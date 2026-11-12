@@ -289,3 +289,79 @@ test("connection test CLI refuses malformed diagnostic fields rather than echoin
   ).not.toBe(0);
   expect(h.output.join("")).not.toContain(secret);
 });
+
+test.each(["openai", "anthropic"])("CLI stores exact per-model prices on a %s connection replacement", async (kind) => {
+  const h = setup();
+  const apiKey = randomUUID();
+  expect(
+    await run(
+      [
+        "creds",
+        "set",
+        kind,
+        "--id",
+        "account",
+        "--expected-version",
+        "3",
+        "--base-url",
+        "https://gateway.example/v1",
+        "--price-model",
+        "owner-deployment",
+        "--price-input",
+        "0",
+        "--price-output",
+        "12.345678901234",
+        "--price-cached-input",
+        "0.25",
+        "--json",
+      ],
+      { out: h.auth.out, err: h.auth.err },
+      { auth: h.auth, readStdin: async () => apiKey },
+    ),
+  ).toBe(0);
+  const request = h.requests[0];
+  if (!request) throw Error("missing request");
+  const body = (await request.json()) as { id: string; expectedVersion: number; value: string };
+  expect(body.id).toBe("account");
+  expect(body.expectedVersion).toBe(3);
+  const value = JSON.parse(body.value);
+  expect(value.prices).toEqual({
+    "owner-deployment": { input: "0", output: "12.345678901234", cacheRead: "0.25", cacheWrite: null, reasoning: null },
+  });
+  expect(value.apiKey).toBe(apiKey);
+  expect(h.output.join("")).toBe('{"ok":true}\n');
+});
+
+test.each(
+  [
+    ["list", "--price-model", "deployment"],
+    ["set", "openai", "--name", "Price", "--price-model", "deployment", "--price-input", "1", "--price-output", "2"],
+    ...[
+      ["--price-model", "deployment"],
+      ["--price-model", "deployment", "--price-input", "-1", "--price-output", "2"],
+      ["--price-model", "deployment", "--price-input", "1", "--price-output", "NaN"],
+      ["--price-model", "deployment", "--price-input", "1e3", "--price-output", "2"],
+      ["--price-model", "deployment", "--price-input", "1", "--price-output", "2", "--price-cached-input", ""],
+      ["--price-model", "__proto__", "--price-input", "1", "--price-output", "2"],
+      ["--price-model", "deployment", "--price-model", "other", "--price-input", "1", "--price-output", "2"],
+    ].map((flags) => ["set", "openai", "--name", "Price", "--base-url", "https://gateway.example/v1", ...flags]),
+  ].map((args) => ({ args })),
+)("invalid prices are refused before secret input/API: %j", async ({ args }) => {
+  const h = setup();
+  let reads = 0;
+  expect(
+    await run(
+      ["creds", ...args],
+      { out: h.auth.out, err: h.auth.err },
+      {
+        auth: h.auth,
+        readStdin: async () => {
+          reads++;
+          return randomUUID();
+        },
+      },
+    ),
+  ).not.toBe(0);
+  expect(reads).toBe(0);
+  expect(h.requests).toHaveLength(0);
+});

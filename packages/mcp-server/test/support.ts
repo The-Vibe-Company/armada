@@ -52,7 +52,11 @@ export interface People {
 
 /** A fresh database with the migrations, two orgs, three people, three goldens and encrypted credentials. */
 export async function database(): Promise<{ db: PGlite; people: People }> {
-  const db = await openMigratedDatabase();
+  return seedDatabase(await openMigratedDatabase());
+}
+
+/** Seed the common launch fixtures into an empty database owned by the caller. */
+export async function seedDatabase(db: PGlite): Promise<{ db: PGlite; people: People }> {
   const people: People = {
     org: crypto.randomUUID(),
     otherOrg: crypto.randomUUID(),
@@ -284,6 +288,7 @@ export interface TestServer {
   supabaseDown(down: boolean): void;
   client(token: string): Promise<Client>;
   github: FakeGitHub;
+  /** Closes clients, and also the database unless it was supplied by the caller. */
   close(): Promise<void>;
 }
 
@@ -391,8 +396,10 @@ export async function harness(
     modelAuth?: (db: PGlite) => NonNullable<HandlerOptions["modelAuth"]>;
     connections?: HandlerOptions["connections"];
   } = {},
+  /** Caller-owned seeded database; its owner closes it after all clients are done. */
+  fixture?: Awaited<ReturnType<typeof database>>,
 ): Promise<TestServer> {
-  const { db, people } = await database();
+  const { db, people } = fixture ?? (await database());
   const boat = fakeBoat();
   const auth = createMemoryAuthStore();
   const clock = { now: new Date("2026-11-08T12:00:00.000Z") };
@@ -521,7 +528,7 @@ export async function harness(
     },
     async close() {
       for (const client of clients) await client.close();
-      await db.close();
+      if (!fixture) await db.close();
     },
   };
 }

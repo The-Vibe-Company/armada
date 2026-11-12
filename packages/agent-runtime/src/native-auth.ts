@@ -8,6 +8,7 @@ import {
   readFileSync,
   readSync,
   statSync,
+  unlinkSync,
 } from "node:fs";
 import { join } from "node:path";
 import { groupState, type ProcessIdentity, processIdentity } from "./processes.ts";
@@ -102,4 +103,9 @@ export function readNativeCodexAuth(root: string, register: (values: readonly st
   } finally {
     if (fd !== undefined) closeSync(fd);
   }
+}
+
+/** Broker-configured restores retain old leaves for redaction, never a guest refresh login. */
+export function removeNativeCodexAuth(root: string, register: (values: readonly string[]) => void): void {
+  if (readNativeCodexAuth(root, register) !== undefined) unlinkSync(join(root, "codex", "auth.json"));
 }

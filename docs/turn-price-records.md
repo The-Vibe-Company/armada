@@ -46,8 +46,8 @@ Native SQL observations still merge monotonically, but a max-per-field union can
 produce a tuple no harness reported. Such a tuple must not be priced. A matching
 fresh observation or previously stored witness is required. Retained rows alone
 are not fresh observations, including when history/files become unavailable.
-Missing or unsupported cache-write TTL is not inferred; the calculator retains
-its source-specific rules. Quote records store only counters/rate provenance, not
+Missing cache-write TTL selects the provider default rate; an explicit unsupported
+lifetime remains unknown. See [default token rates](default-token-rates.md). Quote records store only counters/rate provenance, not
 transcripts, endpoints or model keys.
 
 Native merge and quote publication share a row-locked transaction; publication

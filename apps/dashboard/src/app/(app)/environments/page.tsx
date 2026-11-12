@@ -251,7 +251,6 @@ export default async function GoldensPage({ searchParams }: Props) {
 
   return (
     <ResourceBrowser
-      detailPanel
       title="Environments"
       description="Goldens: what a sandbox contains when it starts."
       meta={goldens.length > 0 ? goldens.length : undefined}

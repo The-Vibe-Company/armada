@@ -134,3 +134,16 @@ test("list rows share their columns, whatever the width of each row's action", a
   await expect(name).toHaveText("Alice Linear");
   expect(await name.evaluate((node) => node.scrollWidth <= node.clientWidth)).toBe(true);
 });
+
+test("the closed panel leaves no empty gap above the list", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 844 });
+  await signIn(page, "alice@example.com", "/environments");
+  const list = page.getByRole("list", { name: "Environments", exact: true });
+  await expect(list).toBeVisible();
+  // The section starts with its list: the parked, closed panel takes no grid row of its own.
+  const offset = await list.evaluate((node) => {
+    const section = node.closest("section");
+    return section ? node.getBoundingClientRect().top - section.getBoundingClientRect().top : Number.NaN;
+  });
+  expect(offset).toBe(0);
+});

@@ -1,12 +1,6 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { createSqlAuthStore } from "@armada/auth";
-import {
-  CREDENTIAL_BUSY_MESSAGE,
-  createSqlVaultStore,
-  mutateCredentialAccount,
-  ProviderError,
-  VaultError,
-} from "@armada/core/server";
+import { createSqlVaultStore, mutateCredentialAccount, ProviderError, VaultError } from "@armada/core/server";
 import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
 import helperManifest from "../../core/helper/manifest.json";
 import { createSqlData } from "../src/data.ts";
@@ -15,8 +9,10 @@ import { createProviderMetadata } from "../src/provider-metadata.ts";
 import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
 import { readStatus } from "../src/turns.ts";
 import { encryptedRecoveryExec } from "./fixtures/recovery-exec.ts";
+import { rowOnlyDatabase } from "./row-only-database.ts";
 import { bunLikeSql, call, ENCRYPTION_KEY, harness, PUBLIC_URL, SECRETS, type TestServer } from "./support.ts";
 
+const sharedDatabase = rowOnlyDatabase();
 let server: TestServer | undefined;
 
 afterEach(async () => {
@@ -25,7 +21,7 @@ afterEach(async () => {
 });
 
 async function start(options: Parameters<typeof harness>[0] = {}) {
-  server = await harness(options);
+  server = await harness(options, await sharedDatabase());
   return server;
 }
 
@@ -1043,7 +1039,9 @@ describe("tools", () => {
   });
 
   test("failed model record inserts do not fail an accepted launch or send", async () => {
-    const { token, client, people, boat, db } = await start();
+    // This case creates a trigger: keep it off the row-only shared connection.
+    server = await harness();
+    const { token, client, people, boat, db } = server;
     const mcp = await client(await token(people.member));
     await db.exec(
       `create function reject_model_record() returns trigger language plpgsql as $$ begin raise exception 'record unavailable'; end $$; create trigger reject_model_record before insert on sandbox_turn_models for each row execute function reject_model_record();`,
@@ -1714,13 +1712,13 @@ captureGitHubAuditLogs();
 test("MCP launch preserves the closed busy account code and safe action", async () => {
   const { token, client, people, boat } = await start({
     providerFor: () => {
-      throw new VaultError("credential_busy", CREDENTIAL_BUSY_MESSAGE);
+      throw new VaultError("credential_busy", "The model account is unavailable. Check its current credentials.");
     },
   });
   const mcp = await client(await token(people.owner));
   const result = await call(mcp, "launch", { golden: "shared", harness: "claude" });
   expect(result.isError).toBe(true);
   expect(result.text).toContain("error code: credential_busy");
-  expect(result.text).toContain(CREDENTIAL_BUSY_MESSAGE);
+  expect(result.text).toContain("The model account is unavailable. Check its current credentials.");
   expect(boat.forks).toHaveLength(0);
 });

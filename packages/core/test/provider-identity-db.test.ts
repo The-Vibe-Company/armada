@@ -3,7 +3,8 @@ import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { PGlite } from "@electric-sql/pglite";
-import { applyMigrations, migrationsDir, openDatabase } from "../../../scripts/db/apply.ts";
+import { migrationsDir, openDatabase } from "../../../scripts/db/apply.ts";
+import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 import { createSqlGoldenStore, type GoldenActor, goldenForLaunch } from "../src/index.ts";
 import { createSqlSandboxStore } from "../src/sandbox.ts";
 
@@ -65,9 +66,8 @@ describe("sandbox provider identity", () => {
   });
 
   test("only the service role registers sandbox identities for either provider; existing rows remain readable", async () => {
-    const db = await openDatabase();
+    const db = await openMigratedDatabase();
     try {
-      await applyMigrations(db);
       const people = await fixture(db);
       for (const provider of ["boat", "modal"] as const) {
         const goldenId = await insertGolden(db, people, provider, `snapshot-${provider}`);
@@ -125,9 +125,8 @@ describe("sandbox provider identity", () => {
   });
 
   test("a name lives once per provider, identities are fixed, and a user JWT cannot write or relabel a Modal golden", async () => {
-    const db = await openDatabase();
+    const db = await openMigratedDatabase();
     try {
-      await applyMigrations(db);
       const people = await fixture(db);
       const boatId = await insertGolden(db, people, "boat", "snap-boat");
       // The server (service role here) writes the Modal golden of the same name, pinned to its App.
