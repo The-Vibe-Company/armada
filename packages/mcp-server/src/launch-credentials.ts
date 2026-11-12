@@ -215,11 +215,15 @@ export async function exposedSecrets(
     for (const row of await reader.credentials(scope, owner)) {
       if (!SECRET_KINDS.includes(row.kind)) continue;
       const value = await decryptSecret(new Uint8Array(row.valueEnc), encryptionKey);
-      values.push(value, ...jsonLeaves(value));
       if ((row.kind === "openai" || row.kind === "anthropic") && value.startsWith("{")) {
         const connection = JSON.parse(parseCredentialValue(row.kind, value));
-        values.push(connection.apiKey);
-      }
+        // Keep full-secret and endpoint/key redaction, not unrelated non-secret numeric prices.
+        values.push(
+          value,
+          ...jsonLeaves(JSON.stringify({ endpoint: connection.endpoint, apiKey: connection.apiKey })),
+          connection.apiKey,
+        );
+      } else values.push(value, ...jsonLeaves(value));
     }
   }
   return values;

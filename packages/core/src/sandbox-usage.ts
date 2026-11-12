@@ -1,4 +1,5 @@
 import type { AgentEvent } from "./provider.ts";
+import type { StoredTurnPricing } from "./turn-pricing.ts";
 
 /** Closed, secret-free explanations for an unmeasured Boat turn. */
 export const USAGE_UNAVAILABLE_CODES = [
@@ -63,6 +64,8 @@ export function usageUnavailableReason(code: UsageUnavailableCode): UsageUnavail
  * Cross-harness totals retain these definitions, not a unique-token or price sum.
  */
 export interface TurnTokenUsage {
+  /** Service-owned quote. Native decoders must not copy this from guest events. */
+  pricing?: StoredTurnPricing | null;
   promptId: string;
   model: string | null;
   inputTokens: number | null;

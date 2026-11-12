@@ -179,6 +179,7 @@ export {
   type PinnedMcpStdio,
   parsePinnedMcpStdio,
 } from "./mcp-stdio.ts";
+export type { ModelPriceOverrides } from "./model-price-overrides.ts";
 export {
   MODEL_PRICE_SOURCES,
   MODEL_PRICES,
@@ -334,6 +335,7 @@ export {
 } from "./templates.ts";
 export { redactKnownTokens } from "./token-redaction.ts";
 export { type ModelSelectionReason, type TurnModelEvidence, turnModelEvidence } from "./turn-model.ts";
+export type { PricingInputs, StoredTurnPricing, TurnPriceContext } from "./turn-pricing.ts";
 export type { UsagePricingContext } from "./usage-pricing.ts";
 export {
   type AccountMutation,

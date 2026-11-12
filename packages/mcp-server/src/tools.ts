@@ -223,6 +223,12 @@ const sandboxUsage = z
         cachedTokens: z.number().nullable(),
         cacheWriteTokens: z.number().nullable().optional(),
         reasoningTokens: z.number().nullable().optional(),
+        // Versioned service-owned pricing metadata; native decoders never populate it.
+        pricing: z
+          .unknown()
+          .nullable()
+          .optional()
+          .describe("Versioned server USD quote from a frozen snapshot; null means unpriced, never zero."),
         unavailableReason: z.object({ code: z.enum(USAGE_UNAVAILABLE_CODES), message: z.string().max(600) }).optional(),
       }),
     ),
