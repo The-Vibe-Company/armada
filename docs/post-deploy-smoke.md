@@ -459,3 +459,30 @@ Cost: three read-only policy calls per pair and two status reads, plus only the
 installs already implied by normal defaults. No policy rows, writes, new secrets,
 migrations or extra workers. Model/registry latency stays inside the shared
 35-minute work +5-minute cleanup deadline; slow or changing policies fail closed.
+
+### Golden runtime integrity (#969)
+
+Both staging entrypoints enable `--golden-runtime`. On the existing ordinary
+worker (only the clean worker when preservation is enabled), named
+`golden_helper_integrity` and `golden_skillpack_integrity` steps verify installed
+bytes, executable resolution and version/protocol. No extra allocation or model
+turn is added. The flag refuses non-staging origins.
+
+The helper must match the bundled architecture-specific digest and closed
+0.1.0/protocol-1 report. Skillpack and skillpack-runtime must match the contents
+of the SHA-256-pinned runtime-v0.3.5 release archive used by the golden bootstrap.
+The probe downloads that archive to a private temporary directory, verifies its
+pin before extraction, compares both installed executables, and removes its
+temporary files. It never installs, repairs, or executes downloaded binaries.
+Installed commands must resolve to the verified bytes; missing, stale, altered,
+unsupported-architecture or unavailable-download cases fail closed and the
+existing worker cleanup still runs. Guest output is not printed.
+
+Prerequisite: staging goldens must contain the shipped helper and Skillpack
+runtime (a golden built with the soft Skillpack download warning will fail this
+check and needs an operator rebuild). No policy, production or database changes.
+Expected added duration: seconds to about one minute per pair; two existing
+60-second exec bounds and the shared 35+5-minute run deadline apply. Cost: one
+pinned release download per pair plus trivial hashing/exec, with no model usage
+or extra worker. Offline transport tests do not prove deployed provider bytes;
+the coordinator runs both enabled providers after merge.

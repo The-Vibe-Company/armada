@@ -18,6 +18,7 @@ import type {
   OrchestratorOperation,
 } from "../packages/core/src/orchestrator.ts";
 import { DefaultSkillSmokeFailure, readDefaultPins, verifyDefaultReceipts } from "./default-skill-smoke.ts";
+import { helperProbe, skillpackProbe } from "./golden-runtime-smoke.ts";
 import { runTemplateSkillCase, TemplateSkillSmokeFailure } from "./template-skill-smoke.ts";
 import { runVaultCase, VaultSmokeFailure } from "./vault-smoke.ts";
 
@@ -188,6 +189,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
   const github = args.includes("--github-runtime");
   const preservation = args.includes("--work-preservation");
   const defaultSkills = args.includes("--default-skills");
+  const goldenRuntime = args.includes("--golden-runtime");
   const templatesSkills = args.includes("--templates-skills");
   const vault = args.includes("--vault");
   const lifecycle = args.includes("--lifecycle");
@@ -195,7 +197,8 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
     if (env.ARMADA_SMOKE !== "create_real_compute") fail("compute_opt_in_required");
     if (
       (defaultSkills && !preservation) ||
-      (github && (orchestrator || preservation || templatesSkills || defaultSkills || lifecycle || vault)) ||
+      (github &&
+        (orchestrator || preservation || templatesSkills || defaultSkills || goldenRuntime || lifecycle || vault)) ||
       args.some(
         (arg) =>
           arg !== "--orchestrator" &&
@@ -203,6 +206,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
           arg !== "--work-preservation" &&
           arg !== "--templates-skills" &&
           arg !== "--default-skills" &&
+          arg !== "--golden-runtime" &&
           arg !== "--lifecycle" &&
           arg !== "--vault",
       ) ||
@@ -216,7 +220,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
       fail("invalid_configuration");
     origin = url.origin;
     if (
-      (preservation || templatesSkills || defaultSkills || lifecycle || vault) &&
+      (preservation || templatesSkills || defaultSkills || goldenRuntime || lifecycle || vault) &&
       origin !== "https://armada-mcp-staging.up.railway.app"
     )
       fail("invalid_configuration");
@@ -593,6 +597,10 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
           },
         ),
       );
+      if (goldenRuntime && !dirty) {
+        await step("golden_helper_integrity", () => checkedExec(helperProbe));
+        await step("golden_skillpack_integrity", () => checkedExec(skillpackProbe));
+      }
       if (defaultSkills) {
         const expected = defaultPins.get(index)!;
         await step(dirty ? "default_skills_opt_out_receipts" : "default_skills_receipts", async () => {

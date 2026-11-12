@@ -1514,3 +1514,50 @@ test("vault transport catches canary echoes in error envelopes, cleans metadata 
     leftoverVariables: [],
   });
 });
+
+test("golden runtime integrity probes are staging-only, fail closed, and retain stopped cleanup on either provider", async () => {
+  const staging = "https://armada-mcp-staging.up.railway.app";
+  for (const provider of ["boat", "modal"]) {
+    for (const broken of [undefined, "helper", "skillpack"] as const) {
+      let stopped = false;
+      const fake = fixture((call) => {
+        if (call.path === "sandbox/stop") stopped = true;
+        if (call.path === "sandbox/status")
+          return json({
+            status: stopped ? "stopped" : "ready",
+            providerState: stopped ? (provider === "boat" ? "archived" : "stopped") : "active",
+          });
+        if (
+          call.path === "sandbox/exec" &&
+          broken &&
+          String(call.body.command).includes(broken === "helper" ? "armada-helper" : "skillpack-runtime")
+        )
+          return json({ exitCode: 1, timedOut: false, stdout: "private-output", stderr: "private-error" });
+      });
+      expect(
+        await postDeploySmoke(
+          {
+            ...env,
+            ARMADA_URL: staging,
+            ARMADA_SMOKE_CASES: JSON.stringify([{ ...selected, provider }]),
+          },
+          ["--golden-runtime"],
+          {
+            ...fake.io,
+            fetch: (url, init) => fake.io.fetch(url.replace(staging, env.ARMADA_URL), init),
+          },
+        ),
+      ).toBe(broken === undefined);
+      const reports = fake.lines.map((line) => JSON.parse(line));
+      expect(reports.some((line) => line.step === "golden_helper_integrity")).toBe(true);
+      expect(reports.some((line) => line.step === "golden_skillpack_integrity")).toBe(broken !== "helper");
+      expect(fake.calls.filter((call) => call.path === "sandbox/launch")).toHaveLength(1);
+      expect(stopped).toBe(true);
+      expect(fake.lines.join("\n")).not.toContain("private-output");
+      expect(fake.lines.join("\n")).not.toContain("private-error");
+    }
+  }
+  const invalid = fixture();
+  expect(await postDeploySmoke(env, ["--golden-runtime"], invalid.io)).toBe(false);
+  expect(invalid.calls).toHaveLength(0);
+});
