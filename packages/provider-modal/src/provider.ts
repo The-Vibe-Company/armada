@@ -11,6 +11,7 @@ import type {
 } from "@armada/core";
 import {
   HARNESSES,
+  isModelConnectionTestResult,
   machineCapacity,
   mapHarnesses,
   ProviderError,
@@ -949,6 +950,16 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         if (result?.acknowledged !== true)
           throw refusal("unavailable", "GitHub runtime did not acknowledge configuration.");
         return { acknowledged: true };
+      });
+    },
+    async testModelConnection({ sandboxId, harness, model }) {
+      resolveModelChoice(harness, { model });
+      return admit(sandboxId, async (row) => {
+        if (row.golden || row.phase !== "active" || !["ready", "running"].includes(row.info.state))
+          throw refusal("sandbox_not_ready", "Connection checks require an already-running sandbox.");
+        const result = await runner.call<unknown>(row, "testModelConnection", { harness, model });
+        if (!isModelConnectionTestResult(result)) throw refusal("unavailable", "Invalid connection-test receipt.");
+        return result;
       });
     },
     async configureReadableVariables({ sandboxId, harness, variables }) {

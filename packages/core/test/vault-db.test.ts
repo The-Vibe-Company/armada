@@ -26,6 +26,9 @@ import {
   type VaultStore,
 } from "../src/index.ts";
 import { createSqlVaultStore } from "../src/server.ts";
+import { migratedDatabase } from "./support/database.ts";
+
+const database = migratedDatabase();
 
 const KEY = Buffer.alloc(32, 9).toString("base64");
 const CLAUDE = "sk-ant-oat01-user-token";
@@ -350,7 +353,7 @@ describe("named model accounts", () => {
     });
   });
   test("ID mutations authorize owners/admins, preserve secret revisions and pin selection across default changes", async () => {
-    await withVault(async ({ store, people, db }) => {
+    await withIsolatedVault(async ({ store, people, db }) => {
       const org = await createOrg(store, people.stan, "Accounts");
       await addMember(store, people.stan, { org: org.id, email: "ada@example.com", role: "member" });
       // Canonical account operations, including explicit CAS, run as the real service role.
@@ -557,7 +560,7 @@ interface People {
 
 describe("GitHub connections", () => {
   test("reconnecting B discards cached A and the next launch resolves B", async () => {
-    await withVault(async ({ store, db, people }) => {
+    await withIsolatedVault(async ({ store, db, people }) => {
       await db.query(
         `insert into github_connections (user_id, github_id, login, refresh_token_enc, access_token_enc, access_expires_at)
          values ($1, 1, 'account-a', $2, $3, '2099-01-01')`,
@@ -592,7 +595,7 @@ describe("GitHub connections", () => {
   });
 
   test("a failed best-effort profile write does not roll back consumed token rotation", async () => {
-    await withVault(async ({ store, db, people }) => {
+    await withIsolatedVault(async ({ store, db, people }) => {
       await db.query(
         "insert into github_connections (user_id, github_id, login, refresh_token_enc) values ($1, 1, 'before', $2)",
         [people.stan, await encryptSecret("refresh-before", KEY)],
@@ -743,18 +746,23 @@ describe("GitHub connections", () => {
   });
 });
 
-async function withVault(
-  run: (ctx: { db: PGlite; store: VaultStore; people: People }) => Promise<void>,
-): Promise<void> {
+type VaultRun = (ctx: { db: PGlite; store: VaultStore; people: People }) => Promise<void>;
+
+async function withVault(run: VaultRun, db = database()): Promise<void> {
+  const people = { stan: crypto.randomUUID(), ada: crypto.randomUUID(), bob: crypto.randomUUID() };
+  await db.query(
+    "insert into auth.users (id, email) values ($1, 'stan@example.com'), ($2, 'ada@example.com'), ($3, 'bob@example.com')",
+    [people.stan, people.ada, people.bob],
+  );
+  await run({ db, store: createSqlVaultStore(db), people });
+}
+
+// Schema, session-role and JWT-setting tests need independent databases.
+async function withIsolatedVault(run: VaultRun): Promise<void> {
   const db = await openDatabase();
   try {
     await applyMigrations(db);
-    const people = { stan: crypto.randomUUID(), ada: crypto.randomUUID(), bob: crypto.randomUUID() };
-    await db.query(
-      "insert into auth.users (id, email) values ($1, 'stan@example.com'), ($2, 'ada@example.com'), ($3, 'bob@example.com')",
-      [people.stan, people.ada, people.bob],
-    );
-    await run({ db, store: createSqlVaultStore(db), people });
+    await withVault(run, db);
   } finally {
     await db.close();
   }

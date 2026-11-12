@@ -89,15 +89,15 @@ test("real native state publication seals rotation without replacing binding, fe
     await resolver.admit!(actor, credentials, SANDBOX); // Actual resolver-to-ownership pipeline before allocation.
     await auth.releaseUnallocated(account.id, 1, SANDBOX);
     expect(await auth.managed(SANDBOX)).toBe(false);
-    await auth.claim(actor, account.id, 1, SANDBOX);
-    await expect(auth.claim(actor, account.id, 1, OTHER)).rejects.toMatchObject({ code: "credential_busy" });
+    await auth.claimLegacy(actor, account.id, 1, SANDBOX);
+    await expect(auth.claimLegacy(actor, account.id, 1, OTHER)).rejects.toMatchObject({ code: "credential_busy" });
     const duplicate = (
       await db.query<{ id: string }>(
         "insert into credentials(scope,owner_id,kind,name,value_enc) values('user',$1,'codex_auth','Same native file',$2) returning id",
         [OWNER, await encryptSecret(native(0), KEY)],
       )
     ).rows[0]!;
-    await expect(auth.claim(actor, duplicate.id, 1, crypto.randomUUID())).rejects.toMatchObject({
+    await expect(auth.claimLegacy(actor, duplicate.id, 1, crypto.randomUUID())).rejects.toMatchObject({
       code: "credential_busy",
     });
 
@@ -133,9 +133,9 @@ test("real native state publication seals rotation without replacing binding, fe
     expect(await auth.managed(SANDBOX)).toBe(true);
     await auth.releaseFailed(actor, account.id, 1, SANDBOX);
     expect(await auth.holder(actor, account.id, 1)).toBeNull();
-    await auth.claim(actor, account.id, 1, OTHER);
+    await auth.claimLegacy(actor, account.id, 1, OTHER);
     await auth.releaseUnallocated(account.id, 1, OTHER);
-    await auth.claim(actor, account.id, 1, SANDBOX);
+    await auth.claimLegacy(actor, account.id, 1, SANDBOX);
     await db.query("update sandboxes set status='ready',credential_id=$2,credential_version=1 where id=$1", [
       SANDBOX,
       account.id,
@@ -277,7 +277,7 @@ test("real native state publication seals rotation without replacing binding, fe
         [PEER, await encryptSecret(native(80), KEY)],
       )
     ).rows[0]!;
-    await auth.claim({ userId: PEER, orgId: ORG, role: "admin" }, peerAccount.id, 1, crypto.randomUUID());
+    await auth.claimLegacy({ userId: PEER, orgId: ORG, role: "admin" }, peerAccount.id, 1, crypto.randomUUID());
     await db.query("delete from members where org_id=$1 and user_id=$2", [ORG, OWNER]);
     await expect(auth.state.read(actor, account.id, 1, SANDBOX)).rejects.toMatchObject({ code: "not_found" });
     await db.query("insert into members(org_id,user_id,role) values($1,$2,'admin')", [ORG, OWNER]);
@@ -290,10 +290,10 @@ test("real native state publication seals rotation without replacing binding, fe
     authJson = native(3);
     expect(await auth.capture(provider, "native", actor)).toContain("synthetic-refresh-3");
     await expect(auth.state.read(actor, account.id, 1, SANDBOX)).rejects.toMatchObject({ code: "not_found" });
-    await expect(auth.claim(actor, account.id, 2, OTHER)).rejects.toMatchObject({ code: "credential_busy" });
+    await expect(auth.claimLegacy(actor, account.id, 2, OTHER)).rejects.toMatchObject({ code: "credential_busy" });
     await db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [SANDBOX]);
     physicalStopped = true; // independent provider observation, not the SQL label
-    await auth.claim(actor, account.id, 2, OTHER);
+    await auth.claimLegacy(actor, account.id, 2, OTHER);
     expect(await auth.state.read(actor, account.id, 2, OTHER)).toMatchObject({ authJson: native(9), revision: 0 });
     // Explicit replacement fences model billing, not safe shell inspection of
     // the prior workspace. Its rotated leaves remain redaction-only.
@@ -328,7 +328,7 @@ test("Modal private publication binds current app, native generation and account
     const time = 1_800_000_000_000;
     const auth = createModelAuthOwnership(db, KEY, undefined, () => time);
     const actor: GoldenActor = { userId: OWNER, orgId: ORG, role: "admin" };
-    await auth.claim(actor, account.id, 1, SANDBOX);
+    await auth.claimLegacy(actor, account.id, 1, SANDBOX);
     const scope: Scope = {
       orgId: ORG,
       userId: OWNER,
@@ -419,7 +419,7 @@ test("managed exec holds stop admission through secret publication while indepen
           [actor.userId, await encryptSecret(native(0, identity), ENCRYPTION_KEY)],
         )
       ).rows[0]!;
-      await ownership.claim(actor, account.id, 1, id);
+      await ownership.claimLegacy(actor, account.id, 1, id);
       const machine = await server.boat.provider.fork({
         from: "fixture-snapshot",
         noEnv: true,
@@ -680,7 +680,7 @@ test.each(["orphan", "failed", "stopped", "deleted", "historical"])(
           [actor.userId, await encryptSecret(native(0), ENCRYPTION_KEY)],
         )
       ).rows[0]!;
-      await ownership.claim(actor, account.id, 1, old);
+      await ownership.claimLegacy(actor, account.id, 1, old);
       if (status === "historical") await ownership.releaseUnallocated(account.id, 1, old);
       if (status !== "orphan")
         await db.query(
@@ -726,7 +726,7 @@ test.each(["orphan", "failed", "stopped", "deleted", "historical"])(
           (await db.query<{ status: string }>("select status from sandboxes where id=$1", [old])).rows[0]?.status,
         ).toBe("deleted");
       const next = crypto.randomUUID();
-      await ownership.claim(actor, account.id, 2, next);
+      await ownership.claimLegacy(actor, account.id, 2, next);
       await expect(ownership.assertOwned(actor, account.id, 2, next)).resolves.toBeUndefined();
       await expect(ownership.bootstrap(actor, account.id, 1, old)).rejects.toMatchObject({ code: "not_found" });
     } finally {
@@ -794,7 +794,7 @@ test("unknown-version history requires atomic fresh import and confirmed deletio
     ).toBe(2);
     expect(await ownership.holder(actor, account.id, 2)).toBeNull();
     const next = crypto.randomUUID();
-    await ownership.claim(actor, account.id, 2, next);
+    await ownership.claimLegacy(actor, account.id, 2, next);
     expect(await ownership.bootstrap(actor, account.id, 2, next)).toMatchObject({ authJson: native(2) });
   } finally {
     await db.close();
@@ -884,7 +884,7 @@ test.each([
       )
     ).rows[0]!;
     const legacy = crypto.randomUUID();
-    if (scenario.enrolled) await ownership.claim(actor, account.id, 1, legacy);
+    if (scenario.enrolled) await ownership.claimLegacy(actor, account.id, 1, legacy);
     const insertLegacy = async (id: string, status: string) =>
       db.query(
         `insert into sandboxes(id,org_id,owner_id,golden_id,harness,status,provider_sandbox_id,boat_id,visibility,credential_id,credential_version,stopped_at,deleted_at)
@@ -948,7 +948,7 @@ test.each([
       expect(forks).toBe(1);
       expect(await ownership.managed(target)).toBe(false); // confirmed no-allocation cleanup
       const freshOwner = crypto.randomUUID();
-      await ownership.claim(actor, account.id, 2, freshOwner);
+      await ownership.claimLegacy(actor, account.id, 2, freshOwner);
       // The old workspace remains unmanaged; a different generation's lease is
       // not permission to rebind it or disable its ordinary shell inspection.
       if (scenario.status === "deleted")
@@ -980,7 +980,7 @@ test.each([
                 [actor.userId, await encryptSecret(native(9), ENCRYPTION_KEY)],
               )
             ).rows[0]!;
-            await expect(ownership.claim(actor, duplicate.id, 1, crypto.randomUUID())).rejects.toMatchObject({
+            await expect(ownership.claimLegacy(actor, duplicate.id, 1, crypto.randomUUID())).rejects.toMatchObject({
               code: "credential_busy",
             });
             // A rotated token is not in the original imported credential. No
@@ -1010,7 +1010,7 @@ test.each([
               account.id,
               await encryptSecret(native(70, "different-replacement"), ENCRYPTION_KEY),
             ]);
-            await expect(ownership.claim(actor, duplicate.id, 1, crypto.randomUUID())).rejects.toMatchObject({
+            await expect(ownership.claimLegacy(actor, duplicate.id, 1, crypto.randomUUID())).rejects.toMatchObject({
               code: "credential_busy",
             });
             // Restoring the fixture advances version again; the old home remains
@@ -1065,7 +1065,7 @@ test.each(["active", "revoked", "replaced"])(
       if (!account) throw Error("Missing account fixture.");
       const auth = createModelAuthOwnership(db, KEY, undefined, () => time);
       const actor: GoldenActor = { userId: p.owner, orgId: p.org, role: "member" };
-      await auth.claim(actor, account.id, 1, sandboxId);
+      await auth.claimLegacy(actor, account.id, 1, sandboxId);
       const scope: Scope = {
         orgId: p.org,
         userId: p.owner,

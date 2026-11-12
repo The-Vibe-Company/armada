@@ -129,7 +129,7 @@ export function createCredentialBindingRecovery(
       // Explicit recovery enrolls fresh native state atomically with both pins.
       // Never resume with a raw refresh token outside the ownership/publication gate.
       if (resolved.sources.some((source) => source.kind === "codex_auth"))
-        await modelAuth.claim(
+        await modelAuth.claimLegacy(
           { userId: caller.userId, orgId: sandbox.org_id, role: "member" },
           binding.credentialId,
           binding.credentialVersion,
