@@ -5,9 +5,15 @@ test.beforeEach(reset);
 
 // The browser boundary owns discoverability, active routes and phone menu behavior.
 // Descriptive menu sub-text or broken route/menu interactions fail this contract.
-for (const phone of [false, true]) {
-  test(`relationship navigation stays usable on ${phone ? "phone" : "desktop"}`, async ({ page }) => {
+for (const [phone, theme] of [
+  [false, "light"],
+  [false, "dark"],
+  [true, "light"],
+  [true, "dark"],
+] as const) {
+  test(`relationship navigation stays usable on ${phone ? "phone" : "desktop"}, ${theme}`, async ({ page }) => {
     await page.setViewportSize({ width: phone ? 390 : 1280, height: phone ? 844 : 900 });
+    await page.addInitScript((value) => localStorage.setItem("theme", value), theme);
     await signIn(page, "alice@example.com", "/environments");
     await expect(page.getByLabel("Active organization", { exact: true })).toHaveCount(1);
     const nav = page.getByRole("navigation", { name: "Main", exact: true });
@@ -26,9 +32,11 @@ for (const phone of [false, true]) {
     await expect(nav).not.toContainText("Templates bring these choices together.");
     const environment = nav.getByRole("link", { name: "Environments", exact: true });
     await expect(environment).toHaveAttribute("aria-current", "page");
+    await expect(page.locator("html")).toHaveClass(new RegExp(theme));
+    await page.mouse.move(389, 843);
     await page.screenshot({
       animations: "disabled",
-      path: `test-results/navigation-after-${phone ? "phone" : "desktop"}.png`,
+      path: `test-results/navigation-no-subtext-after-${phone ? "phone" : "desktop"}-${theme}.png`,
     });
     if (phone) {
       await expect(page.getByRole("dialog", { name: "Navigation" })).toBeVisible();
