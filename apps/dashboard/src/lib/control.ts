@@ -520,6 +520,7 @@ export function createTemplateControl(options: ArmadaApiOptions) {
       id: string;
       revision: number;
       requestKey: string;
+      modelAccount?: { id: string; version: number };
       prompt?: string;
       ttlSeconds?: number;
       size?: string;

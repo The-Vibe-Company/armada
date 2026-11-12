@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { access, chmod, mkdir, mkdtemp, readdir, readFile, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { reportedTurnUsage } from "@armada/core";
 import { ClaudeDriver, type DriverEvent, type Turn } from "../src/index.ts";
 
 const nativeTest = process.platform === "linux" ? test : test.skip;
@@ -234,6 +235,7 @@ nativeTest("Claude native /usage fallback does not become public assistant text 
   try {
     const turn = driver.start({
       request: { sandboxId: "s", harness: "claude", text: "/usage" },
+      sessionId: "fixture-session",
       signal: AbortSignal.timeout(3000),
       session: () => {},
       emit: (event) => {
@@ -242,6 +244,11 @@ nativeTest("Claude native /usage fallback does not become public assistant text 
     });
     expect(await turn.done).toBe("finished");
     expect(events.filter((event) => event.kind === "message")).toEqual([]);
+    expect(events.find((event) => event.kind === "other" && event.type === "result")).toEqual({
+      kind: "other",
+      type: "result",
+      data: { subtype: "success", is_error: false },
+    });
     expect(events.some((event) => event.kind === "other" && event.type === "system")).toBe(true);
   } finally {
     await driver.close();
@@ -274,6 +281,106 @@ nativeTest(
       expect(events.filter((event) => event.kind === "message").map((event) => event.text)).toEqual([
         "work-after-usage",
       ]);
+    } finally {
+      await driver.close();
+    }
+  },
+);
+
+// Real pinned SDK/child boundary, not a fake Driver: cumulative resumed totals are not per-prompt tokens.
+nativeTest.each([false, true])(
+  "Claude resumed=%s usage never attributes saved session totals to a new prompt",
+  async (resumed) => {
+    const driver = new ClaudeDriver({
+      executable: `${import.meta.dir}/fixtures/claude-process.ts`,
+      cwd: import.meta.dir,
+      env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+    });
+    const events: DriverEvent[] = [];
+    try {
+      const turn = driver.start({
+        request: { sandboxId: "s", harness: "claude", text: resumed ? "usage-resumed" : "usage-fresh" },
+        ...(resumed ? { sessionId: "fixture-session" } : {}),
+        signal: AbortSignal.timeout(3000),
+        session() {},
+        emit: (event) => {
+          events.push(event);
+        },
+      });
+      expect(await turn.done).toBe("finished");
+      expect(events.find((event) => event.kind === "other" && event.type === "result")).toMatchObject({
+        data: {
+          total_cost_usd: resumed ? null : 1,
+          modelUsage: {
+            "claude-native": {
+              inputTokens: resumed ? null : 100,
+              outputTokens: resumed ? null : 20,
+              cacheReadInputTokens: resumed ? null : 30,
+              cacheCreationInputTokens: resumed ? null : 10,
+              thinkingTokens: resumed ? null : 4,
+              cacheCreationEphemeral5mInputTokens: resumed ? null : 6,
+              cacheCreationEphemeral1hInputTokens: resumed ? null : 4,
+              costUSD: resumed ? null : 1,
+            },
+          },
+          ...(resumed ? { usageAccounting: { reason: "resumed_baseline_unverified" } } : {}),
+        },
+      });
+    } finally {
+      await driver.close();
+    }
+  },
+);
+
+nativeTest.each([false, true])(
+  "Claude native session reset=%s during steer keeps only attributable usage",
+  async (reset) => {
+    const driver = new ClaudeDriver({
+      executable: `${import.meta.dir}/fixtures/claude-process.ts`,
+      cwd: import.meta.dir,
+      env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+    });
+    const events: DriverEvent[] = [];
+    let turn: Turn | undefined, steering: Promise<void> | undefined;
+    try {
+      turn = driver.start({
+        request: { sandboxId: "s", harness: "claude", text: "initial" },
+        signal: AbortSignal.timeout(3000),
+        session() {},
+        emit(event) {
+          events.push(event);
+          if (event.kind === "message" && event.partial && !steering)
+            steering = turn?.steer(reset ? "usage-after-reset" : "usage-fresh");
+        },
+      });
+      expect(await turn.done).toBe("finished");
+      await steering;
+      const results = events.flatMap((event) =>
+        event.kind === "other" && event.type === "result"
+          ? [{ ...event, id: crypto.randomUUID(), at: 1, promptId: "p" }]
+          : [],
+      );
+      expect(results.at(-1)).toMatchObject({
+        data: {
+          modelUsage: {
+            [reset ? "claude-reset" : "claude-native"]: {
+              inputTokens: reset ? null : 100,
+              outputTokens: reset ? null : 20,
+            },
+          },
+          ...(reset ? { usageAccounting: { reason: "session_reset" } } : {}),
+        },
+      });
+      // Earlier per-native-turn results must not leak measured shares into prompt+model persistence.
+      const collected = reportedTurnUsage(results).turns;
+      expect(collected).toHaveLength(1);
+      expect(collected[0]).toMatchObject({
+        model: reset ? "claude-reset" : "claude-native",
+        inputTokens: reset ? null : 100,
+      });
+      expect(results[0]).toMatchObject({
+        data: { modelUsage: {}, usageAccounting: { reason: "intermediate_result" } },
+      });
     } finally {
       await driver.close();
     }

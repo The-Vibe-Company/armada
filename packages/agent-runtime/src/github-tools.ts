@@ -215,6 +215,37 @@ def repository(value):
     if value.endswith('.git'): value=value[:-4]
     if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+',value): raise ValueError()
     return value
+def api_repository(args):
+    # Match gh's positional endpoint, never a flag's value. Unknown syntax is denied.
+    values={'--cache','--field','-F','--header','-H','--hostname','--input','--jq','-q','--method','-X','--preview','-p','--raw-field','-f','--template','-t'}
+    switches={'--include','-i','--paginate','--silent','--slurp','--verbose','--allow-escape-sequences'}
+    endpoint=None
+    i=0
+    while i<len(args):
+        arg=args[i]
+        flag,separator,value=arg.partition('=')
+        if flag in values:
+            if not separator:
+                i+=1
+                if i>=len(args): raise ValueError()
+                value=args[i]
+            if flag=='--hostname' and value.lower()!='github.com': raise ValueError()
+        elif arg in switches:
+            pass
+        elif arg.startswith('-'):
+            raise ValueError()
+        else:
+            if endpoint is not None: raise ValueError()
+            endpoint=arg
+        i+=1
+    if endpoint is None: raise ValueError()
+    # No URL normalization: encoded separators, placeholders, queries, empty and
+    # dot segments must not change the repository downstream after authorization.
+    path=endpoint.removeprefix('/')
+    parts=path.split('/')
+    if len(parts)<3 or parts[0]!='repos': raise ValueError()
+    if any(not re.fullmatch(r'[A-Za-z0-9_.-]+',part) or part in ('.','..') for part in parts): raise ValueError()
+    return repository('/'.join(parts[1:3]))
 def safe(line,stream=False):
     redaction=os.path.join(os.path.dirname(sys.argv[2]),'redact.sock')
     if sys.argv[1]=='native' and local_secrets:
@@ -312,43 +343,52 @@ try:
         repo=repository(fields.get('path',''))
     elif mode=='gh':
         args=sys.argv[4:]
+        # Resolve supported leading selectors without mistaking their values for
+        # commands. Unknown leading flags fail closed before any token request.
+        command_index=0
+        while command_index<len(args) and args[command_index].startswith('-'):
+            arg=args[command_index]
+            if arg in ('-R','--repo','--hostname'):
+                if command_index+1>=len(args): raise ValueError()
+                command_index+=2
+            elif arg in ('--help','-h','--version') or arg.startswith(('--repo=','--hostname=')):
+                command_index+=1
+            else: raise ValueError()
+        command_args=args[command_index:]
         for i,arg in enumerate(args):
             if arg=='--hostname' and (i+1>=len(args) or args[i+1].lower()!='github.com'): raise ValueError()
             if arg.startswith('--hostname=') and arg.split('=',1)[1].lower()!='github.com': raise ValueError()
             if arg.startswith(('http://','https://')) and not arg.startswith(('https://github.com/','https://api.github.com/')): raise ValueError()
-        repo=os.environ.get('GH_REPO','')
-        for i,arg in enumerate(args):
-            if arg in ('-R','--repo') and i+1<len(args): repo=args[i+1]
-            if arg.startswith('--repo='): repo=arg.split('=',1)[1]
-        if not repo:
-            result=subprocess.run([GIT_EXECUTABLE,'config','--get','remote.origin.url'],capture_output=True,text=True)
-            if result.returncode: raise ValueError()
-            repo=result.stdout
-        repo=repository(repo)
-        for arg in args:
-            if arg.startswith('https://github.com/'):
-                selected=re.match(r'^https://github.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)(?:/|$)',arg)
-                if not selected or repository(selected.group(1)).lower()!=repo.lower(): raise ValueError()
-        if args and args[0]=='repo':
-            # Only exact repository view selectors are supported; other repo mutations fail closed.
-            if len(args)<2 or args[1]!='view': raise ValueError()
-            rest=args[2:]
-            flags_with_values={'--json','--jq','-q','--template','-t','--branch','-b'}
-            i=0
-            while i<len(rest):
-                arg=rest[i]
-                if arg in flags_with_values:
-                    if i+1>=len(rest): raise ValueError()
-                    i+=2; continue
-                if any(arg.startswith(flag+'=') for flag in flags_with_values) or arg in ('--web','-w'): i+=1; continue
-                if repository(arg).lower()!=repo.lower(): raise ValueError()
-                i+=1
-        if args and args[0]=='api':
-            for arg in args[1:]:
-                endpoint=arg.removeprefix('https://api.github.com/').lstrip('/')
-                if endpoint=='graphql': raise ValueError()
-                match=re.match(r'^repos/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)(?:/|$)',endpoint)
-                if match: repo=repository(match.group(1))
+        if command_args and command_args[0]=='api':
+            repo=api_repository(args[:command_index]+command_args[1:])
+        else:
+            repo=os.environ.get('GH_REPO','')
+            for i,arg in enumerate(args):
+                if arg in ('-R','--repo') and i+1<len(args): repo=args[i+1]
+                if arg.startswith('--repo='): repo=arg.split('=',1)[1]
+            if not repo:
+                result=subprocess.run([GIT_EXECUTABLE,'config','--get','remote.origin.url'],capture_output=True,text=True)
+                if result.returncode: raise ValueError()
+                repo=result.stdout
+            repo=repository(repo)
+            for arg in args:
+                if arg.startswith('https://github.com/'):
+                    selected=re.match(r'^https://github.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)(?:/|$)',arg)
+                    if not selected or repository(selected.group(1)).lower()!=repo.lower(): raise ValueError()
+            if command_args and command_args[0]=='repo':
+                # Only exact repository view selectors are supported; other repo mutations fail closed.
+                if len(command_args)<2 or command_args[1]!='view': raise ValueError()
+                rest=command_args[2:]
+                flags_with_values={'--json','--jq','-q','--template','-t','--branch','-b'}
+                i=0
+                while i<len(rest):
+                    arg=rest[i]
+                    if arg in flags_with_values:
+                        if i+1>=len(rest): raise ValueError()
+                        i+=2; continue
+                    if any(arg.startswith(flag+'=') for flag in flags_with_values) or arg in ('--web','-w'): i+=1; continue
+                    if repository(arg).lower()!=repo.lower(): raise ValueError()
+                    i+=1
     else: raise ValueError()
     connection=Connection('private')
     connection.request('POST','/',json.dumps({'repository':repo,'operation':mode}),{'Content-Type':'application/json'})

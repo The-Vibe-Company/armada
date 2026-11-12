@@ -1,6 +1,7 @@
 import type { MachineSizePolicy } from "@armada/core";
 import type { GoldenRow } from "./data/goldens.ts";
 import { goldenSizing } from "./machine-size.ts";
+import type { LaunchAccounts } from "./model-accounts.ts";
 import { goldenRepositoryDirs } from "./repository-context.ts";
 import {
   agentSummary,
@@ -17,6 +18,7 @@ export type TemplateLaunchTarget = {
   name: string;
   revision: number;
   definition: TemplateDefinition;
+  accounts?: LaunchAccounts;
   /** The environment's name, null when it is no longer visible. */
   goldenName: string | null;
   repositories: readonly string[];
@@ -51,6 +53,7 @@ export function launchTarget(
     name: item.name,
     revision: item.revision.revision,
     definition,
+    ...(lookups.accounts ? { accounts: lookups.accounts } : {}),
     goldenName: golden?.name ?? null,
     repositories,
     ...(sizing?.kind === "ready" ? { sizing: { policy: sizing.policy } } : {}),

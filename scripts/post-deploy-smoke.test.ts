@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { postDeploySmoke } from "./post-deploy-smoke.ts";
@@ -1259,7 +1259,7 @@ type LifecycleFault =
   | "lost_resume"
   | "stop_failed"
   | "lost_launch";
-function lifecycleFixture(fault: LifecycleFault = "none") {
+function lifecycleFixture(fault: LifecycleFault = "none", onExec?: () => Response | undefined) {
   let provider = "boat";
   let harness = "codex";
   let id = "";
@@ -1270,6 +1270,7 @@ function lifecycleFixture(fault: LifecycleFault = "none") {
   let readiness = 0;
   let expiry = "";
   const fake = fixture((call) => {
+    if (call.path === "sandbox/exec" && onExec) return onExec();
     if (call.path === "sandbox/launch") {
       launches++;
       provider = String(call.body.provider);
@@ -1513,4 +1514,153 @@ test("vault transport catches canary echoes in error envelopes, cleans metadata 
     leftoverSecrets: [String(fake.calls.find((call) => call.path === "secrets/set")?.body.name)],
     leftoverVariables: [],
   });
+});
+
+test("the advertised smoke workflow invocation admits ordinary staging checks without an orchestrator option", async () => {
+  const workflow = Bun.YAML.parse(
+    readFileSync(new URL("../.github/workflows/post-deploy-smoke.yml", import.meta.url), "utf8"),
+  ) as {
+    on: { workflow_dispatch: { inputs?: Record<string, unknown> } | null };
+    jobs: { smoke: { steps: { name?: string; env?: Record<string, string>; run?: string }[] } };
+  };
+  expect(workflow.on.workflow_dispatch?.inputs?.orchestrator).toBeUndefined();
+  const exercise = workflow.jobs.smoke.steps.find((step) => step.name === "Exercise deployed staging API")!;
+  expect(exercise.env?.ORCHESTRATOR).toBeUndefined();
+  const directory = mkdtempSync(join(tmpdir(), "smoke-workflow-admission-"));
+  try {
+    const bun = join(directory, "bun");
+    writeFileSync(bun, '#!/bin/bash\nprintf "%s\\0" "$@"\n');
+    chmodSync(bun, 0o755);
+    const command = Bun.spawnSync(["bash", "-eu", "-c", exercise.run!], {
+      env: { ...process.env, PATH: `${directory}:${process.env.PATH}`, ORCHESTRATOR: "true" },
+    });
+    expect(command.exitCode).toBe(0);
+    const argv = command.stdout.toString().split("\0").slice(0, -1);
+    expect(argv[0]).toBe("scripts/post-deploy-smoke.ts");
+    const fake = fixture((call) => {
+      if (call.path === "skills/defaults/get") return json({ error: { code: "unauthorized" } }, 401);
+    });
+    const staging = "https://armada-mcp-staging.up.railway.app";
+    expect(
+      await postDeploySmoke(
+        {
+          ...env,
+          ARMADA_URL: staging,
+          ARMADA_SMOKE_CASES: JSON.stringify([
+            {
+              ...selected,
+              org: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+              goldenId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            },
+          ]),
+        },
+        argv.slice(1),
+        {
+          ...fake.io,
+          fetch: (url, init) => fake.io.fetch(url.replace(staging, env.ARMADA_URL), init),
+        },
+      ),
+    ).toBe(false);
+    // A deliberate auth refusal after admission, not a configuration failure or compute allocation.
+    expect(fake.calls.map((call) => call.path)).toEqual(["skills/defaults/get"]);
+    expect(fake.receipts()).toContainEqual({
+      case: 0,
+      step: "default_skills_golden",
+      pass: false,
+      code: "unauthorized",
+    });
+    expect(fake.receipts().some((line) => line.step === "configure")).toBe(false);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("golden runtime integrity probes are staging-only, fail closed, and retain stopped cleanup on either provider", async () => {
+  const staging = "https://armada-mcp-staging.up.railway.app";
+  for (const provider of ["boat", "modal"]) {
+    for (const broken of [undefined, "helper", "skillpack"] as const) {
+      let stopped = false;
+      const fake = fixture((call) => {
+        if (call.path === "sandbox/stop") stopped = true;
+        if (call.path === "sandbox/status")
+          return json({
+            status: stopped ? "stopped" : "ready",
+            providerState: stopped ? (provider === "boat" ? "archived" : "stopped") : "active",
+          });
+        if (
+          call.path === "sandbox/exec" &&
+          broken &&
+          String(call.body.command).includes(broken === "helper" ? "armada-helper" : "skillpack-runtime")
+        )
+          return json({ exitCode: 1, timedOut: false, stdout: "private-output", stderr: "private-error" });
+      });
+      expect(
+        await postDeploySmoke(
+          {
+            ...env,
+            ARMADA_URL: staging,
+            ARMADA_SMOKE_CASES: JSON.stringify([{ ...selected, provider }]),
+          },
+          ["--golden-runtime"],
+          {
+            ...fake.io,
+            fetch: (url, init) => fake.io.fetch(url.replace(staging, env.ARMADA_URL), init),
+          },
+        ),
+      ).toBe(broken === undefined);
+      const reports = fake.lines.map((line) => JSON.parse(line));
+      expect(reports.some((line) => line.step === "golden_helper_integrity")).toBe(true);
+      expect(reports.some((line) => line.step === "golden_skillpack_integrity")).toBe(broken !== "helper");
+      expect(fake.calls.filter((call) => call.path === "sandbox/launch")).toHaveLength(1);
+      expect(stopped).toBe(true);
+      expect(fake.lines.join("\n")).not.toContain("private-output");
+      expect(fake.lines.join("\n")).not.toContain("private-error");
+    }
+  }
+  for (const flags of [
+    ["--golden-runtime"],
+    ["--golden-runtime", "--templates-skills"],
+    ["--golden-runtime", "--orchestrator"],
+  ]) {
+    const invalid = fixture();
+    expect(
+      await postDeploySmoke({ ...env, ...(flags.length > 1 ? { ARMADA_URL: staging } : {}) }, flags, {
+        ...invalid.io,
+        fetch: (url, init) => invalid.io.fetch(url.replace(staging, env.ARMADA_URL), init),
+      }),
+    ).toBe(false);
+    expect(invalid.calls).toHaveLength(0);
+  }
+});
+
+test("readiness timing excludes slow integrity probes and survives either probe failing", async () => {
+  for (const failedExec of [0, 1, 2]) {
+    let execs = 0;
+    const fake = lifecycleFixture("none", () => {
+      execs++;
+      fake.advance(30_000);
+      if (execs === failedExec) return json({ exitCode: 1, timedOut: false });
+    });
+    expect(await fake.run([selected], ["--golden-runtime"])).toBe(failedExec === 0);
+    const reports = fake.receipts();
+    const timing = reports.findIndex((line) => line.step === "time_to_ready");
+    expect(timing).toBeGreaterThanOrEqual(0);
+    expect(reports[timing]).toEqual({
+      case: 0,
+      step: "time_to_ready",
+      pass: true,
+      provider: selected.provider,
+      harness: selected.harness,
+      elapsedMs: 1500,
+    });
+    expect(timing).toBeLessThan(reports.findIndex((line) => line.step === "golden_helper_integrity"));
+    if (failedExec)
+      expect(reports).toContainEqual({
+        case: 0,
+        step: failedExec === 1 ? "golden_helper_integrity" : "golden_skillpack_integrity",
+        pass: false,
+        code: "exec_failed",
+      });
+    expect(fake.calls.some((call) => call.path === "sandbox/stop")).toBe(true);
+  }
 });
