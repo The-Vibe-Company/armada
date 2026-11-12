@@ -63,8 +63,7 @@ migration or new environment setting. Worker tests make no real endpoint call.
 
 ## Dashboard creation fields
 
-Open Models/Harness → Add a subscription → Use an API key instead → Anthropic
-API key. Name the account and check **Use a custom endpoint (Modal)**. Enter
+Open Models/Harness → Add a model account → Anthropic API key. Name the account and check **Use a custom endpoint (Modal)**. Enter
 the HTTPS gateway base URL, select **Bearer token (Authorization)** or
 **API key (x-api-key)** as required by the gateway, and paste the key in the
 password field. Save with Add API key. The named account uses existing

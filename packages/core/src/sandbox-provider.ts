@@ -36,6 +36,13 @@ export const PROVIDER_LIMITS: Readonly<Record<SandboxProviderId, ProviderLimits>
  */
 export interface HostCapabilities {
   readonly goldenRestore: "fresh-fork" | "shared-source";
+  /** Dispose a completed disposable builder without creating an unwanted stop checkpoint. */
+  readonly goldenBuilderCleanup: "stop" | "delete";
+  /**
+   * Stable replacement updates a named snapshot in place. Immutable publication
+   * verifies a fresh source-bound reference, stops the master and publishes by CAS.
+   */
+  readonly goldenSnapshotPublication: "replace-stable" | "publish-immutable";
   /**
    * Abandoned builds either stop their recorded builder, or reconcile a durable
    * reservation and dispose only through its ownership-checked provider port.
@@ -49,11 +56,15 @@ export interface HostCapabilities {
 export const HOST_CAPABILITIES: Readonly<Record<SandboxProviderId, HostCapabilities>> = {
   boat: {
     goldenRestore: "fresh-fork",
+    goldenSnapshotPublication: "replace-stable",
+    goldenBuilderCleanup: "stop",
     goldenBuilderRecovery: "stop-recorded",
     snapshotManagementAuthority: false,
   },
   modal: {
     goldenRestore: "shared-source",
+    goldenSnapshotPublication: "publish-immutable",
+    goldenBuilderCleanup: "delete",
     goldenBuilderRecovery: "dispose-reservation",
     snapshotManagementAuthority: true,
   },

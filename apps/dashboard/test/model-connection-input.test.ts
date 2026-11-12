@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { customAccountValue } from "../src/lib/model-connection-input";
+import { customAccountValue, replacementCodexAccountValue } from "../src/lib/model-connection-input";
 
 function data(baseUrl: string, key: string, apiVersion = "") {
   const form = new FormData();
@@ -63,4 +63,20 @@ test("Claude gateway form rejects invalid auth and mixed Codex options without r
   form.set("endpointAuth", "bearer");
   form.set("apiVersion", "2025-04-01-preview");
   expect(customAccountValue("anthropic", form).ok).toBe(false);
+});
+
+test("Codex replacement requires a destination and refuses JSON pretending to be a default key", () => {
+  const key = randomUUID();
+  const form = data("https://example.com/v1/responses", key);
+  expect(replacementCodexAccountValue(form).ok).toBe(false);
+  form.set("connectionMode", "openai");
+  expect(replacementCodexAccountValue(form)).toEqual({ ok: true, value: key });
+  form.set("value", JSON.stringify({ apiKey: key }));
+  expect(replacementCodexAccountValue(form).ok).toBe(false);
+  form.set("value", key);
+  form.set("connectionMode", "custom");
+  expect(replacementCodexAccountValue(form)).toEqual({
+    ok: true,
+    value: JSON.stringify({ endpoint: { version: 1, baseUrl: "https://example.com/v1" }, apiKey: key }),
+  });
 });

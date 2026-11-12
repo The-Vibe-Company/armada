@@ -31,3 +31,20 @@ export function customAccountValue(
     };
   }
 }
+
+/** Replacement cannot infer a sealed account's route: require an explicit destination choice. */
+export function replacementCodexAccountValue(
+  data: FormData,
+): { ok: true; value: string } | { ok: false; error: string } {
+  const mode = data.get("connectionMode");
+  if (mode === "custom") return customAccountValue("openai", data);
+  if (mode !== "openai") return { ok: false, error: "Choose the replacement connection type." };
+  const raw = data.get("value");
+  if (typeof raw !== "string" || raw.trim().startsWith("{"))
+    return { ok: false, error: "Paste only the API key for the OpenAI default endpoint." };
+  try {
+    return { ok: true, value: parseCredentialValue("openai", raw) };
+  } catch {
+    return { ok: false, error: "Paste a valid OpenAI API key." };
+  }
+}

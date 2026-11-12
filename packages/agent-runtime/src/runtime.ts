@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash, timingSafeEqual } from "node:crypto";
-import type { ExecRequest, ExecResult } from "@armada/core";
-import { validateReadableVariables } from "@armada/core";
+import type { ExecRequest, ExecResult, Harness } from "@armada/core";
+import { HARNESSES, validateReadableVariables } from "@armada/core";
 import { validateHarnessCwd } from "./cwd.ts";
 import { HarnessError } from "./errors.ts";
 import { execCredentialValues, validateExecEnvironment } from "./exec-env.ts";
@@ -43,7 +43,7 @@ export class Runner {
   constructor(
     readonly journal: Journal,
     readonly grant: Grant,
-    readonly drivers: Record<"claude" | "codex", Driver>,
+    readonly drivers: Record<Harness, Driver>,
     private ingest?: IngestClient,
     mcp?: McpConfiguration,
     private stripTransientAuth?: () => Promise<void>,
@@ -152,12 +152,39 @@ export class Runner {
           headers: { "content-type": "application/json" },
         });
       }
+      if (r.op === "testModelConnection") {
+        if (
+          this.credentialFreeBuilder ||
+          this.barrier ||
+          this.journal.checkpointPending(this.grant) ||
+          this.resumingNative ||
+          this.active.size ||
+          this.commands.size ||
+          !this.execution.testModelConnection ||
+          !["claude", "codex"].includes(r.harness) ||
+          typeof r.model !== "string" ||
+          !r.model ||
+          r.model.length > 200 ||
+          r.requestId.length > 128 ||
+          Object.keys(r).some((key) => !["version", "requestId", "sandboxId", "op", "harness", "model"].includes(key))
+        )
+          throw Error("model_connection_test_denied");
+        const work = this.execution.testModelConnection(r.harness, r.model, request.signal);
+        this.commands.add(work);
+        try {
+          const result = await work;
+          // This health check is fresh and transient: no prompt, event or replay-cache row.
+          return Response.json({ version: 1, requestId: r.requestId, result });
+        } finally {
+          this.commands.delete(work);
+        }
+      }
       if (r.op === "configureReadableVariables") {
         if (
           this.credentialFreeBuilder ||
           this.barrier ||
           this.journal.checkpointPending(this.grant) ||
-          !["claude", "codex"].includes(r.harness) ||
+          !(HARNESSES as readonly string[]).includes(r.harness) ||
           Object.keys(r).some((k) => !["version", "requestId", "sandboxId", "op", "harness", "variables"].includes(k))
         )
           throw Error("invalid_request");
@@ -285,6 +312,7 @@ export class Runner {
           | "configureMcp"
           | "configureGitHub"
           | "configureReadableVariables"
+          | "testModelConnection"
           | "resourceObservation"
           | "installOrchestratorEpoch"
           | "scrubOrchestratorEpoch";
@@ -358,7 +386,7 @@ export class Runner {
           (key) => !["sandboxId", "harness", "model", "reasoningEffort", "cwd"].includes(key),
         ) ||
         r.input.sandboxId !== this.grant.sandboxId ||
-        !["claude", "codex"].includes(r.input.harness) ||
+        !(HARNESSES as readonly string[]).includes(r.input.harness) ||
         typeof r.conversationId !== "string" ||
         !r.conversationId ||
         r.conversationId.length > 256 ||
@@ -533,7 +561,7 @@ export class Runner {
       }
       if (
         r.input.sandboxId !== this.grant.sandboxId ||
-        !["claude", "codex"].includes(r.input.harness) ||
+        !(HARNESSES as readonly string[]).includes(r.input.harness) ||
         typeof r.input.text !== "string" ||
         !r.input.text.trim()
       )

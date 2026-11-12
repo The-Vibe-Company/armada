@@ -1,4 +1,11 @@
-import { type LaunchTemplate, type OrgSummary, parseMachineSize, templateRefusalHelp, VaultError } from "@armada/core";
+import {
+  HARNESSES,
+  type LaunchTemplate,
+  type OrgSummary,
+  parseMachineSize,
+  templateRefusalHelp,
+  VaultError,
+} from "@armada/core";
 import { flag, parseArgs, single, values } from "./args.ts";
 import { armadaApiUrl } from "./armada-api.ts";
 import { control } from "./control.ts";
@@ -155,7 +162,7 @@ export async function templateCommand(argv: readonly string[], io: VaultIo): Pro
         !goldenId ||
         !UUID.test(goldenId) ||
         !["boat", "modal"].includes(provider ?? "") ||
-        !["claude", "codex"].includes(harness ?? "")
+        !(HARNESSES as readonly string[]).includes(harness ?? "")
       )
         throw usage("Definition flags require --golden UUID --provider boat|modal --agent claude|codex.");
       const definition: Record<string, unknown> = { goldenId, provider, harness };
