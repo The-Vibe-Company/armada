@@ -65,6 +65,87 @@ export function createModelAuthOwnership(
         ).rows.length > 0
       );
     },
+    async holder(actor: GoldenActor, id: string, version: number) {
+      if (!sql.transaction) throw new VaultError("unavailable", "Native inspection requires transactions.");
+      return sql.transaction(async (tx) => {
+        await authorize(tx, actor, id, version);
+        const result = await tx.query<{ sandboxId: string; version: number; releasable: boolean }>(
+          `select o.sandbox_id as "sandboxId",o.account_version as version,
+           (state.auth_revision=0 and state.source_generation='launch:never-started') as releasable
+           from public.model_auth_ownership o join public.model_auth_state state
+           on state.account_id=o.account_id and state.account_version=o.account_version
+           left join public.sandboxes s on s.id=o.sandbox_id
+           where o.account_id=$1::uuid and o.account_version=$2
+           and (s.id is null or s.owner_id=$3::uuid)`,
+          [id, version, actor.userId],
+        );
+        return result.rows[0] ?? null;
+      });
+    },
+    async markNeverStarted(actor: GoldenActor, id: string, version: number, sandboxId: string) {
+      if (!sql.transaction) throw new VaultError("unavailable", "Native cleanup requires transactions.");
+      return sql.transaction(async (tx) => {
+        await authorize(tx, actor, id, version);
+        const marked = await tx.query(
+          `update public.model_auth_state state set source_generation='launch:never-started'
+           from public.model_auth_ownership o,public.sandboxes s
+           where state.account_id=$1::uuid and state.account_version=$2 and state.auth_revision=0
+           and state.source_generation='launch:unallocated' and o.account_id=state.account_id
+           and o.account_version=state.account_version and o.sandbox_id=$3::uuid
+           and s.id=o.sandbox_id and s.owner_id=$4::uuid and s.status='failed'
+           and cardinality(s.conversation_ids)=0 and s.task_prompt_id is null returning state.account_id`,
+          [id, version, sandboxId, actor.userId],
+        );
+        return marked.rows.length > 0;
+      });
+    },
+    /** Only definitive pre-dispatch failures are marked eligible; empty history alone is not proof. */
+    async releaseFailed(
+      actor: GoldenActor,
+      id: string,
+      version: number,
+      sandboxId: string,
+      deletePhysical?: () => Promise<void>,
+    ) {
+      if (!sql.transaction) throw new VaultError("unavailable", "Native cleanup requires transactions.");
+      await sql.transaction(async (tx) => {
+        await authorize(tx, actor, id, version);
+        if (deletePhysical) {
+          const permitted = await tx.query(
+            `select c.id from public.credentials c where c.id=$1::uuid
+             and (c.scope='user' or exists(select 1 from public.members m
+             where m.org_id=c.owner_id and m.user_id=$2::uuid and m.role='admin'))`,
+            [id, actor.userId],
+          );
+          if (!permitted.rows.length)
+            throw new VaultError("forbidden", "An organization administrator must release organization accounts.");
+        }
+        const found = await tx.query(
+          `select s.id from public.sandboxes s join public.model_auth_ownership o on o.sandbox_id=s.id
+           join public.model_auth_state state on state.account_id=o.account_id and state.account_version=o.account_version
+           where o.account_id=$1::uuid and o.account_version=$2 and s.id=$3::uuid and s.owner_id=$4::uuid
+           and s.status='failed' and cardinality(s.conversation_ids)=0 and s.task_prompt_id is null
+           and (s.activity_until is null or s.activity_until<now())
+           and state.auth_revision=0 and state.source_generation='launch:never-started'
+           for update of s,o,state`,
+          [id, version, sandboxId, actor.userId],
+        );
+        if (!found.rows.length)
+          throw new VaultError("conflict", "Only a confirmed never-started failed launch can release its account.");
+        await deletePhysical?.();
+        await tx.query("update public.sandboxes set credential_id=null,credential_version=null where id=$1::uuid", [
+          sandboxId,
+        ]);
+        await tx.query(
+          "delete from public.model_auth_ownership where account_id=$1::uuid and account_version=$2 and sandbox_id=$3::uuid",
+          [id, version, sandboxId],
+        );
+        await tx.query("delete from public.model_auth_state where account_id=$1::uuid and account_version=$2", [
+          id,
+          version,
+        ]);
+      });
+    },
     async releaseUnallocated(id: string, version: number, sandboxId: string): Promise<void> {
       if (!sql.transaction) throw new VaultError("unavailable", "Native cleanup requires transactions.");
       await sql.transaction(async (tx) => {

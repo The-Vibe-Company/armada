@@ -20,9 +20,11 @@ import { type ReactNode, useActionState, useCallback, useEffect, useId, useRef, 
 import {
   addAccount,
   makeDefaultAccount,
+  releaseSubscription,
   removeAccount,
   renameAccount,
   replaceAccountSecret,
+  subscriptionHolder,
 } from "@/app/actions/model-accounts";
 import { SubmitButton } from "@/components/action-form";
 import { ChoiceCard } from "@/components/connections";
@@ -340,6 +342,9 @@ export function AccountRow({
   now: number;
 }) {
   const [result, setResult] = useState<ActionResult | null>(null);
+  const [holder, setHolder] = useState<string | null>(null);
+  const [releasable, setReleasable] = useState(false);
+  const [checkingHolder, setCheckingHolder] = useState(false);
   const [dialog, setDialog] = useState<RowDialog>(null);
   const menuTrigger = useRef<HTMLButtonElement>(null);
   const rowAction = useRef<HTMLButtonElement>(null);
@@ -395,6 +400,75 @@ export function AccountRow({
           {info.billing === "subscription" && account.status === "active" && (
             <div className="pt-1.5">
               <UsagePanel usage={usage} account={account} now={now} />
+              {account.kind === "codex_auth" && canManage && (
+                <div className="mt-2 text-xs">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={checkingHolder}
+                    onClick={async () => {
+                      setCheckingHolder(true);
+                      try {
+                        const data = new FormData();
+                        data.set("scope", account.scope);
+                        data.set("org", orgId);
+                        data.set("id", account.id);
+                        data.set("version", String(account.version));
+                        const next = await subscriptionHolder(data);
+                        setHolder(next.sandboxId);
+                        setReleasable(next.releasable === true);
+                        setResult(
+                          next.error
+                            ? { ok: false, error: next.error }
+                            : {
+                                ok: true,
+                                message: next.sandboxId
+                                  ? "Subscription holder found."
+                                  : "No active subscription holder.",
+                              },
+                        );
+                      } finally {
+                        setCheckingHolder(false);
+                      }
+                    }}
+                  >
+                    Find subscription holder
+                  </Button>
+                  {holder && (
+                    <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2">
+                      <a className="min-w-0 break-all underline" href={`/sandboxes/${holder}`}>
+                        {holder}
+                      </a>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={checkingHolder || !releasable}
+                        onClick={async () => {
+                          setCheckingHolder(true);
+                          try {
+                            const data = new FormData();
+                            data.set("scope", account.scope);
+                            data.set("org", orgId);
+                            data.set("id", account.id);
+                            data.set("version", String(account.version));
+                            data.set("sandboxId", holder);
+                            const released = await releaseSubscription(data);
+                            setResult(released);
+                            if (released.ok) {
+                              setHolder(null);
+                              setReleasable(false);
+                            }
+                          } finally {
+                            setCheckingHolder(false);
+                          }
+                        }}
+                      >
+                        Release failed launch
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </div>

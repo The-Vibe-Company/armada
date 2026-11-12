@@ -114,6 +114,31 @@ test("real native state publication seals rotation without replacing binding, fe
       visibility,credential_id,credential_version) values($1,$2,$3,$4,'codex','ready','native','native','org',$5,1)`,
       [SANDBOX, ORG, OWNER, GOLDEN, account.id],
     );
+    // Never-started failures carry an explicit server-owned marker: a missing
+    // conversation alone must not release an ambiguously dispatched prompt.
+    await expect(auth.releaseFailed(actor, account.id, 1, SANDBOX)).rejects.toMatchObject({ code: "conflict" });
+    await db.query("update sandboxes set status='failed' where id=$1", [SANDBOX]);
+    await expect(auth.releaseFailed(actor, account.id, 1, SANDBOX)).rejects.toMatchObject({ code: "conflict" });
+    await auth.markNeverStarted(actor, account.id, 1, SANDBOX);
+    expect(await auth.holder(actor, account.id, 1)).toMatchObject({ sandboxId: SANDBOX, releasable: true });
+    await expect(auth.releaseFailed({ ...actor, userId: PEER }, account.id, 1, SANDBOX)).rejects.toMatchObject({
+      code: "not_found",
+    });
+    await expect(
+      auth.releaseFailed(actor, account.id, 1, SANDBOX, async () => {
+        throw Error("delete pending");
+      }),
+    ).rejects.toThrow("delete pending");
+    expect(await auth.managed(SANDBOX)).toBe(true);
+    await auth.releaseFailed(actor, account.id, 1, SANDBOX);
+    expect(await auth.holder(actor, account.id, 1)).toBeNull();
+    await auth.claim(actor, account.id, 1, OTHER);
+    await auth.releaseUnallocated(account.id, 1, OTHER);
+    await auth.claim(actor, account.id, 1, SANDBOX);
+    await db.query("update sandboxes set status='ready',credential_id=$2,credential_version=1 where id=$1", [
+      SANDBOX,
+      account.id,
+    ]);
     const provider = fakeBoat().provider;
     provider.get = async (id) => ({ id, name: id, state: "ready", providerState: "ready", labels: {} });
     const admission = spyOn(auth, "assertSandbox").mockRejectedValueOnce(

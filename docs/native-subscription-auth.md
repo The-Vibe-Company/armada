@@ -150,3 +150,17 @@ old writer and explicitly replace/version that **same** account row rather than
 importing a second name to bypass its ownership. Independent upstream accounts
 remain parallel. Identity admission is serialized and bounded; an oversized
 registry fails closed for maintenance instead of skipping checks.
+
+### Failed launches (#1176, slice 1)
+
+Before the first prompt is dispatched, initialization failures mark the managed
+Codex account as never started. Armada deletes that failed physical sandbox and
+releases its account only after deletion is confirmed. A failed deletion retains
+the claim: on the account row, use **Find subscription holder**, then **Release
+failed launch** to retry deletion and release. Only the sandbox owner can inspect
+this holder; organization accounts additionally require an admin for release.
+The API equivalents are `POST creds/accounts/holder` (`id`, `version`, `org`) and
+`POST creds/accounts/release` (also `sandboxId`). Neither returns auth material.
+Already-dispatched or ambiguous prompts and older unclassified history are not
+safe to release by this action. Concurrent subscription refresh is a separate
+slice; this change does not enable parallel rotating-token writers.

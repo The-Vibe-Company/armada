@@ -182,3 +182,42 @@ export async function removeAccount(_previous: ActionResult | null, data: FormDa
   refresh();
   return done("Account removed.");
 }
+
+/** Inspect or release a failed subscription launch; authorization stays on the server. */
+export async function subscriptionHolder(
+  data: FormData,
+): Promise<{ sandboxId: string | null; releasable?: boolean; error?: string }> {
+  const context = await scoped(data);
+  if (!isScoped(context)) return { sandboxId: null, error: "Account control unavailable." };
+  try {
+    const result = await context.control.holder({
+      ...target(context, formString(data, "id")),
+      version: version(data) ?? -1,
+      org: context.org,
+    });
+    return {
+      sandboxId: typeof result.sandboxId === "string" ? result.sandboxId : null,
+      releasable: result.releasable === true,
+    };
+  } catch (error) {
+    if (error instanceof ControlError) return { sandboxId: null, error: error.message };
+    throw error;
+  }
+}
+
+export async function releaseSubscription(data: FormData): Promise<ActionResult> {
+  const context = await scoped(data);
+  if (!isScoped(context)) return context;
+  try {
+    await context.control.release({
+      ...target(context, formString(data, "id")),
+      sandboxId: formString(data, "sandboxId"),
+      version: version(data) ?? -1,
+      org: context.org,
+    });
+    refresh();
+    return done("Failed launch released. You can launch again.");
+  } catch (error) {
+    return explain(error);
+  }
+}
