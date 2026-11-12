@@ -100,11 +100,13 @@ export default async function ToolsPage({ searchParams }: Props) {
   const rows = sortResources<ResourceRow & { bucket: Bucket }>(connectionRows);
   const blockers = toolBlockers(connectionRows.map((row) => ({ ...row, state: row.status })));
   const requested = typeof query[ITEM_PARAM] === "string" ? query[ITEM_PARAM] : null;
-  // Back from a sign-in, the connection it was for is the one to look at.
-  const initial = requested ?? (returned?.id && rows.some((row) => row.key === returned.id) ? returned.id : null);
+  // OAuth returns carry an explicit item too; notices alone must not reopen
+  // a dismissed panel when the list is reloaded.
+  const initial = requested;
 
   return (
     <ResourceBrowser
+      detailPanel
       title={TITLE}
       description={DESCRIPTION}
       meta={list.connections.length > 0 ? list.connections.length : undefined}
