@@ -262,7 +262,10 @@ export function ResourceBrowser({
               Nothing matches “{query}”.
             </p>
           ) : (
-            <ul aria-label={label} className="divide-y overflow-hidden rounded-xl border bg-card shadow-xs">
+            <ul
+              aria-label={label}
+              className="divide-y overflow-hidden rounded-xl border bg-card shadow-xs @xl:grid @xl:gap-x-4 @xl:grid-cols-[minmax(0,1fr)_10rem_auto] @3xl:grid-cols-[minmax(0,1.4fr)_10rem_minmax(0,1fr)_auto]"
+            >
               {shown.map((row) => (
                 <Row
                   key={row.key}
@@ -412,6 +415,10 @@ export function ResourceBrowser({
   );
 }
 
+/**
+ * A list row. Once the row has columns it takes the list's (subgrid), so a wider action never shifts one row's state
+ * or fact; on a phone each row keeps its own, so a row without an action keeps the full width for its name.
+ */
 function Row({
   row,
   selected,
@@ -430,7 +437,7 @@ function Row({
       {...row.attrs}
       data-selected={selected || undefined}
       className={cn(
-        "relative grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-2 px-4 py-3 transition-colors hover:bg-accent/50 has-[[data-select-item]:focus-visible]:bg-accent/60 has-[[data-select-item]:focus-visible]:ring-[3px] has-[[data-select-item]:focus-visible]:ring-ring/50 has-[[data-select-item]:focus-visible]:ring-inset @xl:grid-cols-[minmax(0,1fr)_10rem_auto] @3xl:grid-cols-[minmax(0,1.4fr)_10rem_minmax(0,1fr)_auto]",
+        "relative grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-2 px-4 py-3 transition-colors hover:bg-accent/50 has-[[data-select-item]:focus-visible]:bg-accent/60 has-[[data-select-item]:focus-visible]:ring-[3px] has-[[data-select-item]:focus-visible]:ring-ring/50 has-[[data-select-item]:focus-visible]:ring-inset @xl:col-span-full @xl:grid-cols-subgrid",
         selected && "bg-accent/70 shadow-[inset_3px_0_0_var(--color-primary)] hover:bg-accent/70",
       )}
     >
