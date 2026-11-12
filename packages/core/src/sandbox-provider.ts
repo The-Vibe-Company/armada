@@ -36,6 +36,11 @@ export const PROVIDER_LIMITS: Readonly<Record<SandboxProviderId, ProviderLimits>
  */
 export interface HostCapabilities {
   readonly goldenRestore: "fresh-fork" | "shared-source";
+  /**
+   * Retain the source until a snapshot attempt settles, including explicit save
+   * refusals. Otherwise only a non-mutating save-call refusal clears the attempt.
+   */
+  readonly retainSourceOnSnapshotUncertainty: boolean;
   /** Dispose a completed disposable builder without creating an unwanted stop checkpoint. */
   readonly goldenBuilderCleanup: "stop" | "delete";
   /**
@@ -51,12 +56,14 @@ export interface HostCapabilities {
 export const HOST_CAPABILITIES: Readonly<Record<SandboxProviderId, HostCapabilities>> = {
   boat: {
     goldenRestore: "fresh-fork",
+    retainSourceOnSnapshotUncertainty: false,
     goldenBuilderCleanup: "stop",
     goldenBuilderRecovery: "stop-recorded",
     snapshotManagementAuthority: false,
   },
   modal: {
     goldenRestore: "shared-source",
+    retainSourceOnSnapshotUncertainty: true,
     goldenBuilderCleanup: "delete",
     goldenBuilderRecovery: "dispose-reservation",
     snapshotManagementAuthority: true,
