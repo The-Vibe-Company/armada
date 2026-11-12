@@ -19,9 +19,9 @@ import { createNativeStateStore, type NativeState, nativeState } from "./model-a
 import { createSubscriptionBroker } from "./subscription-broker.ts";
 
 /**
- * Durable exclusive native-session ownership. Never expires or reassigns a
- * refresh-bearing session merely because a server crashed or a sandbox stopped.
- * API keys and model-only Claude tokens do not use this ownership gate.
+ * Shared-session broker plus legacy native-state recovery/publication.
+ * The exclusive owner is confined to legacy native mode and compatibility
+ * embedders; configured shared launch admission goes directly to the broker.
  */
 export function createModelAuthOwnership(
   sql: Sql,
@@ -671,9 +671,14 @@ export function createModelAuthOwnership(
         return { authRevision: revision, committed: false };
       }
     },
-    /** Must run after resolution, BEFORE provider fork/credential hydration. */
-    async claim(actor: GoldenActor, id: string, version: number, sandboxId: string, transaction?: Sql): Promise<void> {
-      if (broker && !transaction) return broker.enroll(actor, id, version);
+    /** Compatibility admission for legacy native homes, never shared-session enrollment. */
+    async claimLegacy(
+      actor: GoldenActor,
+      id: string,
+      version: number,
+      sandboxId: string,
+      transaction?: Sql,
+    ): Promise<void> {
       if (!sql.transaction && !transaction)
         throw new VaultError("unavailable", "Native credential ownership requires transactions.");
       const claim = async (tx: Sql) => {

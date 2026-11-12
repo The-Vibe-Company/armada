@@ -1798,7 +1798,12 @@ test.each(["claude", "codex"] as const)(
         expect(restored.codexAuthJson).toBe(nativeToken(token));
         expect(restored.nativeAuthRevision).toBe(0);
         await expect(
-          modelAuth.claim({ userId: ADA, orgId: org.id, role: "member" }, winner.credentialId, 1, crypto.randomUUID()),
+          modelAuth.claimLegacy(
+            { userId: ADA, orgId: org.id, role: "member" },
+            winner.credentialId,
+            1,
+            crypto.randomUUID(),
+          ),
         ).rejects.toMatchObject({ code: "credential_busy" });
       }
       const refusedBinding = await post(ADA, winner.credentialId === chosen ? alternate : chosen);
@@ -2240,5 +2245,119 @@ test("access launch grants scoped authority before the first prompt while retain
       armadaAccess: { enabled: true, maxActiveChildren: 1 },
     });
     expect(fake.forks).toHaveLength(beforeAccepted + 1);
+  });
+});
+
+test("CLI/API connection checks require the owner and current bound revision, exposing only closed runtime diagnostics", async () => {
+  await withServer(async ({ db, options, cli }) => {
+    const owner = cli(STAN),
+      other = cli(ADA);
+    await owner.run(["org", "create", "Connection checks"]);
+    const org = (await options.store.memberships(STAN))[0]!;
+    await options.store.addMember(org.id, ADA, "admin");
+    options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
+    options.authStore.addMembership(ADA, { orgId: org.id, name: org.name, role: "admin" });
+    const key = crypto.randomUUID();
+    expect(
+      (
+        await owner.run(["creds", "set", "openai", "--name", "Foundry"], {
+          stdin: JSON.stringify({ endpoint: { version: 1, baseUrl: "https://example.com/v1" }, apiKey: key }),
+        })
+      ).code,
+    ).toBe(0);
+    const account = (
+      await db.query<{ id: string }>("select id from credentials where owner_id=$1 and kind='openai'", [STAN])
+    ).rows[0]!.id;
+    const golden = (
+      await db.query<{ id: string }>(
+        "insert into goldens(org_id,owner_id,name,visibility,provider,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config) values($1,$2,'probe','org','modal','im-probe','ws','main','ap-probe',$3::jsonb) returning id",
+        [org.id, STAN, JSON.stringify({ repos: [], init: [] })],
+      )
+    ).rows[0]!.id;
+    const id = crypto.randomUUID();
+    await db.query(
+      "insert into sandboxes(id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status,credential_id,credential_version,conversation_ids) values($1,'modal','modal_probe',$2,$3,$4,'codex','ready',$5,1,ARRAY['preserved-session'])",
+      [id, golden, org.id, STAN, account],
+    );
+    let calls = 0,
+      resolutions = 0;
+    let receipt: unknown = { ok: false, status: 401, error: "provider_rejected", code: "invalid_api_key" };
+    options.providers = {
+      resolve: async () => {
+        resolutions++;
+        return {
+          ...fakeBoat().provider,
+          id: "modal" as const,
+          get: async () => ({
+            id: "modal_probe",
+            name: "probe",
+            state: "ready" as const,
+            providerState: "ready",
+            labels: {},
+          }),
+          testModelConnection: async (request) => {
+            calls++;
+            expect(request).toEqual({ sandboxId: "modal_probe", harness: "codex", model: "deployment" });
+            return receipt as import("@armada/core").ModelConnectionTestResult;
+          },
+        };
+      },
+    };
+    const args = ["creds", "test", id, "--model", "deployment", "--json"];
+    const denied = await other.run(args);
+    expect(denied.code).not.toBe(0);
+    expect(denied.err).toContain("Only the sandbox owner");
+    expect(resolutions).toBe(0);
+    const rejected = await owner.run(args);
+    expect(rejected.code).toBe(1);
+    expect(rejected.err).toBe("");
+    expect(JSON.parse(rejected.out)).toEqual({
+      id,
+      ok: false,
+      status: 401,
+      error: "provider_rejected",
+      code: "invalid_api_key",
+    });
+    expect(rejected.out).not.toContain(key);
+    receipt = { ok: true, status: 200, error: null, code: null };
+    expect((await owner.run(args)).code).toBe(0);
+    expect(
+      (await db.query<{ conversation_ids: string[] }>("select conversation_ids from sandboxes where id=$1", [id]))
+        .rows[0]?.conversation_ids,
+    ).toEqual(["preserved-session"]);
+    receipt = { ok: false, status: 401, error: "provider_rejected", code: key, message: key };
+    const malformed = await owner.run(args);
+    expect(malformed.code).not.toBe(0);
+    expect(malformed.out + malformed.err).not.toContain(key);
+    const before = calls;
+    const badFlags = await owner.run(["creds", "test", id, "--model", "deployment", "--file", "never-read"]);
+    expect(badFlags.code).not.toBe(0);
+    expect(badFlags.err).toContain("accept only --model");
+    expect(calls).toBe(before);
+    const extra = await handleControlRequest(
+      new Request("https://armada.test/api/v1/sandbox/test-model-connection", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`,
+        },
+        body: JSON.stringify({ id, model: "deployment", apiKey: key }),
+      }),
+      options,
+    );
+    expect(extra?.status).toBe(400);
+    expect(await extra?.text()).not.toContain(key);
+    expect(calls).toBe(before);
+    expect(
+      (
+        await owner.run(["creds", "set", "openai", "--id", account, "--expected-version", "1"], {
+          stdin: JSON.stringify({
+            endpoint: { version: 1, baseUrl: "https://example.com/v1" },
+            apiKey: crypto.randomUUID(),
+          }),
+        })
+      ).code,
+    ).toBe(0);
+    expect((await owner.run(args)).code).not.toBe(0);
+    expect(calls).toBe(before);
   });
 });
