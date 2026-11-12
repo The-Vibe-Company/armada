@@ -1,139 +1,121 @@
 # One Armada runtime on Boat (#1161)
 
-Design-only first PR for #1161 / #1160; no runtime selection changes here.
-**Owner hold: discussion required; this PR stays draft. No implementation is authorized.**
-The proposals below are gated by owner agreement and a disposable staging spike.
+The owner’s **Binding design decisions** in #1161 govern this design and
+supersede earlier proposals. Design-only PR; implementation follows in small PRs.
 
 ## Current state
 
-- `packages/provider-boat/src/provider.ts` sends prompts to `api.prompt`, resumes
-  Boat compute and installs native harness configuration; `src/events.ts` maps
-  Boat events. `src/native-usage.ts` (see `docs/design/boat-native-usage.md`)
-  already extracts native usage: the ticket's “no usage” observation predates it.
-- Modal runs `packages/agent-runtime/src/main.ts`: stdin bootstrap, Bun HTTP
-  server, `Journal` SQLite state, Claude SDK and Codex app-server drivers.
-  `packages/provider-modal/src/distribution.ts` supplies an immutable image,
-  stdin credentials and a single-process lock. `src/transport.ts` sends protocol
-  v1 requests over HTTP with a connection token and generation-bound grant.
-- Boat already offers exec and pinned SSH (`Provider.sshKey`,
-  `packages/core/src/ssh-executor.ts`). Neither proves that a detached runtime,
-  private HTTP transport or its files survive a Boat machine replacement.
+- `packages/provider-boat/src/provider.ts` uses Boat's native prompt/control
+  APIs; `src/events.ts` maps their events. `src/native-usage.ts` already extracts
+  native usage, so the ticket's historical “no usage” observation is outdated.
+- `packages/agent-runtime/src/main.ts` supplies the shared runtime, journal,
+  Claude Agent SDK and Codex app-server drivers. Today it accepts stdin bootstrap
+  and serves HTTP. `build.ts` produces JS and native harness artifacts.
+- Modal's `packages/provider-modal/src/distribution.ts` and `transport.ts`
+  install/start the runtime and use its authenticated tunnel. **Leave Modal
+  behavior unchanged until programme order step 6.**
 - `docs/design/sandbox-helper.md` and `sandbox-reporter.md` are earlier sketches,
-  not evidence of a deployed shared runtime on Boat.
+  not proof of a deployed shared runtime on Boat.
 
-## Target and proposed delivery
+## Settled architecture
 
-One runtime owns harness spawning, turn identity, events, usage and control on
-Boat and Modal. Keep the public Provider/API contract; do not introduce a new
-orchestrator, proxy, usage ledger or general transport framework.
+The host supplies compute only: create from image/golden, run one command with
+stdin, provide a persistent directory and outbound HTTPS, stop/resume and delete.
+Snapshot, fork and human SSH are optional capabilities. Goldens remain recipes
+built separately per host. All agent features belong to the Armada runtime;
+Boat's agent APIs are temporary compatibility only until this lane removes them.
 
-Extend the target-Linux artifact from `packages/agent-runtime/build.ts`
-(bundle, native harness executables and manifest) to include a checksum-verified
-pinned Bun binary; today Modal installs Bun separately. Prefer a
-content-addressed, verified install under the persisted home directory on launch;
-reuse a matching digest on subsequent launches/resume. Old goldens must work
-without rebuilding. An optional credential-free golden cache can follow only if
-measurements justify it; never snapshot a live runtime or its credentials.
-Atomic unpack/install must reject architecture, digest and protocol mismatches.
-Size and start cost are **not measured yet**; do not assume the JS bundle is the
-whole distribution (native executables and Bun dominate the transfer budget).
+**Artifact/install.** Build one compiled executable per OS/architecture with
+`bun build --compile`, glibc by default. Ship pinned harness CLIs beside it in a
+version/sha256 manifest; fetch only the selected harness. A bootstrap checks the
+expected digest and downloads from the Armada server only when missing. A
+pre-filled image is merely a warm cache. Support binary self-install for images
+without a shell. Change versions only at start/resume, never during a lifetime.
+No separate Bun installation is needed for the compiled runtime.
 
-Proposed control transport: pinned SSH from the server to Boat, forwarding to a
-loopback-only runtime HTTP listener, carrying the existing protocol v1 envelopes.
-Use SSH stdin for private bootstrap and request bodies, not command arguments or
-Boat command output. Modal's authenticated tunnel is not a Boat capability.
-Change `main.ts`'s current `0.0.0.0` binding via an explicit bind option before
-using this scheme. No public runtime port. Validate reconnect, bounded requests,
-response identity, cursor pagination and lock ownership in the spike. If SSH
-forwarding is unavailable, record that blocker before choosing an alternative;
-do not silently substitute Boat's native prompt API. Outbound HTTP already used
-by runtime callbacks is not itself a server-to-runtime control channel.
+**Transport.** The runtime dials out: WebSocket commands, automatically falling
+back to HTTPS long-poll, keep-alive under 30 seconds. Upload journal events as
+acknowledged batches; reconnect/replay must not duplicate events or turns.
+Do not add SSH-forwarded control, public runtime ports or a new hosted proxy.
+This is the Boat implementation first, not a rewrite of Modal's current tunnel.
 
-Persist journal, driver conversation state and non-secret artifact identity in
-home, not `/run`. Stop must quiesce the runtime, flush events/checkpoint auth via
-existing runtime mechanisms, then stop Boat compute. Resume must obtain fresh
-SSH access, restore the same journal, rotate the grant/generation, redeliver
-credentials and start one detached, locked runtime before accepting a turn.
-A lost response is not permission to replay a prompt: reconcile its persisted
-identity/status first. Retained events remain readable without starting a model;
-crashed turns must be reported honestly rather than fabricated as completed.
+**Enrolment.** The host passes only a single-use enrolment token over stdin,
+never argv/logs. The runtime retrieves configuration and model credentials from
+the server at launch and every resume. Each enrolment opens a new epoch; reject
+all older-epoch commands/events. The server remains owner of refreshed
+subscription tokens, which the runtime returns privately. Reuse sealed storage;
+never snapshot credentials into goldens or return them in public APIs.
 
-Bootstrap model/MCP/GitHub credentials privately after launch authorization;
-never bake them into goldens or place them in argv, logs, API responses or the
-repository. Reuse sealed server storage and existing runtime auth checkpoint
-rules. Template readable variables and secrets go to the selected harness via
-the shared runtime configuration, not Boat's world-readable native wrapper.
-Credentials must be refreshed on resume, not recovered from a golden.
+**State/lifecycle.** Keep the journal and conversation state in the host's
+persistent directory. Stop quiesces the runtime and flushes/checkpoints before
+compute stops. Resume enrols afresh, restores durable state and starts exactly
+one runtime. Reconcile uncertain prompt identities instead of blindly replaying
+commands after a lost response. Report interrupted/crashed turns honestly.
 
-## Open questions for the owner
+**Drivers/usage.** Keep native Codex app-server and Claude Agent SDK drivers.
+Tokens come from the harness per turn and are priced server-side; missing figures
+remain unknown, never estimated. MCP/GitHub setup and template readable variables
+and secrets must go through runtime configuration, not Boat native wrappers.
+OpenCode's ACP v1 driver belongs to #1164, not this first Boat slice.
 
-1. **Where should we deliver the runtime: golden or launch?** Recommend a
-   digest-verified launch install with cache reuse, including pinned Bun, so old
-   goldens work unchanged. Consider golden prewarming only after measuring cost.
-2. **Should control use private SSH-forwarded HTTP?** Recommend testing pinned
-   SSH to a loopback listener with the existing runtime protocol first, rather
-   than adding a public port or outbound relay. Forwarding and reconnect support
-   remain unproven; choose another transport only after reporting spike results.
-3. **How should existing native sessions retire, and what delays rollout?**
-   Recommend keeping each existing session on its original runner until an
-   owner-agreed drain deadline, then requiring a new runtime session (no assumed
-   transcript import). Require parity evidence and an explicit owner decision on
-   any >20% launch regression before default-on and native-path deletion.
+## Evidence and remaining verification
 
-## Small, independently mergeable slices
+Owner-reported local spikes in #1161: current runtime compiles for Linux x64 and
+arm64; about 82 MB raw / 30–37 MB compressed and about 90 ms boot in bare Debian.
+These are supplied evidence, not Boat launch measurements or independent results
+from this PR. Fake-Claude compiled SDK tests do not prove real harness parity.
 
-Each later branch starts at fresh `origin/main`, uses `codex/1161-<slug>` and a
-PR with `Refs #1161`. This design does not claim the ticket's final acceptance.
+Before implementation relies on compilation, verify real Codex app-server under
+the compiled runtime on native x64: initialize, thread/turn, events and resume.
+Fix `packages/agent-runtime/src/github-tools.ts` self re-exec: its current
+`process.argv[1]` assumption breaks compiled execution. Include the fix in the
+first bounded implementation work; verify real Claude before Boat Claude rollout.
+No worker holds staging/production credentials or deploys this design PR.
 
-1. **Spike + Codex opt-in:** disposable staging Boat; install verified artifact,
-   bootstrap, health, one Codex prompt and cursor events. Server-side per-sandbox
-   selection defaults off and is persisted; no silent mid-session fallback.
-   Report measured blockers and timing before expanding rollout.
-2. **Lifecycle/parity:** steer, interrupt, stop/resume, Claude, usage, MCP/GitHub,
-   readable variables and template secrets. Reuse runtime journal/protocol and
-   launch admission; preserve visibility and credential-resolution rules.
-3. **Default on:** new Boat sessions use the runtime after parity smoke passes;
-   name a drain/retirement plan for existing native conversations, which cannot
-   be presumed importable. Owner decides timing regressions before rollout.
-4. **Delete native:** after native sessions are retired, remove Boat prompt,
-   steer/interrupt runner calls, event mapping, native usage extraction and
-   native harness configuration/wrappers made dead. Keep Boat compute, exec,
-   SSH and golden operations. No permanent two-runner mode.
+## Implementation order and staging gates
 
-## Staging verification and measurement (coordinator-owned)
+Every later branch starts at fresh `origin/main`, uses `codex/1161-<slug>` and
+`Refs #1161`. Split the following into small independently mergeable PRs; each
+states its exact coordinator-owned staging check. Prove each programme step on
+staging with the lifecycle smoke before advancing to the next.
 
-This PR: no deployment needed; inspect referenced files and verify doc scope.
-Workers hold no staging/production credentials and perform no deployment.
+1. **Base on Boat, Codex opt-in per launch:** compiled artifact, digest-checked
+   server download/bootstrap, dial-out WebSocket plus long-poll fallback,
+   single-use enrolment and epoch rejection. Include the self re-exec fix.
+   Verify selected-harness-only download, cold/warm installs, Codex prompt and
+   usage, cursor continuity, reconnect, fallback and stale/token-replay refusal.
+2. **Claude on Boat, then default, then delete native:** prove real Claude,
+   steer/interrupt, stop/resume, usage, MCP/GitHub and template configuration.
+   Resolve existing native session retirement before removal; do not assume
+   transcripts import. Delete Boat native prompt/control calls, event mapping,
+   native usage extraction and dead wrappers/configuration. Keep compute, exec,
+   SSH and golden operations. No permanent second agent runner.
 
-For slice 1, on disposable staging compute record artifact compressed/unpacked
-bytes, install time, runtime readiness, launch-to-ready and launch-to-first-event.
-Run at least five matched baseline/native and opt-in launches (same golden,
-region, harness/model and prompt); separate cold install, digest-cache hit and
-resume. Report raw timings, median and range in the implementation PR; call out
-any >20% regression against the corresponding baseline for an owner decision.
-Also kill/restart the process, stop/resume compute and drop an SSH response;
-verify journal/cursor continuity, single runtime and no duplicate turn. These
-are pending experiments, **not observed blockers or survival guarantees**.
-
-For slices 2–4, coordinator supplies staging `ARMADA_URL`, `ARMADA_TOKEN` and
-`ARMADA_SMOKE_CASES` with Boat Codex and Claude cases as documented at the top of
-`scripts/post-deploy-smoke.ts`, then runs:
+Coordinator supplies staging `ARMADA_URL`, `ARMADA_TOKEN` and
+`ARMADA_SMOKE_CASES` (Boat Codex for step 1; add Claude for step 2), then runs:
 
 ```sh
 ARMADA_SMOKE=create_real_compute bun scripts/post-deploy-smoke.ts --lifecycle
 ```
 
-Expected: existing launch/send/stop/resume/stop and idle-steer-refusal checks pass for
-both harnesses, unchanged access rules, runtime-origin events and per-turn
-harness token counters (unknown stays unknown, never invented zero). Extend the
-smoke in the parity slice to assert runtime identity, cursor replay without
-double counting, active steer, interrupt, MCP/GitHub, readable-variable delivery and secret
-non-disclosure; the command alone today does not establish these new checks.
-Deletion also requires a source audit proving no Boat native prompt call remains.
+Expected: launch/send/stop/resume/stop succeeds through the selected runtime.
+Extend existing smoke coverage to prove runtime identity, active steer (today it
+checks idle refusal), interrupt, harness token counters, epoch/fallback behavior,
+MCP/GitHub, readable variables and secret non-disclosure. Test process death and
+lost acknowledgements without duplicate execution or usage. Audit source after
+deletion: no call to Boat native prompt API remains.
+
+Measure at least five matched native/runtime launches: same golden, region,
+harness/model and prompt. Report compressed/unpacked bytes, install/readiness,
+launch-to-ready and first-event timings, separating cold, cached and resume.
+Publish raw timings, median/range; call out any >20% regression for owner decision.
+Boat timings and survival are **not measured by this design PR**.
 
 ## Boundaries and Later
 
-Model connections/endpoints belong to #1162, cost/pricing to #1163, OpenCode to
-#1164 and Docker hosts to #1165; consume their contracts, do not build them here.
-Later: multi-tenant process isolation beyond the owner-team requirement, golden
-prewarming if justified, broader transport abstractions only for a proven need.
+#1162 model connections and #1163 session cost start on Modal in parallel;
+#1164 owns OpenCode/ACP, #1165 Docker hosts. Consume their contracts, do not
+implement them here. Programme order step 6 later moves Modal to dial-out and
+deletes its tunnel; changing Modal behavior now is explicitly out of scope.
+Later: multi-tenant hardening beyond owner-team needs. Revisit ACP for all only
+when v2 is stable, steering standardized and an adapter maintained by a vendor.
