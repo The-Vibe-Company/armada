@@ -3503,6 +3503,7 @@ test("Modal lifecycle refusals do not resume stopped steer or admit send during 
   await expect(f.provider.steer({ sandboxId: row.id, text: "ignore" })).rejects.toMatchObject({
     code: "sandbox_not_ready",
   });
+  if (!f.provider.extendLifetime) throw new Error("Modal must support lifetime extension");
   await expect(f.provider.extendLifetime({ sandboxId: row.id, ttlSeconds: 60 })).rejects.toMatchObject({
     code: "sandbox_not_ready",
   });
