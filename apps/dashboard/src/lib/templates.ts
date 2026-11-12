@@ -1,4 +1,11 @@
-import { type Harness, MODEL_CATALOG, PROVIDER_LIMITS, type SandboxProviderId, validateSkillPins } from "@armada/core";
+import {
+  type Harness,
+  isHarness,
+  MODEL_CATALOG,
+  PROVIDER_LIMITS,
+  type SandboxProviderId,
+  validateSkillPins,
+} from "@armada/core";
 import { EFFORT_LABEL, HARNESS_LABELS } from "./labels.ts";
 import type { LaunchAccounts } from "./model-accounts";
 import { type ModelFields, modelChoice } from "./model-choice.ts";
@@ -86,7 +93,7 @@ export function parseRevision(value: unknown): TemplateRevision | null {
   if (
     !isId(d.goldenId) ||
     (d.provider !== "boat" && d.provider !== "modal") ||
-    (d.harness !== "claude" && d.harness !== "codex") ||
+    !isHarness(d.harness) ||
     typeof d.model !== "string" ||
     typeof d.reasoningEffort !== "string" ||
     !Array.isArray(d.connections) ||

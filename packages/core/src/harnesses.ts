@@ -71,3 +71,8 @@ export function mapHarnesses<T>(
 export const HARNESS_CAPABILITIES: Readonly<Record<Harness, HarnessCapabilities>> = mapHarnesses(
   (descriptor) => descriptor.capabilities,
 );
+
+/** Validate untrusted harness identifiers while retaining the shared Harness type. */
+export function isHarness(value: unknown): value is Harness {
+  return typeof value === "string" && (HARNESSES as readonly string[]).includes(value);
+}
