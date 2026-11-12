@@ -185,7 +185,7 @@ export {
   type ModelConnectionTestResult,
   modelConnectionErrorCode,
 } from "./model-connection-test.ts";
-export type { ModelPriceOverrides } from "./model-price-overrides.ts";
+export { type ModelPriceOverrides, parseModelPriceOverrides } from "./model-price-overrides.ts";
 export {
   MODEL_PRICE_SOURCES,
   MODEL_PRICES,
