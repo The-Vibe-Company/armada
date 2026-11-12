@@ -4,6 +4,7 @@ import {
   BoxesIcon,
   CameraIcon,
   ChevronDownIcon,
+  Clock3Icon,
   KeyRoundIcon,
   LayoutTemplateIcon,
   PackageIcon,
@@ -34,7 +35,10 @@ const GROUPS = [
   {
     label: "Run",
     description: "Each sandbox is one launch.",
-    links: [{ href: "/sandboxes", label: "Sandboxes", hint: "Running agents and logs", icon: BoxesIcon }],
+    links: [
+      { href: "/sandboxes", label: "Sandboxes", hint: "Running agents and logs", icon: BoxesIcon },
+      { href: "/routines", label: "Routines", hint: "Scheduled template launches", icon: Clock3Icon },
+    ],
   },
   {
     label: "Start with",

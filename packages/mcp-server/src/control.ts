@@ -1425,7 +1425,11 @@ async function launchRoute(options: ControlOptions, caller: Caller, body: Record
     (harness !== "codex" || !options.orchestrators?.enabledPairs.includes(`${golden.provider}:${harness}`))
   )
     throw new VaultError("unavailable", "Sandbox Armada access is unavailable for this provider/harness.");
-  const provider = await providerForGolden(options, caller, golden);
+  const provider = await providerForGolden(
+    options,
+    caller,
+    armadaAccess ? { ...golden, visibility: "private", sourceGoldenVisibility: golden.visibility } : golden,
+  );
   const result = await launchSandbox(
     provider,
     {
@@ -1525,14 +1529,18 @@ export function templateRuntime(options: ControlOptions, caller: Caller) {
   };
 }
 
-async function providerForGolden(options: ControlOptions, caller: Caller, golden: GoldenRecord): Promise<Provider> {
+async function providerForGolden(
+  options: ControlOptions,
+  caller: Caller,
+  golden: GoldenRecord & { sourceGoldenVisibility?: Visibility },
+): Promise<Provider> {
   if (options.providers) return options.providers.resolve(golden, caller);
   if (golden.provider !== "boat")
     throw new ProviderRoutingError("provider_not_configured", "modal", "Modal is not configured.");
   const key = await resolveBoatKey(options.store, options.encryptionKey, {
     userId: caller.userId,
     orgId: golden.orgId,
-    visibility: golden.visibility,
+    visibility: golden.sourceGoldenVisibility ?? golden.visibility,
   });
   return (
     options.providerFor?.(key.key, { userId: caller.userId, orgId: golden.orgId }) ??

@@ -43,6 +43,7 @@ import {
 } from "./auth-commands.ts";
 import { operation, parseTtl } from "./operations.ts";
 import { printOptionalResourceAdvice } from "./resource-advice.ts";
+import { routineCommand } from "./routine-commands.ts";
 import { sizePolicyCommand } from "./size-policy-command.ts";
 import { skillCommand } from "./skill-install.ts";
 import { templateCommand } from "./template-commands.ts";
@@ -193,6 +194,7 @@ Usage:
   armada creds set <kind> [--org <name>] [--file <path>]
                                            Store a credential, encrypted; the value is read from stdin or a file
                                            Model accounts: --name NAME creates; --id UUID --expected-version N replaces
+  armada routine --help                    Create, inspect, enable, pause and manage scheduled template launches
   armada template --help                   Create, publish, list, get, delete and launch immutable templates
   armada vars --help                       Readable variables: set/list/read; stdin/file writes only
   armada secrets --help                    Write-only application secrets: set/list/rotate/revoke/delete
@@ -400,6 +402,8 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
       return logout(rest, io, deps);
     case "org":
       return orgCommand(rest, vaultIo(io, deps));
+    case "routine":
+      return routineCommand(rest, vaultIo(io, deps, true));
     case "template":
       return templateCommand(rest, vaultIo(io, deps, true));
     case "vars":
