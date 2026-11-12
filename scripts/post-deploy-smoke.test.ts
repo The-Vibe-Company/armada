@@ -813,8 +813,10 @@ describe("preservation checks", () => {
         .concat([Buffer.alloc(1024)]),
     ).toString("base64");
   }
+  const commitCommands = new Set<string>();
   for (const provider of ["boat", "modal"]) {
-    test.each([
+    for (const fault of [
+      "wrong_handle_owner",
       "none",
       "missing",
       "wrong",
@@ -823,65 +825,131 @@ describe("preservation checks", () => {
       "clean_note",
       "clean_archive",
       "overwritten",
-    ] as const)(`provider=${provider} fault=%s validates recovery without leaking material`, async (fault) => {
-      let launches = 0;
-      let stopping = false;
-      const fake = fixture((call) => {
-        if (call.path === "sandbox/launch") {
-          launches++;
-          stopping = false;
+      "explicit_missing",
+      "selector_ignored",
+      "recovery_changes",
+      "recovery_wakes",
+      "recovery_note_changes",
+    ] as const) {
+      // Protocol-only negative controls run once; successful reads still cover
+      // both providers' distinct physical stopped-state receipts.
+      if (
+        provider === "modal" &&
+        [
+          "wrong_handle_owner",
+          "explicit_missing",
+          "selector_ignored",
+          "recovery_changes",
+          "recovery_wakes",
+          "recovery_note_changes",
+        ].includes(fault)
+      )
+        continue;
+      test(`provider=${provider} fault=${fault} validates recovery without leaking material`, async () => {
+        let launches = 0;
+        let stopping = false;
+        let sandboxId = "";
+        const recoveryId = crypto.randomUUID();
+        const otherId = crypto.randomUUID();
+        let recoveryReads = 0;
+        const fake = fixture((call) => {
+          if (call.path === "sandbox/launch") {
+            launches++;
+            stopping = false;
+            sandboxId = crypto.randomUUID();
+            recoveryReads = 0;
+            return json({ sandbox: { id: sandboxId, provider } });
+          }
+          if (call.path === "sandbox/stop") stopping = true;
+          if (call.path === "sandbox/status")
+            return json({
+              status: stopping ? "stopped" : "ready",
+              providerState: stopping ? (provider === "boat" ? "archived" : "stopped") : "active",
+              ...(stopping && launches === 2
+                ? {
+                    preservationNote:
+                      fault === "overwritten"
+                        ? "secret-failure"
+                        : `unpushed work preserved at work_recovery:${fault === "wrong_handle_owner" ? otherId : sandboxId}/${fault === "recovery_note_changes" && recoveryReads >= 3 ? otherId : recoveryId}`,
+                  }
+                : {}),
+              ...(stopping && fault === "clean_note" && launches === 1 ? { preservationNote: "secret-failure" } : {}),
+            });
+          if (call.path === "sandbox/exec" && String(call.body.command).includes("commit --allow-empty")) {
+            const command = String(call.body.command);
+            expect(commitCommands.has(command)).toBe(false);
+            commitCommands.add(command);
+            return json({ exitCode: 0, timedOut: false, stdout: `${commit}\n` });
+          }
+          if (call.path === "sandbox/recovery") {
+            expect(call.body.id).toBe(sandboxId);
+            recoveryReads++;
+            if (call.body.recovery_id !== undefined && call.body.recovery_id !== recoveryId)
+              return json({ archive: fault === "selector_ignored" ? archive(commit) : null });
+            if (fault === "recovery_wakes" && launches === 2 && recoveryReads === 2) stopping = false;
+            return json({
+              archive:
+                launches === 1
+                  ? fault === "clean_archive"
+                    ? archive(commit)
+                    : null
+                  : fault === "missing" || (fault === "explicit_missing" && call.body.recovery_id !== undefined)
+                    ? null
+                    : fault === "corrupt" || (fault === "recovery_changes" && recoveryReads >= 3)
+                      ? Buffer.from("secret-invalid").toString("base64")
+                      : archive(fault === "wrong" ? "b".repeat(40) : commit, fault === "corrupt_pack"),
+            });
+          }
+        });
+        const staging = "https://armada-mcp-staging.up.railway.app";
+        const result = await postDeploySmoke(
+          {
+            ...env,
+            ARMADA_URL: staging,
+            ARMADA_SMOKE_CASES: JSON.stringify([{ ...selected, provider }]),
+          },
+          ["--work-preservation"],
+          {
+            ...fake.io,
+            fetch: (url, init) => fake.io.fetch(url.replace(staging, env.ARMADA_URL), init),
+          },
+        );
+        expect(result).toBe(fault === "none");
+        const stops = fake.calls.filter((call) => call.path === "sandbox/stop").length;
+        expect(stops).toBeGreaterThanOrEqual(2);
+        expect(stops).toBeLessThanOrEqual(4);
+        if (fault === "none") {
+          expect(stops).toBe(2);
+          expect(fake.calls.filter((call) => call.body.recovery_id === recoveryId)).toHaveLength(1);
+          expect(fake.calls.filter((call) => call.body.recovery_id !== undefined)).toHaveLength(2);
+          expect(fake.receipts()).toContainEqual({ case: 0, step: "preservation_unknown_handle_refused", pass: true });
+          expect(fake.receipts()).toContainEqual(
+            expect.objectContaining({
+              case: 0,
+              step: "preservation_cleanup_summary",
+              phase: "archive",
+              pass: true,
+              recoveryId,
+              leftoverSandboxIds: [],
+              launchOutcomeUnknown: false,
+            }),
+          );
+          expect(fake.receipts()).toContainEqual({ case: 0, step: "preservation_recovery_handle", pass: true });
+          expect(
+            fake.receipts().filter((line) => line.step === "preservation_recovery_read_only" && line.pass),
+          ).toHaveLength(2);
         }
-        if (call.path === "sandbox/stop") stopping = true;
-        if (call.path === "sandbox/status")
-          return json({
-            status: stopping ? "stopped" : "ready",
-            providerState: stopping ? (provider === "boat" ? "archived" : "stopped") : "active",
-            ...(stopping && launches === 2
-              ? {
-                  preservationNote:
-                    fault === "overwritten"
-                      ? "secret-failure"
-                      : "unpushed work preserved at work_recovery:sandbox/recovery",
-                }
-              : {}),
-            ...(stopping && fault === "clean_note" && launches === 1 ? { preservationNote: "secret-failure" } : {}),
-          });
-        if (call.path === "sandbox/exec" && String(call.body.command).includes("commit --allow-empty"))
-          return json({ exitCode: 0, timedOut: false, stdout: `${commit}\n` });
-        if (call.path === "sandbox/recovery")
-          return json({
-            archive:
-              launches === 1
-                ? fault === "clean_archive"
-                  ? archive(commit)
-                  : null
-                : fault === "missing"
-                  ? null
-                  : fault === "corrupt"
-                    ? Buffer.from("secret-invalid").toString("base64")
-                    : archive(fault === "wrong" ? "b".repeat(40) : commit, fault === "corrupt_pack"),
-          });
+        expect(fake.lines.join("")).not.toContain(commit);
+        expect(fake.lines.join("")).not.toContain("secret");
+        if (fault !== "none")
+          expect(fake.receipts()).toContainEqual(
+            expect.objectContaining({
+              pass: false,
+              code: fault === "recovery_wakes" ? "provider_not_stopped" : "preservation_failed",
+            }),
+          );
       });
-      const staging = "https://armada-mcp-staging.up.railway.app";
-      const result = await postDeploySmoke(
-        {
-          ...env,
-          ARMADA_URL: staging,
-          ARMADA_SMOKE_CASES: JSON.stringify([{ ...selected, provider }]),
-        },
-        ["--work-preservation"],
-        {
-          ...fake.io,
-          fetch: (url, init) => fake.io.fetch(url.replace(staging, env.ARMADA_URL), init),
-        },
-      );
-      expect(result).toBe(fault === "none");
-      expect(fake.calls.filter((call) => call.path === "sandbox/stop")).toHaveLength(2);
-      expect(fake.lines.join("")).not.toContain(commit);
-      expect(fake.lines.join("")).not.toContain("secret");
-      if (fault !== "none")
-        expect(fake.receipts()).toContainEqual(expect.objectContaining({ pass: false, code: "preservation_failed" }));
-    });
+    }
   }
 });
 
