@@ -1,9 +1,9 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { machineCapacity, type ProviderResourceObservation, type Sql } from "@armada/core";
-import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import type { Caller } from "../src/caller.ts";
 import { createResourceStore, pruneResourceObservations } from "../src/resource-store.ts";
 import { pruneServerRetention } from "../src/retention-maintenance.ts";
+import { migratedDatabase } from "./migrated-database.ts";
 
 // Synthetic protocol/counter inputs only; these are not measured provider usage.
 const now = new Date("2026-11-09T12:00:00Z");
@@ -16,14 +16,13 @@ const machineSize = {
   repositoryDir: "web",
   capacity: machineCapacity("boat", "medium"),
 };
-let db: Awaited<ReturnType<typeof openDatabase>>;
+let db: Awaited<ReturnType<typeof migratedDatabase>>;
 const sql: Sql = {
   query: (query, params) => db.query(query, params),
   transaction: (work) => db.transaction((tx) => work({ query: (query, params) => tx.query(query, params) })),
 };
 beforeAll(async () => {
-  db = await openDatabase();
-  await applyMigrations(db);
+  db = await migratedDatabase();
 });
 afterAll(async () => {
   await db.close();

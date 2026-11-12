@@ -54,7 +54,7 @@ export async function createModalIntegration(options: {
   const key = runnerKey(options.encryptionKey);
   const artifact = { ...MODAL_IMAGE_LOCK, ...(await loadEmbeddedRunnerArtifact()) };
   const ingestUrl = new URL(MODAL_INGEST_PATH, options.publicUrl).href;
-  const modelAuth = createModelAuthOwnership(options.sql, options.encryptionKey, undefined, undefined, undefined, {
+  const modelAuth = createModelAuthOwnership(options.sql, options.encryptionKey, undefined, undefined, {
     origin: options.publicUrl,
   });
   const ingest = createModalIngestHandler({

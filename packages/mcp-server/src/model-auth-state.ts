@@ -1,9 +1,35 @@
+import { createHash } from "node:crypto";
 import { decryptSecret, encryptSecret, type GoldenActor, type Sql, VaultError } from "@armada/core/server";
 
 export interface NativeState {
   authJson: string;
   secrets: string[];
   retired?: boolean;
+  brokerDeliveries?: Record<string, number>;
+  retiredRefreshTokens?: string[];
+}
+/** Fingerprints prevent superseded refresh material from becoming authority again. */
+export function refreshFingerprint(state: NativeState): string {
+  return createHash("sha256").update(JSON.parse(state.authJson).tokens.refresh_token).digest("hex");
+}
+export function withRefreshHistory(state: NativeState): NativeState {
+  if (state.retiredRefreshTokens) return state;
+  const current = refreshFingerprint(state);
+  const identity = JSON.parse(state.authJson).tokens.account_id;
+  const retired = new Set<string>();
+  // Initialize older private snapshots before appending a fresh observation.
+  for (const value of state.secrets) {
+    if (!value.trimStart().startsWith("{")) continue;
+    try {
+      const previous = nativeState(value);
+      if (JSON.parse(previous.authJson).tokens.account_id !== identity) continue;
+      const fingerprint = refreshFingerprint(previous);
+      if (fingerprint !== current) retired.add(fingerprint);
+    } catch {
+      /* Only complete same-account snapshots count. */
+    }
+  }
+  return { ...state, retiredRefreshTokens: [...retired] };
 }
 export function nativeState(raw: string): NativeState {
   try {
@@ -43,20 +69,96 @@ export function createNativeStateStore(sql: Sql, key: string | undefined) {
       await cleanupAuthorization(tx);
     }
     const rows = await tx.query<{ value_enc: Uint8Array }>(
-      `select c.value_enc from public.credentials c join public.model_auth_ownership o on o.account_id=c.id
+      `select c.value_enc from public.credentials c
+       join public.sandboxes s on s.credential_id=c.id and s.credential_version=c.version
        where c.id=$1::uuid and c.version=$2 and c.status='active' and c.kind='codex_auth'
-       and o.account_version=$2 and o.sandbox_id=$3::uuid
+       and s.id=$3::uuid and s.owner_id=$4::uuid and s.org_id=$5::uuid and s.deleted_at is null
        and (c.expires_at is null or c.expires_at>now())
        and ((c.scope='user' and c.owner_id=$4::uuid) or (c.scope='org' and c.owner_id=$5::uuid))
        and ($6::boolean or exists(select 1 from public.members m where m.user_id=$4::uuid and m.org_id=$5::uuid))
-       for update of c,o`,
+       for update of c,s`,
       [accountId, version, sandboxId, actor.userId, actor.orgId, !member.rows.length && !!cleanupAuthorization],
     );
     const row = rows.rows[0];
     if (!row) throw new VaultError("not_found", "Private native state binding is no longer authorized.");
     return row.value_enc;
   }
+  async function persist(tx: Sql, accountId: string, version: number, retained: NativeState) {
+    if (Buffer.byteLength(JSON.stringify(retained)) > 4 * 1024 * 1024)
+      throw new VaultError("unavailable", "Native secret redaction budget exceeded.");
+    await tx.query(
+      "update public.model_auth_state set state_enc=$3::bytea,updated_at=now() where account_id=$1::uuid and account_version=$2",
+      [accountId, version, await encryptSecret(JSON.stringify(retained), key)],
+    );
+  }
+  async function appendRedaction(
+    tx: Sql,
+    accountId: string,
+    version: number,
+    previous: NativeState,
+    observed: NativeState,
+    sandboxId: string,
+  ) {
+    previous = withRefreshHistory(previous);
+    const retained: NativeState = { ...previous, secrets: [...new Set([...previous.secrets, ...observed.secrets])] };
+    if (previous.brokerDeliveries) {
+      retained.brokerDeliveries = { ...previous.brokerDeliveries };
+      delete retained.brokerDeliveries[sandboxId];
+    }
+    // Observing a native refresh-bearing home invalidates its earlier access-only
+    // delivery proof without changing broker auth, revision or source ownership.
+    await persist(tx, accountId, version, retained);
+    return retained.secrets;
+  }
+  async function sharedState(tx: Sql, accountId: string, version: number): Promise<NativeState> {
+    const result = await tx.query<{ state_enc: Uint8Array; source_generation: string }>(
+      "select state_enc,source_generation from public.model_auth_state where account_id=$1::uuid and account_version=$2 for update",
+      [accountId, version],
+    );
+    const row = result.rows[0];
+    if (!row?.source_generation.startsWith("server:"))
+      throw new VaultError("unavailable", "Shared private state is unavailable.");
+    const previous = JSON.parse(await decryptSecret(new Uint8Array(row.state_enc), key)) as NativeState;
+    const initialized = withRefreshHistory(previous);
+    if (initialized !== previous) await persist(tx, accountId, version, initialized);
+    return initialized;
+  }
   return {
+    /** Sealed evidence that this exact guest incarnation received access-only auth. */
+    async recordBrokerDelivery(input: {
+      accountId: string;
+      version: number;
+      sandboxId: string;
+      generation: number | null;
+      authorize(tx: Sql): Promise<void>;
+    }): Promise<void> {
+      if (!sql.transaction) throw new VaultError("unavailable", "Private delivery evidence requires transactions.");
+      await sql.transaction(async (tx) => {
+        await input.authorize(tx);
+        const previous = await sharedState(tx, input.accountId, input.version);
+        const retained: NativeState = {
+          ...previous,
+          brokerDeliveries: { ...previous.brokerDeliveries },
+        };
+        if (input.generation === null) delete retained.brokerDeliveries?.[input.sandboxId];
+        else retained.brokerDeliveries![input.sandboxId] = input.generation;
+        await persist(tx, input.accountId, input.version, retained);
+      });
+    },
+    async hasBrokerDelivery(input: {
+      accountId: string;
+      version: number;
+      sandboxId: string;
+      generation: number;
+      authorize(tx: Sql): Promise<void>;
+    }): Promise<boolean> {
+      if (!sql.transaction) throw new VaultError("unavailable", "Private delivery evidence requires transactions.");
+      return sql.transaction(async (tx) => {
+        await input.authorize(tx);
+        const state = await sharedState(tx, input.accountId, input.version);
+        return state.brokerDeliveries?.[input.sandboxId] === input.generation;
+      });
+    },
     /** Redaction may outlive authorization to hydrate or refresh the account. */
     async redactionState(actor: GoldenActor, accountId: string, version: number, sandboxId: string) {
       const result = await sql.query<{ state_enc: Uint8Array; source_generation: string }>(
@@ -82,18 +184,34 @@ export function createNativeStateStore(sql: Sql, key: string | undefined) {
          from public.sandboxes s, public.members m
          where s.id=$1::uuid and s.owner_id=$2::uuid and s.org_id=$3::uuid and s.deleted_at is null
          and m.org_id=s.org_id and m.user_id=s.owner_id
-         and state.account_id=s.credential_id and state.account_version=s.credential_version`,
+         and state.account_id=s.credential_id and state.account_version=s.credential_version
+         and state.source_generation not like 'server:%'`,
         [sandboxId, actor.userId, actor.orgId],
       );
     },
-    /** Caller already holds the authorized account/ownership locks before provider hydration. */
-    async initialize(tx: Sql, accountId: string, version: number, raw: string) {
-      const initial = nativeState(raw);
-      await tx.query(
-        `insert into public.model_auth_state(account_id,account_version,auth_revision,state_enc,source_generation)
-        values($1::uuid,$2,0,$3::bytea,'launch:unallocated') on conflict do nothing`,
-        [accountId, version, await encryptSecret(JSON.stringify(initial), key)],
-      );
+    /** Authenticated cleanup may retain leaves without reviving a replaced login. */
+    async observeRedaction(input: {
+      accountId: string;
+      version: number;
+      authJson: string;
+      sandboxId: string;
+      authorize(tx: Sql): Promise<void>;
+    }): Promise<void> {
+      const observed = nativeState(input.authJson);
+      if (!sql.transaction) throw new VaultError("unavailable", "Private redaction state requires transactions.");
+      await sql.transaction(async (tx) => {
+        await input.authorize(tx);
+        const result = await tx.query<{ state_enc: Uint8Array }>(
+          "select state_enc from public.model_auth_state where account_id=$1::uuid and account_version=$2 for update",
+          [input.accountId, input.version],
+        );
+        const row = result.rows[0];
+        if (!row) throw new VaultError("unavailable", "Retired native identity is unknown.");
+        const previous = JSON.parse(await decryptSecret(new Uint8Array(row.state_enc), key)) as NativeState;
+        if (JSON.parse(previous.authJson).tokens.account_id !== JSON.parse(observed.authJson).tokens.account_id)
+          throw new VaultError("conflict", "Retired native identity changed.");
+        await appendRedaction(tx, input.accountId, input.version, previous, observed, input.sandboxId);
+      });
     },
     /** Redaction-only retired state can never hydrate or revive a replaced/revoked binding. */
     async retire(input: {
@@ -129,6 +247,8 @@ export function createNativeStateStore(sql: Sql, key: string | undefined) {
         const previous = JSON.parse(await decryptSecret(new Uint8Array(row.state_enc), key)) as NativeState;
         if (JSON.parse(previous.authJson).tokens.account_id !== JSON.parse(observed.authJson).tokens.account_id)
           throw new VaultError("conflict", "Retired native identity changed.");
+        if (row.source_generation.startsWith("server:"))
+          return appendRedaction(tx, input.accountId, input.version, previous, observed, input.sandboxId);
         if (previous.retired && previous.authJson === observed.authJson) {
           await tx.query(
             "update public.model_auth_state set source_generation=$3,updated_at=now() where account_id=$1::uuid and account_version=$2",
@@ -220,6 +340,8 @@ export function createNativeStateStore(sql: Sql, key: string | undefined) {
           [input.accountId, input.version],
         );
         const row = result.rows[0];
+        // Account/state locks serialize this with broker adoption. A legacy
+        // preflight may have run earlier, but never owns shared renewal writes.
         const previous = row
           ? (JSON.parse(await decryptSecret(new Uint8Array(row.state_enc), key)) as NativeState)
           : undefined;
@@ -227,6 +349,10 @@ export function createNativeStateStore(sql: Sql, key: string | undefined) {
           const oldAccount = JSON.parse(previous.authJson).tokens.account_id;
           if (oldAccount !== JSON.parse(next.authJson).tokens.account_id)
             throw new VaultError("conflict", "Native identity changed; reconnect the account explicitly.");
+          if (row?.source_generation.startsWith("server:")) {
+            await appendRedaction(tx, input.accountId, input.version, previous, next, input.sandboxId);
+            return row.auth_revision;
+          }
           // An ACK lost after COMMIT can be retried without another rotation or revision.
           if (previous.authJson === next.authJson) {
             await tx.query(

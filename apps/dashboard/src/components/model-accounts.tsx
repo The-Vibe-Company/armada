@@ -16,16 +16,13 @@ import {
   UsersIcon,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { type ReactNode, useActionState, useCallback, useEffect, useId, useRef, useState, useTransition } from "react";
+import { type ReactNode, useActionState, useCallback, useEffect, useId, useRef, useState } from "react";
 import {
   addAccount,
   makeDefaultAccount,
-  reconnectAndReleaseSubscription,
-  releaseSubscription,
   removeAccount,
   renameAccount,
   replaceAccountSecret,
-  subscriptionHolder,
   testAccountConnection,
 } from "@/app/actions/model-accounts";
 import { SubmitButton } from "@/components/action-form";
@@ -392,7 +389,7 @@ export function UsagePanel({
 
 /* ---------------------------------------------------------------- one account */
 
-type RowDialog = "rename" | "replace" | "recover" | "remove" | null;
+type RowDialog = "rename" | "replace" | "remove" | null;
 
 const STATE_ICON = { ok: CircleCheckIcon, warn: CircleHelpIcon, error: CircleAlertIcon } as const;
 
@@ -418,19 +415,6 @@ export function AccountRow({
   now: number;
 }) {
   const [result, setResult] = useState<ActionResult | null>(null);
-  const [holder, setHolder] = useState<string | null>(null);
-  const [releasable, setReleasable] = useState(false);
-  const [requiresReconnect, setRequiresReconnect] = useState(false);
-  const [orphanHolder, setOrphanHolder] = useState(false);
-  const [unknownVersion, setUnknownVersion] = useState(false);
-  const onReplacementResult = useCallback((next: ActionResult) => {
-    setResult(next);
-    if (next.ok) {
-      setHolder(null);
-      setReleasable(false);
-    }
-  }, []);
-  const [checkingHolder, startHolderTransition] = useTransition();
   const [dialog, setDialog] = useState<RowDialog>(null);
   const menuTrigger = useRef<HTMLButtonElement>(null);
   const rowAction = useRef<HTMLButtonElement>(null);
@@ -491,115 +475,6 @@ export function AccountRow({
           {info.billing === "subscription" && account.status === "active" && (
             <div className="pt-1.5">
               <UsagePanel usage={usage} account={account} now={now} />
-              {account.kind === "codex_auth" && canManage && (
-                <div className="mt-2 text-xs">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={checkingHolder}
-                    onClick={() =>
-                      startHolderTransition(async () => {
-                        const data = new FormData();
-                        data.set("scope", account.scope);
-                        data.set("org", orgId);
-                        data.set("id", account.id);
-                        data.set("version", String(account.version));
-                        const next = await subscriptionHolder(data);
-                        setHolder(next.sandboxId);
-                        setReleasable(next.releasable === true);
-                        setRequiresReconnect(next.requiresReconnect === true);
-                        setOrphanHolder(next.orphan === true);
-                        setUnknownVersion(next.unknownVersion === true);
-                        setResult(
-                          next.error
-                            ? { ok: false, error: next.error }
-                            : {
-                                ok: true,
-                                message: next.sandboxId
-                                  ? "Subscription holder found."
-                                  : "No active subscription holder.",
-                              },
-                        );
-                      })
-                    }
-                  >
-                    Find subscription holder
-                  </Button>
-                  {holder && (
-                    <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2">
-                      {orphanHolder ? (
-                        <span className="min-w-0 break-all">Unrecorded launch: {holder}</span>
-                      ) : (
-                        <a className="min-w-0 break-all underline" href={`/sandboxes/${holder}`}>
-                          {holder}
-                        </a>
-                      )}
-                      {requiresReconnect && !unknownVersion && (
-                        <div className="w-full space-y-2">
-                          <p>
-                            Reconnect this account with a fresh auth.json first. Then find the holder again and release
-                            it.
-                          </p>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            disabled={checkingHolder}
-                            onClick={() => setDialog("replace")}
-                          >
-                            Reconnect subscription
-                          </Button>
-                        </div>
-                      )}
-                      {unknownVersion && (
-                        <div className="w-full space-y-2">
-                          <p>This historical sandbox has no account revision. Reconnect and release it together.</p>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            disabled={checkingHolder}
-                            onClick={() => setDialog("recover")}
-                          >
-                            Reconnect and release
-                          </Button>
-                        </div>
-                      )}
-                      {!requiresReconnect && !releasable && (
-                        <p className="w-full">
-                          Stop this sandbox and finish its current operation before releasing the account.
-                        </p>
-                      )}
-                      {releasable && (
-                        <p className="w-full">
-                          Release permanently deletes a recorded holder before freeing the account.
-                        </p>
-                      )}
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        disabled={checkingHolder || !releasable}
-                        onClick={() =>
-                          startHolderTransition(async () => {
-                            const data = new FormData();
-                            data.set("scope", account.scope);
-                            data.set("org", orgId);
-                            data.set("id", account.id);
-                            data.set("version", String(account.version));
-                            data.set("sandboxId", holder);
-                            const released = await releaseSubscription(data);
-                            setResult(released);
-                            if (released.ok) {
-                              setHolder(null);
-                              setReleasable(false);
-                            }
-                          })
-                        }
-                      >
-                        Release subscription
-                      </Button>
-                    </div>
-                  )}
-                </div>
-              )}
             </div>
           )}
         </div>
@@ -687,9 +562,8 @@ export function AccountRow({
             account={account}
             orgId={orgId}
             reconnect={state.needsAction}
-            recoverySandboxId={dialog === "recover" && holder ? holder : undefined}
-            onResult={onReplacementResult}
-            open={dialog === "replace" || dialog === "recover"}
+            onResult={setResult}
+            open={dialog === "replace"}
             onOpenChange={closeDialog}
             onCloseAutoFocus={restoreFocus}
           />
@@ -815,7 +689,6 @@ function ReplaceDialog({
   account,
   orgId,
   reconnect,
-  recoverySandboxId,
   onResult,
   open,
   onOpenChange,
@@ -825,14 +698,9 @@ function ReplaceDialog({
   orgId: string;
   /** The account cannot run now (expired, say): replacing its token is how it reconnects. */
   reconnect: boolean;
-  recoverySandboxId?: string | undefined;
   onResult: (result: ActionResult) => void;
 } & Controlled) {
-  const { state, formAction, generation } = useDialogAction(
-    recoverySandboxId ? reconnectAndReleaseSubscription : replaceAccountSecret,
-    onResult,
-    onOpenChange,
-  );
+  const { state, formAction, generation } = useDialogAction(replaceAccountSecret, onResult, onOpenChange);
   const formRef = usePreservedActionForm();
   const info = KIND_INFO[account.kind];
   const id = useId();
@@ -844,14 +712,8 @@ function ReplaceDialog({
       >
         <DialogHeader>
           <DialogTitle>
-            {recoverySandboxId ? (
-              `Reconnect and release ${account.name}`
-            ) : (
-              <>
-                {reconnect ? "Reconnect" : "Replace the"}{" "}
-                {reconnect ? account.name : `${info.valueLabel} of ${account.name}`}
-              </>
-            )}
+            {reconnect ? "Reconnect" : "Replace the"}{" "}
+            {reconnect ? account.name : `${info.valueLabel} of ${account.name}`}
           </DialogTitle>
           {/* Both sentences describe the dialog, so screen readers announce the effect along with the hint. */}
           <DialogDescription asChild>
@@ -870,26 +732,15 @@ function ReplaceDialog({
                 </p>
               )}
               <p data-replace-effect>
-                {recoverySandboxId ? (
-                  <>
-                    This permanently deletes the failed or stopped holder, replaces this account with the fresh
-                    auth.json, and releases its historical ownership. No new secret is saved unless physical deletion is
-                    confirmed.
-                  </>
-                ) : (
-                  <>
-                    Saving a new {info.valueLabel} creates a new version of {account.name}. Sandboxes launched with the
-                    current version keep their files and conversations, but new messages to them are refused. Launch a
-                    new sandbox to use the new version.
-                  </>
-                )}
+                Saving a new {info.valueLabel} creates a new version of {account.name}. Sandboxes launched with the
+                current version keep their files and conversations, but new messages to them are refused. Launch a new
+                sandbox to use the new version.
               </p>
             </div>
           </DialogDescription>
         </DialogHeader>
         <form ref={formRef} key={generation} action={formAction} className="space-y-4">
           <TargetFields account={account} orgId={orgId} />
-          {recoverySandboxId && <input type="hidden" name="sandboxId" value={recoverySandboxId} />}
           <input type="hidden" name="kind" value={account.kind} />
           <input type="hidden" name="name" value={account.name} />
           {account.kind === "openai" ? (
@@ -900,7 +751,7 @@ function ReplaceDialog({
             <SecretField idPrefix={id} kind={account.kind} />
           )}
           {state && !state.ok && <ResultLine result={state} />}
-          <SubmitButton>{recoverySandboxId ? "Reconnect and release" : <>Save {info.valueLabel}</>}</SubmitButton>
+          <SubmitButton>Save {info.valueLabel}</SubmitButton>
         </form>
       </DialogContent>
     </Dialog>
@@ -1039,9 +890,65 @@ function ClaudeReplacementFields({ idPrefix }: { idPrefix: string }) {
               <option value="api-key">API key (x-api-key)</option>
             </NativeSelect>
           </div>
+          <ModelPriceFields idPrefix={idPrefix} />
         </fieldset>
       )}
       {mode && <SecretField key={`${mode}:${auth}`} idPrefix={idPrefix} kind="anthropic" />}
+    </div>
+  );
+}
+
+/** Optional prices are non-secret; saved only as part of the server-composed connection. */
+function ModelPriceFields({ idPrefix }: { idPrefix: string }) {
+  const [enabled, setEnabled] = useState(false);
+  return (
+    <div className="space-y-3">
+      <Label htmlFor={`${idPrefix}-prices`} className="flex items-center gap-2 text-sm font-normal">
+        <Checkbox id={`${idPrefix}-prices`} checked={enabled} onCheckedChange={(value) => setEnabled(value === true)} />
+        Set model prices (optional)
+      </Label>
+      {enabled && (
+        <fieldset className="space-y-3" aria-describedby={`${idPrefix}-prices-hint`}>
+          <legend className="sr-only">Model prices</legend>
+          <p id={`${idPrefix}-prices-hint`} className="text-xs text-muted-foreground">
+            USD per million tokens for the exact model ID reported by the agent. Missing prices mean unknown, not zero.
+            Replacement does not keep old prices: re-enter them to retain them.
+          </p>
+          <div className="space-y-2">
+            <Label htmlFor={`${idPrefix}-price-model`}>Priced model ID</Label>
+            <Input
+              id={`${idPrefix}-price-model`}
+              name="priceModel"
+              required
+              maxLength={256}
+              autoComplete="off"
+              spellCheck={false}
+              placeholder="Your deployment/model ID"
+            />
+          </div>
+          <div className="grid gap-3 sm:grid-cols-3">
+            {(
+              [
+                ["priceInput", "Input"],
+                ["priceCachedInput", "Cached input (optional)"],
+                ["priceOutput", "Output"],
+              ] as const
+            ).map(([name, label]) => (
+              <div className="space-y-2" key={name}>
+                <Label htmlFor={`${idPrefix}-${name}`}>{label}</Label>
+                <Input
+                  id={`${idPrefix}-${name}`}
+                  name={name}
+                  inputMode="decimal"
+                  required={name !== "priceCachedInput"}
+                  autoComplete="off"
+                  placeholder="USD / million"
+                />
+              </div>
+            ))}
+          </div>
+        </fieldset>
+      )}
     </div>
   );
 }
@@ -1136,6 +1043,7 @@ function CustomEndpointFields({
               </NativeSelect>
             </div>
           )}
+          <ModelPriceFields idPrefix={idPrefix} />
         </fieldset>
       )}
       {chosen && <SecretField key={`${kind}:${custom}`} idPrefix={idPrefix} kind={kind} />}

@@ -13,11 +13,11 @@ and run `bun test packages/core/test/server-pricing.test.ts` before committing.
 The vendored subset includes exact Anthropic/OpenAI provider-model IDs, decimal
 USD/million rates, fetch time, and the SHA-256 of the source `api.json` bytes.
 No requests occur at launch or read time. There are no guessed aliases. Missing
-rates stay null. Complex pricing (context tiers, alternate fast/priority/flex modes,
-audio or other dimensions) is retained as an unsupported flag and returns unknown,
-never the base-tier price. Models with any experimental mode remain unknown until
-service-tier selection is verified, even when their base cost has no extra fields.
-Review unsupported entries when refreshing; do not silently discard new fields.
+rates stay null. Catalogue complexity is retained in the legacy `unsupported`
+flag for provenance, not as a blanket veto on default token rates. The owner’s
+2026-11-12 default-rate decision supersedes the initial fail-closed mode policy;
+see [default token rates](default-token-rates.md). These are admitted/list-rate
+token estimates, not service-tier invoices or unreported non-token fees.
 
 Sources checked for this slice:
 - [models.dev schema](https://github.com/anomalyco/models.dev/blob/dev/packages/core/src/schema.ts)
@@ -38,8 +38,9 @@ historical reads. Callers must bind overrides to the exact admitted model.
 The calculator keeps native counters intact, subtracts Codex cache subsets, and
 charges reasoning only once (or separates it when an explicit reasoning rate is
 present). All required counters must be known, nonnegative safe integers; subset
-inconsistencies are unknown. Positive cache writes require verified TTL; unsupported
-TTLs are unknown. Optional absent rates are usable only for zero-token buckets.
+inconsistencies are unknown. Missing TTL uses the provider default cache-write rate; an explicit unsupported
+lifetime remains unknown for positive writes. Absent rates are usable only for
+zero-token pricing buckets.
 Amounts are exact decimal strings computed with integer arithmetic, not floats.
 The caller is responsible for API-equivalent/subscription labelling and for not
 presenting a known subset of a session as a complete total.
