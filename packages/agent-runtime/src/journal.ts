@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
 import type { AgentEvent, PromptStatus } from "@armada/core";
+import { HARNESSES } from "@armada/core";
 import { checkpointIdentity, checkpointIdentityKey } from "./identity.ts";
 import type { CheckpointIdentity, StoredPrompt } from "./protocol.ts";
 import { createRedactor } from "./state.ts";
@@ -69,7 +70,7 @@ export class Journal {
       conversation.length > 256 ||
       !session ||
       session.length > 256 ||
-      !["claude", "codex"].includes(harness) ||
+      !(HARNESSES as readonly string[]).includes(harness) ||
       this.redact(conversation) !== conversation ||
       this.redact(session) !== session
     )

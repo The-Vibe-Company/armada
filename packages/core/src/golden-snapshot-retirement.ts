@@ -4,7 +4,7 @@ import type { GoldenActor, GoldenRecord } from "./golden.ts";
 import { GoldenError } from "./golden-config.ts";
 import { assertSqlGoldenMutation, type GoldenRow, mapGoldenRow, type Sql } from "./golden-store.ts";
 import { isNonMutatingProviderRefusal, type Provider, ProviderError } from "./provider.ts";
-import { HOST_CAPABILITIES, type ProviderTarget, type SandboxProviderId } from "./sandbox-provider.ts";
+import { HOST_CAPABILITIES, PROVIDER_LIMITS, type ProviderTarget, type SandboxProviderId } from "./sandbox-provider.ts";
 
 interface Target extends ProviderTarget {
   ownerId: string;
@@ -125,8 +125,8 @@ export async function captureGoldenPublication(
   return proof;
 }
 
-/** Legacy proofs require a singleton succeeded job, exact source and org-only immutable authority.
- * Private pre-provenance credential selection cannot be reconstructed and is intentionally retained. */
+/** Legacy proofs require a singleton succeeded job, exact source and immutable authority.
+ * Without per-snapshot authority, private pre-provenance credential selection is unprovable and retained. */
 export async function captureHistoricalPublication(
   sql: Sql,
   key: string | undefined,
@@ -137,7 +137,7 @@ export async function captureHistoricalPublication(
   snapshot: string,
 ): Promise<Proof | null> {
   try {
-    if (target.visibility !== "org" && target.provider !== "modal") return null;
+    if (target.visibility !== "org" && !HOST_CAPABILITIES[target.provider].snapshotManagementAuthority) return null;
     const rows = (
       await sql.query<{
         id: string;
@@ -185,11 +185,11 @@ export async function captureHistoricalPublication(
     )
       return null;
     if (
-      target.provider === "boat" &&
+      PROVIDER_LIMITS[target.provider].defaultGoldenCapacity !== undefined &&
       !(
         await sql.query(
-          "select 1 from public.golden_backend_slots where golden_id=$1 and provider='boat' and backend_id=$2",
-          [goldenId, proof.backend_id],
+          "select 1 from public.golden_backend_slots where golden_id=$1 and provider=$3 and backend_id=$2",
+          [goldenId, proof.backend_id, target.provider],
         )
       ).rows.length
     )
@@ -444,7 +444,7 @@ export class GoldenSnapshotRetirements {
     )
       return "authority_changed";
     if (
-      c.provider === "boat" &&
+      PROVIDER_LIMITS[c.provider].defaultGoldenCapacity !== undefined &&
       !(
         await this.options.sql.query(
           "select 1 from public.golden_backend_slots where provider=$1 and backend_id=$2 and golden_id=$3",
@@ -701,18 +701,18 @@ export class GoldenSnapshotRetirements {
       return { results: [{ outcome: "deferred", reason: "authority_unavailable" }] };
     }
     if (!backend || !authority) return { results: [{ outcome: "deferred", reason: "authority_unavailable" }] };
-    // Private legacy history cannot prove whether the original build selected a user key or org fallback.
+    // Without snapshot authority, private legacy history cannot prove user-key versus org-fallback selection.
     if (
       (golden.visibility === "org" && (authority.scope !== "org" || authority.ownerId !== golden.orgId)) ||
-      (golden.visibility === "private" && golden.provider !== "modal")
+      (golden.visibility === "private" && !HOST_CAPABILITIES[golden.provider].snapshotManagementAuthority)
     )
       return { results: [{ outcome: "deferred", reason: "historical_authority_unproven" }] };
     if (
-      golden.provider === "boat" &&
+      PROVIDER_LIMITS[golden.provider].defaultGoldenCapacity !== undefined &&
       !(
         await sql.query(
-          "select 1 from public.golden_backend_slots where golden_id=$1 and provider='boat' and backend_id=$2",
-          [golden.id, backend],
+          "select 1 from public.golden_backend_slots where golden_id=$1 and provider=$3 and backend_id=$2",
+          [golden.id, backend, golden.provider],
         )
       ).rows.length
     )

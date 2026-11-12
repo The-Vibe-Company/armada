@@ -10,6 +10,8 @@ const send = (message: unknown) => process.stdout.write(`${JSON.stringify(messag
 let loggedIn = false;
 let turn = 0;
 let thread = "fixture-thread";
+let usageOffset = 0;
+let pendingResumeBaseline: (() => void) | undefined;
 createInterface({ input: process.stdin }).on("line", (line) => {
   const m = JSON.parse(line);
   if (process.env.ARMADA_CWD_PROOF) {
@@ -39,6 +41,8 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     loggedIn = true;
     reply({ type: "apiKey" });
   } else if (m.method === "account/rateLimits/read") {
+    pendingResumeBaseline?.();
+    pendingResumeBaseline = undefined;
     if (process.env.ARMADA_QUOTA_UNAVAILABLE === "1") {
       send({ id: m.id, error: { code: -32000, message: "Synthetic quota unavailable" } });
       return;
@@ -100,6 +104,30 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         secondary: null,
       },
     });
+    const baselineMode = m.method === "thread/resume" ? process.env.ARMADA_RESUME_USAGE_BASELINE : undefined;
+    if (baselineMode) usageOffset = 10;
+    const baseline = (scale = 1, omitOptional = baselineMode === "partial") =>
+      notify("thread/tokenUsage/updated", {
+        threadId: baselineMode === "foreign" ? "foreign-thread" : thread,
+        turnId: "old-turn",
+        tokenUsage: {
+          total: {
+            inputTokens: 1000 * scale,
+            outputTokens: 200 * scale,
+            cachedInputTokens: baselineMode === "invalid" ? 1001 : 300 * scale,
+            ...(omitOptional ? {} : { cacheWriteInputTokens: 100 * scale, reasoningOutputTokens: 40 * scale }),
+          },
+        },
+      });
+    if (baselineMode && baselineMode !== "after" && baselineMode !== "late") baseline();
+    if (baselineMode === "regressed") {
+      baseline(0.5);
+      baseline();
+    }
+    if (baselineMode === "lost-optional") {
+      baseline(1, true);
+      baseline();
+    }
     reply({
       thread: { id: process.env.ARMADA_NATIVE_RESUME_MISMATCH === "thread" ? "replacement-native" : thread },
       model:
@@ -109,6 +137,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
             ? undefined
             : (process.env.ARMADA_USAGE_MODEL ?? m.params.model ?? "gpt-6.1-sol"),
     });
+    if (baselineMode === "after") pendingResumeBaseline = baseline;
   } else if (m.method === "turn/start") {
     const params = m.params as TurnStartParams;
     turn++;
@@ -134,15 +163,16 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       turnId: `turn-${turn}`,
       tokenUsage: {
         total: {
-          inputTokens: 100 * turn,
-          outputTokens: 20 * turn,
-          cachedInputTokens: 30 * turn,
-          cacheWriteInputTokens: 10 * turn,
-          reasoningOutputTokens: 4 * turn,
+          inputTokens: 100 * (turn + usageOffset),
+          outputTokens: 20 * (turn + usageOffset),
+          cachedInputTokens: 30 * (turn + usageOffset),
+          cacheWriteInputTokens: 10 * (turn + usageOffset),
+          reasoningOutputTokens: 4 * (turn + usageOffset),
         },
         last: { inputTokens: 40, outputTokens: 5, cachedInputTokens: 10 },
       },
     });
+    if (params.input[0]?.type === "text" && params.input[0].text === "usage-process-lost") process.exit(0);
     if (process.env.ARMADA_USAGE_REROUTE) {
       notify("model/rerouted", {
         threadId: process.env.ARMADA_USAGE_REROUTE === "foreign" ? "another-thread" : thread,
