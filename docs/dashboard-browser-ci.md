@@ -7,7 +7,7 @@ CI and its budget guard are unchanged.
 
 The candidate uses 24 isolated jobs, one mock/app/browser worker in each. Playwright
 fully-parallel sharding distributes individual tests rather than making the largest
-spec one indivisible shard. A collection check selects **262 tests in 42 files**;
+spec one indivisible shard. A collection check selects **261 tests in 42 files**;
 new tests are discovered automatically. Each shard uses zero retries and unchanged
 test assertions. The pinned Noble container supplies system libraries; Chromium
 comes from the installed lockfile version, not the container's old browser revision.
@@ -92,6 +92,6 @@ outside the candidate by exact title, as #1269 permits for slow/flaky cases.
 
 The original full suite, polling intervals, assertion strengths and test timeout
 are unchanged. No retry was used to turn the failed isolation attempt green.
-The 24 candidate shards now retain **262 tests in 42 files**. No extra job or
+The 24 candidate shards now retain **261 tests in 42 files**. No extra job or
 required gate is added. Measure the updated PR and merge-group runs again before
 promotion; the earlier all-green but over-budget run is insufficient evidence.
