@@ -201,6 +201,7 @@ export {
   type ModelOption,
   resolveModelChoice,
 } from "./models.ts";
+export { OPENCODE_ENDPOINT_ENV, type OpenCodeEndpoint, parseOpenCodeEndpoint } from "./opencode-endpoint.ts";
 export * from "./orchestrator.ts";
 export {
   dedupeEvents,
