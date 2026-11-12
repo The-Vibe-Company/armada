@@ -71,14 +71,20 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       send({ id: m.id, error: { code: -32000, message: "Synthetic quota unavailable" } });
       return;
     }
+    if (process.env.ARMADA_LIMIT_SOURCE === "raced")
+      notify("account/rateLimits/updated", {
+        rateLimits: { limitId: "codex", primary: { usedPercent: 100, resetsAt: 1794270000 }, secondary: null },
+      });
     reply({
       ordinaryUsageAllowed: true,
-      rateLimits: {
-        limitId: "codex",
-        primary: { usedPercent: 25, resetsAt: 1794268800 },
-        secondary: null,
-        credits: { hasCredits: false, unlimited: false, balance: "0" },
-      },
+      rateLimits: process.env.ARMADA_LIMITS
+        ? JSON.parse(process.env.ARMADA_LIMITS)
+        : {
+            limitId: "codex",
+            primary: { usedPercent: 25, resetsAt: 1794268800 },
+            secondary: null,
+            credits: { hasCredits: false, unlimited: false, balance: "0" },
+          },
       rateLimitsByLimitId: {
         codex: {
           limitId: "codex",
@@ -121,13 +127,16 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       );
     }
 
-    notify("account/rateLimits/updated", {
-      rateLimits: {
-        limitId: "codex",
-        primary: { usedPercent: 25, windowDurationMins: 300, resetsAt: 1794268800 },
-        secondary: null,
-      },
-    });
+    if (process.env.ARMADA_LIMIT_SOURCE !== "read" && process.env.ARMADA_LIMIT_SOURCE !== "raced")
+      notify("account/rateLimits/updated", {
+        rateLimits: process.env.ARMADA_LIMITS
+          ? JSON.parse(process.env.ARMADA_LIMITS)
+          : {
+              limitId: "codex",
+              primary: { usedPercent: 25, windowDurationMins: 300, resetsAt: 1794268800 },
+              secondary: null,
+            },
+      });
     reply({
       thread: { id: process.env.ARMADA_NATIVE_RESUME_MISMATCH === "thread" ? "replacement-native" : thread },
       model: process.env.ARMADA_NATIVE_RESUME_MISMATCH === "model" ? "replacement-model" : m.params.model,
@@ -190,6 +199,9 @@ createInterface({ input: process.stdin }).on("line", (line) => {
             id: `turn-${turn}`,
             error: {
               ...recordedTerminal.params.turn.error,
+              ...(process.env.ARMADA_LIMITS
+                ? { message: "private-vendor-error-body", additionalDetails: "private-vendor-error-body" }
+                : {}),
               codexErrorInfo:
                 params.input[0].text === "recorded-failure"
                   ? recordedTerminal.params.turn.error.codexErrorInfo

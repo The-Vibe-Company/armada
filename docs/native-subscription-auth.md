@@ -204,6 +204,20 @@ requires three live sandboxes to answer concurrently through an actual refresh;
 unit/transport tests use synthetic vendor material only.
 
 
+### Native plan-limit failures
+
+A native subscription limit is a failed prompt, not a failed launch or an
+expired login. Codex terminal usage/rate-limit codes are preserved with a fixed,
+actionable public message. When the vendor supplies a valid reset for an
+applicable exhausted window, the message and structured result retain that reset time; no
+reset is invented from missing, malformed or non-exhausted quota data. If more
+than one exhausted window supplies a reset, report the latest blocking reset.
+
+Both Boat and Modal feed the same safe public outcome contract. Raw vendor
+error text, credit balances, plan/profile details and the rest of the private
+quota payload remain private; only allowlisted failure classification and reset
+metadata are promoted. Authentication failures keep their separate identity.
+
 ### Recover legacy ownership before shared enrollment
 
 For existing trapped accounts, this slice-2 server must be deployed together

@@ -825,6 +825,38 @@ describe("prompt outcome", () => {
     });
   });
 
+  test("structured plan evidence never overrides auth/interruption or exposes malformed reset/vendor text", async () => {
+    const limit = other_event("usage_limit", {
+      code: "usage_limit_exceeded",
+      resetsAt: "private-reset-body",
+      message: "private-vendor-body",
+    });
+    for (const status of ["failed", "finished"] as const) {
+      expect(
+        await promptOutcome(outcomeProvider(status, events([prompt(status), limit])), {
+          sandboxId: "s",
+          promptId: "p1",
+        }),
+      ).toEqual({
+        state: "failed",
+        reason: "Plan limit reached. Try again after the limit resets.",
+        limit: { code: "usage_limit_exceeded" },
+      });
+    }
+    expect(
+      await promptOutcome(outcomeProvider("failed", events([prompt("failed", "authentication_failed"), limit])), {
+        sandboxId: "s",
+        promptId: "p1",
+      }),
+    ).toEqual({ state: "failed", reason: "authentication_failed" });
+    expect(
+      await promptOutcome(outcomeProvider("interrupted", events([prompt("interrupted"), limit])), {
+        sandboxId: "s",
+        promptId: "p1",
+      }),
+    ).toEqual({ state: "interrupted" });
+  });
+
   test("an event read twice keeps its newest body and its first position", () => {
     const first = message("m1", "Hel", true);
     const second = message("m2", "Done", false);

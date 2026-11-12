@@ -198,6 +198,7 @@ export {
   readPromptEvents,
   turnInterruptionReason,
 } from "./outcome.ts";
+export { codexPlanLimit, type PlanLimit, planLimitData, planLimitFromMessage, planLimitMessage } from "./plan-limit.ts";
 export {
   type AgentEvent,
   type CreateGoldenRequest,

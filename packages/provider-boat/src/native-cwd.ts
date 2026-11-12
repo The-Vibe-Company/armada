@@ -143,6 +143,23 @@ exec(${JSON.stringify(NATIVE_USAGE_BOOTSTRAP)},usage)
 usage_pending = {}
 usage_fresh = set()
 usage_tickets = {}
+plan_rate_limits = None
+plan_notification_revision = 0
+plan_read_sequence = 0
+plan_applied_read = 0
+plan_read_requests = {}
+def plan_limit_message(code):
+    values=[]
+    for window in ((plan_rate_limits or {}).get("primary"),(plan_rate_limits or {}).get("secondary")):
+        if not isinstance(window,dict): continue
+        used,reset=window.get("usedPercent"),window.get("resetsAt")
+        if isinstance(used,(int,float)) and not isinstance(used,bool) and 100<=used<=9007199254740991 and isinstance(reset,(int,float)) and not isinstance(reset,bool) and 0<=reset<=253402300799 and reset%1==0: values.append(reset)
+    result="Rate limit reached." if code=="rateLimitExceeded" else "Plan limit reached."
+    if values:
+        import datetime
+        result+=" Resets at "+datetime.datetime.fromtimestamp(max(values),datetime.timezone.utc).isoformat(timespec="milliseconds").replace("+00:00","Z")+"."
+    else: result+=" Try again after the limit resets."
+    return result
 
 class ManagedMcpOverridesError(Exception):
     pass
@@ -369,6 +386,7 @@ def output(line):
         sys.stdout.buffer.write(line)
         sys.stdout.buffer.flush()
 def receive():
+    global plan_rate_limits, plan_notification_revision, plan_applied_read
     global native_replied
     for line in child.stdout:
         try:
@@ -391,6 +409,32 @@ def receive():
                 pending[0].set()
                 continue
         if isinstance(message,dict):
+            params=message.get("params",{})
+            if message.get("method")=="account/rateLimits/updated" and isinstance(params,dict):
+                limits=params.get("rateLimits")
+                if isinstance(limits,dict) and limits.get("limitId") in (None,"codex"):
+                    plan_rate_limits=limits
+                    plan_notification_revision+=1
+            if message.get("method")=="turn/completed" and isinstance(params,dict):
+                terminal=params.get("turn")
+                error=terminal.get("error") if isinstance(terminal,dict) else None
+                info=error.get("codexErrorInfo") if isinstance(error,dict) else None
+                code=info if isinstance(info,str) else next(iter(info),None) if isinstance(info,dict) else None
+                if code in ("usageLimitExceeded","rateLimitExceeded"):
+                    # Forward only our allowlisted diagnosis, never the vendor body/details.
+                    terminal["error"]={"message":plan_limit_message(code),"codexErrorInfo":code}
+                    line=(json.dumps(message)+"\\n").encode()
+                elif isinstance(error,dict) and isinstance(error.get("message"),str):
+                    import re
+                    if re.fullmatch(r"(?:Plan|Rate) limit reached[.] (?:Resets at [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.]000Z[.]|Try again after the limit resets[.])",error["message"]):
+                        terminal["error"]={"message":"Authentication failed. Reconnect this account." if code=="unauthorized" else "The agent failed.","codexErrorInfo":code}
+                        line=(json.dumps(message)+"\\n").encode()
+            read=plan_read_requests.pop(str(message.get("id")),None) if "method" not in message else None
+            if read is not None and "error" not in message and isinstance(message.get("result"),dict):
+                limits=message["result"].get("rateLimits")
+                if read[0]==plan_notification_revision and read[1]>=plan_applied_read and isinstance(limits,dict) and limits.get("limitId") in (None,"codex"):
+                    plan_rate_limits=limits
+                    plan_applied_read=read[1]
             request = usage_pending.pop(str(message.get("id")),None)
             result = message.get("result",{})
             if request and request[0] in ("thread/start","thread/resume") and isinstance(result,dict):
@@ -450,6 +494,7 @@ def forward_signal(sig, frame):
 for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
     signal.signal(sig, forward_signal)
 def relay():
+    global plan_read_sequence
     global last_mcp
     try:
         for line in sys.stdin.buffer:
@@ -517,6 +562,9 @@ def relay():
                 line = (json.dumps(message, ensure_ascii=True) + "\\n").encode()
             if isinstance(message,dict):
                 method=message.get("method")
+                if method=="account/rateLimits/read" and "id" in message and len(plan_read_requests)<128:
+                    plan_read_sequence+=1
+                    plan_read_requests[str(message["id"])]=(plan_notification_revision,plan_read_sequence)
                 if method in ("thread/start","thread/resume"):
                     usage_pending[str(message.get("id"))]=(method,None)
                 if method=="turn/start":
