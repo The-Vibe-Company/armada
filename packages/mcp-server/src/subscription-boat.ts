@@ -24,7 +24,7 @@ export async function configureBoatSubscription(
 python3 -I <<'ARMADA_MODEL_CONFIG'
 import os,sys,subprocess
 payload=os.environ.pop('ARMADA_GIT_TOKEN')
-script=${JSON.stringify("import os,sys,json,tempfile,pwd,stat\nv=json.load(sys.stdin)\nh='/home/user/.armada'\nos.makedirs(h,mode=0o700,exist_ok=True)\nu=pwd.getpwnam('user')\ns=os.lstat(h)\nassert stat.S_ISDIR(s.st_mode) and not stat.S_ISLNK(s.st_mode) and s.st_uid in (0,u.pw_uid) and not s.st_mode&0o077\nos.chown(h,u.pw_uid,u.pw_gid)\nf,p=tempfile.mkstemp(dir=h)\nos.fchmod(f,0o600)\nos.fchown(f,u.pw_uid,u.pw_gid)\nwith os.fdopen(f,'w') as out: json.dump(v,out)\nos.replace(p,h+'/model-access.json')\ntry: os.unlink('/home/user/.codex/auth.json')\nexcept FileNotFoundError: pass\n")}
+script=${JSON.stringify("import os,sys,json,tempfile,pwd,stat\nv=json.load(sys.stdin)\nh='/home/user/.armada'\nos.makedirs(h,mode=0o700,exist_ok=True)\nu=pwd.getpwnam('user')\ns=os.lstat(h)\nassert stat.S_ISDIR(s.st_mode) and not stat.S_ISLNK(s.st_mode) and s.st_uid in (0,u.pw_uid) and not s.st_mode&0o077\nos.chown(h,u.pw_uid,u.pw_gid)\nf,p=tempfile.mkstemp(dir=h)\nos.fchmod(f,0o600)\nos.fchown(f,u.pw_uid,u.pw_gid)\nwith os.fdopen(f,'w') as out: json.dump(v,out)\nos.replace(p,h+'/model-access.json')\nd='/home/user/.codex'\ntry: ds=os.lstat(d)\nexcept FileNotFoundError: ds=None\nif ds is not None:\n assert stat.S_ISDIR(ds.st_mode) and not stat.S_ISLNK(ds.st_mode) and ds.st_uid==u.pw_uid\n for name in ['auth.json','.armada-managed-native']:\n  try: os.unlink(d+'/'+name)\n  except FileNotFoundError: pass\n")}
 command=['python3','-I','-c',script]
 if os.getuid()!=0: command=['sudo','-n']+command
 try: result=subprocess.run(command,input=payload.encode(),stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=30)

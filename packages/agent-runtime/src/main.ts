@@ -13,7 +13,7 @@ import { runHarnessInstallMode } from "./harness-cache.ts";
 import { checkpointIdentityKey } from "./identity.ts";
 import { ClaudeDriver, CodexDriver, type Grant, Journal, type McpConfiguration, Runner } from "./index.ts";
 import { testModelConnection } from "./model-connection-test.ts";
-import { quiesceNativeCodex, readNativeCodexAuth } from "./native-auth.ts";
+import { quiesceNativeCodex, readNativeCodexAuth, removeNativeCodexAuth } from "./native-auth.ts";
 import type { ExecEnvironment } from "./protocol.ts";
 import { createRedactor, HarnessState } from "./state.ts";
 
@@ -194,7 +194,12 @@ async function main(dialout = false) {
   const sourceIdentity = journal.assertRestoreSource(config.grant);
   const fenced = journal.checkpointPending(config.grant);
   let survivingAuth: string | undefined;
-  if (!fenced && config.nativeAuthRevision !== undefined) {
+  if (!fenced && config.subscription) {
+    await quiesceNativeCodex(config.root, config.codexExecutable);
+    readNativeCodexAuth(config.root, (values) => journal.registerSecrets(values));
+    journal.sanitize();
+  }
+  if (!fenced && !config.subscription && config.nativeAuthRevision !== undefined) {
     await quiesceNativeCodex(config.root, config.codexExecutable);
     survivingAuth = readNativeCodexAuth(config.root, (values) => journal.registerSecrets(values));
     if (survivingAuth) {
@@ -225,7 +230,11 @@ async function main(dialout = false) {
     config.claudeEnv.CLAUDE_CONFIG_DIR = `${config.root}/claude`;
     config.codexEnv.CODEX_HOME = `${config.root}/codex`;
     await configureCodexEndpoint(config.codexEnv.CODEX_HOME, codexEndpoint);
-    if (config.codexAuthJson) await writeFile(`${config.root}/codex/auth.json`, config.codexAuthJson, { mode: 0o600 });
+    if (config.subscription) {
+      removeNativeCodexAuth(config.root, (values) => journal.registerSecrets(values));
+      journal.sanitize();
+    } else if (config.codexAuthJson)
+      await writeFile(`${config.root}/codex/auth.json`, config.codexAuthJson, { mode: 0o600 });
   }
   const subscriptionRevisions = new Map<string, number>();
   const subscriptionAccess = config.subscription
