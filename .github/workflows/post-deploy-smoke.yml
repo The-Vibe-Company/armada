@@ -52,5 +52,5 @@ jobs:
           ARMADA_SMOKE_CASES: ${{ secrets.ARMADA_SMOKE_CASES }}
           ARMADA_SMOKE: create_real_compute
         run: |
-          args=(--work-preservation --templates-skills --lifecycle --vault --default-skills --expiry)
+          args=(--work-preservation --templates-skills --lifecycle --vault --default-skills --golden-runtime --expiry)
           bun scripts/post-deploy-smoke.ts "${args[@]}"

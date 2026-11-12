@@ -19,6 +19,7 @@ import type {
 } from "../packages/core/src/orchestrator.ts";
 import { DefaultSkillSmokeFailure, readDefaultPins, verifyDefaultReceipts } from "./default-skill-smoke.ts";
 import { ExpirySmokeFailure, runExpiryCase } from "./expiry-smoke.ts";
+import { helperProbe, skillpackProbe } from "./golden-runtime-smoke.ts";
 import { runTemplateSkillCase, TemplateSkillSmokeFailure } from "./template-skill-smoke.ts";
 import { runVaultCase, VaultSmokeFailure } from "./vault-smoke.ts";
 
@@ -190,6 +191,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
   const github = args.includes("--github-runtime");
   const preservation = args.includes("--work-preservation");
   const defaultSkills = args.includes("--default-skills");
+  const goldenRuntime = args.includes("--golden-runtime");
   const templatesSkills = args.includes("--templates-skills");
   const vault = args.includes("--vault");
   const lifecycle = args.includes("--lifecycle");
@@ -199,7 +201,16 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
     if (
       (defaultSkills && !preservation) ||
       (expiry && (orchestrator || (!lifecycle && args.length > 1))) ||
-      (github && (orchestrator || preservation || templatesSkills || defaultSkills || expiry || lifecycle || vault)) ||
+      (goldenRuntime && (orchestrator || (templatesSkills && !preservation && !lifecycle))) ||
+      (github &&
+        (orchestrator ||
+          preservation ||
+          templatesSkills ||
+          defaultSkills ||
+          goldenRuntime ||
+          expiry ||
+          lifecycle ||
+          vault)) ||
       args.some(
         (arg) =>
           arg !== "--orchestrator" &&
@@ -207,6 +218,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
           arg !== "--work-preservation" &&
           arg !== "--templates-skills" &&
           arg !== "--default-skills" &&
+          arg !== "--golden-runtime" &&
           arg !== "--lifecycle" &&
           arg !== "--expiry" &&
           arg !== "--vault",
@@ -221,7 +233,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
       fail("invalid_configuration");
     origin = url.origin;
     if (
-      (preservation || templatesSkills || defaultSkills || expiry || lifecycle || vault) &&
+      (preservation || templatesSkills || defaultSkills || goldenRuntime || expiry || lifecycle || vault) &&
       origin !== "https://armada-mcp-staging.up.railway.app"
     )
       fail("invalid_configuration");
@@ -629,6 +641,21 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
           },
         ),
       );
+      if (lifecycle && !dirty)
+        io.out(
+          JSON.stringify({
+            case: index,
+            step: "time_to_ready",
+            pass: true,
+            provider: item.provider,
+            harness: item.harness,
+            elapsedMs: io.now() - startedAt,
+          }),
+        );
+      if (goldenRuntime && !dirty) {
+        await step("golden_helper_integrity", () => checkedExec(helperProbe));
+        await step("golden_skillpack_integrity", () => checkedExec(skillpackProbe));
+      }
       if (defaultSkills) {
         const expected = defaultPins.get(index)!;
         await step(dirty ? "default_skills_opt_out_receipts" : "default_skills_receipts", async () => {
@@ -645,17 +672,6 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
             }),
           );
       }
-      if (lifecycle && !dirty)
-        io.out(
-          JSON.stringify({
-            case: index,
-            step: "time_to_ready",
-            pass: true,
-            provider: item.provider,
-            harness: item.harness,
-            elapsedMs: io.now() - startedAt,
-          }),
-        );
       async function consistent(expected: string) {
         const status = await sandbox<{ id: string; harness: string; status: string; expiresAt: string | null }>(
           "status",
