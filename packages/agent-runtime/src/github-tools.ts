@@ -341,6 +341,9 @@ try:
         repo=repository(fields.get('path',''))
     elif mode=='gh':
         args=sys.argv[4:]
+        # gh resolves command flags even before the subcommand. Require an
+        # explicit command first so leading options cannot bypass its guards.
+        if args and args[0].startswith('-'): raise ValueError()
         for i,arg in enumerate(args):
             if arg=='--hostname' and (i+1>=len(args) or args[i+1].lower()!='github.com'): raise ValueError()
             if arg.startswith('--hostname=') and arg.split('=',1)[1].lower()!='github.com': raise ValueError()

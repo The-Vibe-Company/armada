@@ -214,8 +214,8 @@ test("managed REST binds acquisition to one canonical endpoint before executing 
     );
     installer.stdin.end();
     expect(await installer.exited).toBe(0);
-    const run = async (args: string[]) => {
-      const child = Bun.spawn([join(bin, "gh"), "api", ...args], {
+    const run = async (args: string[], prefix = ["api"]) => {
+      const child = Bun.spawn([join(bin, "gh"), ...prefix, ...args], {
         env: { PATH: process.env.PATH, HOME: home, GH_REPO: "decoy/repo" },
         stdout: "pipe",
         stderr: "pipe",
@@ -263,6 +263,19 @@ test("managed REST binds acquisition to one canonical endpoint before executing 
     for (const args of denied) {
       acquired.length = 0;
       const result = await run(args);
+      expect(result.status).toBe(1);
+      expect(result.output).toBe("");
+      expect(acquired).toEqual([]);
+    }
+    for (const args of [
+      ["--method", "GET", "api", "user"],
+      ["--hostname", "github.com", "api", "repositories/123/issues"],
+      ["--method=GET", "api", "graphql"],
+      ["-X", "GET", "api", "user"],
+      ["--header", "repos/acme/repo", "api", "user"],
+    ]) {
+      acquired.length = 0;
+      const result = await run(args, []);
       expect(result.status).toBe(1);
       expect(result.output).toBe("");
       expect(acquired).toEqual([]);
