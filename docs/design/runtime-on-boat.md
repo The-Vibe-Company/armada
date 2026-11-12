@@ -1,7 +1,8 @@
 # One Armada runtime on Boat (#1161)
 
 Design-only first PR for #1161 / #1160; no runtime selection changes here.
-The proposals below are gated by a disposable staging spike, not vendor promises.
+**Owner hold: discussion required; this PR stays draft. No implementation is authorized.**
+The proposals below are gated by owner agreement and a disposable staging spike.
 
 ## Current state
 
@@ -63,6 +64,21 @@ repository. Reuse sealed server storage and existing runtime auth checkpoint
 rules. Template readable variables and secrets go to the selected harness via
 the shared runtime configuration, not Boat's world-readable native wrapper.
 Credentials must be refreshed on resume, not recovered from a golden.
+
+## Open questions for the owner
+
+1. **Where should we deliver the runtime: golden or launch?** Recommend a
+   digest-verified launch install with cache reuse, including pinned Bun, so old
+   goldens work unchanged. Consider golden prewarming only after measuring cost.
+2. **Should control use private SSH-forwarded HTTP?** Recommend testing pinned
+   SSH to a loopback listener with the existing runtime protocol first, rather
+   than adding a public port or outbound relay. Forwarding and reconnect support
+   remain unproven; choose another transport only after reporting spike results.
+3. **How should existing native sessions retire, and what delays rollout?**
+   Recommend keeping each existing session on its original runner until an
+   owner-agreed drain deadline, then requiring a new runtime session (no assumed
+   transcript import). Require parity evidence and an explicit owner decision on
+   any >20% launch regression before default-on and native-path deletion.
 
 ## Small, independently mergeable slices
 
