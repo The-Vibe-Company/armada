@@ -13,8 +13,10 @@ and run `bun test packages/core/test/server-pricing.test.ts` before committing.
 The vendored subset includes exact Anthropic/OpenAI provider-model IDs, decimal
 USD/million rates, fetch time, and the SHA-256 of the source `api.json` bytes.
 No requests occur at launch or read time. There are no guessed aliases. Missing
-rates stay null. Complex pricing (context tiers, audio or other dimensions) is
-retained as an unsupported flag and returns unknown, never the base-tier price.
+rates stay null. Complex pricing (context tiers, alternate fast/priority/flex modes,
+audio or other dimensions) is retained as an unsupported flag and returns unknown,
+never the base-tier price. Models with any experimental mode remain unknown until
+service-tier selection is verified, even when their base cost has no extra fields.
 Review unsupported entries when refreshing; do not silently discard new fields.
 
 Sources checked for this slice:
@@ -51,7 +53,7 @@ On the checked-out PR SHA in the staging build workspace run:
 bun test packages/core/test/server-pricing.test.ts
 ```
 
-Expected: all four tests pass, including hand arithmetic:
+Expected: all seven tests pass, including hand arithmetic:
 - Codex override: `(700*2 + 200*0.1 + 100*2.5 + 300*10)/1e6 = 0.00467` USD.
 - Claude Sonnet 5.5 public: `(1000*2 + 200*0.1 + 100*2.5 + 300*10)/1e6 = 0.00527` USD.
 - Custom endpoint without prices: unknown; with all-zero override: exactly `0`.

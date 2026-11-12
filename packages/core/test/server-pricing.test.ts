@@ -66,3 +66,26 @@ test("image-generation pricing cannot be mistaken for text-token pricing", () =>
     "pricing_dimensions",
   );
 });
+
+test.each([
+  { provider: "anthropic" as const, model: "claude-opus-5-5", harness: "claude" as const },
+  { provider: "openai" as const, model: "gpt-4.1-nano", harness: "codex" as const },
+  { provider: "openai" as const, model: "gpt-5-nano", harness: "codex" as const },
+])("unverified service tier never receives a standard-rate amount: $model", ({ provider, model, harness }) => {
+  const snapshot = resolvePrice({ provider, model, customEndpoint: false });
+  const result = priceTurn(
+    {
+      ...turn,
+      model,
+      inputTokens: 1_000_000,
+      outputTokens: 0,
+      cachedTokens: 0,
+      cacheWriteTokens: 0,
+      reasoningTokens: 0,
+    },
+    harness,
+    snapshot,
+  );
+  expect(result.usd).toBeNull();
+  expect(result.unknown).toBe("pricing_dimensions");
+});

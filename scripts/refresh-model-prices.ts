@@ -34,8 +34,10 @@ for (const provider of ["anthropic", "openai"]) {
         cacheWrite: rate(cost.cache_write),
         reasoning: rate(cost.reasoning),
       },
-      // Aggregate turns cannot select request-level tiers or account for audio/tool charges.
+      // Aggregate turns cannot select context/service tiers or account for audio/tool charges.
+      // Modes can override prices or provider routing outside model.cost; never assume standard service.
       unsupported:
+        Object.keys(model.experimental?.modes ?? {}).length > 0 ||
         (model.type !== undefined && model.type !== "text") ||
         !Array.isArray(model.modalities?.output) ||
         model.modalities.output.length !== 1 ||
