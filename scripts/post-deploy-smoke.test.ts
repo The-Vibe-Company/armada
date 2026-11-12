@@ -1259,7 +1259,7 @@ type LifecycleFault =
   | "lost_resume"
   | "stop_failed"
   | "lost_launch";
-function lifecycleFixture(fault: LifecycleFault = "none") {
+function lifecycleFixture(fault: LifecycleFault = "none", onExec?: () => Response | undefined) {
   let provider = "boat";
   let harness = "codex";
   let id = "";
@@ -1270,6 +1270,7 @@ function lifecycleFixture(fault: LifecycleFault = "none") {
   let readiness = 0;
   let expiry = "";
   const fake = fixture((call) => {
+    if (call.path === "sandbox/exec" && onExec) return onExec();
     if (call.path === "sandbox/launch") {
       launches++;
       provider = String(call.body.provider);
@@ -1570,5 +1571,37 @@ test("golden runtime integrity probes are staging-only, fail closed, and retain 
       }),
     ).toBe(false);
     expect(invalid.calls).toHaveLength(0);
+  }
+});
+
+test("readiness timing excludes slow integrity probes and survives either probe failing", async () => {
+  for (const failedExec of [0, 1, 2]) {
+    let execs = 0;
+    const fake = lifecycleFixture("none", () => {
+      execs++;
+      fake.advance(30_000);
+      if (execs === failedExec) return json({ exitCode: 1, timedOut: false });
+    });
+    expect(await fake.run([selected], ["--golden-runtime"])).toBe(failedExec === 0);
+    const reports = fake.receipts();
+    const timing = reports.findIndex((line) => line.step === "time_to_ready");
+    expect(timing).toBeGreaterThanOrEqual(0);
+    expect(reports[timing]).toEqual({
+      case: 0,
+      step: "time_to_ready",
+      pass: true,
+      provider: selected.provider,
+      harness: selected.harness,
+      elapsedMs: 1500,
+    });
+    expect(timing).toBeLessThan(reports.findIndex((line) => line.step === "golden_helper_integrity"));
+    if (failedExec)
+      expect(reports).toContainEqual({
+        case: 0,
+        step: failedExec === 1 ? "golden_helper_integrity" : "golden_skillpack_integrity",
+        pass: false,
+        code: "exec_failed",
+      });
+    expect(fake.calls.some((call) => call.path === "sandbox/stop")).toBe(true);
   }
 });

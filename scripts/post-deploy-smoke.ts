@@ -598,6 +598,17 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
           },
         ),
       );
+      if (lifecycle && !dirty)
+        io.out(
+          JSON.stringify({
+            case: index,
+            step: "time_to_ready",
+            pass: true,
+            provider: item.provider,
+            harness: item.harness,
+            elapsedMs: io.now() - startedAt,
+          }),
+        );
       if (goldenRuntime && !dirty) {
         await step("golden_helper_integrity", () => checkedExec(helperProbe));
         await step("golden_skillpack_integrity", () => checkedExec(skillpackProbe));
@@ -618,17 +629,6 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
             }),
           );
       }
-      if (lifecycle && !dirty)
-        io.out(
-          JSON.stringify({
-            case: index,
-            step: "time_to_ready",
-            pass: true,
-            provider: item.provider,
-            harness: item.harness,
-            elapsedMs: io.now() - startedAt,
-          }),
-        );
       async function consistent(expected: string) {
         const status = await sandbox<{ id: string; harness: string; status: string; expiresAt: string | null }>(
           "status",
