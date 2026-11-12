@@ -25,6 +25,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       processCwd: process.cwd(),
       cwd: m.params?.cwd ?? null,
       text: m.params?.input?.[0]?.text ?? null,
+      model: m.params?.model ?? null,
     });
     writeFileSync(path, JSON.stringify(records));
   }
@@ -139,7 +140,12 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       });
     reply({
       thread: { id: process.env.ARMADA_NATIVE_RESUME_MISMATCH === "thread" ? "replacement-native" : thread },
-      model: process.env.ARMADA_NATIVE_RESUME_MISMATCH === "model" ? "replacement-model" : m.params.model,
+      model:
+        process.env.ARMADA_NATIVE_RESUME_MISMATCH === "model"
+          ? "replacement-model"
+          : process.env.ARMADA_USAGE_MODEL === "missing"
+            ? undefined
+            : (process.env.ARMADA_USAGE_MODEL ?? m.params.model ?? "gpt-6.1-sol"),
     });
   } else if (m.method === "turn/start") {
     const params = m.params as TurnStartParams;
@@ -184,6 +190,15 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         last: { inputTokens: 40, outputTokens: 5, cachedInputTokens: 10 },
       },
     });
+    if (process.env.ARMADA_USAGE_REROUTE) {
+      notify("model/rerouted", {
+        threadId: process.env.ARMADA_USAGE_REROUTE === "foreign" ? "another-thread" : thread,
+        turnId: `turn-${turn}`,
+        fromModel: "native-selected",
+        toModel: "native-alternate",
+        reason: "test",
+      });
+    }
     notify("item/agentMessage/delta", { threadId: thread, turnId: `turn-${turn}`, itemId: "text", delta: "partial" });
     if (
       params.input[0]?.type === "text" &&

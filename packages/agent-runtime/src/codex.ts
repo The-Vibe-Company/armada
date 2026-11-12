@@ -95,6 +95,9 @@ export class CodexDriver implements Driver {
     const baseline: Record<string, number> | null = c.sessionId
       ? (this.tokenTotals.get(c.sessionId) ?? null)
       : { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, cacheWriteInputTokens: 0, reasoningOutputTokens: 0 };
+    let reportedModel: string | null = null;
+    let modelRerouted = false;
+    const usage: { latest: Record<string, unknown> | null } = { latest: null };
     const earlyTerminals = new Map<string, TurnCompletedNotification>();
     let terminalResolve: ((value: TurnCompletedNotification) => void) | undefined;
     let terminalReject: ((error: Error) => void) | undefined;
@@ -169,6 +172,13 @@ export class CodexDriver implements Driver {
           return;
         }
         if (m.params?.threadId !== threadId) return;
+        if (m.method === "model/rerouted") {
+          // Totals cannot allocate tokens between models, including pre-steer native turns.
+          // Invalidate the whole prompt rather than attributing it all to either model.
+          modelRerouted = true;
+          c.emit({ kind: "other", type: m.method, data: m.params });
+          return;
+        }
         if (m.method === "thread/tokenUsage/updated") {
           const total = m.params?.tokenUsage?.total;
           if (
@@ -184,22 +194,17 @@ export class CodexDriver implements Driver {
               total[key] >= baseline[key]!
                 ? total[key] - baseline[key]!
                 : null;
-            c.emit({
-              kind: "other",
-              type: "armada/turnUsage",
-              data: {
-                model: c.request.model ?? "gpt-6.1-sol",
-                inputTokens: delta("inputTokens"),
-                outputTokens: delta("outputTokens"),
-                cachedTokens: delta("cachedInputTokens"),
-                ...(Number.isSafeInteger(total.cacheWriteInputTokens)
-                  ? { cacheWriteTokens: delta("cacheWriteInputTokens") }
-                  : {}),
-                ...(Number.isSafeInteger(total.reasoningOutputTokens)
-                  ? { reasoningTokens: delta("reasoningOutputTokens") }
-                  : {}),
-              },
-            });
+            usage.latest = {
+              inputTokens: delta("inputTokens"),
+              outputTokens: delta("outputTokens"),
+              cachedTokens: delta("cachedInputTokens"),
+              ...(Number.isSafeInteger(total.cacheWriteInputTokens)
+                ? { cacheWriteTokens: delta("cacheWriteInputTokens") }
+                : {}),
+              ...(Number.isSafeInteger(total.reasoningOutputTokens)
+                ? { reasoningTokens: delta("reasoningOutputTokens") }
+                : {}),
+            };
             this.tokenTotals.set(threadId, { ...total });
           }
           return;
@@ -307,7 +312,7 @@ export class CodexDriver implements Driver {
         threadId,
         cwd,
         input: [{ type: "text", text, text_elements: [] }],
-        model: c.request.model ?? "gpt-6.1-sol",
+        ...(reportedModel ? { model: reportedModel } : {}),
         effort: effort as ReasoningEffort,
         approvalPolicy: "never",
         sandboxPolicy: { type: "dangerFullAccess" },
@@ -337,7 +342,7 @@ export class CodexDriver implements Driver {
         if (result.type !== "chatgptAuthTokens") throw new HarnessError("authentication_failed");
       }
       // Official API-key login uses the private JSONL channel, never argv or an auth-file read.
-      if (this.options.env.OPENAI_API_KEY) {
+      if (this.options.env.OPENAI_API_KEY && !this.options.env.ARMADA_CUSTOM_CODEX_ENDPOINT) {
         const login: LoginAccountParams = { type: "apiKey", apiKey: this.options.env.OPENAI_API_KEY };
         const result = await rpc<LoginAccountResponse>("account/login/start", login);
         if (result.type !== "apiKey") throw new HarnessError("authentication_failed");
@@ -346,7 +351,7 @@ export class CodexDriver implements Driver {
         cwd,
         approvalPolicy: "never",
         sandbox: "danger-full-access",
-        model: c.request.model ?? "gpt-6.1-sol",
+        ...(c.request.model ? { model: c.request.model } : {}),
         ...(c.mcp
           ? {
               config: {
@@ -368,6 +373,7 @@ export class CodexDriver implements Driver {
       );
       if (typeof result.thread?.id !== "string") throw new HarnessError("invalid_harness_protocol");
       if (resumeOnly && result.model !== c.request.model) throw Error("native_session_model_changed");
+      reportedModel = typeof result.model === "string" && result.model.trim() ? result.model : null;
       threadId = result.thread.id;
       if (c.sessionId && threadId !== c.sessionId) throw Error("native_session_identity_changed");
       c.session(threadId);
@@ -462,6 +468,14 @@ export class CodexDriver implements Driver {
         await this.children.release(child);
         this.nativeWriter = false;
         c.signal.removeEventListener("abort", abort);
+        // One final snapshot prevents stale model shares surviving a late reroute in persisted history.
+        // Also retain observed usage on failed/interrupted prompts; no snapshot is invented when absent.
+        if (usage.latest)
+          c.emit({
+            kind: "other",
+            type: "armada/turnUsage",
+            data: { ...usage.latest, model: modelRerouted ? null : reportedModel },
+          });
       }
     })();
     return {

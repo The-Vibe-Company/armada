@@ -44,6 +44,8 @@ import type { OrchestratorServiceBundle } from "./orchestrator-services.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
 import { pruneServerRetention } from "./retention-maintenance.ts";
 import { startRoutineWorker } from "./routine-worker.ts";
+import { createRuntimeArtifactRoute } from "./runtime-artifacts.ts";
+import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import { createSandboxArmadaAccess } from "./sandbox-armada-access.ts";
 import { createSandboxLifecycle } from "./sandbox-lifecycle.ts";
 import { startServerWorkers } from "./server-workers.ts";
@@ -328,6 +330,8 @@ export async function startServer(
     modalTokensFor: modal.modalTokensFor,
     goldenTarget: modal.goldenTarget,
     routes: [
+      createRuntimeArtifactRoute(env.ARMADA_RUNTIME_ARTIFACT_DIR),
+      createRuntimeEnrolments(sql, config.encryptionKey).route,
       ...(orchestrators && "scopedToolsRoute" in orchestrators
         ? [
             orchestrators.scopedToolsRoute,

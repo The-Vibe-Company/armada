@@ -590,7 +590,8 @@ test("a sandbox's lifetime is a quiet fact, and a missed deadline is a notice, n
   await page.setViewportSize({ width: 1280, height: 720 });
   // The list's metadata carries the deadline but never the stop failure itself (#680): it says the deadline passed.
   await page.goto("/sandboxes");
-  await expect(page.locator('[data-lifecycle="overdue"]')).toHaveText("Past deadline");
+  const row = page.getByRole("row").filter({ has: page.getByRole("link", { name: LABELS.running }) });
+  await expect(row.locator('[data-lifecycle="overdue"]')).toHaveText("Past deadline");
 });
 
 for (const [timezoneId, zone] of [

@@ -16,6 +16,7 @@ import {
   HARNESS_PATH,
   KIND_INFO,
 } from "@/lib/model-accounts";
+import { customCodexAccountValue, replacementCodexAccountValue } from "@/lib/model-connection-input";
 
 type Scoped = { control: AccountControl; scope: AccountScope; org: string };
 
@@ -79,7 +80,10 @@ export async function addAccount(_previous: ActionResult | null, data: FormData)
   if (!(ACCOUNT_KINDS as readonly string[]).includes(kind)) return fail("Choose what you are adding.");
   const name = checkAccountName(data.get("name"));
   if (!name.ok) return fail(name.error);
-  const value = secret(kind as AccountKind, data.get("value"));
+  const value =
+    data.get("customEndpoint") === "on"
+      ? customCodexAccountValue(kind as AccountKind, data)
+      : secret(kind as AccountKind, data.get("value"));
   if (!value.ok) return fail(value.error);
 
   let saved: Awaited<ReturnType<AccountControl["set"]>>;
@@ -118,7 +122,7 @@ export async function replaceAccountSecret(_previous: ActionResult | null, data:
     return fail("That request is not valid.");
   const name = checkAccountName(data.get("name"));
   if (!name.ok) return fail(name.error);
-  const value = secret(kind as AccountKind, data.get("value"));
+  const value = kind === "openai" ? replacementCodexAccountValue(data) : secret(kind as AccountKind, data.get("value"));
   if (!value.ok) return fail(value.error);
   try {
     const saved = await context.control.set({
@@ -181,4 +185,77 @@ export async function removeAccount(_previous: ActionResult | null, data: FormDa
   }
   refresh();
   return done("Account removed.");
+}
+
+/** Inspect or release a failed subscription launch; authorization stays on the server. */
+export async function subscriptionHolder(data: FormData): Promise<{
+  sandboxId: string | null;
+  releasable?: boolean;
+  requiresReconnect?: boolean;
+  orphan?: boolean;
+  unknownVersion?: boolean;
+  error?: string;
+}> {
+  const context = await scoped(data);
+  if (!isScoped(context)) return { sandboxId: null, error: "Account control unavailable." };
+  try {
+    const result = await context.control.holder({
+      ...target(context, formString(data, "id")),
+      version: version(data) ?? -1,
+      org: context.org,
+    });
+    return {
+      sandboxId: typeof result.sandboxId === "string" ? result.sandboxId : null,
+      releasable: result.releasable === true,
+      requiresReconnect: result.requiresReconnect === true,
+      orphan: result.orphan === true,
+      unknownVersion: result.unknownVersion === true,
+    };
+  } catch (error) {
+    if (error instanceof ControlError) return { sandboxId: null, error: error.message };
+    throw error;
+  }
+}
+
+export async function releaseSubscription(data: FormData): Promise<ActionResult> {
+  const context = await scoped(data);
+  if (!isScoped(context)) return context;
+  try {
+    await context.control.release({
+      ...target(context, formString(data, "id")),
+      sandboxId: formString(data, "sandboxId"),
+      version: version(data) ?? -1,
+      org: context.org,
+    });
+    refresh();
+    return done("Subscription released. You can launch again.");
+  } catch (error) {
+    if (error instanceof ControlError) return fail(error.message);
+    throw error;
+  }
+}
+
+/** Atomically reconnect legacy history lacking a version and release its deleted holder. */
+export async function reconnectAndReleaseSubscription(
+  _previous: ActionResult | null,
+  data: FormData,
+): Promise<ActionResult> {
+  const context = await scoped(data);
+  if (!isScoped(context)) return context;
+  const value = secret("codex_auth", data.get("value"));
+  if (!value.ok) return fail(value.error);
+  try {
+    await context.control.release({
+      ...target(context, formString(data, "id")),
+      org: context.org,
+      version: version(data) ?? -1,
+      sandboxId: formString(data, "sandboxId"),
+      value: value.value,
+    });
+    refresh();
+    return done("Subscription released. You can launch again.");
+  } catch (error) {
+    if (error instanceof ControlError) return fail(error.message);
+    throw error;
+  }
 }

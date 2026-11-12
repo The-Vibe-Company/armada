@@ -18,7 +18,13 @@ import {
   type SandboxInfo,
   type SnapshotInfo,
 } from "./provider.ts";
-import { isSandboxProvider, type ModalBinding, SANDBOX_PROVIDERS, type SandboxProviderId } from "./sandbox-provider.ts";
+import {
+  HOST_CAPABILITIES,
+  isSandboxProvider,
+  type ModalBinding,
+  SANDBOX_PROVIDERS,
+  type SandboxProviderId,
+} from "./sandbox-provider.ts";
 
 export interface GoldenActor {
   userId: string;
@@ -119,6 +125,7 @@ export async function connectGolden(
   limits: GoldenLimits = {},
 ): Promise<{ golden: GoldenRecord; sandbox: SandboxInfo }> {
   const golden = await oneVisible(store, actor.orgId, parseGoldenName(name), providerIdOf(provider));
+  const sharedSource = HOST_CAPABILITIES[golden.provider].goldenRestore === "shared-source";
   assertGoldenMutation(actor, golden);
   await store.assertMutation?.(golden, actor);
   await store.reconcileOperations?.(golden, actor);
@@ -130,7 +137,7 @@ export async function connectGolden(
   let uncertain = false;
   let failed = false;
   try {
-    if (golden.provider === "modal" && !store.assertMutation)
+    if (sharedSource && !store.assertMutation)
       throw new GoldenError("forbidden", "Current Modal mutation authority cannot be verified.");
     await store.assertMutation?.(golden, actor);
     await store.assertBackendBinding?.(golden, provider);
@@ -151,7 +158,7 @@ export async function connectGolden(
       throw new GoldenError("conflict", `Golden '${golden.name}' has no saved snapshot to restore.`);
     }
     if (!store.replaceSandbox) throw new GoldenError("conflict", "Golden restore persistence is not configured.");
-    if (golden.provider === "modal" && !provider.restoreGoldenMaster)
+    if (sharedSource && !provider.restoreGoldenMaster)
       throw new GoldenError(
         "conflict",
         "This Modal adapter requires the authorized golden restore port. No worker fork was created.",
@@ -160,7 +167,7 @@ export async function connectGolden(
     uncertain = true;
     const restored = await (async () => {
       try {
-        return golden.provider === "modal"
+        return sharedSource
           ? await provider.restoreGoldenMaster!({
               snapshotId: restoreSnapshot,
               ...(golden.providerSandboxId ? { sandboxId: golden.providerSandboxId } : {}),
@@ -198,7 +205,7 @@ export async function connectGolden(
               row.id === golden.id &&
               row.provider === golden.provider &&
               row.providerSandboxId === restored.id &&
-              (golden.provider !== "modal" || row.providerSnapshotId === golden.providerSnapshotId),
+              (!sharedSource || row.providerSnapshotId === golden.providerSnapshotId),
           );
         } catch {
           // Loss of read access or database availability is not evidence that publication failed.
@@ -222,7 +229,7 @@ export async function connectGolden(
       outcome = published ? "published" : "unpublished";
       uncertain = false;
       if (!published) {
-        if (golden.provider === "modal") {
+        if (sharedSource) {
           // The dedicated restore port is idempotent and may return the same source to concurrent
           // callers. A false CAS is not ownership proof that this shared master is disposable.
           let canonical: GoldenRecord | undefined;
@@ -230,7 +237,7 @@ export async function connectGolden(
             canonical = (await store.findByName(actor.orgId, golden.name)).find(
               (row) =>
                 row.id === golden.id &&
-                row.provider === "modal" &&
+                row.provider === golden.provider &&
                 row.providerSandboxId === restored.id &&
                 row.providerSnapshotId === golden.providerSnapshotId,
             );
@@ -255,9 +262,9 @@ export async function connectGolden(
       }
       return { golden: { ...golden, providerSandboxId: restored.id }, sandbox };
     } finally {
-      // Only fresh Boat forks are disposable. Modal restores reuse a shared image-owned source.
+      // Only fresh forks are disposable. Shared restores reuse an image-owned source.
       // Never delete that source on a losing/failed CAS or readiness ambiguity.
-      if (outcome === "unpublished" && golden.provider === "boat") {
+      if (outcome === "unpublished" && !sharedSource) {
         // Publication lost, but cleanup is not yet known: either transport below may fail.
         uncertain = true;
         // A successful delete call is not a terminal physical observation.

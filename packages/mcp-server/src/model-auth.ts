@@ -3,6 +3,8 @@ import {
   CREDENTIAL_BUSY_MESSAGE,
   createSqlVaultStore,
   decryptSecret,
+  deleteNeverStartedSandbox,
+  encryptSecret,
   ProviderError,
   redact,
   sshNativeAuthAdmission,
@@ -55,6 +57,120 @@ export function createModelAuthOwnership(
     if (!row) throw new VaultError("not_found", "Native credential is no longer authorized.");
     return row.value_enc;
   }
+  async function releaseFailed(
+    actor: GoldenActor,
+    id: string,
+    version: number,
+    sandboxId: string,
+    deletePhysical?: () => Promise<void>,
+    freshAuthJson?: string,
+    automaticNeverStarted = false,
+  ) {
+    if (!sql.transaction) throw new VaultError("unavailable", "Native cleanup requires transactions.");
+    await sql.transaction(async (tx) => {
+      await authorize(tx, actor, id, version);
+      const ownership = await tx.query<{ account_version: number }>(
+        "select account_version from public.model_auth_ownership where account_id=$1::uuid and sandbox_id=$2::uuid for update",
+        [id, sandboxId],
+      );
+      const historical = ownership.rows.length
+        ? undefined
+        : (
+            await tx.query<{ credential_version: number | null }>(
+              "select credential_version from public.sandboxes where id=$1::uuid and credential_id=$2::uuid and owner_id=$3::uuid and org_id=$4::uuid for update",
+              [sandboxId, id, actor.userId, actor.orgId],
+            )
+          ).rows[0];
+      const storedVersion = ownership.rows[0]?.account_version ?? historical?.credential_version;
+      if (storedVersion === undefined)
+        throw new VaultError("conflict", "The subscription holder changed. Reload and try again.");
+      await tx.query(
+        "select account_id from public.model_auth_state where account_id=$1::uuid and account_version=$2 for update",
+        [id, storedVersion],
+      );
+      const unknownVersion = storedVersion === null;
+      if (unknownVersion && !freshAuthJson)
+        throw new VaultError("conflict", "Import fresh account auth while releasing this unknown-version history.");
+      const imported = unknownVersion ? nativeState(freshAuthJson ?? "").authJson : undefined;
+      const fresh = unknownVersion || version > Number(storedVersion);
+      if (automaticNeverStarted && (fresh || !deletePhysical))
+        throw new VaultError(
+          "conflict",
+          "Automatic cleanup requires the original never-started account version and physical deletion proof.",
+        );
+      if (!automaticNeverStarted && (deletePhysical || fresh)) {
+        const permitted = await tx.query(
+          `select c.id from public.credentials c where c.id=$1::uuid
+             and (c.scope='user' or exists(select 1 from public.members m
+             where m.org_id=c.owner_id and m.user_id=$2::uuid and m.role='admin'))`,
+          [id, actor.userId],
+        );
+        if (!permitted.rows.length)
+          throw new VaultError("forbidden", "An organization administrator must release organization accounts.");
+      }
+      const sandbox = await tx.query<{ id: string }>("select id from public.sandboxes where id=$1::uuid for update", [
+        sandboxId,
+      ]);
+      if (!sandbox.rows.length) {
+        // Reconnect fences a late pre-registration bootstrap using the old version.
+        if (!fresh) throw new VaultError("conflict", "Reconnect this account before releasing an unregistered launch.");
+        await tx.query("delete from public.model_auth_ownership where account_id=$1::uuid and sandbox_id=$2::uuid", [
+          id,
+          sandboxId,
+        ]);
+        return;
+      }
+      const found = await tx.query(
+        `select s.id from public.sandboxes s left join public.model_auth_state state
+           on state.account_id=$1::uuid and state.account_version=$2
+           where s.id=$3::uuid and s.owner_id=$4::uuid and s.org_id=$5::uuid
+           and s.credential_id=$1::uuid and s.credential_version is not distinct from $2::integer
+           and s.status in ('failed','stopped','deleted')
+           and (s.activity_until is null or s.activity_until<now())
+           and (s.reconcile_lease_until is null or s.reconcile_lease_until<now()) and s.stop_requested_at is null
+           and ($6::boolean or (s.status='failed' and cardinality(s.conversation_ids)=0 and s.task_prompt_id is null
+           and state.auth_revision=0 and state.source_generation='launch:never-started'))`,
+        [id, storedVersion, sandboxId, actor.userId, actor.orgId, fresh],
+      );
+      if (!found.rows.length)
+        throw new VaultError(
+          "conflict",
+          "Reconnect the account and finish sandbox operations before releasing its failed or stopped holder.",
+        );
+      if (fresh) {
+        if (!historicalProvider) throw new VaultError("unavailable", "Historical sandbox control is unavailable.");
+        const target = await historicalProvider(tx, sandboxId);
+        if (!(await deleteNeverStartedSandbox(target.provider, target.providerSandboxId)))
+          throw new VaultError("conflict", "Physical deletion is not confirmed; ownership retained.");
+      } else await deletePhysical?.();
+      if (imported !== undefined) {
+        await tx.query("update public.credentials set value_enc=$2 where id=$1::uuid", [
+          id,
+          await encryptSecret(imported, encryptionKey),
+        ]);
+      }
+      if (fresh) {
+        await tx.query(
+          "update public.sandboxes set status='deleted',deleted_at=coalesce(deleted_at,now()),status_reason=null,credential_id=null,credential_version=null,activity_lease_id=null,activity_until=null,reconcile_lease=null,reconcile_lease_until=null,lifecycle_generation=lifecycle_generation+1 where id=$1::uuid",
+          [sandboxId],
+        );
+      } else {
+        await tx.query(
+          "update public.sandboxes set credential_id=null,credential_version=null,lifecycle_generation=lifecycle_generation+1 where id=$1::uuid",
+          [sandboxId],
+        );
+        await tx.query("delete from public.model_auth_state where account_id=$1::uuid and account_version=$2", [
+          id,
+          storedVersion,
+        ]);
+      }
+      await tx.query(
+        "delete from public.model_auth_ownership where account_id=$1::uuid and account_version=$2 and sandbox_id=$3::uuid",
+        [id, storedVersion, sandboxId],
+      );
+    });
+  }
+
   return {
     state,
     broker,
@@ -81,6 +197,93 @@ export function createModelAuthOwnership(
           )
         ).rows.length > 0
       );
+    },
+    async holder(actor: GoldenActor, id: string, version: number) {
+      if (!sql.transaction) throw new VaultError("unavailable", "Native inspection requires transactions.");
+      return sql.transaction(async (tx) => {
+        await authorize(tx, actor, id, version);
+        const result = await tx.query<{
+          sandboxId: string;
+          version: number | null;
+          storedVersion: number | null;
+          unknownVersion: boolean;
+          currentVersion: number;
+          requiresReconnect: boolean;
+          releasable: boolean;
+          orphan: boolean;
+        }>(
+          `select o.sandbox_id as "sandboxId",o.account_version as version,o.account_version as "storedVersion",
+           $2::integer as "currentVersion",s.id is null as orphan,o.account_version is null as "unknownVersion",
+           o.account_version is null or not ($2>o.account_version or (s.id is not null and coalesce(state.auth_revision=0,false)
+             and state.source_generation='launch:never-started')) as "requiresReconnect",
+           (o.account_version is not null and ($2>o.account_version or (s.id is not null and coalesce(state.auth_revision=0,false)
+             and state.source_generation='launch:never-started'))
+             and (s.id is null or (s.credential_id=$1::uuid and s.credential_version is not distinct from o.account_version and s.status in ('failed','stopped','deleted')
+             and (s.activity_until is null or s.activity_until<now())
+             and (s.reconcile_lease_until is null or s.reconcile_lease_until<now())
+             and s.stop_requested_at is null))) as releasable
+           from (
+             select sandbox_id,account_version from public.model_auth_ownership where account_id=$1::uuid
+             union all
+             select history.id,history.credential_version from public.sandboxes history
+             where history.credential_id=$1::uuid
+             and history.owner_id=$3::uuid and history.org_id=$4::uuid
+             and not exists(select 1 from public.model_auth_ownership owned where owned.account_id=$1::uuid)
+           ) o left join public.model_auth_state state
+           on state.account_id=$1::uuid and state.account_version=o.account_version
+           left join public.sandboxes s on s.id=o.sandbox_id
+           where (s.id is null or (s.owner_id=$3::uuid and s.org_id=$4::uuid)) order by o.account_version nulls first,s.id limit 1`,
+          [id, version, actor.userId, actor.orgId],
+        );
+        return result.rows[0] ?? null;
+      });
+    },
+    async markNeverStarted(actor: GoldenActor, id: string, version: number, sandboxId: string) {
+      if (!sql.transaction) throw new VaultError("unavailable", "Native cleanup requires transactions.");
+      return sql.transaction(async (tx) => {
+        await authorize(tx, actor, id, version);
+        const marked = await tx.query(
+          `update public.model_auth_state state set source_generation='launch:never-started'
+           from public.model_auth_ownership o,public.sandboxes s
+           where state.account_id=$1::uuid and state.account_version=$2 and state.auth_revision=0
+           and state.source_generation='launch:unallocated' and o.account_id=state.account_id
+           and o.account_version=state.account_version and o.sandbox_id=$3::uuid
+           and s.id=o.sandbox_id and s.owner_id=$4::uuid and s.status='failed'
+           and cardinality(s.conversation_ids)=0 and s.task_prompt_id is null returning state.account_id`,
+          [id, version, sandboxId, actor.userId],
+        );
+        if (marked.rows.length > 0) return true;
+        // A send may have won admission since launch failure. Keep cleanup in
+        // the locked native path; never fall back to an unleased provider stop.
+        return (
+          (
+            await tx.query(
+              "select 1 from public.model_auth_ownership where account_id=$1::uuid and account_version=$2 and sandbox_id=$3::uuid",
+              [id, version, sandboxId],
+            )
+          ).rows.length > 0
+        );
+      });
+    },
+    async releaseFailed(
+      actor: GoldenActor,
+      id: string,
+      version: number,
+      sandboxId: string,
+      deletePhysical?: () => Promise<void>,
+      freshAuthJson?: string,
+    ) {
+      return releaseFailed(actor, id, version, sandboxId, deletePhysical, freshAuthJson);
+    },
+    /** Trusted launch lifecycle only; never selected by request data. */
+    async releaseNeverStarted(
+      actor: GoldenActor,
+      id: string,
+      version: number,
+      sandboxId: string,
+      deletePhysical: () => Promise<void>,
+    ) {
+      return releaseFailed(actor, id, version, sandboxId, deletePhysical, undefined, true);
     },
     async releaseUnallocated(id: string, version: number, sandboxId: string): Promise<void> {
       if (!sql.transaction) throw new VaultError("unavailable", "Native cleanup requires transactions.");
@@ -557,7 +760,8 @@ export function createModelAuthOwnership(
             throw new VaultError("credential_busy", CREDENTIAL_BUSY_MESSAGE);
           const terminal =
             (binding.status === "stopped" && binding.stopped_at !== null) ||
-            (binding.status === "deleted" && binding.deleted_at !== null);
+            (binding.status === "deleted" && binding.deleted_at !== null) ||
+            binding.status === "failed";
           if (!terminal || binding.activity_lease_id !== null || binding.stop_requested_at !== null)
             throw new VaultError("credential_busy", CREDENTIAL_BUSY_MESSAGE);
           // authenticated can edit status/timestamps. A fresh import is not
@@ -568,7 +772,13 @@ export function createModelAuthOwnership(
           try {
             const proof = (async () => {
               const target = await historicalProvider(tx, binding.id);
-              const observed = await target.provider.get(target.providerSandboxId, { signal: controller.signal });
+              let observed: Awaited<ReturnType<Provider["get"]>>;
+              try {
+                observed = await target.provider.get(target.providerSandboxId, { signal: controller.signal });
+              } catch (error) {
+                if (error instanceof ProviderError && error.code === "not_found") return true;
+                throw error;
+              }
               return (
                 observed.id === target.providerSandboxId &&
                 (observed.state === "stopped" || observed.physicalExitConfirmed === true)
@@ -604,7 +814,7 @@ export function createModelAuthOwnership(
         let row = found.rows[0];
         if (row && Number(row.account_version) !== version) {
           const stopped = await tx.query(
-            "select id from public.sandboxes where id=$1::uuid and status='stopped' and stopped_at is not null for update",
+            "select id from public.sandboxes where id=$1::uuid and (status='stopped' and stopped_at is not null or status='deleted' and deleted_at is not null or status='failed') for update",
             [row.sandbox_id],
           );
           if (stopped.rows.length) {
@@ -665,7 +875,7 @@ export function createModelAuthOwnership(
           );
           if (!current.rows.length)
             throw new VaultError("not_found", "Native redaction owner is no longer authorized.");
-        } else await this.assertOwned(actor, row.credential_id, Number(row.credential_version), sandboxId);
+        } else await this.assertOwned(actor, row.credential_id, Number(row.credential_version), sandboxId, true);
       } else if (!_userExec) {
         throw new VaultError(
           "credential_binding_required",
@@ -720,7 +930,13 @@ export function createModelAuthOwnership(
       }
     },
     /** Run before every send/resume, after pinned-account authorization. */
-    async assertOwned(actor: GoldenActor, id: string, version: number, sandboxId: string): Promise<void> {
+    async assertOwned(
+      actor: GoldenActor,
+      id: string,
+      version: number,
+      sandboxId: string,
+      admitTurn = false,
+    ): Promise<void> {
       if (!sql.transaction) throw new VaultError("unavailable", "Native credential ownership requires transactions.");
       await sql.transaction(async (tx) => {
         await authorize(tx, actor, id, version);
@@ -733,6 +949,14 @@ export function createModelAuthOwnership(
           throw new VaultError(
             "conflict",
             "This sandbox no longer owns its subscription session. Stop it and launch a new sandbox with the intended account.",
+          );
+        // Admission itself destroys the initial launch's no-native-work proof.
+        // A later dispatch may be accepted even when its receipt/publication is lost.
+        // Bootstrap only checks ownership; it must not invalidate pre-start cleanup.
+        if (admitTurn)
+          await tx.query(
+            "update public.model_auth_state set source_generation='admission:turn' where account_id=$1::uuid and account_version=$2 and source_generation in ('launch:unallocated','launch:never-started')",
+            [id, version],
           );
       });
     },

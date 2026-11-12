@@ -18,13 +18,49 @@ export interface ProviderLimits {
   maxTtlSeconds: number;
   /** In words, for error messages. */
   maxTtlLabel: string;
+  /** Default independent golden capacity when the adapter declares no override. Omitted means unlimited. */
+  defaultGoldenCapacity?: number;
 }
 
 export const PROVIDER_LIMITS: Readonly<Record<SandboxProviderId, ProviderLimits>> = {
   /** boat.dev's documented TTL maximum. */
-  boat: { maxTtlSeconds: 2_592_000, maxTtlLabel: "30 days" },
+  boat: { maxTtlSeconds: 2_592_000, maxTtlLabel: "30 days", defaultGoldenCapacity: 1 },
   /** Modal's documented maximum lifetime of one sandbox machine. */
   modal: { maxTtlSeconds: 86_400, maxTtlLabel: "24 hours" },
+};
+
+/**
+ * Host lifecycle semantics, independent of harness features and credential routing.
+ * A shared-source restore is idempotent: a losing publisher does not own the source
+ * and must never dispose of it. A fresh fork belongs to that restore attempt.
+ */
+export interface HostCapabilities {
+  readonly goldenRestore: "fresh-fork" | "shared-source";
+  /** Dispose a completed disposable builder without creating an unwanted stop checkpoint. */
+  readonly goldenBuilderCleanup: "stop" | "delete";
+  /**
+   * Abandoned builds either stop their recorded builder, or reconcile a durable
+   * reservation and dispose only through its ownership-checked provider port.
+   * Reservation-backed sources must be retained once snapshot/publication starts.
+   */
+  readonly goldenBuilderRecovery: "stop-recorded" | "dispose-reservation";
+  /** Snapshot metadata must attest the immutable management credential authority before retirement. */
+  readonly snapshotManagementAuthority: boolean;
+}
+
+export const HOST_CAPABILITIES: Readonly<Record<SandboxProviderId, HostCapabilities>> = {
+  boat: {
+    goldenRestore: "fresh-fork",
+    goldenBuilderCleanup: "stop",
+    goldenBuilderRecovery: "stop-recorded",
+    snapshotManagementAuthority: false,
+  },
+  modal: {
+    goldenRestore: "shared-source",
+    goldenBuilderCleanup: "delete",
+    goldenBuilderRecovery: "dispose-reservation",
+    snapshotManagementAuthority: true,
+  },
 };
 
 /**
