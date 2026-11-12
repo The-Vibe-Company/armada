@@ -153,6 +153,27 @@ registry fails closed for maintenance instead of skipping checks.
 
 ### Failed launches (#1176, slice 1)
 
+#### Owner-approved delivery boundary
+
+The owner requested one small PR per slice, starting with immediate unblock and
+then concurrency, with **Refs #1176** rather than closing the whole issue. This
+is the delivery contract, not a claim that slice 1 completes the full ticket.
+
+| Work | Delivery | Acceptance status |
+| --- | --- | --- |
+| Failed-launch cleanup and existing trapped-account product recovery | PR #1180, slice 1 | Implemented; local SQL, launch and browser checks pass; deployed provider checks below remain unperformed here. |
+| Concurrent subscriptions and server-owned refresh | PR #1186, slice 2 | Separate implementation; requires matching runtime and combined deployed acceptance, not established by this PR. |
+| Explicit account re-pointing and missing-pin default fallback | Slice 3 | Outstanding; releasing/deleting a holder is **not** re-pointing an existing sandbox. |
+| Obsolete legacy machinery cleanup | Slice 4 | Separate from the immediate-unblock change. |
+| Vendor plan-limit/reset presentation | Issue-level runtime/provider requirement | Not addressed or claimed delivered by this failed-launch recovery PR. |
+
+The exclusive gate must remain on the legacy native-auth path until the shared
+refresh implementation replaces that path; removing only the gate would allow
+multiple guests to rotate one refresh token. Do not mark full issue acceptance
+complete from this PR's recovery tests. The production Work recovery procedure
+and the required real-provider checks are documented below.
+
+
 Before the first prompt is dispatched, initialization failures mark the managed
 Codex account as never started. Armada deletes that failed physical sandbox and
 releases its account only after deletion is confirmed. A failed deletion retains
