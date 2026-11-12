@@ -32,12 +32,14 @@ for (const [device, width, height] of [
   ["tablet", 768, 1024],
   ["phone", 390, 844],
 ] as const) {
-  test(`Build > Skills shows both keys and adds one in a dialog that fits (${device})`, async ({ page }) => {
+  test(`Skills shows both keys and adds one in a dialog that fits (${device})`, async ({ page }) => {
     const mobile = device === "phone";
     await page.setViewportSize({ width, height });
     await signIn(page, "alice@example.com", "/skills");
     const nav = page.getByRole("navigation", { name: "Main" });
+    if (mobile) await page.getByRole("button", { name: /Navigation/ }).click();
     await expect(nav.getByRole("link", { name: /Skills/ })).toHaveAttribute("aria-current", "page");
+    if (mobile) await page.keyboard.press("Escape");
     await expect(row(page, "user")).toContainText("Not set");
     await expect(row(page, "org")).toContainText("Not set");
     await expect(row(page, "org")).toContainText("Acme key");

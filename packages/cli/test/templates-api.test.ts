@@ -152,7 +152,7 @@ test("template names resolve within the selected organization and flags create a
   });
 });
 
-test("template CLI refuses ambiguous scope, invalid revisions, unsupported overrides and secret bindings before mutation", async () => {
+test("template CLI refuses ambiguous scope, invalid revisions, unsupported overrides and inline secret values before mutation", async () => {
   for (const args of [
     ["create", "preset", "--org", org, "--file", "definition.json"],
     ["publish", id, "--expected-revision", "0", "--file", "definition.json"],
@@ -164,7 +164,7 @@ test("template CLI refuses ambiguous scope, invalid revisions, unsupported overr
     expect(result.requests).toHaveLength(0);
   }
   const secret = await invoke(["template", "create", "preset", "--file", "definition.json"], {
-    file: JSON.stringify({ ...definition, secrets: [] }),
+    file: JSON.stringify({ ...definition, secrets: [{ key: "APP_TOKEN", value: true }] }),
   });
   expect(secret.code).not.toBe(0);
   expect(secret.requests).toHaveLength(0);
@@ -297,4 +297,20 @@ test("template get prints readable header and selected revision unless JSON is r
   expect(plain.out).not.toContain('"item"');
   const json = await invoke(["template", "get", id, "--revision", "1", "--json"]);
   expect(JSON.parse(json.out)).toEqual({ item: template, revision: { revision: 1, definition } });
+});
+
+test("template CLI sends secret references through repeatable flags and definition files", async () => {
+  const binding = { key: "APP_TOKEN", secretId: id, version: 1 };
+  for (const args of [
+    ["--file", "definition.json"],
+    ["--golden", id, "--provider", "boat", "--agent", "codex", "--secret", `APP_TOKEN:${id}:1`],
+  ]) {
+    const result = await invoke(["template", "create", "secret-preset", ...args], {
+      file: JSON.stringify({ ...definition, secrets: [binding] }),
+    });
+    expect(result.code).toBe(0);
+    expect(((await result.requests.at(-1)!.json()) as { definition: unknown }).definition).toMatchObject({
+      secrets: [binding],
+    });
+  }
 });

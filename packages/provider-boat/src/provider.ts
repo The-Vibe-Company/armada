@@ -411,7 +411,7 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
           },
         ),
       );
-      if (!response.sandbox?.id) throw unexpectedAnswer("sandbox");
+      if (!response.sandbox?.id || response.sandbox.id !== sandboxId) throw unexpectedAnswer("sandbox");
       return sandboxInfo(response.sandbox);
     },
 

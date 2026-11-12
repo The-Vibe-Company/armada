@@ -5,6 +5,7 @@ import type { GitHubAccess } from "./github.ts";
 import type { GoldenActor } from "./golden.ts";
 import { LaunchError } from "./launch-error.ts";
 import { SKILLPACK_TOKEN_PATTERN } from "./skillpack-token.ts";
+import { redactKnownTokens } from "./token-redaction.ts";
 import { VaultError } from "./vault-error.ts";
 
 /** The credential kinds a launch injects. Claude Code takes a subscription token, Codex an OpenAI key or `auth.json`. */
@@ -105,12 +106,9 @@ export function toHarnessCredentials(resolved: ResolvedCredentials, github?: Git
   };
 }
 
-/** GitHub's token formats (`ghu_`, `ghr_`, `ghs_`, `gho_`, `ghp_`, `github_pat_`): masked wherever they appear, known or not. */
-const GITHUB_TOKEN = /\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})/g;
-
 /** Replaces every secret in `text`, so command output and error messages are safe to show. */
 export function redact(text: string, secrets: readonly string[]): string {
-  let out = text.replace(GITHUB_TOKEN, "***").replace(/\barmada_gw_[A-Za-z0-9_-]{32,}/g, "***");
+  let out = redactKnownTokens(text);
   for (const secret of [...secrets].sort((a, b) => b.length - a.length)) {
     if (secret !== "") out = out.split(secret).join("***");
   }

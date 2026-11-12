@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { resolve } from "node:path";
 
-test("actual serve composition routes the CLI/web/iOS owner API over HTTP without a runtime factory override", async () => {
+test("actual serve composition routes the retained web/iOS owner API over HTTP without a runtime factory override", async () => {
   const child = Bun.spawn([process.execPath, resolve(import.meta.dir, "fixtures/serve-orchestrators-http.ts")], {
     env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "/tmp", NODE_ENV: "test" },
     stdin: "ignore",

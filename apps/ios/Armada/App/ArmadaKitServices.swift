@@ -112,6 +112,7 @@ struct ArmadaKitServices: SandboxService {
         case .http(405), .http(501):
             return .unavailable("This Armada server doesn't offer this yet.")
         case .unavailable, .http(429): return .offline
+        case .noRunningTurn: return .rejected(armada.localizedDescription)
         case .conflict: return .rejected("The resource changed. Refresh and try again.")
         case .invalidRequest: return .rejected("Armada refused this request.")
         case .invalidResponse: return .rejected("Armada returned a response this app version doesn't understand.")
