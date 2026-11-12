@@ -3149,6 +3149,38 @@ export type Database = {
           },
         ];
       };
+      runtime_events: {
+        Row: {
+          sandbox_id: string;
+          sequence: number;
+          epoch: number;
+          counted_prompt_id: string | null;
+          event_enc: string;
+        };
+        Insert: {
+          sandbox_id: string;
+          sequence: number;
+          epoch: number;
+          counted_prompt_id?: string | null;
+          event_enc: string;
+        };
+        Update: {
+          sandbox_id?: string;
+          sequence?: number;
+          epoch?: number;
+          counted_prompt_id?: string | null;
+          event_enc?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "runtime_events_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: false;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       sandbox_turn_models: {
         Row: {
           sandbox_id: string;
@@ -3173,6 +3205,32 @@ export type Database = {
             foreignKeyName: "sandbox_turn_models_sandbox_id_fkey";
             columns: ["sandbox_id"];
             isOneToOne: false;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      sandbox_usage_pricing: {
+        Row: {
+          sandbox_id: string;
+          context: Json;
+          created_at: string;
+        };
+        Insert: {
+          sandbox_id: string;
+          context: Json;
+          created_at?: string;
+        };
+        Update: {
+          sandbox_id?: string;
+          context?: Json;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "sandbox_usage_pricing_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: true;
             referencedRelation: "sandboxes";
             referencedColumns: ["id"];
           },
@@ -3615,7 +3673,9 @@ export type RoutineRunRow = Database["public"]["Tables"]["routine_runs"]["Row"];
 export type RoutineRow = Database["public"]["Tables"]["routines"]["Row"];
 export type RuntimeCommandRow = Database["public"]["Tables"]["runtime_commands"]["Row"];
 export type RuntimeEnrolmentRow = Database["public"]["Tables"]["runtime_enrolments"]["Row"];
+export type RuntimeEventRow = Database["public"]["Tables"]["runtime_events"]["Row"];
 export type SandboxTurnModelRow = Database["public"]["Tables"]["sandbox_turn_models"]["Row"];
+export type SandboxUsagePricingRow = Database["public"]["Tables"]["sandbox_usage_pricing"]["Row"];
 export type SandboxWorkRecovery = Database["public"]["Tables"]["sandbox_work_recovery"]["Row"];
 export type Sandbox = Database["public"]["Tables"]["sandboxes"]["Row"];
 export type ServiceToken = Database["public"]["Tables"]["service_tokens"]["Row"];

@@ -1,4 +1,4 @@
-import type { MachineSizeEvidence } from "@armada/core";
+import type { MachineSizeEvidence, PlanLimit } from "@armada/core";
 import {
   type AgentEvent,
   dedupeEvents,
@@ -40,6 +40,7 @@ export interface PromptReport {
   state: PromptOutcome["state"];
   /** Why the turn failed or was interrupted, from the prompt event or the usage-limit or expired-login event. */
   reason: string | null;
+  limit?: PlanLimit;
 }
 
 export interface StatusReport {
@@ -188,6 +189,7 @@ export async function readStatus(
       evidence.modelSelectionReason === "model_selection_mismatch";
     prompt = {
       ...evidence,
+      ...(!selectionFailed && outcome.state === "failed" && outcome.limit ? { limit: outcome.limit } : {}),
       promptId: target.promptId,
       conversationId: target.conversationId,
       state: selectionFailed ? "failed" : outcome.state,
@@ -199,8 +201,9 @@ export async function readStatus(
     };
   }
 
-  if (!options.stored && store.recordUsage && (prompt ? prompt.state !== "running" : sandbox.status !== "running")) {
-    await collectSandboxUsage(provider, store, sandbox, prompt?.promptId);
+  // Stored Modal history already contains native counters; project it without waking compute.
+  if (store.recordUsage && (prompt ? prompt.state !== "running" : sandbox.status !== "running")) {
+    await collectSandboxUsage(provider, store, sandbox, prompt?.promptId, { eventsOnly: options.stored === true });
     const refreshed = await store.get(sandbox.id);
     if (refreshed?.usage) sandbox = { ...sandbox, usage: refreshed.usage };
   }
@@ -405,6 +408,7 @@ export async function collectSandboxUsage(
   store: ServerSandboxStore,
   sandbox: SandboxView,
   targetPromptId?: string,
+  options: { eventsOnly?: boolean } = {},
 ): Promise<void> {
   if (!store.recordUsage) return;
   targetPromptId ??= sandbox.taskPromptId ?? undefined;
@@ -412,10 +416,11 @@ export async function collectSandboxUsage(
     const history = await allEvents(provider, sandbox.providerSandboxId, true, EVENT_PAGES).catch(() => null);
     const events = history ?? [];
     const collected = reportedTurnUsage(events);
+    const observations = [...collected.turns];
     const retained = (await store.get(sandbox.id))?.usage ?? sandbox.usage;
     const rows = new Map((retained?.turns ?? []).map((row) => [JSON.stringify([row.promptId, row.model]), row]));
     for (const row of collected.turns) rows.set(JSON.stringify([row.promptId, row.model]), row);
-    if (provider.collectTurnUsage) {
+    if (!options.eventsOnly && provider.collectTurnUsage) {
       const prompts = new Map<string, string | undefined>();
       for (const event of events) {
         if (event.kind === "prompt" && event.promptId) prompts.set(event.promptId, event.conversationId ?? undefined);
@@ -432,6 +437,7 @@ export async function collectSandboxUsage(
           });
           for (const row of native) {
             if (row.promptId !== promptId) continue;
+            observations.push(row);
             const prior = [...rows.values()].filter((known) => known.promptId === promptId);
             if (row.unavailableReason && prior.some(hasReportedCounters)) continue;
             if (row.unavailableReason?.code === "compute_inactive" && prior.some((known) => known.unavailableReason))
@@ -472,10 +478,14 @@ export async function collectSandboxUsage(
       targetPromptId ? 1 : 0,
       new Set([...rows.values()].map((r) => r.promptId)).size,
     );
-    await store.recordUsage(sandbox.id, {
-      turnCount: history === null && knownTurns === 0 ? null : knownTurns,
-      turns: [...rows.values()],
-    });
+    await store.recordUsage(
+      sandbox.id,
+      {
+        turnCount: history === null && knownTurns === 0 ? null : knownTurns,
+        turns: [...rows.values()],
+      },
+      { observations },
+    );
   } catch {
     /* Optional telemetry never changes lifecycle success. */
   }

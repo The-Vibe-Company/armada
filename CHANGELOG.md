@@ -1,5 +1,56 @@
 # Changelog
 
+## [2.25.0](https://github.com/The-Vibe-Company/armada/compare/v2.24.0...v2.25.0) (2026-11-12)
+
+
+### Features
+
+* **accounts:** share server-owned Codex subscriptions across sandboxes ([#1186](https://github.com/The-Vibe-Company/armada/issues/1186)) ([8d78ebd](https://github.com/The-Vibe-Company/armada/commit/8d78ebde1752ecb101fe886d92f7746e19693093))
+* **cli:** add Claude gateway connection fields ([#1216](https://github.com/The-Vibe-Company/armada/issues/1216)) ([63e475c](https://github.com/The-Vibe-Company/armada/commit/63e475c7cd037746b326ee5473d9fa1707ce2da7))
+* **cli:** add Codex custom endpoint fields ([#1199](https://github.com/The-Vibe-Company/armada/issues/1199)) ([fbb61c7](https://github.com/The-Vibe-Company/armada/commit/fbb61c798adf499d0b0172abb70f183b305d643d))
+* **dashboard:** add Claude gateway creation fields ([#1211](https://github.com/The-Vibe-Company/armada/issues/1211)) ([cf0f0eb](https://github.com/The-Vibe-Company/armada/commit/cf0f0eb0d49c7d1f85b5c027e5ad97cd85ade5a9))
+* **dashboard:** add Codex custom endpoint creation fields ([#1204](https://github.com/The-Vibe-Company/armada/issues/1204)) ([8ab8932](https://github.com/The-Vibe-Company/armada/commit/8ab8932f06c1473bc41251d2bef3a17f86516745))
+* **dashboard:** add explicit Claude gateway replacement ([#1231](https://github.com/The-Vibe-Company/armada/issues/1231)) ([9dee025](https://github.com/The-Vibe-Company/armada/commit/9dee0254c4c20666a9de2a4f3c38b238e3434285))
+* **dashboard:** add explicit Codex connection replacement ([#1224](https://github.com/The-Vibe-Company/armada/issues/1224)) ([b74ab9f](https://github.com/The-Vibe-Company/armada/commit/b74ab9f5d8b182a066482551f1f57949e70bd93a))
+* **dashboard:** open environment and template details in a side panel ([#1154](https://github.com/The-Vibe-Company/armada/issues/1154)) ([9364a90](https://github.com/The-Vibe-Company/armada/commit/9364a904ec8c33cd95ae05ce28c76de0bcd31455))
+* **models:** support Claude gateways on Modal ([#1195](https://github.com/The-Vibe-Company/armada/issues/1195)) ([eeb9d11](https://github.com/The-Vibe-Company/armada/commit/eeb9d11bb16f48e49d4d85cada6e17a8484664a0))
+* **models:** support Codex custom endpoints on Modal ([#1181](https://github.com/The-Vibe-Company/armada/issues/1181)) ([6549e4c](https://github.com/The-Vibe-Company/armada/commit/6549e4c87eabaac9c1716942a9386adf8dea7b88))
+* **runtime:** add digest-checked artifact bootstrap cache ([#1191](https://github.com/The-Vibe-Company/armada/issues/1191)) ([222f5b9](https://github.com/The-Vibe-Company/armada/commit/222f5b9ded737b462f01629ad62c63c299ec5039))
+* **runtime:** add durable HTTPS command bridge ([#1222](https://github.com/The-Vibe-Company/armada/issues/1222)) ([eff35ea](https://github.com/The-Vibe-Company/armada/commit/eff35ea996045c3a27b49051db720c6cb2518b50))
+* **runtime:** add enrolment and dial-out client mode ([#1206](https://github.com/The-Vibe-Company/armada/issues/1206)) ([da9e849](https://github.com/The-Vibe-Company/armada/commit/da9e8499b30a5b67672a6eb69e3c500da0a41ad5))
+* **runtime:** add private model connection checks ([#1226](https://github.com/The-Vibe-Company/armada/issues/1226)) ([874b719](https://github.com/The-Vibe-Company/armada/commit/874b7191a8ec03b2d097f8fe2db096a05aa2bb41))
+* **runtime:** add single-use enrolment and epoch fencing ([#1198](https://github.com/The-Vibe-Company/armada/issues/1198)) ([8f72df1](https://github.com/The-Vibe-Company/armada/commit/8f72df12764dd325f4919000f42282a172651f9e))
+* **runtime:** build and validate the compiled Codex artifact ([#1185](https://github.com/The-Vibe-Company/armada/issues/1185)) ([5b42d33](https://github.com/The-Vibe-Company/armada/commit/5b42d331b9ec604e9cf849c97345340294fd318a))
+* **runtime:** deliver commands over authenticated WebSockets ([#1236](https://github.com/The-Vibe-Company/armada/issues/1236)) ([5eba05c](https://github.com/The-Vibe-Company/armada/commit/5eba05c939e0c4c5304ab39b3a01971a5506d35c))
+* **usage:** accept sealed model connection price overrides ([#1223](https://github.com/The-Vibe-Company/armada/issues/1223)) ([bb7fb2a](https://github.com/The-Vibe-Company/armada/commit/bb7fb2aecd8c05f40284c84a135c2dc5b8b1bcd9))
+* **usage:** add server price table and exact token calculator ([#1184](https://github.com/The-Vibe-Company/armada/issues/1184)) ([6ba8bdd](https://github.com/The-Vibe-Company/armada/commit/6ba8bdd9e39627caf1f794d80f18e1e8f396a5d3))
+* **usage:** freeze Modal session pricing at admission ([#1205](https://github.com/The-Vibe-Company/armada/issues/1205)) ([12ee1ee](https://github.com/The-Vibe-Company/armada/commit/12ee1eecfc247a61cfe7d0f519e995ead9737c5a))
+* **usage:** persist frozen server turn price records ([#1240](https://github.com/The-Vibe-Company/armada/issues/1240)) ([8f51dad](https://github.com/The-Vibe-Company/armada/commit/8f51dad993f50cb48ed91c31d8545146d44881a9))
+* **usage:** publish server-priced session amounts ([#1245](https://github.com/The-Vibe-Company/armada/issues/1245)) ([ac8dc0e](https://github.com/The-Vibe-Company/armada/commit/ac8dc0eb2049cd44849faef4760c879c5beb9aee))
+* **usage:** retain Claude cache-write lifetimes ([#1197](https://github.com/The-Vibe-Company/armada/issues/1197)) ([10c50a4](https://github.com/The-Vibe-Company/armada/commit/10c50a4340f24b928b2690463af4d28464d6cedb))
+
+
+### Bug Fixes
+
+* **accounts:** recover subscriptions after failed launches ([#1180](https://github.com/The-Vibe-Company/armada/issues/1180)) ([7295fc0](https://github.com/The-Vibe-Company/armada/commit/7295fc0ed7d5b5beb29da8f05f2a1a317455e441))
+* **dashboard:** align list columns across rows ([#1229](https://github.com/The-Vibe-Company/armada/issues/1229)) ([f798e4d](https://github.com/The-Vibe-Company/armada/commit/f798e4d26ed2bbd4d6700938de619c7af5fd0bb3))
+* **dashboard:** keep panel history handoff when Back precedes hydration ([#1235](https://github.com/The-Vibe-Company/armada/issues/1235)) ([54af56f](https://github.com/The-Vibe-Company/armada/commit/54af56f418f00e92a829086157179ed0f6ca4f15))
+* **dashboard:** make API keys first-class model account choices ([#1182](https://github.com/The-Vibe-Company/armada/issues/1182)) ([f9832e1](https://github.com/The-Vibe-Company/armada/commit/f9832e17a61d2d70273707a382668d6e39ca0cc2))
+* **dashboard:** open routine details in shared side panel ([#1203](https://github.com/The-Vibe-Company/armada/issues/1203)) ([bcfc7fe](https://github.com/The-Vibe-Company/armada/commit/bcfc7fef88e81ece2c900c72d9c98e6df322aea3))
+* **dashboard:** open tool details in shared side panel ([#1193](https://github.com/The-Vibe-Company/armada/issues/1193)) ([6764008](https://github.com/The-Vibe-Company/armada/commit/676400878bd85af7f246be5a0c57c0b5a45045ab))
+* **dashboard:** open variable details in shared side panel ([#1196](https://github.com/The-Vibe-Company/armada/issues/1196)) ([936c808](https://github.com/The-Vibe-Company/armada/commit/936c80869c222ea8ca2c6a00b288695559f3b7de))
+* **dashboard:** remove sidebar descriptive subtext ([#1152](https://github.com/The-Vibe-Company/armada/issues/1152)) ([1e932b5](https://github.com/The-Vibe-Company/armada/commit/1e932b5752d8571b026d23f8d7cb69a4398eda12))
+* **dashboard:** restore main browser test coverage ([#1225](https://github.com/The-Vibe-Company/armada/issues/1225)) ([3acc4a5](https://github.com/The-Vibe-Company/armada/commit/3acc4a5788fc9946f23c7ae14f8c76aaa55205a4))
+* **dashboard:** say a failed sandbox failed in the closed composer ([#1230](https://github.com/The-Vibe-Company/armada/issues/1230)) ([96255a4](https://github.com/The-Vibe-Company/armada/commit/96255a420e94af120f97dbfdfe9289487690e0c1))
+* **dashboard:** wait for panel actionability in history e2e tests ([#1210](https://github.com/The-Vibe-Company/armada/issues/1210)) ([5b7ba1d](https://github.com/The-Vibe-Company/armada/commit/5b7ba1dd18b05e622a27ab902bbed5f5e905b5e0))
+* **github:** return typed unsupported refusal for Modal refresh ([#1243](https://github.com/The-Vibe-Company/armada/issues/1243)) ([c39e3d0](https://github.com/The-Vibe-Company/armada/commit/c39e3d0176953a1bb74814b0c6d87f361c8b3217))
+* **security:** bind managed REST authorization to its endpoint ([#1092](https://github.com/The-Vibe-Company/armada/issues/1092)) ([1834ad1](https://github.com/The-Vibe-Company/armada/commit/1834ad1cc85faf75b1dae263b1d4b3801d024c9a))
+* **templates:** preserve launch refusals and allow account selection ([#1183](https://github.com/The-Vibe-Company/armada/issues/1183)) ([6ec329c](https://github.com/The-Vibe-Company/armada/commit/6ec329c4d9a4214bf8da85b3d8ce5ae8163f27b5))
+* **usage:** adopt verified Codex resume baselines ([#1209](https://github.com/The-Vibe-Company/armada/issues/1209)) ([a79af23](https://github.com/The-Vibe-Company/armada/commit/a79af23a60536f80568d247f2ffe28ee24e536b5))
+* **usage:** attribute Codex turns to the native model ([#1192](https://github.com/The-Vibe-Company/armada/issues/1192)) ([36ae3e2](https://github.com/The-Vibe-Company/armada/commit/36ae3e24e8216afb86d8336861c654284589bfe7))
+* **usage:** reject unverified Claude session totals ([#1202](https://github.com/The-Vibe-Company/armada/issues/1202)) ([a534d51](https://github.com/The-Vibe-Company/armada/commit/a534d514121f979c85ac2c9dae2df67fce82ad43))
+* **usage:** restore Modal journal token accounting ([#1241](https://github.com/The-Vibe-Company/armada/issues/1241)) ([04832a3](https://github.com/The-Vibe-Company/armada/commit/04832a39e4609c6e155e90af9bd16d1f7776377a))
+
 ## [2.24.0](https://github.com/The-Vibe-Company/armada/compare/v2.23.0...v2.24.0) (2026-11-12)
 
 

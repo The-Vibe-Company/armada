@@ -1,4 +1,5 @@
 import { createInterface } from "node:readline";
+import { codexPlanLimit, planLimitFromMessage, planLimitMessage } from "@armada/core";
 import { ChildOwner } from "./children.ts";
 import type { ReasoningEffort } from "./codex-schema/ReasoningEffort.ts";
 import type { LoginAccountParams } from "./codex-schema/v2/LoginAccountParams.ts";
@@ -25,6 +26,10 @@ export class CodexDriver implements Driver {
       env: Record<string, string>;
       refreshSecrets?: () => void;
       exclusiveAuth?: boolean;
+      subscriptionAccess?: (
+        refresh: boolean,
+        previousAccessToken?: string,
+      ) => Promise<{ accessToken: string; chatgptAccountId: string; chatgptPlanType: string | null }>;
     },
   ) {}
   configureReadableVariables(variables: Record<string, string>): void {
@@ -56,6 +61,12 @@ export class CodexDriver implements Driver {
   }
   private open(c: DriverContext, resumeOnly: boolean): Turn {
     const cwd = validateHarnessCwd(c.request.cwd ?? this.options.cwd);
+    let previousAccessToken: string | undefined;
+    const subscriptionAccess = async (refresh: boolean) => {
+      const result = await this.options.subscriptionAccess!(refresh, previousAccessToken);
+      previousAccessToken = result.accessToken;
+      return result;
+    };
     const effort = c.request.reasoningEffort ?? "medium";
     if (!["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(effort))
       throw Error("invalid_effort");
@@ -69,6 +80,8 @@ export class CodexDriver implements Driver {
         env: this.options.env,
       },
     );
+    let rateLimits: unknown;
+    let rateLimitsRevision = 0;
     const pending = new Map<
       number,
       { resolve: (x: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }
@@ -148,6 +161,20 @@ export class CodexDriver implements Driver {
           }
           return;
         }
+        if (m.id !== undefined && m.method === "account/chatgptAuthTokens/refresh" && this.options.subscriptionAccess) {
+          void subscriptionAccess(true)
+            .then((result) => {
+              if (m.params?.previousAccountId && m.params.previousAccountId !== result.chatgptAccountId)
+                throw Error("subscription_identity_changed");
+              child.stdin.write(`${JSON.stringify({ id: m.id, result })}\n`);
+            })
+            .catch(() =>
+              child.stdin.write(
+                `${JSON.stringify({ id: m.id, error: { code: -32603, message: "Subscription renewal unavailable." } })}\n`,
+              ),
+            );
+          return;
+        }
         if (m.id !== undefined) {
           child.stdin.write(
             `${JSON.stringify({ id: m.id, error: { code: -32601, message: "Interactive requests are disabled" } })}\n`,
@@ -156,6 +183,13 @@ export class CodexDriver implements Driver {
         }
         // Account limits have no thread ID and must stay outside the public message lane.
         if (m.method === "account/rateLimits/updated") {
+          if (
+            m.params?.rateLimits &&
+            (m.params.rateLimits.limitId == null || m.params.rateLimits.limitId === "codex")
+          ) {
+            rateLimits = m.params.rateLimits;
+            rateLimitsRevision++;
+          }
           c.emit({ kind: "other", type: m.method, data: m.params });
           return;
         }
@@ -236,8 +270,30 @@ export class CodexDriver implements Driver {
           return;
         }
         if (m.method === "turn/completed") {
-          c.emit({ kind: "other", type: m.method, data: m.params });
           const terminal = m.params as TurnCompletedNotification;
+          const info = terminal.turn?.error?.codexErrorInfo;
+          const code =
+            typeof info === "string" ? info : info && typeof info === "object" ? Object.keys(info)[0] : undefined;
+          if ((code === "usageLimitExceeded" || code === "rateLimitExceeded") && terminal.turn.error) {
+            const limit = codexPlanLimit(
+              rateLimits,
+              code === "rateLimitExceeded" ? "rate_limited" : "usage_limit_exceeded",
+            );
+            terminal.turn.error = {
+              message: planLimitMessage(limit),
+              codexErrorInfo: code,
+              additionalDetails: null,
+              misalignment: null,
+            };
+            c.emit({
+              kind: "other",
+              type: m.method,
+              data: {
+                threadId: terminal.threadId,
+                turn: { id: terminal.turn.id, status: terminal.turn.status, error: terminal.turn.error },
+              },
+            });
+          } else c.emit({ kind: "other", type: m.method, data: m.params });
           if (
             typeof terminal.turn?.id !== "string" ||
             !["completed", "interrupted", "failed"].includes(terminal.turn.status)
@@ -341,6 +397,14 @@ export class CodexDriver implements Driver {
         capabilities: { experimentalApi: true },
       });
       child.stdin.write(`${JSON.stringify({ method: "initialized", params: {} })}\n`);
+      if (this.options.subscriptionAccess) {
+        const access = await subscriptionAccess(false);
+        const result = await rpc<LoginAccountResponse>("account/login/start", {
+          type: "chatgptAuthTokens",
+          ...access,
+        } satisfies LoginAccountParams);
+        if (result.type !== "chatgptAuthTokens") throw new HarnessError("authentication_failed");
+      }
       // Official API-key login uses the private JSONL channel, never argv or an auth-file read.
       if (this.options.env.OPENAI_API_KEY && !this.options.env.ARMADA_CUSTOM_CODEX_ENDPOINT) {
         const login: LoginAccountParams = { type: "apiKey", apiKey: this.options.env.OPENAI_API_KEY };
@@ -384,7 +448,21 @@ export class CodexDriver implements Driver {
         // Existing native ChatGPT session only: this documented RPC never starts inference.
         // Optional quota failure cannot turn a normal coding request into a harness failure.
         try {
+          const requestedAtRevision = rateLimitsRevision;
           const limits = await rpc<unknown>("account/rateLimits/read", {}, 5000, false);
+          const snapshot =
+            limits && typeof limits === "object" && !Array.isArray(limits)
+              ? (limits as { rateLimits?: unknown }).rateLimits
+              : undefined;
+          if (
+            requestedAtRevision === rateLimitsRevision &&
+            snapshot &&
+            typeof snapshot === "object" &&
+            !Array.isArray(snapshot) &&
+            ((snapshot as { limitId?: unknown }).limitId == null ||
+              (snapshot as { limitId?: unknown }).limitId === "codex")
+          )
+            rateLimits = snapshot;
           c.emit({ kind: "other", type: "account/rateLimits/read", data: limits });
         } catch {}
       }
@@ -431,6 +509,14 @@ export class CodexDriver implements Driver {
           const info = result.turn.error?.codexErrorInfo;
           const code =
             typeof info === "string" ? info : info && typeof info === "object" ? Object.keys(info)[0] : undefined;
+          if (code === "usageLimitExceeded" || code === "rateLimitExceeded")
+            c.emit({
+              kind: "other",
+              type: "usage_limit",
+              data:
+                planLimitFromMessage(result.turn.error?.message) ??
+                codexPlanLimit(undefined, code === "rateLimitExceeded" ? "rate_limited" : "usage_limit_exceeded"),
+            });
           throw new HarnessError(
             code === "unauthorized"
               ? "authentication_failed"

@@ -74,7 +74,7 @@ test.each(["stdin", "file"] as const)(
 test.each(
   [
     ["set", "openai", "--api-version", "v1"],
-    ["set", "anthropic", "--name", "Gateway", "--base-url", "https://example.com"],
+    ["set", "claude-oauth", "--name", "Subscription", "--base-url", "https://example.com"],
     ["set", "openai", "--base-url", "https://example.com"],
     ["list", "--base-url", "https://example.com"],
     ["set", "openai", "--name", "Foundry", "--base-url", "https://user:password@example.com"],
@@ -158,6 +158,86 @@ test("CLI refuses connection JSON when endpoint options require a raw key", asyn
   ).not.toBe(0);
   expect(h.requests).toHaveLength(0);
   expect(h.output.join("")).toContain("supply only the API key");
+});
+
+test.each([
+  { authMode: undefined, source: "stdin" },
+  { authMode: "bearer", source: "file" },
+  { authMode: "api-key", source: "stdin" },
+])("CLI creates a Claude gateway with private input: %j", async ({ authMode, source }) => {
+  const h = setup();
+  const apiKey = randomUUID();
+  const args = [
+    "creds",
+    "set",
+    "anthropic",
+    "--name",
+    "Gateway",
+    "--base-url",
+    "https://gateway.example.com/anthropic/",
+  ];
+  if (authMode) args.push("--endpoint-auth", authMode);
+  if (source === "file") args.push("--file", "private-key");
+  expect(
+    await run(
+      args,
+      { out: h.auth.out, err: h.auth.err },
+      {
+        auth: h.auth,
+        readFile: async (path) => {
+          expect(path).toBe("private-key");
+          return apiKey;
+        },
+        readStdin: async () => {
+          expect(source).toBe("stdin");
+          return apiKey;
+        },
+      },
+    ),
+  ).toBe(0);
+  expect(h.requests).toHaveLength(1);
+  const request = h.requests[0];
+  if (!request) throw Error("missing request");
+  expect(new URL(request.url).pathname).toBe("/api/v1/creds/accounts/set");
+  expect(await request.json()).toEqual({
+    scope: "user",
+    kind: "anthropic",
+    name: "Gateway",
+    value: JSON.stringify({
+      endpoint: { version: 1, baseUrl: "https://gateway.example.com/anthropic", auth: authMode ?? "bearer" },
+      apiKey,
+    }),
+  });
+  expect(h.output.join("")).not.toContain(apiKey);
+  expect(h.output.join("")).toContain("supports Claude models only");
+});
+
+test.each(
+  [
+    ["set", "anthropic", "--name", "Gateway", "--endpoint-auth", "bearer"],
+    ["set", "openai", "--name", "Foundry", "--base-url", "https://example.com", "--endpoint-auth", "bearer"],
+    ["set", "anthropic", "--name", "Gateway", "--base-url", "https://example.com", "--api-version", "v1"],
+    ["set", "anthropic", "--name", "Gateway", "--base-url", "https://example.com", "--endpoint-auth", "oauth"],
+    ["list", "--endpoint-auth", "bearer"],
+  ].map((args) => ({ args })),
+)("invalid gateway options refuse before reading a key or calling API: %j", async ({ args }) => {
+  const h = setup();
+  let reads = 0;
+  expect(
+    await run(
+      ["creds", ...args],
+      { out: h.auth.out, err: h.auth.err },
+      {
+        auth: h.auth,
+        readStdin: async () => {
+          reads++;
+          return randomUUID();
+        },
+      },
+    ),
+  ).not.toBe(0);
+  expect(reads).toBe(0);
+  expect(h.requests).toHaveLength(0);
 });
 
 test.each([

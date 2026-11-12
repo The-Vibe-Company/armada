@@ -96,8 +96,7 @@ conversation. Repeat with a newly launched invalid-key account: expect exit1,
 HTTP401 and a recognized code when supplied by the provider. Rotate/revoke the
 bound account, retry the old sandbox, and expect refusal before runtime I/O.
 A non-owner admin, stopped sandbox, extra request key/URL, or malformed receipt
-must fail closed. No model key leaves the existing private bootstrap. Public
-dashboard Test Connection controls are a subsequent slice.
+must fail closed. No model key leaves the existing private bootstrap. The Models page uses this surface as described below.
 
 ## Models page
 

@@ -185,6 +185,7 @@ export {
   type ModelConnectionTestResult,
   modelConnectionErrorCode,
 } from "./model-connection-test.ts";
+export type { ModelPriceOverrides } from "./model-price-overrides.ts";
 export {
   MODEL_PRICE_SOURCES,
   MODEL_PRICES,
@@ -208,6 +209,7 @@ export {
   readPromptEvents,
   turnInterruptionReason,
 } from "./outcome.ts";
+export { codexPlanLimit, type PlanLimit, planLimitData, planLimitFromMessage, planLimitMessage } from "./plan-limit.ts";
 export {
   type AgentEvent,
   type CreateGoldenRequest,
@@ -298,6 +300,8 @@ export {
 export {
   assertProviderOf,
   createProviderRegistry,
+  HOST_CAPABILITIES,
+  type HostCapabilities,
   isSandboxProvider,
   type ModalBinding,
   type OrchestratorCleanupScope,
@@ -338,6 +342,8 @@ export {
 } from "./templates.ts";
 export { redactKnownTokens } from "./token-redaction.ts";
 export { type ModelSelectionReason, type TurnModelEvidence, turnModelEvidence } from "./turn-model.ts";
+export type { PricingInputs, SessionCost, StoredTurnPricing, TurnPriceContext } from "./turn-pricing.ts";
+export type { UsagePricingContext } from "./usage-pricing.ts";
 export {
   type AccountMutation,
   addMember,

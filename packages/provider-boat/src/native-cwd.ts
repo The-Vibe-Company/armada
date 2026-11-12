@@ -143,6 +143,23 @@ exec(${JSON.stringify(NATIVE_USAGE_BOOTSTRAP)},usage)
 usage_pending = {}
 usage_fresh = set()
 usage_tickets = {}
+plan_rate_limits = None
+plan_notification_revision = 0
+plan_read_sequence = 0
+plan_applied_read = 0
+plan_read_requests = {}
+def plan_limit_message(code):
+    values=[]
+    for window in ((plan_rate_limits or {}).get("primary"),(plan_rate_limits or {}).get("secondary")):
+        if not isinstance(window,dict): continue
+        used,reset=window.get("usedPercent"),window.get("resetsAt")
+        if isinstance(used,(int,float)) and not isinstance(used,bool) and 100<=used<=9007199254740991 and isinstance(reset,(int,float)) and not isinstance(reset,bool) and 0<=reset<=253402300799 and reset%1==0: values.append(reset)
+    result="Rate limit reached." if code=="rateLimitExceeded" else "Plan limit reached."
+    if values:
+        import datetime
+        result+=" Resets at "+datetime.datetime.fromtimestamp(max(values),datetime.timezone.utc).isoformat(timespec="milliseconds").replace("+00:00","Z")+"."
+    else: result+=" Try again after the limit resets."
+    return result
 
 class ManagedMcpOverridesError(Exception):
     pass
@@ -236,7 +253,32 @@ if managed:
         sys.exit("native_auth_writer_busy")
     if not admission():
         sys.exit("native_auth_state_sync_pending")
-native_secrets = set()
+subscription = None
+subscription_path = os.path.join(os.path.expanduser("~"), ".armada", "model-access.json")
+if os.path.lexists(subscription_path):
+    fd = os.open(subscription_path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077 or info.st_size > 8192: raise ValueError("Unsafe subscription configuration")
+        subscription = json.loads(os.read(fd,8193))
+    finally: os.close(fd)
+    if managed: raise ValueError("Conflicting subscription auth modes")
+native_secrets = set([subscription["capability"]]) if subscription else set()
+subscription_revision = None
+def subscription_access(refresh=False):
+    global subscription_revision
+    import urllib.request, urllib.parse
+    if not subscription or urllib.parse.urlsplit(subscription["url"]).scheme != "https": raise ValueError("Subscription unavailable")
+    payload = {"previousRevision":subscription_revision} if refresh and subscription_revision is not None else {}
+    request = urllib.request.Request(subscription["url"],data=json.dumps(payload).encode(),headers={"Content-Type":"application/json","Authorization":"Bearer "+subscription["capability"]},method="POST")
+    with urllib.request.urlopen(request,timeout=25) as response: raw=response.read(65537)
+    if len(raw)>65536: raise ValueError("Subscription response oversized")
+    value=json.loads(raw)
+    if not isinstance(value.get("accessToken"),str) or not isinstance(value.get("chatgptAccountId"),str) or not isinstance(value.get("revision"),int): raise ValueError("Subscription response invalid")
+    native_secrets.add(value["accessToken"])
+    subscription_revision=value["revision"]
+    return {key:value.get(key) for key in ("accessToken","chatgptAccountId","chatgptPlanType")}
+
 def native_registry():
     if not managed:
         return
@@ -276,7 +318,7 @@ def native_safe(value):
 native_registry()
 native_stopping = threading.Event()
 child = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                         stderr=subprocess.DEVNULL if managed else subprocess.PIPE, start_new_session=managed,
+                         stderr=subprocess.DEVNULL if managed or subscription else subprocess.PIPE, start_new_session=managed,
                          pass_fds=(writer_fd,) if managed else ())
 if managed:
     # The native group retains flock even if this bridge is SIGKILLed. Record its
@@ -322,7 +364,7 @@ native_replied = False
 starting_turns = {}
 starting_lock = threading.Lock()
 def output(line):
-    if managed:
+    if managed or subscription:
         try:
             native_registry()
             try:
@@ -344,12 +386,22 @@ def output(line):
         sys.stdout.buffer.write(line)
         sys.stdout.buffer.flush()
 def receive():
+    global plan_rate_limits, plan_notification_revision, plan_applied_read
     global native_replied
     for line in child.stdout:
         try:
             message = json.loads(line)
         except (ValueError, UnicodeDecodeError):
             message = None
+        if subscription and isinstance(message,dict) and message.get("method")=="account/chatgptAuthTokens/refresh" and "id" in message:
+            try:
+                access=subscription_access(True)
+                previous=message.get("params",{}).get("previousAccountId")
+                if previous and previous!=access["chatgptAccountId"]: raise ValueError("Subscription identity changed")
+                reply={"id":message["id"],"result":access}
+            except Exception: reply={"id":message["id"],"error":{"code":-32603,"message":"Subscription renewal unavailable."}}
+            child.stdin.write((json.dumps(reply)+"\\n").encode());child.stdin.flush()
+            continue
         if isinstance(message,dict) and "method" not in message and isinstance(message.get("id"),str):
             pending = pending_reload.pop(message.get("id"),None)
             if pending is not None:
@@ -357,6 +409,32 @@ def receive():
                 pending[0].set()
                 continue
         if isinstance(message,dict):
+            params=message.get("params",{})
+            if message.get("method")=="account/rateLimits/updated" and isinstance(params,dict):
+                limits=params.get("rateLimits")
+                if isinstance(limits,dict) and limits.get("limitId") in (None,"codex"):
+                    plan_rate_limits=limits
+                    plan_notification_revision+=1
+            if message.get("method")=="turn/completed" and isinstance(params,dict):
+                terminal=params.get("turn")
+                error=terminal.get("error") if isinstance(terminal,dict) else None
+                info=error.get("codexErrorInfo") if isinstance(error,dict) else None
+                code=info if isinstance(info,str) else next(iter(info),None) if isinstance(info,dict) else None
+                if code in ("usageLimitExceeded","rateLimitExceeded"):
+                    # Forward only our allowlisted diagnosis, never the vendor body/details.
+                    terminal["error"]={"message":plan_limit_message(code),"codexErrorInfo":code}
+                    line=(json.dumps(message)+"\\n").encode()
+                elif isinstance(error,dict) and isinstance(error.get("message"),str):
+                    import re
+                    if re.fullmatch(r"(?:Plan|Rate) limit reached[.] (?:Resets at [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.]000Z[.]|Try again after the limit resets[.])",error["message"]):
+                        terminal["error"]={"message":"Authentication failed. Reconnect this account." if code=="unauthorized" else "The agent failed.","codexErrorInfo":code}
+                        line=(json.dumps(message)+"\\n").encode()
+            read=plan_read_requests.pop(str(message.get("id")),None) if "method" not in message else None
+            if read is not None and "error" not in message and isinstance(message.get("result"),dict):
+                limits=message["result"].get("rateLimits")
+                if read[0]==plan_notification_revision and read[1]>=plan_applied_read and isinstance(limits,dict) and limits.get("limitId") in (None,"codex"):
+                    plan_rate_limits=limits
+                    plan_applied_read=read[1]
             request = usage_pending.pop(str(message.get("id")),None)
             result = message.get("result",{})
             if request and request[0] in ("thread/start","thread/resume") and isinstance(result,dict):
@@ -416,6 +494,7 @@ def forward_signal(sig, frame):
 for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
     signal.signal(sig, forward_signal)
 def relay():
+    global plan_read_sequence
     global last_mcp
     try:
         for line in sys.stdin.buffer:
@@ -438,6 +517,13 @@ def relay():
                 if cwd:
                     message["params"]["cwd"] = cwd
                 try:
+                    if subscription and message["method"] in ("thread/start","thread/resume"):
+                        access=subscription_access()
+                        login_id="armada-model-login-"+uuid.uuid4().hex
+                        event,result=threading.Event(),[]
+                        pending_reload[login_id]=(event,result)
+                        child.stdin.write((json.dumps({"id":login_id,"method":"account/login/start","params":{"type":"chatgptAuthTokens",**access}})+"\\n").encode());child.stdin.flush()
+                        if not event.wait(20) or result != [True]: raise ValueError("Subscription login failed")
                     current_mcp = fresh_mcp(message["params"])
                     if current_mcp is not None:
                         # Never introduce managed session overrides: they mask disk reload.
@@ -476,6 +562,9 @@ def relay():
                 line = (json.dumps(message, ensure_ascii=True) + "\\n").encode()
             if isinstance(message,dict):
                 method=message.get("method")
+                if method=="account/rateLimits/read" and "id" in message and len(plan_read_requests)<128:
+                    plan_read_sequence+=1
+                    plan_read_requests[str(message["id"])]=(plan_notification_revision,plan_read_sequence)
                 if method in ("thread/start","thread/resume"):
                     usage_pending[str(message.get("id"))]=(method,None)
                 if method=="turn/start":

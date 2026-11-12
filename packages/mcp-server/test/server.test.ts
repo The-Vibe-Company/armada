@@ -300,6 +300,27 @@ describe("on the database client production uses", () => {
 });
 
 describe("tools", () => {
+  test("advertised usage schemas accept incomplete subtotals on status and list", async () => {
+    const { token, client, people } = await start();
+    const mcp = await client(await token(people.member));
+    // The SDK validates callTool receipts against the schemas cached by listTools.
+    await mcp.listTools();
+    const launched = await call(mcp, "launch", { golden: "shared", harness: "codex", prompt: "go" });
+    const status = await call(mcp, "status", { id: launched.data.id });
+    expect(status.isError).not.toBe(true);
+    expect(status.data).toMatchObject({ usage: { tokenTotals: { incomplete: true } } });
+    const listed = await call(mcp, "list");
+    expect(listed.isError).not.toBe(true);
+    expect(listed.data).toMatchObject({
+      sandboxes: expect.arrayContaining([
+        expect.objectContaining({
+          id: launched.data.id,
+          usage: expect.objectContaining({ tokenTotals: expect.objectContaining({ incomplete: true }) }),
+        }),
+      ]),
+    });
+  });
+
   test("the tools an orchestrator and the dashboard use are listed, with schemas", async () => {
     const { token, client, people } = await start();
     const mcp = await client(await token(people.member));
@@ -779,6 +800,27 @@ describe("tools", () => {
       [launched.data.id],
     );
     expect(cleared.rows[0]?.status_reason).toBeNull();
+    // A failed native subscription turn preserves safe reset evidence in the public report.
+    const resetsAt = "2026-11-10T00:00:00.000Z";
+    boat.sandbox("bx_1").events.push({
+      id: "safe-plan-limit",
+      at: 10,
+      kind: "other",
+      type: "usage_limit",
+      promptId: "prompt_2",
+      data: { code: "usage_limit_exceeded", resetsAt, message: "private-vendor-body" },
+    });
+    boat.finish("bx_1", "prompt_2", "failed");
+    const exhausted = await call(mcp, "status", { id: launched.data.id });
+    expect(exhausted.data).toMatchObject({
+      status: "ready",
+      prompt: {
+        state: "failed",
+        reason: `Plan limit reached. Resets at ${resetsAt}.`,
+        limit: { code: "usage_limit_exceeded", resetsAt },
+      },
+    });
+    expect(JSON.stringify(exhausted.data)).not.toContain("private-vendor-body");
   });
 
   test("a session in several orgs sees each org's goldens, and launch takes the org that has the golden", async () => {
@@ -850,7 +892,7 @@ describe("tools", () => {
       },
       recordUsage: async () => {
         writes.push("usage");
-        throw new Error("Stored reads must not collect usage");
+        // Stored journal projection is allowed; native collection is not.
       },
       recordTurnModelEvidence: async () => {
         writes.push("telemetry");
@@ -870,7 +912,7 @@ describe("tools", () => {
     );
     expect(stored.status).toBe("ready");
     expect(stored.prompt?.state).toBe("finished");
-    expect(writes).toEqual([]);
+    expect(writes).toEqual(["usage"]);
     // Modal appends terminal prompt transitions; they are not the start of a turn.
     const modalEvents = boat.sandbox("bx_1").events;
     modalEvents.push({
