@@ -76,7 +76,10 @@ try {
             animations: "disabled",
           });
           if (hasDetail) await page.keyboard.press("Escape");
-          await page.getByRole("button", { name: trigger, exact: true }).click();
+          // The current capture script also drives baseline source, before the account dialog was renamed.
+          const triggerName =
+            route === "harness" && phase === "before" ? /^(?:Add a subscription|Add a model account)$/ : trigger;
+          await page.getByRole("button", { name: triggerName, exact: true }).click();
           await expect(page.getByRole("dialog")).toBeVisible();
           if (route === "environments" && (await page.getByText("Show the create form", { exact: true }).isVisible())) {
             await page.getByText("Show the create form", { exact: true }).click();
