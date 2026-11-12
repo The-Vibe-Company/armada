@@ -66,6 +66,8 @@ jobs:
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
       - run: bun run lint
+      - name: Check generated iOS harness metadata
+        run: bun scripts/generate-ios-harness.ts --check
       - run: bun packages/agent-runtime/build.ts
       - run: bun scripts/validate-runtime-native.ts
       - name: Real checkpoint process boundary

@@ -1,4 +1,4 @@
-import { MACHINE_SIZES, MAX_SANDBOX_EXTENSION_TTL_SECONDS, VERSION } from "@armada/core";
+import { HARNESSES, MACHINE_SIZES, MAX_SANDBOX_EXTENSION_TTL_SECONDS, VERSION } from "@armada/core";
 import { OrchestratorAuthorityDenied } from "@armada/core/server";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
@@ -25,7 +25,7 @@ const text = z
 const selection = z
   .object({
     goldenId: z.uuid(),
-    harness: z.enum(["claude", "codex"]),
+    harness: z.enum(HARNESSES),
     credentialId: z.uuid(),
     credentialVersion: z.number().int().positive().safe(),
     model: z.string().min(1).max(200),

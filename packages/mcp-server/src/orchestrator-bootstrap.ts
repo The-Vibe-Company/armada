@@ -1,3 +1,4 @@
+import type { Harness } from "@armada/core";
 import { ORCHESTRATOR_SKILL_PATTERN, type OrchestratorSkillReceipt, type Provider } from "@armada/core";
 import { installPrivateSkill, PrivateSkillError, parseSkillReceipt, skillInstallCommand } from "@armada/core/server";
 import type { OrchestratorDiagnostics } from "./orchestrator-diagnostics.ts";
@@ -30,7 +31,7 @@ export async function bootstrapOrchestrator(
     /** Legacy metadata; no longer selects an installer or method. */
     skillRevision: string;
     skill?: string | undefined;
-    harness?: "claude" | "codex";
+    harness?: Harness;
     skillpackKey?: () => Promise<string | null>;
     recordReceipt?: (receipt: OrchestratorSkillReceipt | null) => Promise<void>;
     configureAuthority: () => Promise<void>;
