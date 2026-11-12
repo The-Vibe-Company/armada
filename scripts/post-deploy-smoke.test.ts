@@ -27,6 +27,7 @@ function fixture(handler?: (call: Call) => Response | undefined | Promise<Respon
   const lines: string[] = [];
   let clock = 0;
   let stopping = false;
+  let lastPromptId = "prompt-id";
   const io = {
     now: () => clock,
     sleep: async (ms: number) => {
@@ -49,8 +50,22 @@ function fixture(handler?: (call: Call) => Response | undefined | Promise<Respon
       calls.push(call);
       if (call.path === "sandbox/launch") stopping = false;
       if (call.path === "sandbox/stop") stopping = true;
+      if (call.path === "sandbox/wait") lastPromptId = String(call.body.prompt_id);
       const override = await handler?.(call);
-      if (override) return override;
+      if (override) {
+        if (call.path === "sandbox/status" && override.ok) {
+          const body = (await override.clone().json()) as Record<string, unknown>;
+          if (!Object.hasOwn(body, "usage"))
+            return json({
+              ...body,
+              usage: {
+                turns: [{ promptId: lastPromptId, inputTokens: 10, outputTokens: 2 }],
+                tokenTotals: { inputTokens: 10, outputTokens: 2 },
+              },
+            });
+        }
+        return override;
+      }
       switch (call.path) {
         case "sandbox/launch":
           return json({ sandbox: { id: "sandbox-id", provider: call.body.provider } });
@@ -63,7 +78,14 @@ function fixture(handler?: (call: Call) => Response | undefined | Promise<Respon
         case "sandbox/stop":
           return json({ status: "stopped" });
         case "sandbox/status":
-          return json({ status: stopping ? "stopped" : "ready", providerState: stopping ? "archived" : "active" });
+          return json({
+            status: stopping ? "stopped" : "ready",
+            providerState: stopping ? "archived" : "active",
+            usage: {
+              turns: [{ promptId: "prompt-id", inputTokens: 10, outputTokens: 2 }],
+              tokenTotals: { inputTokens: 10, outputTokens: 2 },
+            },
+          });
         default:
           throw new Error("Unexpected fake API call");
       }
@@ -486,6 +508,7 @@ test("reports closed server errors without retrying ambiguous sends", async () =
 test("unknown stop outcomes are observed once, including Modal checkpoint fallback warnings", async () => {
   for (const unknown of [false, true]) {
     let stopping = false;
+
     let reads = 0;
     const fake = fixture((call) => {
       if (call.path === "sandbox/stop") {
@@ -516,6 +539,7 @@ test("unknown stop outcomes are observed once, including Modal checkpoint fallba
 test("unknown cleanup stops poll failed terminal states and bound unsettled stops", async () => {
   for (const terminal of [true, false]) {
     let stopping = false;
+
     const fake = fixture((call) => {
       if (call.path === "sandbox/send") return json({ error: { code: "forbidden" } }, 403);
       if (call.path === "sandbox/stop") {
@@ -538,6 +562,7 @@ test("unknown cleanup stops poll failed terminal states and bound unsettled stop
 
 test("exhausted unknown stops reserve cleanup for observation rather than redispatch", async () => {
   let stopping = false;
+
   const fake = fixture((call) => {
     if (call.path === "sandbox/stop") {
       stopping = true;
@@ -621,6 +646,7 @@ test("GitHub slice validates native receipts twice and cleans scratch before san
   for (const failReceipt of [false, true]) {
     let provider = "boat";
     let stopping = false;
+
     const fake = fixture((call) => {
       if (call.path === "sandbox/launch") {
         provider = String(call.body.provider);
@@ -694,6 +720,7 @@ test("GitHub failures retain numeric evidence, reject arbitrary receipts, and cl
   for (const scenario of ["send_rejected", "invalid_receipt", "exec_failed"] as const) {
     let provider = "boat";
     let stopping = false;
+
     const fake = fixture((call) => {
       if (call.path === "sandbox/launch") {
         provider = String(call.body.provider);
@@ -868,6 +895,7 @@ describe("preservation checks", () => {
           }));
         let launches = 0;
         let stopping = false;
+
         let sandboxId = "";
         const recoveryId = crypto.randomUUID();
         const otherId = crypto.randomUUID();
@@ -1765,4 +1793,25 @@ test("readiness timing excludes slow integrity probes and survives either probe 
       });
     expect(fake.calls.some((call) => call.path === "sandbox/stop")).toBe(true);
   }
+});
+
+test("Modal smoke refuses a finished turn whose status never reports usage and still stops compute", async () => {
+  const fake = fixture((call) =>
+    call.path === "sandbox/status"
+      ? json({
+          status: "ready",
+          providerState: "active",
+          usage: { turns: [], tokenTotals: { inputTokens: null, outputTokens: null } },
+        })
+      : undefined,
+  );
+  expect(
+    await postDeploySmoke(
+      { ...env, ARMADA_SMOKE_CASES: JSON.stringify([{ ...selected, provider: "modal" }]) },
+      [],
+      fake.io,
+    ),
+  ).toBe(false);
+  expect(fake.receipts()).toContainEqual({ case: 0, step: "usage", pass: false, code: "poll_limit_exceeded" });
+  expect(fake.calls.some((call) => call.path === "sandbox/stop")).toBe(true);
 });
