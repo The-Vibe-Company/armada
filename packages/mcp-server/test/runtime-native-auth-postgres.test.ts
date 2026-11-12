@@ -43,7 +43,7 @@ test.skipIf(!url)(
         "insert into credentials(id,scope,owner_id,kind,value_enc) values($1,'user',$2,'codex_auth',$3)",
         [account, owner, await encryptSecret(auth(0), key)],
       );
-      await createModelAuthOwnership(sql, key).claim(
+      await createModelAuthOwnership(sql, key).claimLegacy(
         { userId: owner, orgId: org, role: "member" },
         account,
         1,

@@ -30,7 +30,7 @@ async function fixture() {
   const id = crypto.randomUUID(),
     actor: GoldenActor = { userId: people.owner, orgId: people.org, role: "member" };
   const ownership = createModelAuthOwnership(sql, ENCRYPTION_KEY);
-  await ownership.claim(actor, account.id, 1, id);
+  await ownership.claimLegacy(actor, account.id, 1, id);
   await db.query(
     `insert into sandboxes(id,golden_id,org_id,owner_id,boat_id,harness,status,credential_id,credential_version)
     select $1,id,org_id,owner_id,'native-publisher','codex','ready',$3,1 from goldens where owner_id=$2 and visibility='private' limit 1`,

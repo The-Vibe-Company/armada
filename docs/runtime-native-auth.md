@@ -6,6 +6,11 @@ checkpoint/stop integration and lifecycle/timing proof remain separate slices.
 
 ## Private publication
 
+Configured shared-session launches now enrol directly through the subscription
+broker on main. This endpoint remains only for an existing exclusive legacy/
+compatibility native holder; it does not revive exclusive admission or accept
+server-broker-managed state without that holder.
+
 `POST /api/runtime/events` accepts the existing `{sandboxId,generation,events:[],
 nativeAuth:{authJson,expectedRevision}}` envelope under Bearer runtime token and
 `X-Armada-Runtime-Epoch`. It cannot be mixed with journal events; auth JSON is
