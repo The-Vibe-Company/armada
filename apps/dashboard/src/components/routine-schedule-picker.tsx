@@ -62,14 +62,24 @@ export function RoutineSchedulePicker({
   const key = JSON.stringify([cron, timezone]);
   const current = preview?.key === key ? preview.result : null;
   useEffect(() => {
-    // Start with identical server/client markup, then use the browser's supported
-    // IANA list. UTC remains explicit even when ICU does not include it in the list.
+    // Keep server/client markup identical, then resolve the browser's local zone.
+    // Some ICU aliases are absent from supportedValuesOf, so retain it explicitly.
+    let detected = "UTC",
+      supported = FALLBACK_ZONES;
     try {
-      setZones(["UTC", ...Intl.supportedValuesOf("timeZone").filter((zone) => zone !== "UTC")]);
+      detected = new Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+    } catch {
+      /* An unavailable browser zone falls back to UTC. */
+    }
+    try {
+      supported = Intl.supportedValuesOf("timeZone");
     } catch {
       /* Older browsers retain the useful fallback list. */
     }
-  }, []);
+    onValidated(null);
+    setZones([...new Set(["UTC", detected, ...supported])]);
+    setTimezone(detected);
+  }, [onValidated]);
   const request = useMemo(() => ({ orgId, cron, timezone, key, retry }), [orgId, cron, timezone, key, retry]);
   useEffect(() => {
     let active = true;

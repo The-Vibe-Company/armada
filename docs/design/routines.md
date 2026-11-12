@@ -60,7 +60,8 @@ is requested; it is not a claim that arbitrary elapsed intervals equal cron.
 
 Run > Routines > New keeps the centered CreateDialog. Choose **Every hour**,
 **Every day at**, **Weekdays at**, **Weekly on days at**, or **Monthly on day at**;
-**Custom cron** is last. Select an explicit IANA time zone (default UTC), then
+**Custom cron** is last. The time zone defaults to the browser’s detected IANA zone after hydration
+(UTC only if detection is unavailable), and remains explicitly changeable. Then
 check the server's sentence and next three local calendar times with UTC offsets.
 Monthly dates absent from a month are skipped. The preview is not an immediate
 launch or an admission guarantee; the existing safety rules still apply.

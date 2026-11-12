@@ -234,3 +234,40 @@ test("human schedule controls keep weekly choices accessible and block unsafe cu
   await expect(dialog.getByText(/Every hour.*America\/New_York/)).toBeVisible();
   await expect(dialog.getByRole("button", { name: "Create routine", exact: true })).toBeEnabled();
 });
+
+test.describe("browser-local schedule default", () => {
+  test.use({ timezoneId: "Europe/Paris" });
+
+  test("previews and submits the browser zone even when the supported-zone list omits it", async ({ page }) => {
+    // ICU can resolve aliases missing from supportedValuesOf; retain the browser's
+    // resolved zone rather than silently selecting another available option.
+    await page.addInitScript(() => {
+      Object.defineProperty(Intl, "supportedValuesOf", { value: () => ["America/New_York"], configurable: true });
+    });
+    await signIn(page, "alice@example.com", "/routines");
+    await page.getByRole("button", { name: "New", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "New routine" });
+    await expect(dialog.getByLabel("Time zone", { exact: true })).toHaveValue("Europe/Paris");
+    const preview = dialog.getByRole("region", { name: "Schedule preview", exact: true });
+    await expect(preview).toContainText("At 09:00, Europe/Paris");
+    await expect(preview.getByRole("listitem")).toHaveCount(3);
+    await expect(preview.getByRole("listitem").first()).toContainText("09:00 GMT+01:00");
+    await dialog.getByLabel("Name", { exact: true }).fill("Local morning review");
+    await dialog.getByLabel("Template", { exact: true }).selectOption(MODAL_TEMPLATE);
+    await dialog.getByLabel("Prompt", { exact: true }).fill("Summarize changes without editing files.");
+    await dialog.getByRole("button", { name: "Create routine", exact: true }).click();
+    await expect(dialog).toBeHidden();
+    const result = await state();
+    expect(result.routineCalls.filter((call) => call.route === "routines/create")).toEqual([
+      expect.objectContaining({
+        authorized: true,
+        body: expect.objectContaining({ cron: "0 9 * * *", timezone: "Europe/Paris" }),
+      }),
+    ]);
+    expect(result.routines.find((item) => item.name === "Local morning review")).toMatchObject({
+      cron: "0 9 * * *",
+      timezone: "Europe/Paris",
+      status: "paused",
+    });
+  });
+});
