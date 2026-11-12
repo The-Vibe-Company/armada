@@ -36,6 +36,8 @@ export const PROVIDER_LIMITS: Readonly<Record<SandboxProviderId, ProviderLimits>
  */
 export interface HostCapabilities {
   readonly goldenRestore: "fresh-fork" | "shared-source";
+  /** A stopping observation is an in-flight stop; wait rather than reissuing stop. */
+  readonly waitForPendingStop: boolean;
   /** Dispose a completed disposable builder without creating an unwanted stop checkpoint. */
   readonly goldenBuilderCleanup: "stop" | "delete";
   /**
@@ -51,12 +53,14 @@ export interface HostCapabilities {
 export const HOST_CAPABILITIES: Readonly<Record<SandboxProviderId, HostCapabilities>> = {
   boat: {
     goldenRestore: "fresh-fork",
+    waitForPendingStop: true,
     goldenBuilderCleanup: "stop",
     goldenBuilderRecovery: "stop-recorded",
     snapshotManagementAuthority: false,
   },
   modal: {
     goldenRestore: "shared-source",
+    waitForPendingStop: false,
     goldenBuilderCleanup: "delete",
     goldenBuilderRecovery: "dispose-reservation",
     snapshotManagementAuthority: true,

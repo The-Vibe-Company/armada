@@ -291,6 +291,8 @@ export {
 export {
   assertProviderOf,
   createProviderRegistry,
+  HOST_CAPABILITIES,
+  type HostCapabilities,
   isSandboxProvider,
   type ModalBinding,
   type OrchestratorCleanupScope,
