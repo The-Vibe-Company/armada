@@ -19,6 +19,7 @@ import {
   PROVIDER_LABELS,
   type RepoRow,
 } from "@/lib/golden-form";
+import { replaceResourceUrl } from "@/lib/resource-history";
 import { cn } from "@/lib/utils";
 
 type Props = {
@@ -178,7 +179,7 @@ function ScopedGoldenForm({
     const admissionUrl = new URL(window.location.href);
     admissionUrl.searchParams.set(keyParam, admissionKey);
     if (mode === "create" && typeof submitted === "string") admissionUrl.searchParams.set(providerParam, submitted);
-    window.history.replaceState(null, "", admissionUrl);
+    replaceResourceUrl(admissionUrl);
     try {
       result = await buildGolden(previous, data);
     } catch {
@@ -470,7 +471,7 @@ function ScopedGoldenForm({
                 url.searchParams.delete(jobParam);
                 url.searchParams.delete(providerParam);
                 url.searchParams.set(keyParam, key);
-                window.history.replaceState(null, "", url);
+                replaceResourceUrl(url);
               }}
             >
               New build request
@@ -627,7 +628,7 @@ function Permanent() {
 function rememberJob(param: string, jobId: string) {
   const url = new URL(window.location.href);
   url.searchParams.set(param, jobId);
-  window.history.replaceState(null, "", url);
+  replaceResourceUrl(url);
 }
 
 function BuildStatus({ pending, state }: { pending: boolean; state: ActionResult | null }) {
