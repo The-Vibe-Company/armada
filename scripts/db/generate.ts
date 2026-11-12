@@ -52,6 +52,7 @@ const ROW_ALIASES: Record<string, string> = {
   orchestrator_runtime_events: "OrchestratorRuntimeEventRow",
   model_auth_ownership: "ModelAuthOwnershipRow",
   model_auth_state: "ModelAuthStateRow",
+  sandbox_exec_admissions: "SandboxExecAdmissionRow",
   sandbox_model_credentials: "SandboxModelCredentialRow",
   modal_events: "ModalEventRow",
   modal_images: "ModalImageRow",

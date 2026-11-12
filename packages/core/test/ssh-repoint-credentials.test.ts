@@ -33,13 +33,18 @@ const input=fs.readFileSync(0,'utf8').replaceAll('/home/user',process.env.HOME).
     const helper = join(import.meta.dir, "../src/ssh-repoint-credentials.ts"),
       ssh = join(import.meta.dir, "../src/ssh-executor.ts"),
       wrapper = join(import.meta.dir, "../../provider-boat/src/native-cwd.ts");
-    const source = `import {sshRepointCredentials,CAPTURE_MODEL_ENVIRONMENT} from ${JSON.stringify(helper)};import {sshHydrateAuthState} from ${JSON.stringify(ssh)};import {nativeCwdCommand} from ${JSON.stringify(wrapper)};import fs from 'node:fs';
+    const source = `import {sshRepointCredentials,createModelEnvironmentCapture} from ${JSON.stringify(helper)};import {sshHydrateAuthState} from ${JSON.stringify(ssh)};import {nativeCwdCommand} from ${JSON.stringify(wrapper)};import fs from 'node:fs';
 const home=process.env.HOME,bin=home+'/bin',old='old-model-api-secret',next='new-model-api-secret';
 const provider={id:'boat',sshKey:async({key})=>{for(const p of [home,home+'/.root'])fs.appendFileSync(p+'/.ssh/authorized_keys',key+'\\n');return {sshEndpoint:'fake.test:22',hostKey:'ssh-ed25519 AAAA'};}};
 const run=(command,args=[],env={})=>Bun.spawnSync(['bash','-c',command.replaceAll('/home/user',home),'--',...args],{env:{...process.env,OPENAI_API_KEY:old,ANTHROPIC_API_KEY:'old-other-harness-secret',ANTHROPIC_AUTH_TOKEN:'old-claude-gateway-bearer',ANTHROPIC_BASE_URL:'https://old-claude.example',ARMADA_CODEX_AUTH_JSON:'old-json-secret',ARMADA_CODEX_ENDPOINT:JSON.stringify({version:1,baseUrl:'https://old-gateway.example/v1'}),...env}});
 const base={harness:'codex',env:{},credentialId:'credential',credentialVersion:2,sandboxId:'sandbox'};
-const captured=run(CAPTURE_MODEL_ENVIRONMENT);if(captured.exitCode!==0)throw Error('capture failed');
-const values=await sshRepointCredentials(provider,'fake',{...base,revision:'5',phase:'capture'});
+const capture=createModelEnvironmentCapture();
+const captured=run(capture.command);if(captured.exitCode!==0)throw Error('capture failed');
+const scratch=fs.readFileSync(home+'/.armada-repoint-environment.json','utf8');
+const failedProvider={...provider,async sshKey(){throw Error('synthetic SSH failure');}};
+let failedCapture=false;try{await sshRepointCredentials(failedProvider,'fake',{...base,revision:'5',phase:'sample'});}catch{failedCapture=true;}
+const failureSafe=failedCapture&&!scratch.includes(old)&&!scratch.includes('old-claude-gateway-bearer')&&!scratch.includes('old-json-secret')&&JSON.parse(scratch).version===1&&!captured.stdout.toString()&&!captured.stderr.toString();
+const values=capture.decrypt(await sshRepointCredentials(provider,'fake',{...base,revision:'5',phase:'capture'}));
 await sshRepointCredentials(provider,'fake',{...base,env:{OPENAI_API_KEY:next,ARMADA_CODEX_ENDPOINT:JSON.stringify({version:1,baseUrl:'https://gateway.example/v1',apiVersion:'2026-11-01'})},revision:'5',phase:'install',native:false,nativeMode:'none'});
 const probe=run(nativeCwdCommand(bin+'/codex','codex'),['probe']);if(probe.exitCode!==0)throw Error('native probe failed');const result=JSON.parse(probe.stdout.toString());
 let staleInstall=false;try{await sshRepointCredentials(provider,'fake',{...base,env:{OPENAI_API_KEY:old},revision:'4',phase:'install'});}catch{staleInstall=true;}
@@ -56,7 +61,7 @@ const wrong=run(nativeCwdCommand(bin+'/codex','codex'),['probe']);
 await sshRepointCredentials(provider,'fake',{...base,harness:'claude',revision:'7',phase:'capture'});
 await sshRepointCredentials(provider,'fake',{...base,harness:'claude',env:{CLAUDE_CODE_OAUTH_TOKEN:'new-claude-secret'},revision:'7',phase:'install',native:false,nativeMode:'none'});
 const claude=run(nativeCwdCommand(bin+'/claude','claude'),['probe']);const claudeEnv=JSON.parse(claude.stdout.toString());
-console.log(JSON.stringify({selected:result.openai===next,endpoint:result.args.join(' ').includes('https://gateway.example/v1')&&!result.args.join(' ').includes(next)&&!result.args.join(' ').includes('old-gateway'),otherAbsent:!result.anthropic&&!result.auth,captured:values.includes(old)&&values.includes('old-claude-gateway-bearer')&&!values.includes('codex'),staleInstall,staleHydrate,nativeSelected:saved.tokens.access_token==='native-access-new'&&!nativeEnv.openai&&!nativeEnv.auth,wrongPinRejected:wrong.exitCode!==0,claudeSelected:claudeEnv.oauth==='new-claude-secret'&&!claudeEnv.openai&&!claudeEnv.anthropic&&!claudeEnv.bearer&&!claudeEnv.baseUrl}));`;
+console.log(JSON.stringify({failureSafe,selected:result.openai===next,endpoint:result.args.join(' ').includes('https://gateway.example/v1')&&!result.args.join(' ').includes(next)&&!result.args.join(' ').includes('old-gateway'),otherAbsent:!result.anthropic&&!result.auth,captured:values.includes(old)&&values.includes('old-claude-gateway-bearer')&&!values.includes('codex'),staleInstall,staleHydrate,nativeSelected:saved.tokens.access_token==='native-access-new'&&!nativeEnv.openai&&!nativeEnv.auth,wrongPinRejected:wrong.exitCode!==0,claudeSelected:claudeEnv.oauth==='new-claude-secret'&&!claudeEnv.openai&&!claudeEnv.anthropic&&!claudeEnv.bearer&&!claudeEnv.baseUrl}));`;
     const result = Bun.spawnSync([process.execPath, "--eval", source], {
       env: { ...process.env, HOME: home, PATH: bin },
     });
@@ -65,6 +70,7 @@ console.log(JSON.stringify({selected:result.openai===next,endpoint:result.args.j
     expect(output + result.stderr.toString()).not.toContain("old-model-api-secret");
     expect(output + result.stderr.toString()).not.toContain("new-model-api-secret");
     expect(JSON.parse(output)).toEqual({
+      failureSafe: true,
       selected: true,
       endpoint: true,
       otherAbsent: true,

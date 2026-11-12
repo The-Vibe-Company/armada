@@ -15,3 +15,17 @@ create table public.sandbox_model_credentials (
 alter table public.sandbox_model_credentials enable row level security;
 revoke all on public.sandbox_model_credentials from public,anon,authenticated;
 grant all on public.sandbox_model_credentials to service_role;
+
+-- Ordinary commands stay concurrent and never block normal Stop/TTL; account changes
+-- alone require all admitted commands to have a known completion or a physical stop.
+create table public.sandbox_exec_admissions (
+  id uuid primary key,
+  sandbox_id uuid not null references public.sandboxes(id) on delete cascade,
+  active boolean not null default true,
+  stop_generation bigint not null,
+  expires_at timestamptz not null
+);
+create index sandbox_exec_admissions_sandbox on public.sandbox_exec_admissions(sandbox_id);
+alter table public.sandbox_exec_admissions enable row level security;
+revoke all on public.sandbox_exec_admissions from public,anon,authenticated;
+grant all on public.sandbox_exec_admissions to service_role;

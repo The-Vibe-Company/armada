@@ -611,3 +611,184 @@ test("Modal account re-point delivers the selected Claude gateway auth mode, the
     await f.db.close();
   }
 }, 30000);
+
+test("re-point's atomic stop admission refuses both new ordinary exec and already admitted commands without serializing them", async () => {
+  const f = await fixture();
+  try {
+    const store = createSqlData(f.db)(f.caller).sandboxes;
+    const first = await store.admitExec!(f.id),
+      second = await store.admitExec!(f.id);
+    expect(first).not.toBe(second);
+    await expect(f.service.repoint(f.caller, { id: f.id, credentialId: f.target.id })).rejects.toMatchObject({
+      code: "conflict",
+    });
+    expect(f.stops).toBe(0);
+    expect((await store.get(f.id))?.stopRequestedAt).toBeNull();
+    await store.assertExecAdmission!(f.id, first);
+    await store.assertExecAdmission!(f.id, second);
+    await store.settleExec!(f.id, first);
+    await store.settleExec!(f.id, second);
+    // The failed lifecycle admission remains bounded, but its stop request was
+    // ours alone and has been safely removed before any provider mutation.
+    await f.db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [f.id]);
+    let sampled = false;
+    const observe = spyOn(f.provider, "hasActiveTurns").mockImplementation(async () => {
+      sampled = true;
+      // A caller whose earlier read passed before the fence must still fail
+      // its final atomic exec admission, without dispatching provider work.
+      await expect(store.admitExec!(f.id)).rejects.toMatchObject({ code: "sandbox_not_ready" });
+      await expect(
+        callSharedTool(f.context, "exec", { id: f.id, command: "echo must-not-start" }),
+      ).rejects.toMatchObject({ code: "sandbox_not_ready" });
+      expect((await f.db.query("select id from sandbox_exec_admissions where sandbox_id=$1", [f.id])).rows).toEqual([]);
+      return false;
+    });
+    try {
+      await f.service.repoint(f.caller, { id: f.id, credentialId: f.target.id });
+    } finally {
+      observe.mockRestore();
+    }
+    expect(sampled).toBe(true);
+    expect(f.stops).toBe(1);
+  } finally {
+    await f.db.close();
+  }
+});
+
+test("unknown ordinary exec retains a claim without delaying normal Stop, and a confirmed stop makes account repair possible", async () => {
+  const f = await fixture();
+  try {
+    const execute = spyOn(f.provider, "exec").mockImplementationOnce(async () => ({
+      detached: true,
+      processId: 123,
+    }));
+    try {
+      await expect(callSharedTool(f.context, "exec", { id: f.id, command: "background-work" })).rejects.toMatchObject({
+        code: "outcome_unknown",
+      });
+    } finally {
+      execute.mockRestore();
+    }
+    expect((await f.db.query("select id from sandbox_exec_admissions where sandbox_id=$1", [f.id])).rows).toHaveLength(
+      1,
+    );
+    const saved = (
+      await f.db.query<{ activity_until: string | null }>("select activity_until from sandboxes where id=$1", [f.id])
+    ).rows[0];
+    expect(saved?.activity_until).toBeNull();
+    await f.provider.stop({ sandboxId: f.physical });
+    await f.service.repoint(f.caller, { id: f.id, credentialId: f.target.id });
+    expect((await f.db.query("select id from sandbox_exec_admissions where sandbox_id=$1", [f.id])).rows).toEqual([]);
+  } finally {
+    await f.db.close();
+  }
+});
+
+test.each([false, true])(
+  "ordinary exec holds admission through native synchronization (publication fails: %s)",
+  async (publicationFails) => {
+    const f = await fixture();
+    try {
+      let synchronized = false;
+      const native = spyOn(f.context.launchCredentials, "nativeSecrets").mockImplementation(
+        async (_actor, _id, _provider, _physical, phase) => {
+          if (phase === "after") {
+            synchronized = true;
+            await expect(f.service.repoint(f.caller, { id: f.id, credentialId: f.target.id })).rejects.toMatchObject({
+              code: "conflict",
+            });
+            expect(f.stops).toBe(0);
+            if (publicationFails) throw Error("Synthetic private synchronization acknowledgment lost.");
+          }
+          return [];
+        },
+      );
+      const command = spyOn(f.provider, "exec").mockImplementationOnce(async () => ({
+        detached: false,
+        exitCode: 0,
+        stdout: "safe result",
+        stderr: "",
+        timedOut: false,
+        truncated: false,
+      }));
+      try {
+        const result = callSharedTool(f.context, "exec", { id: f.id, command: "read work" });
+        if (publicationFails) await expect(result).rejects.toMatchObject({ code: "outcome_unknown" });
+        else expect(await result).toMatchObject({ stdout: "safe result" });
+        expect(synchronized).toBe(true);
+        expect(
+          (await f.db.query("select active from sandbox_exec_admissions where sandbox_id=$1", [f.id])).rows,
+        ).toEqual(publicationFails ? [{ active: false }] : []);
+      } finally {
+        native.mockRestore();
+        command.mockRestore();
+      }
+    } finally {
+      await f.db.close();
+    }
+  },
+);
+
+test("a live command paused before dispatch survives ordinary Stop as a fenced call, not permission to run against a rebound account", async () => {
+  const f = await fixture();
+  let enter!: () => void, release!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    enter = resolve;
+  });
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const context = {
+    ...f.context,
+    connections: {
+      validate: async () => {},
+      bind: async () => {},
+      prepare: async () => {
+        enter();
+        await released;
+      },
+    },
+  };
+  let result: Promise<unknown> | undefined;
+  try {
+    result = callSharedTool(context, "exec", { id: f.id, command: "must not run against the new account" }).catch(
+      (error) => error,
+    );
+    await entered;
+    await callSharedTool(f.context, "stop", { id: f.id });
+    await expect(f.service.repoint(f.caller, { id: f.id, credentialId: f.target.id })).rejects.toMatchObject({
+      code: "conflict",
+    });
+    expect(f.boots).toBe(0);
+    expect((await f.db.query("select active from sandbox_exec_admissions where sandbox_id=$1", [f.id])).rows).toEqual([
+      { active: true },
+    ]);
+    release();
+    expect(await result).toMatchObject({ code: "sandbox_not_ready" });
+    expect(f.boots).toBe(0);
+    // The previous refusal retained only its bounded lease, not an introduced
+    // stop fence. A settled/unknown call plus authoritative stop is recoverable.
+    await f.db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [f.id]);
+    await f.service.repoint(f.caller, { id: f.id, credentialId: f.target.id });
+    expect((await f.db.query("select id from sandbox_exec_admissions where sandbox_id=$1", [f.id])).rows).toEqual([]);
+  } finally {
+    release();
+    await result;
+    await f.db.close();
+  }
+});
+
+test("expired command calls cannot dispatch after a stopped-workspace repair", async () => {
+  const f = await fixture();
+  try {
+    const store = createSqlData(f.db)(f.caller).sandboxes,
+      claim = await store.admitExec!(f.id);
+    await f.provider.stop({ sandboxId: f.physical });
+    await f.db.query("update sandbox_exec_admissions set expires_at=now()-interval '1 second' where id=$1", [claim]);
+    await f.service.repoint(f.caller, { id: f.id, credentialId: f.target.id });
+    await expect(store.assertExecAdmission!(f.id, claim)).rejects.toMatchObject({ code: "sandbox_not_ready" });
+    expect((await f.db.query("select id from sandbox_exec_admissions where sandbox_id=$1", [f.id])).rows).toEqual([]);
+  } finally {
+    await f.db.close();
+  }
+});

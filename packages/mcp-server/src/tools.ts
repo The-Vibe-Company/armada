@@ -1596,64 +1596,89 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       );
       let acknowledged = false;
       const execute = async () => {
-        const membership = caller.orgs.find((member) => member.orgId === found.orgId);
-        if (!membership) throw new ToolError("forbidden", "No current organization membership.");
-        await context.connections?.prepare?.(provider, found, {
-          userId: caller.userId,
-          orgId: found.orgId,
-          role: membership.role,
-        });
-        const nativeActor = { userId: found.ownerId, orgId: found.orgId, role: "member" as const };
-        const nativeBefore =
-          (await context.launchCredentials.nativeSecrets?.(
-            nativeActor,
-            found.id,
-            provider,
-            found.providerSandboxId,
-            "before",
-          )) ?? [];
-        const result = await provider
-          .exec({
-            sandboxId: found.providerSandboxId,
-            command: args.command,
-            cwd: args.cwd ?? "/home/user",
-            timeoutSeconds: args.timeout_seconds ?? 120,
-          })
-          .catch(unknownMutationOutcome);
-        acknowledged = true;
-        if (result.detached)
-          throw new ToolError(
-            "outcome_unknown",
-            "The command started in the background. Check sandbox status before retrying.",
-          );
+        // Atomic with the re-point stop fence, but not a lifecycle lease: ordinary
+        // commands remain concurrent and normal Stop/TTL can still interrupt them.
+        const execAdmission = !managedNative ? await data.sandboxes.admitExec?.(found.id) : undefined;
+        let dispatched = false,
+          completed = false;
+        const checkExec = async () => {
+          if (execAdmission) await data.sandboxes.assertExecAdmission?.(found.id, execAdmission);
+        };
         try {
-          const nativeAfter =
+          const membership = caller.orgs.find((member) => member.orgId === found.orgId);
+          if (!membership) throw new ToolError("forbidden", "No current organization membership.");
+          await checkExec();
+          dispatched = true;
+          await context.connections?.prepare?.(provider, found, {
+            userId: caller.userId,
+            orgId: found.orgId,
+            role: membership.role,
+          });
+          await checkExec();
+          const nativeActor = { userId: found.ownerId, orgId: found.orgId, role: "member" as const };
+          const nativeBefore =
             (await context.launchCredentials.nativeSecrets?.(
               nativeActor,
               found.id,
               provider,
               found.providerSandboxId,
-              "after",
+              "before",
             )) ?? [];
-          const secrets = [...(await context.exposedSecrets(found.orgId)), ...nativeBefore, ...nativeAfter];
-          const clip = (text: string) => {
-            const safe = redact(text, secrets);
-            return safe.length <= OUTPUT_LIMIT ? safe : `...${safe.slice(-OUTPUT_LIMIT)}`;
-          };
-          return {
-            id: found.id,
-            exitCode: result.exitCode,
-            stdout: clip(result.stdout),
-            stderr: clip(result.stderr),
-            timedOut: result.timedOut,
-            truncated: result.truncated || result.stdout.length > OUTPUT_LIMIT || result.stderr.length > OUTPUT_LIMIT,
-          };
-        } catch (error) {
-          throw new LaunchError(
-            "outcome_unknown",
-            "The command ran but its result could not be safely published. Check sandbox status before retrying.",
-            { cause: error },
-          );
+          await checkExec();
+          dispatched = true;
+          const result = await provider
+            .exec({
+              sandboxId: found.providerSandboxId,
+              command: args.command,
+              cwd: args.cwd ?? "/home/user",
+              timeoutSeconds: args.timeout_seconds ?? 120,
+            })
+            .catch(unknownMutationOutcome);
+          acknowledged = true;
+          if (result.detached)
+            throw new ToolError(
+              "outcome_unknown",
+              "The command started in the background. Check sandbox status before retrying.",
+            );
+          try {
+            await checkExec();
+            const nativeAfter =
+              (await context.launchCredentials.nativeSecrets?.(
+                nativeActor,
+                found.id,
+                provider,
+                found.providerSandboxId,
+                "after",
+              )) ?? [];
+            const secrets = [...(await context.exposedSecrets(found.orgId)), ...nativeBefore, ...nativeAfter];
+            const clip = (text: string) => {
+              const safe = redact(text, secrets);
+              return safe.length <= OUTPUT_LIMIT ? safe : `...${safe.slice(-OUTPUT_LIMIT)}`;
+            };
+            const receipt = {
+              id: found.id,
+              exitCode: result.exitCode,
+              stdout: clip(result.stdout),
+              stderr: clip(result.stderr),
+              timedOut: result.timedOut,
+              truncated: result.truncated || result.stdout.length > OUTPUT_LIMIT || result.stderr.length > OUTPUT_LIMIT,
+            };
+            completed = !result.timedOut;
+            return receipt;
+          } catch (error) {
+            throw new LaunchError(
+              "outcome_unknown",
+              "The command ran but its result could not be safely published. Check sandbox status before retrying.",
+              { cause: error },
+            );
+          }
+        } finally {
+          // Hold admission through all native post-processing and safe publication.
+          // Unknown/detached dispatch retains it until physical stop is verified.
+          if (execAdmission) {
+            if (!dispatched || completed) await data.sandboxes.settleExec?.(found.id, execAdmission);
+            else await data.sandboxes.unknownExec?.(found.id, execAdmission);
+          }
         }
       };
       if (!managedNative) {

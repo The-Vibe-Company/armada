@@ -45,7 +45,10 @@ The handoff has a durable delivery-pending barrier. Normal prompts/exec/public
 output must not use a database pin whose native delivery is incomplete. The
 pending target survives a server interruption; retry the account change (or the
 next owner prompt) after the provider operation settles. The pending UI is not
-a success receipt. Changed/revoked credentials or membership are rechecked
+a success receipt. An uncertain command outcome may require a safe **Stop** before
+retrying. A still-active server call must settle (abandoned admissions expire
+after 15 minutes); normal Stop/TTL and concurrent ordinary commands remain
+available. Changed/revoked credentials or membership are rechecked
 before acknowledgment.
 
 Boat's immutable parent environment is not a credential update. The server uses
@@ -53,8 +56,8 @@ fixed private SSH-stdin delivery and a harness-only override, scrubbing obsolete
 auth material. Modal updates both its public binding and retained native policy
 before bootstrapping the new account. Old redaction material remains sealed on
 the server, including keys removed from the default selection; values are never
-returned, logged or put into command arguments. Native handoff revisions fence
-stale operations. Old conversation/usage history must not be reassigned to the
+returned, logged or put into command arguments. A failed environment capture leaves only ciphertext, encrypted to an ephemeral
+server-held private key. Native handoff revisions fence stale operations. Old conversation/usage history must not be reassigned to the
 new account merely because its current pin changed. Until per-binding quota
 receipts are available, account allowance/profile probing of repointed history
 is intentionally unavailable rather than attributing old profile data to the new

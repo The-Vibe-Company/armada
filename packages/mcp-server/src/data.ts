@@ -41,6 +41,10 @@ export interface ServerSandboxStore extends SandboxStore {
   assertDeletionAllowed?(id: string): Promise<void>;
   /** Admission-only read: ordinary exec stays concurrent, but cannot start during stop. */
   assertExecAllowed?(id: string): Promise<void>;
+  admitExec?(id: string): Promise<string>;
+  settleExec?(id: string, admission: string): Promise<void>;
+  assertExecAdmission?(id: string, admission: string): Promise<void>;
+  unknownExec?(id: string, admission: string): Promise<void>;
   recordUsage?(id: string, usage: Pick<SandboxUsage, "turnCount" | "turns">): Promise<void>;
   preserveWork?(id: string, provider: Provider, providerId: string): Promise<"pending" | void>;
   readWorkRecovery?(id: string, recoveryId?: string): Promise<string | null>;
@@ -375,6 +379,51 @@ export function createSqlData(sql: Sql): DataSource {
             and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)`,
           [...scope, id, JSON.stringify(usage)],
         );
+      },
+      async admitExec(id) {
+        const admission = crypto.randomUUID();
+        const admitted = await sql.query(
+          `with locked as (
+            select s.id,s.stop_generation from public.sandboxes s join public.goldens g on g.id=s.golden_id
+            where ${SANDBOX_VISIBLE} and s.id=$3::uuid and s.stop_requested_at is null
+            and not s.credential_delivery_pending and not s.application_secret_tainted and s.deleted_at is null
+            for update of s
+          ) insert into public.sandbox_exec_admissions(id,sandbox_id,stop_generation,expires_at) select $4::uuid,id,stop_generation,now()+interval '15 minutes' from locked returning id`,
+          [...scope, id, admission],
+        );
+        if (!admitted.rows.length)
+          throw new DataError(
+            "Sandbox is stopping or changing its account. Retry after it settles.",
+            "sandbox_not_ready",
+          );
+        return admission;
+      },
+      async assertExecAdmission(id, admission) {
+        const result = await sql.query(
+          `select s.id from public.sandboxes s join public.goldens g on g.id=s.golden_id
+           join public.sandbox_exec_admissions a on a.sandbox_id=s.id and a.id=$4::uuid
+           where ${SANDBOX_VISIBLE} and s.id=$3::uuid and a.active and a.expires_at>now()
+           and a.stop_generation=s.stop_generation and s.stop_requested_at is null
+           and not s.credential_delivery_pending and not s.application_secret_tainted and s.deleted_at is null`,
+          [...scope, id, admission],
+        );
+        if (!result.rows.length)
+          throw new DataError(
+            "Command admission expired or a stop/account change occurred. Start a new command after status settles.",
+            "sandbox_not_ready",
+          );
+      },
+      async unknownExec(id, admission) {
+        await sql.query("update sandbox_exec_admissions set active=false where sandbox_id=$1::uuid and id=$2::uuid", [
+          id,
+          admission,
+        ]);
+      },
+      async settleExec(id, admission) {
+        await sql.query("delete from public.sandbox_exec_admissions where sandbox_id=$1::uuid and id=$2::uuid", [
+          id,
+          admission,
+        ]);
       },
       async assertExecAllowed(id) {
         const row = (

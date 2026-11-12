@@ -1,3 +1,4 @@
+import { constants, createDecipheriv, generateKeyPairSync, privateDecrypt } from "node:crypto";
 import type { Harness } from "./contract.ts";
 import type { Provider } from "./provider.ts";
 import { type SshExecDeps, sshPrivateSkillCommand } from "./ssh-executor.ts";
@@ -35,16 +36,52 @@ export async function sshRepointCredentials(
   }
 }
 
-// The preceding fixed exec captures only model environment values; it never emits them.
-export const CAPTURE_MODEL_ENVIRONMENT = `python3 -I -c 'import os,json,pwd
-p="/home/user/.armada-repoint-environment.json"
-h=os.lstat("/home/user")
-assert not os.path.islink("/home/user")
-f=os.open(p,os.O_WRONLY|os.O_CREAT|os.O_TRUNC|os.O_NOFOLLOW,0o600)
-try:
- os.fchmod(f,0o600); os.fchown(f,h.st_uid,h.st_gid)
- os.write(f,json.dumps([os.environ[k] for k in ("OPENAI_API_KEY","ANTHROPIC_API_KEY","ANTHROPIC_AUTH_TOKEN","CLAUDE_CODE_OAUTH_TOKEN","ARMADA_CODEX_AUTH_JSON") if os.environ.get(k)]).encode())
-finally: os.close(f)'`;
+/** Only ciphertext may survive a failed/detached public exec; its private key never leaves this process. */
+export function createModelEnvironmentCapture() {
+  const { publicKey, privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const encoded = Buffer.from(publicKey.export({ type: "spki", format: "pem" })).toString("base64");
+  const script = `const fs=require('node:fs'),c=require('node:crypto');
+const names=['OPENAI_API_KEY','ANTHROPIC_API_KEY','ANTHROPIC_AUTH_TOKEN','CLAUDE_CODE_OAUTH_TOKEN','ARMADA_CODEX_AUTH_JSON'];
+const clear=Buffer.from(JSON.stringify(names.map(k=>process.env[k]).filter(Boolean))),key=c.randomBytes(32),iv=c.randomBytes(12),cipher=c.createCipheriv('aes-256-gcm',key,iv);
+const data=Buffer.concat([cipher.update(clear),cipher.final()]);
+const envelope=JSON.stringify({version:1,key:c.publicEncrypt({key:Buffer.from('${encoded}','base64'),padding:c.constants.RSA_PKCS1_OAEP_PADDING,oaepHash:'sha256'},key).toString('base64'),iv:iv.toString('base64'),tag:cipher.getAuthTag().toString('base64'),data:data.toString('base64')});
+const home=fs.lstatSync('/home/user');if(home.isSymbolicLink())throw Error('invalid_home');
+const f=fs.openSync('/home/user/.armada-repoint-environment.json',fs.constants.O_WRONLY|fs.constants.O_CREAT|fs.constants.O_TRUNC|fs.constants.O_NOFOLLOW,0o600);
+try{fs.fchmodSync(f,0o600);fs.fchownSync(f,home.uid,home.gid);fs.writeFileSync(f,envelope);}finally{fs.closeSync(f);}`;
+  return {
+    command: `node -e '${script.replaceAll("'", "'\\''")}'`,
+    decrypt(values: string[]): string[] {
+      return values.flatMap((value) => {
+        if (!value.startsWith("armada-envelope:")) return [value];
+        try {
+          const envelope = JSON.parse(value.slice("armada-envelope:".length));
+          if (envelope.version !== 1) throw Error();
+          const key = privateDecrypt(
+            { key: privateKey, padding: constants.RSA_PKCS1_OAEP_PADDING, oaepHash: "sha256" },
+            Buffer.from(envelope.key, "base64"),
+          );
+          const cipher = createDecipheriv("aes-256-gcm", key, Buffer.from(envelope.iv, "base64"));
+          cipher.setAuthTag(Buffer.from(envelope.tag, "base64"));
+          const clear = JSON.parse(
+            Buffer.concat([cipher.update(Buffer.from(envelope.data, "base64")), cipher.final()]).toString(),
+          );
+          if (!Array.isArray(clear) || clear.some((v) => typeof v !== "string")) throw Error();
+          const leaves = (v: unknown): string[] =>
+            typeof v === "string" ? [v] : v && typeof v === "object" ? Object.values(v).flatMap(leaves) : [];
+          return clear.flatMap((raw: string) => {
+            try {
+              return [raw, ...leaves(JSON.parse(raw))];
+            } catch {
+              return [raw];
+            }
+          });
+        } catch {
+          throw Error("Private account environment recovery failed.");
+        }
+      });
+    },
+  };
+}
 
 const INSTALL = `set +x
 mkdir -p /home/user/.armada && test ! -L /home/user/.armada && test ! -L /home/user/.armada/credential-handoff.lock
@@ -67,7 +104,7 @@ try{
  const fence=home+'/.armada/credential-revision',prior=fs.existsSync(fence)?fs.readFileSync(fence,'utf8').trim():'0';if(!/^[0-9]+$/.test(prior)||BigInt(input.revision)<BigInt(prior))throw Error();
  if(input.phase!=='sample')write(fence,input.revision);
  if(input.phase==='capture'||input.phase==='sample'){
-  read(home+'/.armada-repoint-environment.json',true);read(home+'/.armada/model-credentials.json',true);read(home+'/.armada/model-access.json');read(home+'/.codex/auth.json');read(home+'/.claude/.credentials.json');
+  try{const f=fs.openSync(home+'/.armada-repoint-environment.json',fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);try{const st=fs.fstatSync(f);if(!st.isFile()||st.size>1048576)throw Error();const raw=fs.readFileSync(f,'utf8');if(JSON.parse(raw).version!==1)throw Error();values.add('armada-envelope:'+raw);}finally{fs.closeSync(f);}}catch(e){if(e.code!=='ENOENT')throw e;}read(home+'/.armada/model-credentials.json',true);read(home+'/.armada/model-access.json');read(home+'/.codex/auth.json');read(home+'/.claude/.credentials.json');
   fs.rmSync(home+'/.armada-repoint-environment.json',{force:true});
   if(input.phase==='capture')for(const p of [home+'/.codex/auth.json',home+'/.codex/.armada-managed-native',home+'/.armada/model-access.json'])fs.rmSync(p,{force:true});
  }else if(input.phase==='install'){

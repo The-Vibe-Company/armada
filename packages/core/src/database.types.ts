@@ -3114,6 +3114,38 @@ export type Database = {
           },
         ];
       };
+      sandbox_exec_admissions: {
+        Row: {
+          id: string;
+          sandbox_id: string;
+          active: boolean;
+          stop_generation: number;
+          expires_at: string;
+        };
+        Insert: {
+          id: string;
+          sandbox_id: string;
+          active?: boolean;
+          stop_generation: number;
+          expires_at: string;
+        };
+        Update: {
+          id?: string;
+          sandbox_id?: string;
+          active?: boolean;
+          stop_generation?: number;
+          expires_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "sandbox_exec_admissions_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: false;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       sandbox_model_credentials: {
         Row: {
           sandbox_id: string;
@@ -3623,6 +3655,7 @@ export type RoutineRunInputRow = Database["public"]["Tables"]["routine_run_input
 export type RoutineRunRow = Database["public"]["Tables"]["routine_runs"]["Row"];
 export type RoutineRow = Database["public"]["Tables"]["routines"]["Row"];
 export type RuntimeEnrolmentRow = Database["public"]["Tables"]["runtime_enrolments"]["Row"];
+export type SandboxExecAdmissionRow = Database["public"]["Tables"]["sandbox_exec_admissions"]["Row"];
 export type SandboxModelCredentialRow = Database["public"]["Tables"]["sandbox_model_credentials"]["Row"];
 export type SandboxTurnModelRow = Database["public"]["Tables"]["sandbox_turn_models"]["Row"];
 export type SandboxWorkRecovery = Database["public"]["Tables"]["sandbox_work_recovery"]["Row"];

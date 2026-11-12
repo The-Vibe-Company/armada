@@ -119,6 +119,8 @@ describe("database", () => {
         "routine_runs",
         "routines",
         "runtime_enrolments",
+        "sandbox_exec_admissions",
+        "sandbox_model_credentials",
         "sandbox_turn_models",
         "sandbox_work_recovery",
         "sandboxes",
@@ -283,6 +285,8 @@ describe("database", () => {
         if (
           id === "sandboxes.credential_id" ||
           id === "sandboxes.credential_version" ||
+          id === "sandbox_model_credentials.credential_id" ||
+          id === "sandbox_model_credentials.credential_version" ||
           id === "modal_server_harnesses.credential_id" ||
           id === "modal_server_harnesses.credential_version"
         ) {
@@ -293,6 +297,14 @@ describe("database", () => {
           // Allowlisted account references are UUIDs, never credential values.
           expect(column.data_type).toBe("ARRAY");
           expect(column.udt_name).toBe("_uuid");
+          continue;
+        }
+        if (id === "sandboxes.credential_note") {
+          expect(column.data_type).toBe("text");
+          continue;
+        }
+        if (id === "sandboxes.credential_delivery_pending") {
+          expect(column.data_type).toBe("boolean");
           continue;
         }
         if (id === "sandboxes.application_secret_tainted") {
@@ -329,6 +341,8 @@ describe("database", () => {
         "organization_invitations.token_enc",
         "orgs.boat_api_key_enc",
         "runtime_enrolments.configuration_enc",
+        "sandbox_model_credentials.configuration_enc",
+        "sandbox_model_credentials.redaction_enc",
         "sandbox_work_recovery.archive_enc",
       ]);
 
