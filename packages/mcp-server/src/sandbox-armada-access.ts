@@ -14,6 +14,18 @@ import { bootstrapOrchestrator } from "./orchestrator-bootstrap.ts";
 import { orchestratorScopedMcpUrl } from "./orchestrator-scoped-gateway.ts";
 import { createOrchestratorTransport } from "./orchestrator-transport.ts";
 
+/** Closed admission diagnostics only; these reasons never enable authority. */
+export class ArmadaAccessAdmissionError extends VaultError {
+  constructor(readonly reason: "armada_access_disabled" | "armada_access_pair_unavailable") {
+    super(
+      "unavailable",
+      reason === "armada_access_disabled"
+        ? "Sandbox Armada access is not enabled on this server."
+        : "Sandbox Armada access is unavailable for this provider/harness.",
+    );
+  }
+}
+
 export interface SandboxArmadaAccessOptions {
   maxActiveChildren?: number;
 }

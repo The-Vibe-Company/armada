@@ -80,6 +80,8 @@ class Safety(unittest.TestCase):
         cases = [(200, {"ok": True}, None, None),
                  (400, {"error": {"code": "invalid_config", "reason": "helper_missing", "message": "private body"}}, "invalid_config", "helper_missing"),
                  (503, {"error": {"code": "dependency_unavailable", "details": {"reason": "helper_missing"}}}, "dependency_unavailable", "helper_missing"),
+                 (503, {"error": {"code": "dependency_unavailable", "details": {"reason": "armada_access_disabled"}}}, "dependency_unavailable", "armada_access_disabled"),
+                 (503, {"error": {"code": "dependency_unavailable", "details": {"reason": "armada_access_pair_unavailable"}}}, "dependency_unavailable", "armada_access_pair_unavailable"),
                  (403, {"error": {"code": "owner-secret", "reason": "grant-secret", "message": "private body"}}, "unknown_code", "unknown_reason"),
                  (302, {"message": "private body"}, None, None),
                  (500, b"private malformed response", None, None)]
