@@ -120,6 +120,9 @@ export function ResourceBrowser({
   const opener = useRef<string | null>(null);
   const wide = useSyncExternalStore(subscribeWide, readWide, () => true);
   const sheet = selected !== null && (detailPanel || !wide);
+  useEffect(() => {
+    if (detailPanel && selected !== null) opener.current = selected;
+  }, [detailPanel, selected]);
   // The portal target never changes. Moving this host, rather than changing React
   // parents, retains every detail form and build follower across breakpoints.
   const [host, setHost] = useState<HTMLDivElement | null>(null);
@@ -155,7 +158,7 @@ export function ResourceBrowser({
       if (next !== null) {
         opener.current = next;
         requestAnimationFrame(() => titleRef.current?.focus());
-      } else if (wide) {
+      } else if (wide && !detailPanel) {
         restoreFocus();
       }
     },
@@ -167,11 +170,10 @@ export function ResourceBrowser({
     const sync = () => {
       const key = new URL(window.location.href).searchParams.get(ITEM_PARAM);
       setChosen(key);
-      if (!key) restoreFocus();
     };
     window.addEventListener("popstate", sync);
     return () => window.removeEventListener("popstate", sync);
-  }, [detailPanel, restoreFocus]);
+  }, [detailPanel]);
 
   // Escape closes the panel, unless a dialog opened from it is the one being closed.
   useEffect(() => {
