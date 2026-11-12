@@ -22,6 +22,12 @@ import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogOverlay, DialogPortal } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import {
+  ownsResourceDetail,
+  pushResourceDetail,
+  replaceResourceUrl,
+  syncResourceHistory,
+} from "@/lib/resource-history";
 import { type Blocker, FILTER_FROM, ITEM_PARAM, matchesQuery } from "@/lib/resource-list";
 import { cn } from "@/lib/utils";
 
@@ -148,7 +154,7 @@ export function ResourceBrowser({
       const next = key !== null && valid(key) ? key : null;
       // Keep only our marker, not Next's private history fields: passing __NA
       // would bypass its native-history URL synchronization.
-      const owned = window.history.state?.armadaResourceDetail === window.location.pathname;
+      const owned = ownsResourceDetail();
       if (detailPanel && next === null && owned) {
         window.history.back();
         return; // popstate closes the sheet and Radix restores focus once.
@@ -158,13 +164,9 @@ export function ResourceBrowser({
       if (next === null) url.searchParams.delete(ITEM_PARAM);
       else url.searchParams.set(ITEM_PARAM, next);
       if (detailPanel && selected === null && next !== null) {
-        window.history.pushState({ armadaResourceDetail: window.location.pathname }, "", url);
+        pushResourceDetail(url);
       } else {
-        window.history.replaceState(
-          detailPanel && owned && next !== null ? { armadaResourceDetail: window.location.pathname } : null,
-          "",
-          url,
-        );
+        replaceResourceUrl(url);
       }
       if (next !== null) {
         opener.current = next;
@@ -178,7 +180,9 @@ export function ResourceBrowser({
 
   useEffect(() => {
     if (!detailPanel) return;
+    syncResourceHistory(true);
     const sync = () => {
+      syncResourceHistory();
       const key = new URL(window.location.href).searchParams.get(ITEM_PARAM);
       setChosen(key);
     };

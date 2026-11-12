@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { goldenPanel, goldenRow, MOCK, reset, signIn } from "./helpers";
+import { goldenPanel, goldenRow, MOCK, openCreate, reset, signIn } from "./helpers";
 
 const PRIVATE = "00000000-0000-4000-8000-000000000021";
 test.beforeEach(reset);
@@ -115,24 +115,75 @@ test("desktop details overlay without moving the list; history, keyboard navigat
   await expect(row.locator("[data-select-item]")).toBeFocused();
 });
 
-test("repeated explicit dismissal reuses the list history entry instead of trapping Back", async ({ page }) => {
-  await signIn(page, "alice@example.com", "/templates");
-  await expect(page.getByRole("heading", { name: "Templates", exact: true })).toBeVisible();
-  await page.goto("/environments");
-  const row = goldenRow(page, "shared-golden");
-  await expect(row).toBeVisible();
-  const historyLength = await page.evaluate(() => window.history.length);
-  for (const dismiss of ["escape", "close", "outside"] as const) {
+// One owner-boundary sequence table: catches both duplicate list entries and
+// loss of rebuild recovery state, including native Back and reload.
+for (const scenario of [
+  { name: "Escape", rebuild: false, direct: false, reload: false, dismiss: "escape" },
+  { name: "close button after rebuild", rebuild: true, direct: false, reload: false, dismiss: "close" },
+  { name: "Back after rebuild and reload", rebuild: true, direct: false, reload: true, dismiss: "back" },
+  { name: "outside after rebuild", rebuild: true, direct: false, reload: false, dismiss: "outside" },
+  { name: "direct link Escape after rebuild", rebuild: true, direct: true, reload: false, dismiss: "escape" },
+]) {
+  test(`panel history sequence: ${scenario.name}`, async ({ page }) => {
+    await fetch(`${MOCK}/__test/golden-gate`, { method: "POST", body: JSON.stringify({ hold: true }) });
+    await signIn(page, "alice@example.com", "/templates");
+    await expect(page.getByRole("heading", { name: "Templates", exact: true })).toBeVisible();
+    await page.goto(scenario.direct ? "/environments?item=00000000-0000-4000-8000-000000000020" : "/environments");
+    const row = goldenRow(page, "shared-golden");
+    const baseline = await page.evaluate(() => window.history.length);
     const panel = await goldenPanel(page, "shared-golden");
-    if (dismiss === "escape") await page.keyboard.press("Escape");
-    else if (dismiss === "close") await page.getByRole("button", { name: "Close the panel" }).click();
-    else await page.mouse.click(10, 300);
+    let tracking: string | null = null;
+    const buildKey = "build.rebuild.00000000-0000-4000-8000-000000000020";
+    if (scenario.rebuild) {
+      await panel.getByText("Edit and rebuild").click();
+      const form = panel.locator('form[data-golden-form="update"]');
+      await form.getByLabel("Branch").first().fill("history-regression");
+      await form.getByRole("button", { name: "Rebuild golden" }).click();
+      await expect(form.getByRole("status")).toContainText(/Build .*: (queued|running)/);
+      tracking = new URL(page.url()).searchParams.get(buildKey);
+      expect(tracking).toBeTruthy();
+    }
+    if (scenario.reload) await page.reload();
+    if (scenario.dismiss === "back") await page.goBack();
+    else if (scenario.dismiss === "close") await page.getByRole("button", { name: "Close the panel" }).click();
+    else if (scenario.dismiss === "outside") await page.mouse.click(10, 300);
+    else await page.keyboard.press("Escape");
     await expect(panel).toBeHidden();
     await expect(row.locator("[data-select-item]")).toBeFocused();
-    await expect(page).toHaveURL(/\/environments$/);
-    expect(await page.evaluate(() => window.history.length)).toBe(historyLength + 1);
-  }
-  await page.evaluate(() => window.history.back());
-  await expect(page).toHaveURL(/\/templates$/);
-  await expect(page.getByRole("heading", { name: "Templates", exact: true })).toBeVisible();
+    expect(new URL(page.url()).searchParams.has("item")).toBe(false);
+    expect(new URL(page.url()).searchParams.get(buildKey)).toBe(tracking);
+    // Reopening and closing must not grow the stack or drop recovery state.
+    await goldenPanel(page, "shared-golden");
+    await page.keyboard.press("Escape");
+    await expect(panel).toBeHidden();
+    expect(await page.evaluate(() => window.history.length)).toBe(baseline + 1);
+    await page.reload();
+    await expect(panel).toBeHidden();
+    expect(new URL(page.url()).searchParams.get(buildKey)).toBe(tracking);
+    await page.goBack();
+    await expect(page).toHaveURL(/\/templates$/);
+  });
+}
+
+test("Forward through an older detail does not erase a newer list-side build", async ({ page }) => {
+  await fetch(`${MOCK}/__test/golden-gate`, { method: "POST", body: JSON.stringify({ hold: true }) });
+  await signIn(page, "alice@example.com", "/environments");
+  const panel = await goldenPanel(page, "shared-golden");
+  await page.keyboard.press("Escape");
+  await expect(panel).toBeHidden();
+  const form = await openCreate(page);
+  await form.getByLabel("Name").fill("history-new-build");
+  await form.getByRole("textbox", { name: "Repository 1", exact: true }).fill("acme/web");
+  await form.getByRole("button", { name: "Build golden" }).click();
+  await expect(form.getByRole("status")).toContainText(/Build .*: (queued|running)/);
+  const recovery = new URL(page.url()).search;
+  expect(recovery).toContain("build.create.");
+  await page.keyboard.press("Escape");
+  await page.goForward();
+  await expect(panel).toBeVisible();
+  await page.goBack();
+  await expect(panel).toBeHidden();
+  expect(new URL(page.url()).search).toBe(recovery);
+  await page.reload();
+  expect(new URL(page.url()).search).toBe(recovery);
 });
