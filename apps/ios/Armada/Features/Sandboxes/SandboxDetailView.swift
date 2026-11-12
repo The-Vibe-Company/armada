@@ -199,7 +199,7 @@ struct SandboxConversationView: View {
         }
         // Restarts when a refresh revives a stopped follow, and ends once the sandbox is deleted.
         .task(id: "\(model.sandboxID):\(model.followGeneration):\(model.isDeleted)") { await model.follow() }
-        .task(id: model.sandboxID) { await model.watchState() }
+        .task(id: "\(model.sandboxID):\(model.stateWatchGeneration)") { await model.watchState() }
         .onChange(of: model.feed.conversation.items) { _, _ in model.streamChanged() }
     }
 
@@ -216,8 +216,8 @@ struct SandboxConversationView: View {
             if case .reconnecting(let reason) = model.feed.connection {
                 InlineBanner(text: reason + " Reconnecting… The conversation continues from where it stopped.", style: .info)
             }
-            if case .stopped = model.feed.connection, !model.isDeleted {
-                InlineBanner(text: "Live updates paused. Pull to refresh to resume.", style: .warning)
+            if case .stopped(let failure) = model.feed.connection, !model.isDeleted {
+                InlineBanner(text: failure.message + " Live updates paused. Pull to refresh to resume.", style: .warning)
             }
             if model.stopping {
                 InlineBanner(text: "Stopping… The disk and conversation are kept.", style: .info)

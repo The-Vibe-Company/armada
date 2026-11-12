@@ -1,3 +1,4 @@
+import struct ArmadaKit.ConversationFeedLifecycle
 import class ArmadaKit.ConversationCache
 import class ArmadaKit.ConversationLoader
 import struct ArmadaKit.ConversationPage
@@ -19,12 +20,7 @@ typealias ConversationMemory = ConversationCache<AgentEvent>
 @MainActor
 @Observable
 final class ConversationFeed {
-    enum Connection: Equatable {
-        case connecting
-        case live
-        case reconnecting(String)
-        case stopped(ServiceFailure)
-    }
+    typealias Connection = ConversationFeedLifecycle<ServiceFailure>.Connection
 
     /// One read: forward after `cursor`, or backward (the latest page when `cursor` is nil, else
     /// the page before that older cursor).
@@ -32,9 +28,15 @@ final class ConversationFeed {
 
     private(set) var conversation = Conversation(items: [], activeTurns: [:], technicalCount: 0)
     private(set) var documents: [String: MarkdownDocument] = [:]
-    private(set) var connection: Connection = .connecting
+    private var lifecycle = ConversationFeedLifecycle<ServiceFailure>()
+    var connection: Connection { lifecycle.connection }
     /// Something is shown: this session's earlier read of the conversation, or the latest page.
     private(set) var hasLoaded = false
+    /// Available before asynchronous projection first publishes: an offline detail failure
+    /// must not remove the transcript task before it can show this cached window.
+    var hasCachedHistory: Bool {
+        lifecycle.canKeepHistory(hasPublished: hasLoaded, hasWindow: loader.snapshot.hasTail)
+    }
     /// Older history exists above what is shown.
     private(set) var hasOlder = false
     private(set) var isLoadingOlder = false
@@ -46,37 +48,56 @@ final class ConversationFeed {
     @ObservationIgnored private var cache: [String: CachedMarkdownDocument] = [:]
     /// Orders projections that finish out of order: only the latest stream is shown.
     @ObservationIgnored private var generation = 0
+    @ObservationIgnored private var lifetime = 0
 
     init(key: String, memory: ConversationMemory?) {
         loader = ConversationLoader(key: key, cache: memory)
     }
 
     /// Reads what is new now (pull to refresh) up to the newest event. Safe beside `follow`:
-    /// events are applied once by id, so overlapping reads change nothing.
-    func refresh(_ fetch: @escaping Fetch) async throws(ServiceFailure) {
+    /// events are applied once by id, so overlapping reads change nothing. Returns whether
+    /// the caller should restart follow after recovering a stopped/backing-off stream.
+    func refresh(_ fetch: @escaping Fetch) async throws(ServiceFailure) -> Bool {
+        guard !lifecycle.isRevoked else { return false }
+        let startedAt = lifetime
         await loader.showCached(show)
-        try await loader.catchUp(Self.read(fetch), show: show)
+        do throws(ServiceFailure) {
+            try await loader.catchUp(read(fetch), show: show)
+        } catch {
+            if !Task.isCancelled, lifetime == startedAt {
+                switch error.category {
+                case .offline, .uncertain:
+                    lifecycle.refreshFailed(error, message: error.message)
+                default: break
+                }
+            }
+            throw error
+        }
+        guard !Task.isCancelled, lifetime == startedAt, loader.snapshot.hasTail else { return false }
+        return lifecycle.refreshSucceeded()
     }
 
     /// Shows what is known, reads the latest page, then follows forward until the calling task is
     /// cancelled (the screen disappears) or the stream stops.
     func follow(_ fetch: @escaping Fetch, onSignedOut: @MainActor () -> Void) async {
+        guard !lifecycle.isRevoked else { return }
         await loader.run(
             clock: ContinuousClock(),
-            fetch: Self.read(fetch),
+            fetch: read(fetch),
             show: show,
             pollDelay: { self.conversation.running ? .seconds(2) : .seconds(6) },
-            onRead: { self.connection = .live },
+            onRead: { self.lifecycle.readSucceeded() },
             onFailure: { (error: ServiceFailure, failures: Int) -> Duration? in
                 switch error.category {
                 case .signedOut:
                     onSignedOut()
                     return nil
                 case .unavailable, .noAccess, .rejected:
-                    self.connection = .stopped(error)
+                    self.lifecycle.readFailed(error, retryable: false, message: error.message)
                     return nil
                 case .offline, .uncertain:
-                    self.connection = .reconnecting(error.message)
+                    guard !self.lifecycle.isRevoked else { return nil }
+                    self.lifecycle.readFailed(error, retryable: true, message: error.message)
                     return .seconds(min(30, 1 << min(failures, 5)))
                 }
             }
@@ -86,38 +107,58 @@ final class ConversationFeed {
     /// Reads the page before the oldest message shown (scroll-up). A failure is returned to the
     /// caller; the next scroll-up tries again.
     func loadOlder(_ fetch: @escaping Fetch) async throws(ServiceFailure) {
-        guard loader.hasOlder, !loader.isLoadingOlder else { return }
+        guard !lifecycle.isRevoked, loader.hasOlder, !loader.isLoadingOlder else { return }
         isLoadingOlder = true
+        let startedAt = lifetime
         defer {
             isLoadingOlder = false
-            hasOlder = loader.hasOlder
+            if lifetime == startedAt { hasOlder = loader.hasOlder }
         }
-        try await loader.loadOlder(Self.read(fetch), show: show)
-        olderPagesRead += 1
+        try await loader.loadOlder(read(fetch), show: show)
+        if !Task.isCancelled, lifetime == startedAt { olderPagesRead += 1 }
     }
 
     /// Forgets what this session kept of the conversation, after its access was refused.
-    func forget() {
-        loader.forget()
+    func forget(reason: ServiceFailure = .noAccess) {
+        lifecycle.revoke(reason) {
+            generation += 1
+            lifetime += 1
+            loader.forget()
+            conversation = Conversation(items: [], activeTurns: [:], technicalCount: 0)
+            documents = [:]
+            cache = [:]
+            hasLoaded = false
+            hasOlder = false
+            isLoadingOlder = false
+            olderPagesRead = 0
+        }
     }
 
-    private static func read(
+    private func read(
         _ fetch: @escaping Fetch
-    ) -> (ConversationRead) async throws(ServiceFailure) -> ConversationPage<AgentEvent> {
+    ) -> @MainActor (ConversationRead) async throws(ServiceFailure) -> ConversationPage<AgentEvent> {
         { (read: ConversationRead) async throws(ServiceFailure) -> ConversationPage<AgentEvent> in
-            let page: ConversationEventPage
-            switch read {
-            case .latest: page = try await fetch(nil, true)
-            case .older(let cursor): page = try await fetch(cursor, true)
-            case .newer(let cursor): page = try await fetch(cursor, false)
+            guard !self.lifecycle.isRevoked else { throw .noAccess }
+            do throws(ServiceFailure) {
+                let page: ConversationEventPage
+                switch read {
+                case .latest: page = try await fetch(nil, true)
+                case .older(let cursor): page = try await fetch(cursor, true)
+                case .newer(let cursor): page = try await fetch(cursor, false)
+                }
+                guard !self.lifecycle.isRevoked else { throw .noAccess }
+                return ConversationPage(events: page.events, cursor: page.cursor, olderCursor: page.olderCursor, hasMore: page.hasMore)
+            } catch {
+                if case .noAccess = error.category { self.forget(reason: error) }
+                throw error
             }
-            return ConversationPage(events: page.events, cursor: page.cursor, olderCursor: page.olderCursor, hasMore: page.hasMore)
         }
     }
 
     /// Called once per read that changed the stream (never per event). Projection and Markdown
     /// run off the main actor, so a long history never blocks scrolling or the composer.
     private func show(_ events: [AgentEvent]) async {
+        guard !lifecycle.isRevoked, !Task.isCancelled else { return }
         hasOlder = loader.hasOlder
         generation += 1
         let current = generation
@@ -125,15 +166,19 @@ final class ConversationFeed {
             ConversationProjection.project(events)
         }.value
         guard current == generation else { return }
-        conversation = projected
-        hasLoaded = true
+        guard lifecycle.publish(projected, apply: {
+            conversation = $0
+            hasLoaded = true
+        }) else { return }
         let sources = projected.items.compactMap { item -> MarkdownDocumentSource? in
             guard case .assistant(let text, _, _) = item.kind else { return nil }
             return MarkdownDocumentSource(eventID: item.key, content: text)
         }
         let rendered = await MarkdownDocumentRenderer.render(sources: sources, reusing: cache)
         guard current == generation else { return }
-        cache = rendered
-        documents = rendered.mapValues(\.document)
+        lifecycle.publish(rendered) {
+            cache = $0
+            documents = $0.mapValues(\.document)
+        }
     }
 }

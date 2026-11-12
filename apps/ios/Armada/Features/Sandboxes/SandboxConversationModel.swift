@@ -1,3 +1,4 @@
+import struct ArmadaKit.ConversationDetailPolling
 import Foundation
 import Observation
 
@@ -33,6 +34,8 @@ final class SandboxConversationModel {
     private(set) var readIssue: String?
     /// Bumped when live follow must start again (after it stopped, or the sandbox was deleted).
     private(set) var followGeneration = 0
+    /// Explicit successful refresh also wakes a detail watcher sleeping in network backoff.
+    private(set) var stateWatchGeneration = 0
     private var recoveringPrompt = true
     var draft = ""
     let feed: ConversationFeed
@@ -40,6 +43,7 @@ final class SandboxConversationModel {
     /// The turn each accepted bubble opened, to retire it once the transcript shows that turn.
     @ObservationIgnored private var acceptedPrompts: [String: String] = [:]
     @ObservationIgnored private let service: any SandboxService
+    @ObservationIgnored private var detailPolling = ConversationDetailPolling()
     @ObservationIgnored let sandboxID: String
     @ObservationIgnored private let orgID: String
     /// The list row's status, shown until the interior state is read.
@@ -104,12 +108,14 @@ final class SandboxConversationModel {
     func refresh() async {
         guard await loadState() else { return }
         guard !isDeleted else { return }
+        stateWatchGeneration += 1
         do throws(ServiceFailure) {
-            try await feed.refresh(fetch)
+            let restart = try await feed.refresh(fetch)
+            guard !Task.isCancelled, phase != .noAccess else { return }
             readIssue = nil
             reconcilePending()
-            // A follow that the server stopped resumes once a read succeeds again.
-            if case .stopped = feed.connection { followGeneration += 1 }
+            // Explicit recovery must not leave a successful refresh behind an old backoff sleep.
+            if restart { followGeneration += 1 }
         } catch {
             handleReadFailure(error)
         }
@@ -121,6 +127,10 @@ final class SandboxConversationModel {
         guard !isDeleted else { return }
         await feed.follow(fetch, onSignedOut: onSignedOut)
         guard !Task.isCancelled, case .stopped(let failure) = feed.connection else { return }
+        if case .noAccess = failure.category {
+            handleReadFailure(failure)
+            return
+        }
         // The history may be refused because the sandbox was deleted meanwhile: its state says so.
         guard await loadState(), !isDeleted else { return }
         handleReadFailure(failure)
@@ -140,7 +150,7 @@ final class SandboxConversationModel {
     func watchState() async {
         while !Task.isCancelled, phase == .loaded || phase == .loading {
             let busy = isWorking || stopping || state?.status == .starting || state?.status == .stopping
-            try? await Task.sleep(for: busy ? .seconds(3) : .seconds(15))
+            try? await Task.sleep(for: detailPolling.delay(busy: busy))
             guard !Task.isCancelled else { return }
             _ = await loadState()
         }
@@ -165,18 +175,25 @@ final class SandboxConversationModel {
         }
     }
 
-    /// Returns false when the read was refused or failed before anything was shown.
+    /// True only after an authorized detail read and local pending-prompt recovery succeed.
     private func loadState() async -> Bool {
         do throws(ServiceFailure) {
-            state = try await service.sandboxState(id: sandboxID, orgID: orgID)
+            let loaded = try await service.sandboxState(id: sandboxID, orgID: orgID)
+            guard !Task.isCancelled, phase != .noAccess else { return false }
+            state = loaded
+            detailPolling.succeeded()
             // Any first successful authorized read can finish recovery, including a refresh after
             // the initial detail read failed while history loaded in parallel. Never enable send
             // until local tracking was read successfully.
             if recoveringPrompt {
-                if let recovery = service as? any SandboxPromptRecovery, pending.isEmpty,
-                   let saved = try await recovery.unconfirmedPrompt(sandboxID: sandboxID, orgID: orgID) {
-                    pending = [PendingBubble(id: saved.id.uuidString, text: saved.text, intent: .message,
-                                             sentAt: saved.sentAt, status: .unconfirmed)]
+                if let recovery = service as? any SandboxPromptRecovery, pending.isEmpty {
+                    let saved = try await recovery.unconfirmedPrompt(sandboxID: sandboxID, orgID: orgID)
+                    guard !Task.isCancelled, phase != .noAccess else { return false }
+                    // Another read may already have completed recovery and allowed a send.
+                    if let saved, pending.isEmpty {
+                        pending = [PendingBubble(id: saved.id.uuidString, text: saved.text, intent: .message,
+                                                 sentAt: saved.sentAt, status: .unconfirmed)]
+                    }
                 }
                 recoveringPrompt = false
             }
@@ -184,8 +201,14 @@ final class SandboxConversationModel {
             if phase == .loading { phase = .loaded }
             return true
         } catch {
+            if !Task.isCancelled {
+                switch error.category {
+                case .offline, .uncertain: detailPolling.failed()
+                default: break
+                }
+            }
             handleReadFailure(error)
-            return phase == .loaded
+            return false
         }
     }
 
@@ -297,6 +320,10 @@ final class SandboxConversationModel {
     private func handleReadFailure(_ error: ServiceFailure) {
         // Leaving the screen cancels the read; that is not a failure to show.
         if Task.isCancelled { return }
+        if phase == .noAccess {
+            if case .signedOut = error.category { onSignedOut() }
+            return
+        }
         switch error.category {
         case .signedOut:
             onSignedOut()
@@ -306,7 +333,7 @@ final class SandboxConversationModel {
             phase = .unavailable(error.message)
         default:
             // Once something is shown, a failed read is a banner, never a blank screen.
-            if phase == .loaded || feed.hasLoaded {
+            if phase == .loaded || feed.hasLoaded || feed.hasCachedHistory {
                 readIssue = error.message
             } else {
                 phase = .failed(error.message)
