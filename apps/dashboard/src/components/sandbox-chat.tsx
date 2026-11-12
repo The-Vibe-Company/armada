@@ -995,7 +995,7 @@ function Composer({
       <p className="border-t bg-muted/30 px-4 py-3 text-sm text-muted-foreground sm:px-6">
         {status === "starting" || status === "stopping"
           ? `The sandbox is ${status}.`
-          : `The sandbox is ${status}: it takes no new messages.`}
+          : `The sandbox ${status === "failed" ? "failed" : status === "deleted" ? "was deleted" : `is ${status}`}: it takes no new messages.`}
       </p>
     );
   }
