@@ -87,8 +87,8 @@ argv: no key. No schema migration or new deployment prerequisite for the CLI.
 
 ## Dashboard creation fields
 
-On Models/Harness, open **Add a subscription**, choose **Use an API key
-instead**, select **OpenAI API key**, and name the account. Check **Use a custom
+On Models/Harness, open **Add a model account**, select **OpenAI API key**,
+and name the account. Check **Use a custom
 endpoint (Modal)**. Paste the Foundry base URL (with or without `/responses`),
 leave API version empty for v1, and paste the key in the password field.
 Save with **Add API key**; the named account is available in existing launch
@@ -99,6 +99,24 @@ Coordinator staging check: repeat that creation flow for both pasted URL
 forms using the owner-held endpoint/key, then launch each account and request
 MODEL_OK on initial and subsequent turns. Expect success and no duplicated
 suffix. Inspect account listings/page text: neither key nor connection JSON
-is returned. The separate endpoint-test action and dedicated replacement
-fields are not part of this creation-form slice; replacement still accepts
-the complete connection JSON through the existing flow.
+is returned. The separate endpoint-test action remains a subsequent slice. Replacement
+uses the explicit destination flow below.
+
+
+## Replacing a Codex connection
+
+Use the account menu → Replace key. Existing endpoint details cannot be read
+back from the sealed account, so **Connection type** starts unselected.
+Choose **Custom endpoint (Modal)** and re-enter the full endpoint configuration
+and new key to keep custom routing. Choose **OpenAI default endpoint** only
+when deliberately switching to OpenAI (or rotating an existing default key).
+Changing the destination clears any key already typed. Keys are not prefilled,
+and connection JSON is refused in the default-key mode.
+
+Coordinator staging check: rotate a saved Foundry account through Custom
+endpoint with the owner-held new key and either pasted URL form. Expect the
+same account ID/name/default, a higher version, and a new Modal launch returning
+MODEL_OK. The old version-bound sandbox must refuse later messages, without
+losing files/conversations. A second tab holding the old version must report a
+conflict instead of overwriting the rotation. Existing subscription replacement
+is unchanged. No migration/new setting; dashboard rollout only.
