@@ -1,4 +1,4 @@
-import type { AgentEvent, ExecRequest, PromptRequest, PromptStatus } from "@armada/core";
+import type { AgentEvent, ExecRequest, Harness, PromptRequest, PromptStatus } from "@armada/core";
 import type { GitHubBrokerConfiguration } from "./github-broker.ts";
 import type { ModelConnectionTestResult } from "./model-connection-test.ts";
 export const PROTOCOL_VERSION = 1;
@@ -115,7 +115,7 @@ export type RunnerRequest = { version: 1; requestId: string; sandboxId: string }
       expectedSessionId: string;
       input: Omit<RuntimePromptRequest, "text">;
     }
-  | { op: "configureReadableVariables"; harness: "claude" | "codex"; variables: Record<string, string> }
+  | { op: "configureReadableVariables"; harness: Harness; variables: Record<string, string> }
   | { op: "configureGitHub"; configuration: GitHubBrokerConfiguration | null }
   | { op: "resourceObservation" }
   | ConfigureMcpRequest
