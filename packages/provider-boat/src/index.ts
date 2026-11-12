@@ -15,3 +15,4 @@ export {
   DEFAULT_TTL_SECONDS,
   MAX_TTL_SECONDS,
 } from "./provider.ts";
+export { startBoatRuntime } from "./runtime-bootstrap.ts";
