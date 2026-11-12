@@ -1,4 +1,6 @@
 import {
+  CLAUDE_ENDPOINT_ENV,
+  CODEX_ENDPOINT_ENV,
   type CredentialKind,
   type CredentialReader,
   decryptSecret,
@@ -16,6 +18,7 @@ import {
 } from "@armada/core";
 
 import {
+  createUsagePricingContext,
   installPrivateSkill,
   PrivateSkillError,
   sshHydrateAuthState,
@@ -197,6 +200,12 @@ export function launchCredentials(
           )
         : undefined;
       const result = toHarnessCredentials(resolved, access);
+      result.usagePricing = createUsagePricingContext({
+        harness,
+        credentialKind: resolved.sources[0]?.kind ?? null,
+        ...(result.binding ?? {}),
+        customEndpoint: Boolean(result.env[CODEX_ENDPOINT_ENV] || result.env[CLAUDE_ENDPOINT_ENV]),
+      });
       if (ownership?.broker && result.codexAuthJson) {
         delete result.env.ARMADA_CODEX_AUTH_JSON;
         result.env.ARMADA_SERVER_CODEX = "1";
@@ -223,11 +232,15 @@ export async function exposedSecrets(
     for (const row of await reader.credentials(scope, owner)) {
       if (!SECRET_KINDS.includes(row.kind)) continue;
       const value = await decryptSecret(new Uint8Array(row.valueEnc), encryptionKey);
-      values.push(value, ...jsonLeaves(value));
       if ((row.kind === "openai" || row.kind === "anthropic") && value.startsWith("{")) {
         const connection = JSON.parse(parseCredentialValue(row.kind, value));
-        values.push(connection.apiKey);
-      }
+        // Keep full-secret and endpoint/key redaction, not unrelated non-secret numeric prices.
+        values.push(
+          value,
+          ...jsonLeaves(JSON.stringify({ endpoint: connection.endpoint, apiKey: connection.apiKey })),
+          connection.apiKey,
+        );
+      } else values.push(value, ...jsonLeaves(value));
     }
   }
   return values;

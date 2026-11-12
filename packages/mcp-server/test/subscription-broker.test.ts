@@ -55,6 +55,15 @@ test("three current sandbox grants share one server refresh across replicas with
     const replica = createSubscriptionBroker(db, ENCRYPTION_KEY, "https://armada.example", vendor);
     const resolver = launchCredentials(createSqlVaultStore(db), ENCRYPTION_KEY, undefined, ownership);
     const credentials = await resolver.resolve(actor, "codex", account.id);
+    expect(credentials.usagePricing).toMatchObject({
+      provider: "openai",
+      basis: "api_equivalent",
+      customEndpoint: false,
+      credentialId: account.id,
+      credentialVersion: 1,
+    });
+    expect(JSON.stringify(credentials.usagePricing)).not.toContain("refresh-before");
+    expect(JSON.stringify(credentials.usagePricing)).not.toContain("access-before");
     expect(credentials.env.ARMADA_CODEX_AUTH_JSON).toBeUndefined();
     expect(JSON.stringify(credentials.env)).not.toContain("refresh-before");
     const ids = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()];

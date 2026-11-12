@@ -871,7 +871,7 @@ describe("tools", () => {
       },
       recordUsage: async () => {
         writes.push("usage");
-        throw new Error("Stored reads must not collect usage");
+        // Stored journal projection is allowed; native collection is not.
       },
       recordTurnModelEvidence: async () => {
         writes.push("telemetry");
@@ -891,7 +891,7 @@ describe("tools", () => {
     );
     expect(stored.status).toBe("ready");
     expect(stored.prompt?.state).toBe("finished");
-    expect(writes).toEqual([]);
+    expect(writes).toEqual(["usage"]);
     // Modal appends terminal prompt transitions; they are not the start of a turn.
     const modalEvents = boat.sandbox("bx_1").events;
     modalEvents.push({

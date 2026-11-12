@@ -1,5 +1,13 @@
 # Native subscription authentication and renewal (#604)
 
+## Current owner policy (#1176, 2026-11-12)
+
+Subscription accounts are reusable like API keys, with no Armada exclusivity,
+use-history lease, holder or reconcile/release step. #1248 owns lock removal.
+Legacy behavior documented below describes compatibility code, not a requirement
+to retain those restrictions or impose a fleet-migration gate. The owner allows
+only the already-open PRs and their stack to finish; further feature work is cancelled.
+
 ## Scope and prerequisites
 
 Configured servers use shared, server-owned Codex sessions (#1176): launch
@@ -10,8 +18,9 @@ API keys and model-only Claude setup tokens do not use rotating-session ownershi
 Local native consent/import, encrypted auth revisions, hydration and redaction
 remain supported. Legacy ownership and private native-state transport are retained
 for historical refresh-bearing homes, explicit legacy binding/recovery and
-compatibility embedders without a broker. They cannot be removed while those
-writers or their archived redaction state may still exist. Per-account quota telemetry is separately owned by #624.
+compatibility embedders without a broker. Their removal follows #1248 and the
+owner policy above; this PR adds no further migration requirement. Per-account
+quota telemetry is separately owned by #624.
 
 Requires #603's named account IDs, binding versions and sandbox pins. Apply
 20261110120200_named_model_credentials.sql, then

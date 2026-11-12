@@ -32,6 +32,14 @@ API, auth callbacks, extension, assets, signing profiles or App Store record.
 - Native runtime remains OFF until real operator conformance. A successful
   compile is not evidence of working auth, API or native-session continuity.
 
+## Generated harness metadata
+
+`Armada/Model/Harness.generated.swift` is generated from the browser-safe core
+harness catalog (IDs, labels and steering capabilities). After changing that
+catalog, run `bun scripts/generate-ios-harness.ts` from the repository root and
+commit the result. CI runs `bun scripts/generate-ios-harness.ts --check` to reject
+drift. XcodeGen includes this file through the existing `Armada` source directory.
+
 ## Verify on Apple hardware
 
 Xcode with iOS 26 SDK, Swift 6+, and XcodeGen 2.44.1+ are required.

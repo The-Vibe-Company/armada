@@ -1,4 +1,5 @@
 import type { Harness, PromptStatus, ToolCall } from "@armada/core";
+import { mapHarnesses } from "@armada/core";
 import type { ChatEvent, MessageEvent } from "./events.ts";
 
 /** One tool call, merged from every event that carried its id (start, input, result). */
@@ -26,7 +27,9 @@ export type Chat = {
  * How a steer reaches the running turn, as both providers declare it (`HarnessCapabilities.steer`): Claude Code joins
  * the turn, Codex interrupts it and continues with the message. Only the label depends on it; the server decides.
  */
-export const STEER_RESTARTS_TURN: Readonly<Record<Harness, boolean>> = { claude: false, codex: true };
+export const STEER_RESTARTS_TURN: Readonly<Record<Harness, boolean>> = mapHarnesses(
+  ({ capabilities }) => capabilities.steer === "restart",
+);
 
 /**
  * The closed event types the server reads as a failed turn although the prompt says `finished` (`promptOutcome` in

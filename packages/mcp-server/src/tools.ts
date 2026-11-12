@@ -201,6 +201,15 @@ const sandboxUsage = z
   .object({
     computeSeconds: z.number().nullable(),
     turnCount: z.number().nullable(),
+    cost: z
+      .object({
+        currency: z.literal("USD"),
+        usd: z.string().nullable(),
+        basis: z.enum(["estimated", "api_equivalent"]).nullable(),
+        unknown: z.enum(["admission", "coverage", "price", "tokens", "pricing_dimensions"]).nullable(),
+        unpricedTurns: z.number().int().nonnegative().nullable(),
+      })
+      .optional(),
     tokenTotals: z
       .object({
         inputTokens: z.number().nullable(),
@@ -219,6 +228,12 @@ const sandboxUsage = z
         cachedTokens: z.number().nullable(),
         cacheWriteTokens: z.number().nullable().optional(),
         reasoningTokens: z.number().nullable().optional(),
+        // Versioned service-owned pricing metadata; native decoders never populate it.
+        pricing: z
+          .unknown()
+          .nullable()
+          .optional()
+          .describe("Versioned server USD quote from a frozen snapshot; null means unpriced, never zero."),
         unavailableReason: z.object({ code: z.enum(USAGE_UNAVAILABLE_CODES), message: z.string().max(600) }).optional(),
       }),
     ),
@@ -677,6 +692,8 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       const { sandbox: found, provider } = await live(args.id);
       if (found.ownerId !== caller.userId)
         throw new ToolError("forbidden", "Only the sandbox owner may repair GitHub access.");
+      if (provider.id !== "boat")
+        throw new ToolError("unsupported", "Use the next prompt to reconcile this provider's managed GitHub runtime.");
       const machine = await provider.get(found.providerSandboxId);
       if (!["ready", "running"].includes(machine.state))
         throw new ToolError("conflict", "GitHub repair requires a running sandbox.");

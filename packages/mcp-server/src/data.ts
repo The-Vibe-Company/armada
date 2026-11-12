@@ -16,6 +16,8 @@ import {
   type Sql,
   statusReasonOf,
   type TaskOutcome,
+  type TurnPriceContext,
+  type TurnTokenUsage,
   type Visibility,
   withUsageTotals,
 } from "@armada/core";
@@ -24,6 +26,7 @@ import { assertGoldenBackendBinding, assertSqlGoldenMutation } from "@armada/cor
 import { beginGoldenOperation, reconcileGoldenOperations } from "../../core/src/golden-store.ts";
 import type { Caller } from "./caller.ts";
 import { createResourceStore, type ResourceStore } from "./resource-store.ts";
+import { admittedTurnContexts, stampTurnPricing, withServerCost } from "./turn-pricing.ts";
 import { preserveBeforeStop, readWorkRecovery } from "./work-preservation.ts";
 
 /** A sandbox with what the caller needs to know about its golden. */
@@ -41,7 +44,16 @@ export interface ServerSandboxStore extends SandboxStore {
   assertDeletionAllowed?(id: string): Promise<void>;
   /** Admission-only read: ordinary exec stays concurrent, but cannot start during stop. */
   assertExecAllowed?(id: string): Promise<void>;
-  recordUsage?(id: string, usage: Pick<SandboxUsage, "turnCount" | "turns">): Promise<void>;
+  recordUsage?(
+    id: string,
+    usage: Pick<SandboxUsage, "turnCount" | "turns">,
+    options?: {
+      /** Fresh native snapshots only, not retained/server-merged rows. */
+      observations: readonly TurnTokenUsage[];
+      /** Trusted service admission contexts, never guest monetary output. */
+      contexts?: readonly TurnPriceContext[];
+    },
+  ): Promise<void>;
   preserveWork?(id: string, provider: Provider, providerId: string): Promise<"pending" | void>;
   readWorkRecovery?(id: string, recoveryId?: string): Promise<string | null>;
   reportTaskOutcome?(id: string, promptId: string, outcome: TaskOutcome, expectedGeneration?: number): Promise<void>;
@@ -78,7 +90,13 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const GOLDEN_COLUMNS = `g.id, g.org_id, g.name, g.visibility::text as visibility, g.owner_id,
   g.provider::text as provider, g.provider_sandbox_id, g.provider_snapshot_id, g.modal_workspace,
   g.modal_environment, g.modal_app_id, g.config, g.size_policy, g.build_warnings, g.helper_receipt, g.created_at`;
-const SANDBOX_COLUMNS = `public.sandbox_usage(s) as usage, s.preservation_note, s.task_outcome, s.task_prompt_id, s.credential_id, s.credential_version, s.id, s.provider::text as provider, s.provider_sandbox_id, s.golden_id, s.org_id, s.owner_id, s.harness::text as harness,
+// Include admitted prompts even before their native usage is collected; never show a stale subtotal as complete.
+const SANDBOX_USAGE = `(public.sandbox_usage(s) || jsonb_build_object('turnCount',
+  greatest((s.usage_turns->>'turnCount')::int, (select nullif(count(distinct prompt_id),0)::int from (
+    select prompt_id from public.sandbox_turn_models where sandbox_id=s.id
+    union select value->>'promptId' from jsonb_array_elements(coalesce(s.usage_turns->'turns','[]'::jsonb))
+  ) admitted_prompts))))`;
+const SANDBOX_COLUMNS = `${SANDBOX_USAGE} as usage, s.preservation_note, s.task_outcome, s.task_prompt_id, s.credential_id, s.credential_version, s.id, s.provider::text as provider, s.provider_sandbox_id, s.golden_id, s.org_id, s.owner_id, s.harness::text as harness,
   s.status::text as status, s.conversation_ids, s.created_at, s.stopped_at, s.deleted_at, s.status_reason,
   s.skills,s.expires_at,s.effective_ttl_seconds,s.requested_ttl_seconds,s.last_observed_at,s.lifecycle_error,s.lifecycle_generation,s.stop_requested_at,s.model, s.reasoning_effort, s.machine_size,s.resource_project, s.repository_dir, g.name as golden, s.visibility::text as visibility, s.access_owner_id,
   s.source_golden_visibility::text as source_golden_visibility, g.modal_workspace,
@@ -91,7 +109,7 @@ const SANDBOX_MEMBER = `not exists(select 1 from public.orchestrators o where o.
   where m.org_id=s.org_id and m.user_id=$2::uuid)`;
 const SANDBOX_VISIBLE = `${SANDBOX_MEMBER} and exists(select 1 from public.members m
   where m.org_id=s.org_id and m.user_id=$2::uuid and (s.owner_id=$2::uuid or m.role='admin'))`;
-const SANDBOX_LIST_COLUMNS = `case when (s.owner_id=$2::uuid or exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$2::uuid and m.role='admin')) then public.sandbox_usage(s) else null end as usage, s.preservation_note as "preservationNote", nullif(s.provider_sandbox_id,'') as "providerSandboxId",
+const SANDBOX_LIST_COLUMNS = `case when (s.owner_id=$2::uuid or exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$2::uuid and m.role='admin')) then ${SANDBOX_USAGE} else null end as usage, s.preservation_note as "preservationNote", nullif(s.provider_sandbox_id,'') as "providerSandboxId",
   case when s.provider='boat' then nullif(s.provider_sandbox_id,'') else null end as "boatId", s.id, s.org_id as "orgId", s.owner_id as "ownerId",
   s.provider::text as provider, s.harness::text as harness, s.model, s.reasoning_effort as "reasoningEffort",
   s.status::text as status, s.created_at as "createdAt", s.stopped_at as "stoppedAt", s.expires_at as "expiresAt",
@@ -237,6 +255,10 @@ export function createSqlData(sql: Sql): DataSource {
 
     const sandboxes: ServerSandboxStore = {
       activityOwnership: true,
+      async recordUsagePricingContext(id, context) {
+        if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");
+        await createSqlSandboxStore(sql, { turnModels: true }).recordUsagePricingContext!(id, context);
+      },
       async recordTurnModel(id, promptId, requestedModel) {
         if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");
         await createSqlSandboxStore(sql, { turnModels: true }).recordTurnModel!(id, promptId, requestedModel);
@@ -327,13 +349,23 @@ export function createSqlData(sql: Sql): DataSource {
         if (!["stopped", "failed", "deleted"].includes(row.status))
           throw new GoldenError("conflict", "Stop the sandbox before deleting it.");
       },
-      async recordUsage(id, usage) {
-        await sql.query(
-          `update public.sandboxes s set usage_turns=(
+      async recordUsage(id, usage, options) {
+        const mergeNative = async (target: Sql, unpriced: boolean) =>
+          target.query<{ usage: Pick<SandboxUsage, "turnCount" | "turns"> }>(
+            `update public.sandboxes s set usage_turns=(
             with snapshots as (
               select value, ordinality as ordinal
               from jsonb_array_elements(coalesce(s.usage_turns->'turns','[]'::jsonb) ||
                 coalesce(($4::text::jsonb)->'turns','[]'::jsonb)) with ordinality
+            ), lifetime_snapshots as (
+              select *,
+                bool_or(value ? 'cacheWriteTokensByTtl') over identity as has_ttl,
+                bool_or(value#>'{cacheWriteTokensByTtl,conflicted}'='true'::jsonb) over identity as ttl_conflicted,
+                max((value#>>'{cacheWriteTokensByTtl,fiveMinute}')::bigint) over identity as ttl_five,
+                max((value#>>'{cacheWriteTokensByTtl,oneHour}')::bigint) over identity as ttl_hour,
+                max((value->>'cacheWriteTokens')::bigint) over identity as ttl_total
+              from snapshots
+              window identity as (partition by value->>'promptId', value->>'model')
             ), merged as (
               select distinct on (value->>'promptId', value->>'model')
                 value || jsonb_strip_nulls(jsonb_build_object(
@@ -342,8 +374,18 @@ export function createSqlData(sql: Sql): DataSource {
                   'outputTokens', max((value->>'outputTokens')::bigint) over identity,
                   'cachedTokens', max((value->>'cachedTokens')::bigint) over identity,
                   'cacheWriteTokens', max((value->>'cacheWriteTokens')::bigint) over identity,
-                  'reasoningTokens', max((value->>'reasoningTokens')::bigint) over identity)) as value
-              from snapshots
+                  'reasoningTokens', max((value->>'reasoningTokens')::bigint) over identity)) ||
+                  -- Keep monotone lifetime subsets across stale writers, without inventing a
+                  -- coherent breakdown when conflicting snapshots exceed the aggregate.
+                  -- A conflict is sticky: ordinary replays carry no authoritative reset/order proof.
+                  case when has_ttl then jsonb_build_object('cacheWriteTokensByTtl',
+                    case when ttl_conflicted or
+                        (ttl_total is not null and coalesce(ttl_five,0)+coalesce(ttl_hour,0)>ttl_total)
+                      then jsonb_build_object('fiveMinute',null,'oneHour',null,'conflicted',true)
+                      when ttl_total is null then jsonb_build_object('fiveMinute',null,'oneHour',null)
+                      else jsonb_build_object('fiveMinute',ttl_five,'oneHour',ttl_hour) end)
+                    else '{}'::jsonb end as value
+              from lifetime_snapshots
               window identity as (partition by value->>'promptId', value->>'model'),
                 diagnostic as (partition by value->>'promptId', value->>'model' order by
                   case when jsonb_typeof(value->'unavailableReason')='object' then
@@ -367,14 +409,72 @@ export function createSqlData(sql: Sql): DataSource {
             select jsonb_build_object(
               'turnCount', greatest((s.usage_turns->>'turnCount')::int,
                 (($4::text::jsonb)->>'turnCount')::int,
-                (select nullif(count(distinct value->>'promptId'),0)::int from retained)),
+                (select nullif(count(distinct prompt_id),0)::int from (
+                  select prompt_id from public.sandbox_turn_models where sandbox_id=s.id
+                  union select value->>'promptId' from retained
+                ) admitted_prompts)),
               'turns', coalesce((select jsonb_agg(value order by value->>'promptId', value->>'model') from retained),'[]'::jsonb))
           )
           where ${SANDBOX_VISIBLE} and s.id=$3::uuid
             -- Managed parents use their durable journal as the sole usage writer.
-            and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)`,
-          [...scope, id, JSON.stringify(usage)],
-        );
+            and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)
+            ${
+              unpriced
+                ? `and not exists(select 1 from jsonb_array_elements(coalesce(s.usage_turns->'turns','[]'::jsonb)) r
+              where jsonb_typeof(r->'pricing')='object')`
+                : ""
+            }
+            returning s.usage_turns as usage`,
+            [
+              ...scope,
+              id,
+              JSON.stringify({
+                ...usage,
+                turns: usage.turns.map(({ pricing: _ignored, ...native }) => ({
+                  ...native,
+                  ...(unpriced ? { pricing: null } : {}),
+                })),
+              }),
+            ],
+          );
+        // Legacy adapters record unpriced telemetry only. Never erase a frozen context or
+        // leave a stale known amount beside updated counters without a transaction.
+        if (!sql.transaction) {
+          await mergeNative(sql, true);
+          return;
+        }
+        await sql.transaction(async (tx) => {
+          const prior = await tx.query<{
+            usage: Pick<SandboxUsage, "turnCount" | "turns"> | null;
+            harness: Harness;
+            admission: unknown;
+          }>(
+            `select s.usage_turns as usage,s.harness::text as harness,
+               (select p.context from public.sandbox_usage_pricing p where p.sandbox_id=s.id) as admission
+             from public.sandboxes s where ${SANDBOX_VISIBLE} and s.id=$3::uuid for update`,
+            [...scope, id],
+          );
+          const before = prior.rows[0];
+          if (!before) return;
+          const merged = (await mergeNative(tx, false)).rows[0]?.usage;
+          if (!merged) return;
+          const priced = {
+            ...merged,
+            turns: stampTurnPricing(
+              merged.turns,
+              before.usage?.turns ?? [],
+              options?.observations ?? [],
+              options?.contexts ?? admittedTurnContexts(before.admission, options?.observations ?? [], before.harness),
+              before.harness,
+            ),
+          };
+          const saved = await tx.query<{ id: string }>(
+            `update public.sandboxes s set usage_turns=$4::text::jsonb
+             where ${SANDBOX_VISIBLE} and s.id=$3::uuid returning s.id`,
+            [...scope, id, JSON.stringify(priced)],
+          );
+          if (saved.rows.length !== 1) throw new DataError("Usage admission changed during recording.");
+        });
       },
       async assertExecAllowed(id) {
         const row = (
@@ -558,7 +658,7 @@ export function createSqlData(sql: Sql): DataSource {
             .filter((row): row is SandboxListMetadata & { total: number } => row.id !== null)
             .map(({ total: _total, ...row }) => ({
               ...row,
-              usage: withUsageTotals(row.usage),
+              usage: withServerCost(withUsageTotals(row.usage), row.harness),
               createdAt: new Date(row.createdAt).toISOString(),
               stoppedAt: row.stoppedAt === null ? null : new Date(row.stoppedAt).toISOString(),
               expiresAt: row.expiresAt === null ? null : new Date(row.expiresAt).toISOString(),
@@ -623,8 +723,10 @@ export function createSqlData(sql: Sql): DataSource {
 }
 
 function mapView(row: SandboxViewRow): SandboxView {
+  const record = mapSandboxRow(row);
   return {
-    ...mapSandboxRow(row),
+    ...record,
+    usage: withServerCost(record.usage ?? null, record.harness),
     golden: row.golden,
     visibility: visibility(row.visibility),
     sourceGoldenVisibility: visibility(row.source_golden_visibility),
