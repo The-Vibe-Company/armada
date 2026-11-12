@@ -231,3 +231,20 @@ describe("logs through the Armada API", () => {
     ]);
   });
 });
+
+test.each(["explicit", "saved"])("logs forwards the %s organization selection", async (selection) => {
+  const saved = "22222222-2222-4222-8222-222222222222";
+  const explicit = "33333333-3333-4333-8333-333333333333";
+  let body: unknown;
+  const api = auth(async (_input, init) => {
+    body = JSON.parse(String(init?.body));
+    return Response.json({ events: [], cursor: null, hasMore: false, settled: true });
+  });
+  const code = await run(
+    ["logs", id, ...(selection === "explicit" ? ["--org", explicit] : []), "--json"],
+    { out: () => {}, err: () => {} },
+    { auth: { ...api, preferences: { read: async () => saved, write: async () => {} } } },
+  );
+  expect(code).toBe(0);
+  expect(body).toEqual({ id, all: false, follow: false, org: selection === "explicit" ? explicit : saved });
+});

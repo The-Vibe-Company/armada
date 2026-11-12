@@ -1,3 +1,77 @@
+## Cron schedule rollout (owner amendment, issue #1006)
+
+The canonical schedule is now `cron` (standard five fields: minute, hour, day of
+month, month, weekday) plus an IANA `timezone`, such as `Europe/Paris` or `UTC`.
+New API clients must supply both; they must not also supply `intervalHours`.
+Examples: `0 * * * *` hourly, `0 9 * * MON-FRI` weekdays at 09:00, and
+`30 10 1 * *` monthly on day 1 at 10:30. Day-of-month and weekday restrictions
+use standard **OR** semantics. Seconds, macros and extended `L`, `W`, `#`, `?`
+operators are not supported. Missing dates (e.g. February 30) are skipped.
+
+The maintained Croner engine evaluates the calendar; cRonstrue supplies English
+24-hour descriptions. Fixed-time jobs run once during an autumn fold, and at
+the first valid local time after a spring gap. Wildcard/interval expressions
+follow Croner's Vixie DST semantics (repeated times may run twice, missing times
+are skipped). The minimum is **one hour between actual instants**, including
+non-hour DST changes. Validation checks transition windows over 28 years;
+every runtime advancement checks adjacent instants again, protecting rules
+outside that horizon. A schedule that becomes unsafe/unavailable auto-pauses
+with the closed readable `schedule_unavailable` history reason; it never launches.
+
+`POST /api/v1/routines/preview` accepts `{org, cron, timezone}` and returns
+`{cron, timezone, description, nextRuns: [ISO, ISO, ISO], asOf: ISO}` using the
+database clock. It requires current organization membership but creates nothing.
+Routine DTOs add `cron`, `timezone`, `scheduleDescription`; canonical cron rows
+have `intervalHours: null`. Create/update accept the new fields. Enable always
+chooses the next calendar instant strictly after the database clock, not an
+immediate launch or an elapsed interval after enabling. The scheduler reserves
+one existing due occurrence, jumps strictly past now and does not replay missed
+slots. History's existing `missedIntervals` now counts missed **occurrences**;
+counts saturate at 1,000 with `missedCountCapped: true`, so long outages have
+bounded evaluation cost. Claim keys, overlap prevention, daily caps, revision
+pinning, owner authorization and three-failure auto-pause are unchanged.
+
+### Migration and temporary v1 compatibility
+
+Apply `20261112073106_routine_cron_schedule.sql` through the coordinator's
+approved migration process **before** deploying this server. It is additive;
+no new credentials or environment variables are required. Keep the new schema
+for rollback. This worker does not apply staging/production migrations.
+
+Existing hourly/day-divisor intervals (1/2/3/4/6/8/12/24 hours) and weekly
+168-hour intervals acquire equivalent UTC cron calendars anchored to their
+existing due time (rounded **up** by less than one minute, never early).
+Enabled state, immutable history and claim keys are preserved; configuration
+versions advance to fence old clients. Paused routines remain paused.
+
+**Exact-conversion limitation:** five-field calendar cron cannot represent
+arbitrary elapsed intervals such as 7, 25 or 48 hours across month boundaries.
+Those existing routines retain their exact UTC interval timing, `cron: null`
+and an explicitly labeled legacy description until the owner edits to cron.
+They are not silently approximated, disabled or lost. Existing v1 create/write
+requests remain accepted for every advertised 1–720-hour interval during the
+additive rollout, preserving exact legacy timing where conversion is impossible.
+This avoids breaking the still-shipped clients before their cron controls land;
+canonical clients use cron/timezone instead. The next CLI and dashboard slices
+replace the old creation controls; their existing list/detail readers already
+accept canonical cron DTOs. Owner confirmation of this compatibility choice
+is requested; it is not a claim that arbitrary elapsed intervals equal cron.
+
+### Coordinator staging delta
+
+After migration/server deployment, run the bounded script below separately for
+Boat and Modal. It now explicitly creates `0 * * * *` in UTC and waits for the
+next calendar hour (up to one hour), then pauses and proves no second occurrence
+across the next boundary. Its conservative 122-minute budget remains valid.
+Additionally preview `0 9 * * MON-FRI` in Europe/Paris and check the sentence and
+three UTC instants; verify a migrated UTC routine's phase/status and explicit
+legacy labels if any. Two consecutive firings and restart/replica idempotency
+still require the longer/manual checks below. No staging check was run here.
+
+---
+
+## Historical interval-slice notes (superseded schedule semantics)
+
 # Routines (#1006)
 
 A routine launches a normal sandbox from a template and a prompt at an interval.

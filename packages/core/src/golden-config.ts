@@ -196,28 +196,6 @@ export function parseGoldenConfig(input: unknown): GoldenConfig {
   return { repos: assignDirs(drafts), init };
 }
 
-export function cloneCommand(repo: GoldenRepo): ShellCommand {
-  // No credential helper and no prompt: a private URL fails instead of baking a token into the disk.
-  const command = [
-    "env",
-    "GIT_TERMINAL_PROMPT=0",
-    "git",
-    "-c",
-    "credential.helper=",
-    "clone",
-    "--branch",
-    repo.branch,
-    "--single-branch",
-    repo.url,
-    repo.dir,
-  ]
-    .map(shQuote)
-    .join(" ");
-  // `env` and `git` and the flags are fixed words; only branch, url and dir come from the config.
-  // Quoting every word keeps a branch or a URL from being read as shell syntax.
-  return { command, cwd: GOLDEN_ROOT, timeoutSeconds: CLONE_TIMEOUT_SECONDS };
-}
-
 /** Brings one checkout up to date with its stored branch. Fast-forward only, and never asks for credentials. */
 export function pullCommand(repo: GoldenRepo): ShellCommand {
   const command = [

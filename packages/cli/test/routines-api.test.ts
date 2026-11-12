@@ -10,12 +10,16 @@ const config = {
   templateId,
   templateRevision: 2,
   prompt: "Inspect\nexact bytes\n",
-  intervalHours: 1,
+  cron: "0 9 * * MON-FRI",
+  timezone: "Europe/Paris",
   ttlSeconds: 600,
   maxRunsPerDay: 2,
 };
+const { name: _createName, ...createConfig } = config;
 const routine = {
   ...config,
+  intervalHours: null,
+  scheduleDescription: "At 09:00, Monday through Friday, Europe/Paris",
   id,
   orgId: org,
   scope: "personal",
@@ -45,6 +49,7 @@ async function invoke(
     items?: unknown[];
     selected?: string;
     status?: number;
+    getReply?: unknown;
     reply?: unknown;
     token?: string;
     readError?: boolean;
@@ -80,6 +85,8 @@ async function invoke(
           const request = input instanceof Request ? new Request(input, init) : new Request(input.toString(), init);
           requests.push(request);
           if (request.url.endsWith("/org/list")) return Response.json({ orgs: [{ id: org, name: "Example" }] });
+          if (request.url.endsWith("/routines/get") && options.getReply !== undefined)
+            return Response.json(options.getReply);
           if (request.url.endsWith("/routines/list")) return Response.json({ items: options.items ?? [routine] });
           return Response.json(
             options.reply ?? (request.url.endsWith("/routines/history") ? history : { item: routine }),
@@ -149,8 +156,10 @@ test("routine inline creation preserves prompt bytes and resolves selected organ
       "2",
       "--prompt-file",
       "-",
-      "--interval-hours",
-      "1",
+      "--cron",
+      config.cron,
+      "--timezone",
+      config.timezone,
       "--ttl",
       "10m",
       "--max-runs-per-day",
@@ -175,6 +184,10 @@ test("routine inline creation preserves prompt bytes and resolves selected organ
     "2",
     "--prompt",
     "inspect",
+    "--cron",
+    config.cron,
+    "--timezone",
+    config.timezone,
     "--org",
     org,
     "--scope",
@@ -189,6 +202,8 @@ test("routine inline creation preserves prompt bytes and resolves selected organ
     templateId,
     templateRevision: 2,
     prompt: "inspect",
+    cron: config.cron,
+    timezone: config.timezone,
   });
 });
 
@@ -211,17 +226,60 @@ test("routine human output explains history and admitted-run mutation boundaries
 });
 
 test("routine input rejects unsupported mutations and incomplete replacements before network I/O", async () => {
-  const valid = ["create", "nightly", "--template", templateId, "--revision", "2", "--prompt", "inspect"];
+  const valid = [
+    "create",
+    "nightly",
+    "--template",
+    templateId,
+    "--revision",
+    "2",
+    "--prompt",
+    "inspect",
+    "--cron",
+    config.cron,
+    "--timezone",
+    config.timezone,
+  ];
   const cases = [
     { args: [...valid, "--org", org] },
     { args: [...valid, "--scope", "other"] },
     { args: [...valid, "--interval-hours", "0"] },
-    { args: [...valid, "--interval-hours", "1.5"] },
+    { args: valid.slice(0, -4) },
+    { args: valid.slice(0, -2) },
+    { args: [...valid.slice(0, -4), "--timezone", "UTC"] },
+    {
+      args: ["create", "nightly", "--file", "config.json"],
+      file: JSON.stringify({ ...createConfig, cron: undefined }),
+    },
+    {
+      args: ["create", "nightly", "--file", "config.json"],
+      file: JSON.stringify({ ...createConfig, timezone: undefined }),
+    },
+    {
+      args: ["create", "nightly", "--file", "config.json"],
+      file: JSON.stringify({ ...createConfig, intervalHours: 1 }),
+    },
+    { args: ["update", id, "--expected-version", "3", "--cron", "0 9 * * *"] },
+    { args: ["update", id, "--expected-version", "3", "--cron", "0 9 * * *", "--timezone", "UTC", "--scope", "org"] },
+    {
+      args: [
+        "update",
+        id,
+        "--expected-version",
+        "3",
+        "--file",
+        "config.json",
+        "--cron",
+        "0 9 * * *",
+        "--timezone",
+        "UTC",
+      ],
+    },
     { args: [...valid, "--max-runs-per-day", "25"] },
     { args: [...valid, "--ttl", "1m"] },
     { args: [...valid, "--prompt-file", "prompt.txt"] },
     { args: [...valid, "--template", templateId] },
-    { args: ["create", "nightly", "--file", "config.json"], file: JSON.stringify({ ...config, scope: "org" }) },
+    { args: ["create", "nightly", "--file", "config.json"], file: JSON.stringify({ ...createConfig, scope: "org" }) },
     {
       args: ["update", id, "--expected-version", "3", "--file", "config.json"],
       file: JSON.stringify({ ...config, ownerId: id }),
@@ -280,6 +338,49 @@ test("routine help is available without authentication or requests", async () =>
   const response = await invoke(["--help"], { token: "" });
   expect(response.code).toBe(0);
   expect(response.requests).toHaveLength(0);
-  expect(response.out).toContain("minimum interval is ONE HOUR");
+  expect(response.out).toContain("at least ONE HOUR apart");
   expect(response.out).toContain("--expected-version");
+});
+
+test("inline schedule updates send a complete owner-neutral replacement with the caller version, without retrying conflicts", async () => {
+  const args = ["update", id, "--expected-version", "2", "--cron", "0 10 * * *", "--timezone", "UTC", "--json"];
+  const getReply = { item: { ...routine, version: 3, ownerId: "another-owner", scope: "org" } };
+  const response = await invoke(args, { getReply });
+  expect(response.code).toBe(0);
+  expect(response.requests).toHaveLength(2);
+  expect(response.requests[0]?.url).toEndWith("/routines/get");
+  expect(await response.requests[0]?.json()).toEqual({ org, id });
+  expect(response.requests[1]?.url).toEndWith("/routines/update");
+  expect(await response.requests[1]?.json()).toEqual({
+    org,
+    id,
+    expectedVersion: 2,
+    ...config,
+    cron: "0 10 * * *",
+    timezone: "UTC",
+  });
+  const conflict = await invoke(args, {
+    getReply,
+    status: 409,
+    reply: { error: { code: "conflict", message: "Routine version changed." } },
+  });
+  expect(conflict.code).toBe(1);
+  expect(conflict.requests).toHaveLength(2);
+  expect(JSON.parse(conflict.err)).toMatchObject({ error: { code: "conflict" } });
+});
+
+test("human routine output uses server schedule words and next-run truth, retaining legacy read support", async () => {
+  const active = { ...routine, status: "enabled", nextDueAt: "2026-11-13T08:00:00Z" };
+  const list = await invoke(["list"], { items: [active, { ...routine, nextDueAt: "stale-must-not-be-shown" }] });
+  expect(list.out).toContain(routine.scheduleDescription);
+  expect(list.out).toContain("Next: 2026-11-13T08:00:00Z");
+  expect(list.out).toContain("Next: none (paused)");
+  expect(list.out).not.toContain("stale-must-not-be-shown");
+  const show = await invoke(["show", id], { reply: { item: active } });
+  expect(show.out).toContain(`Cron: ${config.cron}  Time zone: ${config.timezone}`);
+  expect(show.out).toContain("Next: 2026-11-13T08:00:00Z");
+  const legacy = await invoke(["list"], {
+    items: [{ ...routine, cron: null, timezone: "UTC", scheduleDescription: undefined, intervalHours: 7 }],
+  });
+  expect(legacy.out).toContain("Every 7 hours (legacy UTC interval)");
 });

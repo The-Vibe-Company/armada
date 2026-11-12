@@ -37,6 +37,24 @@ for (const phone of [false, true]) {
     await expect(panel).toBeVisible();
     await variable.click();
     await expect(page.locator('[data-vault-panel="APP_REGION"]')).toBeVisible();
+    const reverseUsage = page.locator("[data-template-usage]").filter({ visible: true });
+    await expect(reverseUsage).toContainText("Used by 2 visible templates.");
+    await reverseUsage.scrollIntoViewIfNeeded();
+    await page.screenshot({
+      path: `test-results/library-variable-usage-${phone ? "phone" : "desktop"}.png`,
+      animations: "disabled",
+    });
+    await reverseUsage.getByRole("link", { name: "Backend with docs", exact: true }).click();
+    await tool.click();
+    await expect(page.locator('[data-connection-panel="Acme Docs"]')).toBeVisible();
+    await expect(reverseUsage).toContainText("Used by 1 visible template.");
+    await reverseUsage.scrollIntoViewIfNeeded();
+    await page.screenshot({
+      path: `test-results/library-tool-usage-${phone ? "phone" : "desktop"}.png`,
+      animations: "disabled",
+    });
+    await page.goBack();
+    await variable.click();
     await expect(page).toHaveURL(/\/variables\?item=variable-00000000-0000-4000-8000-000000000080$/);
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(phone ? 390 : 1280);
   });
@@ -79,6 +97,15 @@ test("secret and skill ingredients link to their existing management pages witho
   await expect(panel.getByRole("link", { name: "notes@1.0.0", exact: true })).toHaveAttribute("href", "/skills");
   await expect(panel).toContainText("Manage Skillpack access on the Skills page.");
   await expect(page.locator("body")).not.toContainText("sk_e2e_seeded_org_secret");
+  await panel.getByRole("link", { name: "STRIPE_API_KEY", exact: true }).click();
+  const usage = page.locator("[data-template-usage]").filter({ visible: true });
+  await expect(usage).toContainText("Used by 1 visible template.");
+  await page.goto("/skills");
+  await expect(page.getByRole("heading", { name: "Templates using skills", exact: true })).toBeVisible();
+  await expect(usage.getByRole("link", { name: "Backend with docs", exact: true })).toHaveAttribute(
+    "href",
+    "/templates?item=00000000-0000-4000-8000-000000000090",
+  );
 });
 
 // The sheet can clip a row even when document width is correct. Check the actual

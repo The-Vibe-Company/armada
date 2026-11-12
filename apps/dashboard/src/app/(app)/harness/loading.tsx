@@ -4,7 +4,7 @@ import { PageHeader } from "@/components/page-header";
 export default function Loading() {
   return (
     <>
-      <PageHeader title="Harness" />
+      <PageHeader title="Models" />
       <div role="status" aria-label="Loading subscriptions" className="space-y-3">
         {[0, 1].map((key) => (
           <div key={key} className="space-y-3 rounded-lg border p-4">

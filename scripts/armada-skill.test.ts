@@ -113,4 +113,12 @@ test("published Armada skill commands and flags match the live CLI usage contrac
   expect(validate("armada launch example --nonexistent-flag", contract)).toContain("Unknown flag");
   expect(validate("armada stop sandbox --skill team/example@1.0.0", contract)).toContain("Unknown flag");
   expect(validate("armada routine enable routine --revision 1", contract)).toContain("Unknown flag");
+  expect(
+    validate("armada routine create nightly --cron '0 9 * * MON-FRI' --timezone Europe/Paris", contract),
+  ).toBeUndefined();
+  expect(
+    validate("armada routine update routine --expected-version 3 --cron '0 10 * * *' --timezone UTC", contract),
+  ).toBeUndefined();
+  expect(validate("armada routine create nightly --interval-hours 1", contract)).toContain("Unknown flag");
+  expect(validate("armada routine enable routine --cron '0 9 * * *'", contract)).toContain("Unknown flag");
 });

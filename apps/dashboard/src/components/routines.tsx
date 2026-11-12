@@ -173,7 +173,7 @@ function RoutineForm({
             required
           />
           <p className="text-xs text-muted-foreground">
-            Minimum one hour. Enabling starts the first interval, not an immediate launch.
+            Minimum one hour. Enabling follows the saved calendar schedule.
           </p>
         </div>
         <details className="rounded-lg border px-3 py-2">
@@ -221,7 +221,7 @@ export function RoutineToggle({ item, orgId }: { item: RoutineItem; orgId: strin
       successToast={
         enabled
           ? "Routine paused. Already admitted runs may still finish."
-          : "Routine enabled. Its first interval starts now."
+          : "Routine enabled. It will run at its next scheduled time."
       }
     >
       <input type="hidden" name="org" value={orgId} />

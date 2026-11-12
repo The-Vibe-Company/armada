@@ -214,6 +214,34 @@ Environment:
   ARMADA_URL                               Armada API server (default: https://armada.thevibecompany.co).
 `;
 
+const LOGS_HELP = `Read agent events from a sandbox.
+
+Usage:
+  armada logs <sandbox-id> [--since <cursor>] [--all] [--follow] [--org <org>] [--json]
+  armada logs <sandbox-id> --tail [n] [--follow] [--org <org>] [--json]
+
+Options:
+  --since <cursor>  Resume after an opaque cursor returned by a JSON page.
+  --tail [n]        Last n events (1–1000; default 100). You cannot combine
+                    --tail with --all or --since. With --follow, tail is read once.
+  --all             Drain all currently available pages, without polling delays.
+  --follow          Drain pages, then poll while active until settled.
+                    Ctrl-C stops only this reader, not the agent.
+  --org <org>       Override the organization selected by armada org use.
+  --json            Stream page objects: events, cursor, hasMore, settled.
+                    Multiple pages are not one JSON array. Errors use stderr.
+
+Without --all, --follow or --tail, read one bounded page.
+Use armada list --json to find a visible sandbox ID.
+
+Examples:
+  armada logs SANDBOX_ID --tail 20
+  armada logs SANDBOX_ID --since CURSOR --follow
+  armada logs SANDBOX_ID --all --json | jq -c '.events[]'
+
+For other commands and authentication settings: armada --help.
+`;
+
 /** Runs one command line and returns the process exit code. */
 export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Promise<number> {
   try {
@@ -299,7 +327,7 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
     original.length === 1 &&
     ["--help", "-h"].includes(original[0] ?? "")
   ) {
-    io.out(HELP);
+    io.out(command === "logs" ? LOGS_HELP : HELP);
     return 0;
   }
   if (command === "orchestrator") {
@@ -950,6 +978,7 @@ async function logs(argv: readonly string[], io: Io, deps: Deps): Promise<number
     throw new GoldenError("invalid_config", "--tail must be between 1 and 1000.");
   if (tail !== undefined && (flag(args, "--all") || single(args, "--since")))
     throw new GoldenError("invalid_config", "--tail cannot be combined with --all or --since.");
+  const org = single(args, "--org");
   let firstTail = tail !== undefined;
   const id = oneName(args.positionals);
   const all = flag(args, "--all");
@@ -972,6 +1001,7 @@ async function logs(argv: readonly string[], io: Io, deps: Deps): Promise<number
         id,
         all,
         follow,
+        ...(org === undefined ? {} : { org }),
         ...(firstTail ? { direction: "backward", limit } : {}),
         ...(cursor === null ? {} : { cursor }),
       }),

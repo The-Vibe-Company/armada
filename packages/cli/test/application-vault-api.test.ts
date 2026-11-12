@@ -107,6 +107,12 @@ test("vault CLI uses authenticated body-only API contracts and projects metadata
       input: "input.txt",
     },
     {
+      argv: ["secrets", "set", item.name, "--file", "-h"],
+      route: "secrets/set",
+      body: { org, scope: "personal", name: item.name, value: canary },
+      input: "-h",
+    },
+    {
       argv: ["vars", "set", item.name, "--org", otherOrg, "--scope", "personal"],
       route: "variables/set",
       body: { org: otherOrg, scope: "personal", name: item.name, value: canary },
@@ -196,6 +202,9 @@ test("unsafe vault arguments and input failures are value-free and never reach t
     ["secrets", "rotate", item.id, "--expected-version", canary],
     ["secrets", "delete", item.id, "--expected-version", "0"],
     ["vars", "list", "--file", canary],
+    ["vars", "list", "--", "-h"],
+    ["vars", "set", item.name, "--scope", "-h"],
+    ["secrets", "revoke", item.id, "--expected-version", "-h"],
     ["secrets", "set", item.name, "--scope", canary],
   ]) {
     const result = await invoke(argv);
@@ -242,18 +251,22 @@ test("vault API errors select actionable local messages without echoing untruste
   }
 });
 
-test("vault help documents secure input, scope and metadata-only JSON without authentication", async () => {
-  for (const resource of ["vars", "secrets"]) {
-    for (const argv of [
-      [resource, "--help"],
-      [resource, "set", "--help"],
-    ]) {
-      const result = await invoke(argv, { selected: null });
-      expect(result.code).toBe(0);
-      expect(result.out).toContain("piped stdin or --file");
-      expect(result.out).toContain("--scope personal|org");
-      expect(result.out).toContain("vars read --json includes the value");
-      expect(result.requests).toHaveLength(0);
+test("vault help documents secure input and supports both aliases before value input or requests", async () => {
+  for (const [resource, actions] of [
+    ["vars", ["set", "list", "read"]],
+    ["secrets", ["set", "list", "rotate", "revoke", "delete"]],
+  ] as const) {
+    for (const prefix of [[resource], ...actions.map((action) => [resource, action])]) {
+      for (const option of ["--help", "-h"]) {
+        const result = await invoke([...prefix, option], { selected: null });
+        expect(result.code).toBe(0);
+        expect(result.err).toBe("");
+        expect(result.out).toContain("piped stdin or --file");
+        expect(result.out).toContain("--scope personal|org");
+        expect(result.out).toContain("vars read --json includes the value");
+        expect(result.requests).toHaveLength(0);
+        expect(result.inputSources).toHaveLength(0);
+      }
     }
   }
 });
