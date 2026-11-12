@@ -249,6 +249,10 @@ export function createSqlData(sql: Sql): DataSource {
 
     const sandboxes: ServerSandboxStore = {
       activityOwnership: true,
+      async recordUsagePricingContext(id, context) {
+        if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");
+        await createSqlSandboxStore(sql, { turnModels: true }).recordUsagePricingContext!(id, context);
+      },
       async recordTurnModel(id, promptId, requestedModel) {
         if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");
         await createSqlSandboxStore(sql, { turnModels: true }).recordTurnModel!(id, promptId, requestedModel);

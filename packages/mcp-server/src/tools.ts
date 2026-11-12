@@ -683,6 +683,8 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       const { sandbox: found, provider } = await live(args.id);
       if (found.ownerId !== caller.userId)
         throw new ToolError("forbidden", "Only the sandbox owner may repair GitHub access.");
+      if (provider.id !== "boat")
+        throw new ToolError("unsupported", "Use the next prompt to reconcile this provider's managed GitHub runtime.");
       const machine = await provider.get(found.providerSandboxId);
       if (!["ready", "running"].includes(machine.state))
         throw new ToolError("conflict", "GitHub repair requires a running sandbox.");
