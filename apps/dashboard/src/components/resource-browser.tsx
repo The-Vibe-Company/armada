@@ -229,6 +229,9 @@ export function ResourceBrowser({
       setChosen(key);
     };
     window.addEventListener("popstate", sync);
+    // Back may precede hydration/subscription, or resume a retained route tree.
+    // Initial props are not authoritative once native history has moved.
+    sync();
     return () => window.removeEventListener("popstate", sync);
   }, [detailPanel]);
 

@@ -187,3 +187,21 @@ test("Forward through an older detail does not erase a newer list-side build", a
   await page.reload();
   expect(new URL(page.url()).search).toBe(recovery);
 });
+
+test("hydration reconciles selection when native history changed before panel subscriptions", async ({ page }) => {
+  await signIn(page, "alice@example.com", "/environments");
+  // Native Back can change the URL before the new document's React effects
+  // subscribe. Reproduce that missing-event boundary, not an arbitrary delay.
+  await page.addInitScript(() => {
+    const url = new URL(location.href);
+    if (url.pathname === "/environments" && url.searchParams.has("item")) {
+      url.searchParams.delete("item");
+      history.replaceState(null, "", url);
+    }
+  });
+  await page.goto(`/environments?item=${PRIVATE}&source=history-handoff`);
+  await expect(goldenRow(page, "alice-private")).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "alice-private", exact: true })).toBeHidden();
+  await expect(page).not.toHaveURL(/[?&]item=/);
+  expect(new URL(page.url()).searchParams.get("source")).toBe("history-handoff");
+});

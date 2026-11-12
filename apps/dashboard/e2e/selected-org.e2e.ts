@@ -128,6 +128,9 @@ test("mutation targets cannot escape the selected org even when the viewer admin
   await golden.getByRole("button", { name: "Make private" }).click();
   await expect(alert(page)).toContainText("not available in this scope");
   await page.reload();
+  const reloaded = await goldenPanel(page, "zenith-golden");
+  await page.keyboard.press("Escape");
+  await expect(reloaded).toBeHidden();
   await goldenRow(page, "zenith-golden").getByRole("button", { name: "Launch from zenith-golden" }).click();
   const launch = page.getByRole("dialog");
   await launch.locator('input[name="org"]').evaluate((input) => {
