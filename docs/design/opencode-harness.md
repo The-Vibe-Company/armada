@@ -1,6 +1,8 @@
 # OpenCode as the third harness
 
 Design-only first PR for #1164, under #1160. No harness is enabled by this PR.
+**Owner hold:** draft for discussion; do not start any implementation slice.
+All implementation choices below are recommendations, not approved decisions.
 
 ## Current state
 
@@ -17,7 +19,7 @@ Design-only first PR for #1164, under #1160. No harness is enabled by this PR.
 
 ## Interface spike and decision (2026-11-12)
 
-Choose a private, long-lived **OpenCode V2 server**, controlled by the released
+Recommend a private, long-lived **OpenCode V2 server**, controlled by the released
 `@opencode/client`, rather than ACP or spawning one CLI process per prompt.
 Pin the implementation spike to `@opencode/cli@2.2.7` and
 `@opencode/client@2.2.7`; lock packages and native artifact integrity in its PR.
@@ -53,7 +55,19 @@ and per-turn token mapping at the pinned version. Save reproducible commands and
 fixtures in that PR. If any operation cannot meet Driver/Turn, revise this decision
 rather than advertise unsupported capabilities. No live DeepSeek call was made.
 
-## Target and runtime-owned configuration
+## Open questions for the owner
+
+1. **Server/client or ACP?** Recommend the pinned V2 server/client approach above,
+   conditional on the executable spike proving lifecycle and usage semantics.
+   Should ACP be evaluated head-to-head before approving that choice?
+2. **Which model access ships first?** Recommend DeepSeek-compatible endpoint plus
+   an OpenCode-plan API key via #1162; defer interactive subscription login until
+   terms and persistence are verified. Is that initial access scope sufficient?
+3. **How far should the single harness table reach?** Recommend browser-safe core
+   descriptors with generated iOS values, keeping server driver factories and SQL
+   migrations separate. Approve that boundary rather than a broader code generator?
+
+## Proposed target and runtime-owned configuration
 
 One browser-safe core harness descriptor table owns IDs, labels, model defaults,
 credential-kind references and baseline capabilities. Derive existing exports
