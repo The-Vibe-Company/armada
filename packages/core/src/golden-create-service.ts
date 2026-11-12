@@ -16,7 +16,13 @@ import { GITHUB_TOKEN_PATTERN } from "./golden-scan.ts";
 import { GOLDEN_SKILLPACK_SETUP } from "./golden-skillpack.ts";
 import type { HelperReceipt } from "./helper.ts";
 import { isNonMutatingProviderRefusal, type Provider, ProviderError } from "./provider.ts";
-import { assertProviderOf, isSandboxProvider, type ModalBinding, type SandboxProviderId } from "./sandbox-provider.ts";
+import {
+  assertProviderOf,
+  HOST_CAPABILITIES,
+  isSandboxProvider,
+  type ModalBinding,
+  type SandboxProviderId,
+} from "./sandbox-provider.ts";
 
 const MAX_REPOS = 16;
 
@@ -205,7 +211,7 @@ export class GoldenCreateService {
         await this.deps.execution?.phase("snapshot");
       }
       snapshotAttempted = true;
-      uncertainSnapshot = providerId === "modal";
+      uncertainSnapshot = HOST_CAPABILITIES[providerId].retainSourceOnSnapshotUncertainty;
       const started = await provider.snapshot({ sandboxId: builder.id, name: requestedSnapshot });
       saveAccepted = true;
       const snapshot = started.name;
@@ -285,10 +291,15 @@ export class GoldenCreateService {
       }
       return { snapshot, warnings };
     } catch (error) {
-      // Only Boat's save-call refusal proves no artifact was accepted. A later
-      // provenance/read failure must retain capacity even before ownership is known.
-      // Modal keeps its conservative unknown-outcome/source-retention contract.
-      if (providerId === "boat" && phase === "snapshot" && !saveAccepted && isNonMutatingProviderRefusal(error)) {
+      // Only an explicit save-call refusal under the host's release policy clears the
+      // attempt. Later provenance/read failures still retain capacity; conservative
+      // hosts retain the source even when the save call reports a refusal.
+      if (
+        !HOST_CAPABILITIES[providerId].retainSourceOnSnapshotUncertainty &&
+        phase === "snapshot" &&
+        !saveAccepted &&
+        isNonMutatingProviderRefusal(error)
+      ) {
         snapshotAttempted = false;
       }
       refusedBuilder = !builder && phase === "builder" && isNonMutatingProviderRefusal(error);
@@ -379,9 +390,9 @@ export class GoldenCreateService {
       });
       let stopped = false;
       if (builder && !uncertainSnapshot && !uncertainPublication) {
-        // A disposable Modal builder must not create a durable stop checkpoint.
+        // Use the host cleanup mode: stopping can create an unwanted durable checkpoint.
         try {
-          if (providerId === "modal") {
+          if (HOST_CAPABILITIES[providerId].goldenBuilderCleanup === "delete") {
             const receipt = await provider.delete({ sandboxId: builder.id });
             stopped = receipt.status === "deleted";
             if (!stopped) cleanupSafe = false;

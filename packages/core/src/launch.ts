@@ -1,3 +1,4 @@
+import { CLAUDE_ENDPOINT_ENV } from "./claude-endpoint.ts";
 import { CODEX_ENDPOINT_ENV } from "./codex-endpoint.ts";
 import { HARNESSES, type Harness } from "./contract.ts";
 import { CODEX_AUTH_ENV, type HarnessCredentials, redact } from "./credentials.ts";
@@ -31,7 +32,7 @@ import { resolveRepositoryDir } from "./repository-context.ts";
 import type { SandboxRecord, SandboxStore } from "./sandbox.ts";
 import { sandboxActivity } from "./sandbox-activity.ts";
 import { DEFAULT_SANDBOX_EXTENSION_HEADROOM_SECONDS, SANDBOX_STOP_MARGIN_SECONDS } from "./sandbox-lifetime.ts";
-import { assertProviderOf, PROVIDER_LIMITS, type SandboxProviderId } from "./sandbox-provider.ts";
+import { assertProviderOf, HOST_CAPABILITIES, PROVIDER_LIMITS, type SandboxProviderId } from "./sandbox-provider.ts";
 import { mergeSkillPins } from "./skill-merge.ts";
 import { installSkill, validateSkillPins } from "./skillpack.ts";
 
@@ -287,6 +288,8 @@ export async function launchSandbox(
   const snapshot = golden.providerSnapshotId;
   if (!snapshot) throw new GoldenError("conflict", `Golden '${golden.name}' has no snapshot yet.`);
   const credentials = await stores.credentials.resolve(actor, harness, request.credentialId);
+  if (credentials.env[CLAUDE_ENDPOINT_ENV] && provider.id !== "modal")
+    throw new LaunchError("invalid_request", "Custom Claude gateways currently require Modal.");
   if (credentials.env[CODEX_ENDPOINT_ENV] && provider.id !== "modal")
     throw new LaunchError("invalid_request", "Custom Codex endpoints currently require Modal.");
   const github: GitHubAccess = credentials.github ?? { status: "not_connected", message: GITHUB_NOT_CONNECTED };
@@ -316,12 +319,12 @@ export async function launchSandbox(
         // Managed parents own their separate lifecycle policy. Ordinary workers need stop headroom.
         ttlSeconds: options.privateParent
           ? ttlSeconds
-          : golden.provider === "modal"
-            ? Math.min(
-                PROVIDER_LIMITS.modal.maxTtlSeconds,
-                ttlSeconds + SANDBOX_STOP_MARGIN_SECONDS + extensionHeadroom,
-              )
-            : Math.min(PROVIDER_LIMITS.boat.maxTtlSeconds, ttlSeconds + SANDBOX_STOP_MARGIN_SECONDS),
+          : Math.min(
+              PROVIDER_LIMITS[golden.provider].maxTtlSeconds,
+              ttlSeconds +
+                SANDBOX_STOP_MARGIN_SECONDS +
+                (HOST_CAPABILITIES[golden.provider].reserveExtensionHeadroom ? extensionHeadroom : 0),
+            ),
         labels: {
           armada: "sandbox",
           sandbox: id,
@@ -416,6 +419,8 @@ export async function launchSandbox(
           { safeReason: "visibility_not_persisted" },
         );
       }
+      if (golden.provider === "modal" && credentials.usagePricing)
+        await stores.sandboxes.recordUsagePricingContext?.(record.id, credentials.usagePricing);
       progress("initialization_bind");
       await stores.connections?.bind(record.id, connectionIds);
       progress("initialization_ready");

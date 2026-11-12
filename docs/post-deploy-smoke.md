@@ -509,6 +509,50 @@ Use dedicated/exclusive staging smoke actors/cases, clean secretless goldens,
 named account UUIDs, and a staging public MCP URL; no production origins/sessions.
 No migrations/new credentials/case fields. Offline tests are not live receipts.
 
+### Legacy GitHub repair (#969)
+
+Both staging entrypoints add `--github-refresh`, requiring `--lifecycle`
+and excluding orchestrator and managed-runtime test modes. It reuses the
+ordinary clean worker; no additional allocations or model turns. Readiness is
+recorded immediately before the new `github_launch_access` read-only git
+probe. This proves origin access before the first model turn or explicit
+repair, so a later repair cannot mask broken launch access.
+
+After the existing initial turn and git checks, Boat runs named
+`github_refresh_first` and `github_refresh_second` API calls, requiring the
+same sandbox ID, connected status and stable owner login. Each is followed by
+a read-only `github_refresh_access_first/second` origin-access check. No token,
+login, response body, SSH exception or git output is printed. Requests are not
+retried: an uncertain repair stays failed and ordinary cleanup still stops the
+worker. This is observable idempotency/access continuity, not a claim that
+encrypted token bytes never rotate.
+
+**Existing capability limit:** explicit `armada github refresh` is shipped
+only for legacy Boat. A staging Boat with the optional managed GitHub runtime
+enabled refuses this command and will fail this legacy probe; use a legacy
+Boat staging case for it. Modal always refuses the legacy command. Its
+`github_refresh_unsupported` step requires the existing503/unavailable
+refusal; an accidental success or any other error fails. Its idempotency
+delivery proof is visibly skipped as `legacy_boat_only`, not claimed as a
+success. Positive Modal/managed-Boat explicit-refresh support would be a new
+application capability and is deliberately not implemented under the feature
+freeze. Modal still has to pass launch GitHub access and the ordinary git
+checks. The legacy refusal is not evidence of broker renewal, and managed
+renewal/fault coverage remains in the separate managed-runtime smoke.
+
+Duration/cost: two API repairs and two read-only git checks for Boat, one
+refusal for Modal, plus one pre-turn git check per pair. Expect seconds to
+roughly two minutes per pair for SSH/auth latency, no extra model usage or
+worker. Requests and60-second execs stay under the existing35-minute work /
+five-minute cleanup budget. Staging requires the smoke owner's existing GitHub
+connection with origin access. Use a private GitHub origin in the existing
+checkout to make git access an authentication proof: a public origin only
+proves connectivity and cannot demonstrate that a token is installed correctly.
+The probe does not infer repository visibility from a successful ls-remote.
+No policy/settings writes, migrations,
+deployment or production actions. The coordinator runs both providers after
+merge; offline tests do not prove real GitHub/SSH success.
+
 ### Ordinary expiry-as-stop (#969)
 
 Both staging entrypoints add `--expiry`. Standalone

@@ -8,7 +8,11 @@ const panelOf = (page: Page, name: string) => page.locator(`[data-template-panel
 
 async function panel(page: Page, name: string) {
   const shown = panelOf(page, name);
-  if (!(await shown.isVisible())) await row(page, name).getByRole("button", { name, exact: true }).click();
+  if (!(await shown.isVisible())) {
+    const current = page.getByRole("dialog").filter({ has: page.locator("[data-resource-panel]") });
+    if (await current.isVisible()) await page.keyboard.press("Escape");
+    await row(page, name).getByRole("link", { name, exact: true }).click();
+  }
   await expect(shown).toBeVisible();
   return shown;
 }
@@ -312,7 +316,7 @@ test("launch from a template: only the run is chosen, the revision is pinned and
     ttlSeconds: 3600,
   });
   expect(Object.keys(launches[0]?.body ?? {}).sort()).toEqual(
-    ["id", "org", "prompt", "repo", "requestKey", "revision", "ttlSeconds"].sort(),
+    ["id", "org", "prompt", "repo", "requestKey", "revision", "ttlSeconds", "modelAccount"].sort(),
   );
 });
 
@@ -320,9 +324,24 @@ test("a refused launch says why and takes a fresh key; a successful one opens th
   await signIn(page, "alice@example.com", "/templates");
   await row(page, "Backend with docs").getByRole("button", { name: "Launch from Backend with docs" }).click();
   const dialog = page.getByRole("dialog", { name: "Launch Backend with docs" });
-  await outcome({ state: "failed", reason: "connection_unavailable" });
+  await expect(dialog.getByLabel("Account", { exact: true })).toBeVisible();
+  await outcome({
+    state: "failed",
+    reason: "credential_busy",
+    message: "This subscription account is busy. Choose another account.",
+    busyAccount: {
+      id: "00000000-0000-4000-8000-000000000040",
+      name: "Personal Codex",
+      sandboxId: "00000000-0000-4000-8000-000000000070",
+    },
+  });
   await dialog.getByRole("button", { name: /Launch/ }).click();
-  await expect(dialog.getByRole("alert")).toHaveText(/A tool it uses is not connected/);
+  await expect(dialog.getByRole("alert")).toContainText("This subscription account is busy. Choose another account.");
+  await expect(dialog.getByRole("alert")).toContainText("Account: Personal Codex");
+  await expect(dialog.getByRole("link", { name: "Open its sandbox" })).toHaveAttribute(
+    "href",
+    "/sandboxes/00000000-0000-4000-8000-000000000070",
+  );
   await dialog.getByRole("button", { name: /Launch/ }).click();
   await expect(page).toHaveURL(/\/sandboxes\/[0-9a-f-]{36}$/);
   const launches = (await mockState()).templateCalls.filter((call) => call.route === "templates/launch");

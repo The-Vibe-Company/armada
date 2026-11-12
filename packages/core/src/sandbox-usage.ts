@@ -1,4 +1,5 @@
 import type { AgentEvent } from "./provider.ts";
+import type { StoredTurnPricing } from "./turn-pricing.ts";
 
 /** Closed, secret-free explanations for an unmeasured Boat turn. */
 export const USAGE_UNAVAILABLE_CODES = [
@@ -63,6 +64,8 @@ export function usageUnavailableReason(code: UsageUnavailableCode): UsageUnavail
  * Cross-harness totals retain these definitions, not a unique-token or price sum.
  */
 export interface TurnTokenUsage {
+  /** Service-owned quote. Native decoders must not copy this from guest events. */
+  pricing?: StoredTurnPricing | null;
   promptId: string;
   model: string | null;
   inputTokens: number | null;
@@ -70,6 +73,15 @@ export interface TurnTokenUsage {
   cachedTokens: number | null;
   cacheWriteTokens?: number | null;
   reasoningTokens?: number | null;
+  /** Native Claude cache-write subsets, not additional input. Absence means TTL detail was not reported.
+   * Their sum may be less than cacheWriteTokens (legacy/unclassified writes); never assume the remainder is 5m.
+   */
+  cacheWriteTokensByTtl?: {
+    fiveMinute: number | null;
+    oneHour: number | null;
+    /** Sticky server-observed contradiction for this prompt/model; replay cannot resolve it. */
+    conflicted?: true;
+  };
   /** Why no counters could be collected; never a raw provider/guest error. */
   unavailableReason?: UsageUnavailableReason;
 }
@@ -83,6 +95,24 @@ export interface SandboxUsage {
 const object = (v: unknown): Record<string, unknown> | null =>
   v !== null && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
 const count = (v: unknown): number | null => (typeof v === "number" && Number.isSafeInteger(v) && v >= 0 ? v : null);
+
+/** Pinned Claude ModelUsage lifetime fields may be partial after an older native CLI session. */
+function claudeCacheWriteTtl(usage: Record<string, unknown>): Pick<TurnTokenUsage, "cacheWriteTokensByTtl"> {
+  const fiveKey = "cacheCreationEphemeral5mInputTokens",
+    hourKey = "cacheCreationEphemeral1hInputTokens";
+  if (!Object.hasOwn(usage, fiveKey) && !Object.hasOwn(usage, hourKey)) return {};
+  const total = count(usage.cacheCreationInputTokens),
+    five = count(usage[fiveKey]),
+    hour = count(usage[hourKey]);
+  const invalid =
+    total === null ||
+    (Object.hasOwn(usage, fiveKey) && five === null) ||
+    (Object.hasOwn(usage, hourKey) && hour === null) ||
+    (five !== null && five > total) ||
+    (hour !== null && hour > total) ||
+    (five !== null && hour !== null && (!Number.isSafeInteger(five + hour) || five + hour > total));
+  return { cacheWriteTokensByTtl: invalid ? { fiveMinute: null, oneHour: null } : { fiveMinute: five, oneHour: hour } };
+}
 
 /** Native final snapshots only, never deltas or account quota reports. */
 export function reportedTurnUsage(events: readonly AgentEvent[]): { turnCount: number; turns: TurnTokenUsage[] } {
@@ -107,6 +137,7 @@ export function reportedTurnUsage(events: readonly AgentEvent[]): { turnCount: n
           outputTokens: count(usage.outputTokens),
           cachedTokens: count(usage.cacheReadInputTokens),
           cacheWriteTokens: count(usage.cacheCreationInputTokens),
+          ...claudeCacheWriteTtl(usage),
           reasoningTokens: count(usage.thinkingTokens) ?? count(usage.reasoningTokens),
         });
       }

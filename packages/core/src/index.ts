@@ -6,6 +6,7 @@ export {
   type GitHubHydrationPhase,
   githubHydrationPhase,
 } from "./api-failure.ts";
+export { CLAUDE_ENDPOINT_ENV, type ClaudeEndpoint, parseClaudeEndpoint } from "./claude-endpoint.ts";
 export { CLIENT_CONFIG_PATH, type ClientConfig } from "./client-config.ts";
 export { CODEX_ENDPOINT_ENV, type CodexEndpoint, parseCodexEndpoint } from "./codex-endpoint.ts";
 export * from "./connections.ts";
@@ -143,6 +144,7 @@ export {
   splitRepoArg,
 } from "./golden-config.ts";
 export { createSqlGoldenStore, GOLDEN_SELECT, type GoldenRow, mapGoldenRow, type Sql } from "./golden-store.ts";
+export { HARNESS_CAPABILITIES, HARNESS_CATALOG, isHarness, mapHarnesses } from "./harnesses.ts";
 export { type HelperNegotiation, type HelperReceipt, type HelperRefusal, negotiateHelper } from "./helper.ts";
 export * from "./invitations.ts";
 export {
@@ -177,6 +179,7 @@ export {
   type PinnedMcpStdio,
   parsePinnedMcpStdio,
 } from "./mcp-stdio.ts";
+export type { ModelPriceOverrides } from "./model-price-overrides.ts";
 export {
   MODEL_PRICE_SOURCES,
   MODEL_PRICES,
@@ -290,6 +293,8 @@ export {
 export {
   assertProviderOf,
   createProviderRegistry,
+  HOST_CAPABILITIES,
+  type HostCapabilities,
   isSandboxProvider,
   type ModalBinding,
   type OrchestratorCleanupScope,
@@ -318,6 +323,7 @@ export {
   withUsageTotals,
 } from "./sandbox-usage.ts";
 export type { SkillCatalogItem, SkillCatalogPage, SkillCatalogSource } from "./skill-catalog.ts";
+export { skillRefusalMessage } from "./skill-diagnostics.ts";
 export { SKILL_PIN_PATTERN, validateSkillPins } from "./skill-pins.ts";
 export type { TaskOutcome } from "./task-outcome.ts";
 export {
@@ -329,6 +335,8 @@ export {
 } from "./templates.ts";
 export { redactKnownTokens } from "./token-redaction.ts";
 export { type ModelSelectionReason, type TurnModelEvidence, turnModelEvidence } from "./turn-model.ts";
+export type { PricingInputs, StoredTurnPricing, TurnPriceContext } from "./turn-pricing.ts";
+export type { UsagePricingContext } from "./usage-pricing.ts";
 export {
   type AccountMutation,
   addMember,

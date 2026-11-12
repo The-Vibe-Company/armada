@@ -1,4 +1,5 @@
 import type { Harness } from "./contract.ts";
+import { mapHarnesses } from "./harnesses.ts";
 import { LaunchError } from "./launch-error.ts";
 
 /**
@@ -28,32 +29,14 @@ export interface HarnessModels {
   models: readonly ModelOption[];
 }
 
-const CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
-const CODEX_EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultra"] as const;
-
-export const MODEL_CATALOG: Readonly<Record<Harness, HarnessModels>> = {
-  claude: {
-    defaultModel: "claude-opus-5-5",
-    defaultReasoningEffort: "medium",
-    reasoningEfforts: CLAUDE_EFFORTS,
-    models: [
-      { id: "claude-opus-5-5", label: "Claude Opus 5.5", reasoningEfforts: CLAUDE_EFFORTS },
-      { id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5", reasoningEfforts: CLAUDE_EFFORTS },
-    ],
-  },
-  codex: {
-    defaultModel: "gpt-6.1-sol",
-    defaultReasoningEffort: "medium",
-    reasoningEfforts: CODEX_EFFORTS,
-    models: [
-      { id: "gpt-6.1-sol", label: "GPT-6.1 Sol", reasoningEfforts: CODEX_EFFORTS },
-      { id: "gpt-6.1-terra", label: "GPT-6.1 Terra", reasoningEfforts: CODEX_EFFORTS },
-      { id: "gpt-6-astra", label: "GPT-6 Astra", reasoningEfforts: CODEX_EFFORTS },
-      { id: "gpt-6-sol", label: "GPT-6 Sol", reasoningEfforts: CODEX_EFFORTS },
-      { id: "gpt-6-luna", label: "GPT-6 Luna", reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
-    ],
-  },
-};
+export const MODEL_CATALOG: Readonly<Record<Harness, HarnessModels>> = mapHarnesses(
+  ({ defaultModel, defaultReasoningEffort, reasoningEfforts, models }) => ({
+    defaultModel,
+    defaultReasoningEffort,
+    reasoningEfforts,
+    models,
+  }),
+);
 
 /** A model id Armada forwards: letters, digits and `.:_/-[]`, as harness and gateway ids are written. */
 const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:/[\]-]{0,199}$/;

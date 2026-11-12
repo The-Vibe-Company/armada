@@ -30,7 +30,10 @@ type Templates = NonNullable<Awaited<ReturnType<typeof viewerTemplates>>>;
 type Context = { templates: Templates; org: string; admin: boolean };
 
 /** A launch whose outcome is not known: the dialog keeps its request key, so trying again starts nothing new. */
-export type TemplateLaunchResult = ActionResult & { pending?: true };
+export type TemplateLaunchResult = ActionResult & {
+  pending?: true;
+  busyAccount?: { id: string; name: string; sandboxId?: string };
+};
 
 async function scoped(data: FormData): Promise<Context | ActionResult> {
   const org = formString(data, "org");
@@ -165,17 +168,34 @@ export async function launchFromTemplate(
     const blocker = await newWorkBlocker(org, provider);
     if (blocker) return fail(blocker);
     const golden = (await listGoldens(await createClient())).find((row) => row.id === saved.definition.goldenId);
-    if (!golden) return fail(launchReason("environment_unavailable"));
+    if (!golden) return fail("No such golden.");
     const repository = repositoryChoice(formString(data, "repo"), goldenRepositoryDirs(golden.config));
     if (!repository.ok) return fail(repository.error);
     const ttl = ttlChoice(formString(data, "ttl"), provider);
     if (!ttl.ok) return fail(ttl.error);
+    const requestedAccount = formString(data, "model_account");
+    let modelAccount: { id: string; version: number } | undefined;
+    if (requestedAccount) {
+      const [accountId, accountVersion, extra] = requestedAccount.split(":");
+      const version = Number(accountVersion);
+      if (
+        saved.definition.modelAccount ||
+        !accountId ||
+        !isUuid(accountId) ||
+        extra !== undefined ||
+        !Number.isSafeInteger(version) ||
+        version < 1
+      )
+        return fail("Choose an available model account.");
+      modelAccount = { id: accountId, version };
+    }
     const prompt = formString(data, "prompt").trim();
     outcome = await templates.launch({
       org,
       id,
       revision,
       requestKey,
+      ...(modelAccount ? { modelAccount } : {}),
       ...(prompt ? { prompt } : {}),
       ...(ttl.value === undefined ? {} : { ttlSeconds: ttl.value }),
       ...(size ? { size } : {}),
@@ -192,6 +212,9 @@ export async function launchFromTemplate(
       error.message.startsWith("Request key")
     )
       return { ...fail(error.code ? templateFailure(error.status, error.message) : error.message), pending: true };
+    // A missing model credential is not a missing template (both can use HTTP 404).
+    if (["missing_credential", "credential_refused", "credential_busy"].includes(error.code ?? ""))
+      return fail(error.message);
     return fail(error.code ? templateFailure(error.status, error.message) : error.message);
   }
   revalidatePath("/sandboxes");
@@ -199,7 +222,7 @@ export async function launchFromTemplate(
   if (outcome.state === "reconciling")
     return {
       ...fail(
-        "Armada could not confirm whether the sandbox started. Check Sandboxes before launching again: launching again from this dialog repeats the same request and starts nothing new.",
+        `${outcome.message ?? (outcome.reason?.startsWith("skillpack_") ? launchReason(outcome.reason) : "")} Armada could not confirm whether the sandbox started. Check Sandboxes before launching again: launching again from this dialog repeats the same request and starts nothing new.`,
       ),
       pending: true,
     };
@@ -207,5 +230,8 @@ export async function launchFromTemplate(
     return fail(
       `${launchReason(outcome.reason)} If ${PROVIDER_LABELS[provider]} refused ${MACHINE_SIZE_LABELS[size as MachineSize]}, choose another size or the default.`,
     );
-  return fail(launchReason(outcome.reason));
+  return {
+    ...fail(outcome.message ?? launchReason(outcome.reason)),
+    ...(outcome.busyAccount ? { busyAccount: outcome.busyAccount } : {}),
+  };
 }

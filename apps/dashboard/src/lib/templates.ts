@@ -1,4 +1,12 @@
-import { type Harness, MODEL_CATALOG, PROVIDER_LIMITS, type SandboxProviderId, validateSkillPins } from "@armada/core";
+import {
+  type Harness,
+  isHarness,
+  MODEL_CATALOG,
+  PROVIDER_LIMITS,
+  type SandboxProviderId,
+  skillRefusalMessage,
+  validateSkillPins,
+} from "@armada/core";
 import { EFFORT_LABEL, HARNESS_LABELS } from "./labels.ts";
 import type { LaunchAccounts } from "./model-accounts";
 import { type ModelFields, modelChoice } from "./model-choice.ts";
@@ -86,7 +94,7 @@ export function parseRevision(value: unknown): TemplateRevision | null {
   if (
     !isId(d.goldenId) ||
     (d.provider !== "boat" && d.provider !== "modal") ||
-    (d.harness !== "claude" && d.harness !== "codex") ||
+    !isHarness(d.harness) ||
     typeof d.model !== "string" ||
     typeof d.reasoningEffort !== "string" ||
     !Array.isArray(d.connections) ||
@@ -418,6 +426,7 @@ const LAUNCH_REASONS: Record<string, string> = {
 };
 
 export function launchReason(reason: string | null | undefined): string {
+  if (reason?.startsWith("skillpack_")) return skillRefusalMessage(reason);
   return (reason && LAUNCH_REASONS[reason]) ?? "The sandbox could not be started.";
 }
 
@@ -453,16 +462,40 @@ export function templateFailure(status: number | undefined, message: string): st
 /** What a `templates/launch` answered: the sandbox it started, a definite refusal, or an outcome not known yet. */
 export type LaunchOutcome =
   | { state: "succeeded"; id: string }
-  | { state: "failed"; reason: string }
-  | { state: "reconciling"; id: string | null };
+  | {
+      state: "failed";
+      reason: string;
+      message?: string;
+      busyAccount?: { id: string; name: string; sandboxId?: string };
+    }
+  | { state: "reconciling"; id: string | null; reason?: string; message?: string };
 
 export function parseLaunchOutcome(value: unknown): LaunchOutcome | null {
   if (!isRecord(value)) return null;
   if (value.state === "succeeded" && isId(value.id)) return { state: "succeeded", id: value.id };
   if (value.state === "failed")
-    return { state: "failed", reason: typeof value.reason === "string" ? value.reason : "" };
+    return {
+      state: "failed",
+      reason: typeof value.reason === "string" ? value.reason : "",
+      ...(isRecord(value.busyAccount) && isId(value.busyAccount.id) && typeof value.busyAccount.name === "string"
+        ? {
+            busyAccount: {
+              id: value.busyAccount.id,
+              name: value.busyAccount.name,
+              ...(isId(value.busyAccount.sandboxId) ? { sandboxId: value.busyAccount.sandboxId } : {}),
+            },
+          }
+        : {}),
+      ...(typeof value.message === "string" ? { message: value.message } : {}),
+    };
   // Claimed, allocating or reconciling: a sandbox may exist. Never reported as a failure that invites a new launch.
-  if (typeof value.state === "string") return { state: "reconciling", id: isId(value.id) ? value.id : null };
+  if (typeof value.state === "string")
+    return {
+      state: "reconciling",
+      id: isId(value.id) ? value.id : null,
+      ...(typeof value.reason === "string" ? { reason: value.reason } : {}),
+      ...(typeof value.message === "string" ? { message: value.message } : {}),
+    };
   return null;
 }
 

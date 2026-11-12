@@ -97,7 +97,11 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
       if (options.job) {
         await options.job.phase("authorization");
         const reservation = options.job.reservationId ?? undefined;
-        if (provider.id === "boat" && !reservation)
+        if (
+          isSandboxProvider(provider.id) &&
+          PROVIDER_LIMITS[provider.id].defaultGoldenCapacity !== undefined &&
+          !reservation
+        )
           throw new GoldenError("conflict", "Boat job has no owned backend reservation.");
         if (existingGolden && reservation) {
           const identity = await provider.backendIdentity?.();
@@ -166,12 +170,13 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
           throw new GoldenError("forbidden", "Snapshot authority changed.");
         await options.job?.lock(tx);
         if (
-          golden.provider === "boat" &&
+          PROVIDER_LIMITS[golden.provider].defaultGoldenCapacity !== undefined &&
           !(
-            await tx.query(
-              "select 1 from golden_backend_slots where golden_id=$1 and provider='boat' and backend_id=$2",
-              [golden.id, backend],
-            )
+            await tx.query("select 1 from golden_backend_slots where golden_id=$1 and provider=$3 and backend_id=$2", [
+              golden.id,
+              backend,
+              golden.provider,
+            ])
           ).rows.length
         )
           throw new GoldenError("conflict", "Revision backend binding changed.");

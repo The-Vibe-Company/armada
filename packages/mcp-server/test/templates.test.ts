@@ -11,12 +11,15 @@ import {
   createSqlVaultStore,
   createTemplateService,
   encryptSecret,
+  goldenForLaunch,
+  installSkill,
   type LaunchTemplate,
   launchSandbox,
   PrivateSkillError,
   ProviderError,
   type Sql,
   type TemplateRuntime,
+  VaultError,
 } from "@armada/core/server";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -328,7 +331,7 @@ for (const retained of [false, true]) {
       expect(result).toMatchObject(
         retained
           ? { state: "reconciling", reason: "allocation_or_start_unknown" }
-          : { state: "failed", reason: "provider_rate_limited" },
+          : { state: "failed", reason: "rate_limited" },
       );
       expect(await f.launch(t.id)).toEqual(result);
       expect(calls).toBe(1);
@@ -467,13 +470,19 @@ test("HTTP and MCP share strict template operations; secure routes require authe
           );
         warning.mockClear();
         const refused = await api("launch", { org: f.people.org, id: claude.id, requestKey: reason });
-        expect(refused?.status).toBe(409);
-        expect(await refused!.json()).toEqual({
-          error: { code: "conflict", message: `Template launch refused: ${reason}.` },
-        });
-        expect(warning.mock.calls).toEqual([
-          ["armada: template launch refused", { reason, templateId: claude.id, orgId: f.people.org }],
-        ]);
+        if (reason === "model_account_ambiguous") {
+          expect(refused?.status).toBe(409);
+          expect(await refused!.json()).toEqual({
+            error: { code: "conflict", message: `Template launch refused: ${reason}.` },
+          });
+          expect(warning.mock.calls).toHaveLength(1);
+        } else {
+          expect(refused?.status).toBe(accounts === 0 ? 404 : 422);
+          const body = (await refused!.json()) as { error: { code: string; message: string } };
+          expect(body.error.code).toBe(accounts === 0 ? "missing_credential" : "credential_refused");
+          expect(body.error.message).not.toContain("Template launch refused");
+          expect(warning.mock.calls).toHaveLength(0);
+        }
         expect(f.boat.forks).toHaveLength(0);
         expect((await f.db.query("select id from template_launch_requests")).rows).toHaveLength(0);
         expect((await api("get", { org: f.people.org, id: claude.id }))?.status).toBe(200);
@@ -484,6 +493,30 @@ test("HTTP and MCP share strict template operations; secure routes require authe
     } finally {
       warning.mockRestore();
     }
+    // An unpinned revision can bill an explicitly selected eligible account, not its default.
+    const alternate = (
+      await f.db.query<{ id: string; version: number }>(
+        "insert into credentials(scope,owner_id,kind,name,value_enc) select 'user',$1,'openai','Alternate API',value_enc from credentials where kind='openai' limit 1 returning id,version",
+        [f.people.owner],
+      )
+    ).rows[0]!;
+    const chosen = await api("launch", {
+      org: f.people.org,
+      id: saved.item.id,
+      requestKey: "alternate-account",
+      modelAccount: alternate,
+    });
+    expect(chosen?.status).toBe(200);
+    expect(await chosen!.json()).toMatchObject({ state: "succeeded", manifest: { account: alternate } });
+    const pinned = (await f.create(f.people.owner, "personal", { ...f.definition, modelAccount: alternate }))
+      .item as LaunchTemplate;
+    const refusedOverride = await api("launch", {
+      org: f.people.org,
+      id: pinned.id,
+      requestKey: "pinned-override",
+      modelAccount: alternate,
+    });
+    expect(refusedOverride?.status).toBe(400);
     const context = {
       templates: f.service,
       caller: f.actor(),
@@ -942,6 +975,42 @@ test("template skills retain verified receipts and closed refusals without repla
     expect(unavailable.reason).toBe("skillpack_skill_unavailable");
     expect(JSON.stringify(unavailable)).not.toContain("untrusted guest output");
     expect(f.boat.prompts).toHaveLength(1);
+    f.provider.exec = async (r) =>
+      r.command.includes("skillpack install")
+        ? {
+            detached: false,
+            exitCode: 127,
+            stdout: "secret guest detail",
+            stderr: "secret guest detail",
+            timedOut: false,
+            truncated: false,
+          }
+        : exec(r);
+    for (const [reason, warnings, action] of [
+      ["skillpack_cli_unavailable", [], "armada golden update"],
+      ["skillpack_download_unavailable", ["skillpack_download_unavailable"], "allow GitHub release egress"],
+    ] as const) {
+      await f.db.query("update goldens set build_warnings=$2::text[] where id=$1", [
+        f.goldenId,
+        `{${warnings.join(",")}}`,
+      ]);
+      let directMessage = "";
+      try {
+        await installSkill(f.provider, "direct", "/home/user/repo", "codex", skills[0]!, warnings);
+      } catch (error) {
+        directMessage = (error as Error).message;
+      }
+      const refusal = await f.launch(t.id, reason);
+      expect(refusal).toMatchObject({ reason, message: directMessage });
+      expect(refusal.message).toContain(action);
+      expect(JSON.stringify(refusal)).not.toContain("secret guest detail");
+      expect(await f.launch(t.id, reason)).toEqual(refusal);
+      const stored = await f.db.query<{ result: { message: string } }>(
+        "select result from template_launch_requests where client_key=$1",
+        [reason],
+      );
+      expect(stored.rows[0]?.result.message).toBe(directMessage);
+    }
   } finally {
     await f.db.close();
   }
@@ -1219,6 +1288,116 @@ test("template admission validates decrypted combined byte budget before any for
     expect(accepted.state).toBe("succeeded");
     expect(f.boat.forks).toHaveLength(1);
     expect(JSON.stringify(accepted).includes(canary)).toBe(false);
+  } finally {
+    await f.db.close();
+  }
+});
+
+test("template launch preserves public account and provider refusals and their replay", async () => {
+  const f = await fixture();
+  try {
+    const t = (await f.create()).item as LaunchTemplate;
+    for (const [key, error, reason] of [
+      [
+        "busy",
+        new VaultError("credential_busy", "This subscription account is busy. Choose another account."),
+        "credential_busy",
+      ],
+      ["refused", new VaultError("credential_refused", "Reconnect the selected credential."), "credential_refused"],
+      [
+        "provider",
+        new ProviderError({
+          provider: "boat",
+          code: "payment_required",
+          retryable: false,
+          message: "Your provider plan does not allow this machine. Choose another size.",
+        }),
+        "payment_required",
+      ],
+    ] as const) {
+      f.runtime.provider = async () => {
+        throw error;
+      };
+      const result = await f.launch(t.id, key);
+      expect(result).toMatchObject({ state: "failed", reason, message: error.message });
+      expect(await f.launch(t.id, key)).toEqual(result);
+    }
+    expect(f.boat.forks).toHaveLength(0);
+  } finally {
+    await f.db.close();
+  }
+});
+
+test("template golden admission preserves direct-launch public classifications", async () => {
+  const f = await fixture();
+  try {
+    const t = (await f.create()).item as LaunchTemplate;
+    await f.db.query("update goldens set provider_snapshot_id=null,boat_snapshot_id=null where id=$1", [f.goldenId]);
+    await expect(
+      goldenForLaunch(
+        f.runtime.stores.goldens,
+        { userId: f.people.owner, orgId: f.people.org, role: "member" },
+        "shared",
+        "boat",
+      ),
+    ).rejects.toMatchObject({ code: "conflict", message: "Golden 'shared' has no snapshot yet." });
+    expect(await f.launch(t.id, "no-snapshot")).toMatchObject({
+      state: "failed",
+      reason: "conflict",
+      message: "Golden 'shared' has no snapshot yet.",
+    });
+    await f.db.query("update goldens set removed_at=now() where id=$1", [f.goldenId]);
+    expect(await f.launch(t.id, "removed-golden")).toMatchObject({
+      state: "failed",
+      reason: "not_found",
+      message: "No such golden.",
+    });
+    expect(f.boat.forks).toHaveLength(0);
+  } finally {
+    await f.db.close();
+  }
+});
+
+test("busy template account hints expose only currently authorized holder sandboxes, including on replay", async () => {
+  const f = await fixture();
+  try {
+    const t = (await f.create()).item as LaunchTemplate;
+    const started = await f.launch(t.id, "holder");
+    const account = (
+      await f.db.query<{ id: string; name: string }>("select id,name from credentials where kind='openai'")
+    ).rows[0]!;
+    await f.db.query("insert into model_auth_ownership(account_id,account_version,sandbox_id) values($1,1,$2)", [
+      account.id,
+      started.id,
+    ]);
+    f.runtime.provider = async () => {
+      throw new VaultError("credential_busy", "Choose another account.");
+    };
+    const refused = await f.launch(t.id, "busy-holder");
+    expect(refused.busyAccount).toEqual({ id: account.id, name: account.name, sandboxId: started.id });
+    const holder = async (owner: string, visibility: string, org = f.people.org) => {
+      const sandboxId = crypto.randomUUID();
+      const goldenId = (
+        await f.db.query<{ id: string }>("select id from goldens where org_id=$1 and owner_id=$2 limit 1", [org, owner])
+      ).rows[0]!.id;
+      await f.db.query(
+        "insert into sandboxes(id,org_id,owner_id,golden_id,harness,status,provider_sandbox_id,boat_id,visibility,credential_id,credential_version) values($1,$2,$3,$4,'codex','ready',$5,$5,$6,$7,1)",
+        [sandboxId, org, owner, goldenId, `holder-${sandboxId}`, visibility, account.id],
+      );
+      await f.db.query("update model_auth_ownership set sandbox_id=$2 where account_id=$1", [account.id, sandboxId]);
+      return sandboxId;
+    };
+    await holder(f.people.admin, "private");
+    expect((await f.launch(t.id, "busy-holder")).busyAccount).toEqual({ id: account.id, name: account.name });
+    const own = await holder(f.people.owner, "private");
+    expect((await f.launch(t.id, "busy-holder")).busyAccount).toEqual({
+      id: account.id,
+      name: account.name,
+      sandboxId: own,
+    });
+    await holder(f.people.member, "org", f.people.otherOrg);
+    expect((await f.launch(t.id, "busy-holder")).busyAccount).toEqual({ id: account.id, name: account.name });
+    expect(f.boat.forks).toHaveLength(1);
   } finally {
     await f.db.close();
   }
