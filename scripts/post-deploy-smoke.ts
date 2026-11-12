@@ -44,10 +44,14 @@ type Code =
   | "operation_failed"
   | "continuity_failed"
   | "preservation_failed"
-  | "invalid";
+  | "invalid"
+  | "no_running_turn"
+  | "steer_not_refused"
+  | "list_status_mismatch";
 const API_CODES = new Set<Code>([
   ...(Object.keys(API_FAILURE_STATUS) as ApiFailureCode[]),
   "sandbox_not_ready",
+  "no_running_turn",
   "unauthorized",
   "forbidden",
   "not_found",
@@ -183,16 +187,18 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
   const preservation = args.includes("--work-preservation");
   const templatesSkills = args.includes("--templates-skills");
   const vault = args.includes("--vault");
+  const lifecycle = args.includes("--lifecycle");
   try {
     if (env.ARMADA_SMOKE !== "create_real_compute") fail("compute_opt_in_required");
     if (
-      (github && (orchestrator || preservation || templatesSkills || vault)) ||
+      (github && (orchestrator || preservation || templatesSkills || lifecycle || vault)) ||
       args.some(
         (arg) =>
           arg !== "--orchestrator" &&
           arg !== "--github-runtime" &&
           arg !== "--work-preservation" &&
           arg !== "--templates-skills" &&
+          arg !== "--lifecycle" &&
           arg !== "--vault",
       ) ||
       !env.ARMADA_URL ||
@@ -204,7 +210,10 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
     if (url.protocol !== "https:" || url.username || url.password || url.pathname !== "/" || url.search || url.hash)
       fail("invalid_configuration");
     origin = url.origin;
-    if ((preservation || templatesSkills || vault) && origin !== "https://armada-mcp-staging.up.railway.app")
+    if (
+      (preservation || templatesSkills || lifecycle || vault) &&
+      origin !== "https://armada-mcp-staging.up.railway.app"
+    )
       fail("invalid_configuration");
     const parsed: unknown = JSON.parse(env.ARMADA_SMOKE_CASES);
     if (!Array.isArray(parsed) || parsed.length === 0 || parsed.length > 8) fail("invalid_configuration");
@@ -393,7 +402,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
     }
     // This mode is independently runnable; combined staging runs keep the existing
     // preservation baseline as well, under the same shared deadline.
-    if (!preservation) return templateSkillsPassed && vaultPassed;
+    if (!preservation && !lifecycle) return templateSkillsPassed && vaultPassed;
   }
   // Validate the entire selected matrix before any billable mutation. A later
   // disabled case must not be discovered after earlier cases have allocated.
@@ -468,6 +477,8 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
           scratchBranch: scratch,
         }),
       );
+    const startedAt = io.now();
+    let launchAttempted = false;
     let sandboxId: string | undefined;
     let commit: string | undefined;
     let stopped = false;
@@ -508,6 +519,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
     }
     try {
       await step("launch", async () => {
+        launchAttempted = true;
         const result = await sandbox<{ sandbox: { id: string; provider: string }; promptId?: string }>(
           "launch",
           {
@@ -535,14 +547,61 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
           },
         ),
       );
-      async function nativeTurn(second: boolean) {
+      if (lifecycle && !dirty)
+        io.out(
+          JSON.stringify({
+            case: index,
+            step: "time_to_ready",
+            pass: true,
+            provider: item.provider,
+            harness: item.harness,
+            elapsedMs: io.now() - startedAt,
+          }),
+        );
+      async function consistent(expected: string) {
+        const status = await sandbox<{ id: string; harness: string; status: string; expiresAt: string | null }>(
+          "status",
+          { id: sandboxId },
+        );
+        if (status.id !== sandboxId || status.harness !== item.harness || status.status !== expected)
+          fail("list_status_mismatch");
+        let page = 1;
+        for (let attempt = 0; attempt < 20; attempt++) {
+          const result = await sandbox<{
+            sandboxes: { id: string; provider: string; harness: string; status: string; expiresAt: string | null }[];
+            page: number;
+            hasMore: boolean;
+            nextPage: number | null;
+          }>("list", { owner: "me", harness: item.harness, status: [expected], limit: 200, page });
+          if (!Array.isArray(result?.sandboxes) || result.page !== page || typeof result.hasMore !== "boolean")
+            fail("invalid_response");
+          const matches = result.sandboxes.filter((row) => row.id === sandboxId);
+          if (matches.length) {
+            const row = matches[0]!;
+            if (
+              matches.length !== 1 ||
+              row.provider !== item.provider ||
+              row.harness !== status.harness ||
+              row.status !== status.status ||
+              row.expiresAt !== status.expiresAt
+            )
+              fail("list_status_mismatch");
+            return;
+          }
+          if (!result.hasMore) fail("list_status_mismatch");
+          if (result.nextPage !== page + 1) fail("invalid_response");
+          page++;
+        }
+        fail("poll_limit_exceeded");
+      }
+      async function nativeTurn(second: boolean, phase?: string) {
         const commands = `${git} status -sb >/dev/null 2>&1; a=$?; ${git} ls-remote origin HEAD >/dev/null 2>&1; b=$?; ${second ? "c=0" : `${git} push origin HEAD:refs/heads/${scratch} >/dev/null 2>&1; c=$?`}; printf '%s %s %s' "$a" "$b" "$c" > ${quote(receipt)}`;
         if (github) {
           await step("repository_guard", () => checkedExec(remoteGuard));
           await checkedExec(`rm -f ${quote(receipt)}`);
           if (!second) pushAttempted = true;
         }
-        const turn = await step(second ? "send_second" : "send", async () => {
+        const turn = await step(phase ? `${phase}_send` : second ? "send_second" : "send", async () => {
           const result = await poll(
             async () => {
               try {
@@ -563,7 +622,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
           if (!result?.promptId || typeof result.promptId !== "string") fail("invalid_response");
           return result;
         });
-        await step("wait", () =>
+        await step(phase ? `${phase}_wait` : "wait", () =>
           poll(
             () =>
               sandbox<{ prompt: { promptId: string; state: string } | null }>("wait", {
@@ -616,6 +675,37 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
           ),
         );
       await nativeTurn(false);
+      if (lifecycle && !dirty) {
+        await step("list_ready", () => consistent("ready"));
+        await step("steer_refused", async () => {
+          try {
+            await sandbox("steer", { id: sandboxId, text: "Smoke: no turn should be running." });
+          } catch (error) {
+            if (error instanceof SmokeFailure && error.code === "no_running_turn" && error.status === 409) return;
+            throw error;
+          }
+          fail("steer_not_refused");
+        });
+        await step("extend", async () => {
+          const before = await sandbox<{ expiresAt: string }>("status", { id: sandboxId });
+          const previous = Date.parse(before.expiresAt);
+          if (!Number.isFinite(previous)) fail("invalid_response");
+          // A modest extension fits Modal's existing launch headroom; no wall-clock wait.
+          const extension = await sandbox<{ id: string; expiresAt: string; ttlSeconds: number }>("extend", {
+            id: sandboxId,
+            ttl_seconds: 1860,
+          });
+          if (
+            extension.id !== sandboxId ||
+            extension.ttlSeconds !== 1860 ||
+            !Number.isFinite(Date.parse(extension.expiresAt)) ||
+            Date.parse(extension.expiresAt) <= previous
+          )
+            fail("invalid_receipt");
+          const after = await sandbox<{ expiresAt: string }>("status", { id: sandboxId });
+          if (after.expiresAt !== extension.expiresAt) fail("list_status_mismatch");
+        });
+      }
       for (const [name, command] of [
         ["git_status", "git status -sb"],
         ["git_remote", "git ls-remote origin HEAD"],
@@ -686,6 +776,18 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
             await verifyRecovery(result.archive, item.repo, commit);
           }
         });
+      if (lifecycle && !dirty) {
+        await step("list_stopped", () => consistent("stopped"));
+        // send is the existing resume operation. Invalidate the old stop handle
+        // BEFORE dispatch, so a lost response still requires cleanup.
+        stopped = false;
+        stopRequested = false;
+        preservationNote = undefined;
+        await nativeTurn(true, "resume");
+        await step("list_resumed", () => consistent("ready"));
+        await step("stop_resumed", stopSandbox);
+        await step("list_stopped_final", () => consistent("stopped"));
+      }
     } catch {
       passed = false;
     } finally {
@@ -728,6 +830,23 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
         }
       }
     }
+    if (lifecycle)
+      io.out(
+        JSON.stringify({
+          case: index,
+          phase: dirty ? "preservation" : "lifecycle",
+          step: "lifecycle_cleanup_summary",
+          pass: !!sandboxId && stopped,
+          provider: item.provider,
+          harness: item.harness,
+          elapsedMs: io.now() - startedAt,
+          leftoverSandboxIds: sandboxId && !stopped ? [sandboxId] : [],
+          launchOutcomeUnknown: launchAttempted && !sandboxId,
+          startedAt: new Date(startedAt).toISOString(),
+          org: item.org,
+          golden: item.golden,
+        }),
+      );
     if (!orchestrator || dirty) continue;
     let orchestratorId: string | undefined;
     let orchestratorStopped = false;

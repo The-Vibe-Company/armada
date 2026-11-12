@@ -75,6 +75,7 @@ async function request(data: FormData, scope: string, previous?: TemplateDefinit
       reasoningEffort: formString(data, "reasoning_effort"),
       connections: data.getAll("connections").map(String),
       variables: data.getAll("variables").map(String),
+      secrets: data.getAll("secrets").map(String),
     },
     await templateLookups(),
     previous,

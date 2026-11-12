@@ -327,6 +327,38 @@ labels (including Skillpack transport/authorization and allocation uncertainty);
 unknown remote text is replaced by `unrecognized_refusal`. This remains a smoke, not a resource janitor.
 No live staging run or deployment is implied by the offline API tests.
 
+### Sandbox lifecycle and timings (#969, night slice)
+
+Both staging entrypoints additionally pass `--lifecycle`. This flag is
+independently runnable against the exact staging origin and needs no new case
+fields. It reuses the ordinary clean-case worker, not the template worker:
+launch → ready → send/wait → idle steer refusal → extend → stop → send/resume →
+wait → final stop. The existing dirty preservation worker is not resumed.
+
+Named verdicts include `list_ready`, `steer_refused`, `extend`, `list_stopped`,
+`resume_send`, `resume_wait`, `list_resumed`, `stop_resumed` and
+`list_stopped_final`. Idle steer must return exactly HTTP 409 /
+`no_running_turn`; other errors and accidental admission fail. Extension must
+advance the persisted expiry and match the status receipt. List/status checks
+compare this worker's ID, harness, provider, status and expiry, with owner/harness/
+status filters and bounded pagination (at most 20 × 200 entries).
+
+A named `time_to_ready` pass records milliseconds from immediately before
+launch through its ready observation, tagged with provider/harness and case.
+Each ordinary worker also emits `lifecycle_cleanup_summary`, with total elapsed
+time, known leftover IDs and an explicit unknown-launch flag. An ambiguous
+launch cannot be retried or declared clean: use the reported org/golden/start
+time to reconcile staging resources before rerunning. No new correlation API is
+introduced. Interrupted runners still require operator reconciliation.
+
+This adds one tiny model turn and one retained stop/resume physical incarnation
+per selected pair, not a new logical sandbox. Expect roughly 1–4 extra minutes
+per pair; provider cold-start/model rates determine cost. Extension requests
+1860 seconds from now (initial logical TTL 1800), within existing Modal physical
+headroom, then cleanup stops compute; no TTL wall-clock wait is added. Shared
+35-minute work / five-minute cleanup deadlines and 120-poll bounds remain.
+Expiry-as-stop is not claimed by this slice. No migrations or deployment actions.
+
 ### Personal vault slice (#969, night program)
 
 Both staging entrypoints additionally pass `--vault`. Standalone
