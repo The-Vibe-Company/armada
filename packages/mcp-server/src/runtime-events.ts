@@ -1,8 +1,9 @@
-import { type AgentEvent, type MemberRole, PROMPT_STATUSES, reportedTurnUsage } from "@armada/core";
+import { type AgentEvent, type MemberRole, PROMPT_STATUSES, reportedTurnUsage, VaultError } from "@armada/core";
 import { decryptSecret, encryptSecret } from "@armada/core/server";
 import { createSqlData } from "./data.ts";
 import type { Route } from "./http.ts";
 import { type createRuntimeEnrolments, RuntimeEnrolmentDenied } from "./runtime-enrolment.ts";
+import type { RuntimeNativePublication } from "./runtime-native-auth.ts";
 
 class InvalidEvents extends Error {}
 class ConflictingEvent extends Error {}
@@ -66,9 +67,43 @@ async function body(request: Request): Promise<unknown> {
 }
 
 /** ACK only after both encrypted archive and the existing usage projection commit. */
-export function createRuntimeEvents(authority: ReturnType<typeof createRuntimeEnrolments>, key: string) {
-  async function append(token: string, epoch: string, value: unknown): Promise<{ acknowledgedSequence: number }> {
+export function createRuntimeEvents(
+  authority: ReturnType<typeof createRuntimeEnrolments>,
+  key: string,
+  publishNativeAuth?: (input: RuntimeNativePublication) => Promise<{ authRevision: number; committed: boolean }>,
+) {
+  async function append(
+    token: string,
+    epoch: string,
+    value: unknown,
+  ): Promise<{ acknowledgedSequence: number } | { authRevision: number; committed: boolean }> {
     if (!record(value)) throw new InvalidEvents();
+    if (value.nativeAuth !== undefined && publishNativeAuth) {
+      if (
+        typeof value.sandboxId !== "string" ||
+        typeof value.generation !== "string" ||
+        !Array.isArray(value.events) ||
+        value.events.length ||
+        !record(value.nativeAuth) ||
+        Object.keys(value).some((k) => !["sandboxId", "generation", "events", "nativeAuth"].includes(k)) ||
+        Object.keys(value.nativeAuth).some((k) => !["authJson", "expectedRevision"].includes(k)) ||
+        typeof value.nativeAuth.authJson !== "string" ||
+        Buffer.byteLength(value.nativeAuth.authJson) > 65536 ||
+        !Number.isSafeInteger(value.nativeAuth.expectedRevision) ||
+        (value.nativeAuth.expectedRevision as number) < 0
+      )
+        throw new InvalidEvents();
+      // Publisher owns its credential/source lock order; never wrap it in an outer
+      // sandbox-first transaction or publish on a separate connection after admission.
+      return publishNativeAuth({
+        token,
+        epoch,
+        sandboxId: value.sandboxId,
+        generation: value.generation,
+        authJson: value.nativeAuth.authJson,
+        expectedRevision: value.nativeAuth.expectedRevision as number,
+      });
+    }
     return authority.withSession(token, epoch, async (tx, scope) => {
       if (value.sandboxId !== scope.sandboxId || value.generation !== scope.epoch) throw new RuntimeEnrolmentDenied();
       if (value.nativeAuth !== undefined) throw new UnsupportedNativeAuth();
@@ -187,13 +222,14 @@ export function createRuntimeEvents(authority: ReturnType<typeof createRuntimeEn
       return Response.json(await append(token, epoch, await body(request)), { headers });
     } catch (error) {
       const status =
-        error instanceof RuntimeEnrolmentDenied
+        error instanceof RuntimeEnrolmentDenied ||
+        (error instanceof VaultError && ["not_found", "forbidden"].includes(error.code))
           ? 401
           : error instanceof ConflictingEvent
             ? 409
             : error instanceof OversizedEvents
               ? 413
-              : error instanceof InvalidEvents
+              : error instanceof InvalidEvents || (error instanceof VaultError && error.code === "invalid")
                 ? 400
                 : error instanceof UnsupportedNativeAuth
                   ? 501

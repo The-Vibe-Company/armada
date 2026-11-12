@@ -2,8 +2,9 @@ import { describe, expect, spyOn, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
-import { applyMigrations, migrationsDir, openDatabase } from "../../../scripts/db/apply.ts";
+import { migrationsDir } from "../../../scripts/db/apply.ts";
 import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
+import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 import { createMemoryAuthStore } from "../../auth/src/index.ts";
 import { handleControlRequest } from "../../mcp-server/src/control.ts";
 import { providerRegistry } from "../../mcp-server/src/http.ts";
@@ -31,9 +32,8 @@ const APP = { clientId: "Iv1.test", clientSecret: "github-client-secret" };
 
 describe("createGoldenCreateService, wired to a real database", () => {
   test("refuses a caller with no GitHub connection before touching the provider or the database", async () => {
-    const db = await openDatabase();
+    const db = await openMigratedDatabase();
     try {
-      await applyMigrations(db);
       const { actor } = await fixture(db);
       const service = createGoldenCreateService({
         sql: db,
@@ -54,9 +54,8 @@ describe("createGoldenCreateService, wired to a real database", () => {
   test.each(["boat", "modal"] as const)(
     "secure %s checkout persists provider-specific identity without Boat aliases",
     async (providerId) => {
-      const db = await openDatabase();
+      const db = await openMigratedDatabase();
       try {
-        await applyMigrations(db);
         const { actor, userId } = await fixture(db);
         await connectGitHub(db, userId);
         const sshCalls: { token: string; script: string }[] = [];
@@ -273,9 +272,8 @@ describe("createGoldenCreateService, wired to a real database", () => {
   );
 
   test("Boat capacity requires a backend identity and a second factory build is refused globally", async () => {
-    const db = await openDatabase();
+    const db = await openMigratedDatabase();
     try {
-      await applyMigrations(db);
       const { actor, userId } = await fixture(db);
       await connectGitHub(db, userId);
       const options = {
@@ -309,10 +307,9 @@ describe("createGoldenCreateService, wired to a real database", () => {
   ])(
     "factory rolls back on finalize failure and redacts driver diagnostics ($expected)",
     async ({ code, errno, expected }) => {
-      const db = await openDatabase();
+      const db = await openMigratedDatabase();
       const logs = spyOn(console, "error").mockImplementation(() => {});
       try {
-        await applyMigrations(db);
         const { actor, userId } = await fixture(db);
         await connectGitHub(db, userId);
         const original = db.query.bind(db);
@@ -365,9 +362,8 @@ describe("createGoldenCreateService, wired to a real database", () => {
   );
 
   test("with GITHUB_APP_PRIVATE_KEY configured, checkout uses a scoped installation token and revokes it", async () => {
-    const db = await openDatabase();
+    const db = await openMigratedDatabase();
     try {
-      await applyMigrations(db);
       const { actor, userId } = await fixture(db);
       await connectGitHub(db, userId);
       const installationApp: GitHubInstallationApp = {
@@ -397,9 +393,8 @@ describe("createGoldenCreateService, wired to a real database", () => {
   });
 
   test("a fail-closed scan stops the build before any snapshot or database row", async () => {
-    const db = await openDatabase();
+    const db = await openMigratedDatabase();
     try {
-      await applyMigrations(db);
       const { actor, userId } = await fixture(db);
       await connectGitHub(db, userId);
       const stops: string[] = [];
@@ -437,9 +432,8 @@ describe("createGoldenCreateService, wired to a real database", () => {
 });
 
 test("rebuild retains last-good artifacts/config through scan, snapshot and SQL failures, then restores the committed revision", async () => {
-  const db = await openDatabase();
+  const db = await openMigratedDatabase();
   try {
-    await applyMigrations(db);
     const { actor, userId } = await fixture(db);
     await connectGitHub(db, userId);
     let failure = "";
@@ -966,9 +960,8 @@ test.skipIf(!process.env.ARMADA_TEST_POSTGRES_URL)(
 test.each(["delayed", "timeout", "failed", "unknown"] as const)(
   "rebuild keeps its old canonical master until a confirmed stop (%s)",
   async (mode) => {
-    const db = await openDatabase();
+    const db = await openMigratedDatabase();
     try {
-      await applyMigrations(db);
       const { actor, userId } = await fixture(db);
       await connectGitHub(db, userId);
       const remote = new Map<string, "running" | "stopped" | "failed">();
