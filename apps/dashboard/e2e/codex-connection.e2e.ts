@@ -45,6 +45,11 @@ test("Codex custom endpoint creation accepts both Foundry URL forms without retu
       .getByLabel("Base URL", { exact: true })
       .fill(`https://resource.services.ai.azure.com/api/projects/project/openai/v1${suffix}`);
     await expect(dialog.getByLabel("API version (optional)")).toHaveValue("");
+    await dialog.getByLabel("Set model prices (optional)", { exact: true }).check();
+    await dialog.getByLabel("Priced model ID", { exact: true }).fill("owner-deployment");
+    await dialog.getByLabel("Input", { exact: true }).fill("2.5");
+    await dialog.getByLabel("Output", { exact: true }).fill("15");
+    if (index === 0) await dialog.getByLabel("Cached input (optional)", { exact: true }).fill("0.25");
     const input = dialog.locator('input[name="value"]');
     await expect(input).toHaveAttribute("type", "password");
     // Capture before typing a generated throwaway credential: screenshots contain no key.
@@ -87,6 +92,10 @@ test("Codex replacement chooses a route explicitly, keeps the version fence and 
   await dialog
     .getByLabel("Base URL", { exact: true })
     .fill("https://resource.services.ai.azure.com/api/projects/project/openai/v1/responses");
+  await dialog.getByLabel("Set model prices (optional)", { exact: true }).check();
+  await dialog.getByLabel("Priced model ID", { exact: true }).fill("owner-deployment");
+  await dialog.getByLabel("Input", { exact: true }).fill("2.5");
+  await dialog.getByLabel("Output", { exact: true }).fill("15");
   await page.screenshot({ path: info.outputPath("codex-replacement.png"), fullPage: true, animations: "disabled" });
   const key = randomUUID();
   await dialog.locator('input[name="value"]').fill(key);
@@ -136,6 +145,10 @@ test("Claude gateway replacement keeps explicit routing/auth and refuses a stale
   await dialog.locator('input[name="value"]').fill(randomUUID());
   await dialog.getByLabel("Gateway authentication").selectOption("api-key");
   await expect(dialog.locator('input[name="value"]')).toHaveValue("");
+  await dialog.getByLabel("Set model prices (optional)", { exact: true }).check();
+  await dialog.getByLabel("Priced model ID", { exact: true }).fill("owner-deployment");
+  await dialog.getByLabel("Input", { exact: true }).fill("2.5");
+  await dialog.getByLabel("Output", { exact: true }).fill("15");
   await page.screenshot({ path: info.outputPath("claude-replacement.png"), fullPage: true, animations: "disabled" });
   const key = randomUUID();
   await dialog.locator('input[name="value"]').fill(key);

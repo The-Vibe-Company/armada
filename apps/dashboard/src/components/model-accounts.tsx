@@ -1039,9 +1039,65 @@ function ClaudeReplacementFields({ idPrefix }: { idPrefix: string }) {
               <option value="api-key">API key (x-api-key)</option>
             </NativeSelect>
           </div>
+          <ModelPriceFields idPrefix={idPrefix} />
         </fieldset>
       )}
       {mode && <SecretField key={`${mode}:${auth}`} idPrefix={idPrefix} kind="anthropic" />}
+    </div>
+  );
+}
+
+/** Optional prices are non-secret; saved only as part of the server-composed connection. */
+function ModelPriceFields({ idPrefix }: { idPrefix: string }) {
+  const [enabled, setEnabled] = useState(false);
+  return (
+    <div className="space-y-3">
+      <Label htmlFor={`${idPrefix}-prices`} className="flex items-center gap-2 text-sm font-normal">
+        <Checkbox id={`${idPrefix}-prices`} checked={enabled} onCheckedChange={(value) => setEnabled(value === true)} />
+        Set model prices (optional)
+      </Label>
+      {enabled && (
+        <fieldset className="space-y-3" aria-describedby={`${idPrefix}-prices-hint`}>
+          <legend className="sr-only">Model prices</legend>
+          <p id={`${idPrefix}-prices-hint`} className="text-xs text-muted-foreground">
+            USD per million tokens for the exact model ID reported by the agent. Missing prices mean unknown, not zero.
+            Replacement does not keep old prices: re-enter them to retain them.
+          </p>
+          <div className="space-y-2">
+            <Label htmlFor={`${idPrefix}-price-model`}>Priced model ID</Label>
+            <Input
+              id={`${idPrefix}-price-model`}
+              name="priceModel"
+              required
+              maxLength={256}
+              autoComplete="off"
+              spellCheck={false}
+              placeholder="Your deployment/model ID"
+            />
+          </div>
+          <div className="grid gap-3 sm:grid-cols-3">
+            {(
+              [
+                ["priceInput", "Input"],
+                ["priceCachedInput", "Cached input (optional)"],
+                ["priceOutput", "Output"],
+              ] as const
+            ).map(([name, label]) => (
+              <div className="space-y-2" key={name}>
+                <Label htmlFor={`${idPrefix}-${name}`}>{label}</Label>
+                <Input
+                  id={`${idPrefix}-${name}`}
+                  name={name}
+                  inputMode="decimal"
+                  required={name !== "priceCachedInput"}
+                  autoComplete="off"
+                  placeholder="USD / million"
+                />
+              </div>
+            ))}
+          </div>
+        </fieldset>
+      )}
     </div>
   );
 }
@@ -1136,6 +1192,7 @@ function CustomEndpointFields({
               </NativeSelect>
             </div>
           )}
+          <ModelPriceFields idPrefix={idPrefix} />
         </fieldset>
       )}
       {chosen && <SecretField key={`${kind}:${custom}`} idPrefix={idPrefix} kind={kind} />}
