@@ -20,6 +20,7 @@ import type {
 import { DefaultSkillSmokeFailure, readDefaultPins, verifyDefaultReceipts } from "./default-skill-smoke.ts";
 import { ExpirySmokeFailure, runExpiryCase } from "./expiry-smoke.ts";
 import { helperProbe, skillpackProbe } from "./golden-runtime-smoke.ts";
+import { createScopedProbe, ScopedAccessSmokeFailure } from "./scoped-access-smoke.ts";
 import { runTemplateSkillCase, TemplateSkillSmokeFailure } from "./template-skill-smoke.ts";
 import { runVaultCase, VaultSmokeFailure } from "./vault-smoke.ts";
 
@@ -178,6 +179,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
                 error instanceof SmokeFailure ||
                 error instanceof TemplateSkillSmokeFailure ||
                 error instanceof DefaultSkillSmokeFailure ||
+                error instanceof ScopedAccessSmokeFailure ||
                 error instanceof ExpirySmokeFailure ||
                 error instanceof VaultSmokeFailure
                   ? error.code
@@ -193,6 +195,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
   const github = args.includes("--github-runtime");
   const preservation = args.includes("--work-preservation");
   const defaultSkills = args.includes("--default-skills");
+  const scopedAccess = args.includes("--scoped-access");
   const goldenRuntime = args.includes("--golden-runtime");
   const templatesSkills = args.includes("--templates-skills");
   const vault = args.includes("--vault");
@@ -202,7 +205,8 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
   try {
     if (env.ARMADA_SMOKE !== "create_real_compute") fail("compute_opt_in_required");
     if (
-      (defaultSkills && !preservation) ||
+      ((defaultSkills || scopedAccess) && !preservation) ||
+      (scopedAccess && orchestrator) ||
       (githubRefresh && (!lifecycle || orchestrator)) ||
       (expiry && (orchestrator || (!lifecycle && args.length > 1))) ||
       (goldenRuntime && (orchestrator || (templatesSkills && !preservation && !lifecycle))) ||
@@ -211,6 +215,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
           preservation ||
           templatesSkills ||
           defaultSkills ||
+          scopedAccess ||
           githubRefresh ||
           goldenRuntime ||
           expiry ||
@@ -223,6 +228,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
           arg !== "--work-preservation" &&
           arg !== "--templates-skills" &&
           arg !== "--default-skills" &&
+          arg !== "--scoped-access" &&
           arg !== "--golden-runtime" &&
           arg !== "--lifecycle" &&
           arg !== "--github-refresh" &&
@@ -239,7 +245,14 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
       fail("invalid_configuration");
     origin = url.origin;
     if (
-      (preservation || templatesSkills || defaultSkills || goldenRuntime || expiry || lifecycle || vault) &&
+      (preservation ||
+        templatesSkills ||
+        defaultSkills ||
+        scopedAccess ||
+        goldenRuntime ||
+        expiry ||
+        lifecycle ||
+        vault) &&
       origin !== "https://armada-mcp-staging.up.railway.app"
     )
       fail("invalid_configuration");
@@ -255,6 +268,11 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
           (key) => typeof item[key] !== "string" || !item[key].trim(),
         ) ||
         !item.repo.startsWith("/") ||
+        (scopedAccess &&
+          item.harness === "codex" &&
+          [item.org, item.goldenId, item.modelAccountId].some(
+            (value) => typeof value !== "string" || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(value),
+          )) ||
         (defaultSkills &&
           (typeof item.goldenId !== "string" ||
             !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(item.goldenId) ||
@@ -300,7 +318,16 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
       }
     }
     cases = parsed.map((item) =>
-      defaultSkills ? { ...item, org: item.org.toLowerCase(), goldenId: item.goldenId.toLowerCase() } : item,
+      defaultSkills || (scopedAccess && item.harness === "codex")
+        ? {
+            ...item,
+            org: item.org.toLowerCase(),
+            goldenId: item.goldenId.toLowerCase(),
+            modelAccountId: /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(item.modelAccountId)
+              ? item.modelAccountId.toLowerCase()
+              : item.modelAccountId,
+          }
+        : item,
     );
   } catch (error) {
     report(0, "configure", error instanceof SmokeFailure ? error : new SmokeFailure("invalid_configuration"));
@@ -347,11 +374,11 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
       fail("request_failed");
     }
   }
-  async function poll<T>(read: () => Promise<T>, done: (value: T) => boolean): Promise<T> {
-    for (let i = 0; i < POLLS; i++) {
+  async function poll<T>(read: () => Promise<T>, done: (value: T) => boolean, limit = POLLS): Promise<T> {
+    for (let i = 0; i < limit; i++) {
       const value = await read();
       if (done(value)) return value;
-      if (i + 1 < POLLS) await io.sleep(1000);
+      if (i + 1 < limit) await io.sleep(1000);
     }
     fail("poll_limit_exceeded");
   }
@@ -538,6 +565,40 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
     }
     const sandbox = <T>(action: string, body: object, timeoutMs?: number) =>
       request<T>(`sandbox/${action}`, { org: item.org, ...body }, undefined, timeoutMs);
+    const scopedPair = scopedAccess && item.harness === "codex";
+    let parentCredentialVersion: number | undefined;
+    const scoped = scopedPair
+      ? createScopedProbe({ ...item, goldenId: item.goldenId! }, !dirty, {
+          request: (path, body) => request(path, { ...body, org: item.org }),
+          poll: (read, done) => poll(read, done, 300),
+          step,
+          withCleanup: async (action) => {
+            cleaning = true;
+            try {
+              return await action();
+            } finally {
+              cleaning = false;
+            }
+          },
+          isNotReady: (error) => error instanceof SmokeFailure && error.code === "sandbox_not_ready",
+          out: (line) => io.out(JSON.stringify({ ...JSON.parse(line), case: index })),
+          stopSandbox: async (id) => {
+            try {
+              await sandbox("stop", { id });
+            } catch (error) {
+              if (!(error instanceof SmokeFailure) || !["outcome_unknown", "request_failed"].includes(error.code))
+                throw error;
+            }
+            await poll(
+              () => sandbox<{ id: string; status: string; providerState: string }>("status", { id }),
+              (status) =>
+                status.id === id &&
+                ["stopped", "failed"].includes(status.status) &&
+                ["archived", "stopped"].includes(status.providerState),
+            );
+          },
+        })
+      : undefined;
     const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
     const scratch = `armada-runtime-smoke-${crypto.randomUUID()}`;
     const receipt = `/tmp/${scratch}`;
@@ -611,15 +672,30 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
       stopped = true;
     }
     try {
+      if (scoped) await scoped.prepare();
+      else if (scopedAccess && !dirty)
+        io.out(JSON.stringify({ case: index, step: "scoped_access", skip: true, reason: "codex_only" }));
       await step("launch", async () => {
         launchAttempted = true;
         const result = await sandbox<{
-          sandbox: { id: string; provider: string; skills?: unknown };
+          sandbox: {
+            id: string;
+            provider: string;
+            skills?: unknown;
+            harness?: string;
+            model?: string;
+            reasoningEffort?: string;
+            credentialId?: string;
+            credentialVersion?: number;
+            visibility?: string;
+          };
+          armadaAccess?: { enabled?: boolean; maxActiveChildren?: number };
           golden?: { id: string };
           promptId?: string;
         }>(
-          "launch",
+          scopedPair && !dirty ? "launch-access-v1" : "launch",
           {
+            ...(scopedPair && !dirty ? { armadaAccessVersion: 1, armadaAccess: { maxActiveChildren: 1 } } : {}),
             golden: item.golden,
             provider: item.provider,
             harness: item.harness,
@@ -627,7 +703,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
             credentialId: item.modelAccountId,
             ...(item.reasoningEffort ? { reasoningEffort: item.reasoningEffort } : {}),
             connections: [],
-            ...(defaultSkills && dirty ? { skipSkillDefaults: true } : {}),
+            ...((defaultSkills || scopedPair) && dirty ? { skipSkillDefaults: true } : {}),
             ttlSeconds: 1800,
           },
           600_000,
@@ -635,7 +711,25 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
         // Retain the cleanup handle even if later response validation fails.
         if (typeof result?.sandbox?.id === "string" && result.sandbox.id) sandboxId = result.sandbox.id;
         if (!sandboxId || result.sandbox.provider !== item.provider || result.promptId) fail("invalid_response");
-        if (defaultSkills && result.golden?.id !== item.goldenId) fail("invalid_response");
+        if ((defaultSkills || scopedPair) && result.golden?.id !== item.goldenId) fail("invalid_response");
+        if (scopedPair)
+          await step("scoped_parent_configuration", async () => {
+            if (
+              result.sandbox.harness !== item.harness ||
+              result.sandbox.model !== item.model ||
+              (item.reasoningEffort && result.sandbox.reasoningEffort !== item.reasoningEffort) ||
+              result.sandbox.credentialId !== item.modelAccountId ||
+              !Number.isSafeInteger(result.sandbox.credentialVersion) ||
+              Number(result.sandbox.credentialVersion) < 1 ||
+              (dirty
+                ? result.armadaAccess?.enabled === true
+                : result.armadaAccess?.enabled !== true ||
+                  result.armadaAccess.maxActiveChildren !== 1 ||
+                  result.sandbox.visibility !== "private")
+            )
+              fail("invalid_response");
+            parentCredentialVersion = result.sandbox.credentialVersion;
+          });
         launchSkills = result.sandbox.skills;
       });
       await step("ready", () =>
@@ -837,6 +931,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
           ),
         );
       await nativeTurn(false);
+      if (scoped) await scoped.run(sandboxId!, parentCredentialVersion!);
       if (lifecycle && !dirty) {
         await step("list_ready", () => consistent("ready"));
         await step("steer_refused", async () => {
@@ -1077,6 +1172,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
         }
       }
     }
+    if (scoped && !(await scoped.cleanup(sandboxId, stopped, launchAttempted))) passed = false;
     if (preservation)
       io.out(
         JSON.stringify({
