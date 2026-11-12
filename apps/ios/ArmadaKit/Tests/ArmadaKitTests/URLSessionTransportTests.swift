@@ -1,4 +1,5 @@
 import Foundation
+import CoreFoundation
 import Testing
 import ObjectiveC
 @testable import ArmadaKit
@@ -10,8 +11,8 @@ private extension URLSessionConfiguration {
     @objc class func transportFixtureEphemeral() -> URLSessionConfiguration {
         let configuration = transportFixtureEphemeral() // Original getter after exchange.
         configuration.protocolClasses = [TransportProtocol.self] + (configuration.protocolClasses ?? [])
-        // Supply a real, isolated store so the test can detect a transport that
-        // forgets to disable credential lookup on its otherwise ephemeral session.
+        // Supply the supported system store; fixture credentials are scoped to
+        // a unique test host and removed at teardown. Production must clear it.
         configuration.urlCredentialStorage = TransportProtocol.credentials
         return configuration
     }
@@ -19,7 +20,7 @@ private extension URLSessionConfiguration {
 
 /// Only claims the fixture's unique hosts; all other package traffic is unchanged.
 private final class TransportProtocol: URLProtocol, URLAuthenticationChallengeSender, @unchecked Sendable {
-    static let credentials = URLCredentialStorage()
+    static let credentials = URLCredentialStorage.shared
     static let routes = Routes()
     static let installed: Bool = {
         guard let original = class_getClassMethod(URLSessionConfiguration.self,
@@ -42,7 +43,11 @@ private final class TransportProtocol: URLProtocol, URLAuthenticationChallengeSe
         request.url?.host?.hasSuffix(".transport.test") == true
     }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    private let runLoopLock = NSLock()
+    private var loadingRunLoop: CFRunLoop?
+
     override func startLoading() {
+        runLoopLock.withLock { loadingRunLoop = CFRunLoopGetCurrent() }
         guard let route = Self.routes.get(request.url) else {
             client?.urlProtocol(self, didFailWithError: URLError(.resourceUnavailable))
             return
@@ -51,27 +56,40 @@ private final class TransportProtocol: URLProtocol, URLAuthenticationChallengeSe
     }
     override func stopLoading() { Self.routes.get(request.url)?.stop() }
 
+    // Tests release responses from Swift tasks. URLProtocolClient callbacks must
+    // return to the loading thread, not execute on an arbitrary test executor.
+    private func onLoadingThread(_ action: @escaping @Sendable () -> Void) {
+        let loop = runLoopLock.withLock { loadingRunLoop! }
+        CFRunLoopPerformBlock(loop, kCFRunLoopDefaultMode, action)
+        CFRunLoopWakeUp(loop)
+    }
     func reply(status: Int = 200, headers: [String: String] = [:]) {
-        let response = HTTPURLResponse(url: request.url!, statusCode: status,
-                                       httpVersion: "HTTP/1.1", headerFields: headers)!
-        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .allowed)
-        client?.urlProtocol(self, didLoad: Data("fixture".utf8))
-        client?.urlProtocolDidFinishLoading(self)
+        onLoadingThread { [self] in
+            let response = HTTPURLResponse(url: request.url!, statusCode: status,
+                                           httpVersion: "HTTP/1.1", headerFields: headers)!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .allowed)
+            client?.urlProtocol(self, didLoad: Data("fixture".utf8))
+            client?.urlProtocolDidFinishLoading(self)
+        }
     }
     func challenge(in space: URLProtectionSpace) {
-        let response = HTTPURLResponse(url: request.url!, statusCode: 401,
-                                       httpVersion: "HTTP/1.1", headerFields: ["WWW-Authenticate": "Basic realm=fixture"])!
-        let challenge = URLAuthenticationChallenge(protectionSpace: space, proposedCredential: nil,
-                                                    previousFailureCount: 0, failureResponse: response,
-                                                    error: nil, sender: self)
-        client?.urlProtocol(self, didReceive: challenge)
+        onLoadingThread { [self] in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 401,
+                                           httpVersion: "HTTP/1.1", headerFields: ["WWW-Authenticate": "Basic realm=fixture"])!
+            let challenge = URLAuthenticationChallenge(protectionSpace: space, proposedCredential: nil,
+                                                        previousFailureCount: 0, failureResponse: response,
+                                                        error: nil, sender: self)
+            client?.urlProtocol(self, didReceive: challenge)
+        }
     }
     func use(_ credential: URLCredential, for challenge: URLAuthenticationChallenge) {
         finishChallenge(credential)
     }
     func continueWithoutCredential(for challenge: URLAuthenticationChallenge) { finishChallenge(nil) }
     func cancel(_ challenge: URLAuthenticationChallenge) {
-        client?.urlProtocol(self, didFailWithError: URLError(.userCancelledAuthentication))
+        onLoadingThread { [self] in
+            client?.urlProtocol(self, didFailWithError: URLError(.userCancelledAuthentication))
+        }
     }
     func performDefaultHandling(for challenge: URLAuthenticationChallenge) { finishChallenge(nil) }
     func rejectProtectionSpaceAndContinue(with challenge: URLAuthenticationChallenge) { finishChallenge(nil) }
@@ -80,11 +98,15 @@ private final class TransportProtocol: URLProtocol, URLAuthenticationChallengeSe
         reply(status: credential == nil ? 401 : 200)
     }
     func redirect(to url: URL) {
-        let response = HTTPURLResponse(url: request.url!, statusCode: 302,
-                                       httpVersion: "HTTP/1.1", headerFields: ["Location": url.absoluteString])!
-        client?.urlProtocol(self, wasRedirectedTo: URLRequest(url: url), redirectResponse: response)
-        client?.urlProtocolDidFinishLoading(self)
+        onLoadingThread { [self] in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 302,
+                                           httpVersion: "HTTP/1.1", headerFields: ["Location": url.absoluteString])!
+            client?.urlProtocol(self, wasRedirectedTo: URLRequest(url: url), redirectResponse: response)
+            // The redirection callback transfers control to URLSession. Do not
+            // issue a second terminal didFinishLoading on the redirected loader.
+        }
     }
+
 }
 
 private final class Route: @unchecked Sendable {
@@ -154,6 +176,8 @@ private final class TransportFixture {
     deinit { for url in urls { TransportProtocol.routes.remove(url) } }
 }
 
+@Suite(.serialized)
+struct URLSessionTransportTests {
 @Test func transportConcurrentCancellationIsIsolated() async throws {
     let fixture = TransportFixture()
     let transport = URLSessionTransport()
@@ -232,7 +256,7 @@ private final class TransportFixture {
     defer { store.remove(credential, for: space) }
     // Negative-control input: the configured factory store really contains a
     // credential for this host/realm. Production must disconnect that store.
-    #expect(store.defaultCredential(for: space)?.user == "fixture-user")
+    try #require(store.defaultCredential(for: space)?.user == "fixture-user")
     // Positive control at the same URLSession/URLProtocol boundary: without the
     // transport's no-storage policy, this challenge really selects the credential.
     let (controlRequest, controlRoute) = fixture.route("/control-challenge")
@@ -242,9 +266,9 @@ private final class TransportFixture {
     let controlLoader = await controlRoute.waitForStart()
     controlLoader.challenge(in: space)
     let (_, controlResponse) = try await control.value
-    #expect((controlResponse as? HTTPURLResponse)?.statusCode == 200)
-    #expect(controlRoute.challengeCredentials.count == 1)
-    #expect(controlRoute.challengeCredentials.first.flatMap { $0 }?.user == "fixture-user")
+    try #require((controlResponse as? HTTPURLResponse)?.statusCode == 200)
+    try #require(controlRoute.challengeCredentials.count == 1)
+    try #require(controlRoute.challengeCredentials.first.flatMap { $0 }?.user == "fixture-user")
 
     let transport = URLSessionTransport()
     let first = Task { try await transport.send(firstRequest) }
@@ -262,4 +286,6 @@ private final class TransportFixture {
     let selected = secondRoute.challengeCredentials
     #expect(selected.count == 1)
     #expect(selected.allSatisfy { $0 == nil })
+}
+
 }
