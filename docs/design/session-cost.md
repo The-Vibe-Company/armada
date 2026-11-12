@@ -62,8 +62,8 @@ bucket may be zero with provenance. Reject invalid/subset-inconsistent counters.
 2. Otherwise use a pinned provider/model entry from vendored `models.dev/api.json`
    for a known public endpoint or subscription. Never match a custom endpoint to
    public pricing just because its model string resembles a public model.
-3. Unknown model, custom endpoint without prices, missing required bucket/rate,
-   ambiguous model routing or unknown tier => null amount with reason; show tokens.
+3. Unknown model, custom endpoint without prices, missing positive-bucket data/rate
+   or ambiguous routing => unknown; default policy: `docs/default-token-rates.md`.
 
 Vendor only supported price data plus MIT attribution, source revision, fetch date
 and content hash. A refresh script validates schema, nonnegative finite rates,
@@ -74,9 +74,9 @@ reasoning prices are not zero. Never strip arbitrary suffixes to guess a model.
 Normalize to disjoint pricing buckets: Claude uncached input is native input;
 Codex uncached input is input minus cached reads (minus writes only if the native
 schema proves writes are a separate input subset). Price cache writes by supported
-TTL; unknown TTL with differing rates stays unknown. Output already includes
-reasoning: charge output once, or split reasoning from output only when its count
-and a distinct rate are known. Never add reasoning to total output a second time.
+TTL; an omitted TTL uses provider default, explicit non-default TTL needs a rate.
+Output includes reasoning: charge once, or split when count and separate rate are
+known. Never add reasoning to total output a second time.
 Amount = sum(bucket tokens × USD/million rate) / 1,000,000, using decimal arithmetic;
 round only for presentation. Non-token tool charges/compute are outside this sum.
 
@@ -130,7 +130,7 @@ Update `docs/sandbox-usage.md` when behavior changes. #1161 deletes Boat's nativ
 runner; #1164 owns OpenCode; #1165 owns Docker. Do not build those in this lane.
 Known limits: unavailable history cannot be reconstructed; aggregate turn counters
 may not identify per-request context tiers, TTL or mixed-model reroute allocation.
-These remain explicit unknowns, not silent short-context prices or zero.
+Count/routing gaps remain unknown; default token estimates are not tier invoices.
 Later: invoice reconciliation, non-token tool/compute charges, FX, quotas/billing,
 org-wide override policy beyond connection prices, backfill/repricing tools and
 additional multi-tenant hardening. Retain existing RLS/access rules now.
