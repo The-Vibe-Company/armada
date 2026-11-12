@@ -2,7 +2,7 @@
 
 import type { ReactNode } from "react";
 import { NavMobileTrigger } from "@/components/nav-links";
-import { Sidebar, SidebarFooter, SidebarHeader, useSidebar } from "@/components/ui/sidebar";
+import { Sidebar, SidebarFooter, SidebarHeader, SidebarTrigger, useSidebar } from "@/components/ui/sidebar";
 
 /** Mount the organization switcher only once, including across responsive layouts. */
 export function AppSidebar({
@@ -14,7 +14,7 @@ export function AppSidebar({
   footer: ReactNode;
   children: ReactNode;
 }) {
-  const { isMobile } = useSidebar();
+  const { isMobile, state } = useSidebar();
   return (
     <>
       {isMobile && (
@@ -25,10 +25,20 @@ export function AppSidebar({
           </div>
         </div>
       )}
-      <Sidebar className="md:sticky md:top-0 md:h-dvh md:w-64 md:shrink-0">
-        {isMobile === false && <SidebarHeader className="gap-0 p-0">{header}</SidebarHeader>}
+      <Sidebar collapsible="icon" className="md:sticky md:top-0 md:h-dvh md:shrink-0">
+        {isMobile === false && (
+          <SidebarHeader className="gap-0 p-0">
+            {state === "collapsed" ? (
+              <SidebarTrigger className="mx-auto my-3" aria-label="Expand navigation" />
+            ) : (
+              header
+            )}
+          </SidebarHeader>
+        )}
         {children}
-        {isMobile === false && <SidebarFooter className="mt-auto gap-0 border-t px-3 py-3">{footer}</SidebarFooter>}
+        {isMobile === false && state !== "collapsed" && (
+          <SidebarFooter className="mt-auto gap-0 border-t px-3 py-3">{footer}</SidebarFooter>
+        )}
       </Sidebar>
     </>
   );

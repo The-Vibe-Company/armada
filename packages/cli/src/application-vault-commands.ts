@@ -13,6 +13,7 @@ const HELP = `Application variables and write-only secrets (not model credential
   armada secrets rotate <id> --expected-version <N> [--file <path>] [--org <name|UUID>] [--json]
   armada secrets revoke|delete <id> --expected-version <N> [--org <name|UUID>] [--json]
 
+Use --help or -h at the family or subcommand level; no login or value input is required.
 Values come only from piped stdin or --file; bytes are preserved, never echoed or cached.
 Set creates a new entry; duplicate names conflict. With --org, set requires explicit
 --scope personal|org. Without --org, set defaults to personal in the organization
@@ -25,13 +26,26 @@ Org members can read; only admins can mutate org entries. Revoke is terminal; de
 before reusing a revoked name. No sandbox delivery or upstream rotation is performed.
 `;
 
+const VALUE_OPTIONS = ["--org", "--file", "--scope", "--expected-version"];
+
+function shortHelpRequested(argv: readonly string[]): boolean {
+  for (let index = 0; index < argv.length; index++) {
+    const argument = argv[index] ?? "";
+    if (argument === "--") return false;
+    if (argument === "-h") return true;
+    // A value such as --file -h is input, not a help request.
+    if (VALUE_OPTIONS.includes(argument)) index += 1;
+  }
+  return false;
+}
+
 /** Application vault management stays separate from model-account credentials. */
 export async function applicationVaultCommand(
   resource: "vars" | "secrets",
   argv: readonly string[],
   io: VaultIo,
 ): Promise<number> {
-  if (argv.length === 0 || argv.includes("--help")) {
+  if (argv.length === 0 || argv.includes("--help") || shortHelpRequested(argv)) {
     io.auth.out(HELP);
     return 0;
   }
@@ -96,7 +110,7 @@ function parseInput(resource: "vars" | "secrets", argv: readonly string[]) {
       )
     )
       throw new Error();
-    const args = parseArgs(rest, ["--scope"]);
+    const args = parseArgs(rest, VALUE_OPTIONS);
     const writing = action === "set" || action === "rotate";
     const versioned = action === "rotate" || action === "revoke" || action === "delete";
     const allowed = new Set([

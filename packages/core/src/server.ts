@@ -30,6 +30,7 @@ export {
   withGoldenDirs,
 } from "./golden-create-service.ts";
 export { type GoldenGitHubAdapterOptions, goldenGitHubAdapter } from "./golden-github.ts";
+export { snapshotGolden } from "./golden-runtime.ts";
 export { GITHUB_TOKEN_PATTERN, scanGoldenSandbox } from "./golden-scan.ts";
 export * from "./golden-snapshot-retirement.ts";
 export { assertSqlGoldenMutation } from "./golden-store.ts";
@@ -52,6 +53,12 @@ export {
 } from "./private-skill.ts";
 export { isNonMutatingProviderRefusal } from "./provider.ts";
 export {
+  advanceRoutineSchedule,
+  nextRoutineDates,
+  parseRoutineSchedule,
+  type RoutineSchedule,
+} from "./routine-schedule.ts";
+export {
   createRoutineScheduler,
   type RoutineLaunchAdmission,
   type RoutineSchedulerRuntime,
@@ -59,6 +66,14 @@ export {
 } from "./routine-scheduler.ts";
 export { createRoutineService, type RoutineService } from "./routine-service.ts";
 export { sandboxActivity } from "./sandbox-activity.ts";
+export {
+  type PriceContext,
+  type PricedTurn,
+  type PriceSnapshot,
+  priceTurn,
+  resolvePrice,
+  type TokenRates,
+} from "./server-pricing.ts";
 export { createSkillCatalog } from "./skill-catalog.ts";
 export * from "./skill-defaults.ts";
 export { mergeSkillPins } from "./skill-merge.ts";
@@ -75,4 +90,5 @@ export { sshHydrateGitHubToken } from "./ssh-github-token.ts";
 export { type PrivateOrchestratorSshReceipt, sshOrchestratorReceipt } from "./ssh-orchestrator.ts";
 export { sshReadableVariables } from "./ssh-readable-variables.ts";
 export { createTemplateService, type TemplateRuntime, type TemplateService } from "./template-service.ts";
+export { createSqlVaultStore } from "./vault-store.ts";
 export { preserveWork, type WorkPreservation, workPreservationError } from "./work-preservation.ts";

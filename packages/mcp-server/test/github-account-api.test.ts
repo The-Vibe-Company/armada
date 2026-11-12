@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { createMemoryAuthStore, createServiceToken } from "@armada/auth";
-import { createSqlVaultStore } from "@armada/core";
+import { createSqlVaultStore } from "@armada/core/server";
 import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";

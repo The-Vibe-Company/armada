@@ -7,6 +7,7 @@ export {
   githubHydrationPhase,
 } from "./api-failure.ts";
 export { CLIENT_CONFIG_PATH, type ClientConfig } from "./client-config.ts";
+export { CODEX_ENDPOINT_ENV, type CodexEndpoint, parseCodexEndpoint } from "./codex-endpoint.ts";
 export * from "./connections.ts";
 export { HARNESSES, type Harness, type Visibility } from "./contract.ts";
 export type { CredentialBinding } from "./credentials.ts";
@@ -107,9 +108,7 @@ export {
 } from "./github.ts";
 export {
   assertGoldenMutation,
-  type CreatedGolden,
   connectGolden,
-  createGolden,
   type GoldenActor,
   type GoldenLimits,
   type GoldenRecord,
@@ -118,7 +117,6 @@ export {
   goldenForSettings,
   providerIdOf,
   type SnapshottedGolden,
-  snapshotGolden,
   waitSnapshot,
 } from "./golden.ts";
 export type { GoldenBuildStatus } from "./golden-build-status.ts";
@@ -239,6 +237,7 @@ export {
   type SteerRequest,
   type ToolCall,
 } from "./provider.ts";
+export { providerRateLimitDetails, providerRateLimitMessage } from "./provider-limit.ts";
 export { validateReadableVariables } from "./readable-variables.ts";
 export { resolveRepositoryDir } from "./repository-context.ts";
 export {
@@ -356,5 +355,4 @@ export {
   VaultError,
   type VaultErrorCode,
 } from "./vault-error.ts";
-export { createSqlVaultStore } from "./vault-store.ts";
 export { VERSION } from "./version.ts";

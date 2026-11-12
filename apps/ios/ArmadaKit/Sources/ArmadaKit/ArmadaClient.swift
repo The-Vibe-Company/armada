@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import os
 
 public struct ArmadaSession: Codable, Sendable {
     public let accessToken: String
@@ -30,6 +31,7 @@ private struct StoredSession: Codable {
 /// API-only authority owner. No Supabase configuration, provider key or browser callback.
 /// Keep one instance per UI session. Mutations are never automatically retried.
 public actor ArmadaClient {
+    private static let conversationSignposter = OSSignposter(subsystem: "co.thevibecompany.armada", category: "ConversationRequest")
     public static let productionOrigin = URL(string: "https://armada.thevibecompany.co")!
     private let origin: URL
     private let transport: any ArmadaTransport
@@ -190,6 +192,12 @@ public actor ArmadaClient {
         if let token { request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization") }
         if let key { request.setValue(key, forHTTPHeaderField: "Idempotency-Key") }
         request.httpBody = body
+        let signposter = Self.conversationSignposter
+        let intervalName: StaticString? = route == "sandbox/detail" ? "SandboxDetail" : route == "logs/read" ? "ConversationEvents" : nil
+        let interval = intervalName.map { signposter.beginInterval($0, id: signposter.makeSignpostID()) }
+        defer {
+            if let name = intervalName, let interval { signposter.endInterval(name, interval) }
+        }
         let data: Data; let response: HTTPURLResponse
         do { (data, response) = try await transport.send(request) }
         catch is CancellationError { throw CancellationError() }
@@ -227,6 +235,10 @@ public actor ArmadaClient {
             // flow is not an authenticated session and can retain its server explanation.
             if cause == .signedOut { throw cause }
             throw ArmadaServerFailure.explaining(cause, body: data)
+        }
+        let decode = intervalName.map { _ in signposter.beginInterval("Decode", id: signposter.makeSignpostID()) }
+        defer {
+            if let decode { signposter.endInterval("Decode", decode) }
         }
         do { return try JSONDecoder().decode(Response.self, from: data) }
         catch { throw ArmadaError.invalidResponse }

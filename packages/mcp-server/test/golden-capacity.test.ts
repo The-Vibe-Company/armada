@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import { createSqlVaultStore } from "@armada/core";
 import type { Sql } from "@armada/core/server";
+import { createSqlVaultStore } from "@armada/core/server";
 import { sqlGoldenBackendSlots } from "../../core/src/golden-create.ts";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";

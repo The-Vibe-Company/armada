@@ -3,7 +3,6 @@ import { createMemoryAuthStore, generateToken, memorySessionStore, sha256Hex } f
 import {
   API_FAILURE_HELP,
   CREDENTIAL_BUSY_MESSAGE,
-  createSqlVaultStore,
   DEFAULT_LAUNCH_TTL_SECONDS,
   encryptSecret,
   GitHubHydrationError,
@@ -19,6 +18,7 @@ import {
   VaultError,
   type VaultStore,
 } from "@armada/core";
+import { createSqlVaultStore } from "@armada/core/server";
 import { appendModalEvents, createSqlModalStore, type Machine, type Scope, scopeKey } from "@armada/provider-modal";
 import type { PGlite } from "@electric-sql/pglite";
 import { AppService } from "modal";
@@ -75,7 +75,17 @@ for (const failure of [
         throw new ProviderError({
           provider: "boat",
           code: failure === "rate_limited" || failure === "payment_required" ? failure : "unavailable",
-          ...(failure === "rate_limited" ? { status: 429 } : {}),
+          ...(failure === "rate_limited"
+            ? {
+                status: 429,
+                retryAfterSeconds: 120,
+                details: {
+                  window: "day",
+                  nextStartAt: "2026-11-12T08:08:00.000Z",
+                  message: "private-upstream-canary",
+                },
+              }
+            : {}),
           message: "credential_refused expired revoked (not a classification input)",
           retryable: true,
           ...(failure === "provider_unavailable" ? { status: 503 } : {}),
@@ -117,7 +127,22 @@ for (const failure of [
                 ? 402
                 : 503,
       );
-      expect(await response?.json()).toMatchObject({ error: { code: failure } });
+      const payload = await response?.json();
+      expect(payload).toMatchObject({ error: { code: failure } });
+      if (failure === "rate_limited") {
+        expect(payload).toMatchObject({
+          error: {
+            message: expect.stringContaining("plan start limit per day"),
+            details: {
+              provider: "boat",
+              window: "day",
+              nextStartAt: "2026-11-12T08:08:00.000Z",
+              retryAfterSeconds: 120,
+            },
+          },
+        });
+        expect(JSON.stringify(payload)).not.toContain("private-upstream-canary");
+      }
       expect((await db.query("select id from sandboxes")).rows).toEqual([]);
     });
   });

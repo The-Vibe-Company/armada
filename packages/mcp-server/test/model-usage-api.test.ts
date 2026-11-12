@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { createMemoryAuthStore, generateToken, sha256Hex } from "@armada/auth";
-import { createSqlVaultStore, encryptSecret } from "@armada/core";
+import { encryptSecret } from "@armada/core";
+import { createSqlVaultStore } from "@armada/core/server";
 import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import { productionAuthIo } from "../../cli/src/auth-commands.ts";
 import { credsCommand } from "../../cli/src/vault-commands.ts";

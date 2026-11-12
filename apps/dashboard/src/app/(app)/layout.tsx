@@ -7,7 +7,7 @@ import { NavLinks } from "@/components/nav-links";
 import { OrgSwitcher } from "@/components/org-switcher";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
-import { SidebarProvider } from "@/components/ui/sidebar";
+import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { Toaster } from "@/components/ui/toast";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { listMemberships, requireViewer } from "@/lib/data/viewer";
@@ -28,6 +28,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
           <BrandMark />
           Armada
         </div>
+        <SidebarTrigger className="hidden md:flex" aria-label="Collapse navigation" />
         <div className="flex items-center gap-1 md:hidden">
           <CommandMenuTrigger compact />
           <ThemeToggle />

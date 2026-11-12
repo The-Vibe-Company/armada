@@ -6,6 +6,7 @@ import {
   githubHydrationPhase,
   type InvitationApiError,
   type InvitationErrorReason,
+  providerRateLimitMessage,
   TEMPLATE_REFUSAL_HELP,
 } from "@armada/core";
 import { sandboxFailure } from "./sandbox-errors.ts";
@@ -198,6 +199,32 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
             "Application vault unavailable. Check entry status before retrying.",
         );
       }
+      // Routine errors can contain echoed prompt/configuration. Keep output closed and local.
+      if (path.startsWith("/api/v1/routines/")) {
+        const messages: Record<number, string> = {
+          400: "Invalid routine request. Check the configuration, IDs, integer limits and expected version.",
+          401: "Run armada login or update ARMADA_TOKEN.",
+          403: "Routine access denied. Current membership is required; only admins can mutate organization routines.",
+          404: "Routine, template revision or organization not found or not visible.",
+          409: "Routine conflict. Show the routine and check owner access, references and the current --expected-version before retrying.",
+        };
+        throw new ArmadaApiError(
+          response.status === 400
+            ? "invalid"
+            : response.status === 401
+              ? "unauthorized"
+              : response.status === 403
+                ? "forbidden"
+                : response.status === 404
+                  ? "not_found"
+                  : response.status === 409
+                    ? "conflict"
+                    : "unavailable",
+          response.status,
+          messages[response.status] ??
+            "Routine operation unavailable. Inspect the routine before retrying; a mutation may have been accepted.",
+        );
+      }
       if (path === "/api/v1/templates/launch" && response.status >= 500)
         throw new ArmadaApiError("unavailable", response.status, TEMPLATE_LAUNCH_UNKNOWN);
       if (path.startsWith("/api/v1/templates/")) {
@@ -260,7 +287,7 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
           throw new ArmadaApiError(
             "rate_limited",
             429,
-            "The provider refused allocation because a rate or account limit was reached. Check the selected provider account limits before retrying.",
+            providerRateLimitMessage((payload as { error?: { details?: unknown } }).error?.details),
           );
         if (response.status === 402 && failureCode === "payment_required")
           throw new ArmadaApiError(

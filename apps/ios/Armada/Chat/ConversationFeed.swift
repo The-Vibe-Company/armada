@@ -4,6 +4,7 @@ import struct ArmadaKit.ConversationPage
 import enum ArmadaKit.ConversationRead
 import Foundation
 import Observation
+import os
 
 /// The conversations opened recently in this session, in memory only (ArmadaKit
 /// `ConversationCache`). `AppModel` owns one and empties it when the session or organization changes.
@@ -42,12 +43,22 @@ final class ConversationFeed {
     /// item (more fragments of a message already shown, or only technical events).
     private(set) var olderPagesRead = 0
 
+    private struct Presentation: Sendable {
+        let conversation: Conversation
+        let markdown: [String: CachedMarkdownDocument]
+    }
+
+    private static let signposter = OSSignposter(subsystem: "co.thevibecompany.armada", category: "ConversationPresentation")
+    @ObservationIgnored private let key: String
+    @ObservationIgnored private let memory: ConversationMemory?
     @ObservationIgnored private let loader: ConversationLoader<AgentEvent>
     @ObservationIgnored private var cache: [String: CachedMarkdownDocument] = [:]
     /// Orders projections that finish out of order: only the latest stream is shown.
     @ObservationIgnored private var generation = 0
 
     init(key: String, memory: ConversationMemory?) {
+        self.key = key
+        self.memory = memory
         loader = ConversationLoader(key: key, cache: memory)
     }
 
@@ -121,19 +132,43 @@ final class ConversationFeed {
         hasOlder = loader.hasOlder
         generation += 1
         let current = generation
-        let projected = await Task.detached(priority: .userInitiated) {
-            ConversationProjection.project(events)
-        }.value
-        guard current == generation else { return }
-        conversation = projected
-        hasLoaded = true
-        let sources = projected.items.compactMap { item -> MarkdownDocumentSource? in
-            guard case .assistant(let text, _, _) = item.kind else { return nil }
-            return MarkdownDocumentSource(eventID: item.key, content: text)
+        let interval = Self.signposter.beginInterval("Presentation", id: Self.signposter.makeSignpostID())
+        defer { Self.signposter.endInterval("Presentation", interval) }
+        var rebuilt = false
+        let reusedMarkdown = cache
+        let build: @MainActor ([AgentEvent]) async -> Presentation = { events in
+            rebuilt = true
+            let projection = Self.signposter.beginInterval("Projection", id: Self.signposter.makeSignpostID())
+            let projected = await Task.detached(priority: .userInitiated) {
+                ConversationProjection.project(events)
+            }.value
+            Self.signposter.endInterval("Projection", projection)
+            // Preserve the cold-open first paint: plain text is visible before Markdown finishes.
+            if !Task.isCancelled, current == self.generation {
+                self.conversation = projected
+                self.hasLoaded = true
+            }
+            let sources = projected.items.compactMap { item -> MarkdownDocumentSource? in
+                guard case .assistant(let text, _, _) = item.kind else { return nil }
+                return MarkdownDocumentSource(eventID: item.key, content: text)
+            }
+            let markdown = Self.signposter.beginInterval("Markdown", id: Self.signposter.makeSignpostID())
+            let rendered = await MarkdownDocumentRenderer.render(sources: sources, reusing: reusedMarkdown)
+            Self.signposter.endInterval("Markdown", markdown)
+            return Presentation(conversation: projected, markdown: rendered)
         }
-        let rendered = await MarkdownDocumentRenderer.render(sources: sources, reusing: cache)
-        guard current == generation else { return }
-        cache = rendered
-        documents = rendered.mapValues(\.document)
+        let presentation: Presentation
+        if let memory {
+            presentation = await memory.rendered(for: key, events: events, build: build)
+        } else {
+            presentation = await build(events)
+        }
+        guard !Task.isCancelled, current == generation else { return }
+        if !rebuilt {
+            conversation = presentation.conversation
+            hasLoaded = true
+        }
+        cache = presentation.markdown
+        documents = presentation.markdown.mapValues(\.document)
     }
 }

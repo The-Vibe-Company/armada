@@ -16,6 +16,7 @@ import {
 } from "./golden-snapshot-retirement.ts";
 import { createSqlGoldenStore, type Sql } from "./golden-store.ts";
 import { type Provider, ProviderError } from "./provider.ts";
+import { isSandboxProvider, PROVIDER_LIMITS } from "./sandbox-provider.ts";
 import { sshStdinCheckout } from "./ssh-executor.ts";
 
 export interface GoldenBackendSlot {
@@ -455,7 +456,10 @@ export async function reserveGoldenBuild(
   slots: GoldenBackendSlot = sqlGoldenBackendSlots(sql),
   defaultCapacity?: number,
 ): Promise<string | undefined> {
-  const capacity = provider.maxGoldens ?? defaultCapacity ?? (provider.id === "boat" ? 1 : undefined);
+  const capacity =
+    provider.maxGoldens ??
+    defaultCapacity ??
+    (isSandboxProvider(provider.id) ? PROVIDER_LIMITS[provider.id].defaultGoldenCapacity : undefined);
   if (capacity === undefined) return undefined;
   if (!Number.isInteger(capacity) || capacity < 1)
     throw new GoldenError("invalid_config", "Provider golden capacity must be a positive integer.");
@@ -555,7 +559,7 @@ export async function assertGoldenBackendBinding(
   provider: Provider,
   backendId?: string,
 ): Promise<void> {
-  if (golden.provider !== "boat" && provider.maxGoldens === undefined) return;
+  if (PROVIDER_LIMITS[golden.provider].defaultGoldenCapacity === undefined && provider.maxGoldens === undefined) return;
   const identity = backendId ?? (await provider.backendIdentity?.())?.id;
   if (!identity) throw new GoldenError("conflict", "Golden backend binding cannot be verified.");
   const result = await sql.query<{ busy: boolean }>(

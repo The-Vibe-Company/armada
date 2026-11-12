@@ -103,7 +103,7 @@ test("personal provider keys sit in Settings under the org's providers; Harness 
   ).toHaveCount(1);
 
   await page.goto("/harness");
-  await expect(page.getByRole("heading", { name: "Harness", level: 1 })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Models", level: 1 })).toBeVisible();
   await expect(page.locator("[data-harness]")).toHaveCount(2);
   await expect(page.locator("[data-credentials]")).toHaveCount(0);
   await expect(page.locator("[data-modal-token]")).toHaveCount(0);

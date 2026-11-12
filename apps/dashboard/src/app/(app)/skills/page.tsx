@@ -3,10 +3,12 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { Empty, PageHeader } from "@/components/page-header";
 import { SkillpackKeyView } from "@/components/skillpack-key";
+import { TemplateUsage } from "@/components/template-usage";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { readSelectedSkillpackKeys } from "@/lib/data/skillpack-key";
+import { listSelectedTemplates } from "@/lib/data/templates";
 import { SKILLS_PATH } from "@/lib/skillpack-key";
 
 export const metadata: Metadata = { title: "Skills" };
@@ -65,14 +67,24 @@ export default async function SkillsPage() {
       </>
     );
 
+  const templates = await listSelectedTemplates();
   return (
-    <SkillpackKeyView
-      title={TITLE}
-      description={DESCRIPTION}
-      orgId={selected.org.id}
-      orgName={selected.org.name}
-      isAdmin={selected.role === "admin"}
-      keys={list.keys}
-    />
+    <>
+      <SkillpackKeyView
+        title={TITLE}
+        description={DESCRIPTION}
+        orgId={selected.org.id}
+        orgName={selected.org.name}
+        isAdmin={selected.role === "admin"}
+        keys={list.keys}
+      />
+      <TemplateUsage
+        list={templates}
+        uses={(definition) => definition.skills.length > 0}
+        title="Templates using skills"
+        empty="No visible templates include skill pins."
+        note="These templates include skill pins; this is not a count of Skillpack-key usage."
+      />
+    </>
   );
 }
