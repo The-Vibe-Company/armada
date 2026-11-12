@@ -211,7 +211,7 @@ export class GoldenCreateService {
         await this.deps.execution?.phase("snapshot");
       }
       snapshotAttempted = true;
-      uncertainSnapshot = providerId === "modal";
+      uncertainSnapshot = HOST_CAPABILITIES[providerId].retainSourceOnSnapshotUncertainty;
       const started = await provider.snapshot({ sandboxId: builder.id, name: requestedSnapshot });
       saveAccepted = true;
       const snapshot = started.name;
@@ -291,10 +291,15 @@ export class GoldenCreateService {
       }
       return { snapshot, warnings };
     } catch (error) {
-      // Only Boat's save-call refusal proves no artifact was accepted. A later
-      // provenance/read failure must retain capacity even before ownership is known.
-      // Modal keeps its conservative unknown-outcome/source-retention contract.
-      if (providerId === "boat" && phase === "snapshot" && !saveAccepted && isNonMutatingProviderRefusal(error)) {
+      // Only an explicit save-call refusal under the host's release policy clears the
+      // attempt. Later provenance/read failures still retain capacity; conservative
+      // hosts retain the source even when the save call reports a refusal.
+      if (
+        !HOST_CAPABILITIES[providerId].retainSourceOnSnapshotUncertainty &&
+        phase === "snapshot" &&
+        !saveAccepted &&
+        isNonMutatingProviderRefusal(error)
+      ) {
         snapshotAttempted = false;
       }
       refusedBuilder = !builder && phase === "builder" && isNonMutatingProviderRefusal(error);
