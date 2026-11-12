@@ -16,6 +16,8 @@ import {
   type Sql,
   statusReasonOf,
   type TaskOutcome,
+  type TurnPriceContext,
+  type TurnTokenUsage,
   type Visibility,
   withUsageTotals,
 } from "@armada/core";
@@ -24,6 +26,7 @@ import { assertGoldenBackendBinding, assertSqlGoldenMutation } from "@armada/cor
 import { beginGoldenOperation, reconcileGoldenOperations } from "../../core/src/golden-store.ts";
 import type { Caller } from "./caller.ts";
 import { createResourceStore, type ResourceStore } from "./resource-store.ts";
+import { stampTurnPricing } from "./turn-pricing.ts";
 import { preserveBeforeStop, readWorkRecovery } from "./work-preservation.ts";
 
 /** A sandbox with what the caller needs to know about its golden. */
@@ -41,7 +44,16 @@ export interface ServerSandboxStore extends SandboxStore {
   assertDeletionAllowed?(id: string): Promise<void>;
   /** Admission-only read: ordinary exec stays concurrent, but cannot start during stop. */
   assertExecAllowed?(id: string): Promise<void>;
-  recordUsage?(id: string, usage: Pick<SandboxUsage, "turnCount" | "turns">): Promise<void>;
+  recordUsage?(
+    id: string,
+    usage: Pick<SandboxUsage, "turnCount" | "turns">,
+    options?: {
+      /** Fresh native snapshots only, not retained/server-merged rows. */
+      observations: readonly TurnTokenUsage[];
+      /** Trusted service admission contexts, never guest monetary output. */
+      contexts?: readonly TurnPriceContext[];
+    },
+  ): Promise<void>;
   preserveWork?(id: string, provider: Provider, providerId: string): Promise<"pending" | void>;
   readWorkRecovery?(id: string, recoveryId?: string): Promise<string | null>;
   reportTaskOutcome?(id: string, promptId: string, outcome: TaskOutcome, expectedGeneration?: number): Promise<void>;
@@ -237,6 +249,10 @@ export function createSqlData(sql: Sql): DataSource {
 
     const sandboxes: ServerSandboxStore = {
       activityOwnership: true,
+      async recordUsagePricingContext(id, context) {
+        if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");
+        await createSqlSandboxStore(sql, { turnModels: true }).recordUsagePricingContext!(id, context);
+      },
       async recordTurnModel(id, promptId, requestedModel) {
         if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");
         await createSqlSandboxStore(sql, { turnModels: true }).recordTurnModel!(id, promptId, requestedModel);
@@ -327,13 +343,23 @@ export function createSqlData(sql: Sql): DataSource {
         if (!["stopped", "failed", "deleted"].includes(row.status))
           throw new GoldenError("conflict", "Stop the sandbox before deleting it.");
       },
-      async recordUsage(id, usage) {
-        await sql.query(
-          `update public.sandboxes s set usage_turns=(
+      async recordUsage(id, usage, options) {
+        const mergeNative = async (target: Sql, unpriced: boolean) =>
+          target.query<{ usage: Pick<SandboxUsage, "turnCount" | "turns"> }>(
+            `update public.sandboxes s set usage_turns=(
             with snapshots as (
               select value, ordinality as ordinal
               from jsonb_array_elements(coalesce(s.usage_turns->'turns','[]'::jsonb) ||
                 coalesce(($4::text::jsonb)->'turns','[]'::jsonb)) with ordinality
+            ), lifetime_snapshots as (
+              select *,
+                bool_or(value ? 'cacheWriteTokensByTtl') over identity as has_ttl,
+                bool_or(value#>'{cacheWriteTokensByTtl,conflicted}'='true'::jsonb) over identity as ttl_conflicted,
+                max((value#>>'{cacheWriteTokensByTtl,fiveMinute}')::bigint) over identity as ttl_five,
+                max((value#>>'{cacheWriteTokensByTtl,oneHour}')::bigint) over identity as ttl_hour,
+                max((value->>'cacheWriteTokens')::bigint) over identity as ttl_total
+              from snapshots
+              window identity as (partition by value->>'promptId', value->>'model')
             ), merged as (
               select distinct on (value->>'promptId', value->>'model')
                 value || jsonb_strip_nulls(jsonb_build_object(
@@ -342,8 +368,18 @@ export function createSqlData(sql: Sql): DataSource {
                   'outputTokens', max((value->>'outputTokens')::bigint) over identity,
                   'cachedTokens', max((value->>'cachedTokens')::bigint) over identity,
                   'cacheWriteTokens', max((value->>'cacheWriteTokens')::bigint) over identity,
-                  'reasoningTokens', max((value->>'reasoningTokens')::bigint) over identity)) as value
-              from snapshots
+                  'reasoningTokens', max((value->>'reasoningTokens')::bigint) over identity)) ||
+                  -- Keep monotone lifetime subsets across stale writers, without inventing a
+                  -- coherent breakdown when conflicting snapshots exceed the aggregate.
+                  -- A conflict is sticky: ordinary replays carry no authoritative reset/order proof.
+                  case when has_ttl then jsonb_build_object('cacheWriteTokensByTtl',
+                    case when ttl_conflicted or
+                        (ttl_total is not null and coalesce(ttl_five,0)+coalesce(ttl_hour,0)>ttl_total)
+                      then jsonb_build_object('fiveMinute',null,'oneHour',null,'conflicted',true)
+                      when ttl_total is null then jsonb_build_object('fiveMinute',null,'oneHour',null)
+                      else jsonb_build_object('fiveMinute',ttl_five,'oneHour',ttl_hour) end)
+                    else '{}'::jsonb end as value
+              from lifetime_snapshots
               window identity as (partition by value->>'promptId', value->>'model'),
                 diagnostic as (partition by value->>'promptId', value->>'model' order by
                   case when jsonb_typeof(value->'unavailableReason')='object' then
@@ -372,9 +408,59 @@ export function createSqlData(sql: Sql): DataSource {
           )
           where ${SANDBOX_VISIBLE} and s.id=$3::uuid
             -- Managed parents use their durable journal as the sole usage writer.
-            and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)`,
-          [...scope, id, JSON.stringify(usage)],
-        );
+            and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)
+            ${
+              unpriced
+                ? `and not exists(select 1 from jsonb_array_elements(coalesce(s.usage_turns->'turns','[]'::jsonb)) r
+              where jsonb_typeof(r->'pricing')='object')`
+                : ""
+            }
+            returning s.usage_turns as usage`,
+            [
+              ...scope,
+              id,
+              JSON.stringify({
+                ...usage,
+                turns: usage.turns.map(({ pricing: _ignored, ...native }) => ({
+                  ...native,
+                  ...(unpriced ? { pricing: null } : {}),
+                })),
+              }),
+            ],
+          );
+        // Legacy adapters record unpriced telemetry only. Never erase a frozen context or
+        // leave a stale known amount beside updated counters without a transaction.
+        if (!sql.transaction) {
+          await mergeNative(sql, true);
+          return;
+        }
+        await sql.transaction(async (tx) => {
+          const prior = await tx.query<{ usage: Pick<SandboxUsage, "turnCount" | "turns"> | null; harness: Harness }>(
+            `select s.usage_turns as usage,s.harness::text as harness from public.sandboxes s
+             where ${SANDBOX_VISIBLE} and s.id=$3::uuid for update`,
+            [...scope, id],
+          );
+          const before = prior.rows[0];
+          if (!before) return;
+          const merged = (await mergeNative(tx, false)).rows[0]?.usage;
+          if (!merged) return;
+          const priced = {
+            ...merged,
+            turns: stampTurnPricing(
+              merged.turns,
+              before.usage?.turns ?? [],
+              options?.observations ?? [],
+              options?.contexts ?? [],
+              before.harness,
+            ),
+          };
+          const saved = await tx.query<{ id: string }>(
+            `update public.sandboxes s set usage_turns=$4::text::jsonb
+             where ${SANDBOX_VISIBLE} and s.id=$3::uuid returning s.id`,
+            [...scope, id, JSON.stringify(priced)],
+          );
+          if (saved.rows.length !== 1) throw new DataError("Usage admission changed during recording.");
+        });
       },
       async assertExecAllowed(id) {
         const row = (

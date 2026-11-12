@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { TurnTokenUsage } from "../src/sandbox-usage.ts";
-import { priceTurn, resolvePrice, type TokenRates } from "../src/server-pricing.ts";
+import { createUsagePricingContext, priceTurn, resolvePrice, type TokenRates } from "../src/server-pricing.ts";
 
 const rates: TokenRates = { input: "2", output: "10", cacheRead: "0.1", cacheWrite: "2.5", reasoning: null };
 const turn: TurnTokenUsage = {
@@ -23,6 +23,8 @@ const override = (prices = rates) =>
 test("native buckets are disjoint for Codex; reasoning is not charged twice; decimal amount is exact", () => {
   // 700*2 + 200*.1 + 100*2.5 + 300*10 = 4670 microdollars.
   expect(priceTurn(turn, "codex", override(), "30m").usd).toBe("0.00467");
+  // Explicit connection rates are flat across cache lifetimes; no vendor TTL is guessed.
+  expect(priceTurn(turn, "codex", override()).usd).toBe("0.00467");
   const claude = { ...turn, model: "claude-sonnet-5-5" };
   const snapshot = resolvePrice({ provider: "anthropic", model: claude.model, customEndpoint: false });
   // Claude input excludes reads/writes: 1000*2 + 200*.1 + 100*2.5 + 300*10.
@@ -53,7 +55,8 @@ test("missing or invalid observations and unsupported pricing never become zero"
   ]) {
     expect(priceTurn({ ...turn, ...patch } as TurnTokenUsage, "codex", override(), "30m").unknown).toBe("tokens");
   }
-  expect(priceTurn(turn, "codex", override()).unknown).toBe("pricing_dimensions");
+  const publicClaude = resolvePrice({ provider: "anthropic", model: "claude-sonnet-5-5", customEndpoint: false });
+  expect(priceTurn({ ...turn, model: "claude-sonnet-5-5" }, "claude", publicClaude).unknown).toBe("pricing_dimensions");
   expect(priceTurn(turn, "codex", override({ ...rates, cacheRead: null }), "30m").unknown).toBe("price");
   expect(override({ ...rates, input: "NaN" })).toBeNull();
   const tiered = resolvePrice({ provider: "openai", model: "gpt-5.5", customEndpoint: false });
@@ -88,4 +91,35 @@ test.each([
   );
   expect(result.usd).toBeNull();
   expect(result.unknown).toBe("pricing_dimensions");
+});
+
+test("admission books freeze exact provider rates and basis without guessing custom endpoint prices", () => {
+  const input = {
+    harness: "claude" as const,
+    credentialKind: "claude_oauth" as const,
+    customEndpoint: false,
+    credentialId: "account",
+    credentialVersion: 3,
+  };
+  const context = createUsagePricingContext(input);
+  expect(context).toMatchObject({
+    schemaVersion: 1,
+    provider: "anthropic",
+    basis: "api_equivalent",
+    credentialId: "account",
+    credentialVersion: 3,
+    prices: { "claude-sonnet-5-5": { rates: { input: "2", output: "10" } } },
+  });
+  const rate = context.prices["claude-sonnet-5-5"];
+  if (!rate) throw Error("Missing public price fixture");
+  rate.rates.input = "999";
+  expect(createUsagePricingContext(input).prices["claude-sonnet-5-5"]?.rates.input).toBe("2");
+  const custom = createUsagePricingContext({
+    harness: "codex",
+    credentialKind: "openai",
+    customEndpoint: true,
+    credentialId: "endpoint",
+    credentialVersion: 2,
+  });
+  expect(custom).toMatchObject({ provider: "openai", basis: "estimated", customEndpoint: true, prices: {} });
 });

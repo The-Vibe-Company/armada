@@ -8,7 +8,11 @@ const panelOf = (page: Page, name: string) => page.locator(`[data-template-panel
 
 async function panel(page: Page, name: string) {
   const shown = panelOf(page, name);
-  if (!(await shown.isVisible())) await row(page, name).getByRole("button", { name, exact: true }).click();
+  if (!(await shown.isVisible())) {
+    const current = page.getByRole("dialog").filter({ has: page.locator("[data-resource-panel]") });
+    if (await current.isVisible()) await page.keyboard.press("Escape");
+    await row(page, name).getByRole("link", { name, exact: true }).click();
+  }
   await expect(shown).toBeVisible();
   return shown;
 }
