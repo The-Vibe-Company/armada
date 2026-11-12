@@ -302,6 +302,7 @@ private struct MarkdownParagraphView: View {
     let content: AttributedString
     let foreground: Color
     let linkColor: Color
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         if let link = standaloneLink {
@@ -317,12 +318,14 @@ private struct MarkdownParagraphView: View {
                         Text(linkTitle)
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(ArmadaTheme.textPrimary)
-                            .lineLimit(2)
+                            .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
+                            .fixedSize(horizontal: false, vertical: true)
 
                         Text(linkDomain(for: link))
                             .font(.subheadline)
                             .foregroundStyle(ArmadaTheme.textSecondary)
-                            .lineLimit(1)
+                            .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
 
                     Spacer(minLength: 4)

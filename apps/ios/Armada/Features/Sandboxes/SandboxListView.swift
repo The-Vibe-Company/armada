@@ -236,27 +236,33 @@ struct SandboxListView: View {
 struct SandboxRow: View {
     let sandbox: SandboxSummary
     let currentUserID: String?
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 60)) { context in
             VStack(alignment: .leading, spacing: 5) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(sandbox.displayLabel)
-                        .font(.body.weight(.semibold))
-                        .foregroundStyle(ArmadaTheme.textPrimary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    if !sandbox.canOpen {
-                        Image(systemName: "lock")
-                            .font(.caption)
-                            .foregroundStyle(ArmadaTheme.textSecondary)
-                            .accessibilityLabel("Owner or admin only")
+                headerLayout {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(sandbox.displayLabel)
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(ArmadaTheme.textPrimary)
+                            .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+                            .truncationMode(.middle)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if !sandbox.canOpen {
+                            Image(systemName: "lock")
+                                .font(.caption)
+                                .foregroundStyle(ArmadaTheme.textSecondary)
+                                .accessibilityLabel("Owner or admin only")
+                        }
                     }
-                    Spacer(minLength: 8)
-                    Text(RelativeTime.age(of: sandbox.createdAt, now: context.date))
-                        .font(.footnote.monospacedDigit())
-                        .foregroundStyle(ArmadaTheme.textSecondary)
-                    StatusDot(tone: sandbox.status.tone)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    HStack(spacing: 8) {
+                        Text(RelativeTime.age(of: sandbox.createdAt, now: context.date))
+                            .font(.footnote.monospacedDigit())
+                            .foregroundStyle(ArmadaTheme.textSecondary)
+                        StatusDot(tone: sandbox.status.tone)
+                    }
                 }
                 HStack(spacing: 6) {
                     ProviderBadge(provider: sandbox.provider)
@@ -272,12 +278,20 @@ struct SandboxRow: View {
                 Text(secondLine)
                     .font(.footnote)
                     .foregroundStyle(ArmadaTheme.textSecondary)
-                    .lineLimit(1)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .padding(.vertical, 4)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(accessibilityText(now: context.date))
         }
+    }
+
+    private var headerLayout: AnyLayout {
+        if dynamicTypeSize.isAccessibilitySize {
+            return AnyLayout(VStackLayout(alignment: .leading, spacing: 4))
+        }
+        return AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 8))
     }
 
     private var owner: String { SandboxOwner.label(sandbox.ownerID, currentUserID: currentUserID) }
@@ -289,7 +303,8 @@ struct SandboxRow: View {
     }
 
     private func accessibilityText(now: Date) -> String {
-        var parts = [sandbox.displayLabel, sandbox.status.label, sandbox.provider.label, owner]
+        var parts = [sandbox.displayLabel, sandbox.status.label, sandbox.provider.label, sandbox.agentLabel, owner]
+        if let model = sandbox.model, !model.isEmpty { parts.append("Model \(model)") }
         parts.append("Created \(RelativeTime.age(of: sandbox.createdAt, now: now))")
         if !sandbox.canOpen { parts.append("Owner or admin only") }
         return parts.joined(separator: ", ")
