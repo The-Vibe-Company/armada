@@ -1,0 +1,59 @@
+name: Dashboard browser measurements
+
+on:
+  pull_request:
+  merge_group:
+    types: [checks_requested]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dashboard-measure-${{ github.event_name }}-${{ github.ref }}-${{ github.event_name == 'merge_group' && github.sha || 'latest' }}
+  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
+
+jobs:
+  browser-shard:
+    # Not required until real PR and merge-group measurements prove the budget.
+    name: Informational dashboard browser (${{ matrix.shard }}/24)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]
+    # Reuse the previously verified OS-library image, not its old bundled browsers.
+    container:
+      image: mcr.microsoft.com/playwright:v1.56.1-noble@sha256:f1e7e01021efd65dd1a2c56064be399f3e4de00fd021ac561325f2bfbb2b837a
+      options: --ipc=host
+    defaults:
+      run:
+        shell: bash
+        working-directory: apps/dashboard
+    env:
+      CI: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install pinned Bun
+        run: |
+          version=$(node -p "require('../../package.json').packageManager.split('@')[1]")
+          npm install --global --prefix "$HOME/.bun-npm" "bun@$version"
+          echo "$HOME/.bun-npm/bin" >> "$GITHUB_PATH"
+      - run: bun install --frozen-lockfile
+        working-directory: .
+      - name: Install lockfile-selected Chromium
+        run: bunx playwright install chromium --only-shell
+      - name: Build, start isolated mock/app and run shard without retries
+        run: bunx playwright test --config=playwright.ci.config.ts --shard=${{ matrix.shard }}/24 --reporter=list,json
+        env:
+          PLAYWRIGHT_JSON_OUTPUT_FILE: test-results/report.json
+      - name: Preserve timing and failure evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dashboard-browser-${{ matrix.shard }}
+          path: apps/dashboard/test-results
+          if-no-files-found: ignore
