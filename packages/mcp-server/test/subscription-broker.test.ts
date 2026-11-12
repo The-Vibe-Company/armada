@@ -1,11 +1,19 @@
 import { expect, test } from "bun:test";
-import { createSqlVaultStore, encryptSecret, type GoldenActor, type Sql } from "@armada/core/server";
+import {
+  createSqlGoldenStore,
+  createSqlSandboxStore,
+  createSqlVaultStore,
+  encryptSecret,
+  type GoldenActor,
+  launchSandbox,
+  type Sql,
+} from "@armada/core/server";
 import { launchCredentials } from "../src/launch-credentials.ts";
 import { createModelAuthOwnership } from "../src/model-auth.ts";
 import { createSubscriptionBroker } from "../src/subscription-broker.ts";
-import { database, ENCRYPTION_KEY } from "./support.ts";
+import { database, ENCRYPTION_KEY, fakeBoat } from "./support.ts";
 
-test("three current sandbox grants share one server refresh across replicas without receiving refresh tokens", async () => {
+test("three subscription launches prompt despite trapped history and share one refresh across replicas", async () => {
   const { db, people } = await database();
   try {
     const actor: GoldenActor = { userId: people.owner, orgId: people.org, role: "member" };
@@ -76,14 +84,38 @@ test("three current sandbox grants share one server refresh across replicas with
     expect(JSON.stringify(credentials.usagePricing)).not.toContain("access-before");
     expect(credentials.env.ARMADA_CODEX_AUTH_JSON).toBeUndefined();
     expect(JSON.stringify(credentials.env)).not.toContain("refresh-before");
-    const ids = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()];
-    for (const id of ids) {
-      await resolver.admit!(actor, credentials, id);
-      await db.query(
-        `insert into sandboxes(id,org_id,owner_id,golden_id,harness,status,provider_sandbox_id,boat_id,visibility,credential_id,credential_version,expires_at) select $1,$2,$3,id,'codex','running',$4,$4,'org',$5,1,now()+interval '1 hour' from goldens where name='shared' and org_id=$2`,
-        [id, people.org, people.owner, `physical-${id}`, account.id],
-      );
+    const boat = fakeBoat();
+    const stores = {
+      goldens: createSqlGoldenStore(db),
+      sandboxes: createSqlSandboxStore(db),
+      credentials: {
+        ...resolver,
+        // Only the private SSH delivery is replaced; launch still resolves and
+        // admits the real account before allocating and dispatching each prompt.
+        hydrateNative: async () => true,
+      },
+    };
+    const ids: string[] = [];
+    for (let index = 0; index < 3; index++) {
+      const launched = await launchSandbox(boat.provider, stores, actor, {
+        golden: "shared",
+        harness: "codex",
+        credentialId: account.id,
+        prompt: `Reply to subscription launch ${index + 1}`,
+      });
+      ids.push(launched.sandbox.id);
+      expect(launched.sandbox).toMatchObject({
+        credentialId: account.id,
+        credentialVersion: 1,
+        status: "running",
+      });
+      expect(launched.promptId).toBe(`prompt_${index + 1}`);
     }
+    expect(boat.prompts.map(({ sandboxId, text }) => ({ sandboxId, text }))).toEqual([
+      { sandboxId: "bx_1", text: "Reply to subscription launch 1" },
+      { sandboxId: "bx_2", text: "Reply to subscription launch 2" },
+      { sandboxId: "bx_3", text: "Reply to subscription launch 3" },
+    ]);
     for (const id of ids) await resolver.assertTurn!(actor, id, false);
     const request = (index: number, revision?: number) =>
       new Request("https://armada.example/api/internal/model/access", {
