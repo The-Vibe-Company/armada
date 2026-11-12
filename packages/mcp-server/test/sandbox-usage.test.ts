@@ -171,7 +171,9 @@ test("real SQL runtime includes open and completed intervals and usage follows i
     ];
     await store(p.owner).recordUsage!(id, { turnCount: 2, turns });
     expect((await store(p.owner).get(id))?.usage).toMatchObject({ computeSeconds: 30, turnCount: 2, turns });
-    expect((await store(p.owner).list({ limit: 10 })).rows[0]?.usage?.turns).toEqual(turns);
+    expect((await store(p.owner).list({ limit: 10 })).rows[0]?.usage?.turns).toEqual(
+      turns.map((row) => ({ ...row, pricing: null })),
+    );
     // A late stale writer cannot lower lifetime subsets or erase them with an older CLI result.
     await store(p.owner).recordUsage!(id, {
       turnCount: 2,
@@ -179,7 +181,7 @@ test("real SQL runtime includes open and completed intervals and usage follows i
     });
     const { cacheWriteTokensByTtl: _ttl, ...legacy } = turns[0]!;
     await store(p.owner).recordUsage!(id, { turnCount: 2, turns: [legacy] });
-    expect((await store(p.owner).get(id))?.usage?.turns).toEqual(turns);
+    expect((await store(p.owner).get(id))?.usage?.turns).toEqual(turns.map((row) => ({ ...row, pricing: null })));
     // Conflicting non-monotone lifetime observations must not manufacture an overfull split.
     await store(p.owner).recordUsage!(id, {
       turnCount: 2,
@@ -198,7 +200,7 @@ test("real SQL runtime includes open and completed intervals and usage follows i
         { cacheWriteTokensByTtl: { fiveMinute: null, oneHour: null } },
       ]);
     }
-    expect((await store(p.owner).get(id))?.usage?.turns).toEqual(conflicted);
+    expect((await store(p.owner).get(id))?.usage?.turns).toEqual(conflicted.map((row) => ({ ...row, pricing: null })));
     // Unknown detail is not itself contradictory: later valid native data can fill it.
     const lateDetail = { ...turns[0]!, promptId: "late-detail" };
     await store(p.owner).recordUsage!(id, {
@@ -206,9 +208,10 @@ test("real SQL runtime includes open and completed intervals and usage follows i
       turns: [{ ...lateDetail, cacheWriteTokens: null, cacheWriteTokensByTtl: { fiveMinute: null, oneHour: null } }],
     });
     await store(p.owner).recordUsage!(id, { turnCount: 2, turns: [lateDetail] });
-    expect((await store(p.owner).get(id))?.usage?.turns.find((row) => row.promptId === "late-detail")).toEqual(
-      lateDetail,
-    );
+    expect((await store(p.owner).get(id))?.usage?.turns.find((row) => row.promptId === "late-detail")).toEqual({
+      ...lateDetail,
+      pricing: null,
+    });
     expect((await store(p.owner).list({ limit: 10 })).rows[0]?.usage?.computeSeconds).toBe(30);
     // Stop's activity reservation clears stoppedAt even for an already stopped sandbox.
     await store(p.owner).update(id, { status: "stopping", stoppedAt: null });
