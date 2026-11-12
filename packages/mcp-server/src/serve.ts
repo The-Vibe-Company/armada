@@ -31,7 +31,7 @@ import { launchCredentials } from "./launch-credentials.ts";
 import { catalogAuthenticationFromEnv } from "./mcp-catalog-client.ts";
 import { createMcpHttpIntegration } from "./mcp-http-integration.ts";
 import { bootstrapBoatMcp } from "./mcp-native.ts";
-import { createMcpSandboxProviderResolver } from "./mcp-sandbox-provider.ts";
+import { createHistoricalSandboxProviderResolver, createMcpSandboxProviderResolver } from "./mcp-sandbox-provider.ts";
 import { createModalIntegration } from "./modal-integration.ts";
 import { createModelAuthOwnership } from "./model-auth.ts";
 import { createModelUsageApi } from "./model-usage.ts";
@@ -52,6 +52,7 @@ import { createSandboxArmadaAccess } from "./sandbox-armada-access.ts";
 import { createSandboxLifecycle } from "./sandbox-lifecycle.ts";
 import { startServerWorkers } from "./server-workers.ts";
 import { bunSql } from "./sql.ts";
+import { createSubscriptionMigration } from "./subscription-migration.ts";
 
 export { bunSql };
 
@@ -94,8 +95,11 @@ export async function startServer(
   );
   await catalogAuthentication("slack"); // Reject invalid deployment ciphertext before serving.
   const sql = bunSql(config.databaseUrl, config.databasePoolMax);
+  let subscriptionMigration: ReturnType<typeof createSubscriptionMigration>;
   const modelAuth = createModelAuthOwnership(sql, config.encryptionKey, undefined, undefined, {
     origin: config.publicUrl,
+    prepareAccount: (actor, id, version) => subscriptionMigration.prepareAccount(actor, id, version),
+    prepareTurn: (provider, id, caller) => subscriptionMigration.prepareTurn(provider, id, caller),
   });
   const store = createSqlVaultStore(sql);
   const authStore = createSqlAuthStore(sql);
@@ -196,6 +200,12 @@ export async function startServer(
     modalProviderFor,
     modalTokensFor: modal.modalTokensFor,
   });
+  subscriptionMigration = createSubscriptionMigration(
+    sql,
+    createHistoricalSandboxProviderResolver(providers),
+    (provider, id, caller, quiesced) => modelAuth.capture(provider, id, caller, quiesced),
+    modelAuth.broker!,
+  );
   const goldenAdoption = createGoldenAdoption(sql);
 
   const goldenBuilds = new GoldenBuildJobs({

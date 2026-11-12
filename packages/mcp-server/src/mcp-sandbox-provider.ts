@@ -38,9 +38,9 @@ export function createMcpSandboxProviderResolver(sql: Sql, providers: ProviderRe
   };
 }
 
-/** Admission-only read of an older binding's immutable management target. Public
- * sandbox terminal labels are NOT proof: callers must observe this provider.
- * No prompt, exec, resume, stop or snapshot is performed by this resolver. */
+/** Resolve a persisted binding's immutable management target for native transition.
+ * This read performs no lifecycle writes; the caller observes the provider.
+ * SQL terminal labels are not physical-state proof or an admission fence. */
 export function createHistoricalSandboxProviderResolver(providers: ProviderRegistry) {
   return async (sql: Sql, id: string): Promise<{ provider: Provider; providerSandboxId: string }> => {
     const row = (

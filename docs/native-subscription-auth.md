@@ -55,29 +55,52 @@ A native plan limit remains a prompt failure, not a launch failure or expired
 login. Only applicable vendor reset evidence is surfaced; raw vendor errors
 and private quota/profile payloads remain private.
 
-## Legacy-runtime boundary and public output
+## Automatic transition of existing native writers
 
-Changing sealed state to broker-owned does not rewrite a native process that is
-already running on older code. This PR does not claim an atomic fleet-wide
-upgrade of those processes, especially allocations whose provider ID was never
-recorded. It does not restore a history-based launch refusal or a user cleanup
-step to try to establish that proof. A running legacy process may still rotate
-its previously delivered login; automatic live-process cutover is not delivered
-by this account-lock deletion.
+Before first adoption, the server upgrades observable live writers automatically.
+Boat's tracked native writer is quiesced, its latest private auth is captured,
+and the access-only bridge replaces its refresh-bearing file and managed marker.
+Modal checkpoints its old runner before adoption; its next normal resume starts
+with access-only configuration and removes restored raw auth after retaining
+redaction leaves. A legacy native turn may be interrupted once during upgrade;
+workspace and conversation data remain retained. No user stop, release, re-import
+or reconcile action is required by historical bindings.
 
-Authenticated late legacy observations append only to the sealed redaction
-registry; they cannot overwrite broker auth, revision or refresh intent. A
-broker refresh preserves observations arriving while its upstream call is in
-flight. Known running Boat homes are sampled privately before public output;
-a missing auth file is accepted only with a secure exact-capability broker
-configuration proof. Unsafe or unavailable observations withhold output rather
-than expose an unregistered token. Stopped shared Boat logs/events are also
-withheld, including access-only homes, until resumed for private observation:
-this change does not persist a post-stop source proof. This is an output safety
-limitation, not account exclusivity; it does not reserve the account or prevent
-another sandbox launching.
+A known Boat home discovered after account adoption is also converted before its
+next prompt. Captured auth is not blindly promoted over broker state: the server
+validates it through a coordinated upstream refresh and publishes the verified
+replacement with revision CAS. An authoritatively rejected stale guest token may
+fall back once to a separately held current token, never replaying an uncertain
+token. Normal renewal can invoke the same automatic recovery. Confirmed temporary
+upstream failures keep the private candidate paused for an ordinary retry, not a
+forced sign-in.
 
-Deployment validation must additionally exercise an older refresh-bearing
-runtime with a prompt in flight during adoption on Boat and Modal. Verify the
-runtime upgrade and subsequent refresh behavior explicitly; do not infer a
-successful live-process cutover from synthetic account-admission tests.
+Terminal, absent and unobservable historical allocations are ignored rather than
+becoming admission fences. Old/unknown pins are not silently re-pointed. If a
+rotating upstream accepts a refresh but its response is lost, the replacement
+secret may be absent from every trusted source. The server cannot reconstruct an
+opaque replacement or safely replay the spent token. After trying known private
+sources, this genuinely unrecoverable case has exactly one user-facing step:
+**Sign in again to this ChatGPT account.** This is authentication failure, not
+account exclusivity; no sandbox cleanup or internal renewal-mode instruction is
+shown to the owner.
+
+## Public output during transition
+
+Authenticated late observations append encrypted redaction leaves without
+changing broker auth or refresh intent. Refresh commits preserve leaves and
+per-guest delivery evidence arriving during the vendor call. Known running Boat
+homes are sampled privately before output; a secure exact-capability proof also
+checks that the old managed marker is absent. A partially installed home repairs
+automatically before its next prompt and cannot certify public output meanwhile.
+
+A sealed delivery receipt for the exact sandbox lifecycle generation allows safe
+stopped Boat output without SSH. Raw auth observations invalidate that receipt;
+pre-exec observations do not certify later output. Unknown or changed-generation
+stopped sources remain withheld until a fresh private observation is possible.
+These are output safety checks, not account reservations or usage limits.
+
+Deployment validation additionally covers an older refresh-bearing runtime with
+a prompt in flight during adoption on Boat and Modal: launch another sandbox,
+then prompt the old one and renew both through the server. Verify late access and
+refresh tokens stay redacted. Synthetic tests do not claim deployed success.

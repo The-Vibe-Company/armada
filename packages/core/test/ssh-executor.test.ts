@@ -258,7 +258,7 @@ test.each(["boat", "modal"] as const)(
     if (id === "boat") {
       // Exercise the actual private wire program: missing native auth is safe
       // only with a private, exact sandbox broker capability receipt.
-      for (const proof of ["matching", "wrong", "missing", "unsafe"] as const) {
+      for (const proof of ["matching", "wrong", "missing", "unsafe", "managed"] as const) {
         const config = "/home/user/.armada/model-access.json";
         const files = new Map<string, string>();
         if (proof !== "missing")
@@ -275,6 +275,7 @@ test.each(["boat", "modal"] as const)(
           isDirectory: () => !files.has(file),
           isFile: () => files.has(file),
         });
+        if (proof === "managed") files.set("/home/user/.codex/.armada-managed-native", "paused");
         const output: string[] = [];
         const guest = {
           env: { ARMADA_GIT_TOKEN: "synthetic-capability" },
@@ -286,7 +287,11 @@ test.each(["boat", "modal"] as const)(
           process: guest,
           require: () => ({
             constants: { O_RDONLY: 0, O_NOFOLLOW: 1 },
-            lstatSync: metadata,
+            lstatSync: (file: string) => {
+              if (file.endsWith("/.armada-managed-native") && !files.has(file))
+                throw Object.assign(new Error("absent"), { code: "ENOENT" });
+              return metadata(file);
+            },
             fstatSync: metadata,
             openSync: (file: string) => {
               if (!files.has(file)) throw Object.assign(new Error("absent"), { code: "ENOENT" });
@@ -296,8 +301,8 @@ test.each(["boat", "modal"] as const)(
             closeSync: () => {},
           }),
         });
-        expect(output.join("")).toBe(proof === "matching" ? "null" : "");
-        expect(guest.exitCode).toBe(proof === "matching" ? 0 : 1);
+        expect(output.join("")).toBe(proof === "matching" ? "null" : proof === "managed" ? "pending" : "");
+        expect(guest.exitCode).toBe(proof === "matching" || proof === "managed" ? 0 : 1);
       }
       await sshPrivateAuthState(selected, "native", deps, false, "synthetic-capability");
       expect(calls.at(-1)?.stdin).toStartWith("synthetic-capability\n");

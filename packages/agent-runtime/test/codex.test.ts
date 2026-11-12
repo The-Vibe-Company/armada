@@ -1,9 +1,10 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type AgentEvent, type Provider, promptOutcome } from "@armada/core";
-import { CodexDriver, type DriverEvent, type Turn } from "../src/index.ts";
+import { CodexDriver, createRedactor, type DriverEvent, type Turn } from "../src/index.ts";
+import { removeNativeCodexAuth } from "../src/native-auth.ts";
 
 const nativeTest = process.platform === "linux" ? test : test.skip;
 
@@ -339,12 +340,29 @@ nativeTest.each([true, false])(
 );
 
 nativeTest("external subscription refresh completes an already-running Codex turn over private RPC", async () => {
+  const root = await mkdtemp(join(tmpdir(), "armada-shared-native-"));
+  await mkdir(join(root, "codex"), { mode: 0o700 });
+  await writeFile(
+    join(root, "codex/auth.json"),
+    JSON.stringify({
+      tokens: {
+        access_token: "synthetic-retired-access",
+        refresh_token: "synthetic-retired-refresh",
+        account_id: "synthetic-account",
+      },
+    }),
+    { mode: 0o600 },
+  );
+  const retired: string[] = [];
+  removeNativeCodexAuth(root, (values) => retired.push(...values));
+  await expect(readFile(join(root, "codex/auth.json"))).rejects.toMatchObject({ code: "ENOENT" });
+  expect(createRedactor(retired)("synthetic-retired-access synthetic-retired-refresh")).toBe("[REDACTED] [REDACTED]");
   const requests: boolean[] = [];
   const events: DriverEvent[] = [];
   const driver = new CodexDriver({
     executable: `${import.meta.dir}/fixtures/app-server.ts`,
     cwd: import.meta.dir,
-    env: { PATH: process.env.PATH ?? "/usr/bin:/bin", ARMADA_EXTERNAL_AUTH: "1" },
+    env: { PATH: process.env.PATH ?? "/usr/bin:/bin", ARMADA_EXTERNAL_AUTH: "1", CODEX_HOME: join(root, "codex") },
     subscriptionAccess: async (refresh) => {
       requests.push(refresh);
       return {
@@ -375,6 +393,7 @@ nativeTest("external subscription refresh completes an already-running Codex tur
     expect(JSON.stringify(events)).not.toContain("account/chatgptAuthTokens/refresh");
   } finally {
     await driver.close();
+    await rm(root, { recursive: true, force: true });
   }
 });
 

@@ -23,11 +23,16 @@ export function createModelAuthOwnership(
   encryptionKey?: string,
   captureNative: typeof sshPrivateAuthState = sshPrivateAuthState,
   now: () => number = Date.now,
-  subscription?: { origin: string; fetch?: typeof fetch },
+  subscription?: {
+    origin: string;
+    fetch?: typeof fetch;
+    prepareAccount?(actor: GoldenActor, id: string, version: number): Promise<void>;
+    prepareTurn?(provider: Provider, id: string, caller: { userId: string; orgId: string }): Promise<void>;
+  },
 ) {
   const state = createNativeStateStore(sql, encryptionKey);
   const broker = subscription
-    ? createSubscriptionBroker(sql, encryptionKey, subscription.origin, subscription.fetch)
+    ? createSubscriptionBroker(sql, encryptionKey, subscription.origin, subscription.fetch, subscription.prepareAccount)
     : undefined;
   async function modalGeneration(tx: Sql, providerId: string, actor: GoldenActor, lock = false): Promise<string> {
     const result = await tx.query<{ generation: string }>(
@@ -123,28 +128,6 @@ export function createModelAuthOwnership(
       const actor: GoldenActor = { userId: row.owner_id, orgId: row.org_id, role: "member" };
       if (broker && (await broker.enrolled(row.credential_id, row.credential_version))) {
         if (provider.id === "boat") {
-          const physical = await provider.get(providerId);
-          if (physical.id !== providerId)
-            throw new VaultError("conflict", "Private native observation returned another sandbox.");
-          if (physical.state === "stopped")
-            throw new ProviderError({
-              provider: "boat",
-              code: "unavailable",
-              retryable: true,
-              message: "Stopped native auth cannot be observed privately; output is withheld.",
-            });
-          const capability = broker.configuration(actor, row.credential_id, row.credential_version, row.id).capability;
-          let observed: string;
-          try {
-            observed = await captureNative(provider, providerId, {}, quiesced, capability);
-          } catch {
-            throw new ProviderError({
-              provider: "boat",
-              code: "unavailable",
-              retryable: true,
-              message: "Private native auth observation is unavailable; output is withheld.",
-            });
-          }
           const authorize = async (tx: Sql) => {
             const pinned = await tx.query(
               `select s.id from public.sandboxes s where s.id=$1::uuid and s.owner_id=$2::uuid and s.org_id=$3::uuid
@@ -166,14 +149,57 @@ export function createModelAuthOwnership(
             );
             if (!pinned.rows.length) throw new VaultError("conflict", "Private native observation source changed.");
           };
+          const physical = await provider.get(providerId);
+          if (physical.id !== providerId)
+            throw new VaultError("conflict", "Private native observation returned another sandbox.");
+          const delivery = {
+            accountId: row.credential_id,
+            version: row.credential_version,
+            sandboxId: row.id,
+            generation: row.lifecycle_generation,
+            authorize,
+          };
+          if (physical.state === "stopped") {
+            if (await state.hasBrokerDelivery(delivery))
+              return broker.secrets(row.credential_id, row.credential_version);
+            throw new ProviderError({
+              provider: "boat",
+              code: "unavailable",
+              retryable: true,
+              message: "Stopped native auth has no verified access-only delivery; output is withheld.",
+            });
+          }
+          if (!["ready", "running"].includes(physical.state) || physical.physicalExitConfirmed === true)
+            throw new ProviderError({
+              provider: "boat",
+              code: "unavailable",
+              retryable: true,
+              message: "Private native observation requires running compute; output is withheld.",
+            });
+          const capability = broker.configuration(actor, row.credential_id, row.credential_version, row.id).capability;
+          let observed: string;
+          try {
+            observed = await captureNative(provider, providerId, {}, quiesced, capability);
+          } catch {
+            throw new ProviderError({
+              provider: "boat",
+              code: "unavailable",
+              retryable: true,
+              message: "Private native auth observation is unavailable; output is withheld.",
+            });
+          }
+          if (observed === "pending")
+            throw new VaultError("unavailable", "Private native configuration is incomplete; output is withheld.");
           if (observed === "null") {
-            if (!sql.transaction) throw new VaultError("unavailable", "Private redaction requires transactions.");
-            await sql.transaction(authorize);
+            // A pre-exec sample cannot certify the filesystem after that command.
+            if (allowStoppedSample) await state.recordBrokerDelivery({ ...delivery, generation: null });
+            else await state.recordBrokerDelivery(delivery);
           } else
             await state.observeRedaction({
               accountId: row.credential_id,
               version: row.credential_version,
               authJson: observed,
+              sandboxId: row.id,
               authorize,
             });
         }
@@ -346,6 +372,7 @@ export function createModelAuthOwnership(
     },
     async beforePrompt(provider: Provider, providerId: string, caller: { userId: string; orgId: string }) {
       await this.beforeResume(provider, providerId, caller);
+      await subscription?.prepareTurn?.(provider, providerId, caller);
       const secrets = await this.capture(provider, providerId, caller);
       if (
         provider.id === "boat" &&
@@ -432,6 +459,7 @@ export function createModelAuthOwnership(
           accountId: row.credential_id,
           version: row.credential_version,
           authJson,
+          sandboxId: row.id,
           authorize: async (tx) => {
             const member = await tx.query(`select 1 from public.members where org_id=$1 and user_id=$2 for share`, [
               scope.orgId,

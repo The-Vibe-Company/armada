@@ -506,15 +506,48 @@ test("shared Boat output samples late native disk secrets and refuses uncertain 
     await expect(events("synthetic-refresh-4")).rejects.toMatchObject({ code: "conflict" });
     expect(await broker.secrets(account.id, 1)).not.toContain("synthetic-refresh-4");
     duringSample = undefined;
+    const runningInfo = boat.sandbox(physical.id).info;
+    boat.sandbox(physical.id).info = { ...runningInfo, state: "stopping" };
+    const beforeStoppingRead = samples;
+    await expect(events("stopping-output")).rejects.toMatchObject({ code: "unavailable" });
+    expect(samples).toBe(beforeStoppingRead);
+    boat.sandbox(physical.id).info = runningInfo;
     unavailable = true;
     await expect(events("unobserved-disk-output")).rejects.toThrow();
     unavailable = false;
-    sample = "null"; // Private transport verified this is an access-only broker home.
+    sample = "null";
+    await shared.capture(boat.provider, physical.id, actor, false, true); // Pre-exec proof cannot certify later output.
+    await boat.provider.stop({ sandboxId: physical.id });
+    const beforeUnknownStop = samples;
+    await expect(events("unknown-stopped-output")).rejects.toMatchObject({ code: "unavailable" });
+    expect(samples).toBe(beforeUnknownStop);
+    const ready = () => {
+      boat.sandbox(physical.id).info = { ...boat.sandbox(physical.id).info, state: "ready", providerState: "ready" };
+    };
+    ready();
+    sample = "null"; // Private transport verified this exact guest is access-only.
     expect(await events("synthetic-refresh-3")).toMatchObject([{ text: "***" }]);
     await boat.provider.stop({ sandboxId: physical.id });
     const beforeStoppedRead = samples;
-    await expect(events("unobserved-stopped-output")).rejects.toMatchObject({ code: "unavailable" });
+    expect(await events("synthetic-refresh-3")).toMatchObject([{ text: "***" }]);
     expect(samples).toBe(beforeStoppedRead);
+    ready();
+    await shared.capture(boat.provider, physical.id, actor, false, true);
+    await boat.provider.stop({ sandboxId: physical.id });
+    await expect(events("unobserved-command-output")).rejects.toMatchObject({ code: "unavailable" });
+    // A newly observed native file revokes the same guest's prior delivery fact.
+    ready();
+    sample = native(5);
+    expect(await events("synthetic-refresh-5")).toMatchObject([{ text: "***" }]);
+    await boat.provider.stop({ sandboxId: physical.id });
+    await expect(events("unknown-after-native-observation")).rejects.toMatchObject({ code: "unavailable" });
+    ready();
+    sample = "null";
+    expect(await events("synthetic-refresh-5")).toMatchObject([{ text: "***" }]);
+    await boat.provider.stop({ sandboxId: physical.id });
+    expect(await events("synthetic-refresh-5")).toMatchObject([{ text: "***" }]);
+    await db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [id]);
+    await expect(events("another-incarnation-output")).rejects.toMatchObject({ code: "unavailable" });
     const preserved = (
       await db.query<{ state_enc: Uint8Array; auth_revision: number; source_generation: string }>(
         "select state_enc,auth_revision,source_generation from model_auth_state where account_id=$1 and account_version=1",

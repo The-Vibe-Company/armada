@@ -146,6 +146,7 @@ test("three subscription launches prompt despite trapped history and share one r
       ).rows[0]!;
       const observed = JSON.parse(await decryptSecret(new Uint8Array(row.state_enc), ENCRYPTION_KEY));
       observed.secrets.push("late-native-observation");
+      observed.brokerDeliveries = { [ids[0]!]: 2 };
       await tx.query("update model_auth_state set state_enc=$2 where account_id=$1 and account_version=1", [
         account.id,
         await encryptSecret(JSON.stringify(observed), ENCRYPTION_KEY),
@@ -160,6 +161,15 @@ test("three subscription launches prompt despite trapped history and share one r
     }
     expect(requests).toBe(1);
     expect(await broker.secrets(account.id, 1)).toContain("late-native-observation");
+    const registry = (
+      await db.query<{ state_enc: Uint8Array }>(
+        "select state_enc from model_auth_state where account_id=$1 and account_version=1",
+        [account.id],
+      )
+    ).rows[0]!;
+    expect(
+      JSON.parse(await decryptSecret(new Uint8Array(registry.state_enc), ENCRYPTION_KEY)).brokerDeliveries,
+    ).toEqual({ [ids[0]!]: 2 });
     expect(await broker.secrets(account.id, 1)).toContain("access-after");
     expect(await broker.secrets(account.id, 1)).toContain(
       broker.configuration(actor, account.id, 1, ids[0]!).capability,
@@ -189,12 +199,19 @@ test("uncertain upstream refresh is never replayed", async () => {
       )
     ).rows[0]!;
     let requests = 0;
+    let reply: "lost" | "temporary" | "success" = "lost";
     const broker = createSubscriptionBroker(db, ENCRYPTION_KEY, "https://armada.example", (async () => {
       requests++;
+      if (reply === "temporary") return Response.json({ error: "upstream_private_detail" }, { status: 503 });
+      if (reply === "success")
+        return Response.json({ access_token: "recovered-access", refresh_token: "recovered-refresh" });
       throw Error("network lost after dispatch");
     }) as unknown as typeof fetch);
     await broker.enroll(actor, original.id, 1);
-    await expect(broker.access(actor, original.id, 1, 0)).rejects.toMatchObject({ code: "unavailable" });
+    await expect(broker.access(actor, original.id, 1, 0)).rejects.toMatchObject({
+      code: "unavailable",
+      message: "Sign in again to this ChatGPT account.",
+    });
     expect(requests).toBe(1);
     expect(
       (
@@ -204,7 +221,15 @@ test("uncertain upstream refresh is never replayed", async () => {
         )
       ).rows[0]!.source_generation,
     ).toBe("server:uncertain");
-    await expect(broker.access(actor, original.id, 1, 0)).rejects.toMatchObject({ code: "unavailable" });
+    await expect(broker.access(actor, original.id, 1, 0)).rejects.toMatchObject({
+      code: "unavailable",
+      message: "Sign in again to this ChatGPT account.",
+    });
+    expect(requests).toBe(1);
+    await expect(broker.enroll(actor, original.id, 1)).rejects.toMatchObject({
+      code: "unavailable",
+      message: "Sign in again to this ChatGPT account.",
+    });
     expect(requests).toBe(1);
     // Explicit replacement may reconnect, never a hidden retry with the spent token.
     await db.query("update credentials set value_enc=$2 where id=$1", [
@@ -213,6 +238,26 @@ test("uncertain upstream refresh is never replayed", async () => {
     ]);
     await expect(broker.access(actor, original.id, 1, 0)).rejects.toMatchObject({ code: "credential_refused" });
     expect(requests).toBe(1);
+    await broker.enroll(actor, original.id, 2);
+    reply = "temporary";
+    await expect(broker.access(actor, original.id, 2, 0)).rejects.toMatchObject({
+      code: "unavailable",
+      message: "Model sign-in is temporarily unavailable. Try again.",
+    });
+    expect(
+      (
+        await db.query<{ source_generation: string }>(
+          "select source_generation from model_auth_state where account_id=$1 and account_version=2",
+          [original.id],
+        )
+      ).rows[0]?.source_generation,
+    ).toBe("server:ready");
+    reply = "success";
+    expect(await broker.access(actor, original.id, 2, 0)).toMatchObject({
+      accessToken: "recovered-access",
+      revision: 1,
+    });
+    expect(requests).toBe(3);
   } finally {
     await db.close();
   }

@@ -201,7 +201,12 @@ try {
   const expected=process.env.ARMADA_GIT_TOKEN;
   if(${provider.id === "boat" ? "true" : "false"} && expected && error.code==='ENOENT' &&
      JSON.parse(readPrivate('/home/user/.armada/model-access.json')).capability===expected)
-   process.stdout.write('null');
+  {
+   let managed=false;
+   try { fs.lstatSync('/home/user/.codex/.armada-managed-native'); managed=true; }
+   catch(e) { if(e.code!=='ENOENT') throw e; }
+   process.stdout.write(managed ? 'pending' : 'null');
+  }
   else throw error;
  }
  if(text!==undefined) {

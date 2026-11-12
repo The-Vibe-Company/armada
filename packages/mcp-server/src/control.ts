@@ -111,6 +111,7 @@ import { exposedSecrets, launchCredentials } from "./launch-credentials.ts";
 import { launchOptions } from "./launch-options.ts";
 import { catalogAuthenticationFromEnv } from "./mcp-catalog-client.ts";
 import { createMcpLifecycle } from "./mcp-lifecycle.ts";
+import { createHistoricalSandboxProviderResolver } from "./mcp-sandbox-provider.ts";
 import { createModalIntegration } from "./modal-integration.ts";
 import { createModelAuthOwnership, type ModelAuthOwnership, modelAuthCapabilities } from "./model-auth.ts";
 import { createModelUsageApi, isPrivateModelEvent, type ModelUsageApi } from "./model-usage.ts";
@@ -126,6 +127,7 @@ import { createProviderMetadata } from "./provider-metadata.ts";
 import { RequestTiming, withRequestTiming } from "./request-timing.ts";
 import { type createSandboxArmadaAccess, parseSandboxArmadaAccess } from "./sandbox-armada-access.ts";
 import { bunSql } from "./sql.ts";
+import { createSubscriptionMigration } from "./subscription-migration.ts";
 import { callSharedTool, ToolApiError } from "./tool-api.ts";
 
 export const CONTROL_PREFIX = "/api/v1/";
@@ -1741,7 +1743,27 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
     modalProviderFor: async (tokens, binding, context) =>
       (await modalIntegration()).modalProviderFor(tokens, binding, context),
   });
-  const modelAuth = createModelAuthOwnership(sql, encryptionKey, undefined, undefined);
+  let subscriptionMigration: ReturnType<typeof createSubscriptionMigration>;
+  const modelAuth = createModelAuthOwnership(
+    sql,
+    encryptionKey,
+    undefined,
+    undefined,
+    env.ARMADA_PUBLIC_URL
+      ? {
+          origin: env.ARMADA_PUBLIC_URL,
+          prepareAccount: (actor, id, version) => subscriptionMigration.prepareAccount(actor, id, version),
+          prepareTurn: (provider, id, caller) => subscriptionMigration.prepareTurn(provider, id, caller),
+        }
+      : undefined,
+  );
+  if (modelAuth.broker)
+    subscriptionMigration = createSubscriptionMigration(
+      sql,
+      createHistoricalSandboxProviderResolver(providers),
+      (provider, id, caller, quiesced) => modelAuth.capture(provider, id, caller, quiesced),
+      modelAuth.broker,
+    );
   return {
     ...(env.ARMADA_PUBLIC_URL ? { publicUrl: env.ARMADA_PUBLIC_URL } : {}),
     credentialBindingRecovery: createCredentialBindingRecovery(sql, encryptionKey),
