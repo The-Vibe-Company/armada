@@ -317,6 +317,8 @@ export {
   usageUnavailableReason,
   withUsageTotals,
 } from "./sandbox-usage.ts";
+export type { SkillCatalogItem, SkillCatalogPage, SkillCatalogSource } from "./skill-catalog.ts";
+export { SKILL_PIN_PATTERN, validateSkillPins } from "./skill-pins.ts";
 export type { TaskOutcome } from "./task-outcome.ts";
 export {
   type LaunchTemplate,

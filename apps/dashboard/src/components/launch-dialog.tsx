@@ -21,6 +21,7 @@ import { ConnectionStatusBadge } from "@/components/connections";
 import { MachineSizeField } from "@/components/machine-size-field";
 import { ModKey } from "@/components/mod-key";
 import { EFFORT_LABEL, type ModelCatalog, ModelFields } from "@/components/model-fields";
+import { SkillPicker } from "@/components/skill-picker";
 import { TemplateLaunchForm } from "@/components/templates";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -165,6 +166,7 @@ function LaunchForm({ golden, provider, orgId, catalog, connections, accounts, r
   const root = useRef<HTMLDivElement>(null);
   const advanced = useRef<HTMLDivElement>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [skills, setSkills] = useState<string[]>([]);
   useVisibleViewport(root);
 
   useEffect(() => {
@@ -283,6 +285,7 @@ function LaunchForm({ golden, provider, orgId, catalog, connections, accounts, r
           {access.alerts(() => {
             focusLaunch.current = true;
           })}
+          <SkillPicker orgId={orgId} value={skills} onChange={setSkills} />
           <Collapsible
             ref={advanced}
             open={advancedOpen}
