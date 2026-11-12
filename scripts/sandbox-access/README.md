@@ -211,3 +211,21 @@ Optionally add `--repo armada` only if `armada` is actually configured on each
 selected golden. This is not a promise of a live pass: old-grant audit, native
 negative-control evidence, provider readiness and approved staging rollout remain
 prerequisites. This change performed no live staging rerun.
+
+### Closed access-admission reasons (server rollout required)
+
+A server containing this follow-up reports the same HTTP 503
+`dependency_unavailable` and existing fixed message, plus `error.details.reason`:
+
+- `armada_access_disabled`: the sandbox-access or shared scoped service is absent.
+  Have the operator check approved service composition/enablement; the checker
+  cannot enable it or grant itself authority.
+- `armada_access_pair_unavailable`: the requested provider/harness pair is not
+  admitted by the currently configured runtime (or the harness is unsupported).
+  Check the exact configured pair; do not switch or silently fall back.
+
+These are diagnostics, not policy changes. Older deployments still return the
+same generic 503 without a reason; they need an approved server rollout before
+the new distinctions appear. The checker recognizes both finite reason values.
+No deployment or live staging validation is performed by this change, and neither
+reason alone proves what caused an earlier staging attempt.

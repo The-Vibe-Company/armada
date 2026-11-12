@@ -1961,6 +1961,41 @@ test("access launch grants scoped authority before the first prompt while retain
         }),
         options,
       );
+    const enabled = options.orchestrators;
+    for (const unavailable of ["access", "shared", "pair"] as const) {
+      if (unavailable === "access") delete options.sandboxArmadaAccess;
+      if (unavailable === "shared") delete options.orchestrators;
+      if (unavailable === "pair") options.orchestrators = { enabledPairs: [] } as unknown as typeof enabled;
+      const denial = await stagingLaunch("web");
+      expect(denial?.status).toBe(503);
+      expect(await denial?.json()).toEqual({
+        error: {
+          code: "dependency_unavailable",
+          message:
+            unavailable === "pair"
+              ? "Sandbox Armada access is unavailable for this provider/harness."
+              : "Sandbox Armada access is not enabled on this server.",
+          details: { reason: unavailable === "pair" ? "armada_access_pair_unavailable" : "armada_access_disabled" },
+        },
+      });
+      expect(fake.forks).toHaveLength(0);
+      expect((await db.query("select id from sandboxes where org_id=$1", [org.id])).rows).toHaveLength(0);
+      options.sandboxArmadaAccess = access;
+      options.orchestrators = enabled;
+    }
+    const providers = options.providers;
+    options.providers = {
+      resolve: async () => {
+        const error = new VaultError("unavailable", "Generic dependency unavailable.");
+        Object.assign(error, { reason: "must-not-leak-request-reason" });
+        throw error;
+      },
+    };
+    const generic = await stagingLaunch("web");
+    expect(await generic?.json()).toEqual({
+      error: { code: "dependency_unavailable", message: "Generic dependency unavailable." },
+    });
+    options.providers = providers;
     const refused = await stagingLaunch("/home/user/web");
     expect(refused?.status).toBe(400);
     expect(await refused?.json()).toMatchObject({ error: { code: "invalid_config" } });

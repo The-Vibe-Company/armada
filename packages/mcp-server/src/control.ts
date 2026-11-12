@@ -119,7 +119,11 @@ import {
 import type { ProviderMetadataFor } from "./provider-metadata.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
 import { RequestTiming, withRequestTiming } from "./request-timing.ts";
-import { type createSandboxArmadaAccess, parseSandboxArmadaAccess } from "./sandbox-armada-access.ts";
+import {
+  ArmadaAccessAdmissionError,
+  type createSandboxArmadaAccess,
+  parseSandboxArmadaAccess,
+} from "./sandbox-armada-access.ts";
 import { bunSql } from "./sql.ts";
 import { callSharedTool, ToolApiError } from "./tool-api.ts";
 
@@ -322,6 +326,7 @@ export async function handleControlRequest(request: Request, options: ControlOpt
             code: failureCode,
             message: error instanceof Error ? error.message : failureCode,
             ...(error instanceof GitHubHydrationError ? { details: error.details } : {}),
+            ...(error instanceof ArmadaAccessAdmissionError ? { details: { reason: error.reason } } : {}),
             ...(error instanceof ProviderError && error.details?.keepSource === true
               ? { details: { keepSource: true, sourceSandboxId: error.details.sourceSandboxId } }
               : {}),
@@ -1362,7 +1367,7 @@ async function launchRoute(options: ControlOptions, caller: Caller, body: Record
     throw new VaultError("invalid", "connections must contain at most 100 connection UUIDs.");
   const armadaAccess = parseSandboxArmadaAccess(body.armadaAccess);
   if (armadaAccess && (!options.sandboxArmadaAccess || !options.orchestrators))
-    throw new VaultError("unavailable", "Sandbox Armada access is not enabled on this server.");
+    throw new ArmadaAccessAdmissionError("armada_access_disabled");
   if (armadaAccess && (typeof body.credentialId !== "string" || !UUID.test(body.credentialId)))
     throw new VaultError("invalid", "Sandbox Armada access requires an explicit credentialId.");
   const name = required(body, "golden");
@@ -1382,7 +1387,7 @@ async function launchRoute(options: ControlOptions, caller: Caller, body: Record
     armadaAccess &&
     (harness !== "codex" || !options.orchestrators?.enabledPairs.includes(`${golden.provider}:${harness}`))
   )
-    throw new VaultError("unavailable", "Sandbox Armada access is unavailable for this provider/harness.");
+    throw new ArmadaAccessAdmissionError("armada_access_pair_unavailable");
   const provider = await providerForGolden(options, caller, golden);
   const result = await launchSandbox(
     provider,
