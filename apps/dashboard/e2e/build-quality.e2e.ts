@@ -107,11 +107,11 @@ test("a refused org secret keeps kind/scope for retry but clears its one-time va
 test("list rows share their columns on desktop and keep the full name width on a phone", async ({ page }) => {
   await signIn(page, "alice@example.com", "/tools");
   const list = page.getByRole("list", { name: "Tools", exact: true });
+  await expect(list.locator(":scope > li")).toHaveCount(5);
   // Rows carry different actions (Retry, Reconnect, Configure, none); the state column must not move with them.
   const lefts = await list
     .locator(":scope > li > div:nth-child(2)")
     .evaluateAll((cells) => cells.map((cell) => Math.round(cell.getBoundingClientRect().left)));
-  expect(lefts.length).toBeGreaterThan(2);
   expect(new Set(lefts).size).toBe(1);
 
   await page.setViewportSize({ width: 390, height: 844 });
