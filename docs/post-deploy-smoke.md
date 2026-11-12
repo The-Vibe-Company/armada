@@ -472,6 +472,10 @@ For every selected pair, launch one additional prompt-free ordinary worker
 with a 180-second logical TTL, no connections and default skills opted out.
 Named `expiry_launch`, `expiry_ready` and `expiry_deadline` steps check its
 identity, readiness, persisted effective TTL and bounded expiry receipt.
+The existing paginated sandbox/list API supplies provider/harness, effective
+TTL and stop timestamp; sandbox/status supplies the physical state/reason.
+List reads filter owner and harness and allow at most20pages of200rows,
+matching the known worker ID without assuming undocumented status fields.
 `expiry_time_to_ready` records readiness immediately, before waiting for TTL.
 
 `expiry_as_stop` polls status without sending, extending or explicitly stopping

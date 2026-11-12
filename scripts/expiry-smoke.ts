@@ -22,13 +22,10 @@ interface Io {
 }
 interface Status {
   id: string;
-  provider: string;
   status: string;
   providerState: string;
   statusReason?: string | null;
   expiresAt: string | null;
-  stoppedAt: string | null;
-  effectiveTtlSeconds: number | null;
 }
 const TTL = 180;
 /** Observe the ordinary TTL lane; a manual cleanup stop can never count as expiry proof. */
@@ -44,9 +41,37 @@ export async function runExpiryCase(item: Case, io: Io): Promise<boolean> {
   async function observe(done: (status: Status) => boolean, polls: number): Promise<Status> {
     for (let i = 0; i < polls; i++) {
       const status = await api<Status>("status", { id });
-      if (status?.id !== id || status.provider !== item.provider) throw new ExpirySmokeFailure("invalid_receipt");
+      if (status?.id !== id) throw new ExpirySmokeFailure("invalid_receipt");
       if (done(status)) return status;
       if (i + 1 < polls) await io.sleep(1000);
+    }
+    throw new ExpirySmokeFailure("poll_limit_exceeded");
+  }
+  interface Metadata {
+    id: string;
+    provider: string;
+    harness: string;
+    status: string;
+    effectiveTtlSeconds: number | null;
+    expiresAt: string | null;
+    stoppedAt: string | null;
+  }
+  async function metadata(): Promise<Metadata> {
+    for (let page = 1; page <= 20; page++) {
+      const result = await api<{ sandboxes: Metadata[]; page: number; hasMore: boolean; nextPage: number | null }>(
+        "list",
+        { owner: "me", harness: item.harness, page, limit: 200 },
+      );
+      if (!Array.isArray(result?.sandboxes) || result.page !== page) throw new ExpirySmokeFailure("invalid_receipt");
+      const matches = result.sandboxes.filter((row) => row.id === id);
+      if (matches.length === 1) {
+        const row = matches[0]!;
+        if (row.provider !== item.provider || row.harness !== item.harness)
+          throw new ExpirySmokeFailure("invalid_receipt");
+        return row;
+      }
+      if (matches.length > 1 || !result.hasMore || result.nextPage !== page + 1)
+        throw new ExpirySmokeFailure("invalid_receipt");
     }
     throw new ExpirySmokeFailure("poll_limit_exceeded");
   }
@@ -87,9 +112,11 @@ export async function runExpiryCase(item: Case, io: Io): Promise<boolean> {
     const expiresAt = ready.expiresAt;
     await io.step("expiry_deadline", async () => {
       // Receipt must be a short ordinary TTL, not a hard-provider-timeout or an unbounded wait.
+      const row = await metadata();
       const deadline = typeof expiresAt === "string" ? Date.parse(expiresAt) : NaN;
       if (
-        ready.effectiveTtlSeconds !== TTL ||
+        row.effectiveTtlSeconds !== TTL ||
+        row.expiresAt !== expiresAt ||
         !Number.isFinite(deadline) ||
         deadline <= startedAt ||
         deadline > io.now() + TTL * 1000 + 10_000
@@ -101,14 +128,17 @@ export async function runExpiryCase(item: Case, io: Io): Promise<boolean> {
         if (status.expiresAt !== expiresAt || status.status === "failed")
           throw new ExpirySmokeFailure("expiry_not_stopped");
         if (!physicalStop(status)) return false;
-        if (
-          status.statusReason !== "expired" ||
-          !status.stoppedAt ||
-          !(Date.parse(status.stoppedAt) >= Date.parse(expiresAt!))
-        )
-          throw new ExpirySmokeFailure("expiry_not_stopped");
+        if (status.statusReason !== "expired") throw new ExpirySmokeFailure("expiry_not_stopped");
         return true;
       }, 360);
+      const row = await metadata();
+      if (
+        row.status !== "stopped" ||
+        row.expiresAt !== expiresAt ||
+        !row.stoppedAt ||
+        !(Date.parse(row.stoppedAt) >= Date.parse(expiresAt!))
+      )
+        throw new ExpirySmokeFailure("expiry_not_stopped");
       stopped = true;
     });
   } catch {

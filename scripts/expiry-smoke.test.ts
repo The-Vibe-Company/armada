@@ -14,7 +14,10 @@ type Fault =
   | "lost_launch"
   | "wrong_provider"
   | "cleanup_lost"
-  | "cleanup_failed";
+  | "cleanup_failed"
+  | "ttl"
+  | "list_missing"
+  | "list_identity";
 function fixture(provider: "boat" | "modal", fault: Fault = "none") {
   let clock = 1_800_000_000_000;
   let expiry = clock + 180_000;
@@ -46,6 +49,31 @@ function fixture(provider: "boat" | "modal", fault: Fault = "none") {
           sandbox: { id: "owned-worker", provider: fault === "wrong_provider" ? "wrong" : provider },
         });
       }
+      if (path === "sandbox/list") {
+        expect(body.owner).toBe("me");
+        expect(body.harness).toBe("codex");
+        if (body.page === 1) return Response.json({ sandboxes: [], page: 1, hasMore: true, nextPage: 2 });
+        const stopped = manualStop || clock >= expiry || (fault === "early" && statusCalls > 2);
+        return Response.json({
+          sandboxes:
+            fault === "list_missing"
+              ? []
+              : [
+                  {
+                    id: "owned-worker",
+                    provider: fault === "list_identity" ? "wrong" : provider,
+                    harness: "codex",
+                    status: stopped ? "stopped" : "ready",
+                    effectiveTtlSeconds: fault === "ttl" ? 3600 : 180,
+                    stoppedAt: stopped ? new Date(clock).toISOString() : null,
+                    expiresAt: new Date(expiry).toISOString(),
+                  },
+                ],
+          page: 2,
+          hasMore: false,
+          nextPage: null,
+        });
+      }
       expect(body.id).toBe("owned-worker");
       if (path === "sandbox/stop") {
         if (fault === "cleanup_failed") throw new Error("secret stop detail");
@@ -69,12 +97,9 @@ function fixture(provider: "boat" | "modal", fault: Fault = "none") {
                 : "ready";
         return Response.json({
           id: "owned-worker",
-          effectiveTtlSeconds: 180,
-          provider,
           status,
           providerState: stopped && fault !== "physical" ? (provider === "boat" ? "archived" : "stopped") : "active",
           statusReason: fault === "reason" ? "other" : "expired",
-          stoppedAt: stopped ? new Date(clock).toISOString() : null,
           expiresAt: new Date(expiry + (fault === "changed" && statusCalls > 2 ? 1000 : 0)).toISOString(),
         });
       }
@@ -135,6 +160,9 @@ test("expiry false receipts and timeouts fail closed; cleanup cannot turn a manu
     "physical",
     "cleanup_lost",
     "cleanup_failed",
+    "ttl",
+    "list_missing",
+    "list_identity",
   ] as const) {
     const fake = fixture("boat", fault);
     expect(await postDeploySmoke(fake.env, ["--expiry"], fake.io)).toBe(false);
