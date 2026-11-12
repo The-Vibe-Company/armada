@@ -15,6 +15,7 @@ import { database, ENCRYPTION_KEY, fakeBoat, SECRETS } from "./support.ts";
 async function fixture(
   options: {
     native?: boolean;
+    shared?: boolean;
     orgVisible?: boolean;
     harness?: "claude" | "codex";
     boat?: boolean;
@@ -113,10 +114,27 @@ async function fixture(
     "insert into modal_server_harnesses(scope,machine_id,harness,github_enabled,credential_id,credential_version) values($1,$2,$4::public.harness,false,$3,1)",
     [scopeKey(scope), physical, old.id, harness],
   );
-  const auth = createModelAuthOwnership(db, ENCRYPTION_KEY, undefined, undefined, async () => ({
-    provider,
-    providerSandboxId: physical,
-  }));
+  const auth = createModelAuthOwnership(
+    db,
+    ENCRYPTION_KEY,
+    undefined,
+    undefined,
+    async () => ({
+      provider,
+      providerSandboxId: physical,
+    }),
+    options.shared
+      ? {
+          origin: "https://armada.example",
+          fetch: Object.assign(
+            async (_input: string | URL | Request, _init?: RequestInit): Promise<Response> => {
+              throw Error("Unexpected upstream refresh in handoff fixture.");
+            },
+            { preconnect: fetch.preconnect },
+          ),
+        }
+      : undefined,
+  );
   const environment = modalLaunchEnvironment({
     sql: db,
     vault: createSqlVaultStore(db),
@@ -132,6 +150,7 @@ async function fixture(
     failOnce = options.failAfterBoot === true,
     used: string | undefined = SECRETS.orgOpenai;
   let delivered: Record<string, string> = {};
+  let subscription: { url: string; capability: string } | undefined;
   const readMachine = async () => {
     const row = (
       await db.query<{ record: Machine }>("select record from modal_machines where scope=$1 and id=$2", [
@@ -191,6 +210,8 @@ async function fixture(
       expect(config.credentialRepoint).toBeString();
       configureClaudeEndpoint(config.claudeEnv);
       delivered = harness === "claude" ? config.claudeEnv : config.codexEnv;
+      subscription = config.subscription;
+      if (subscription) expect(config.codexAuthJson).toBeUndefined();
       used = config.codexAuthJson
         ? JSON.parse(config.codexAuthJson).tokens.access_token
         : (delivered.OPENAI_API_KEY ?? delivered.ANTHROPIC_AUTH_TOKEN ?? delivered.ANTHROPIC_API_KEY);
@@ -222,6 +243,21 @@ async function fixture(
     },
     async prompt(request) {
       await auth.assertCredentialReady(provider, physical);
+      // External-token clients consume the private grant at turn admission,
+      // not while idle compute is only bootstrapping the handoff.
+      if (subscription) {
+        const access = await auth.broker!.route(
+          new Request(subscription.url, {
+            method: "POST",
+            headers: { authorization: `Bearer ${subscription.capability}` },
+            body: "{}",
+          }),
+        );
+        expect(access?.status).toBe(200);
+        const body = await access!.text();
+        expect(body).not.toContain("replacement-refresh-token");
+        used = JSON.parse(body).accessToken;
+      }
       if (!used) throw Error("Selected native credentials were not delivered.");
       return { promptId: "new-prompt", conversationId: request.conversationId ?? "new-conversation", status: "queued" };
     },
@@ -254,6 +290,9 @@ async function fixture(
     get delivered() {
       return delivered;
     },
+    get subscription() {
+      return subscription;
+    },
     get used() {
       return used;
     },
@@ -267,52 +306,57 @@ async function fixture(
   };
 }
 
-test("removing an API-key pin lets the next ordinary send use the eligible subscription default and retain its conversation", async () => {
-  const f = await fixture({ native: true });
-  try {
-    await f.db.query("update credentials set status='deleted' where id=$1", [f.old.id]);
-    const sent = await callSharedTool(f.context, "send", { id: f.id, prompt: "Continue the existing work" });
-    expect(sent).toMatchObject({
-      id: f.id,
-      conversationId: "existing-conversation",
-      credentialNote: "The pinned account was removed. This sandbox now uses your default account.",
-    });
-    expect(f.used).toBe("replacement-access-token");
-    expect(f.stops).toBe(1);
-    const saved = await createSqlData(f.db)(f.caller).sandboxes.get(f.id);
-    expect(saved).toMatchObject({
-      credentialId: f.target.id,
-      credentialVersion: 1,
-      credentialDeliveryPending: false,
-      conversationIds: ["existing-conversation"],
-    });
-    expect(JSON.stringify(sent)).not.toContain("replacement-access-token");
-    expect(JSON.stringify(sent)).not.toContain(SECRETS.orgOpenai);
-    expect((await f.readMachine()).info.labels.credentialId).toBe(f.target.id);
-    let quotaReads = 0;
-    const quota = await createModelUsageApi(f.db).read(f.caller, f.target.id, f.id, async () => {
-      quotaReads++;
-      return { provider: f.provider, providerSandboxId: f.physical };
-    });
-    expect(quota).toMatchObject({ accountId: f.target.id, status: "unavailable", windows: [] });
-    expect(quotaReads).toBe(0);
-    await f.db.query("select set_config('request.jwt.claim.sub',$1,false)", [f.people.owner]);
-    await f.db.query("set role authenticated");
+test.each([false, true])(
+  "removing an API-key pin uses its eligible subscription default and retained conversation (shared: %s)",
+  async (shared) => {
+    const f = await fixture({ native: true, shared });
     try {
-      expect(
-        (await f.db.query<{ credential_note: string }>("select credential_note from sandboxes where id=$1", [f.id]))
-          .rows[0]?.credential_note,
-      ).toContain("default account");
-      await expect(f.db.query("select redaction_enc from sandbox_model_credentials")).rejects.toMatchObject({
-        code: "42501",
+      await f.db.query("update credentials set status='deleted' where id=$1", [f.old.id]);
+      const sent = await callSharedTool(f.context, "send", { id: f.id, prompt: "Continue the existing work" });
+      expect(sent).toMatchObject({
+        id: f.id,
+        conversationId: "existing-conversation",
+        credentialNote: "The pinned account was removed. This sandbox now uses your default account.",
       });
+      expect(f.used).toBe("replacement-access-token");
+      if (shared) expect(f.subscription).toMatchObject({ url: "https://armada.example/api/internal/model/access" });
+      expect(f.stops).toBe(1);
+      const saved = await createSqlData(f.db)(f.caller).sandboxes.get(f.id);
+      expect(saved).toMatchObject({
+        credentialId: f.target.id,
+        credentialVersion: 1,
+        credentialDeliveryPending: false,
+        conversationIds: ["existing-conversation"],
+      });
+      expect(JSON.stringify(sent)).not.toContain("replacement-access-token");
+      expect(JSON.stringify(sent)).not.toContain(SECRETS.orgOpenai);
+      expect((await f.readMachine()).info.labels.credentialId).toBe(f.target.id);
+      let quotaReads = 0;
+      const quota = await createModelUsageApi(f.db).read(f.caller, f.target.id, f.id, async () => {
+        quotaReads++;
+        return { provider: f.provider, providerSandboxId: f.physical };
+      });
+      expect(quota).toMatchObject({ accountId: f.target.id, status: "unavailable", windows: [] });
+      expect(quotaReads).toBe(0);
+      await f.db.query("select set_config('request.jwt.claim.sub',$1,false)", [f.people.owner]);
+      await f.db.query("set role authenticated");
+      try {
+        expect(
+          (await f.db.query<{ credential_note: string }>("select credential_note from sandboxes where id=$1", [f.id]))
+            .rows[0]?.credential_note,
+        ).toContain("default account");
+        await expect(f.db.query("select redaction_enc from sandbox_model_credentials")).rejects.toMatchObject({
+          code: "42501",
+        });
+      } finally {
+        await f.db.query("reset role");
+      }
     } finally {
-      await f.db.query("reset role");
+      await f.db.close();
     }
-  } finally {
-    await f.db.close();
-  }
-}, 30_000);
+  },
+  30_000,
+);
 
 test.each(["other-owner", "wrong-harness", "active-other-conversation", "uncertain-stop", "leased"] as const)(
   "re-point refuses unsafe selection without changing billing identity (%s)",

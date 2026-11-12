@@ -2,6 +2,7 @@ import {
   type AgentEvent,
   PROMPT_STATUSES,
   type PromptStatus,
+  planLimitFromMessage,
   type ToolCall,
   turnInterruptionReason,
 } from "@armada/core";
@@ -70,7 +71,15 @@ export function normalizeEvent(event: SandboxEvent): AgentEvent {
       const interruption = status === "failed" || status === "interrupted" ? turnInterruptionReason(reason) : undefined;
       if (interruption)
         return { ...base, kind: "prompt", text: str(data.prompt) ?? "", status: "interrupted", reason: interruption };
-      return { ...base, kind: "prompt", text: str(data.prompt) ?? "", status, ...(reason ? { reason } : {}) };
+      const limit = status === "failed" ? planLimitFromMessage(reason) : undefined;
+      return {
+        ...base,
+        kind: "prompt",
+        text: str(data.prompt) ?? "",
+        status,
+        ...(reason ? { reason } : {}),
+        ...(limit ? { limit } : {}),
+      };
     }
     case "response": {
       const model = str(data.model);

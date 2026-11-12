@@ -38,6 +38,7 @@ async function main(dialout = false) {
     ingestUrl: string;
     codexAuthJson?: string;
     credentialRepoint?: string;
+    subscription?: { url: string; capability: string };
     nativeAuthRevision?: number;
     nativeAuthSecrets?: string[];
     execEnv?: ExecEnvironment;
@@ -52,6 +53,7 @@ async function main(dialout = false) {
     };
   if (config.credentialFreeBuilder !== undefined && typeof config.credentialFreeBuilder !== "boolean")
     throw Error("invalid_exec_environment");
+  if (config.subscription && config.codexAuthJson) throw Error("subscription_auth_modes_conflict");
   const codexEndpoint = config.codexEnv[CODEX_ENDPOINT_ENV]
     ? parseCodexEndpoint(JSON.parse(config.codexEnv[CODEX_ENDPOINT_ENV]!))
     : undefined;
@@ -96,6 +98,7 @@ async function main(dialout = false) {
     throw Error("invalid_exec_environment");
   const secrets = [
     ...(config.nativeAuthSecrets ?? []),
+    ...(config.subscription ? [config.subscription.capability] : []),
     config.grant.token,
     ...execCredentialValues(execEnv),
     ...(config.codexAuthJson ? [config.codexAuthJson, ...authStrings(JSON.parse(config.codexAuthJson))] : []),
@@ -231,6 +234,39 @@ async function main(dialout = false) {
     await configureCodexEndpoint(config.codexEnv.CODEX_HOME, codexEndpoint);
     if (config.codexAuthJson) await writeFile(`${config.root}/codex/auth.json`, config.codexAuthJson, { mode: 0o600 });
   }
+  const subscriptionRevisions = new Map<string, number>();
+  const subscriptionAccess = config.subscription
+    ? async (refresh: boolean, previousAccessToken?: string) => {
+        const response = await fetch(config.subscription!.url, {
+          method: "POST",
+          headers: { "content-type": "application/json", authorization: `Bearer ${config.subscription!.capability}` },
+          body: JSON.stringify(
+            refresh && previousAccessToken ? { previousRevision: subscriptionRevisions.get(previousAccessToken) } : {},
+          ),
+          signal: AbortSignal.timeout(25_000),
+        });
+        if (!response.ok) throw Error("subscription_access_unavailable");
+        const access = (await response.json()) as {
+          accessToken: string;
+          chatgptAccountId: string;
+          chatgptPlanType: string | null;
+          revision: number;
+        };
+        if (
+          typeof access.accessToken !== "string" ||
+          typeof access.chatgptAccountId !== "string" ||
+          !Number.isSafeInteger(access.revision)
+        )
+          throw Error("subscription_access_invalid");
+        journal.registerSecrets([access.accessToken]);
+        subscriptionRevisions.set(access.accessToken, access.revision);
+        return {
+          accessToken: access.accessToken,
+          chatgptAccountId: access.chatgptAccountId,
+          chatgptPlanType: access.chatgptPlanType,
+        };
+      }
+    : undefined;
   const github = new GitHubBroker((values) => journal.registerSecrets(values));
   const githubRoot = `${config.root}/github-${createHash("sha256").update(config.grant.generation).digest("hex").slice(0, 16)}`;
   let githubSocket: Awaited<ReturnType<GitHubBroker["listen"]>> | undefined;
@@ -271,6 +307,7 @@ async function main(dialout = false) {
         env: config.codexEnv,
         refreshSecrets: refreshNativeSecrets,
         exclusiveAuth: config.nativeAuthRevision !== undefined,
+        ...(subscriptionAccess ? { subscriptionAccess } : {}),
       }),
     },
     channel ?? {

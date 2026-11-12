@@ -20,6 +20,7 @@ export interface HarnessEnvironment {
   codexEnv: Record<string, string>;
   codexAuthJson?: string;
   credentialRepoint?: string;
+  subscription?: { url: string; capability: string };
   nativeAuthRevision?: number;
   nativeAuthSecrets?: string[];
   mcp?: McpConfiguration;
@@ -140,6 +141,7 @@ async function composeModalProvider(options: ComposedModalOptions) {
         ...("credentialRepoint" in harness && harness.credentialRepoint !== undefined
           ? { credentialRepoint: harness.credentialRepoint }
           : {}),
+        ...(harness.subscription ? { subscription: harness.subscription } : {}),
         ...("codexAuthJson" in harness && harness.codexAuthJson !== undefined
           ? { codexAuthJson: harness.codexAuthJson }
           : {}),

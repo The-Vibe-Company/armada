@@ -1,3 +1,4 @@
+import { type PlanLimit, planLimitData, planLimitFromMessage, planLimitMessage } from "./plan-limit.ts";
 import type { AgentEvent, PromptState, Provider } from "./provider.ts";
 
 /** Event types boat sends when a turn ends "finished" but the agent could not work. */
@@ -10,7 +11,7 @@ export type PromptOutcome =
   | { state: "running" }
   | { state: "finished" }
   | { state: "interrupted"; reason?: "interrupted_by_provider_move" | "interrupted_by_harness_exit" }
-  | { state: "failed"; reason: string };
+  | { state: "failed"; reason: string; limit?: PlanLimit };
 
 /** Closed, resendable turn interruptions. Boat's raw failed events and normalized events share this mapping. */
 export function turnInterruptionReason(
@@ -52,13 +53,31 @@ export async function promptOutcome(
   const state =
     observation?.state ?? (await provider.getPrompt({ sandboxId: request.sandboxId, promptId: request.promptId }));
   if (state.status === "interrupted" || state.status === "failed") {
-    const reason = (observation?.events ?? (await promptEvents(provider, request)))
+    const events = (observation?.events ?? (await promptEvents(provider, request))).filter(
+      (event) => event.promptId === request.promptId,
+    );
+    const reason = events
       .filter((event) => event.promptId === request.promptId)
       .find((event) => event.kind === "prompt" && event.reason);
     const message = reason?.kind === "prompt" ? reason.reason : undefined;
     const interruption = turnInterruptionReason(message);
     if (interruption) return { state: "interrupted", reason: interruption };
     if (state.status === "interrupted") return { state: "interrupted" };
+    if (
+      message !== "authentication_failed" &&
+      !events.some((event) => event.kind === "other" && event.type === "auth_expiry")
+    ) {
+      const limit =
+        (reason?.kind === "prompt"
+          ? (planLimitData(reason.limit) ?? planLimitFromMessage(reason.reason))
+          : undefined) ??
+        events
+          .flatMap((event) =>
+            event.kind === "other" && event.type === "usage_limit" ? [planLimitData(event.data)] : [],
+          )
+          .find(Boolean);
+      if (limit) return { state: "failed", reason: planLimitMessage(limit), limit };
+    }
     return {
       state: "failed",
       reason: reason?.kind === "prompt" && reason.reason ? reason.reason : "The agent failed.",
@@ -68,7 +87,14 @@ export async function promptOutcome(
   const stop = (observation?.events ?? (await promptEvents(provider, request)))
     .filter((event) => event.promptId === request.promptId)
     .find((event) => event.kind === "other" && FAILURE_EVENTS.has(event.type));
-  if (stop?.kind === "other") return { state: "failed", reason: failureReason(stop.type, stop.data) };
+  if (stop?.kind === "other") {
+    const limit = stop.type === "usage_limit" ? planLimitData(stop.data) : undefined;
+    return {
+      state: "failed",
+      reason: limit ? planLimitMessage(limit) : failureReason(stop.type, stop.data),
+      ...(limit ? { limit } : {}),
+    };
+  }
   return { state: "finished" };
 }
 

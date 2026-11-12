@@ -31,7 +31,7 @@ export function modalLaunchEnvironment(options: ModalLaunchEnvironmentOptions) {
   ): Promise<HarnessEnvironment & { execEnv: ExecEnvironment }> => {
     if (machine.golden) throw new VaultError("forbidden", "Golden builders cannot resolve launch credentials.");
     const claude = Boolean(env.CLAUDE_CODE_OAUTH_TOKEN || env.ANTHROPIC_API_KEY);
-    const codex = Boolean(env.OPENAI_API_KEY || env.ARMADA_CODEX_AUTH_JSON);
+    const codex = Boolean(env.OPENAI_API_KEY || env.ARMADA_CODEX_AUTH_JSON || env.ARMADA_SERVER_CODEX);
     if (claude && codex) throw new VaultError("invalid", "A launch must select exactly one harness.");
     const initialHarness: Harness | undefined = claude ? "claude" : codex ? "codex" : undefined;
     if (env.GH_TOKEN && env.GITHUB_TOKEN && env.GH_TOKEN !== env.GITHUB_TOKEN)
@@ -96,7 +96,25 @@ export function modalLaunchEnvironment(options: ModalLaunchEnvironmentOptions) {
         ? (credentials.binding as { credentialId: string; credentialVersion: number } | undefined)
         : undefined;
     const publicId = machine.info.labels.sandbox;
+    const shared =
+      binding &&
+      publicId &&
+      options.modelAuth?.broker &&
+      stored.harness === "codex" &&
+      credentials.sources.some((source) => source.kind === "codex_auth")
+        ? await options.modelAuth.broker.enrolled(binding.credentialId, binding.credentialVersion)
+        : false;
+    const subscription =
+      shared && binding && publicId && options.modelAuth?.broker
+        ? options.modelAuth.broker.configuration(
+            { userId, orgId: options.scope.orgId, role: "member" },
+            binding.credentialId,
+            binding.credentialVersion,
+            publicId,
+          )
+        : undefined;
     const native =
+      !shared &&
       binding &&
       publicId &&
       options.modelAuth &&
@@ -109,6 +127,7 @@ export function modalLaunchEnvironment(options: ModalLaunchEnvironmentOptions) {
             publicId,
           )
         : undefined;
+    if (shared) delete credentials.env.ARMADA_CODEX_AUTH_JSON;
     const execEnv: ExecEnvironment = {
       HOME: "/home/user",
       PATH: "/usr/local/bin:/usr/bin:/bin",
@@ -140,6 +159,7 @@ export function modalLaunchEnvironment(options: ModalLaunchEnvironmentOptions) {
     const githubEnv = execEnv.GH_TOKEN ? { GH_TOKEN: execEnv.GH_TOKEN, GITHUB_TOKEN: execEnv.GH_TOKEN } : {};
     return {
       ...(machine.info.labels.credentialRepoint ? { credentialRepoint: machine.info.labels.credentialRepoint } : {}),
+      ...(subscription ? { subscription } : {}),
       ...(native ? { nativeAuthRevision: native.revision, nativeAuthSecrets: native.secrets } : {}),
       claudeEnv:
         stored.harness === "claude"
@@ -147,7 +167,7 @@ export function modalLaunchEnvironment(options: ModalLaunchEnvironmentOptions) {
           : {},
       codexEnv:
         stored.harness === "codex" ? { HOME: "/home/user", PATH: execEnv.PATH!, ...credentials.env, ...githubEnv } : {},
-      ...(stored.harness === "codex" && credentials.files[0]
+      ...(!shared && stored.harness === "codex" && credentials.files[0]
         ? { codexAuthJson: native?.authJson ?? credentials.files[0].content }
         : {}),
       execEnv,
