@@ -17,6 +17,7 @@ import { setGoldenVisibility } from "@/app/actions/goldens";
 import { ActionForm, SubmitButton } from "@/components/action-form";
 import { CopyButton } from "@/components/copy-button";
 import { Disclosure } from "@/components/disclosure";
+import { EnvironmentTemplates } from "@/components/environment-templates";
 import { GoldenCreateDialog } from "@/components/golden-create-dialog";
 import { GoldenForm } from "@/components/golden-form";
 import { type LaunchConnections, LaunchDialog } from "@/components/launch-dialog";
@@ -169,6 +170,7 @@ export default async function GoldensPage({ searchParams }: Props) {
     connections,
     accounts,
     templates,
+    templateList,
   };
 
   const now = Date.now();
@@ -458,6 +460,7 @@ type RowContext = {
   accounts: LaunchAccounts;
   /** Every template the viewer can launch, with the environment each starts from. */
   templates: readonly TemplateLaunchTarget[];
+  templateList: TemplateList;
 };
 
 type EnvironmentRow = ResourceRow & {
@@ -562,6 +565,7 @@ function environmentRow(golden: Golden, context: RowContext, now: number): Envir
           </AlertDescription>
         </Alert>
       ))}
+      <EnvironmentTemplates list={context.templateList} goldenId={golden.id} provider={golden.provider} />
       <PanelSection title="Repositories">
         {repos.length === 0 ? (
           <p className="text-sm text-muted-foreground">No repository recorded in this golden.</p>
