@@ -5,6 +5,7 @@ import { runArtifactInstallMode } from "./artifact-cache.ts";
 import { configureClaudeEndpoint } from "./claude-endpoint.ts";
 import { configureCodexEndpoint } from "./codex-endpoint.ts";
 import { enrolRuntime, RuntimeDialout } from "./dialout.ts";
+import { prepareEnrolledHarness } from "./enrolled-harness.ts";
 import { execCredentialValues, validateExecEnvironment } from "./exec-env.ts";
 import { GitHubBroker, type GitHubBrokerConfiguration } from "./github-broker.ts";
 import { type installGitHubTools, prepareGitHubTools, runGitHubInstallMode } from "./github-tools.ts";
@@ -28,6 +29,8 @@ async function main(dialout = false) {
     grant: Grant;
     claudeExecutable: string;
     codexExecutable: string;
+    selectedHarness?: unknown;
+    artifactManifest?: unknown;
     claudeEnv: Record<string, string>;
     codexEnv: Record<string, string>;
     mcp?: McpConfiguration;
@@ -39,13 +42,17 @@ async function main(dialout = false) {
     execEnv?: ExecEnvironment;
     credentialFreeBuilder?: boolean;
   };
-  if (enrolled)
+  if (enrolled) {
+    // Enrolment owns selection and credentials. Never trust a preinstalled CLI
+    // path from the image, or install/change harness versions during commands.
+    Object.assign(config, await prepareEnrolledHarness(input.serverUrl, config));
     config.grant = {
       token: enrolled.runtimeToken,
       sandboxId: enrolled.sandboxId,
       generation: enrolled.epoch,
       expiresAt: config.grant.expiresAt,
     };
+  }
   if (config.credentialFreeBuilder !== undefined && typeof config.credentialFreeBuilder !== "boolean")
     throw Error("invalid_exec_environment");
   if (config.subscription && config.codexAuthJson) throw Error("subscription_auth_modes_conflict");
@@ -375,6 +382,14 @@ async function main(dialout = false) {
     try {
       await channel.run(
         (request) => {
+          const harness =
+            request.op === "prompt" || request.op === "resumeNativeSession"
+              ? request.input?.harness
+              : request.op === "configureReadableVariables" || request.op === "testModelConnection"
+                ? request.harness
+                : undefined;
+          if (harness !== undefined && harness !== config.selectedHarness)
+            return Promise.resolve(Response.json({ error: "unselected_runtime_harness" }, { status: 409 }));
           // Exec ownership/termination is a separate parity slice. Never start a detached
           // shell that could outlive this initial dial-out client on revocation.
           if (request.op === "exec")
