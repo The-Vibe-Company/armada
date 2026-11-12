@@ -1,6 +1,6 @@
 ---
 name: armada
-description: Use Armada from a terminal to sign in, select an organization, choose a golden or template, launch Claude Code or Codex in Boat or Modal sandboxes, pin private skills, send or steer work, wait, inspect failures and preserve work. Use whenever someone asks to launch, monitor, troubleshoot or control Armada sandboxes, including several sandboxes from another sandbox. This is tool knowledge, not a project coordination, code review or merge policy.
+description: Use Armada from a terminal to sign in, select an organization, choose a golden or template, schedule owner-scoped routines, launch Claude Code or Codex in Boat or Modal sandboxes, pin private skills, send or steer work, wait, inspect failures and preserve work. Use whenever someone asks to launch, monitor, troubleshoot or control Armada sandboxes, including several sandboxes from another sandbox. This is tool knowledge, not a project coordination, code review or merge policy.
 ---
 
 # Armada terminal guide
@@ -68,11 +68,52 @@ is unknown, retry that SAME ID, key and body; never generate another key just
 because the terminal timed out. Only prompt, TTL, size and repository override
 launch defaults; configuration changes require a new published revision.
 
+## Scheduled routines
+
+A routine pins a template revision and a prompt. Run `armada routine --help` before
+changing one; use a standard five-field cron expression and an IANA time zone.
+Runs must remain at least one hour apart, including DST transitions; this is not
+a fast polling mechanism.
+It runs as its original owner with current access and credentials, even when an
+org admin edits it. Creation is paused; enabling schedules the next matching cron
+occurrence, never an immediate launch. Set a small daily cap and TTL; a previous live or uncertain
+sandbox causes a visible skip rather than another paid launch.
+
+```sh
+armada routine create nightly --template TEMPLATE_UUID --revision 1 --prompt-file routine-prompt.txt --cron '0 9 * * MON-FRI' --timezone Europe/Paris --ttl 30m --max-runs-per-day 2 --scope personal --json
+armada routine list --json
+armada routine show ROUTINE_UUID --json
+armada routine enable ROUTINE_UUID --expected-version 1 --json
+armada routine pause ROUTINE_UUID --expected-version 2 --json
+armada routine update ROUTINE_UUID --expected-version 3 --cron '0 10 * * MON-FRI' --timezone Europe/Paris --json
+armada routine update ROUTINE_UUID --expected-version 4 --file routine-config.json --json
+armada routine delete ROUTINE_UUID --expected-version 5 --json
+armada routine runs ROUTINE_UUID --json
+```
+
+Copy the actual current version from show/list; the numbers above are examples,
+not retry instructions. Inline update changes only cron and timezone while
+retaining current configuration; its expected version still guards the full
+replacement. Update JSON is a full replacement containing name, templateId,
+templateRevision, prompt, cron, timezone, ttlSeconds and maxRunsPerDay;
+owner, scope and org do not belong in that file. Create JSON omits name (taken
+from NAME), and can omit limits for server defaults. Prompt files preserve
+whitespace; readable configuration is not a place for secrets. With explicit
+--org, create also requires explicit --scope.
+Pause/delete forbid new admissions but already admitted launches may finish;
+neither stops a sandbox. Runs includes skip/failure explanations, authorized
+sandbox links and the original prompt outcome separately from launch status.
+Keep uncertainty visible; do not create replacement routines to bypass it.
+List/show print the server schedule description and next run; paused routines have
+no next run. Legacy interval schedules remain readable, but new writes require
+cron and timezone. Deleted routine history remains readable by ID. No triggers
+or orchestration are provided.
+
 ## 3. Drive a turn without busy polling
 
 ```sh
 armada send SANDBOX "Continue with the next agreed task"
-armada wait SANDBOX --json
+armada wait SANDBOX --timeout 120 --json
 armada logs SANDBOX --tail 50 --json
 armada status SANDBOX --json
 ```
@@ -83,10 +124,12 @@ Send starts a new turn; steer redirects an active turn:
 sending replacement work. Do not treat steer as a guaranteed new turn or send
 as a safe interruption mechanism. Capture returned prompt/turn identifiers.
 
-Use blocking wait instead of tight status loops. The default wait is bounded
-to 60 seconds; a still-running result can be waited on again, not relaunched. A wait response is an
-observation, not proof tests passed or work was pushed; inspect outcome and
-logs. Do not add an imagined timeout flag. For longer event inspection use
+Use blocking wait instead of tight status loops. --timeout is in seconds,
+accepts 0–600 and defaults to 60; the example waits at most 120 seconds. A
+still-running result can be waited on again, not relaunched. A wait response is
+an observation, not proof tests passed or work was pushed; inspect outcome and
+logs. If a send times out ambiguously, inspect detail, status and logs before
+considering another send; do not replay a possibly accepted instruction. For longer event inspection use
 `armada logs SANDBOX --follow --json`; `armada logs SANDBOX --all --json`
 drains available pages. Keep output bounded with tail for routine diagnostics.
 Preserve returned cursors/identifiers in reports; do not fabricate a cursor flag.
@@ -97,14 +140,17 @@ Use `armada extend SANDBOX --ttl 1h --json` before expiry if more time is
 justified. Confirm the returned expiry; do not assume extension succeeded.
 Ask the agent to commit and push, and verify branch/PR/head SHA independently
 before `armada stop SANDBOX`. Stop is not delete, but provider retention is not
-a substitute for a pushed branch. `armada rm SANDBOX --yes` permanently deletes
+a substitute for a pushed branch. Modal retains disk only after a successful
+checkpoint; checkpoint_failed_disk_not_retained means it cannot resume. `armada rm SANDBOX --yes` permanently deletes
 a stopped sandbox and recovery archives: require explicit user authorization
 and confirmed recovery first.
 
-Read [failure and recovery](references/recovery.md) for stopped machines,
-credential failures, or unpushed work. This CLI version has no general sandbox
-resume/recover command. Do not substitute undocumented endpoints or promise
-that a stopped machine can be restarted through this terminal interface.
+Read [failure and recovery](references/recovery.md) before recovering stopped
+machines or unpushed work. One authorized armada send to a retained stopped
+sandbox resumes it and continues its conversation, subject to current credential
+and access gates. This is a new agent turn, not a read-only restart. There is no
+standalone sandbox resume/recover command; do not invent one or substitute
+undocumented endpoints.
 
 ## 5. Several sandboxes, including a sandbox as caller
 

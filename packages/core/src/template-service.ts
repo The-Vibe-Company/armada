@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { ApplicationVaultActor } from "./application-vault.ts";
+import { decryptSecret } from "./crypto.ts";
 import type { GoldenActor, GoldenOperation, GoldenRecord } from "./golden.ts";
 import { GOLDEN_SELECT, type GoldenRow, mapGoldenRow, type Sql } from "./golden-store.ts";
 import { type LaunchOptions, type LaunchStores, launchSandbox } from "./launch.ts";
@@ -7,7 +8,7 @@ import { LaunchError } from "./launch-error.ts";
 import { parseMachineSize } from "./machine-size.ts";
 import { resolveModelChoice } from "./models.ts";
 import { PRIVATE_SKILL_FAILURES } from "./private-skill-error.ts";
-import type { Provider } from "./provider.ts";
+import { isNonMutatingProviderRefusal, type Provider, ProviderError } from "./provider.ts";
 import { validateReadableVariables } from "./readable-variables.ts";
 import { createSkillDefaultsService } from "./skill-defaults.ts";
 import { mergeSkillPins } from "./skill-merge.ts";
@@ -127,7 +128,7 @@ function dto(h: Header): LaunchTemplate {
 }
 
 /** Service-role owner: both transports share validation, reference authorization and admission. */
-export function createTemplateService(sql: Sql) {
+export function createTemplateService(sql: Sql, encryptionKey?: string) {
   async function transaction<T>(work: (tx: Sql) => Promise<T>): Promise<T> {
     if (!sql.transaction) throw new VaultError("unavailable", "Template transactions unavailable.");
     try {
@@ -212,6 +213,17 @@ export function createTemplateService(sql: Sql) {
       if (v.version !== binding.version) unavailable("variable_version_changed");
       values[binding.key] = v.value;
     }
+    // Metadata only: publication and admission must never fetch ciphertext or plaintext.
+    for (const binding of def.secrets ?? []) {
+      const secret = (
+        await tx.query<{ version: number; scope: string }>(
+          "select version,scope from public.application_secrets where id=$1 and org_id=$2 and status='active' and (expires_at is null or expires_at>now()) and (scope='org' or owner_id=$3) for share",
+          [binding.secretId, actor.orgId, actor.userId],
+        )
+      ).rows[0];
+      if (!secret || (scope === "org" && secret.scope !== "org")) unavailable("secret_unavailable");
+      if (secret.version !== binding.version) unavailable("secret_version_changed");
+    }
     try {
       validateReadableVariables(values);
     } catch {
@@ -258,6 +270,7 @@ export function createTemplateService(sql: Sql) {
       "modelAccount",
       "connections",
       "variables",
+      "secrets",
       "skills",
     ]);
     if (d.provider !== "boat" && d.provider !== "modal") invalid();
@@ -293,6 +306,22 @@ export function createTemplateService(sql: Sql) {
       if (variables.some((v) => v.key === key)) invalid();
       variables.push({ key, variableId: id(b.variableId), version: integer(b.version) });
     }
+    const secrets: NonNullable<TemplateDefinition["secrets"]> = [];
+    if (d.secrets !== undefined && (!Array.isArray(d.secrets) || d.secrets.length > 64)) invalid();
+    for (const binding of (d.secrets ?? []) as unknown[]) {
+      const b = object(binding);
+      fields(b, ["key", "secretId", "version"]);
+      const key = text(b.key, 128);
+      if (/^(NEXT_PUBLIC_|VITE_|PUBLIC_)/i.test(key)) invalid();
+      try {
+        validateReadableVariables({ [key]: "" });
+      } catch {
+        invalid();
+      }
+      if (variables.some((v) => v.key === key) || secrets.some((v) => v.key === key)) invalid();
+      secrets.push({ key, secretId: id(b.secretId), version: integer(b.version) });
+    }
+    if (variables.length + secrets.length > 64) unavailable("environment_limits_exceeded");
     const skills = (d.skills ?? []) as string[];
     if (!Array.isArray(skills)) invalid();
     try {
@@ -314,6 +343,7 @@ export function createTemplateService(sql: Sql) {
       ...choice,
       connections,
       variables,
+      ...(secrets.length ? { secrets } : {}),
       skills,
       ...(modelAccount ? { modelAccount } : {}),
     };
@@ -463,6 +493,7 @@ export function createTemplateService(sql: Sql) {
       return { a, h, r: await revision(tx, h, input.revision) };
     });
     const def = selection.r.definition;
+
     const credentials = await runtime.stores.credentials
       .resolve(selection.a, def.harness, def.modelAccount?.id, def.modelAccount?.version)
       .catch((error: unknown) => {
@@ -579,7 +610,8 @@ export function createTemplateService(sql: Sql) {
     };
     try {
       const provider = await runtime.provider(m.golden);
-      if (def.variables.length && !provider.configureReadableVariables) unavailable("variable_delivery_unavailable");
+      if ((def.variables.length || def.secrets?.length) && !provider.configureReadableVariables)
+        unavailable(def.secrets?.length ? "secret_delivery_unavailable" : "variable_delivery_unavailable");
       const result = await launchSandbox(
         provider,
         {
@@ -633,6 +665,9 @@ export function createTemplateService(sql: Sql) {
           newId: () => request.sandbox_id,
           beforeFork: async (sandboxId) => {
             await revalidate(actor, org, m);
+            // Validate the full decrypted payload before any provider allocation.
+            // Discard plaintext after this check; final start resolves current authority again.
+            await resolveEnvironment(selection.a, m);
             await runtime.options?.beforeFork?.(sandboxId);
             await sql.query(
               "update public.template_launch_requests set state='allocating',updated_at=now() where id=$1",
@@ -643,11 +678,11 @@ export function createTemplateService(sql: Sql) {
           beforeStart: async (p, s) => {
             await revalidate(actor, org, m);
             await runtime.options?.beforeStart?.(p, s);
-            if (def.variables.length)
+            if (def.variables.length || def.secrets?.length)
               await p.configureReadableVariables!({
                 sandboxId: s.providerSandboxId,
                 harness: def.harness,
-                variables: m.variables,
+                variables: await resolveEnvironment(selection.a, m),
               });
           },
         },
@@ -679,8 +714,11 @@ export function createTemplateService(sql: Sql) {
       // owns release (registered child/confirmed absence) vs retention (unknown fork).
       if (!fenceConsumed) await releaseFence();
       // Once dispatch might have occurred, no timeout/exception proves absence. Never resend.
-      const state = allocating ? "reconciling" : "failed";
-      const safeReason = refusalReason(error) ?? (allocating ? "allocation_or_start_unknown" : "launch_unavailable");
+      const refused = error instanceof ProviderError && isNonMutatingProviderRefusal(error);
+      const state = allocating && !refused ? "reconciling" : "failed";
+      const safeReason = refused
+        ? `provider_${error.code}`
+        : (refusalReason(error) ?? (allocating ? "allocation_or_start_unknown" : "launch_unavailable"));
       // A publication may have committed even if both acknowledgements were lost.
       // Keep its durable success intact; same-key replay reads the saved receipt.
       await sql.query(
@@ -711,6 +749,35 @@ export function createTemplateService(sql: Sql) {
       await references(tx, a, h.scope, { ...m.definition, modelAccount: m.account }, false, m.connections);
     });
   }
+  async function resolveEnvironment(actor: { userId: string; orgId: string }, m: Manifest) {
+    const values = { ...m.variables, ...(await resolveSecrets(actor, m.definition)) };
+    try {
+      return validateReadableVariables(values);
+    } catch {
+      // Closed diagnostic only: never include keys, values or a decryption error.
+      unavailable("environment_limits_exceeded");
+    }
+  }
+  // Resolve only into a short-lived provider call; never put plaintext in the durable manifest.
+  async function resolveSecrets(actor: { userId: string; orgId: string }, def: TemplateDefinition) {
+    const values: Record<string, string> = {};
+    if (!def.secrets?.length) return values;
+    await transaction(async (tx) => {
+      await member(tx, { userId: actor.userId, orgs: [{ orgId: actor.orgId }] }, actor.orgId);
+      for (const binding of def.secrets ?? []) {
+        const row = (
+          await tx.query<{ value_enc: Uint8Array; version: number }>(
+            "select value_enc,version from public.application_secrets where id=$1 and org_id=$2 and status='active' and (expires_at is null or expires_at>now()) and (scope='org' or owner_id=$3) for share",
+            [binding.secretId, actor.orgId, actor.userId],
+          )
+        ).rows[0];
+        if (!row) unavailable("secret_unavailable");
+        if (row.version !== binding.version) unavailable("secret_version_changed");
+        values[binding.key] = await decryptSecret(new Uint8Array(row.value_enc), encryptionKey);
+      }
+    });
+    return values;
+  }
   /** Later turns need current sandbox authority, NOT the mutable sources of a frozen readable launch. */
   async function prepare(
     provider: Provider,
@@ -729,12 +796,13 @@ export function createTemplateService(sql: Sql) {
     ).rows[0];
     if (!row) throw new VaultError("forbidden", "Sandbox access denied.");
     const m = row.manifest;
-    if (!Object.keys(m.variables).length) return;
-    if (!provider.configureReadableVariables) unavailable("variable_delivery_unavailable");
+    if (!Object.keys(m.variables).length && !m.definition.secrets?.length) return;
+    if (!provider.configureReadableVariables)
+      unavailable(m.definition.secrets?.length ? "secret_delivery_unavailable" : "variable_delivery_unavailable");
     await provider.configureReadableVariables({
       sandboxId: providerSandboxId,
       harness: m.definition.harness,
-      variables: m.variables,
+      variables: await resolveEnvironment(actor, m),
     });
   }
   return { command, prepare };

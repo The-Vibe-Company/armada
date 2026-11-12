@@ -5,6 +5,7 @@ import { AddServerDialog, ServiceCatalog, ServiceMark, ToolPanel, ToolRowAction 
 import { Empty, PageHeader } from "@/components/page-header";
 import { ResourceBrowser, type ResourceRow } from "@/components/resource-browser";
 import { RowTag, StateCell } from "@/components/state-cell";
+import { TemplateUsage } from "@/components/template-usage";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
@@ -19,6 +20,7 @@ import {
 import { ControlError } from "@/lib/control";
 import { listSelectedCatalog, listSelectedConnections, viewerControl } from "@/lib/data/connections";
 import { selectedOrganization } from "@/lib/data/selected-org";
+import { listSelectedTemplates, type TemplateList } from "@/lib/data/templates";
 import { type Bucket, ITEM_PARAM, sortResources } from "@/lib/resource-list";
 import { type ToolState, toolBlockers, toolFact, toolState } from "@/lib/tools";
 import { cn } from "@/lib/utils";
@@ -81,9 +83,10 @@ export default async function ToolsPage({ searchParams }: Props) {
   }
 
   const isAdmin = selected.role === "admin";
-  const [notice, catalog] = await Promise.all([
+  const [notice, catalog, templates] = await Promise.all([
     returned ? returnNotice(returned, selected.org.id) : null,
     listSelectedCatalog(selected.org.id),
+    listSelectedTemplates(),
   ]);
   const services = catalog.state === "ready" ? catalog.services : [];
   const org = { orgId: selected.org.id, orgName: selected.org.name, isAdmin };
@@ -92,7 +95,7 @@ export default async function ToolsPage({ searchParams }: Props) {
     const canManage = connection.scope === "personal" || isAdmin;
     const serviceLabel = services.find((service) => service.id === connection.catalogId)?.label;
     const state = toolState(connection, canManage);
-    return { ...connectionRow(connection, state, canManage, serviceLabel), status: state, connection };
+    return { ...connectionRow(connection, state, canManage, serviceLabel, templates), status: state, connection };
   });
   const rows = sortResources<ResourceRow & { bucket: Bucket }>(connectionRows);
   const blockers = toolBlockers(connectionRows.map((row) => ({ ...row, state: row.status })));
@@ -160,6 +163,7 @@ function connectionRow(
   state: ToolState,
   canManage: boolean,
   serviceLabel: string | undefined,
+  templates: TemplateList,
 ): ResourceRow & { bucket: Bucket } {
   const remote = connection.transport !== "stdio";
   const where =
@@ -209,7 +213,12 @@ function connectionRow(
     ),
     fact: toolFact(connection),
     action: canManage ? <ToolRowAction connection={connection} /> : null,
-    detail: <ToolPanel connection={connection} canManage={canManage} serviceLabel={serviceLabel} />,
+    detail: (
+      <div className="space-y-4">
+        <ToolPanel connection={connection} canManage={canManage} serviceLabel={serviceLabel} />
+        <TemplateUsage list={templates} uses={(definition) => definition.connections.includes(connection.id)} />
+      </div>
+    ),
     attrs: { "data-connection": connection.name },
   };
 }

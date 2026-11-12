@@ -53,7 +53,7 @@ const owner: GoldenActor = { userId: OWNER, orgId: ORG, role: "member" };
 const other: GoldenActor = { userId: OTHER, orgId: ORG, role: "member" };
 
 describe("launch", () => {
-  test.each(["invalid_request", "unavailable"] as const)(
+  test.each(["invalid_request", "unavailable", "rate_limited"] as const)(
     "native admission releases only a confirmed unallocated fork (%s)",
     async (code) => {
       const world = setup({ golden: golden("org") });
@@ -66,6 +66,7 @@ describe("launch", () => {
         throw new ProviderError({
           provider: "boat",
           code,
+          ...(code === "rate_limited" ? { status: 429 } : {}),
           message: "fixture refusal",
           retryable: false,
         });
@@ -73,7 +74,31 @@ describe("launch", () => {
       await expect(
         launchSandbox(world.provider, world.stores, owner, { golden: "web", harness: "claude" }),
       ).rejects.toMatchObject({ code: code === "unavailable" ? "outcome_unknown" : code });
-      expect(released).toBe(code === "invalid_request" ? 1 : 0);
+      expect(released).toBe(code === "unavailable" ? 0 : 1);
+    },
+  );
+  test.each(["retained", "no_http_status", "other_provider"] as const)(
+    "unconfirmed rate-limit evidence stays ambiguous (%s)",
+    async (evidence) => {
+      const world = setup({ golden: golden("org") });
+      let released = 0;
+      world.stores.credentials.releaseUnallocated = async () => {
+        released++;
+      };
+      world.provider.fork = async () => {
+        throw new ProviderError({
+          provider: evidence === "other_provider" ? "modal" : "boat",
+          code: "rate_limited",
+          ...(evidence === "no_http_status" ? {} : { status: 429 }),
+          retryable: false,
+          message: "Unconfirmed outcome",
+          ...(evidence === "retained" ? { details: { keepSource: true } } : {}),
+        });
+      };
+      await expect(
+        launchSandbox(world.provider, world.stores, owner, { golden: "web", harness: "claude" }),
+      ).rejects.toMatchObject({ code: "outcome_unknown" });
+      expect(released).toBe(0);
     },
   );
   test("native ownership refusal happens before any provider receives credentials", async () => {

@@ -8,7 +8,11 @@ export interface Routine {
   templateId: string;
   templateRevision: number;
   prompt: string;
-  intervalHours: number;
+  /** Deprecated v1 read bridge; null for schedules written with cron. */
+  intervalHours: number | null;
+  cron?: string | null;
+  timezone?: string;
+  scheduleDescription?: string;
   maxRunsPerDay: number;
   ttlSeconds: number;
   status: "enabled" | "paused" | "deleted";
@@ -21,6 +25,7 @@ export interface Routine {
 }
 
 export const ROUTINE_REASON_HELP = {
+  schedule_unavailable: "The schedule is unavailable. Check its cron and time zone before enabling again.",
   previous_run_alive: "Skipped because the previous sandbox is still alive. Stop it before the next occurrence.",
   previous_run_uncertain: "Skipped because a previous launch is uncertain. Reconcile that launch before continuing.",
   daily_limit_reached: "Skipped because the rolling 24-hour launch limit was reached.",

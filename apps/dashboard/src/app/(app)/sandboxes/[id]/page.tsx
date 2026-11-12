@@ -5,6 +5,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ConnectionStatusBadge, ScopeBadge } from "@/components/connections";
 import { CopyButton } from "@/components/copy-button";
+import { InstalledSkills } from "@/components/installed-skills";
 import { LinkPendingIcon } from "@/components/link-pending";
 import { SandboxAccountChoice } from "@/components/sandbox-account-choice";
 import { SandboxActions } from "@/components/sandbox-actions";
@@ -21,7 +22,7 @@ import { bindableStatus, needsAccountChoice } from "@/lib/account-recovery";
 import { isUuid } from "@/lib/action";
 import { readAccountChoices } from "@/lib/data/account-recovery";
 import { listSandboxConnections, type SandboxConnections } from "@/lib/data/connections";
-import { listGoldenHistory } from "@/lib/data/goldens";
+import { findGoldenLabel } from "@/lib/data/goldens";
 import { credentialKinds, getSandbox, getSandboxMetadata } from "@/lib/data/sandboxes";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { displayUser, listMemberships, memberDirectory, requireViewer } from "@/lib/data/viewer";
@@ -52,9 +53,8 @@ export default async function SandboxPage({ params }: Props) {
   const pending = listMemberships(supabase, viewer.id).then((items) =>
     items.filter((item) => item.org.id === selected?.org.id),
   );
-  const [sandbox, goldens, memberships, directory] = await Promise.all([
+  const [sandbox, memberships, directory] = await Promise.all([
     getSandbox(supabase, id),
-    listGoldenHistory(supabase),
     pending,
     pending.then((items) =>
       memberDirectory(
@@ -71,23 +71,22 @@ export default async function SandboxPage({ params }: Props) {
     if (!listed || listed.canOpen) notFound();
     return <RestrictedSandbox sandbox={listed} owner={displayUser(directory, listed.ownerId, viewer.id)} />;
   }
-  const golden = goldens.find((item) => item.id === sandbox.golden_id);
   const org = memberships.find((item) => item.org.id === sandbox.org_id);
   const configured = mcpUrl() !== null;
-  const [applied, kinds] = await Promise.all([
+  const recovery = needsAccountChoice(sandbox);
+  const owner = sandbox.owner_id === viewer.id;
+  const [golden, applied, kinds, choices] = await Promise.all([
+    findGoldenLabel(supabase, sandbox.golden_id),
     listSandboxConnections(sandbox),
     credentialKinds(supabase, [sandbox.credential_id]),
+    recovery && owner && bindableStatus(sandbox.status) !== "failed"
+      ? readAccountChoices(viewer, sandbox.harness, sandbox.org_id)
+      : undefined,
   ]);
   const cost = costOfRow(sandbox, kinds.get(sandbox.credential_id ?? "") ?? null);
   const repositoryDir = sandboxRepositoryDir(sandbox);
   const lifecycle = readLifecycle(sandbox);
   const life = lifecycleView(sandbox.status, lifecycle, new Date());
-  const recovery = needsAccountChoice(sandbox);
-  const owner = sandbox.owner_id === viewer.id;
-  const choices =
-    recovery && owner && bindableStatus(sandbox.status) !== "failed"
-      ? await readAccountChoices(viewer, sandbox.harness, sandbox.org_id)
-      : undefined;
   const machineSize = describeEvidence(sandbox.provider, sandbox);
   // The interior row is returned only to a viewer who may open the sandbox, so the recovery command is theirs to run.
   const outcome = settledOutcome(sandbox.status, parseTaskOutcome(sandbox.task_outcome));
@@ -189,6 +188,8 @@ export default async function SandboxPage({ params }: Props) {
           </Card>
 
           <SandboxCostCard cost={cost} />
+
+          <InstalledSkills receipts={sandbox.skills} />
 
           <Card className="gap-3 py-5">
             <CardHeader className="px-5">

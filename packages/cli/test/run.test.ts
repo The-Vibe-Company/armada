@@ -40,7 +40,6 @@ describe("run", () => {
     "stop",
     "wait",
     "interrupt",
-    "logs",
     "mcp",
     "login",
     "logout",
@@ -55,6 +54,67 @@ describe("run", () => {
     expect(err).toBe("");
     expect(out).toContain("Usage:");
     expect(out).toContain(command);
+  });
+
+  test("retired orchestrator commands explain the scoped sandbox replacement without authenticating", async () => {
+    let requested = false;
+    let err = "";
+    const code = await run(
+      ["orchestrator", "list"],
+      { out: () => {}, err: (text) => (err += text) },
+      {
+        fetch: Object.assign(
+          async () => {
+            requested = true;
+            throw new Error("must not request");
+          },
+          { preconnect: () => {} },
+        ),
+      },
+    );
+    expect(code).toBe(1);
+    expect(requested).toBe(false);
+    expect(err).toContain("removed");
+    expect(err).toContain("--armada-access");
+    expect(err).toContain("#1002");
+  });
+
+  test.each(["--help", "-h"])("logs %s explains the reader without login, preferences or requests", async (option) => {
+    let out = "";
+    let err = "";
+    const forbidden = async () => {
+      throw new Error("Help must not perform I/O");
+    };
+    const io = {
+      out: (text: string) => {
+        out += text;
+      },
+      err: (text: string) => {
+        err += text;
+      },
+    };
+    const code = await run(["logs", option], io, {
+      auth: {
+        ...io,
+        env: {},
+        now: () => new Date(0),
+        open: forbidden,
+        fetch: forbidden,
+        session: { read: forbidden, write: forbidden, clear: forbidden },
+        preferences: { read: forbidden, write: forbidden },
+      },
+    });
+    expect(code).toBe(0);
+    expect(err).toBe("");
+    expect(out).toContain("armada logs");
+    expect(out).toContain("--since");
+    expect(out).toContain("--org");
+    expect(out).toContain("1–1000");
+    expect(out).toContain("default 100");
+    expect(out).toContain("cannot combine");
+    expect(out).toContain(".events[]");
+    expect(out).toContain("Ctrl-C");
+    expect(out).not.toContain("armada golden create");
   });
 
   test("an unknown command fails with a usage error", async () => {

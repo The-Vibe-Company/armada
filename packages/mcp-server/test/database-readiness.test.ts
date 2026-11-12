@@ -1,6 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
 import type { Sql } from "@armada/core";
 import { createDatabaseReadiness } from "../src/database-readiness.ts";
+import { REQUIRED_MIGRATION } from "../src/required-migration.ts";
 
 test("readiness bounds a stuck probe, coalesces callers and requires fresh proof after recovery", async () => {
   let now = 100;
@@ -16,7 +17,7 @@ test("readiness bounds a stuck probe, coalesces callers and requires fresh proof
   const ready = createDatabaseReadiness({
     query: (() => {
       calls++;
-      return calls === 1 ? stuck.promise : Promise.resolve({ rows: [] });
+      return calls === 1 ? stuck.promise : Promise.resolve({ rows: [{ version: REQUIRED_MIGRATION }] });
     }) as Sql["query"],
   });
   try {

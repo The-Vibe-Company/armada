@@ -86,10 +86,15 @@ the connection before returning a token.
 Reconnect can therefore finish while an older refresh is in flight. If that
 refresh observes the changed grant during publication or validation, it returns
 retryable `unavailable` rather than overwriting the new identity or handing out
-the old account's token. A caller that loses the consume fence re-reads once
-and returns retryable `unavailable`. If the token changed, it asks for a retry
-without asking the person to reconnect: another replica has published a rotation.
-If the token is unchanged, a rotation may still be pending, so retry shortly;
+the old account's token. A caller that loses the consume fence re-reads once.
+If another replica has published a same-account successor with enough remaining
+lifetime, it validates that access token against GitHub and rechecks the stored
+connection before using it. This lets an existing managed-runtime acquisition
+recover from completed concurrent rotation without another refresh or command
+replay. Missing, expired, revoked, mismatched or rejected successors remain
+unavailable; this never switches the linked account or reuses consumed material.
+If the token changed without a usable successor, retry shortly without assuming
+reconnect is needed. If the token is unchanged, a rotation may still be pending;
 if this persists, reconnect GitHub in the dashboard under Settings. An outage,
 timeout or crash after the durable fence was written can leave the token
 permanently unchanged, and reconnect is then the recovery path. No automatic

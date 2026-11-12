@@ -286,9 +286,12 @@ html:has(> body .lp) {
   }
 }
 
-/* A command to copy: the row is the button. */
+/* A command to copy: the shared Button keeps the landing's geometry and typography. */
 .lp-copy {
   display: flex;
+  justify-content: flex-start;
+  flex-shrink: 1;
+  white-space: normal;
   align-items: center;
   gap: 14px;
   min-width: 0;
@@ -311,6 +314,8 @@ html:has(> body .lp) {
     background-color var(--t-fast) ease;
 }
 .lp-copy:active {
+  /* The shared Button also scales on press; keep just the landing's existing transform. */
+  scale: none;
   transform: scale(0.96);
 }
 .lp-copy.is-lg {
@@ -325,6 +330,20 @@ html:has(> body .lp) {
     background: rgba(255, 255, 255, 0.06);
   }
 }
+.lp-copy[data-copy-failed] {
+  height: auto;
+  min-height: 48px;
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+.lp-copy.is-lg[data-copy-failed] {
+  min-height: 56px;
+}
+.lp-copy-error {
+  font: 12.5px / 1.4 var(--font-sans);
+  color: inherit;
+  white-space: normal;
+}
 .lp-copy-text {
   display: flex;
   flex-direction: column;
@@ -333,6 +352,7 @@ html:has(> body .lp) {
   min-width: 0;
 }
 .lp-copy-command {
+  user-select: text;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { createSqlVaultStore } from "@armada/core";
+import { createSqlVaultStore } from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
 import { sandbox } from "../../provider-boat/test/support.ts";
 import { handleControlRequest } from "../src/control.ts";
@@ -147,7 +147,7 @@ test("accepted send with failed completion publication reports outcome unknown, 
           dispatched++;
           return Response.json({ ok: true, promptId: "accepted", conversationId: "conversation", status: "queued" });
         }
-        return Response.json({ ok: true, sandbox: sandbox({ state: "idle" }) });
+        return Response.json({ ok: true, sandbox: sandbox({ id: record.providerSandboxId, state: "idle" }) });
       }) as typeof fetch,
     });
     const token = await server.token(server.people.owner);

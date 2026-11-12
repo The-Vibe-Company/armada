@@ -1,3 +1,77 @@
+## Cron schedule rollout (owner amendment, issue #1006)
+
+The canonical schedule is now `cron` (standard five fields: minute, hour, day of
+month, month, weekday) plus an IANA `timezone`, such as `Europe/Paris` or `UTC`.
+New API clients must supply both; they must not also supply `intervalHours`.
+Examples: `0 * * * *` hourly, `0 9 * * MON-FRI` weekdays at 09:00, and
+`30 10 1 * *` monthly on day 1 at 10:30. Day-of-month and weekday restrictions
+use standard **OR** semantics. Seconds, macros and extended `L`, `W`, `#`, `?`
+operators are not supported. Missing dates (e.g. February 30) are skipped.
+
+The maintained Croner engine evaluates the calendar; cRonstrue supplies English
+24-hour descriptions. Fixed-time jobs run once during an autumn fold, and at
+the first valid local time after a spring gap. Wildcard/interval expressions
+follow Croner's Vixie DST semantics (repeated times may run twice, missing times
+are skipped). The minimum is **one hour between actual instants**, including
+non-hour DST changes. Validation checks transition windows over 28 years;
+every runtime advancement checks adjacent instants again, protecting rules
+outside that horizon. A schedule that becomes unsafe/unavailable auto-pauses
+with the closed readable `schedule_unavailable` history reason; it never launches.
+
+`POST /api/v1/routines/preview` accepts `{org, cron, timezone}` and returns
+`{cron, timezone, description, nextRuns: [ISO, ISO, ISO], asOf: ISO}` using the
+database clock. It requires current organization membership but creates nothing.
+Routine DTOs add `cron`, `timezone`, `scheduleDescription`; canonical cron rows
+have `intervalHours: null`. Create/update accept the new fields. Enable always
+chooses the next calendar instant strictly after the database clock, not an
+immediate launch or an elapsed interval after enabling. The scheduler reserves
+one existing due occurrence, jumps strictly past now and does not replay missed
+slots. History's existing `missedIntervals` now counts missed **occurrences**;
+counts saturate at 1,000 with `missedCountCapped: true`, so long outages have
+bounded evaluation cost. Claim keys, overlap prevention, daily caps, revision
+pinning, owner authorization and three-failure auto-pause are unchanged.
+
+### Migration and temporary v1 compatibility
+
+Apply `20261112073106_routine_cron_schedule.sql` through the coordinator's
+approved migration process **before** deploying this server. It is additive;
+no new credentials or environment variables are required. Keep the new schema
+for rollback. This worker does not apply staging/production migrations.
+
+Existing hourly/day-divisor intervals (1/2/3/4/6/8/12/24 hours) and weekly
+168-hour intervals acquire equivalent UTC cron calendars anchored to their
+existing due time (rounded **up** by less than one minute, never early).
+Enabled state, immutable history and claim keys are preserved; configuration
+versions advance to fence old clients. Paused routines remain paused.
+
+**Exact-conversion limitation:** five-field calendar cron cannot represent
+arbitrary elapsed intervals such as 7, 25 or 48 hours across month boundaries.
+Those existing routines retain their exact UTC interval timing, `cron: null`
+and an explicitly labeled legacy description until the owner edits to cron.
+They are not silently approximated, disabled or lost. Existing v1 create/write
+requests remain accepted for every advertised 1–720-hour interval during the
+additive rollout, preserving exact legacy timing where conversion is impossible.
+This avoids breaking the still-shipped clients before their cron controls land;
+canonical clients use cron/timezone instead. The next CLI and dashboard slices
+replace the old creation controls; their existing list/detail readers already
+accept canonical cron DTOs. Owner confirmation of this compatibility choice
+is requested; it is not a claim that arbitrary elapsed intervals equal cron.
+
+### Coordinator staging delta
+
+After migration/server deployment, run the bounded script below separately for
+Boat and Modal. It now explicitly creates `0 * * * *` in UTC and waits for the
+next calendar hour (up to one hour), then pauses and proves no second occurrence
+across the next boundary. Its conservative 122-minute budget remains valid.
+Additionally preview `0 9 * * MON-FRI` in Europe/Paris and check the sentence and
+three UTC instants; verify a migrated UTC routine's phase/status and explicit
+legacy labels if any. Two consecutive firings and restart/replica idempotency
+still require the longer/manual checks below. No staging check was run here.
+
+---
+
+## Historical interval-slice notes (superseded schedule semantics)
+
 # Routines (#1006)
 
 A routine launches a normal sandbox from a template and a prompt at an interval.
@@ -8,9 +82,9 @@ It is not an orchestrator, workflow engine, or privileged service identity.
 1. **Slice 1 (#1011):** configuration API, pinned template references, paused-only storage,
    read isolation and authorization. No timer, launch, or enabling endpoint is
    shipped. The API is a foundation, not completion of #1006.
-2. **This PR:** server scheduler, durable run history/claims, pause/resume and cost guards.
-3. API-only `armada routine …` commands.
-4. Dashboard Run > Routines using CreateDialog; optional read-only iPhone last.
+2. **Slice 2 (#1014):** server scheduler, durable run history/claims, pause/resume and cost guards.
+3. **CLI + coordinator checks (#1027):** API-only `armada routine …` commands and a bounded coordinator staging check.
+4. **Dashboard (also #1027):** Run > Routines using CreateDialog; optional read-only iPhone last.
 
 ## Configuration and identity
 
@@ -155,3 +229,79 @@ history tables are required at startup; no new environment variables are needed.
 Existing routines remain paused after migration and require explicit enabling.
 For rollback, stop the scheduler-enabled server before removing any of its schema;
 retain occurrence history and template claim keys so recovery cannot refire a run.
+
+
+## CLI and bounded coordinator check
+
+`armada routine --help` documents create/list/show/update/enable/pause/delete/runs.
+Every command supports `--json`; all requests go through the authenticated Armada
+API. Mutations require the current `--expected-version` (except initial create).
+Update is a complete mutable-configuration JSON file, not a patch or an exported
+show envelope. Prompt files preserve whitespace; use `--prompt-file -` for piped
+stdin. Explicit `--org` creation also requires explicit `--scope`.
+
+The coordinator can run the Python 3.9+ stdlib check on macOS or Linux:
+
+```sh
+# Securely set STAGING_URL, STAGING_ORG (UUID), and ARMADA_TOKEN in the environment.
+# Do not put the token in arguments or paste it into logs.
+python3 scripts/routines/staging-check.py --help
+python3 scripts/routines/staging-check.py --provider boat --template BOAT_CODEX_TEMPLATE_UUID
+python3 scripts/routines/staging-check.py --provider modal --template MODAL_CODEX_TEMPLATE_UUID
+```
+
+The minimum interval is **one hour**, so the script cannot truthfully finish in a
+few minutes. Each invocation takes about **122 minutes plus setup/cleanup**, with
+a 130-minute main deadline and a five-minute cleanup budget (about 135 minutes
+maximum under normal bounded HTTP timeouts). The two provider invocations can run
+in parallel. It refuses both documented production origins, requires HTTPS, does not
+follow redirects, and never prints bearer values, raw errors or event contents.
+Existing staging templates/goldens and usable current owner credentials are
+prerequisites; when multiple templates are visible, select one explicitly.
+
+The source template is read-only. The script creates a nonce-named private clone
+with **only immutable revision 1**, then a one-hour routine pinned to that revision.
+It checks the enabled definition, admitted configuration version, template request
+ID and exact prompt event in the new sandbox. The sole-revision temporary template
+makes the pinned revision unambiguous without database access or private manifests.
+It pauses after the first firing, deletes that sandbox so a live-run skip cannot
+masquerade as pause, and observes past the next due boundary plus two minutes.
+History must retain the same sole occurrence; any skip/failure reason must be a
+known closed code with a readable explanation.
+
+A finally block attempts cleanup even after interruption: pause/delete the test
+routine, drain its admitted history, stop/delete created compute, and soft-delete
+the temporary template. Lost create acknowledgements are discovered by exact nonce
+name, never retried as new creates. Definitions are tombstoned and immutable
+history is retained by the server; those records cannot be hard-deleted through
+the API. Unconfirmed creates, network/auth failures or uncertain late allocations
+exit nonzero with the nonce/resource UUIDs for manual reconciliation, never a
+false cleanup-success claim. SIGKILL or loss of the coordinator machine cannot
+execute cleanup; rerun manual cleanup for the printed nonce in that situation.
+
+**Not proved by this bounded check:** two consecutive firings, live-run skip,
+restart/replica idempotency, downtime catch-up behavior, revocation, daily cap and
+repeated-failure auto-pause. Use the longer/manual checklist above; do not infer
+those checks from a passing script. This worker has not executed staging checks.
+
+
+## Dashboard slice
+
+Run > Routines lists the selected organization's visible schedules. New opens the
+shared centered CreateDialog: choose a published template, enter a prompt and a
+whole-hour interval, and optionally set lifetime/daily limits. The selected
+immutable template revision is pinned; creation is paused, never an immediate
+launch. Personal routines run as their owner, while only admins manage shared
+organization routines. Readable prompts are not a place for secrets.
+
+Enable/pause use the displayed optimistic version. A conflict asks for a refresh,
+not an automatic retry. Pausing admits no new runs but already admitted work may
+finish; it does not stop a sandbox. Selected details load history on demand (not
+one request per list row), showing closed readable reasons and the original
+prompt outcome independently of launch success. Only sandbox links authorized by
+the API are rendered. Empty, unavailable, loading and permission states keep the
+same quiet list/create patterns as the rest of the dashboard.
+
+This UI uses the already-deployed routine API and existing tables. It introduces
+no migrations or staging/production credential requirements. Screenshot/browser
+verification uses the local mock API, not live scheduled launches.

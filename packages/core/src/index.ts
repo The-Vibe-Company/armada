@@ -107,9 +107,7 @@ export {
 } from "./github.ts";
 export {
   assertGoldenMutation,
-  type CreatedGolden,
   connectGolden,
-  createGolden,
   type GoldenActor,
   type GoldenLimits,
   type GoldenRecord,
@@ -118,7 +116,6 @@ export {
   goldenForSettings,
   providerIdOf,
   type SnapshottedGolden,
-  snapshotGolden,
   waitSnapshot,
 } from "./golden.ts";
 export type { GoldenBuildStatus } from "./golden-build-status.ts";
@@ -239,6 +236,7 @@ export {
   type SteerRequest,
   type ToolCall,
 } from "./provider.ts";
+export { providerRateLimitDetails, providerRateLimitMessage } from "./provider-limit.ts";
 export { validateReadableVariables } from "./readable-variables.ts";
 export { resolveRepositoryDir } from "./repository-context.ts";
 export {
@@ -317,6 +315,8 @@ export {
   usageUnavailableReason,
   withUsageTotals,
 } from "./sandbox-usage.ts";
+export type { SkillCatalogItem, SkillCatalogPage, SkillCatalogSource } from "./skill-catalog.ts";
+export { SKILL_PIN_PATTERN, validateSkillPins } from "./skill-pins.ts";
 export type { TaskOutcome } from "./task-outcome.ts";
 export {
   type LaunchTemplate,
@@ -325,6 +325,7 @@ export {
   type TemplateRefusalReason,
   templateRefusalHelp,
 } from "./templates.ts";
+export { redactKnownTokens } from "./token-redaction.ts";
 export { type ModelSelectionReason, type TurnModelEvidence, turnModelEvidence } from "./turn-model.ts";
 export {
   type AccountMutation,
@@ -353,5 +354,4 @@ export {
   VaultError,
   type VaultErrorCode,
 } from "./vault-error.ts";
-export { createSqlVaultStore } from "./vault-store.ts";
 export { VERSION } from "./version.ts";

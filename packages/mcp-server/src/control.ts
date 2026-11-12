@@ -1,12 +1,15 @@
 import {
+  AuthError,
   type AuthStore,
   assertEmail,
   assertEmailCode,
   assertProvider,
+  BodyTooLargeError,
   createServiceToken,
   createSqlAuthStore,
   exchangeSupabaseCode,
   listServiceTokens,
+  readBoundedText,
   refreshSupabaseSession,
   revokeServiceToken,
   type Session,
@@ -21,6 +24,8 @@ import {
   MAX_SANDBOX_EXTENSION_TTL_SECONDS,
   parseMachineSize,
   parseMachineSizePolicy,
+  providerRateLimitDetails,
+  providerRateLimitMessage,
 } from "@armada/core";
 import {
   type ApplicationVault,
@@ -31,6 +36,7 @@ import {
   createGoldenAdoption,
   createOrg,
   createRoutineService,
+  createSkillCatalog,
   createSkillDefaultsService,
   createSqlMcpLaunchPort,
   createSqlMcpRegistry,
@@ -77,6 +83,7 @@ import {
   resolveModelChoice,
   resolveOrg,
   resolveRepositoryDir,
+  resolveSkillpackCredential,
   type SkillDefaultsService,
   scanGoldenSandbox,
   setCredential,
@@ -115,7 +122,7 @@ import {
 } from "./org-provider.ts";
 import type { ProviderMetadataFor } from "./provider-metadata.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
-import { RequestTiming } from "./request-timing.ts";
+import { RequestTiming, withRequestTiming } from "./request-timing.ts";
 import { type createSandboxArmadaAccess, parseSandboxArmadaAccess } from "./sandbox-armada-access.ts";
 import { bunSql } from "./sql.ts";
 import { callSharedTool, ToolApiError } from "./tool-api.ts";
@@ -129,6 +136,7 @@ import { orchestratorHttp } from "./orchestrator-api.ts";
 import type { OrchestratorRuntime } from "./orchestrator-runtime.ts";
 
 export interface ControlOptions {
+  skillCatalog?: ReturnType<typeof createSkillCatalog>;
   /** Per-request diagnostics; supplied by the HTTP handler, never request JSON. */
   timing?: RequestTiming;
   storedProviderFor?: (target: ProviderTarget, caller: { userId: string }) => Promise<Provider>;
@@ -252,7 +260,9 @@ export async function handleControlRequest(request: Request, options: ControlOpt
   try {
     const caller = await timing.measure("auth", () => authenticatedCaller(request, options));
     if (
-      (route.startsWith("skills/defaults/") ||
+      (route === "skillpack/catalog" ||
+        route === "skillpack/versions" ||
+        route.startsWith("skills/defaults/") ||
         route.startsWith("templates/") ||
         route.startsWith("routines/") ||
         route.startsWith("variables/") ||
@@ -262,7 +272,9 @@ export async function handleControlRequest(request: Request, options: ControlOpt
       throw new VaultError("invalid", "Parameters must be in the request body.");
     const body = deletion
       ? { id: deletion[1], org: url.searchParams.get("org") ?? undefined }
-      : route.startsWith("skills/defaults/") ||
+      : route === "skillpack/catalog" ||
+          route === "skillpack/versions" ||
+          route.startsWith("skills/defaults/") ||
           route.startsWith("templates/") ||
           route.startsWith("routines/") ||
           route.startsWith("variables/") ||
@@ -296,7 +308,7 @@ export async function handleControlRequest(request: Request, options: ControlOpt
             : await options.invitations.manage(invitationAction, caller, required(body, "org"), body);
     } else
       result = await timing.measure("dispatch", () =>
-        dispatch(deletion ? "sandbox/delete" : route, caller, body, options),
+        withRequestTiming(timing, () => dispatch(deletion ? "sandbox/delete" : route, caller, body, options)),
       );
     if (result === undefined) return fail(404, "unknown_route", "Unknown route.");
     return Response.json(result, {
@@ -310,6 +322,7 @@ export async function handleControlRequest(request: Request, options: ControlOpt
       headers: { "cache-control": "no-store", "server-timing": timing.header() },
     });
   } catch (error) {
+    if (error instanceof BodyTooLargeError) return fail(413, "invalid", error.message);
     const failureCode = apiFailureCode(error);
     if (failureCode)
       return Response.json(
@@ -335,27 +348,37 @@ export async function handleControlRequest(request: Request, options: ControlOpt
     if (error instanceof AuthUnavailable)
       return fail(503, "dependency_unavailable", "Authentication is temporarily unavailable.");
     if (error instanceof ProviderError) {
+      const limit =
+        error.provider === "boat" && error.code === "rate_limited" && error.status === 429
+          ? providerRateLimitDetails({ ...error.details, provider: "boat", retryAfterSeconds: error.retryAfterSeconds })
+          : undefined;
       const status =
-        error.code === "conflict"
-          ? 409
-          : error.code === "forbidden"
-            ? 403
-            : error.code === "invalid_request"
-              ? 400
-              : 503;
+        error.code === "rate_limited"
+          ? 429
+          : error.code === "payment_required"
+            ? 402
+            : error.code === "conflict"
+              ? 409
+              : error.code === "forbidden"
+                ? 403
+                : error.code === "invalid_request"
+                  ? 400
+                  : 503;
       return Response.json(
         {
           error: {
             code: error.code,
-            message: error.message,
-            ...(error.details?.keepSource === true
-              ? {
-                  details: {
-                    keepSource: true,
-                    sourceSandboxId: error.details.sourceSandboxId,
-                  },
-                }
-              : {}),
+            message: limit ? providerRateLimitMessage(limit) : error.message,
+            ...(limit
+              ? { details: limit }
+              : error.details?.keepSource === true
+                ? {
+                    details: {
+                      keepSource: true,
+                      sourceSandboxId: error.details.sourceSandboxId,
+                    },
+                  }
+                : {}),
           },
         },
         { status, headers: { "cache-control": "no-store" } },
@@ -403,28 +426,61 @@ export async function handleControlRequest(request: Request, options: ControlOpt
   }
 }
 
+/** Only store I/O is a dependency failure; policy/validation errors stay outside this boundary. */
+function tokenRouteStore(store: AuthStore): AuthStore {
+  const dependency = async <T>(operation: () => Promise<T>): Promise<T> => {
+    try {
+      return await operation();
+    } catch {
+      throw new AuthUnavailable("Token store unavailable.");
+    }
+  };
+  return {
+    ...store,
+    memberships: (...args) => dependency(() => store.memberships(...args)),
+    listServiceTokens: (...args) => dependency(() => store.listServiceTokens(...args)),
+    insertToken: (...args) => dependency(() => store.insertToken(...args)),
+    revokeToken: (...args) => dependency(() => store.revokeToken(...args)),
+  };
+}
+
+function tokenRouteFailure(error: unknown, revoking = false): Response {
+  if (error instanceof AuthUnavailable)
+    return fail(503, "dependency_unavailable", "Token service is temporarily unavailable.");
+  if (error instanceof Unauthorized) return fail(401, "unauthorized", "Run armada login.");
+  if (error instanceof VaultError) return fail(STATUS[error.code], error.code, error.message);
+  if (error instanceof AuthError)
+    return revoking
+      ? fail(403, "forbidden", "Token revocation was refused.")
+      : fail(400, "invalid", "Invalid token request.");
+  return fail(500, "internal", "The server could not complete the request.");
+}
+
 async function tokenRevokeRoute(request: Request, options: ControlOptions): Promise<Response> {
   if (request.method !== "POST") return fail(405, "invalid", "Use POST.");
   try {
     const caller = await authenticatedCaller(request, options);
+    const store = tokenRouteStore(options.authStore);
     const body = await readBody(request);
     const id = required(body, "id");
+    if (!UUID.test(id)) throw new VaultError("invalid", "id must be a token UUID.");
     if (caller.via !== "supabase") {
-      const visible = await listServiceTokens(options.authStore, caller.userId);
+      const visible = await listServiceTokens(store, caller.userId);
       const target = visible.find((token) => token.id === id);
-      const members = await options.authStore.memberships(caller.userId);
+      const members = await store.memberships(caller.userId);
       const org = caller.orgs[0];
       if (!target || !org || !members.some((member) => member.orgId === org.orgId && member.name === target.orgName))
         return fail(403, "forbidden", "This token is scoped to another org.");
     }
-    await revokeServiceToken(options.authStore, {
+    await revokeServiceToken(store, {
       userId: caller.userId,
       id,
       now: (options.now ?? (() => new Date()))(),
     });
     return Response.json({ ok: true }, { headers: { "cache-control": "no-store" } });
-  } catch {
-    return fail(403, "forbidden", "Token revocation was refused.");
+  } catch (error) {
+    if (error instanceof BodyTooLargeError) return fail(413, "invalid", error.message);
+    return tokenRouteFailure(error, true);
   }
 }
 
@@ -432,11 +488,12 @@ async function tokenCreateRoute(request: Request, options: ControlOptions): Prom
   if (request.method !== "POST") return fail(405, "invalid", "Use POST.");
   try {
     const caller = await authenticatedCaller(request, options);
+    const store = tokenRouteStore(options.authStore);
     const body = await readBody(request);
     const ref = optional(body, "org") ?? optional(body, "orgName");
     if (body.org !== undefined && body.orgName !== undefined && body.org !== body.orgName)
       return fail(400, "invalid", "Conflicting org selectors.");
-    const memberships = await options.authStore.memberships(caller.userId);
+    const memberships = await store.memberships(caller.userId);
     const selected =
       ref === undefined
         ? undefined
@@ -449,7 +506,7 @@ async function tokenCreateRoute(request: Request, options: ControlOptions): Prom
     if (caller.via !== "supabase" && !selected)
       return fail(403, "forbidden", "A scoped token cannot create an unscoped token.");
     const org = selected?.name;
-    const created = await createServiceToken(options.authStore, {
+    const created = await createServiceToken(store, {
       userId: caller.userId,
       ...(org ? { orgName: org } : {}),
       ...(optional(body, "label") ? { label: optional(body, "label")! } : {}),
@@ -459,8 +516,9 @@ async function tokenCreateRoute(request: Request, options: ControlOptions): Prom
       { id: created.id, label: created.label, orgName: created.orgName, token: created.token },
       { headers: { "cache-control": "no-store" } },
     );
-  } catch {
-    return fail(401, "unauthorized", "Token creation was refused.");
+  } catch (error) {
+    if (error instanceof BodyTooLargeError) return fail(413, "invalid", error.message);
+    return tokenRouteFailure(error);
   }
 }
 
@@ -468,9 +526,10 @@ async function tokenListRoute(request: Request, options: ControlOptions): Promis
   if (request.method !== "POST") return fail(405, "invalid", "Use POST.");
   try {
     const caller = await authenticatedCaller(request, options);
-    const tokens = await listServiceTokens(options.authStore, caller.userId);
+    const store = tokenRouteStore(options.authStore);
+    const tokens = await listServiceTokens(store, caller.userId);
     const allowed = caller.via !== "supabase" ? new Set(caller.orgs.map((org) => org.orgId)) : null;
-    const memberships = allowed ? await options.authStore.memberships(caller.userId) : [];
+    const memberships = allowed ? await store.memberships(caller.userId) : [];
     const names = new Set(
       memberships.filter((membership) => allowed?.has(membership.orgId)).map((membership) => membership.name),
     );
@@ -482,8 +541,8 @@ async function tokenListRoute(request: Request, options: ControlOptions): Promis
       },
       { headers: { "cache-control": "no-store" } },
     );
-  } catch {
-    return fail(401, "unauthorized", "Run armada login.");
+  } catch (error) {
+    return tokenRouteFailure(error);
   }
 }
 
@@ -505,7 +564,8 @@ async function emailVerifyRoute(request: Request, options: ControlOptions): Prom
       { accessToken: session.accessToken, refreshToken: session.refreshToken, expiresAt: session.expiresAt },
       { headers: { "cache-control": "no-store" } },
     );
-  } catch {
+  } catch (error) {
+    if (error instanceof BodyTooLargeError) return fail(413, "invalid", error.message);
     return fail(401, "unauthorized", "Email code was refused.");
   }
 }
@@ -541,6 +601,7 @@ async function emailStartRoute(request: Request, options: ControlOptions): Promi
     });
     return Response.json({ ok: true }, { headers: { "cache-control": "no-store" } });
   } catch (error) {
+    if (error instanceof BodyTooLargeError) return fail(413, "invalid", error.message);
     const status = error instanceof Error && error.message.includes("Too many") ? 429 : 400;
     return fail(
       status,
@@ -563,6 +624,7 @@ async function exchangeRoute(request: Request, options: ControlOptions): Promise
       : await nativeExchange(options, code, verifier);
     return Response.json(result, { headers: { "cache-control": "no-store" } });
   } catch (error) {
+    if (error instanceof BodyTooLargeError) return fail(413, "invalid", error.message);
     if (error instanceof ProviderRoutingError) return fail(503, error.code, error.message);
     if (error instanceof LaunchError)
       return fail(
@@ -629,6 +691,7 @@ async function refreshRoute(request: Request, options: ControlOptions): Promise<
     const refreshed = options.refreshNative ? await options.refreshNative(token) : await nativeRefresh(options, token);
     return Response.json(refreshed, { headers: { "cache-control": "no-store" } });
   } catch (error) {
+    if (error instanceof BodyTooLargeError) return fail(413, "invalid", error.message);
     if (error instanceof ProviderRoutingError) return fail(503, error.code, error.message);
     if (error instanceof LaunchError)
       return fail(
@@ -847,6 +910,37 @@ async function dispatch(
     return disconnectOrgProvider(store, caller, optional(body, "org"), required(body, "provider"));
   const org = scopedOrg(caller, optional(body, "org"));
   switch (route) {
+    case "skillpack/catalog":
+    case "skillpack/versions": {
+      const versions = route === "skillpack/versions";
+      const allowed = versions ? ["org", "source", "reference"] : ["org", "source", "offset"];
+      if (Object.keys(body).some((key) => !allowed.includes(key)))
+        throw new VaultError("invalid", "Invalid skill catalog request.");
+      if (body.source !== "public" && body.source !== "private")
+        throw new VaultError("invalid", "Choose the public catalog or private workspace.");
+      if (
+        body.offset !== undefined &&
+        (typeof body.offset !== "number" || !Number.isInteger(body.offset) || body.offset < 0 || body.offset > 10000)
+      )
+        throw new VaultError("invalid", "Invalid catalog offset.");
+      const member = await resolveOrg(store, userId, org);
+      // Resolve exactly the launching user's credential policy; never expose the
+      // PAT or let a caller select an alternate registry or workspace header.
+      const credential =
+        body.source === "private"
+          ? await resolveSkillpackCredential(store, encryptionKey, { userId, orgId: member.id })
+          : null;
+      const catalog = options.skillCatalog ?? createSkillCatalog();
+      const result = versions
+        ? await catalog.versions({ source: body.source, reference: required(body, "reference") }, credential?.key)
+        : await catalog.list(
+            { source: body.source, ...(body.offset === undefined ? {} : { offset: body.offset as number }) },
+            credential?.key,
+          );
+      // Membership may have changed during the bounded upstream request.
+      await resolveOrg(store, userId, member.id);
+      return result;
+    }
     case "skillpack/connection": {
       // Reuse vault visibility, including live membership and token org scoping.
       const credentials = await listCredentials(store, userId, org);
@@ -1339,7 +1433,11 @@ async function launchRoute(options: ControlOptions, caller: Caller, body: Record
     (harness !== "codex" || !options.orchestrators?.enabledPairs.includes(`${golden.provider}:${harness}`))
   )
     throw new VaultError("unavailable", "Sandbox Armada access is unavailable for this provider/harness.");
-  const provider = await providerForGolden(options, caller, golden);
+  const provider = await providerForGolden(
+    options,
+    caller,
+    armadaAccess ? { ...golden, visibility: "private", sourceGoldenVisibility: golden.visibility } : golden,
+  );
   const result = await launchSandbox(
     provider,
     {
@@ -1439,14 +1537,18 @@ export function templateRuntime(options: ControlOptions, caller: Caller) {
   };
 }
 
-async function providerForGolden(options: ControlOptions, caller: Caller, golden: GoldenRecord): Promise<Provider> {
+async function providerForGolden(
+  options: ControlOptions,
+  caller: Caller,
+  golden: GoldenRecord & { sourceGoldenVisibility?: Visibility },
+): Promise<Provider> {
   if (options.providers) return options.providers.resolve(golden, caller);
   if (golden.provider !== "boat")
     throw new ProviderRoutingError("provider_not_configured", "modal", "Modal is not configured.");
   const key = await resolveBoatKey(options.store, options.encryptionKey, {
     userId: caller.userId,
     orgId: golden.orgId,
-    visibility: golden.visibility,
+    visibility: golden.sourceGoldenVisibility ?? golden.visibility,
   });
   return (
     options.providerFor?.(key.key, { userId: caller.userId, orgId: golden.orgId }) ??
@@ -1522,19 +1624,7 @@ function scopedOrg(caller: Caller, requested: string | undefined): string | unde
 }
 
 async function readBody(request: Request): Promise<Record<string, unknown>> {
-  const text = await request.text();
-  if (text.length > MAX_BODY_BYTES) throw new VaultError("invalid", "The request is too large.");
-  if (text.trim() === "") return {};
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    throw new VaultError("invalid", "The request is not JSON.");
-  }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    throw new VaultError("invalid", "The request is not a JSON object.");
-  }
-  return parsed as Record<string, unknown>;
+  return readJsonBody(request, false);
 }
 
 function optional(body: Record<string, unknown>, key: string): string | undefined {
@@ -1617,7 +1707,7 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
       env.NODE_ENV === "development",
     ),
   });
-  const templates = createTemplateService(sql);
+  const templates = createTemplateService(sql, encryptionKey);
   const lifecycle = () =>
     createMcpLifecycle({
       sql,
@@ -1801,31 +1891,47 @@ async function selectedCaller(options: ControlOptions, caller: Caller, ref: stri
   return { ...caller, orgs: caller.orgs.filter((item) => item.orgId === org.id) };
 }
 
-/** Bounded streaming UTF-8 decode: never buffer an unlimited secret body or replace malformed bytes. */
+/** Both policies count bytes before decoding; vault bodies additionally require valid UTF-8. */
 async function readVaultBody(request: Request): Promise<Record<string, unknown>> {
-  const reader = request.body?.getReader();
-  if (!reader) throw new VaultError("invalid", "Invalid application vault request.");
-  const decoder = new TextDecoder("utf-8", { fatal: true });
-  let text = "",
+  return readJsonBody(request, true);
+}
+
+async function readJsonBody(request: Request, vault: boolean): Promise<Record<string, unknown>> {
+  const invalid = (message: string) =>
+    new VaultError("invalid", vault ? "Invalid application vault request." : message);
+  const reader = vault ? request.body?.getReader() : undefined;
+  const decoder = new TextDecoder("utf-8", { fatal: vault });
+  let text = vault ? "" : await readBoundedText(request, MAX_BODY_BYTES),
     bytes = 0;
   try {
-    while (true) {
-      const chunk = await reader.read();
-      if (chunk.done) break;
-      bytes += chunk.value.byteLength;
-      if (bytes > 64 * 1024) {
-        await reader.cancel();
-        throw new Error("limit");
+    if (reader) {
+      while (true) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        bytes += chunk.value.byteLength;
+        if (bytes > (vault ? 64 * 1024 : MAX_BODY_BYTES)) {
+          // Do not drain an untrusted stream, or wait for its producer to finish cancellation.
+          void reader.cancel().catch(() => {});
+          throw invalid("The request is too large.");
+        }
+        text += decoder.decode(chunk.value, { stream: true });
       }
-      text += decoder.decode(chunk.value, { stream: true });
+      text += decoder.decode();
     }
-    text += decoder.decode();
-    const parsed: unknown = JSON.parse(text);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("object");
+    if (!vault && text.trim() === "") return {};
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      throw invalid("The request is not JSON.");
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+      throw invalid("The request is not a JSON object.");
     return parsed as Record<string, unknown>;
-  } catch {
-    throw new VaultError("invalid", "Invalid application vault request.");
+  } catch (error) {
+    if (vault) throw invalid("");
+    throw error;
   } finally {
-    reader.releaseLock();
+    reader?.releaseLock();
   }
 }

@@ -42,8 +42,8 @@ import {
   tokenRevoke,
 } from "./auth-commands.ts";
 import { operation, parseTtl } from "./operations.ts";
-import { orchestratorCommand } from "./orchestrator-commands.ts";
 import { printOptionalResourceAdvice } from "./resource-advice.ts";
+import { routineCommand } from "./routine-commands.ts";
 import { sizePolicyCommand } from "./size-policy-command.ts";
 import { skillCommand } from "./skill-install.ts";
 import { templateCommand } from "./template-commands.ts";
@@ -80,7 +80,6 @@ export interface Deps {
 const HELP = `armada ${VERSION}: launch coding agents in Boat and Modal sandboxes
 
 Usage:
-  armada orchestrator --help               Persistent coordinator create/list/detail/send/steer/stop/resume/recover/events/capabilities
   armada --version                         Print the version
   armada --help                            Show this help
   armada skill install (--project <directory> | --global) --yes [--revision <commit>]
@@ -146,7 +145,9 @@ Usage:
                                            Owner-only legacy Modal binding recovery; stop safely first; no restart
   armada rm <sandbox-id> --yes [--org UUID] [--json]  Permanently delete a stopped sandbox and its recovery archives
   armada extend <sandbox-id> --ttl <duration> [--org UUID] [--json]
-  armada detail|status|recovery|stop|wait|interrupt <sandbox-id> [--org UUID] [--json]
+  armada detail|status|recovery|stop|interrupt <sandbox-id> [--org UUID] [--json]
+  armada wait <sandbox-id> [--timeout <seconds>] [--org UUID] [--json]
+                                           Timeout is 0–600 seconds, default 60.
   armada report <sandbox-id> ready|blocked --prompt-id ID [--reason TEXT] [--pr-number N] [--pr-url URL] [--head-sha SHA]
   armada send|steer|exec <sandbox-id> <text-or-command> [--model ID] [--reasoning-effort LEVEL]
   armada golden retirement dry-run|reconcile <golden-id> [--limit 1-50] [--org UUID]
@@ -193,6 +194,7 @@ Usage:
   armada creds set <kind> [--org <name>] [--file <path>]
                                            Store a credential, encrypted; the value is read from stdin or a file
                                            Model accounts: --name NAME creates; --id UUID --expected-version N replaces
+  armada routine --help                    Create, inspect, enable, pause and manage scheduled template launches
   armada template --help                   Create, publish, list, get, delete and launch immutable templates
   armada vars --help                       Readable variables: set/list/read; stdin/file writes only
   armada secrets --help                    Write-only application secrets: set/list/rotate/revoke/delete
@@ -210,6 +212,34 @@ Environment:
   ARMADA_TOKEN                             API token for non-interactive authentication. Takes precedence over
                                            a saved login session.
   ARMADA_URL                               Armada API server (default: https://armada.thevibecompany.co).
+`;
+
+const LOGS_HELP = `Read agent events from a sandbox.
+
+Usage:
+  armada logs <sandbox-id> [--since <cursor>] [--all] [--follow] [--org <org>] [--json]
+  armada logs <sandbox-id> --tail [n] [--follow] [--org <org>] [--json]
+
+Options:
+  --since <cursor>  Resume after an opaque cursor returned by a JSON page.
+  --tail [n]        Last n events (1–1000; default 100). You cannot combine
+                    --tail with --all or --since. With --follow, tail is read once.
+  --all             Drain all currently available pages, without polling delays.
+  --follow          Drain pages, then poll while active until settled.
+                    Ctrl-C stops only this reader, not the agent.
+  --org <org>       Override the organization selected by armada org use.
+  --json            Stream page objects: events, cursor, hasMore, settled.
+                    Multiple pages are not one JSON array. Errors use stderr.
+
+Without --all, --follow or --tail, read one bounded page.
+Use armada list --json to find a visible sandbox ID.
+
+Examples:
+  armada logs SANDBOX_ID --tail 20
+  armada logs SANDBOX_ID --since CURSOR --follow
+  armada logs SANDBOX_ID --all --json | jq -c '.events[]'
+
+For other commands and authentication settings: armada --help.
 `;
 
 /** Runs one command line and returns the process exit code. */
@@ -297,16 +327,14 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
     original.length === 1 &&
     ["--help", "-h"].includes(original[0] ?? "")
   ) {
-    io.out(HELP);
+    io.out(command === "logs" ? LOGS_HELP : HELP);
     return 0;
   }
   if (command === "orchestrator") {
-    const auth = authOf(io, deps);
-    return orchestratorCommand(original, {
-      ...auth,
-      fetch: deps.fetch ?? auth.fetch,
-      ...(deps.sleep ? { sleep: deps.sleep } : {}),
-    });
+    io.err(
+      "Orchestrators have been removed. Launch an ordinary sandbox with --armada-access instead; see docs/sandbox-armada-access.md (#1002).\n",
+    );
+    return 1;
   }
   let rest = original;
   const terminator = rest.indexOf("--");
@@ -402,6 +430,8 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
       return logout(rest, io, deps);
     case "org":
       return orgCommand(rest, vaultIo(io, deps));
+    case "routine":
+      return routineCommand(rest, vaultIo(io, deps, true));
     case "template":
       return templateCommand(rest, vaultIo(io, deps, true));
     case "vars":
@@ -948,6 +978,7 @@ async function logs(argv: readonly string[], io: Io, deps: Deps): Promise<number
     throw new GoldenError("invalid_config", "--tail must be between 1 and 1000.");
   if (tail !== undefined && (flag(args, "--all") || single(args, "--since")))
     throw new GoldenError("invalid_config", "--tail cannot be combined with --all or --since.");
+  const org = single(args, "--org");
   let firstTail = tail !== undefined;
   const id = oneName(args.positionals);
   const all = flag(args, "--all");
@@ -970,6 +1001,7 @@ async function logs(argv: readonly string[], io: Io, deps: Deps): Promise<number
         id,
         all,
         follow,
+        ...(org === undefined ? {} : { org }),
         ...(firstTail ? { direction: "backward", limit } : {}),
         ...(cursor === null ? {} : { cursor }),
       }),

@@ -2,7 +2,9 @@
 
 import {
   BoxesIcon,
+  CalendarClockIcon,
   CameraIcon,
+  ChevronDownIcon,
   KeyRoundIcon,
   LayoutTemplateIcon,
   PackageIcon,
@@ -13,105 +15,122 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Fragment } from "react";
+
 import { LinkPendingIcon } from "@/components/link-pending";
+import {
+  SidebarContent,
+  SidebarGroup,
+  SidebarGroupContent,
+  SidebarGroupLabel,
+  SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem,
+  SidebarTrigger,
+  useSidebar,
+} from "@/components/ui/sidebar";
 import { cn } from "@/lib/utils";
 
-/**
- * Grouped in the order the work happens: sandboxes are what runs (Run), environments, templates,
- * tools, skills, variables and harness subscriptions are set up once (Build), and the account pages sit last. The
- * hint, a tooltip, says what each page holds. On a phone the links fit two rows of six, so the conversation
- * pages keep their height.
- */
+/** The menu contains group labels and destinations only; relationships belong on the pages. */
 const GROUPS = [
   {
     label: "Run",
     links: [
-      { href: "/sandboxes", label: "Sandboxes", short: "Boxes", hint: "Running agents and logs", icon: BoxesIcon },
+      { href: "/sandboxes", label: "Sandboxes", icon: BoxesIcon },
+      { href: "/routines", label: "Routines", icon: CalendarClockIcon },
+      { href: "/templates", label: "Templates", icon: LayoutTemplateIcon },
     ],
   },
   {
-    label: "Build",
+    label: "Library",
     links: [
-      {
-        href: "/environments",
-        label: "Environments",
-        short: "Envs",
-        hint: "Goldens: what a sandbox contains when it starts",
-        icon: CameraIcon,
-      },
-      {
-        href: "/templates",
-        label: "Templates",
-        short: "Tmpls",
-        hint: "Launch presets: environment, tools, model and variables",
-        icon: LayoutTemplateIcon,
-      },
-      { href: "/tools", label: "Tools", hint: "MCP connections your agents can use", icon: PlugIcon },
-      { href: "/skills", label: "Skills", hint: "The Skillpack key for private skills", icon: PackageIcon },
-      {
-        href: "/variables",
-        label: "Variables",
-        short: "Vars",
-        hint: "Configuration and write-only secrets",
-        icon: VariableIcon,
-      },
-      { href: "/harness", label: "Harness", hint: "Claude Code and Codex subscriptions", icon: KeyRoundIcon },
+      { href: "/environments", label: "Environments", icon: CameraIcon },
+      { href: "/skills", label: "Skills", icon: PackageIcon },
+      { href: "/tools", label: "Tools", icon: PlugIcon },
+      { href: "/variables", label: "Variables", icon: VariableIcon },
     ],
   },
   {
     label: "Account",
     links: [
-      { href: "/orgs", label: "Organizations", short: "Orgs", hint: "Members and roles", icon: UsersIcon },
-      { href: "/settings", label: "Settings", hint: "Sandbox providers, provider keys and GitHub", icon: SettingsIcon },
+      { href: "/harness", label: "Models", icon: KeyRoundIcon },
+      { href: "/orgs", label: "Organizations", icon: UsersIcon },
+      { href: "/settings", label: "Settings", icon: SettingsIcon },
     ],
   },
 ] as const;
 
+export function NavMobileTrigger() {
+  const pathname = usePathname();
+  const { openMobile } = useSidebar();
+  const current = GROUPS.flatMap((group) => [...group.links]).find(
+    (link) => pathname === link.href || pathname.startsWith(`${link.href}/`),
+  );
+  return (
+    <SidebarTrigger
+      variant="ghost"
+      size="default"
+      className="mb-1 h-9 w-full justify-between md:hidden"
+      aria-expanded={openMobile}
+      aria-controls="main-navigation-links"
+    >
+      <span>
+        Navigation <span className="text-muted-foreground">/ {current?.label ?? "Dashboard"}</span>
+      </span>
+      <ChevronDownIcon className={cn("size-4", openMobile && "rotate-180")} />
+    </SidebarTrigger>
+  );
+}
+
 export function NavLinks({ className }: { className?: string }) {
   const pathname = usePathname();
+  const { setOpenMobile } = useSidebar();
   return (
-    <nav aria-label="Main" className={className}>
-      {GROUPS.map((group) => (
-        <Fragment key={group.label}>
-          <p
-            aria-hidden="true"
-            className="hidden px-2 pt-5 pb-1.5 text-xs font-medium text-muted-foreground first:pt-1 md:block"
-          >
-            {group.label}
-          </p>
-          {group.links.map((link) => {
-            const { href, label, hint, icon: Icon } = link;
-            const short = "short" in link ? link.short : label;
-            const active = pathname === href || pathname.startsWith(`${href}/`);
-            return (
-              <Link
-                key={href}
-                href={href}
-                title={hint}
-                aria-current={active ? "page" : undefined}
-                className={cn(
-                  "flex min-w-0 flex-col items-center gap-1 rounded-md px-0.5 py-2 text-xs font-medium transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none has-[[data-pending]]:bg-accent has-[[data-pending]]:text-accent-foreground md:flex-row md:gap-2.5 md:px-2 md:py-1.5 md:text-sm",
-                  active
-                    ? "bg-background text-foreground shadow-xs ring-1 ring-border md:bg-background"
-                    : "text-muted-foreground",
-                )}
-              >
-                <LinkPendingIcon>
-                  <Icon />
-                </LinkPendingIcon>
-                {/* A phone's six columns take a shorter word where the full one would be cut. */}
-                <span className="truncate md:hidden">
-                  {short}
-                  {/* The visible word starts the accessible name (label in name), the full one follows. */}
-                  {short !== label && <span className="sr-only"> ({label})</span>}
-                </span>
-                <span className="hidden truncate md:inline">{label}</span>
-              </Link>
-            );
-          })}
-        </Fragment>
-      ))}
-    </nav>
+    <SidebarContent className={cn("gap-0", className)}>
+      <nav id="main-navigation-links" aria-label="Main">
+        {GROUPS.map((group) => (
+          <SidebarGroup key={group.label} className="p-0 pt-4 first:pt-0" role="region" aria-label={group.label}>
+            <SidebarGroupLabel
+              asChild
+              className="h-auto px-2 text-xs font-medium text-foreground group-data-[collapsible=icon]:mt-0 group-data-[collapsible=icon]:h-0"
+            >
+              <h2>{group.label}</h2>
+            </SidebarGroupLabel>
+            <SidebarGroupContent>
+              <SidebarMenu className="gap-0.5">
+                {group.links.map(({ href, label, icon: Icon }) => {
+                  const active = pathname === href || pathname.startsWith(`${href}/`);
+                  return (
+                    <SidebarMenuItem key={href}>
+                      <SidebarMenuButton
+                        asChild
+                        isActive={active}
+                        tooltip={label}
+                        className={cn(
+                          "h-auto min-h-9 gap-2.5 px-2 py-2 text-sm font-medium transition-colors focus-visible:ring-[3px] focus-visible:ring-ring/50 has-[[data-pending]]:bg-accent has-[[data-pending]]:text-accent-foreground md:min-h-0 md:py-1.5",
+                          active
+                            ? "bg-background text-foreground shadow-xs ring-1 ring-border data-[active=true]:bg-background"
+                            : "text-muted-foreground",
+                        )}
+                      >
+                        <Link
+                          href={href}
+                          onClick={() => setOpenMobile(false)}
+                          aria-current={active ? "page" : undefined}
+                        >
+                          <LinkPendingIcon>
+                            <Icon />
+                          </LinkPendingIcon>
+                          <span className="truncate">{label}</span>
+                        </Link>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  );
+                })}
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        ))}
+      </nav>
+    </SidebarContent>
   );
 }

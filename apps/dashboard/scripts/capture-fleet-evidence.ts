@@ -1,4 +1,5 @@
 /** Mock-only before/after evidence for retiring Fleet and preserving its sandbox actions. */
+import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { chromium, expect } from "@playwright/test";
@@ -9,6 +10,13 @@ const phase = process.env.EVIDENCE_PHASE;
 if (phase !== "before" && phase !== "after") throw new Error("EVIDENCE_PHASE must be before or after");
 const output = process.env.EVIDENCE_DIR ?? "test-results/fleet-evidence";
 await mkdir(output, { recursive: true });
+// Later PR baselines already include Fleet retirement. Choose historical
+// expectations from the restored source tree, never from the observed URL.
+const legacyBaseline = phase === "before" && existsSync(new URL("../src/app/(app)/fleet/page.tsx", import.meta.url));
+await writeFile(
+  join(output, `${phase}-baseline-mode.txt`),
+  legacyBaseline ? "Legacy Fleet page\n" : "Fleet redirects to Sandboxes\n",
+);
 await reset();
 const examples = new Set(Object.values(BUSY));
 const seeded = await fetch(`${MOCK}/__test/add-sandboxes`, {
@@ -36,14 +44,14 @@ try {
         ] as const) {
           await page.goto(route);
           await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
-          if (name === "fleet") await expect(page).toHaveURL(phase === "after" ? /\/sandboxes$/ : /\/fleet\?view=all$/);
+          if (name === "fleet") await expect(page).toHaveURL(legacyBaseline ? /\/fleet\?view=all$/ : /\/sandboxes$/);
           if (name === "attention") {
             // Capture settled conversation content, not whichever loading frame the browser reached first.
             await expect(page.getByRole("log", { name: "Messages" })).toContainText(
               "I moved the cache behind a feature flag.",
             );
             if (width < 1024) await page.getByRole("button", { name: "Details", exact: true }).click();
-            if (phase === "after")
+            if (!legacyBaseline)
               await expect(page.locator("[data-sandbox-attention]").filter({ visible: true })).toBeVisible();
           }
           await expect(page.locator("html")).toHaveClass(theme === "dark" ? /dark/ : /light/);

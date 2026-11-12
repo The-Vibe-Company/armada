@@ -9,6 +9,7 @@ import {
   LayoutTemplateIcon,
   LockIcon,
   LockKeyholeIcon,
+  PackageIcon,
   PencilIcon,
   PlugIcon,
   RocketIcon,
@@ -31,6 +32,7 @@ import { CreateDialog } from "@/components/create-dialog";
 import { LaunchShortcut, RepositoryField, Segmented } from "@/components/launch-dialog";
 import { MachineSizeField } from "@/components/machine-size-field";
 import { type ModelCatalog, ModelFields } from "@/components/model-fields";
+import { SkillPicker } from "@/components/skill-picker";
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -105,8 +107,8 @@ export function NoSecretsNote({ className }: { className?: string }) {
     >
       <LockKeyholeIcon aria-hidden className="mt-0.5 size-3.5 shrink-0" />
       <span>
-        <span className="font-medium text-foreground">Secrets are not available in templates yet.</span> A template
-        delivers readable variables only; anyone who can launch it can see their values.
+        <span className="font-medium text-foreground">Secret values are never shown here.</span> A template delivers
+        chosen secrets to the agent environment; anyone who can launch it can use those values.
       </span>
     </p>
   );
@@ -137,7 +139,7 @@ type Editing = { id: string; name: string; scope: TemplateScope; revision: numbe
 /**
  * The create flow (#949), the shared {@link CreateDialog}: one form in two steps so it fits a laptop. The first
  * step holds what defines a template (its name, who can use it, the environment and the agent); the second, the
- * optional tools and variables. Who can use it cannot be changed later, so it is marked.
+ * optional tools, skills and variables. Who can use it cannot be changed later, so it is marked.
  */
 export function CreateTemplateDialog(props: {
   orgId: string;
@@ -200,6 +202,7 @@ function TemplateForm({
   const [golden, setGolden] = useState(editing?.definition.goldenId ?? "");
   const [harness, setHarness] = useState<Harness>(editing?.definition.harness ?? "claude");
   const [keepAccount, setKeepAccount] = useState(true);
+  const [skills, setSkills] = useState<string[]>(() => [...(editing?.definition.skills ?? [])]);
   const [problem, setProblem] = useState<string | null>(null);
   const keepingPinnedAccount = Boolean(
     keepAccount && editing?.definition.modelAccount && harness === editing.definition.harness,
@@ -353,7 +356,7 @@ function TemplateForm({
               ? `Several ${HARNESS_LABELS[harness]} accounts are available. Set a default in `
               : `No usable ${HARNESS_LABELS[harness]} account is available to you in this organization. Add or reconnect one in `}
             <Link className="underline" href={HARNESS_PATH}>
-              Build &gt; Harness
+              Account &gt; Models
             </Link>
             {accountSelection === "ambiguous" ? "." : " or choose another agent."} You can save this template, but
             launching it requires {accountSelection === "ambiguous" ? "an unambiguous account selection" : "an account"}
@@ -466,7 +469,45 @@ function TemplateForm({
           initial={editing?.definition.variables.map((binding) => binding.variableId) ?? []}
           hint="Each value is copied into the sandbox at launch, under its own name unless the revision named it otherwise. Publishing uses its current version."
         />
-        <NoSecretsNote />
+        <PickList
+          legend="Secrets"
+          name="secrets"
+          icon={<LockKeyholeIcon />}
+          mono
+          empty={
+            lookups.secrets == null
+              ? "Secrets could not be read. Refresh to choose them."
+              : "No secrets yet. Add one in Secrets."
+          }
+          options={[
+            ...(lookups.secrets ?? [])
+              .filter(
+                (row) =>
+                  (row.status === "active" || editing?.definition.secrets?.some((b) => b.secretId === row.id)) &&
+                  (scope === "personal" || row.scope === "org"),
+              )
+              .map((row) => ({
+                id: row.id,
+                label: row.name,
+                note:
+                  row.status !== "active"
+                    ? "Unavailable — remove to publish"
+                    : row.scope === "org"
+                      ? "Org"
+                      : "Personal",
+              })),
+            ...(editing?.definition.secrets ?? [])
+              .filter(
+                (b, i, all) =>
+                  all.findIndex((v) => v.secretId === b.secretId) === i &&
+                  !lookups.secrets?.some((row) => row.id === b.secretId),
+              )
+              .map((b) => ({ id: b.secretId, label: b.key, note: "Unavailable — remove to publish" })),
+          ]}
+          initial={editing?.definition.secrets?.map((b) => b.secretId) ?? []}
+          hint="Only names and scope are shown. Values are delivered as environment variables to the selected agent."
+        />
+        <SkillPicker orgId={orgId} value={skills} onChange={setSkills} />
         {lost && (
           <p role="alert" className="text-sm text-destructive" data-template-lost>
             {lost}
@@ -606,6 +647,16 @@ function Preset({ target }: { target: TemplateLaunchTarget }) {
       text: `${target.goldenName ?? "Unavailable"} on ${PROVIDER_LABELS[target.definition.provider]}`,
     },
     { key: "agent", icon: <CpuIcon />, label: "Agent", text: target.agent },
+    ...(target.definition.skills.length
+      ? [
+          {
+            key: "skills",
+            icon: <PackageIcon />,
+            label: "Skills",
+            text: target.definition.skills.join(", "),
+          },
+        ]
+      : []),
     {
       key: "tools",
       icon: <PlugIcon />,
@@ -634,7 +685,12 @@ function Preset({ target }: { target: TemplateLaunchTarget }) {
             </span>
             {fact.label}
           </dt>
-          <dd className={cn("min-w-0 break-words", fact.key === "variables" && "font-mono text-xs leading-5")}>
+          <dd
+            className={cn(
+              "min-w-0 break-words",
+              (fact.key === "variables" || fact.key === "skills") && "font-mono text-xs leading-5 break-all",
+            )}
+          >
             {fact.text}
           </dd>
         </div>

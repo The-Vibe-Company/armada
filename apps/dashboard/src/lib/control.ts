@@ -18,6 +18,7 @@ import {
   parsePreview,
   type RecipientPreview,
 } from "./invitations.ts";
+import { parseRoutine, parseRoutineRun, type RoutineInput, routineFailure } from "./routines.ts";
 import {
   type LaunchOutcome,
   parseLaunchOutcome,
@@ -77,33 +78,9 @@ export type ControlClient = {
 };
 
 export function createControlClient(options: Options): ControlClient {
-  const origin = originOf(options.serverUrl);
-  const doFetch = options.fetch ?? fetch;
   return {
     async post<T>(route: string, body: Record<string, unknown>): Promise<T> {
-      if (!origin) throw new ControlError("The Armada server is not configured for this dashboard.");
-      let response: Response;
-      try {
-        response = await doFetch(new URL(`/api/v1/${route}`, origin), {
-          method: "POST",
-          headers: {
-            authorization: `Bearer ${options.token}`,
-            "content-type": "application/json",
-            accept: "application/json",
-          },
-          body: JSON.stringify(body),
-          redirect: "error",
-          cache: "no-store",
-          signal: AbortSignal.timeout(options.timeoutMs ?? GOLDEN_BUILD_TIMEOUT_MS),
-        });
-      } catch (error) {
-        if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError"))
-          throw new ControlError(
-            "The Armada server did not answer in time. The build may still finish: refresh before trying again.",
-          );
-        throw new ControlError("The Armada server is unreachable.");
-      }
-      const parsed = await readJson(response);
+      const { response, parsed } = await transport(options, `/api/v1/${route}`, body);
       if (response.status === 401)
         throw new ControlError("The Armada server refused this session. Sign in again.", 401);
       if (!response.ok) {
@@ -133,12 +110,61 @@ function originOf(value: string): string | null {
   }
 }
 
-async function readJson(response: Response): Promise<unknown> {
+/**
+ * Transport policy only. The adapters below deliberately interpret the same JSON differently.
+ * Race the entire exchange so even a stalled body reader cannot outlive the request deadline.
+ */
+async function transport(options: Options, path: string, body: object) {
+  const origin = originOf(options.serverUrl);
+  if (!origin) throw new ControlError("The Armada server is not configured for this dashboard.");
+  const url = new URL(path, origin);
+  if (url.origin !== origin) throw new ControlError("The Armada request address was refused.");
+  const timeoutMs = options.timeoutMs ?? GOLDEN_BUILD_TIMEOUT_MS;
+  if (!Number.isInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 2_147_483_647)
+    throw new ControlError("The Armada request deadline must be a positive finite number of milliseconds.");
+  const signal = AbortSignal.timeout(timeoutMs);
+  let onAbort: () => void = () => {};
+  const aborted = new Promise<never>((_, reject) => {
+    onAbort = () => reject(new DOMException("Request deadline exceeded.", "TimeoutError"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) onAbort();
+  });
   try {
-    return await response.json();
-  } catch {
-    return null;
+    return await Promise.race([
+      aborted,
+      (async () => {
+        const response = await (options.fetch ?? fetch)(url, {
+          method: "POST",
+          headers: { "content-type": "application/json", authorization: `Bearer ${options.token}` },
+          body: JSON.stringify(body),
+          redirect: "error",
+          cache: "no-store",
+          signal,
+        });
+        let parsed: unknown;
+        try {
+          parsed = await response.json();
+        } catch (error) {
+          if (signal.aborted || isAbort(error)) throw error;
+          parsed = null;
+        }
+        signal.throwIfAborted();
+        return { response, parsed };
+      })(),
+    ]);
+  } catch (error) {
+    if (signal.aborted || isAbort(error))
+      throw new ControlError(
+        "The Armada server did not answer in time. The request outcome may be unknown: inspect its status before trying again.",
+      );
+    throw new ControlError("The Armada server is unreachable.");
+  } finally {
+    signal.removeEventListener("abort", onAbort);
   }
+}
+
+function isAbort(error: unknown): boolean {
+  return error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -218,6 +244,8 @@ export type ArmadaApiOptions = {
   serverUrl: string;
   token: string;
   fetch?: typeof fetch;
+  /** Deadline for the entire exchange, including JSON consumption; defaults to 10 seconds. */
+  timeoutMs?: number;
 };
 
 export type McpControl = ReturnType<typeof createMcpControl>;
@@ -232,19 +260,8 @@ export async function controlPost(
   body: object,
   feature = "MCP connections",
 ): Promise<Record<string, unknown>> {
-  let response: Response;
-  try {
-    response = await (options.fetch ?? fetch)(new URL(path, new URL(options.serverUrl).origin), {
-      method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${options.token}` },
-      body: JSON.stringify(body),
-      cache: "no-store",
-      redirect: "error",
-    });
-  } catch {
-    throw new ControlError("The Armada server is unreachable.");
-  }
-  const payload = await readMcpJson(response);
+  const { response, parsed } = await transport(options, path, body);
+  const payload = isRecord(parsed) ? parsed : null;
   if (response.ok) {
     if (!payload) throw new ControlError("The Armada server sent something unreadable.", response.status);
     return payload;
@@ -321,17 +338,6 @@ export function createMcpControl(options: ArmadaApiOptions) {
     oauthCallback: async (body: { state: string; code: string; issuer?: string }) =>
       (await connection("oauth/callback", body)).connection,
   };
-}
-
-async function readMcpJson(response: Response): Promise<Record<string, unknown> | null> {
-  try {
-    const value: unknown = await response.json();
-    return typeof value === "object" && value !== null && !Array.isArray(value)
-      ? (value as Record<string, unknown>)
-      : null;
-  } catch {
-    return null;
-  }
 }
 
 /** The server's `{error: {code, message}}`, in words for the person. Its message is already sanitized. */
@@ -522,6 +528,43 @@ export function createTemplateControl(options: ArmadaApiOptions) {
       const outcome = parseLaunchOutcome(await post("launch", request));
       if (!outcome) throw new ControlError("The Armada server sent an unexpected launch answer.");
       return outcome;
+    },
+  };
+}
+
+/** Owner-scoped routines; no raw provider text or launch manifests enter the dashboard. */
+export function createRoutineControl(options: ArmadaApiOptions) {
+  async function post(operation: string, body: object) {
+    try {
+      return await controlPost(options, `/api/v1/routines/${operation}`, body, "routines");
+    } catch (error) {
+      if (!(error instanceof ControlError)) throw error;
+      throw new ControlError(routineFailure(error.status), error.status, error.code);
+    }
+  }
+  async function saved(operation: string, body: object) {
+    const payload = await post(operation, body),
+      item = parseRoutine(payload.item);
+    if (!item) throw new ControlError("The Armada server sent an unexpected routine.");
+    return item;
+  }
+  return {
+    async list(org: string) {
+      const payload = await post("list", { org });
+      if (!Array.isArray(payload.items)) throw new ControlError("The Armada server sent no routine list.");
+      const items = payload.items.map(parseRoutine);
+      if (items.some((x) => !x)) throw new ControlError("The Armada server sent an unexpected routine.");
+      return items.filter((x): x is NonNullable<typeof x> => !!x && x.orgId === org && x.status !== "deleted");
+    },
+    create: (request: RoutineInput & { org: string }) => saved("create", request),
+    enable: (request: { org: string; id: string; expectedVersion: number }) => saved("enable", request),
+    pause: (request: { org: string; id: string; expectedVersion: number }) => saved("pause", request),
+    async history(org: string, id: string) {
+      const payload = await post("history", { org, id });
+      if (!Array.isArray(payload.items)) throw new ControlError("The Armada server sent no run history.");
+      const items = payload.items.map(parseRoutineRun);
+      if (items.some((x) => !x)) throw new ControlError("The Armada server sent unexpected run history.");
+      return items.filter((x): x is NonNullable<typeof x> => !!x);
     },
   };
 }

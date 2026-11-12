@@ -90,7 +90,7 @@ export async function removeCredential(_previous: ActionResult | null, data: For
   const row = (await listCredentials(supabase)).find((item) => item.id === id);
   if (!row) return fail("That key is not available in this scope.");
   // A model credential is a named account, removed by id through the server (`creds/accounts/remove`).
-  if (!isCredentialKind(row.kind)) return fail("Remove a subscription or API key on the Harness page.");
+  if (!isCredentialKind(row.kind)) return fail("Remove a subscription or API key on the Models page.");
   if (row.scope === "org") return fail(ORG_HOSTING_IN_SETTINGS);
   const { data: rows, error } = await supabase.from("credentials").delete().eq("id", id).select("id");
   if (error) return fail(explainDbError(error));

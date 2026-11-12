@@ -70,9 +70,11 @@ opener = urllib.request.build_opener(NoRedirect())
 
 # Fixed allowlist: do not print arbitrary server headers (or reflected secret strings).
 SERVER_PHASES = {
+    "tool_register", "tool_connect", "tool_call", "tool_close",
     "auth", "dispatch", "provider", "stored_provider", "sandbox_read",
     "logs_target", "events", "state", "prompt",
     "send_credentials", "send_state", "send_turn_auth", "send_submit",
+    "modal_prepare", "modal_before_prompt", "modal_admit", "modal_health", "modal_rpc",
 }
 
 

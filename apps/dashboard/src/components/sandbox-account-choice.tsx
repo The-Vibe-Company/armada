@@ -100,7 +100,7 @@ export function SandboxAccountChoice({ sandboxId, status, owner, choices, harnes
         <p className="text-sm">
           No {harnessLabel} account you can use.{" "}
           <Link href={HARNESS_PATH} className="font-medium underline underline-offset-4">
-            Add one in Harness
+            Add one in Models
           </Link>
         </p>
       ) : (

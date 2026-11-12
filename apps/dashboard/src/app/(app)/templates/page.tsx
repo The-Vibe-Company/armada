@@ -3,6 +3,7 @@ import { CircleAlertIcon, InfoIcon, LayoutTemplateIcon, TriangleAlertIcon, UserI
 import type { Metadata } from "next";
 import Link from "next/link";
 import { CreatedAt } from "@/components/created-at";
+import { IngredientLink } from "@/components/ingredient-link";
 import { Empty, PageHeader } from "@/components/page-header";
 import { ResourceBrowser, type ResourceRow } from "@/components/resource-browser";
 import { PanelSection, RowTag, StateCell } from "@/components/state-cell";
@@ -36,6 +37,7 @@ import {
   templateAudience,
   templateState,
 } from "@/lib/templates";
+import { itemKey } from "@/lib/variables";
 
 export const metadata: Metadata = { title: "Templates" };
 export const dynamic = "force-dynamic";
@@ -160,7 +162,9 @@ function row(item: TemplateItem, context: RowContext): ResourceRow & { bucket: B
   const { org, lookups } = context;
   const state = templateState(item, lookups);
   const definition = item.revision?.definition;
-  const golden = definition ? lookups.goldens.find((row) => row.id === definition.goldenId) : undefined;
+  const golden = definition
+    ? lookups.goldens.find((row) => row.id === definition.goldenId && row.provider === definition.provider)
+    : undefined;
   const environment = definition
     ? `${golden?.name ?? "Unavailable environment"} on ${PROVIDER_LABELS[definition.provider]}`
     : null;
@@ -201,25 +205,52 @@ function row(item: TemplateItem, context: RowContext): ResourceRow & { bucket: B
       {definition && target ? (
         <>
           <PanelSection title="Environment">
-            <p className="text-sm">{environment}</p>
+            {golden ? (
+              <IngredientLink href={`/environments?item=${encodeURIComponent(golden.id)}`}>
+                {environment}
+              </IngredientLink>
+            ) : (
+              <p className="text-sm">{environment}</p>
+            )}
           </PanelSection>
           <PanelSection title="Agent">
-            <p className="text-sm">
+            <IngredientLink href="/harness">
               {HARNESS_LABELS[definition.harness]}, {modelLabel(definition.harness, definition.model)},{" "}
               {EFFORT_LABEL[definition.reasoningEffort] ?? definition.reasoningEffort} effort
-            </p>
+            </IngredientLink>
             <p className="text-xs text-muted-foreground">
               {definition.modelAccount
                 ? "Runs on a pinned model account, whoever launches it."
                 : "Runs on the launcher's own model account."}
             </p>
           </PanelSection>
+          {definition.skills.length > 0 && (
+            <PanelSection title="Skills">
+              <p className="text-xs text-muted-foreground">Manage Skillpack access on the Skills page.</p>
+              <ul className="flex flex-wrap gap-2">
+                {definition.skills.map((pin) => (
+                  <li key={pin} className="min-w-0 max-w-full">
+                    <IngredientLink href="/skills">{pin}</IngredientLink>
+                  </li>
+                ))}
+              </ul>
+            </PanelSection>
+          )}
           <PanelSection title="Tools">
             {target.tools.length ? (
               <ul className="space-y-1 text-sm">
-                {target.tools.map((tool, index) => (
-                  <li key={definition.connections[index]}>{tool}</li>
-                ))}
+                {definition.connections.map((id) => {
+                  const tool = lookups.connections?.find((connection) => connection.id === id);
+                  return (
+                    <li key={id}>
+                      {tool ? (
+                        <IngredientLink href={`/tools?item=${encodeURIComponent(id)}`}>{tool.name}</IngredientLink>
+                      ) : (
+                        "Unavailable tool"
+                      )}
+                    </li>
+                  );
+                })}
               </ul>
             ) : (
               <p className="text-sm text-muted-foreground">None</p>
@@ -229,8 +260,16 @@ function row(item: TemplateItem, context: RowContext): ResourceRow & { bucket: B
             {definition.variables.length ? (
               <ul className="space-y-1 font-mono text-xs">
                 {definition.variables.map((binding) => (
-                  <li key={binding.key} className="flex justify-between gap-3">
-                    <span className="truncate">{binding.key}</span>
+                  <li key={binding.key} className="flex min-w-0 justify-between gap-3">
+                    {lookups.variables?.some((variable) => variable.id === binding.variableId) ? (
+                      <IngredientLink
+                        href={`/variables?item=${encodeURIComponent(itemKey({ kind: "variable", id: binding.variableId }))}`}
+                      >
+                        {binding.key}
+                      </IngredientLink>
+                    ) : (
+                      <span className="min-w-0 [overflow-wrap:anywhere]">{binding.key}</span>
+                    )}
                     <span className="shrink-0 font-sans text-muted-foreground tabular-nums">v{binding.version}</span>
                   </li>
                 ))}
@@ -238,8 +277,29 @@ function row(item: TemplateItem, context: RowContext): ResourceRow & { bucket: B
             ) : (
               <p className="text-sm text-muted-foreground">None</p>
             )}
-            <NoSecretsNote />
           </PanelSection>
+          {(definition.secrets?.length ?? 0) > 0 && (
+            <PanelSection title="Secrets">
+              <ul className="space-y-1 text-xs">
+                {definition.secrets?.map((binding) => (
+                  <li key={binding.key} className="flex min-w-0 items-center justify-between gap-3">
+                    {lookups.secrets?.some((secret) => secret.id === binding.secretId) ? (
+                      <IngredientLink
+                        href={`/variables?item=${encodeURIComponent(itemKey({ kind: "secret", id: binding.secretId }))}`}
+                      >
+                        {binding.key}
+                      </IngredientLink>
+                    ) : (
+                      <span className="min-w-0 [overflow-wrap:anywhere]">{binding.key}</span>
+                    )}
+                    <span className="shrink-0 text-muted-foreground tabular-nums">v{binding.version}</span>
+                  </li>
+                ))}
+              </ul>
+            </PanelSection>
+          )}
+
+          <NoSecretsNote />
         </>
       ) : (
         <p className="text-sm text-muted-foreground">

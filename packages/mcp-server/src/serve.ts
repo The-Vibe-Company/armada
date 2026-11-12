@@ -22,6 +22,7 @@ import { createCredentialBindingRecovery } from "./credential-binding-recovery.t
 import { createSqlData } from "./data.ts";
 import { retryDatabaseBoot } from "./database-boot.ts";
 import { createDatabaseReadiness } from "./database-readiness.ts";
+import { requireDatabaseSchema } from "./database-schema.ts";
 import { createGitHubAccountApi } from "./github-account.ts";
 import { configureBoatGitHub } from "./github-boat.ts";
 import { createHandler, providerRegistry, type Route } from "./http.ts";
@@ -101,7 +102,7 @@ export async function startServer(
     publicUrl: config.publicUrl,
   });
   const data = createSqlData(sql);
-  const templates = createTemplateService(sql);
+  const templates = createTemplateService(sql, config.encryptionKey);
   const mcp = createMcpHttpIntegration({
     prepareReadableVariables: templates.prepare,
     deferBackground: true,
@@ -119,7 +120,10 @@ export async function startServer(
     supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
   });
   try {
-    await retryDatabaseBoot(() => mcp.drainInvalidations(), options.logError ?? console.error);
+    await retryDatabaseBoot(async () => {
+      await requireDatabaseSchema(sql);
+      await mcp.drainInvalidations();
+    }, options.logError ?? console.error);
   } catch (error) {
     await mcp.close();
     await sql.close();
@@ -380,9 +384,19 @@ export async function startServer(
     void pending.finally(() => requests.delete(pending)).catch(() => {});
     return pending;
   };
-  const server = Object.assign(Bun.serve({ port: config.port, hostname: "0.0.0.0", fetch }), {
-    workerDone: Promise.resolve(),
-  });
+  const server = Object.assign(
+    Bun.serve({
+      port: config.port,
+      hostname: "0.0.0.0",
+      // Keep Bun's 128 MiB ingress budget explicit: MCP prompts/tool arguments have no
+      // smaller aggregate cap. Control JSON (128 KiB) and broker (1 KiB) are bounded per route.
+      maxRequestBodySize: 128 * 1024 * 1024,
+      fetch,
+    }),
+    {
+      workerDone: Promise.resolve(),
+    },
+  );
   const lifecycle = createSandboxLifecycle(sql, createMcpSandboxProviderResolver(sql, providers));
   const workers = startServerWorkers(
     goldenBuilds,

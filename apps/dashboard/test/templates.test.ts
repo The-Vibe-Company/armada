@@ -75,6 +75,7 @@ const form = (fields: Partial<TemplateFormFields> = {}): TemplateFormFields => (
   reasoningEffort: "high",
   connections: [],
   variables: [],
+  skills: [],
   ...fields,
 });
 
@@ -92,7 +93,7 @@ describe("template DTOs", () => {
     });
     expect(parseTemplate({ ...header, status: "deleted" })).toBeNull();
     expect(parseTemplate({ ...header, currentRevision: 0 })).toBeNull();
-    const parsed = parseRevision({ ...revision, definition: { ...definition, secrets: ["x"] } });
+    const parsed = parseRevision({ ...revision, definition: { ...definition, secrets: [] } });
     expect(parsed?.definition).toEqual({
       goldenId: SHARED,
       provider: "boat",
@@ -182,6 +183,34 @@ describe("template form", () => {
     });
   });
 
+  test("publishes explicit exact skills, preserving an edited revision until the person changes or clears them", () => {
+    const skills = ["team/testing@1.2.3", "review-code@2.1.0"];
+    const previous = { connections: [], variables: [], skills };
+    for (const selected of [skills, ["review-code@2.0.0"], []]) {
+      const parsed = templateRequest(form({ skills: selected, reasoningEffort: "medium" }), lookups, previous);
+      expect(parsed.ok).toBe(true);
+      expect(parsed.ok && (parsed.value.definition.skills ?? [])).toEqual(selected);
+    }
+    expect(previous.skills).toEqual(["team/testing@1.2.3", "review-code@2.1.0"]);
+  });
+
+  test("invalid template skills are refused before immutable publication", () => {
+    for (const skills of [
+      ["review-code@latest"],
+      ["review-code@^2.0.0"],
+      ["team/armada-tools@1.0.0"],
+      ["armada-tools@1.0.0"],
+      ["review-code@2.1.0", "team/review-code@2.0.0"],
+      ["review-code@2.1.0", "review-code@2.1.0"],
+      Array.from({ length: 21 }, (_, index) => `skill-${index}@1.0.0`),
+    ]) {
+      expect(templateRequest(form({ skills }), lookups)).toEqual({
+        ok: false,
+        error: "Choose at most 20 distinct skills pinned to exact versions. Armada tools are managed automatically.",
+      });
+    }
+  });
+
   test("refuses in words what the server would refuse", () => {
     const error = (fields: Partial<TemplateFormFields>) => {
       const parsed = templateRequest(form(fields), lookups);
@@ -246,8 +275,8 @@ describe("template launch", () => {
       "Publish a new revision",
     );
     for (const [reason, action] of [
-      ["model_account_ambiguous", "Set a default in Build > Harness"],
-      ["model_account_refused", "Reconnect it in Build > Harness"],
+      ["model_account_ambiguous", "Set a default in Account > Models"],
+      ["model_account_refused", "Reconnect it in Account > Models"],
     ]) {
       const message = templateFailure(409, `Template launch refused: ${reason}.`);
       expect(message).toContain(action);
@@ -312,4 +341,41 @@ describe("template launch", () => {
       { route: "/api/v1/templates/launch", body: { org: ORG, id: TEMPLATE, revision: 2, requestKey: "dashboard:k" } },
     ]);
   });
+});
+
+test("template form binds metadata-only secrets, preserves aliases and refuses unreadable selections", () => {
+  const secretId = "00000000-0000-4000-8000-000000000081";
+  const sources = {
+    ...lookups,
+    secrets: [{ id: secretId, name: "APP_TOKEN", scope: "org" as const, version: 2, status: "active" }],
+  };
+  const previous = { ...definition, secrets: [{ key: "DEPLOY_TOKEN", secretId, version: 1 }] };
+  const result = templateRequest(form({ secrets: [secretId] }), sources, previous);
+  expect(result.ok).toBe(true);
+  if (result.ok) expect(result.value.definition.secrets).toEqual([{ key: "DEPLOY_TOKEN", secretId, version: 2 }]);
+  expect(templateRequest(form({ secrets: [secretId] }), { ...sources, secrets: null }, previous).ok).toBe(false);
+  expect(parseRevision({ ...revision, definition: previous })?.definition.secrets).toEqual(previous.secrets);
+});
+
+test("secret references expose stale state and actionable closed refusals without values", () => {
+  const secretId = "00000000-0000-4000-8000-000000000081";
+  const def = { ...definition, secrets: [{ key: "APP_TOKEN", secretId, version: 1 }] };
+  for (const secret of [
+    { id: secretId, name: "APP_TOKEN", scope: "org" as const, version: 2, status: "active" },
+    { id: secretId, name: "APP_TOKEN", scope: "org" as const, version: 1, status: "revoked" },
+    {
+      id: secretId,
+      name: "APP_TOKEN",
+      scope: "org" as const,
+      version: 1,
+      status: "active",
+      expiresAt: "2000-01-01T00:00:00Z",
+    },
+  ]) {
+    expect(templateState({ revision: { ...revision, definition: def } }, { ...lookups, secrets: [secret] }).label).toBe(
+      "Secret changed",
+    );
+  }
+  for (const reason of ["secret_unavailable", "secret_version_changed", "secret_delivery_unavailable"])
+    expect(templateFailure(409, `Template launch refused: ${reason}.`)).not.toContain("could not be started");
 });

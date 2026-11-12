@@ -24,10 +24,14 @@ try {
         const page = await context.newPage();
         await signIn(page, "alice@example.com", unconfigured ? "/harness" : "/sandboxes");
         if (unconfigured) {
-          const notice = page
-            .getByRole(phase === "before" ? "alert" : "status")
-            .filter({ hasText: "The Armada server is not configured" });
+          // Candidate evidence requires status semantics; baseline evidence supports either revision.
+          const currentNotice = page.getByRole("status").filter({ hasText: "The Armada server is not configured" });
+          const notice =
+            phase === "before"
+              ? currentNotice.or(page.getByRole("alert").filter({ hasText: "The Armada server is not configured" }))
+              : currentNotice;
           await expect(notice).toBeVisible();
+          await expect(notice).toHaveText("The Armada server is not configured: subscriptions cannot be managed here.");
           await expect(page.locator("html")).toHaveClass(theme === "dark" ? /dark/ : /light/);
           await page.screenshot({
             path: join(output, `${phase}-harness-unconfigured-${width}-${theme}.png`),
@@ -42,10 +46,11 @@ try {
           ["tools", "Tools", "Add server"],
           ["variables", "Variables", "Add"],
           ["skills", "Skills", "Add key"],
-          ["harness", "Harness", "Add a subscription"],
+          ["harness", "Models", "Add a subscription"],
         ] as const) {
           await page.goto(`/${route}`);
-          await expect(page.getByRole("heading", { name: title, level: 1, exact: true })).toBeVisible();
+          const heading = route === "harness" && phase === "before" ? /^(?:Harness|Models)$/ : title;
+          await expect(page.getByRole("heading", { name: heading, level: 1, exact: true })).toBeVisible();
           const hasDetail = route !== "skills" && route !== "harness";
           if (hasDetail) {
             // The header can stream before its rows. Never substitute a loading frame for detail evidence.

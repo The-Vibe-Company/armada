@@ -10,17 +10,22 @@ import {
   createSqlMcpRegistry,
   createSqlVaultStore,
   createTemplateService,
+  encryptSecret,
   type LaunchTemplate,
   launchSandbox,
   PrivateSkillError,
+  ProviderError,
   type Sql,
   type TemplateRuntime,
 } from "@armada/core/server";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { AUTH_HEADER, CodexDriver, Journal, Runner } from "../../agent-runtime/src/index.ts";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { createMcpLifecycle } from "../src/mcp-lifecycle.ts";
 import { callSharedTool } from "../src/tool-api.ts";
+import { createArmadaServer } from "../src/tools.ts";
 import { database, ENCRYPTION_KEY, fakeBoat } from "./support.ts";
 
 // Primary contract owner: real migrations + service-role authorization/admission, fake physical provider only.
@@ -34,7 +39,7 @@ async function fixture() {
     },
     transaction: (work) => db.transaction((tx) => work(tx)),
   };
-  const service = createTemplateService(sql);
+  const service = createTemplateService(sql, ENCRYPTION_KEY);
   const vault = createApplicationVault(sql, undefined);
   const actor = (userId = people.owner) => ({
     userId,
@@ -297,6 +302,39 @@ for (const mode of ["before_commit", "after_commit", "both_before_commit", "both
       expect(f.boat.prompts).toHaveLength(1);
     } finally {
       injected.mockRestore();
+      await f.db.close();
+    }
+  });
+}
+
+for (const retained of [false, true]) {
+  test(`template allocation quota refusal is terminal only without retained evidence (${retained})`, async () => {
+    const f = await fixture();
+    try {
+      const t = (await f.create()).item as LaunchTemplate;
+      let calls = 0;
+      f.provider.fork = async () => {
+        calls++;
+        throw new ProviderError({
+          provider: "boat",
+          code: "rate_limited",
+          status: 429,
+          retryable: false,
+          message: "Daily starts exhausted",
+          ...(retained ? { details: { keepSource: true } } : {}),
+        });
+      };
+      const result = await f.launch(t.id);
+      expect(result).toMatchObject(
+        retained
+          ? { state: "reconciling", reason: "allocation_or_start_unknown" }
+          : { state: "failed", reason: "provider_rate_limited" },
+      );
+      expect(await f.launch(t.id)).toEqual(result);
+      expect(calls).toBe(1);
+      expect((await f.db.query("select id from sandboxes")).rows).toHaveLength(0);
+      expect((await f.db.query("select id from golden_operation_fences")).rows).toHaveLength(retained ? 1 : 0);
+    } finally {
       await f.db.close();
     }
   });
@@ -965,6 +1003,222 @@ test("template admission freezes merged defaults and explicit overrides; opt-out
       code: "invalid",
     });
     expect(f.boat.forks).toHaveLength(2);
+  } finally {
+    await f.db.close();
+  }
+});
+
+// Publication owns reference authorization; no raw secret fixture is needed at this boundary.
+test("secret references authorize delivery without persisting values and revoke later turns", async () => {
+  const f = await fixture();
+  try {
+    const canary = crypto.randomUUID() + crypto.randomUUID();
+    // Generate in memory; assert booleans so a failing assertion never prints the value.
+    const secretId = (
+      await f.db.query<{ id: string }>(
+        "insert into application_secrets(org_id,owner_id,scope,name,value_enc) values($1,$2,'personal','APP_TOKEN',$3) returning id",
+        [f.people.org, f.people.owner, await encryptSecret(canary, ENCRYPTION_KEY)],
+      )
+    ).rows[0]!.id;
+    const binding = { key: "APP_TOKEN", secretId, version: 1 };
+    const def = { ...f.definition, variables: [], secrets: [binding] };
+    // Exercise the actual remote MCP schema, not only the shared tool dispatcher.
+    const server = createArmadaServer(
+      {
+        templates: f.service,
+        caller: f.actor(),
+        data: createSqlData(f.sql)(f.actor()),
+        launchCredentials: f.runtime.stores.credentials,
+        exposedSecrets: async () => [],
+        provider: async () => f.provider,
+        now: () => new Date(),
+        sleep: async () => {},
+      },
+      "test",
+    );
+    const client = new Client({ name: "template-secret-test", version: "1" });
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    await server.connect(a);
+    await client.connect(b);
+    try {
+      const created = await client.callTool({
+        name: "template_create",
+        arguments: {
+          org: f.people.org,
+          name: "mcp-secret-template",
+          scope: "personal",
+          definition: def,
+        },
+      });
+      expect(created.isError).not.toBe(true);
+      const saved = JSON.parse((created.content as { text: string }[])[0]!.text);
+      expect(saved.revision.definition.secrets).toEqual([binding]);
+      const published = await client.callTool({
+        name: "template_publish",
+        arguments: {
+          org: f.people.org,
+          id: saved.item.id,
+          expectedRevision: 1,
+          definition: def,
+        },
+      });
+      expect(published.isError).not.toBe(true);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+    const created = await f.create(f.people.owner, "personal", def);
+    const templateId = (created.item as LaunchTemplate).id;
+    const read = await f.service.command(f.actor(), "get", { org: f.people.org, id: templateId });
+    expect((read.revision as { definition: unknown }).definition).toEqual({
+      ...def,
+      goldenBinding: null,
+      skills: [],
+    });
+    for (const user of [f.people.member, f.people.admin]) {
+      await expect(f.create(user, "personal", def)).rejects.toThrow("secret_unavailable");
+    }
+    await expect(f.create(f.people.admin, "org", def)).rejects.toThrow("secret_unavailable");
+    for (const secrets of [
+      [binding, binding],
+      [{ ...binding, key: "OPENAI_API_KEY" }],
+      ...["NEXT_PUBLIC_", "VITE_", "PUBLIC_"].map((prefix) => [{ ...binding, key: prefix + "TOKEN" }]),
+      [{ ...binding, value: "not-accepted" }],
+      [{ ...binding, version: 0 }],
+    ]) {
+      await expect(f.create(f.people.owner, "personal", { ...def, secrets })).rejects.toMatchObject({
+        code: "invalid",
+      });
+    }
+    await expect(
+      f.create(f.people.owner, "personal", {
+        ...f.definition,
+        secrets: [{ ...binding, key: "APP_REGION" }],
+      }),
+    ).rejects.toMatchObject({ code: "invalid" });
+    const launched = await f.launch(templateId);
+    expect(launched.state).toBe("succeeded");
+    expect(JSON.stringify(launched).includes(canary)).toBe(false);
+    expect((f.configured.at(-1) as { variables: Record<string, string> }).variables.APP_TOKEN === canary).toBe(true);
+    const request = (
+      await f.db.query<{ id: string; manifest: unknown }>("select id,manifest from template_launch_requests")
+    ).rows[0]!;
+    expect(JSON.stringify(request.manifest).includes(canary)).toBe(false);
+    f.configured.length = 0;
+    const lifecycle = createMcpLifecycle({
+      sql: f.sql,
+      registry: createSqlMcpRegistry(f.sql, ENCRYPTION_KEY),
+      encryptionKey: ENCRYPTION_KEY,
+      origin: "https://armada.test",
+      prepareReadableVariables: f.service.prepare,
+    });
+    await lifecycle.beforePrompt(f.provider, launched.providerSandboxId as string, {
+      userId: f.people.owner,
+      orgId: f.people.org,
+    });
+    expect((f.configured.at(-1) as { variables: Record<string, string> }).variables.APP_TOKEN === canary).toBe(true);
+    const { configureReadableVariables: _configure, ...withoutDelivery } = f.provider;
+    f.runtime.provider = async () => withoutDelivery;
+    const unsupported = await f.launch(templateId, "unsupported-provider");
+    expect(unsupported.reason).toBe("secret_delivery_unavailable");
+    await expect(
+      f.service.prepare(
+        withoutDelivery,
+        launched.providerSandboxId as string,
+        { userId: f.people.owner, orgId: f.people.org },
+        request.id,
+      ),
+    ).rejects.toThrow("secret_delivery_unavailable");
+    await f.db.query("update application_secrets set version=2 where id=$1", [secretId]);
+    await expect(f.create(f.people.owner, "personal", def)).rejects.toThrow("secret_version_changed");
+    await expect(
+      f.service.prepare(
+        f.provider,
+        launched.providerSandboxId as string,
+        { userId: f.people.owner, orgId: f.people.org },
+        request.id,
+      ),
+    ).rejects.toThrow("secret_version_changed");
+    await f.db.query("update application_secrets set scope='org' where id=$1", [secretId]);
+    const updated = { ...def, secrets: [{ ...binding, version: 2 }] };
+    await f.create(f.people.admin, "org", updated);
+    const published = await f.service.command(f.actor(), "publish", {
+      org: f.people.org,
+      id: templateId,
+      expectedRevision: 1,
+      definition: updated,
+    });
+    expect((published.item as LaunchTemplate).currentRevision).toBe(2);
+    const old = await f.service.command(f.actor(), "get", { org: f.people.org, id: templateId, revision: 1 });
+    expect((old.revision as { definition: { secrets: unknown } }).definition.secrets).toEqual([binding]);
+    for (const change of [
+      "expires_at=now()-interval '1 minute'",
+      "expires_at=null,status='revoked',value_enc=null",
+      "status='deleted'",
+    ]) {
+      await f.db.query(`update application_secrets set ${change} where id=$1`, [secretId]);
+      await expect(f.create(f.people.owner, "personal", updated)).rejects.toThrow("secret_unavailable");
+    }
+  } finally {
+    await f.db.close();
+  }
+});
+
+// Owns combined transport admission: neither per-list validation nor provider stubs enforce this contract.
+test("template publication caps readable and secret bindings at 64 combined entries", async () => {
+  const f = await fixture();
+  try {
+    const secretId = (
+      await f.db.query<{ id: string }>(
+        "insert into application_secrets(org_id,owner_id,scope,name,value_enc) values($1,$2,'personal','APP_TOKEN',$3) returning id",
+        [f.people.org, f.people.owner, await encryptSecret(crypto.randomUUID(), ENCRYPTION_KEY)],
+      )
+    ).rows[0]!.id;
+    const variables = Array.from({ length: 64 }, (_, i) => ({
+      key: `CONFIG_${i}`,
+      variableId: f.variableId,
+      version: 1,
+    }));
+    const secrets = [{ key: "APP_TOKEN", secretId, version: 1 }];
+    await expect(f.create(f.people.owner, "personal", { ...f.definition, variables, secrets })).rejects.toThrow(
+      "environment_limits_exceeded",
+    );
+    const valid = await f.create(f.people.owner, "personal", {
+      ...f.definition,
+      variables: variables.slice(1),
+      secrets,
+    });
+    expect((valid.item as LaunchTemplate).currentRevision).toBe(1);
+  } finally {
+    await f.db.close();
+  }
+});
+
+test("template admission validates decrypted combined byte budget before any fork", async () => {
+  const f = await fixture();
+  try {
+    // Generated in memory, never included in assertion output, fixtures or receipts.
+    const canary = crypto.randomUUID().repeat(228).slice(0, 8192);
+    const secretId = (
+      await f.db.query<{ id: string }>(
+        "insert into application_secrets(org_id,owner_id,scope,name,value_enc) values($1,$2,'personal','APP_TOKEN',$3) returning id",
+        [f.people.org, f.people.owner, await encryptSecret(canary, ENCRYPTION_KEY)],
+      )
+    ).rows[0]!.id;
+    const secrets = Array.from({ length: 8 }, (_, i) => ({ key: `APP_TOKEN_${i}`, secretId, version: 1 }));
+    const oversized = (await f.create(f.people.owner, "personal", { ...f.definition, secrets })).item as LaunchTemplate;
+    const refused = await f.launch(oversized.id, "over-budget");
+    expect(refused.reason).toBe("environment_limits_exceeded");
+    expect(refused.state).toBe("failed");
+    expect(f.boat.forks).toHaveLength(0);
+    expect(f.configured).toHaveLength(0);
+    expect(JSON.stringify(refused).includes(canary)).toBe(false);
+    const exact = (await f.create(f.people.owner, "personal", { ...f.definition, variables: [], secrets }))
+      .item as LaunchTemplate;
+    const accepted = await f.launch(exact.id, "exact-budget");
+    expect(accepted.state).toBe("succeeded");
+    expect(f.boat.forks).toHaveLength(1);
+    expect(JSON.stringify(accepted).includes(canary)).toBe(false);
   } finally {
     await f.db.close();
   }

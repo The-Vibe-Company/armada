@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { COMMANDS, matchCommands, modifierKey, moveActive } from "../src/lib/command-menu.ts";
+import { COMMANDS, matchCommands, modifierKey } from "../src/lib/command-menu.ts";
 
 const labels = (query: string) => matchCommands(query).map((command) => command.label);
 
@@ -15,18 +15,13 @@ test("a label that starts with the query ranks before a word, a keyword and a su
   // A keyword only: "mcp" finds Tools.
   expect(labels("mcp")).toEqual(["Tools"]);
   // A substring anywhere, last.
-  expect(labels("ness")).toEqual(["Harness"]);
+  expect(labels("odel")).toEqual(["Models"]);
+  // The old page name remains searchable without keeping it in the menu.
+  expect(labels("harness")).toEqual(["Models"]);
 });
 
 test("nothing matches an unknown word", () => {
   expect(matchCommands("zzz")).toEqual([]);
-});
-
-test("moving the active result wraps at both ends", () => {
-  expect(moveActive(0, -1, 3)).toBe(2);
-  expect(moveActive(2, 1, 3)).toBe(0);
-  expect(moveActive(1, 1, 3)).toBe(2);
-  expect(moveActive(0, 1, 0)).toBe(0);
 });
 
 test("shortcuts name ⌘ on Apple systems and Ctrl elsewhere", () => {

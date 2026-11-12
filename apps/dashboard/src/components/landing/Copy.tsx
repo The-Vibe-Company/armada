@@ -2,7 +2,8 @@
 
 // A command to copy (THE-887): the whole row is the button, and its icon
 // cross-fades to a check (better-ui: scale 0.25 to 1, blur 4px to 0).
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useId, useRef, useState } from "react";
+import { Button } from "@/components/ui/button";
 
 export function CopyCommand({
   command,
@@ -17,25 +18,33 @@ export function CopyCommand({
   words?: boolean;
 }) {
   const [copied, setCopied] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const failureId = useId();
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => void (timer.current && clearTimeout(timer.current)), []);
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(command);
     } catch {
-      // No clipboard (an insecure page, a refusal): the command stays on screen to select.
+      setCopied(false);
+      setFailed(true);
+      if (timer.current) clearTimeout(timer.current);
       return;
     }
+    setFailed(false);
     setCopied(true);
     if (timer.current) clearTimeout(timer.current);
     timer.current = setTimeout(() => setCopied(false), 1600);
   };
   return (
-    <button
+    <Button
+      variant="ghost"
       type="button"
       className={`lp-copy is-${size}`}
       onClick={copy}
       data-copied={copied || undefined}
+      data-copy-failed={failed || undefined}
+      aria-describedby={failed ? failureId : undefined}
       aria-label={copied ? `Copied: ${command}` : `Copy: ${command}`}
     >
       <span className="lp-copy-text">
@@ -54,6 +63,11 @@ export function CopyCommand({
             : command}
         </span>
         {note && <span className="lp-copy-note">{note}</span>}
+        {failed && (
+          <span id={failureId} className="lp-copy-error" role="status">
+            Could not copy. Select the command to copy it manually, or try again.
+          </span>
+        )}
       </span>
       <span className="lp-copy-icon" aria-hidden>
         <svg viewBox="0 0 16 16" className="is-copy" aria-hidden>
@@ -76,6 +90,6 @@ export function CopyCommand({
           />
         </svg>
       </span>
-    </button>
+    </Button>
   );
 }
