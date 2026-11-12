@@ -249,80 +249,90 @@ const INSTALLER_HARNESS = `import os,sys,json,stat,io,tempfile,fcntl,time
 from types import SimpleNamespace
 from unittest.mock import patch
 from contextlib import ExitStack
-p=json.load(sys.stdin)
-class InstallationStarted(BaseException): pass
-seen=[];mutations=[];result={};err=io.StringIO();clock=[0.0];attempts=[0];writes=[0]
-def info(mode,uid=0):
-    return SimpleNamespace(st_mode=mode,st_uid=uid,st_gid=uid,st_nlink=1,st_size=1024)
-def lstat(path):
-    seen.append(path)
-    if path==p.get('target'):
-        if p['violation']=='symlink': return info(stat.S_IFLNK|0o777)
-        if path=='/usr/lib': return info(stat.S_IFDIR|0o755,2000)
-        return info(stat.S_IFREG|(0o600 if path.endswith('token.json') else 0o755),2000)
-    # Boat intentionally gives the sandbox user ownership of /usr/local.
-    if path in ['/usr/local','/usr/local/bin','/usr/local/lib']: return info(stat.S_IFDIR|0o755,1000)
-    if path=='/home/user': return info(stat.S_IFDIR|0o755,1000)
-    if path=='/usr/bin/git': return info(stat.S_IFREG|0o755)
-    if path=='/run/armada-github/token.json': return info(stat.S_IFREG|0o600,1000)
-    if path in ['/run','/usr','/usr/bin','/usr/lib','/run/armada-github','/home']:
-        return info(stat.S_IFDIR|0o755)
-    raise FileNotFoundError()
-def begin(*args,**kwargs):
-    writes[0]+=1
-    if p.get('fail_write'): raise OSError('synthetic-secret-detail')
-    raise InstallationStarted()
-def flock(*args):
-    attempts[0]+=1
-    busy=p.get('busy',0)
-    if busy=='forever' or attempts[0]<=busy: raise BlockingIOError()
-def sleep(duration): clock[0]+=duration
-def mutation(*args,**kwargs): mutations.append(args)
-payload=json.dumps({'token':'synthetic-install-token','expiresAt':200000}).encode()
-with ExitStack() as stack:
-    for target,value in [
-      ('os.getuid',lambda: 0),('os.lstat',lstat),('os.open',lambda *args: 99),
-      ('os.chmod',lambda *args: None),('fcntl.flock',flock),
-      ('time.monotonic',lambda: clock[0]),('time.sleep',sleep),
-      ('tempfile.mkstemp',begin),('os.rename',mutation),('os.replace',mutation),
-      ('time.time',lambda: 100),('sys.stderr',err),('sys.stdin',io.TextIOWrapper(io.BytesIO(payload)))]:
-        stack.enter_context(patch(target,value))
-    try: exec(compile(p['script'],'installer','exec'),{'__name__':'__main__'})
-    except InstallationStarted: result['action']='install'
-    except SystemExit as error: result.update(action='exit',code=error.code)
-result.update(stderr=err.getvalue(),seen=seen,mutations=mutations,writes=writes[0],attempts=attempts[0],elapsed=clock[0])
-print(json.dumps(result))
+def run_case(p):
+    class InstallationStarted(BaseException): pass
+    seen=[];mutations=[];result={};err=io.StringIO();clock=[0.0];attempts=[0];writes=[0]
+    def info(mode,uid=0):
+        return SimpleNamespace(st_mode=mode,st_uid=uid,st_gid=uid,st_nlink=1,st_size=1024)
+    def lstat(path):
+        seen.append(path)
+        if path==p.get('target'):
+            if p['violation']=='symlink': return info(stat.S_IFLNK|0o777)
+            if path=='/usr/lib': return info(stat.S_IFDIR|0o755,2000)
+            return info(stat.S_IFREG|(0o600 if path.endswith('token.json') else 0o755),2000)
+        # Boat intentionally gives the sandbox user ownership of /usr/local.
+        if path in ['/usr/local','/usr/local/bin','/usr/local/lib']: return info(stat.S_IFDIR|0o755,1000)
+        if path=='/home/user': return info(stat.S_IFDIR|0o755,1000)
+        if path=='/usr/bin/git': return info(stat.S_IFREG|0o755)
+        if path=='/run/armada-github/token.json': return info(stat.S_IFREG|0o600,1000)
+        if path in ['/run','/usr','/usr/bin','/usr/lib','/run/armada-github','/home']:
+            return info(stat.S_IFDIR|0o755)
+        raise FileNotFoundError()
+    def begin(*args,**kwargs):
+        writes[0]+=1
+        if p.get('fail_write'): raise OSError('synthetic-secret-detail')
+        raise InstallationStarted()
+    def flock(*args):
+        attempts[0]+=1
+        busy=p.get('busy',0)
+        if busy=='forever' or attempts[0]<=busy: raise BlockingIOError()
+    def sleep(duration): clock[0]+=duration
+    def mutation(*args,**kwargs): mutations.append(args)
+    payload=json.dumps({'token':'synthetic-install-token','expiresAt':200000}).encode()
+    with ExitStack() as stack:
+        for target,value in [
+          ('os.getuid',lambda: 0),('os.lstat',lstat),('os.open',lambda *args: 99),
+          ('os.chmod',lambda *args: None),('fcntl.flock',flock),
+          ('time.monotonic',lambda: clock[0]),('time.sleep',sleep),
+          ('tempfile.mkstemp',begin),('os.rename',mutation),('os.replace',mutation),
+          ('time.time',lambda: 100),('sys.stderr',err),('sys.stdin',io.TextIOWrapper(io.BytesIO(payload)))]:
+            stack.enter_context(patch(target,value))
+        try: exec(compile(p['script'],'installer','exec'),{'__name__':'__main__'})
+        except InstallationStarted: result['action']='install'
+        except SystemExit as error: result.update(action='exit',code=error.code)
+    result.update(stderr=err.getvalue(),seen=seen,mutations=mutations,writes=writes[0],attempts=attempts[0],elapsed=clock[0])
+    return result
+print(json.dumps([run_case(p) for p in json.load(sys.stdin)]))
 `;
 
 test("installer refuses symlink and non-root-owned code paths before replacing any executable", () => {
-  // Positive control uses Boat ownership (/usr/local is user-owned), reaching the first atomic write.
-  expect(python(INSTALLER_HARNESS, { script: GITHUB_TOKEN_INSTALLER }).action).toBe("install");
-  for (const target of [
+  const cases = [
     "/usr/lib",
     "/usr/bin/git",
     "/usr/bin/git.armada-original",
     "/usr/lib/armada-github-legacy.py",
     "/run/armada-github/token.json",
-  ]) {
-    for (const violation of ["symlink", "ownership"]) {
-      const result = python(INSTALLER_HARNESS, { script: GITHUB_TOKEN_INSTALLER, target, violation });
-      expect(result.seen).toContain(target);
-      expect(result.action).toBe("exit");
-      expect(result.code).toBe(1);
-      expect(result.mutations).toEqual([]);
-    }
+  ].flatMap((target) => ["symlink", "ownership"].map((violation) => ({ target, violation })));
+  const results = python<PythonResult[]>(INSTALLER_HARNESS, [
+    { script: GITHUB_TOKEN_INSTALLER },
+    ...cases.map((input) => ({ script: GITHUB_TOKEN_INSTALLER, ...input })),
+  ]);
+  // Positive control uses Boat ownership (/usr/local is user-owned), reaching the first atomic write.
+  const positive = results[0];
+  if (!positive) throw new Error("Missing Python installer positive control");
+  expect(positive.action).toBe("install");
+  for (const [index, { target }] of cases.entries()) {
+    const result = results[index + 1];
+    if (!result) throw new Error("Missing Python installer matrix result");
+    expect(result.seen).toContain(target);
+    expect(result.action).toBe("exit");
+    expect(result.code).toBe(1);
+    expect(result.mutations).toEqual([]);
   }
 });
 
 test("installer waits through transient lock contention but fails at its deadline before credential or executable writes", () => {
-  const recovered = python(INSTALLER_HARNESS, { script: GITHUB_TOKEN_INSTALLER, busy: 2 });
+  const [recovered, timedOut] = python<PythonResult[]>(INSTALLER_HARNESS, [
+    { script: GITHUB_TOKEN_INSTALLER, busy: 2 },
+    { script: GITHUB_TOKEN_INSTALLER, busy: "forever" },
+  ]);
+  if (!recovered || !timedOut) throw new Error("Missing Python lock matrix result");
   expect(recovered.action).toBe("install");
   expect(recovered.attempts).toBe(3);
   expect(recovered.elapsed).toBeGreaterThan(0);
   expect(recovered.elapsed).toBeLessThanOrEqual(5);
   expect(recovered.writes).toBe(1);
 
-  const timedOut = python(INSTALLER_HARNESS, { script: GITHUB_TOKEN_INSTALLER, busy: "forever" });
   expect(timedOut.action).toBe("exit");
   expect(timedOut.code).toBe(1);
   expect(timedOut.attempts).toBeGreaterThan(1);
@@ -334,11 +344,17 @@ test("installer waits through transient lock contention but fails at its deadlin
 
 // The executable artifact owns the diagnostic contract: raw exception text must never escape.
 test("installer reports the failed directory check or atomic install as a closed phase", () => {
-  for (const [input, phase] of [
+  const cases = [
     [{ target: "/usr/lib", violation: "ownership" }, "directories"],
     [{ fail_write: true }, "install"],
-  ] as const) {
-    const result = python(INSTALLER_HARNESS, { script: GITHUB_TOKEN_INSTALLER, ...input });
+  ] as const;
+  const results = python<PythonResult[]>(
+    INSTALLER_HARNESS,
+    cases.map(([input]) => ({ script: GITHUB_TOKEN_INSTALLER, ...input })),
+  );
+  for (const [index, [, phase]] of cases.entries()) {
+    const result = results[index];
+    if (!result) throw new Error("Missing Python installer phase result");
     expect(result.code).toBe(1);
     expect(result.stderr).toBe(`ARMADA_GITHUB_FAILURE ${phase}\n`);
   }
@@ -392,19 +408,27 @@ test("bootstrap relays an exact installer phase and maps all other child stderr 
   const harness = `import sys,json,io,os,subprocess
 from unittest.mock import patch
 from types import SimpleNamespace
-p=json.load(sys.stdin);err=io.StringIO();code=None
-with patch.dict(os.environ,{'ARMADA_GIT_TOKEN':'synthetic'},clear=True), patch('os.getuid',lambda:1000), patch('subprocess.run',lambda *a,**k:SimpleNamespace(returncode=1,stderr=p['stderr'].encode())), patch('sys.stderr',err):
-    try: exec(compile(p['script'],'bootstrap','exec'),{})
-    except SystemExit as e: code=e.code
-print(json.dumps({'code':code,'stderr':err.getvalue()}))
+def run_case(p):
+    err=io.StringIO();code=None
+    with patch.dict(os.environ,{'ARMADA_GIT_TOKEN':'synthetic'},clear=True), patch('os.getuid',lambda:1000), patch('subprocess.run',lambda *a,**k:SimpleNamespace(returncode=1,stderr=p['stderr'].encode())), patch('sys.stderr',err):
+        try: exec(compile(p['script'],'bootstrap','exec'),{})
+        except SystemExit as e: code=e.code
+    return {'code':code,'stderr':err.getvalue()}
+print(json.dumps([run_case(p) for p in json.load(sys.stdin)]))
 `;
-  for (const [stderr, phase] of [
+  const cases = [
     ["ARMADA_GITHUB_FAILURE directories\n", "directories"],
     ["ARMADA_GITHUB_FAILURE synthetic-secret\n", "sudo"],
     ["sudo: synthetic-secret\n", "sudo"],
     ["ARMADA_GITHUB_FAILURE install\nextra-secret\n", "sudo"],
-  ]) {
-    const result = python(harness, { script, stderr });
+  ];
+  const results = python<Pick<PythonResult, "code" | "stderr">[]>(
+    harness,
+    cases.map(([stderr]) => ({ script, stderr })),
+  );
+  for (const [index, [, phase]] of cases.entries()) {
+    const result = results[index];
+    if (!result) throw new Error("Missing Python bootstrap phase result");
     expect(result.code).toBe(1);
     expect(result.stderr).toBe(`ARMADA_GITHUB_FAILURE ${phase}\n`);
   }
