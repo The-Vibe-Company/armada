@@ -16,7 +16,7 @@ import {
   UsersIcon,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { type ReactNode, useActionState, useCallback, useEffect, useId, useRef, useState } from "react";
+import { type ReactNode, useActionState, useCallback, useEffect, useId, useRef, useState, useTransition } from "react";
 import {
   addAccount,
   makeDefaultAccount,
@@ -344,7 +344,7 @@ export function AccountRow({
   const [result, setResult] = useState<ActionResult | null>(null);
   const [holder, setHolder] = useState<string | null>(null);
   const [releasable, setReleasable] = useState(false);
-  const [checkingHolder, setCheckingHolder] = useState(false);
+  const [checkingHolder, startHolderTransition] = useTransition();
   const [dialog, setDialog] = useState<RowDialog>(null);
   const menuTrigger = useRef<HTMLButtonElement>(null);
   const rowAction = useRef<HTMLButtonElement>(null);
@@ -406,9 +406,8 @@ export function AccountRow({
                     variant="outline"
                     size="sm"
                     disabled={checkingHolder}
-                    onClick={async () => {
-                      setCheckingHolder(true);
-                      try {
+                    onClick={() =>
+                      startHolderTransition(async () => {
                         const data = new FormData();
                         data.set("scope", account.scope);
                         data.set("org", orgId);
@@ -427,10 +426,8 @@ export function AccountRow({
                                   : "No active subscription holder.",
                               },
                         );
-                      } finally {
-                        setCheckingHolder(false);
-                      }
-                    }}
+                      })
+                    }
                   >
                     Find subscription holder
                   </Button>
@@ -443,9 +440,8 @@ export function AccountRow({
                         variant="outline"
                         size="sm"
                         disabled={checkingHolder || !releasable}
-                        onClick={async () => {
-                          setCheckingHolder(true);
-                          try {
+                        onClick={() =>
+                          startHolderTransition(async () => {
                             const data = new FormData();
                             data.set("scope", account.scope);
                             data.set("org", orgId);
@@ -458,10 +454,8 @@ export function AccountRow({
                               setHolder(null);
                               setReleasable(false);
                             }
-                          } finally {
-                            setCheckingHolder(false);
-                          }
-                        }}
+                          })
+                        }
                       >
                         Release failed launch
                       </Button>
