@@ -1,5 +1,5 @@
 import { afterAll, beforeAll } from "bun:test";
-import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
+import { openMigratedDatabase, resetMigratedDatabaseRows } from "../../../scripts/test-support/migrated-database.ts";
 import { seedDatabase } from "./support.ts";
 
 /**
@@ -21,7 +21,7 @@ export function rowOnlyDatabase() {
     await db?.close();
   });
   return async () => {
-    await db.exec(reset);
+    await resetMigratedDatabaseRows(db, reset);
     return seedDatabase(db);
   };
 }

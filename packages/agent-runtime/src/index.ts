@@ -1,3 +1,4 @@
+export { AcpDriver } from "./acp.ts";
 export { ClaudeDriver } from "./claude.ts";
 export { CodexDriver } from "./codex.ts";
 export { HarnessError, type HarnessErrorCode } from "./errors.ts";

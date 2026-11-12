@@ -46,6 +46,38 @@ and HTTP result sizes are bounded at 1 MiB and 2 MiB respectively; command
 admission includes HTTP/WSS envelope bytes so a queued head cannot exceed the
 client frame ceiling.
 
+## Trusted request/reply caller
+
+The server's `call(ownerId, request, {signal?, timeoutMs?})` now admits one
+caller-supplied stable `requestId` and waits for its durable reply (default/max
+120 seconds). It returns the stored `{epoch, requestId, status, body}`, not a
+claim that a harness turn finished. A successful prompt reply is only admission;
+turn completion still comes from journal events/status.
+
+Each read rechecks owner/membership/lifecycle authority and pins the epoch from
+admission. A reply completed just before replacement is not a reply from the new
+runtime, even though historical `result` readback intentionally remains possible.
+No SQL lock is held during the 250ms waits. HTTPS and WSS use the same mailbox.
+
+Abort/deadline ends only the caller's wait, never the durable work. A deadline
+throws `runtime_command_pending`; callers must preserve the request identity and
+reconcile, never mint a new ID to retry uncertain side effects. Calling again with
+the identical request in the same epoch can return the prior reply without
+re-execution. Old-epoch identity reuse still conflicts. Pre-aborted calls do not
+enqueue. No public call/credential API, provider routing or Boat opt-in is added.
+
+Fast coordinator check for this slice (zero Boat starts, no deploy prerequisites):
+
+```sh
+bun test packages/mcp-server/test/runtime-commands.test.ts
+```
+
+Expected: real Runner/dial-out round trips through `call`, durable reconciliation
+after timeout/abort, and rejection after stop/replacement without fresh IDs.
+Tests use migrated disposable PGlite and an injected clock, not wall-clock waits.
+No new migration. Launch routing/readiness and the one-launch milestone check
+remain subsequent integration work; Modal is unchanged.
+
 ## Coordinator staging check
 
 1. Recheck migration ordering on current main before merge, then apply
