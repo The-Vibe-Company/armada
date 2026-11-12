@@ -60,6 +60,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { NativeSelect } from "@/components/ui/native-select";
 import { RadioGroup } from "@/components/ui/radio-group";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
@@ -71,7 +72,6 @@ import {
   type AuthCapabilities,
   accountProblem,
   accountState,
-  addChoices,
   creditText,
   formatDuration,
   formatMoney,
@@ -80,7 +80,6 @@ import {
   type LaunchDefault,
   MAX_ACCOUNT_NAME,
   type ModelAccount,
-  otherBilling,
   relativeTime,
   terminalLogin,
   type UsageView,
@@ -757,7 +756,10 @@ function ReplaceDialog({
   const id = useId();
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg" onCloseAutoFocus={onCloseAutoFocus}>
+      <DialogContent
+        className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-lg"
+        onCloseAutoFocus={onCloseAutoFocus}
+      >
         <DialogHeader>
           <DialogTitle>
             {recoverySandboxId ? (
@@ -773,6 +775,12 @@ function ReplaceDialog({
           <DialogDescription asChild>
             <div className="space-y-2">
               <p>{info.hint}</p>
+              {account.kind === "openai" && (
+                <p>
+                  Choose the destination again: existing endpoint details are not returned. To keep a custom endpoint,
+                  re-enter its URL and key. Choosing OpenAI default changes routing to OpenAI.
+                </p>
+              )}
               <p data-replace-effect>
                 {recoverySandboxId ? (
                   <>
@@ -796,7 +804,11 @@ function ReplaceDialog({
           {recoverySandboxId && <input type="hidden" name="sandboxId" value={recoverySandboxId} />}
           <input type="hidden" name="kind" value={account.kind} />
           <input type="hidden" name="name" value={account.name} />
-          <SecretField idPrefix={id} kind={account.kind} />
+          {account.kind === "openai" ? (
+            <CodexConnectionFields idPrefix={id} requireChoice />
+          ) : (
+            <SecretField idPrefix={id} kind={account.kind} />
+          )}
           {state && !state.ok && <ResultLine result={state} />}
           <SubmitButton>{recoverySandboxId ? "Reconnect and release" : <>Save {info.valueLabel}</>}</SubmitButton>
         </form>
@@ -884,20 +896,43 @@ function SecretField({ idPrefix, kind }: { idPrefix: string; kind: AccountKind }
 }
 
 /** Non-secret endpoint fields are opt-in; the key remains an uncontrolled password input. */
-function CodexConnectionFields({ idPrefix }: { idPrefix: string }) {
+function CodexConnectionFields({ idPrefix, requireChoice = false }: { idPrefix: string; requireChoice?: boolean }) {
   const [custom, setCustom] = useState(false);
+  const [chosen, setChosen] = useState(!requireChoice);
   return (
     <div className="space-y-4">
-      <Label htmlFor={`${idPrefix}-custom`} className="flex items-center gap-2 text-sm font-normal">
-        <Checkbox
-          id={`${idPrefix}-custom`}
-          name="customEndpoint"
-          value="on"
-          checked={custom}
-          onCheckedChange={(value) => setCustom(value === true)}
-        />
-        Use a custom endpoint (Modal)
-      </Label>
+      {requireChoice ? (
+        <div className="space-y-2">
+          <Label htmlFor={`${idPrefix}-mode`}>Connection type</Label>
+          <NativeSelect
+            id={`${idPrefix}-mode`}
+            name="connectionMode"
+            required
+            value={chosen ? (custom ? "custom" : "openai") : ""}
+            onChange={(event) => {
+              setChosen(Boolean(event.target.value));
+              setCustom(event.target.value === "custom");
+            }}
+          >
+            <option value="" disabled>
+              Choose a destination
+            </option>
+            <option value="openai">OpenAI default endpoint</option>
+            <option value="custom">Custom endpoint (Modal)</option>
+          </NativeSelect>
+        </div>
+      ) : (
+        <Label htmlFor={`${idPrefix}-custom`} className="flex items-center gap-2 text-sm font-normal">
+          <Checkbox
+            id={`${idPrefix}-custom`}
+            name="customEndpoint"
+            value="on"
+            checked={custom}
+            onCheckedChange={(value) => setCustom(value === true)}
+          />
+          Use a custom endpoint (Modal)
+        </Label>
+      )}
       {custom && (
         <fieldset className="min-w-0 space-y-3 rounded-lg border bg-muted/30 p-4">
           <legend className="px-1 text-sm font-medium">Codex connection</legend>
@@ -930,25 +965,21 @@ function CodexConnectionFields({ idPrefix }: { idPrefix: string }) {
           </div>
         </fieldset>
       )}
-      <SecretField idPrefix={idPrefix} kind="openai" />
+      {chosen && <SecretField key={custom ? "custom" : "openai"} idPrefix={idPrefix} kind="openai" />}
     </div>
   );
 }
 
 /* ---------------------------------------------------------------- add an account */
 
-/**
- * Adds a subscription (#805): the dialog leads with the subscription sign-in of each harness, and an API key is the
- * secondary way in ("Use an API key instead"), for the same harness. Until the server offers a native sign-in, the
- * account is added from a value the person produces on their own machine and pastes here.
- */
+/** Adds subscriptions and API keys in one short form, with equal-weight connection choices. */
 export function AddAccountDialog({
   orgId,
   orgName,
   isAdmin,
   capabilities,
   initialKind = "claude_oauth",
-  triggerLabel = "Add a subscription",
+  triggerLabel = "Add a model account",
   triggerVariant = "default",
 }: {
   orgId: string;
@@ -1016,7 +1047,7 @@ export function AddAccountDialog({
         </DialogTrigger>
         <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-xl">
           <DialogHeader>
-            <DialogTitle>{subscription ? "Add a subscription" : "Add an API key"}</DialogTitle>
+            <DialogTitle>Add a model account</DialogTitle>
             <DialogDescription>
               {subscription
                 ? "Sign in with the plan you already pay for. Add as many as you have; each launch names the one it bills."
@@ -1028,33 +1059,23 @@ export function AddAccountDialog({
             <input type="hidden" name="kind" value={kind} />
             <input type="hidden" name="scope" value={scope} />
             <fieldset className="space-y-2">
-              <legend className="text-sm font-medium">{subscription ? "Subscription" : "API key"}</legend>
+              <legend className="text-sm font-medium">Connection</legend>
               <RadioGroup
                 value={kind}
                 onValueChange={(value) => setKind(value as AccountKind)}
-                aria-label={subscription ? "Subscription" : "API key"}
+                aria-label="Connection"
                 className="sm:grid-cols-2"
               >
-                {addChoices(info.billing).map((value) => (
+                {(["claude_oauth", "codex_auth", "anthropic", "openai"] as const).map((value) => (
                   <ChoiceCard
                     key={value}
                     value={value}
-                    icon={subscription ? <StarIcon /> : <KeyRoundIcon />}
+                    icon={KIND_INFO[value].billing === "subscription" ? <StarIcon /> : <KeyRoundIcon />}
                     title={KIND_INFO[value].label}
-                    hint={`${KIND_INFO[value].harnessLabel}${subscription ? "" : ", billed per token"}`}
+                    hint={`${KIND_INFO[value].harnessLabel}${KIND_INFO[value].billing === "subscription" ? "" : ", billed per token"}`}
                   />
                 ))}
               </RadioGroup>
-              <Button
-                type="button"
-                variant="link"
-                size="sm"
-                className="h-auto px-0 text-muted-foreground"
-                data-billing-switch
-                onClick={() => setKind(otherBilling(kind))}
-              >
-                {subscription ? "Use an API key instead" : "Use a subscription instead"}
-              </Button>
             </fieldset>
 
             {isAdmin && (
@@ -1082,7 +1103,7 @@ export function AddAccountDialog({
                 required
                 maxLength={MAX_ACCOUNT_NAME}
                 autoComplete="off"
-                placeholder={subscription ? "Work, Personal…" : "Team key"}
+                placeholder="Choose a name"
               />
             </div>
 
