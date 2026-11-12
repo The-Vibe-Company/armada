@@ -1,4 +1,5 @@
 import {
+  CLAUDE_ENDPOINT_ENV,
   CODEX_ENDPOINT_ENV,
   type CredentialKind,
   type CredentialReader,
@@ -184,7 +185,7 @@ export function launchCredentials(
         harness,
         credentialKind: resolved.sources[0]?.kind ?? null,
         ...(credentials.binding ?? {}),
-        customEndpoint: Boolean(credentials.env[CODEX_ENDPOINT_ENV]),
+        customEndpoint: Boolean(credentials.env[CODEX_ENDPOINT_ENV] || credentials.env[CLAUDE_ENDPOINT_ENV]),
       });
       return credentials;
     },
@@ -209,8 +210,8 @@ export async function exposedSecrets(
       if (!SECRET_KINDS.includes(row.kind)) continue;
       const value = await decryptSecret(new Uint8Array(row.valueEnc), encryptionKey);
       values.push(value, ...jsonLeaves(value));
-      if (row.kind === "openai" && value.startsWith("{")) {
-        const connection = JSON.parse(parseCredentialValue("openai", value));
+      if ((row.kind === "openai" || row.kind === "anthropic") && value.startsWith("{")) {
+        const connection = JSON.parse(parseCredentialValue(row.kind, value));
         values.push(connection.apiKey);
       }
     }

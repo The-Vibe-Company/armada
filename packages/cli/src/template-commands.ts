@@ -12,7 +12,7 @@ const HELP = `Launch templates (readable variables and secret references):
   armada template get NAME|ID [--revision N] [--org NAME|UUID] [--json]
   armada template publish NAME|ID --expected-revision N --file definition.json [--org NAME|UUID] [--json]
   armada template delete NAME|ID --expected-revision N [--org NAME|UUID] [--json]
-  armada template launch NAME|ID --request-key KEY [--revision N] [--prompt TEXT] [--ttl 30m] [--size SIZE] [--repo REPO] [--org NAME|UUID] [--json]
+  armada template launch NAME|ID --request-key KEY [--revision N] [--prompt TEXT] [--ttl 30m] [--size SIZE] [--repo REPO] [--model-account UUID --model-account-version N] [--org NAME|UUID] [--json]
 
 Create/publish accept either a JSON definition file (the definition object, not an API envelope)
 or --golden UUID --provider boat|modal --agent claude|codex, optionally --model ID,
@@ -25,8 +25,7 @@ Names must be exact and unambiguous; use an ID if names collide across scopes.
 Launch uses a required request key: retry the SAME key and body after an unknown outcome.
 For name-based launches, the resolved template ID is printed before submission; use that ID
 for retries so a later rename or deletion cannot prevent recovery.
-Never invent a new key while the original outcome is unknown. Only prompt, TTL, size and
-repository can be overridden. No local environment expansion is supported. Secret references deliver environment values to the selected native harness.
+Never invent a new key while the original outcome is unknown. Only prompt, TTL, size, repository and an unpinned model account can be overridden. No local environment expansion is supported. Secret references deliver environment values to the selected native harness.
 Readable values may appear in launch manifests; they are not secrets.
 `;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -69,7 +68,9 @@ export async function templateCommand(argv: readonly string[], io: VaultIo): Pro
     ...(action === "create" ? ["--scope"] : []),
     ...(["get", "launch"].includes(action ?? "") ? ["--revision"] : []),
     ...(["publish", "delete"].includes(action ?? "") ? ["--expected-revision"] : []),
-    ...(action === "launch" ? ["--request-key", "--prompt", "--ttl", "--size", "--repo"] : []),
+    ...(action === "launch"
+      ? ["--request-key", "--prompt", "--ttl", "--size", "--repo", "--model-account", "--model-account-version"]
+      : []),
   ]);
   for (const key of args.options.keys()) {
     if (!allowed.has(key)) throw usage();
@@ -192,6 +193,13 @@ export async function templateCommand(argv: readonly string[], io: VaultIo): Pro
     if (!key || !/^[A-Za-z0-9._:-]{1,128}$/.test(key))
       throw usage("Launch requires --request-key (1–128 ASCII letters, digits, dots, underscores, colons or hyphens).");
     body.requestKey = key;
+    const account = single(args, "--model-account"),
+      accountVersion = single(args, "--model-account-version");
+    if (account !== undefined || accountVersion !== undefined) {
+      if (!account || !UUID.test(account))
+        throw usage("A model account requires its UUID and --model-account-version N.");
+      body.modelAccount = { id: account, version: positive(accountVersion) };
+    }
     const prompt = single(args, "--prompt"),
       ttl = single(args, "--ttl"),
       size = single(args, "--size"),
@@ -246,7 +254,7 @@ export async function templateCommand(argv: readonly string[], io: VaultIo): Pro
     io.auth.out(items.length ? `${items.map(format).join("\n")}\n` : "No templates.\n");
   } else io.auth.out(`${format(result.item as LaunchTemplate)}\n`);
   if (action === "launch" && result.state !== undefined && result.state !== "succeeded") {
-    const reason = templateRefusalHelp(result.reason);
+    const reason = typeof result.message === "string" ? result.message : templateRefusalHelp(result.reason);
     io.auth.err(
       result.state === "failed"
         ? `Template launch refused; no sandbox started. ${reason}\n`

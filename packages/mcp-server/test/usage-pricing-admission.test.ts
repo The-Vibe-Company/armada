@@ -132,6 +132,33 @@ test("Modal freezes a secret-free credential/catalog context before inference an
       activity_lease_id: null,
       status_reason: expect.stringContaining("price admission failed"),
     });
+    // Main's Claude gateway delivery is likewise private custom pricing, never public Anthropic rates.
+    const gatewayKey = "synthetic-admission-gateway-key";
+    const gateway = (
+      await db.query<{ id: string }>(
+        "insert into credentials(scope,owner_id,kind,value_enc) values('user',$1,'anthropic',$2) returning id",
+        [
+          p.owner,
+          await encryptSecret(
+            JSON.stringify({
+              apiKey: gatewayKey,
+              endpoint: { version: 1, baseUrl: "https://gateway.invalid/v1", auth: "api-key" },
+            }),
+            ENCRYPTION_KEY,
+          ),
+        ],
+      )
+    ).rows[0];
+    if (!gateway) throw Error("Missing gateway fixture");
+    const gatewayContext = (await credentials.resolve(actor, "claude", gateway.id)).usagePricing;
+    expect(gatewayContext).toMatchObject({
+      provider: "anthropic",
+      basis: "estimated",
+      customEndpoint: true,
+      prices: {},
+    });
+    expect(JSON.stringify(gatewayContext)).not.toContain(gatewayKey);
+    expect(JSON.stringify(gatewayContext)).not.toContain("gateway.invalid");
     await db.query("set role authenticated");
     try {
       await expect(db.query("select context from sandbox_usage_pricing")).rejects.toThrow("permission denied");

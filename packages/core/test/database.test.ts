@@ -249,6 +249,7 @@ describe("database", () => {
         "notify_subscriptions.secret_enc",
         "organization_invitations.token_enc",
         "orgs.boat_api_key_enc",
+        "runtime_enrolments.configuration_enc",
         "sandbox_work_recovery.archive_enc",
       ]);
 
