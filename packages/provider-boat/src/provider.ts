@@ -132,7 +132,7 @@ function sandboxInfo(sandbox: Sandbox): SandboxInfo {
   };
   if (sandbox.error) info.error = sandbox.error;
   if (sandbox.createdAt) info.createdAt = sandbox.createdAt;
-  if (sandbox.stoppedAt) info.stoppedAt = sandbox.stoppedAt;
+  if (sandbox.stoppedAt && Number.isFinite(sandbox.stoppedAt.getTime())) info.stoppedAt = sandbox.stoppedAt;
   if (sandbox.archiveAfter) info.expiresAt = sandbox.archiveAfter;
   if (sandbox.sshEndpoint) info.sshEndpoint = sandbox.sshEndpoint;
   return info;
@@ -440,6 +440,14 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
     },
     async conversations(sandboxId: string) {
       const response = await call(() => api.conversations({ sandboxId }, { signal: AbortSignal.timeout(10_000) }));
+      // Unknown activity cannot prove that it is safe to capture work or stop.
+      if (
+        response.conversations.some(
+          (conversation) =>
+            typeof conversation?.id !== "string" || !conversation.id || typeof conversation.running !== "boolean",
+        )
+      )
+        throw unexpectedAnswer("conversation activity");
       return response.conversations.map(({ id, running, lastHarness, lastModel }) => ({
         id,
         running,
@@ -819,6 +827,7 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
 
     async extendLifetime(request) {
       const before = await provider.get(request.sandboxId);
+      if (before.id !== request.sandboxId) throw unexpectedAnswer("sandbox");
       if (!["ready", "running"].includes(before.state)) throw invalidRequest("Only running compute can be extended.");
       const response = await call(() =>
         api.update(
@@ -826,8 +835,11 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
           { signal: AbortSignal.timeout(10_000) },
         ),
       );
-      if (!response.sandbox) throw unexpectedAnswer("sandbox");
-      const info = sandboxInfo(response.sandbox);
+      const acknowledged = response.sandbox?.id === request.sandboxId ? sandboxInfo(response.sandbox) : undefined;
+      // Observe once after an incomplete/misidentified successful reply; never
+      // replay the PATCH or publish another resource's lifetime as this one's.
+      const info = acknowledged?.expiresAt ? acknowledged : await provider.get(request.sandboxId);
+      if (info.id !== request.sandboxId) throw unexpectedAnswer("sandbox");
       if (!info.expiresAt) throw unexpectedAnswer("expiry");
       return info.expiresAt;
     },

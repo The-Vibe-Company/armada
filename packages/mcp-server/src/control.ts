@@ -34,6 +34,7 @@ import {
   createGoldenAdoption,
   createOrg,
   createRoutineService,
+  createSkillCatalog,
   createSkillDefaultsService,
   createSqlMcpLaunchPort,
   createSqlMcpRegistry,
@@ -80,6 +81,7 @@ import {
   resolveModelChoice,
   resolveOrg,
   resolveRepositoryDir,
+  resolveSkillpackCredential,
   type SkillDefaultsService,
   scanGoldenSandbox,
   setCredential,
@@ -132,6 +134,7 @@ import { orchestratorHttp } from "./orchestrator-api.ts";
 import type { OrchestratorRuntime } from "./orchestrator-runtime.ts";
 
 export interface ControlOptions {
+  skillCatalog?: ReturnType<typeof createSkillCatalog>;
   /** Per-request diagnostics; supplied by the HTTP handler, never request JSON. */
   timing?: RequestTiming;
   storedProviderFor?: (target: ProviderTarget, caller: { userId: string }) => Promise<Provider>;
@@ -255,7 +258,9 @@ export async function handleControlRequest(request: Request, options: ControlOpt
   try {
     const caller = await timing.measure("auth", () => authenticatedCaller(request, options));
     if (
-      (route.startsWith("skills/defaults/") ||
+      (route === "skillpack/catalog" ||
+        route === "skillpack/versions" ||
+        route.startsWith("skills/defaults/") ||
         route.startsWith("templates/") ||
         route.startsWith("routines/") ||
         route.startsWith("variables/") ||
@@ -265,7 +270,9 @@ export async function handleControlRequest(request: Request, options: ControlOpt
       throw new VaultError("invalid", "Parameters must be in the request body.");
     const body = deletion
       ? { id: deletion[1], org: url.searchParams.get("org") ?? undefined }
-      : route.startsWith("skills/defaults/") ||
+      : route === "skillpack/catalog" ||
+          route === "skillpack/versions" ||
+          route.startsWith("skills/defaults/") ||
           route.startsWith("templates/") ||
           route.startsWith("routines/") ||
           route.startsWith("variables/") ||
@@ -891,6 +898,37 @@ async function dispatch(
     return disconnectOrgProvider(store, caller, optional(body, "org"), required(body, "provider"));
   const org = scopedOrg(caller, optional(body, "org"));
   switch (route) {
+    case "skillpack/catalog":
+    case "skillpack/versions": {
+      const versions = route === "skillpack/versions";
+      const allowed = versions ? ["org", "source", "reference"] : ["org", "source", "offset"];
+      if (Object.keys(body).some((key) => !allowed.includes(key)))
+        throw new VaultError("invalid", "Invalid skill catalog request.");
+      if (body.source !== "public" && body.source !== "private")
+        throw new VaultError("invalid", "Choose the public catalog or private workspace.");
+      if (
+        body.offset !== undefined &&
+        (typeof body.offset !== "number" || !Number.isInteger(body.offset) || body.offset < 0 || body.offset > 10000)
+      )
+        throw new VaultError("invalid", "Invalid catalog offset.");
+      const member = await resolveOrg(store, userId, org);
+      // Resolve exactly the launching user's credential policy; never expose the
+      // PAT or let a caller select an alternate registry or workspace header.
+      const credential =
+        body.source === "private"
+          ? await resolveSkillpackCredential(store, encryptionKey, { userId, orgId: member.id })
+          : null;
+      const catalog = options.skillCatalog ?? createSkillCatalog();
+      const result = versions
+        ? await catalog.versions({ source: body.source, reference: required(body, "reference") }, credential?.key)
+        : await catalog.list(
+            { source: body.source, ...(body.offset === undefined ? {} : { offset: body.offset as number }) },
+            credential?.key,
+          );
+      // Membership may have changed during the bounded upstream request.
+      await resolveOrg(store, userId, member.id);
+      return result;
+    }
     case "skillpack/connection": {
       // Reuse vault visibility, including live membership and token org scoping.
       const credentials = await listCredentials(store, userId, org);

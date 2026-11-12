@@ -1099,6 +1099,78 @@ test.each(["configured", "no_pins", "refused"])(
   },
 );
 
+test("vault transport catches canary echoes in error envelopes, cleans metadata and never allocates compute", async () => {
+  const org = "11111111-1111-4111-8111-111111111111";
+  let variable: Record<string, unknown> | undefined;
+  let readable = "";
+  let canary = "";
+  const fake = fixture((call) => {
+    switch (call.path) {
+      case "variables/set":
+        readable = String(call.body.value);
+        variable = {
+          id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          orgId: org,
+          ownerId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          name: call.body.name,
+          scope: "personal",
+          version: 1,
+          epoch: 1,
+          status: "active",
+          createdAt: "2026-11-11T00:00:00Z",
+          updatedAt: "2026-11-11T00:00:00Z",
+        };
+        return json({ item: variable });
+      case "variables/list":
+        return json({ items: variable ? [variable] : [] });
+      case "variables/read":
+        return json({ item: variable, value: readable });
+      case "secrets/set":
+        canary = String(call.body.value);
+        return json({ error: { code: "conflict", message: canary } }, 409);
+      case "secrets/list":
+        return json({ items: [] });
+      case "variables/delete": {
+        const item = { ...variable, version: 2, epoch: 2, status: "deleted" };
+        variable = undefined;
+        return json({ item });
+      }
+    }
+  });
+  expect(await postDeploySmoke(env, ["--vault"], fake.io)).toBe(false);
+  expect(fake.calls).toHaveLength(0);
+  const staging = "https://armada-mcp-staging.up.railway.app";
+  expect(
+    await postDeploySmoke(
+      { ...env, ARMADA_URL: staging, ARMADA_SMOKE_CASES: JSON.stringify([{ ...selected, org }, selected]) },
+      ["--vault"],
+      fake.io,
+    ),
+  ).toBe(false);
+  expect(fake.calls).toHaveLength(0);
+  expect(
+    await postDeploySmoke(
+      { ...env, ARMADA_URL: staging, ARMADA_SMOKE_CASES: JSON.stringify([{ ...selected, org }]) },
+      ["--vault"],
+      {
+        ...fake.io,
+        fetch: (url, init) => fake.io.fetch(url.replace(staging, env.ARMADA_URL), init),
+      },
+    ),
+  ).toBe(false);
+  expect(fake.receipts()).toContainEqual({ case: 0, step: "vault_secret_set", pass: false, code: "secret_exposed" });
+  expect(fake.calls.some((call) => call.path.startsWith("sandbox/"))).toBe(false);
+  expect(fake.calls.filter((call) => call.path === "variables/delete")).toHaveLength(1);
+  expect(fake.lines.join("")).not.toContain(canary);
+  expect(fake.receipts()).toContainEqual({
+    case: 0,
+    step: "vault_cleanup_summary",
+    pass: false,
+    leftoverSecrets: [String(fake.calls.find((call) => call.path === "secrets/set")?.body.name)],
+    leftoverVariables: [],
+  });
+});
+
 type LifecycleFault =
   | "none"
   | "steer_admitted"
@@ -1191,14 +1263,14 @@ function lifecycleFixture(fault: LifecycleFault = "none") {
       return json({ status: "stopping" });
     }
   });
-  const run = (cases: object[] = [selected]) =>
+  const run = (cases: object[] = [selected], extraArgs: string[] = []) =>
     postDeploySmoke(
       {
         ...env,
         ARMADA_URL: "https://armada-mcp-staging.up.railway.app",
         ARMADA_SMOKE_CASES: JSON.stringify(cases),
       },
-      ["--lifecycle"],
+      ["--lifecycle", ...extraArgs],
       {
         ...fake.io,
         fetch: (url, init) =>
@@ -1280,4 +1352,14 @@ test("lifecycle failures reject false receipts and report unknown launches or le
     }
     expect(fake.lines.join("")).not.toContain("secret");
   }
+});
+
+// The merged staging command combines these independently runnable families.
+test("vault/template failures remain failures without bypassing the combined lifecycle checks", async () => {
+  const fake = lifecycleFixture();
+  expect(
+    await fake.run([{ ...selected, org: "11111111-1111-4111-8111-111111111111" }], ["--vault", "--templates-skills"]),
+  ).toBe(false);
+  expect(fake.calls.some((call) => call.path === "variables/set")).toBe(true);
+  expect(fake.receipts()).toContainEqual({ case: 0, step: "list_stopped_final", pass: true });
 });

@@ -122,6 +122,9 @@ public final class ConversationLoader<Event: Identifiable & Equatable & Sendable
 
     private let key: String
     private let cache: ConversationCache<Event>?
+    private var revision = 0
+    private var newestRevision = 0
+    private var forgotten = false
 
     public init(key: String, cache: ConversationCache<Event>?) {
         self.key = key
@@ -134,7 +137,7 @@ public final class ConversationLoader<Event: Identifiable & Equatable & Sendable
     /// Shows a snapshot kept from an earlier visit, without any request. Returns whether one was.
     @discardableResult
     public func showCached(_ show: Show) async -> Bool {
-        guard !hasShown, snapshot.hasTail else { return false }
+        guard !forgotten, !hasShown, snapshot.hasTail else { return false }
         hasShown = true
         await show(snapshot.events)
         return true
@@ -146,7 +149,7 @@ public final class ConversationLoader<Event: Identifiable & Equatable & Sendable
         _ fetch: (_ read: ConversationRead) async throws(Failure) -> ConversationPage<Event>,
         show: Show
     ) async throws(Failure) {
-        while !Task.isCancelled {
+        while !Task.isCancelled, !forgotten {
             guard try await step(fetch, show: show) else { return }
         }
     }
@@ -164,16 +167,16 @@ public final class ConversationLoader<Event: Identifiable & Equatable & Sendable
     ) async {
         await showCached(show)
         var failures = 0
-        while !Task.isCancelled {
+        while !Task.isCancelled, !forgotten {
             do throws(Failure) {
                 let more = try await step(fetch, show: show)
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, !forgotten else { return }
                 failures = 0
                 onRead()
                 if more { continue }
                 try? await clock.sleep(for: pollDelay())
             } catch {
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, !forgotten else { return }
                 failures += 1
                 guard let backoff = onFailure(error, failures) else { return }
                 try? await clock.sleep(for: backoff)
@@ -187,32 +190,49 @@ public final class ConversationLoader<Event: Identifiable & Equatable & Sendable
         _ fetch: (_ read: ConversationRead) async throws(Failure) -> ConversationPage<Event>,
         show: Show
     ) async throws(Failure) {
-        guard snapshot.hasOlder, let before = snapshot.olderCursor, !isLoadingOlder else { return }
+        guard !forgotten, !Task.isCancelled, snapshot.hasOlder, let before = snapshot.olderCursor, !isLoadingOlder else { return }
         isLoadingOlder = true
         defer { isLoadingOlder = false }
+        let startedAt = revision
+        let beforeEvents = snapshot.events
         let page = try await fetch(.older(before))
         // The window may have been replaced meanwhile; only continue from where this read started.
-        guard snapshot.olderCursor == before else { return }
-        let changed = Self.prepend(page.events, into: &snapshot.events)
+        guard !forgotten, !Task.isCancelled, snapshot.olderCursor == before else { return }
+        // A live read may have updated overlapping event bodies while this older page waited.
+        let incoming = revision == startedAt ? page.events
+            : Self.uncontested(page.events, since: beforeEvents, current: snapshot.events)
+        let changed = Self.prepend(incoming, into: &snapshot.events)
+        revision += 1
         snapshot.olderCursor = page.olderCursor
         snapshot.hasOlder = page.hasMore && page.olderCursor != nil
         cache?.store(snapshot, for: key)
         if changed { await show(snapshot.events) }
     }
 
-    /// Forgets this conversation in memory (for example after a refused read).
+    /// Terminal for this loader (for example after a refused read). A new authorized screen
+    /// creates a new loader; late reads may not restore this window or restart its polling.
     public func forget() {
+        forgotten = true
+        revision += 1
+        snapshot = ConversationSnapshot()
+        hasShown = false
         cache?.remove(key)
     }
 
-    /// One read toward the newest event. Returns whether newer events remain to read at once.
+    /// One read toward the newest event. Returns whether another immediate read is needed
+    /// for newer events or to revalidate a contested response without skipping its frontier.
     private func step<Failure: Error>(
         _ fetch: (_ read: ConversationRead) async throws(Failure) -> ConversationPage<Event>,
         show: Show
     ) async throws(Failure) -> Bool {
+        guard !forgotten, !Task.isCancelled else { return false }
+        let startedAt = revision
+        let newestAt = newestRevision
         if !snapshot.hasTail {
             let page = try await fetch(.latest)
-            guard !snapshot.hasTail else { return false }
+            guard !forgotten, !Task.isCancelled, revision == startedAt, !snapshot.hasTail else { return false }
+            revision += 1
+            newestRevision += 1
             let changed = EventStream.merge(page.events, into: &snapshot.events)
             snapshot.cursor = page.cursor
             snapshot.olderCursor = page.olderCursor
@@ -223,8 +243,20 @@ public final class ConversationLoader<Event: Identifiable & Equatable & Sendable
             return page.hasMore && page.olderCursor == nil && page.cursor != nil
         }
         let previous = snapshot.cursor
+        let beforeEvents = snapshot.events
         let page = try await fetch(.newer(previous))
-        let changed = EventStream.merge(page.events, into: &snapshot.events)
+        // Another forward read won: its frontier/body is newer than this request's window.
+        guard !forgotten, !Task.isCancelled, newestRevision == newestAt else { return false }
+        // Pagination may have changed the window without advancing the live frontier.
+        let incoming = revision == startedAt ? page.events
+            : Self.uncontested(page.events, since: beforeEvents, current: snapshot.events)
+        // An older page may contain only intermediate content. Never commit a frontier while
+        // suppressing a conflicting live body: revalidate the whole page from the same cursor.
+        // If that read fails, the existing frontier still permits a later retry of the update.
+        guard incoming.count == page.events.count else { return true }
+        revision += 1
+        newestRevision += 1
+        let changed = EventStream.merge(incoming, into: &snapshot.events)
         if let next = page.cursor { snapshot.cursor = next }
         let advanced = snapshot.cursor != previous
         await publish(store: changed || advanced, render: changed, show: show)
@@ -237,6 +269,17 @@ public final class ConversationLoader<Event: Identifiable & Equatable & Sendable
         guard render || !hasShown else { return }
         hasShown = true
         await show(snapshot.events)
+    }
+
+    /// Only protect bodies actually changed while a read waited. Unchanged overlaps may still
+    /// carry useful updates, and fresh IDs must not be lost when pagination and live reads race.
+    private static func uncontested(_ incoming: [Event], since before: [Event], current: [Event]) -> [Event] {
+        let previous = Dictionary(before.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let known = Dictionary(current.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        return incoming.filter { event in
+            guard let existing = known[event.id] else { return true }
+            return event == existing || previous[event.id] == existing
+        }
     }
 
     /// Older events go first in their order; an event already known is replaced in place.

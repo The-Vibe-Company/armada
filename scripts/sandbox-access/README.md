@@ -151,3 +151,63 @@ Run the offline tests without credentials/network:
 python3 -m unittest discover -s scripts/sandbox-access -p 'test_*.py'
 bun test scripts/sandbox-access/staging-check.test.ts
 ```
+
+## First-launch diagnostics and repository selectors
+
+Each controller API call emits an additional JSON line with **only** `step`,
+`route`, HTTP `status`, `code` and `reason`. Steps/routes are fixed local labels
+(including `parent_launch` and `control_launch`), never URLs or submitted arguments.
+Machine codes/reasons use finite allowlists; unknown supplied values become
+`unknown_code` or `unknown_reason`. The runner reads either `error.reason` or
+`error.details.reason`, never server messages/bodies. A missing server reason
+stays `null`; local transport/deadline labels appear only without an HTTP status.
+The final summary retains the first failing API step and the closed local cause
+through cleanup. Known owner/current request credentials are redacted even if
+they equal an allowlisted word. Output writes are best effort: a broken pipe
+never changes the request outcome or prevents cleanup, with no stderr fallback.
+
+The reported `--repo /home/user/armada` was not a valid selector in the old
+runner: the API accepts a configured directory selector or `owner/repo`, not
+an arbitrary absolute working directory. A local real-handler regression using
+an absolute path returns HTTP 400 `invalid_config` before any provider fork or
+sandbox registration. This proves the input-contract issue, **not** the sole
+cause of the reported staging failure: access-service availability is checked
+earlier and can instead refuse with HTTP 503 `dependency_unavailable`. Read the
+new `parent_launch` trace before claiming a deployed configuration/root cause.
+
+For compatibility the runner now translates only exact `/home/user/<dir>` paths
+whose single directory segment exactly matches one selected golden
+`config.repos[].dir`. The same selector goes to parent, control and child. There
+is no basename guessing, trailing-slash normalization or traversal (`..`);
+unmatched absolute paths fail preflight before allocation flags. Existing
+directory and `owner/repo` selectors are unchanged. Server validation is unchanged.
+
+This MCP-only probe does not need a repository cwd. The safest rerun **omits
+`--repo`**, without guessing the golden layout. With the three required staging
+environment variables already set securely, set `BOAT_GOLDEN_ID`,
+`MODAL_GOLDEN_ID` and `MODEL_ACCOUNT_ID` to the actual authorized UUIDs (the same
+owner account, version 1, for both placements):
+
+```sh
+python3 scripts/sandbox-access/staging-check.py \
+  --provider modal --harness codex \
+  --golden smoke-modal --golden-id "${MODAL_GOLDEN_ID:?Set the smoke-modal golden UUID}" \
+  --account-id "${MODEL_ACCOUNT_ID:?Set the authorized owner account UUID}" \
+  --account-version 1 --model gpt-6.1-sol --confirm-real-compute
+```
+
+Inspect that run and confirm cleanup before starting the other placement; do not
+automatically continue after an unknown allocation/cleanup outcome.
+
+```sh
+python3 scripts/sandbox-access/staging-check.py \
+  --provider boat --harness codex \
+  --golden smoke-boat --golden-id "${BOAT_GOLDEN_ID:?Set the smoke-boat golden UUID}" \
+  --account-id "${MODEL_ACCOUNT_ID:?Set the authorized owner account UUID}" \
+  --account-version 1 --model gpt-6.1-sol --confirm-real-compute
+```
+
+Optionally add `--repo armada` only if `armada` is actually configured on each
+selected golden. This is not a promise of a live pass: old-grant audit, native
+negative-control evidence, provider readiness and approved staging rollout remain
+prerequisites. This change performed no live staging rerun.
