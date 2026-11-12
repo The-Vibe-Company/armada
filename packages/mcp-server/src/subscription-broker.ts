@@ -1,18 +1,16 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { readBoundedText } from "@armada/auth";
-import {
-  decryptSecret,
-  encryptSecret,
-  type GoldenActor,
-  type Provider,
-  ProviderError,
-  type Sql,
-  VaultError,
-} from "@armada/core/server";
-import { type NativeState, nativeState } from "./model-auth-state.ts";
+import { decryptSecret, encryptSecret, type GoldenActor, type Sql, VaultError } from "@armada/core/server";
+import { type NativeState, nativeState, refreshFingerprint, withRefreshHistory } from "./model-auth-state.ts";
 
 const PATH = "/api/internal/model/access";
 const READY = "server:ready";
+/** An authoritative unsuccessful response is retryable, unlike a lost rotation response. */
+export class SubscriptionTemporaryError extends VaultError {
+  constructor() {
+    super("unavailable", "Model sign-in is temporarily unavailable. Try again.");
+  }
+}
 export interface SubscriptionConfiguration {
   url: string;
   capability: string;
@@ -37,14 +35,14 @@ export function createSubscriptionBroker(
   key: string | undefined,
   origin: string,
   fetcher: typeof fetch = fetch,
-  historicalProvider?: (tx: Sql, sandboxId: string) => Promise<{ provider: Provider; providerSandboxId: string }>,
+  prepareLegacy?: (actor: GoldenActor, id: string, version: number) => Promise<void>,
 ) {
   if (Buffer.from(key ?? "", "base64").length !== 32)
     throw new VaultError("unavailable", "Subscription renewal requires an encryption key.");
   const signing = createHmac("sha256", Buffer.from(key ?? "", "base64"))
     .update("armada/model/access/v1")
     .digest();
-  const pending = new Map<string, Promise<SubscriptionAccess>>();
+  const pending = new Map<string, Promise<SubscriptionAccess | undefined>>();
   const sign = (body: string) => createHmac("sha256", signing).update(body).digest("base64url");
   async function account(tx: Sql, actor: GoldenActor, id: string, version: number) {
     const found = await tx.query<{ value_enc: Uint8Array }>(
@@ -76,17 +74,161 @@ export function createSubscriptionBroker(
       )
     ).rows[0];
     if (!row || !row.source_generation.startsWith("server:"))
-      throw new VaultError(
-        "credential_binding_required",
-        "This account still uses legacy native renewal. Stop its old sandboxes and import a fresh account revision.",
+      throw new VaultError("credential_binding_required", "Shared subscription authentication state is unavailable.");
+    const previous = JSON.parse(await decryptSecret(new Uint8Array(row.state_enc), key)) as NativeState;
+    const state = withRefreshHistory(previous);
+    if (state !== previous)
+      await tx.query(
+        "update public.model_auth_state set state_enc=$3::bytea where account_id=$1::uuid and account_version=$2",
+        [id, version, await encryptSecret(JSON.stringify(state), key)],
       );
-    return { ...row, state: JSON.parse(await decryptSecret(new Uint8Array(row.state_enc), key)) as NativeState };
+    return { ...row, state };
   }
   const output = (state: NativeState, revision: number): SubscriptionAccess => {
     const tokens = JSON.parse(state.authJson).tokens;
     return { accessToken: tokens.access_token, chatgptAccountId: tokens.account_id, chatgptPlanType: null, revision };
   };
-  async function access(
+  class DefiniteRefreshRefusal extends Error {}
+  async function refreshTokens(state: NativeState): Promise<NativeState> {
+    const tokens = JSON.parse(state.authJson);
+    // Codex rust-v0.116.0 core/src/auth.rs: token refresh and permanent 401 codes.
+    const response = await fetcher("https://auth.openai.com/oauth/token", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        client_id: "app_EMoamEEZ73f0CkXaXp7hrann",
+        grant_type: "refresh_token",
+        refresh_token: tokens.tokens.refresh_token,
+      }),
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (response.status === 401) {
+      await response.body?.cancel().catch(() => {});
+      throw new DefiniteRefreshRefusal("refresh_refused");
+    }
+    const raw = await response.text();
+    if (Buffer.byteLength(raw) > 65536) throw Error("refresh_oversized");
+    if (!response.ok) {
+      if (response.status === 400 || response.status === 401) {
+        let value: unknown;
+        try {
+          value = JSON.parse(raw);
+        } catch {
+          /* Unknown replies are not retry authority. */
+        }
+        const record = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+        const detail = record.error;
+        const code =
+          typeof detail === "string"
+            ? detail
+            : detail && typeof detail === "object"
+              ? (detail as Record<string, unknown>).code
+              : record.code;
+        if (
+          ["invalid_grant", "refresh_token_expired", "refresh_token_reused", "refresh_token_invalidated"].includes(
+            typeof code === "string" ? code.toLowerCase() : "",
+          )
+        )
+          throw new DefiniteRefreshRefusal("refresh_refused");
+      }
+      throw new SubscriptionTemporaryError();
+    }
+    const replacement = JSON.parse(raw);
+    if (typeof replacement.access_token !== "string" || !replacement.access_token) throw Error("refresh_invalid");
+    tokens.tokens.access_token = replacement.access_token;
+    if (typeof replacement.refresh_token === "string" && replacement.refresh_token)
+      tokens.tokens.refresh_token = replacement.refresh_token;
+    if (typeof replacement.id_token === "string") tokens.tokens.id_token = replacement.id_token;
+    return nativeState(JSON.stringify(tokens));
+  }
+  async function finishRefresh(
+    actor: GoldenActor,
+    id: string,
+    version: number,
+    row: Awaited<ReturnType<typeof saved>>,
+    candidate: NativeState = row.state,
+    verifySource?: (tx: Sql) => Promise<void>,
+  ): Promise<SubscriptionAccess> {
+    const retired = new Set(row.state.retiredRefreshTokens ?? []);
+    const attempted = new Set<string>();
+    const rejected = new Set<string>();
+    const request = async (state: NativeState) => {
+      const fingerprint = refreshFingerprint(state);
+      if (retired.has(fingerprint)) throw new DefiniteRefreshRefusal("retired_refresh");
+      attempted.add(fingerprint);
+      try {
+        return await refreshTokens(state);
+      } catch (error) {
+        if (error instanceof DefiniteRefreshRefusal) rejected.add(fingerprint);
+        throw error;
+      }
+    };
+    try {
+      if (retired.has(refreshFingerprint(candidate))) {
+        if (row.source_generation !== READY || retired.has(refreshFingerprint(row.state)))
+          throw new VaultError("unavailable", "Sign in again to this ChatGPT account.");
+        candidate = row.state;
+      }
+      let next: NativeState;
+      try {
+        next = await request(candidate);
+      } catch (error) {
+        const distinct =
+          JSON.parse(candidate.authJson).tokens.refresh_token !== JSON.parse(row.state.authJson).tokens.refresh_token;
+        // A positively rejected stale guest token may fall back to a separately
+        // held current token. Never retry an uncertain/spent token or lost reply.
+        if (!(error instanceof DefiniteRefreshRefusal) || !distinct || row.source_generation !== READY) throw error;
+        next = await request(row.state);
+      }
+      next.secrets = [...new Set([...row.state.secrets, ...candidate.secrets, ...next.secrets])];
+      return await sql.transaction!(async (tx) => {
+        await account(tx, actor, id, version);
+        await verifySource?.(tx);
+        const latest = await saved(tx, id, version);
+        next.secrets = [...new Set([...latest.state.secrets, ...next.secrets])];
+        if (latest.state.brokerDeliveries) next.brokerDeliveries = latest.state.brokerDeliveries;
+        next.retiredRefreshTokens = [...new Set([...(latest.state.retiredRefreshTokens ?? []), ...attempted])].filter(
+          (fingerprint) => fingerprint !== refreshFingerprint(next),
+        );
+        if (Buffer.byteLength(JSON.stringify(next)) > 4 * 1024 * 1024)
+          throw new VaultError("unavailable", "Native secret redaction budget exceeded.");
+        const updated = await tx.query(
+          "update public.model_auth_state set state_enc=$4::bytea,auth_revision=auth_revision+1,source_generation=$5,updated_at=now() where account_id=$1::uuid and account_version=$2 and auth_revision=$3 and source_generation='server:refreshing' returning auth_revision",
+          [id, version, row.auth_revision, await encryptSecret(JSON.stringify(next), key), READY],
+        );
+        if (!updated.rows.length) throw Error("refresh_conflict");
+        return output(next, row.auth_revision + 1);
+      });
+    } catch (error) {
+      await sql.transaction!(async (tx) => {
+        const latest = await saved(tx, id, version);
+        if (latest.auth_revision !== row.auth_revision || latest.source_generation !== "server:refreshing") return;
+        const retained: NativeState = {
+          ...latest.state,
+          retiredRefreshTokens: [
+            ...new Set([
+              ...(latest.state.retiredRefreshTokens ?? []),
+              ...(error instanceof SubscriptionTemporaryError ? rejected : attempted),
+            ]),
+          ],
+        };
+        if (Buffer.byteLength(JSON.stringify(retained)) > 4 * 1024 * 1024) throw Error("redaction_budget");
+        await tx.query(
+          "update public.model_auth_state set state_enc=$4::bytea,source_generation=$5 where account_id=$1::uuid and account_version=$2 and auth_revision=$3 and source_generation='server:refreshing'",
+          [
+            id,
+            version,
+            row.auth_revision,
+            await encryptSecret(JSON.stringify(retained), key),
+            error instanceof SubscriptionTemporaryError ? row.source_generation : "server:uncertain",
+          ],
+        );
+      }).catch(() => {});
+      if (error instanceof SubscriptionTemporaryError) throw error;
+      throw new VaultError("unavailable", "Sign in again to this ChatGPT account.");
+    }
+  }
+  async function accessAttempt(
     actor: GoldenActor,
     id: string,
     version: number,
@@ -100,11 +242,15 @@ export function createSubscriptionBroker(
     const existing = pending.get(identity);
     if (existing) {
       const result = await existing;
+      if (!result) {
+        if (pending.get(identity) === existing) pending.delete(identity);
+        return accessAttempt(actor, id, version, previousRevision);
+      }
       // An overlapping ordinary read is not a renewal receipt. If this caller
       // rejected that same revision, admit its refresh after the read settles.
       if (previousRevision === result.revision) {
         if (pending.get(identity) === existing) pending.delete(identity);
-        return access(actor, id, version, previousRevision);
+        return accessAttempt(actor, id, version, previousRevision);
       }
       return result;
     }
@@ -136,65 +282,38 @@ export function createSubscriptionBroker(
         });
         if (!selected.waiting) break;
         if (selected.row.source_generation !== "server:refreshing" || Date.now() >= deadline)
-          throw new VaultError(
-            "unavailable",
-            "Subscription renewal is pending or uncertain. Reconnect if it persists.",
-          );
+          throw new VaultError("unavailable", "Sign in again to this ChatGPT account.");
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
       if (!selected.refresh) return output(selected.row.state, selected.row.auth_revision);
-      try {
-        const tokens = JSON.parse(selected.row.state.authJson);
-        // Native Codex refresh protocol: openai/codex rust-v0.116.0 core/src/auth.rs, request_chatgpt_token_refresh.
-        const response = await fetcher("https://auth.openai.com/oauth/token", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            client_id: "app_EMoamEEZ73f0CkXaXp7hrann",
-            grant_type: "refresh_token",
-            refresh_token: tokens.tokens.refresh_token,
-          }),
-          signal: AbortSignal.timeout(20_000),
-        });
-        if (!response.ok) throw Error("refresh_refused");
-        const raw = await response.text();
-        if (Buffer.byteLength(raw) > 65536) throw Error("refresh_oversized");
-        const replacement = JSON.parse(raw);
-        if (typeof replacement.access_token !== "string" || !replacement.access_token) throw Error("refresh_invalid");
-        tokens.tokens.access_token = replacement.access_token;
-        if (typeof replacement.refresh_token === "string" && replacement.refresh_token)
-          tokens.tokens.refresh_token = replacement.refresh_token;
-        if (typeof replacement.id_token === "string") tokens.tokens.id_token = replacement.id_token;
-        const next = nativeState(JSON.stringify(tokens));
-        next.secrets = [...new Set([...selected.row.state.secrets, ...next.secrets])];
-        return await sql.transaction!(async (tx) => {
-          await account(tx, actor, id, version);
-          const updated = await tx.query(
-            "update public.model_auth_state set state_enc=$4::bytea,auth_revision=auth_revision+1,source_generation=$5,updated_at=now() where account_id=$1::uuid and account_version=$2 and auth_revision=$3 and source_generation='server:refreshing' returning auth_revision",
-            [id, version, selected.row.auth_revision, await encryptSecret(JSON.stringify(next), key), READY],
-          );
-          if (!updated.rows.length) throw Error("refresh_conflict");
-          return output(next, selected.row.auth_revision + 1);
-        });
-      } catch {
-        await sql
-          .query(
-            "update public.model_auth_state set source_generation='server:uncertain' where account_id=$1::uuid and account_version=$2 and auth_revision=$3 and source_generation='server:refreshing'",
-            [id, version, selected.row.auth_revision],
-          )
-          .catch(() => {});
-        // Fixed text only; vendor errors and response bodies may contain private material.
-        throw new VaultError(
-          "unavailable",
-          "Subscription renewal could not be confirmed. Reconnect this account before retrying renewal.",
-        );
-      }
+      return finishRefresh(actor, id, version, selected.row);
     })();
     pending.set(identity, work);
     try {
       return await work;
     } finally {
       if (pending.get(identity) === work) pending.delete(identity);
+    }
+  }
+  async function access(
+    actor: GoldenActor,
+    id: string,
+    version: number,
+    previousRevision?: number,
+  ): Promise<SubscriptionAccess> {
+    try {
+      return await accessAttempt(actor, id, version, previousRevision);
+    } catch (error) {
+      if (
+        !(error instanceof VaultError) ||
+        error.message !== "Sign in again to this ChatGPT account." ||
+        !prepareLegacy
+      )
+        throw error;
+      // A late known guest may hold a recoverable newer token. Attempt its
+      // authenticated handoff before asking the owner to sign in again.
+      await prepareLegacy(actor, id, version);
+      return accessAttempt(actor, id, version, previousRevision);
     }
   }
   function configuration(
@@ -210,118 +329,109 @@ export function createSubscriptionBroker(
   return {
     enrolled,
     access,
+    async transferLegacy(
+      actor: GoldenActor,
+      id: string,
+      version: number,
+      authJson: string,
+      verifySource: (tx: Sql) => Promise<void>,
+    ): Promise<void> {
+      const candidate = nativeState(authJson);
+      const identity = `${id}:${version}`;
+      // Share the existing renewal coordination, never a sandbox/account lease.
+      for (;;) {
+        const existing = pending.get(identity);
+        if (!existing) break;
+        await existing.catch(() => {});
+      }
+      const work = (async () => {
+        const deadline = Date.now() + 25_000;
+        for (;;) {
+          const selected = await sql.transaction!(async (tx) => {
+            await account(tx, actor, id, version);
+            await verifySource(tx);
+            const source = await tx.query<{ source_generation: string }>(
+              "select source_generation from public.model_auth_state where account_id=$1::uuid and account_version=$2 for update",
+              [id, version],
+            );
+            // Before first adoption the quiesced observation already published
+            // latest private auth; enroll will adopt it after all known writers.
+            if (!source.rows[0]?.source_generation.startsWith("server:")) return { legacy: true as const };
+            const row = await saved(tx, id, version);
+            if (JSON.parse(candidate.authJson).tokens.account_id !== JSON.parse(row.state.authJson).tokens.account_id)
+              throw new VaultError("conflict", "Native account identity changed.");
+            if (row.source_generation === "server:refreshing") return { row, waiting: true as const };
+            const distinct =
+              JSON.parse(candidate.authJson).tokens.refresh_token !==
+              JSON.parse(row.state.authJson).tokens.refresh_token;
+            if (row.source_generation !== READY && !(row.source_generation === "server:uncertain" && distinct))
+              throw new VaultError("unavailable", "Sign in again to this ChatGPT account.");
+            await tx.query(
+              "update public.model_auth_state set source_generation='server:refreshing' where account_id=$1::uuid and account_version=$2 and auth_revision=$3",
+              [id, version, row.auth_revision],
+            );
+            return { row, waiting: false as const };
+          });
+          if ("legacy" in selected) return undefined;
+          if (!selected.waiting) return finishRefresh(actor, id, version, selected.row, candidate, verifySource);
+          if (Date.now() >= deadline) throw new VaultError("unavailable", "Sign in again to this ChatGPT account.");
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+      })();
+      pending.set(identity, work);
+      try {
+        await work;
+      } finally {
+        if (pending.get(identity) === work) pending.delete(identity);
+      }
+    },
     async enroll(actor: GoldenActor, id: string, version: number) {
       if (!sql.transaction) throw new VaultError("unavailable", "Subscription renewal requires transactions.");
+      const needsPreparation = await sql.transaction(async (tx) => {
+        await account(tx, actor, id, version);
+        const result = await tx.query<{ source_generation: string }>(
+          "select source_generation from public.model_auth_state where account_id=$1::uuid and account_version=$2 for update",
+          [id, version],
+        );
+        const source = result.rows[0]?.source_generation;
+        return source === "server:uncertain" || !source?.startsWith("server:");
+      });
+      if (!needsPreparation) {
+        await access(actor, id, version);
+        return;
+      }
+      // Native checkpoint publication must be able to acquire account/state
+      // locks while a known writer is drained; never hold SQL locks across it.
+      await prepareLegacy?.(actor, id, version);
       await sql.transaction(async (tx) => {
         const raw = await account(tx, actor, id, version);
-        // Serialize identity admission, including differently named copies of one rotating session.
-        await tx.query("lock table public.model_auth_ownership in share row exclusive mode");
-        const incoming = nativeState(await decryptSecret(new Uint8Array(raw), key));
-        const tokens = JSON.parse(incoming.authJson).tokens;
-        const peers = await tx.query<{ state_enc: Uint8Array }>(
-          "select state_enc from public.model_auth_state where account_id<>$1::uuid limit 1001",
-          [id],
+        // Existing homes and allocation history do not impose account exclusivity.
+        // Preserve already-rotated sealed native state when adopting an old account.
+        const previous = await tx.query<{ state_enc: Uint8Array; source_generation: string }>(
+          "select state_enc,source_generation from public.model_auth_state where account_id=$1::uuid and account_version=$2 for update",
+          [id, version],
         );
-        if (peers.rows.length > 1000)
-          throw new VaultError("unavailable", "Subscription registry requires maintenance.");
-        for (const peer of peers.rows) {
-          const prior = JSON.parse(await decryptSecret(new Uint8Array(peer.state_enc), key)) as NativeState;
-          if (prior.secrets.includes(tokens.refresh_token))
-            throw new VaultError(
-              "credential_busy",
-              "This rotating subscription session is already registered under another account.",
-            );
-        }
-        // A replaced pre-enrollment import no longer identifies the session
-        // still held by its old native home. Do not infer independence from the
-        // replacement's current account label or a newly issued refresh token.
-        const unknownHistory = await tx.query(
-          `select 1 from public.credentials c
-          join public.credentials original on original.id=$1::uuid
-          join public.sandboxes s on s.credential_id=c.id
-          where c.id<>$1::uuid and c.kind='codex_auth' and c.scope=original.scope and c.owner_id=original.owner_id
-          and s.credential_version is distinct from c.version
-          and not exists(select 1 from public.model_auth_ownership o where o.account_id=c.id and o.account_version=c.version)
-          and not exists(select 1 from public.model_auth_state a where a.account_id=c.id and a.account_version=s.credential_version and a.source_generation like 'server:%')
-          limit 1`,
-          [id],
-        );
-        if (unknownHistory.rows.length)
-          throw new VaultError(
-            "credential_busy",
-            "A replaced legacy subscription has unknown sandbox history. Reconcile its original account before enrolling another.",
+        const old = previous.rows[0];
+        if (old?.source_generation === "server:uncertain")
+          throw new VaultError("unavailable", "Sign in again to this ChatGPT account.");
+        if (!old) {
+          const state = withRefreshHistory(nativeState(await decryptSecret(new Uint8Array(raw), key)));
+          await tx.query(
+            "insert into public.model_auth_state(account_id,account_version,state_enc,source_generation) values($1::uuid,$2,$3::bytea,$4)",
+            [id, version, await encryptSecret(JSON.stringify(state), key), READY],
           );
-        const historicalPeers = await tx.query<{ value_enc: Uint8Array; same_owner: boolean }>(
-          `select c.value_enc,(c.scope=original.scope and c.owner_id=original.owner_id) as same_owner from public.credentials c join public.credentials original on original.id=$1::uuid where c.id<>$1::uuid and c.kind='codex_auth' and exists(select 1 from public.sandboxes s where s.credential_id=c.id) limit 1001`,
-          [id],
-        );
-        if (historicalPeers.rows.length > 1000)
-          throw new VaultError("unavailable", "Subscription registry requires maintenance.");
-        for (const peer of historicalPeers.rows) {
-          const other = JSON.parse(
-            nativeState(await decryptSecret(new Uint8Array(peer.value_enc), key)).authJson,
-          ).tokens;
-          if (
-            other.refresh_token === tokens.refresh_token ||
-            (peer.same_owner && other.account_id === tokens.account_id)
-          )
-            throw new VaultError(
-              "credential_busy",
-              "This subscription has historical writers under another account. Reconcile the original account instead.",
-            );
+        } else if (!old.source_generation.startsWith("server:")) {
+          const state = withRefreshHistory(
+            JSON.parse(await decryptSecret(new Uint8Array(old.state_enc), key)) as NativeState,
+          );
+          await tx.query(
+            "update public.model_auth_state set source_generation=$3,state_enc=$4::bytea,updated_at=now() where account_id=$1::uuid and account_version=$2",
+            [id, version, READY, await encryptSecret(JSON.stringify(state), key)],
+          );
         }
-        const legacy = await tx.query<{ id: string; credential_version: number | null }>(
-          `select s.id,s.credential_version from public.sandboxes s where s.credential_id=$1::uuid and not exists(select 1 from public.model_auth_state a where a.account_id=s.credential_id and a.account_version=s.credential_version and a.source_generation like 'server:%') order by s.id for update`,
-          [id],
-        );
-        for (const prior of legacy.rows) {
-          if (!historicalProvider || prior.credential_version === null || prior.credential_version >= version)
-            throw new VaultError(
-              "credential_busy",
-              "Stop legacy sandboxes and import a fresh revision of this account before enabling shared renewal.",
-            );
-          const target = await historicalProvider(tx, prior.id);
-          // Resolve authority first: a missing provider/key is not proof that its machine is gone.
-          const quiescent = await target.provider
-            .get(target.providerSandboxId, { signal: AbortSignal.timeout(10_000) })
-            .then(
-              (physical) =>
-                physical.id === target.providerSandboxId &&
-                (physical.state === "stopped" || physical.physicalExitConfirmed === true),
-            )
-            .catch((error: unknown) => {
-              if (error instanceof ProviderError && error.provider === target.provider.id && error.code === "not_found")
-                return true;
-              throw error;
-            });
-          if (!quiescent)
-            throw new VaultError("credential_busy", "A legacy subscription writer is not confirmed stopped.");
-        }
-        const owner = await tx.query<{ account_version: number; sandbox_id: string }>(
-          "select account_version,sandbox_id from public.model_auth_ownership where account_id=$1::uuid for update",
-          [id],
-        );
-        if (owner.rows[0]) {
-          if (
-            owner.rows[0].account_version >= version ||
-            !legacy.rows.some(
-              (prior) =>
-                prior.id === owner.rows[0]!.sandbox_id && prior.credential_version === owner.rows[0]!.account_version,
-            )
-          )
-            throw new VaultError("credential_busy", "The previous subscription launch has an unreconciled outcome.");
-          await tx.query("delete from public.model_auth_ownership where account_id=$1::uuid and account_version<$2", [
-            id,
-            version,
-          ]);
-        }
-        const state = nativeState(await decryptSecret(new Uint8Array(raw), key));
-        await tx.query(
-          "insert into public.model_auth_state(account_id,account_version,state_enc,source_generation) values($1::uuid,$2,$3::bytea,$4) on conflict do nothing",
-          [id, version, await encryptSecret(JSON.stringify(state), key), READY],
-        );
         await saved(tx, id, version);
       });
+      await access(actor, id, version);
     },
     configuration: configuration,
     async secrets(id: string, version: number): Promise<string[]> {
