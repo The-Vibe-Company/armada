@@ -1,4 +1,10 @@
-import { ProviderError, type ProviderErrorCode, providerPaymentRequiredMessage } from "@armada/core";
+import {
+  ProviderError,
+  type ProviderErrorCode,
+  providerPaymentRequiredMessage,
+  providerRateLimitDetails,
+  providerRateLimitMessage,
+} from "@armada/core";
 import { FetchError, RequiredError, ResponseError } from "@boatdev/sdk";
 
 export const PROVIDER_ID = "boat";
@@ -11,6 +17,7 @@ interface Envelope {
   details?: Record<string, unknown>;
   retryAfterSeconds?: number;
   window?: string;
+  nextStartAt?: string;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -43,6 +50,8 @@ function readEnvelope(body: unknown): Envelope {
   if (retryAfter !== undefined) envelope.retryAfterSeconds = retryAfter;
   const window = text(body.window) ?? text(details?.window);
   if (window) envelope.window = window;
+  const nextStartAt = text(body.nextStartAt) ?? text(details?.nextStartAt);
+  if (nextStartAt) envelope.nextStartAt = nextStartAt;
   return envelope;
 }
 
@@ -99,11 +108,21 @@ async function fromResponse(response: Response, cause: unknown): Promise<Provide
   const headerRetry = Number(response.headers.get("retry-after"));
   const retryAfterSeconds =
     envelope.retryAfterSeconds ?? (Number.isFinite(headerRetry) && headerRetry > 0 ? headerRetry : undefined);
+  const limit =
+    code === "rate_limited"
+      ? providerRateLimitDetails({
+          provider: PROVIDER_ID,
+          window: envelope.window,
+          nextStartAt: envelope.nextStartAt,
+          retryAfterSeconds,
+        })
+      : undefined;
   return new ProviderError({
     provider: PROVIDER_ID,
     code,
-    message:
-      code === "payment_required"
+    message: limit
+      ? providerRateLimitMessage(limit)
+      : code === "payment_required"
         ? providerPaymentRequiredMessage("boat")
         : (envelope.message ?? `boat.dev answered ${status}${providerCode ? ` (${providerCode})` : ""}.`),
     status,
@@ -111,7 +130,7 @@ async function fromResponse(response: Response, cause: unknown): Promise<Provide
     retryable,
     ...(retryAfterSeconds !== undefined ? { retryAfterSeconds } : {}),
     ...(envelope.requestId ? { requestId: envelope.requestId } : {}),
-    ...(envelope.details ? { details: envelope.details } : {}),
+    ...(limit ? { details: { ...envelope.details, ...limit } } : envelope.details ? { details: envelope.details } : {}),
     cause,
   });
 }
