@@ -3,9 +3,9 @@ import { createSqlAuthStore } from "@armada/auth";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import { createMcpHttpIntegration } from "../src/mcp-http-integration.ts";
 import { createMcpSecretBox } from "../src/mcp-integration.ts";
+import { migratedDatabase } from "./migrated-database.ts";
 
 function deferred() {
   let finish = () => {};
@@ -30,7 +30,7 @@ const cases = [
 // Current-role-only checks cannot pass remove/readd: publication must carry the durable epoch.
 for (const change of cases)
   test(`OAuth callback publication fences ${change} while token exchange is in flight`, async () => {
-    const db = await openDatabase();
+    const db = await migratedDatabase();
     const started = deferred(),
       release = deferred(),
       refreshStarted = deferred(),
@@ -157,7 +157,6 @@ for (const change of cases)
       return response;
     };
     try {
-      await applyMigrations(db);
       await db.query("insert into auth.users(id) values($1),($2)", [actor, other]);
       await db.query("insert into public.orgs(id,name) values($1,'OAuth publication')", [org]);
       await db.query("insert into public.members(org_id,user_id,role) values($1,$2,'admin'),($1,$3,'admin')", [

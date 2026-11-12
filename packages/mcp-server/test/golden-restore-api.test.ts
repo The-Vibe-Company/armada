@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { connectGolden, type Provider, ProviderError, type Sql } from "@armada/core";
-import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import { createSqlData } from "../src/data.ts";
+import { migratedDatabase } from "./migrated-database.ts";
 
 const owner = "11111111-1111-4111-8111-111111111111";
 const admin = "22222222-2222-4222-8222-222222222222";
@@ -17,9 +17,8 @@ async function bindBackend(sql: Sql, name: string): Promise<void> {
 }
 
 test("scoped stopped-master restore CAS publishes one ready fork, cleans the loser, and never grants private access to an admin", async () => {
-  const db = await openDatabase();
+  const db = await migratedDatabase();
   try {
-    await applyMigrations(db);
     await db.query("insert into auth.users(id) values ($1),($2)", [owner, admin]);
     await db.query("insert into orgs(id,name) values ($1,'Restore')", [org]);
     await db.query("insert into members(org_id,user_id,role) values ($1,$2,'admin'),($1,$3,'admin')", [
@@ -110,9 +109,8 @@ test("scoped stopped-master restore CAS publishes one ready fork, cleans the los
 });
 
 test("a committed restore with a lost SQL response never deletes the canonical fork, even when reconciliation reads fail", async () => {
-  const db = await openDatabase();
+  const db = await migratedDatabase();
   try {
-    await applyMigrations(db);
     await db.query("insert into auth.users(id) values ($1)", [owner]);
     await db.query("insert into orgs(id,name) values ($1,'AmbiguousRestore')", [org]);
     await db.query("insert into members(org_id,user_id,role) values ($1,$2,'admin')", [org, owner]);
@@ -193,9 +191,8 @@ test("a committed restore with a lost SQL response never deletes the canonical f
 test.each(["lost-delete", "lost-confirmation", "confirmed-gone"] as const)(
   "acknowledged losing Boat restore retains ownership until terminal cleanup (%s)",
   async (mode) => {
-    const db = await openDatabase();
+    const db = await migratedDatabase();
     try {
-      await applyMigrations(db);
       await db.query("insert into auth.users(id) values($1)", [owner]);
       await db.query("insert into orgs(id,name) values($1,'LoserCleanup')", [org]);
       await db.query("insert into members(org_id,user_id,role) values($1,$2,'admin')", [org, owner]);
