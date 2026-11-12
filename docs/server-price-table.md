@@ -89,7 +89,7 @@ If persistence fails, launch fails before inference and uses existing cleanup.
 
 ### Coordinator staging check
 
-Apply `20261112133000_sandbox_usage_pricing.sql` through the normal migration
+Apply `20261112162000_sandbox_usage_pricing.sql` through the normal migration
 process before deploying the server. The worker never applies remote migrations.
 Launch on an existing Modal golden:
 
