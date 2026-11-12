@@ -28,6 +28,7 @@ import type { HandlerOptions } from "./http.ts";
 import type { GitHubLaunchOptions } from "./launch-credentials.ts";
 import { modalLaunchEnvironment } from "./modal-launch-environment.ts";
 import { createModelAuthOwnership } from "./model-auth.ts";
+import { measureProviderPhase } from "./request-timing.ts";
 
 export type { ModalManagementAuthority } from "@armada/provider-modal";
 export const MODAL_INGEST_PATH = "/api/internal/modal/events";
@@ -180,6 +181,7 @@ export async function createModalIntegration(options: {
     const provenance = await managementAuthority(context.target, context.caller);
     const sourceScope: Scope = { ...scope, visibility: provenance.sourceGoldenVisibility };
     const composed: ComposedModalOptions = {
+      measure: measureProviderPhase,
       storedReads,
       sql: options.sql,
       scope,

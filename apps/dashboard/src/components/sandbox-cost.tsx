@@ -1,5 +1,9 @@
 import { MODEL_PRICES_AS_OF, type SandboxCost } from "@armada/core";
+import { ChevronRightIcon } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { formatDuration } from "@/lib/lifecycle";
 import { costFigure, costTitle, formatTokens, formatUsd } from "@/lib/sandbox-cost";
 import { cn } from "@/lib/utils";
@@ -60,10 +64,22 @@ export function SandboxCostCard({ cost }: { cost: SandboxCost }) {
                 </div>
               ))}
             </dl>
-            <details className="group text-[13px]">
-              <summary className="cursor-pointer font-medium">Per turn</summary>
-              <TurnTable cost={cost} />
-            </details>
+            <Collapsible>
+              <CollapsibleTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="group -ml-2 justify-start gap-1 px-2 text-[13px]"
+                >
+                  <ChevronRightIcon aria-hidden className="size-3 group-data-[state=open]:rotate-90" />
+                  Per turn
+                </Button>
+              </CollapsibleTrigger>
+              <CollapsibleContent forceMount className="pt-2 data-[state=closed]:hidden">
+                <TurnTable cost={cost} />
+              </CollapsibleContent>
+            </Collapsible>
             <p className="text-xs text-muted-foreground">
               List prices of {MODEL_PRICES_AS_OF}, short-prompt rates. Cache writes use the listed 5-minute Claude or
               30-minute OpenAI rate; actual billing may differ.
@@ -81,60 +97,60 @@ function TurnTable({ cost }: { cost: SandboxCost }) {
   for (const turn of cost.turns) if (!numbers.has(turn.promptId)) numbers.set(turn.promptId, numbers.size + 1);
   const several = cost.models.length > 1 || cost.turns.some((turn) => turn.model === null);
   return (
-    <div className="mt-2 overflow-x-auto">
-      <table className="w-full text-xs tabular-nums" aria-label="Cost per turn">
-        <thead className="text-muted-foreground">
-          <tr>
-            <th scope="col" className="py-1 pr-2 text-left font-normal">
-              Turn
-            </th>
-            <th scope="col" className="py-1 pr-2 text-right font-normal">
-              In
-            </th>
-            <th scope="col" className="py-1 pr-2 text-right font-normal">
-              Cached
-            </th>
-            <th scope="col" className="py-1 pr-2 text-right font-normal">
-              Writes
-            </th>
-            <th scope="col" className="py-1 pr-2 text-right font-normal">
-              Out
-            </th>
-            <th scope="col" className="py-1 text-right font-normal">
-              Cost
-            </th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-border/70">
-          {cost.turns.map((turn) => (
-            <tr key={`${turn.promptId}:${turn.model ?? ""}`}>
-              <td className="py-1 pr-2">
-                {numbers.get(turn.promptId)}
-                {/* A turn can call more than one model (Claude Code's background model): each row names its own. */}
-                {several && (
-                  <span className="block max-w-28 truncate text-muted-foreground" title={turn.model ?? undefined}>
-                    {turn.model ?? "Model not reported"}
-                  </span>
-                )}
-              </td>
-              <td className="py-1 pr-2 text-right">{tokens(turn.inputTokens)}</td>
-              <td className="py-1 pr-2 text-right">{tokens(turn.cachedTokens)}</td>
-              <td className="py-1 pr-2 text-right">{tokens(turn.cacheWriteTokens)}</td>
-              <td className="py-1 pr-2 text-right">{tokens(turn.outputTokens)}</td>
-              <td className="py-1 text-right">
-                {turn.usd !== null ? (
-                  formatUsd(turn.usd)
-                ) : (
-                  <span className="text-muted-foreground">
-                    {turn.unknown === "price" ? "Price unknown" : "Not reported"}
-                  </span>
-                )}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+    <Table className="w-full text-xs tabular-nums" aria-label="Cost per turn">
+      <TableHeader className="[&_tr]:border-0">
+        <TableRow className="border-0 hover:bg-transparent">
+          <TableHead scope="col" className="h-auto px-0 whitespace-normal py-1 pr-2 text-left font-normal">
+            Turn
+          </TableHead>
+          <TableHead scope="col" className="h-auto px-0 whitespace-normal py-1 pr-2 text-right font-normal">
+            In
+          </TableHead>
+          <TableHead scope="col" className="h-auto px-0 whitespace-normal py-1 pr-2 text-right font-normal">
+            Cached
+          </TableHead>
+          <TableHead scope="col" className="h-auto px-0 whitespace-normal py-1 pr-2 text-right font-normal">
+            Writes
+          </TableHead>
+          <TableHead scope="col" className="h-auto px-0 whitespace-normal py-1 pr-2 text-right font-normal">
+            Out
+          </TableHead>
+          <TableHead scope="col" className="h-auto px-0 whitespace-normal py-1 text-right font-normal">
+            Cost
+          </TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody className="divide-y divide-border/70">
+        {cost.turns.map((turn) => (
+          <TableRow className="border-0 hover:bg-transparent" key={`${turn.promptId}:${turn.model ?? ""}`}>
+            <TableCell className="px-0 whitespace-normal py-1 pr-2">
+              {numbers.get(turn.promptId)}
+              {/* A turn can call more than one model (Claude Code's background model): each row names its own. */}
+              {several && (
+                <span className="block max-w-28 truncate text-muted-foreground" title={turn.model ?? undefined}>
+                  {turn.model ?? "Model not reported"}
+                </span>
+              )}
+            </TableCell>
+            <TableCell className="px-0 whitespace-normal py-1 pr-2 text-right">{tokens(turn.inputTokens)}</TableCell>
+            <TableCell className="px-0 whitespace-normal py-1 pr-2 text-right">{tokens(turn.cachedTokens)}</TableCell>
+            <TableCell className="px-0 whitespace-normal py-1 pr-2 text-right">
+              {tokens(turn.cacheWriteTokens)}
+            </TableCell>
+            <TableCell className="px-0 whitespace-normal py-1 pr-2 text-right">{tokens(turn.outputTokens)}</TableCell>
+            <TableCell className="px-0 whitespace-normal py-1 text-right">
+              {turn.usd !== null ? (
+                formatUsd(turn.usd)
+              ) : (
+                <span className="text-muted-foreground">
+                  {turn.unknown === "price" ? "Price unknown" : "Not reported"}
+                </span>
+              )}
+            </TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
   );
 }
 

@@ -140,7 +140,7 @@ test("same-boot autoarchive fences SQL leases before Boat resume and reinstalls 
         if (init?.method === "GET")
           return Response.json({
             sandbox: boatSandbox({
-              id: record.providerSandboxId,
+              id: path.split("/").at(-1),
               state,
               archiveAfter: new Date(Date.now() + 3600000).toISOString(),
             }),

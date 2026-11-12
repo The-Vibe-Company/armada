@@ -1,5 +1,9 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+import type { ModalPromptPhase } from "@armada/provider-modal";
+
 /** Fixed, secret-free server phase names. Durations overlap: dispatch contains its subphases. */
 export type TimingPhase =
+  | ModalPromptPhase
   | "auth"
   | "dispatch"
   | "tool_register"
@@ -31,4 +35,14 @@ export class RequestTiming {
   header(): string {
     return [...this.durations].map(([name, duration]) => `${name};dur=${duration.toFixed(2)}`).join(", ");
   }
+}
+
+// The observer is request-local, never a property of a cached credential/provider.
+const current = new AsyncLocalStorage<RequestTiming>();
+export function withRequestTiming<T>(timing: RequestTiming, work: () => Promise<T>): Promise<T> {
+  return current.run(timing, work);
+}
+export function measureProviderPhase<T>(phase: ModalPromptPhase, work: () => Promise<T>): Promise<T> {
+  const timing = current.getStore();
+  return timing ? timing.measure(phase, work) : work();
 }

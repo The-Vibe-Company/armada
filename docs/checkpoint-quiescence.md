@@ -1,5 +1,16 @@
 # Modal checkpoint quiescence and legacy recovery (#732)
 
+> **Compatibility-window recovery:** the current CLI no longer implements the
+> orchestrator command. For existing-compute inspection/recovery only, define
+> `armada_legacy` using the exact **2.21.0** npm invocation in the
+> [pinned recovery setup](cli-orchestrators.md#existing-compute-recovery-during-the-compatibility-window)
+> and verify its version before running the commands below. Use the existing
+> owner's session and approved `ARMADA_URL`; never log credentials. The sandbox
+> replacement does not recover existing managed parents. Create/smoke examples
+> below are historical, not current deployment instructions or authorization
+> to allocate compute. Server/database retirement remains gated.
+
+
 ## Repair
 
 Legacy recovery was fixed in #755 and is confirmed stopped in production. This
@@ -68,19 +79,19 @@ UUID), and `MODEL_ACCOUNT` (the accessible Codex account UUID).
 
 ```sh
 : "${ORG:?Set the owning organization UUID}"
-armada orchestrator list --org "$ORG" --json
+armada_legacy orchestrator list --org "$ORG" --json
 # Select the full UUID matching the affected 07cdaaa1 prefix from list output:
 : "${AFFECTED_ORCHESTRATOR:?Set the full affected orchestrator UUID}"
-armada orchestrator detail "$AFFECTED_ORCHESTRATOR" --org "$ORG" --json
-armada orchestrator events "$AFFECTED_ORCHESTRATOR" --org "$ORG" --all --json
+armada_legacy orchestrator detail "$AFFECTED_ORCHESTRATOR" --org "$ORG" --json
+armada_legacy orchestrator events "$AFFECTED_ORCHESTRATOR" --org "$ORG" --all --json
 ```
 
 Do not resume an uncertain stop or assume a new key retries it. Preserve its
-original key/revision for supported reconciliation. The fresh smoke below avoids
+original key/revision for supported reconciliation. The historical smoke below avoided
 mutating an already uncertain checkpoint. Do not rerun the completed legacy
 recovery as part of this follow-up, delete provider sandboxes or edit SQL rows.
 
-### Fresh stop → resume → second stop smoke
+### Historical: fresh stop → resume → second stop smoke
 
 Keep the same `RUN_ID` and keys when retrying uncertain commands. Set
 `ORCHESTRATOR` to the full UUID returned by create. Wait for create to succeed and
@@ -90,20 +101,20 @@ revisions below are for this fresh parent with no intervening mutations.
 ```sh
 : "${ORG:?}" "${GOLDEN:?}" "${MODEL_ACCOUNT:?}"
 RUN_ID=$(date -u +%Y%m%dT%H%M%SZ)
-armada orchestrator create checkpoint-smoke --org "$ORG" --golden "$GOLDEN" --provider modal --agent codex --model gpt-6.1-sol --model-account "$MODEL_ACCOUNT" --idempotency-key "732-create-$RUN_ID" --json
+armada_legacy orchestrator create checkpoint-smoke --org "$ORG" --golden "$GOLDEN" --provider modal --agent codex --model gpt-6.1-sol --model-account "$MODEL_ACCOUNT" --idempotency-key "732-create-$RUN_ID" --json
 # Set ORCHESTRATOR to the returned full UUID, then inspect readiness:
 : "${ORCHESTRATOR:?Set the newly created orchestrator UUID}"
-armada orchestrator detail "$ORCHESTRATOR" --org "$ORG" --json
-armada orchestrator send "$ORCHESTRATOR" 'Remember checkpoint marker armada-732 and reply briefly.' --org "$ORG" --expected-revision 1 --idempotency-key "732-send-$RUN_ID" --json
-armada orchestrator events "$ORCHESTRATOR" --org "$ORG" --all --json
+armada_legacy orchestrator detail "$ORCHESTRATOR" --org "$ORG" --json
+armada_legacy orchestrator send "$ORCHESTRATOR" 'Remember checkpoint marker armada-732 and reply briefly.' --org "$ORG" --expected-revision 1 --idempotency-key "732-send-$RUN_ID" --json
+armada_legacy orchestrator events "$ORCHESTRATOR" --org "$ORG" --all --json
 # After the turn finishes (inspect detail/events again if necessary):
-armada orchestrator detail "$ORCHESTRATOR" --org "$ORG" --json
-armada orchestrator stop "$ORCHESTRATOR" --org "$ORG" --expected-revision 2 --idempotency-key "732-stop1-$RUN_ID" --json
-armada orchestrator detail "$ORCHESTRATOR" --org "$ORG" --json
-armada orchestrator resume "$ORCHESTRATOR" --org "$ORG" --expected-revision 3 --idempotency-key "732-resume-$RUN_ID" --json
-armada orchestrator detail "$ORCHESTRATOR" --org "$ORG" --json
-armada orchestrator stop "$ORCHESTRATOR" --org "$ORG" --expected-revision 4 --idempotency-key "732-stop2-$RUN_ID" --json
-armada orchestrator detail "$ORCHESTRATOR" --org "$ORG" --json
+armada_legacy orchestrator detail "$ORCHESTRATOR" --org "$ORG" --json
+armada_legacy orchestrator stop "$ORCHESTRATOR" --org "$ORG" --expected-revision 2 --idempotency-key "732-stop1-$RUN_ID" --json
+armada_legacy orchestrator detail "$ORCHESTRATOR" --org "$ORG" --json
+armada_legacy orchestrator resume "$ORCHESTRATOR" --org "$ORG" --expected-revision 3 --idempotency-key "732-resume-$RUN_ID" --json
+armada_legacy orchestrator detail "$ORCHESTRATOR" --org "$ORG" --json
+armada_legacy orchestrator stop "$ORCHESTRATOR" --org "$ORG" --expected-revision 4 --idempotency-key "732-stop2-$RUN_ID" --json
+armada_legacy orchestrator detail "$ORCHESTRATOR" --org "$ORG" --json
 ```
 
 Expect `stopped` with verified native continuity, then `ready` with the restored

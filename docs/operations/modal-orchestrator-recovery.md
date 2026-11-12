@@ -1,6 +1,17 @@
 # Modal orchestrator recovery (#728)
 
-After deploying the fix, use owner-authorized `armada orchestrator detail`
+> **Compatibility-window recovery:** the current CLI no longer implements the
+> orchestrator command. For existing-compute inspection/recovery only, define
+> `armada_legacy` using the exact **2.21.0** npm invocation in the
+> [pinned recovery setup](../cli-orchestrators.md#existing-compute-recovery-during-the-compatibility-window)
+> and verify its version before running the commands below. Use the existing
+> owner's session and approved `ARMADA_URL`; never log credentials. The sandbox
+> replacement does not recover existing managed parents. Create/smoke examples
+> below are historical, not current deployment instructions or authorization
+> to allocate compute. Server/database retirement remains gated.
+
+
+After deploying the fix, use owner-authorized `armada_legacy orchestrator detail`
 to inspect the current revision before each mutation. A completed idempotency
 key replays its original receipt; a new recovery attempt needs a new key.
 
@@ -15,12 +26,12 @@ request recovery: that key only replays its immutable uncertain receipt.
 
 ```sh
 export ORG='<Armada organization UUID>'
-armada orchestrator detail ad7e39cb-da9c-4088-8fb9-31b55fff270e --org "$ORG" --json
-armada orchestrator recover ad7e39cb-da9c-4088-8fb9-31b55fff270e --org "$ORG" --expected-revision 3 --idempotency-key recover-ad7e39cb-v1 --json
-armada orchestrator detail ad7e39cb-da9c-4088-8fb9-31b55fff270e --org "$ORG" --json
+armada_legacy orchestrator detail ad7e39cb-da9c-4088-8fb9-31b55fff270e --org "$ORG" --json
+armada_legacy orchestrator recover ad7e39cb-da9c-4088-8fb9-31b55fff270e --org "$ORG" --expected-revision 3 --idempotency-key recover-ad7e39cb-v1 --json
+armada_legacy orchestrator detail ad7e39cb-da9c-4088-8fb9-31b55fff270e --org "$ORG" --json
 
-armada orchestrator recover 52b264fd-6a22-4dd7-91ba-1f9358aae7c2 --org "$ORG" --expected-revision 1 --idempotency-key recover-52b264fd-v1 --json
-armada orchestrator detail 52b264fd-6a22-4dd7-91ba-1f9358aae7c2 --org "$ORG" --json
+armada_legacy orchestrator recover 52b264fd-6a22-4dd7-91ba-1f9358aae7c2 --org "$ORG" --expected-revision 1 --idempotency-key recover-52b264fd-v1 --json
+armada_legacy orchestrator detail 52b264fd-6a22-4dd7-91ba-1f9358aae7c2 --org "$ORG" --json
 ```
 
 Revision 3 is the revision reserved by the reported stop with expected revision 2.
@@ -37,7 +48,7 @@ checks the original create reservation, ownership tags, physical ID and generati
 before terminating and requires positive exit evidence. Stop recovery is limited
 to the original SQL/native generation 1, which is the reported case.
 
-## Fresh create → send → stop → resume → stop smoke
+## Historical: fresh create → send → stop → resume → stop smoke
 
 Use an authorized Modal golden and Codex model account. Set these non-secret
 resource IDs and an approved model ID; use a fresh run label each time.
@@ -45,8 +56,8 @@ resource IDs and an approved model ID; use a fresh run label each time.
 ```sh
 export GOLDEN='<Modal golden UUID>' MODEL_ACCOUNT='<Codex account UUID>' MODEL='<approved Codex model>'
 RUN="modal-728-$(date +%s)"
-ID=$(armada orchestrator create "$RUN" --org "$ORG" --golden "$GOLDEN" --provider modal --agent codex --model "$MODEL" --model-account "$MODEL_ACCOUNT" --idempotency-key "$RUN-create" --json | jq -er '.orchestratorId')
-armada orchestrator detail "$ID" --org "$ORG" --json
+ID=$(armada_legacy orchestrator create "$RUN" --org "$ORG" --golden "$GOLDEN" --provider modal --agent codex --model "$MODEL" --model-account "$MODEL_ACCOUNT" --idempotency-key "$RUN-create" --json | jq -er '.orchestratorId')
+armada_legacy orchestrator detail "$ID" --org "$ORG" --json
 ```
 
 Create is asynchronous. Repeat detail until ready; if blocked, inspect events
@@ -54,16 +65,16 @@ instead of sending. Then execute each step only after the previous receipt is
 succeeded; inspect detail/events until the sent turn has finished before stop.
 
 ```sh
-revision() { armada orchestrator detail "$ID" --org "$ORG" --json | jq -er '.orchestrator.revision'; }
-armada orchestrator send "$ID" 'Reply with exactly: modal-728-ok' --org "$ORG" --expected-revision "$(revision)" --idempotency-key "$RUN-send" --json
-armada orchestrator events "$ID" --org "$ORG" --all --json
+revision() { armada_legacy orchestrator detail "$ID" --org "$ORG" --json | jq -er '.orchestrator.revision'; }
+armada_legacy orchestrator send "$ID" 'Reply with exactly: modal-728-ok' --org "$ORG" --expected-revision "$(revision)" --idempotency-key "$RUN-send" --json
+armada_legacy orchestrator events "$ID" --org "$ORG" --all --json
 # After the turn finishes:
-armada orchestrator stop "$ID" --org "$ORG" --expected-revision "$(revision)" --idempotency-key "$RUN-stop-1" --json
-armada orchestrator detail "$ID" --org "$ORG" --json
-armada orchestrator resume "$ID" --org "$ORG" --expected-revision "$(revision)" --idempotency-key "$RUN-resume" --json
-armada orchestrator detail "$ID" --org "$ORG" --json
-armada orchestrator stop "$ID" --org "$ORG" --expected-revision "$(revision)" --idempotency-key "$RUN-stop-2" --json
-armada orchestrator detail "$ID" --org "$ORG" --json
+armada_legacy orchestrator stop "$ID" --org "$ORG" --expected-revision "$(revision)" --idempotency-key "$RUN-stop-1" --json
+armada_legacy orchestrator detail "$ID" --org "$ORG" --json
+armada_legacy orchestrator resume "$ID" --org "$ORG" --expected-revision "$(revision)" --idempotency-key "$RUN-resume" --json
+armada_legacy orchestrator detail "$ID" --org "$ORG" --json
+armada_legacy orchestrator stop "$ID" --org "$ORG" --expected-revision "$(revision)" --idempotency-key "$RUN-stop-2" --json
+armada_legacy orchestrator detail "$ID" --org "$ORG" --json
 ```
 
 Both stops must report stopped/native continuity; resume sends no extra prompt.
