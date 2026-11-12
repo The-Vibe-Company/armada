@@ -401,6 +401,37 @@ export async function resolveGitHubAccess(deps: GitHubResolveDeps, userId: strin
         current &&
         (current.refreshTokenEnc.length !== connection.refreshTokenEnc.length ||
           !current.refreshTokenEnc.every((byte, index) => byte === connection.refreshTokenEnc[index]));
+      // Another replica can have completed rotation before our fence read. Reuse
+      // only its validated same-account successor; never replay consumed material.
+      if (
+        changed &&
+        current.userId === userId &&
+        current.githubId === connection.githubId &&
+        !current.revokedAt &&
+        current.accessTokenEnc &&
+        current.accessExpiresAt &&
+        current.accessExpiresAt.getTime() > (deps.now ?? (() => new Date()))().getTime() + minimumLifetimeMs
+      ) {
+        try {
+          const recovered = await connectedFromToken(
+            current,
+            await decryptSecret(new Uint8Array(current.accessTokenEnc), deps.encryptionKey),
+            request,
+            store,
+            userId,
+            false,
+            current.accessExpiresAt,
+          );
+          if (
+            recovered.status !== "connected" ||
+            current.accessExpiresAt.getTime() > (deps.now ?? (() => new Date()))().getTime() + minimumLifetimeMs
+          )
+            return recovered;
+        } catch (error) {
+          if (error instanceof EncryptionKeyError) throw error;
+          // Do not expose decryption, database or HTTP diagnostics to the sandbox.
+        }
+      }
       return {
         status: "unavailable",
         message: changed

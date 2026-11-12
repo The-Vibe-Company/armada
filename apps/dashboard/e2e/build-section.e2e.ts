@@ -143,7 +143,8 @@ test("on a phone the list fits the width and the panel is a sheet over it", asyn
   );
   // A modal sheet: named by its title, the list behind it out of reach, Tab kept inside.
   await expect(page.getByRole("dialog", { name: "web-frontend" })).toBeVisible();
-  await expect(page.locator("[inert]").filter({ has: row })).toHaveCount(1);
+  await expect(page.getByRole("button", { name: "New", exact: true })).toHaveCount(0);
+  await expect(page.locator("[data-resource-panel-title]")).toBeFocused();
   await page.keyboard.press("Shift+Tab");
   expect(await sheet.evaluate((element) => element.contains(document.activeElement))).toBe(true);
   await page.keyboard.press("Tab");
