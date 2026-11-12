@@ -5,13 +5,15 @@ import { runArtifactInstallMode } from "./artifact-cache.ts";
 import { configureClaudeEndpoint } from "./claude-endpoint.ts";
 import { configureCodexEndpoint } from "./codex-endpoint.ts";
 import { enrolRuntime, RuntimeDialout } from "./dialout.ts";
+import { prepareEnrolledHarness } from "./enrolled-harness.ts";
 import { execCredentialValues, validateExecEnvironment } from "./exec-env.ts";
 import { GitHubBroker, type GitHubBrokerConfiguration } from "./github-broker.ts";
 import { type installGitHubTools, prepareGitHubTools, runGitHubInstallMode } from "./github-tools.ts";
+import { runHarnessInstallMode } from "./harness-cache.ts";
 import { checkpointIdentityKey } from "./identity.ts";
 import { ClaudeDriver, CodexDriver, type Grant, Journal, type McpConfiguration, Runner } from "./index.ts";
 import { testModelConnection } from "./model-connection-test.ts";
-import { quiesceNativeCodex, readNativeCodexAuth } from "./native-auth.ts";
+import { quiesceNativeCodex, readNativeCodexAuth, removeNativeCodexAuth } from "./native-auth.ts";
 import type { ExecEnvironment } from "./protocol.ts";
 import { createRedactor, HarnessState } from "./state.ts";
 
@@ -27,6 +29,8 @@ async function main(dialout = false) {
     grant: Grant;
     claudeExecutable: string;
     codexExecutable: string;
+    selectedHarness?: unknown;
+    artifactManifest?: unknown;
     claudeEnv: Record<string, string>;
     codexEnv: Record<string, string>;
     mcp?: McpConfiguration;
@@ -38,13 +42,17 @@ async function main(dialout = false) {
     execEnv?: ExecEnvironment;
     credentialFreeBuilder?: boolean;
   };
-  if (enrolled)
+  if (enrolled) {
+    // Enrolment owns selection and credentials. Never trust a preinstalled CLI
+    // path from the image, or install/change harness versions during commands.
+    Object.assign(config, await prepareEnrolledHarness(input.serverUrl, config));
     config.grant = {
       token: enrolled.runtimeToken,
       sandboxId: enrolled.sandboxId,
       generation: enrolled.epoch,
       expiresAt: config.grant.expiresAt,
     };
+  }
   if (config.credentialFreeBuilder !== undefined && typeof config.credentialFreeBuilder !== "boolean")
     throw Error("invalid_exec_environment");
   if (config.subscription && config.codexAuthJson) throw Error("subscription_auth_modes_conflict");
@@ -186,7 +194,12 @@ async function main(dialout = false) {
   const sourceIdentity = journal.assertRestoreSource(config.grant);
   const fenced = journal.checkpointPending(config.grant);
   let survivingAuth: string | undefined;
-  if (!fenced && config.nativeAuthRevision !== undefined) {
+  if (!fenced && config.subscription) {
+    await quiesceNativeCodex(config.root, config.codexExecutable);
+    readNativeCodexAuth(config.root, (values) => journal.registerSecrets(values));
+    journal.sanitize();
+  }
+  if (!fenced && !config.subscription && config.nativeAuthRevision !== undefined) {
     await quiesceNativeCodex(config.root, config.codexExecutable);
     survivingAuth = readNativeCodexAuth(config.root, (values) => journal.registerSecrets(values));
     if (survivingAuth) {
@@ -217,7 +230,11 @@ async function main(dialout = false) {
     config.claudeEnv.CLAUDE_CONFIG_DIR = `${config.root}/claude`;
     config.codexEnv.CODEX_HOME = `${config.root}/codex`;
     await configureCodexEndpoint(config.codexEnv.CODEX_HOME, codexEndpoint);
-    if (config.codexAuthJson) await writeFile(`${config.root}/codex/auth.json`, config.codexAuthJson, { mode: 0o600 });
+    if (config.subscription) {
+      removeNativeCodexAuth(config.root, (values) => journal.registerSecrets(values));
+      journal.sanitize();
+    } else if (config.codexAuthJson)
+      await writeFile(`${config.root}/codex/auth.json`, config.codexAuthJson, { mode: 0o600 });
   }
   const subscriptionRevisions = new Map<string, number>();
   const subscriptionAccess = config.subscription
@@ -374,6 +391,14 @@ async function main(dialout = false) {
     try {
       await channel.run(
         (request) => {
+          const harness =
+            request.op === "prompt" || request.op === "resumeNativeSession"
+              ? request.input?.harness
+              : request.op === "configureReadableVariables" || request.op === "testModelConnection"
+                ? request.harness
+                : undefined;
+          if (harness !== undefined && harness !== config.selectedHarness)
+            return Promise.resolve(Response.json({ error: "unselected_runtime_harness" }, { status: 409 }));
           // Exec ownership/termination is a separate parity slice. Never start a detached
           // shell that could outlive this initial dial-out client on revocation.
           if (request.op === "exec")
@@ -411,7 +436,9 @@ void (
     ? runGitHubInstallMode()
     : process.argv[2] === "install-artifact"
       ? runArtifactInstallMode()
-      : main(process.argv[2] === "dialout")
+      : process.argv[2] === "install-harness"
+        ? runHarnessInstallMode()
+        : main(process.argv[2] === "dialout")
 ).catch(() => {
   process.stderr.write("runner_boot_failed\n");
   process.exitCode = 1;

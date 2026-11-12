@@ -84,11 +84,9 @@ than being overwritten. Other Skillpack package conflicts follow the native
 installer policy.
 The optional repo must exist in that golden. Select a current named **Codex**
 model account owned/authorized for the caller, a supported model and optional
-effort. Rotating native Codex accounts retain ordinary exclusive ownership: a
-parent-owned native account cannot also be claimed by a child. The composition
-consents only to the selected golden/account; child launch must fail before
-allocation when that account is busy, not bypass its lifecycle hooks. A shareable
-API-key account can launch children under its normal policy. Keep the caller's
+effort. Subscription accounts are shared just like API keys: parents, children
+and ordinary sandboxes may use the same authorized account concurrently. Codex
+renewal stays server-owned; no account reservation or release is required. Keep the caller's
 GitHub connection valid when the golden requires it.
 
 Restart the server through the normal deployment process, then authenticate as

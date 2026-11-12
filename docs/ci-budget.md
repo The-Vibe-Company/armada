@@ -18,7 +18,13 @@ local actions and CI workflow. Dashboard-only and documentation-only changes rep
 the existing required names without building. Main/manual runs always build everything.
 A classifier failure cannot produce a green budget gate.
 
-The budget guard takes a single API snapshot after the required jobs, counting elapsed
+The actual budget guard runs inside the required **Lint, typecheck and test**
+verification aggregate, after its normal static/unit admission checks and all other
+required prerequisites. The **CI budget (120s)** name is retained as an independent
+fast compatibility marker pointing to that combined enforcement. Neither a second
+serial runner queue nor a concurrent snapshot of an unfinished verification gate is
+needed. A budget violation fails the required verification aggregate itself.
+It counts elapsed
 time from workflow start, including job queue/setup and aggregate gates, not just step
 execution. It fails with an author-facing summary on late or unsuccessful verdicts.
 It does not poll, cancel work, raise timeouts or turn skipped tests green.

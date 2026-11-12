@@ -9,6 +9,7 @@ import {
   parseCodexEndpoint,
   parseCredentialKind,
   parseCredentialValue,
+  parseModelPriceOverrides,
   parseRole,
   VaultError,
 } from "@armada/core";
@@ -161,12 +162,23 @@ async function members(argv: readonly string[], io: VaultIo): Promise<number> {
 
 export async function credsCommand(argv: readonly string[], io: VaultIo): Promise<number> {
   const [sub, ...rest] = argv;
-  const args = parseArgs(rest, ["--id", "--expected-version", "--base-url", "--api-version", "--endpoint-auth"]);
+  const priceOptions = ["--price-model", "--price-input", "--price-cached-input", "--price-output"];
+  const args = parseArgs(rest, [
+    "--id",
+    "--expected-version",
+    "--base-url",
+    "--api-version",
+    "--endpoint-auth",
+    ...priceOptions,
+  ]);
   const org = single(args, "--org");
   const scope = org === undefined ? "user" : "org";
   if (
     sub !== "set" &&
-    (args.options.has("--base-url") || args.options.has("--api-version") || args.options.has("--endpoint-auth"))
+    (args.options.has("--base-url") ||
+      args.options.has("--api-version") ||
+      args.options.has("--endpoint-auth") ||
+      priceOptions.some((name) => args.options.has(name)))
   )
     throw usage("Endpoint options are only supported by creds set openai or anthropic.");
   switch (sub) {
@@ -299,10 +311,28 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
           );
         }
       }
+      let prices: ReturnType<typeof parseModelPriceOverrides> | undefined;
+      if (priceOptions.some((name) => args.options.has(name))) {
+        if (!endpoint) throw usage("Price options require creds set openai or anthropic --base-url.");
+        const model = single(args, "--price-model");
+        const input = single(args, "--price-input");
+        const output = single(args, "--price-output");
+        const cacheRead = single(args, "--price-cached-input");
+        if (!model || input === undefined || output === undefined)
+          throw usage(
+            "Supply --price-model, --price-input and --price-output together; --price-cached-input is optional.",
+          );
+        prices = parseModelPriceOverrides({
+          [model]: { input, output, ...(cacheRead !== undefined ? { cacheRead } : {}) },
+        });
+      }
       const raw = await readValue(args, io);
       if (endpoint && raw.trim().startsWith("{"))
         throw usage("With --base-url, supply only the API key through stdin or --file, not connection JSON.");
-      const value = parseCredentialValue(kind, endpoint ? JSON.stringify({ endpoint, apiKey: raw.trim() }) : raw);
+      const value = parseCredentialValue(
+        kind,
+        endpoint ? JSON.stringify({ endpoint, apiKey: raw.trim(), ...(prices ? { prices } : {}) }) : raw,
+      );
       await control(
         io.auth,
         single(args, "--id") !== undefined || single(args, "--name") !== undefined ? "creds/accounts/set" : "creds/set",

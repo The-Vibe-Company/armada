@@ -4,7 +4,7 @@ const run = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
 const jobs = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
 const required = jobs.filter(
   (job) =>
-    job.name !== "CI budget (120s)" &&
+    job.name !== "Lint, typecheck and test" &&
     job.name !== "Binary (darwin-x64)" &&
     job.name !== "Informational Golden OS recipe (actual provider image)",
 );

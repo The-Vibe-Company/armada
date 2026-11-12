@@ -7,7 +7,7 @@ CI and its budget guard are unchanged.
 
 The candidate uses 24 isolated jobs, one mock/app/browser worker in each. Playwright
 fully-parallel sharding distributes individual tests rather than making the largest
-spec one indivisible shard. A collection check selects **264 tests in 42 files**;
+spec one indivisible shard. A collection check selects **263 tests in 42 files**;
 new tests are discovered automatically. Each shard uses zero retries and unchanged
 test assertions. The pinned Noble container supplies system libraries; Chromium
 comes from the installed lockfile version, not the container's old browser revision.

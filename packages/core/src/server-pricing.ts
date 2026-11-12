@@ -15,6 +15,7 @@ export interface PriceSnapshot {
   revision: string;
   connectionId: string | null;
   rates: TokenRates;
+  /** Legacy catalogue complexity marker, not a veto on rate-backed default token classes. */
   unsupported: boolean;
 }
 export interface PriceContext {
@@ -81,8 +82,8 @@ export function priceTurn(
   turn: TurnTokenUsage,
   harness: Harness,
   snapshot: PriceSnapshot | null,
-  /** Verify native TTL for public vendor rates. Explicit connection rates are flat across lifetimes. */
-  cacheWriteTtl: "5m" | "30m" | null = null,
+  /** Missing TTL uses the provider default rate; explicit non-default/conflicting TTL stays unknown. */
+  cacheWriteTtl: "5m" | "30m" | "other" | null = null,
 ): PricedTurn {
   // Copy so neither a subsequent connection edit nor caller mutation changes this result's provenance.
   const frozen = snapshot ? { ...snapshot, rates: { ...snapshot.rates } } : null;
@@ -94,7 +95,6 @@ export function priceTurn(
     frozen.provider !== (harness === "claude" ? "anthropic" : "openai")
   )
     return unknown("price");
-  if (frozen.unsupported) return unknown("pricing_dimensions");
   const { inputTokens: input, outputTokens: output, cachedTokens: cached, cacheWriteTokens: write } = turn;
   if (!count(input) || !count(output) || !count(cached) || !count(write)) return unknown("tokens");
   const reasoning = turn.reasoningTokens;
@@ -104,11 +104,12 @@ export function priceTurn(
   if (
     write > 0 &&
     frozen.source === "models.dev" &&
-    (cacheWriteTtl === null || cacheWriteTtl !== (harness === "claude" ? "5m" : "30m"))
+    cacheWriteTtl !== null &&
+    cacheWriteTtl !== (harness === "claude" ? "5m" : "30m")
   )
     return unknown("pricing_dimensions");
   const rates = frozen.rates;
-  if (rates.reasoning !== null && !count(reasoning)) return unknown("tokens");
+  if (output > 0 && rates.reasoning !== null && !count(reasoning)) return unknown("tokens");
   const buckets: [number, string | null][] = [
     [uncached, rates.input],
     [cached, rates.cacheRead],

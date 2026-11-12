@@ -37,6 +37,7 @@ test("budget guard rejects late, failed, missing and queued verdicts", () => {
       [[{ ...success, completed_at: new Date(start + 121_000).toISOString() }], 1],
       [[{ ...success, conclusion: "failure" }], 1],
       [[{ ...success, conclusion: null, status: "queued" }], 1],
+      [[success, { name: "Lint, typecheck and test", conclusion: null, status: "in_progress" }], 0],
       [[], 1],
     ] as const) {
       writeFileSync(join(dir, "jobs.json"), JSON.stringify(jobs));
