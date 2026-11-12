@@ -202,6 +202,15 @@ export {
   resolveModelChoice,
 } from "./models.ts";
 export * from "./orchestrator.ts";
+export type {
+  OttoCompleteness,
+  OttoFact,
+  OttoOrphan,
+  OttoPage,
+  OttoResource,
+  OttoTask,
+  OttoTruth,
+} from "./otto/index.ts";
 export {
   dedupeEvents,
   type PromptOutcome,

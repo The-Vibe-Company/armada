@@ -2814,6 +2814,101 @@ export type Database = {
           },
         ];
       };
+      otto_resources: {
+        Row: {
+          org_id: string;
+          repository: string;
+          kind: string;
+          external_id: string;
+          task_issue: number | null;
+          owner_state: string;
+          owner_id: string | null;
+          access_owner_id: string | null;
+          reason: string;
+          observed_at: string | null;
+          evidence: Json;
+        };
+        Insert: {
+          org_id: string;
+          repository: string;
+          kind: string;
+          external_id: string;
+          task_issue?: number | null;
+          owner_state: string;
+          owner_id?: string | null;
+          access_owner_id?: string | null;
+          reason: string;
+          observed_at?: string | null;
+          evidence: Json;
+        };
+        Update: {
+          org_id?: string;
+          repository?: string;
+          kind?: string;
+          external_id?: string;
+          task_issue?: number | null;
+          owner_state?: string;
+          owner_id?: string | null;
+          access_owner_id?: string | null;
+          reason?: string;
+          observed_at?: string | null;
+          evidence?: Json;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "otto_resources_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      otto_tasks: {
+        Row: {
+          org_id: string;
+          repository: string;
+          issue_number: number;
+          title: string;
+          state: string;
+          fact_id: string;
+          observed_at: string;
+        };
+        Insert: {
+          org_id: string;
+          repository: string;
+          issue_number: number;
+          title: string;
+          state: string;
+          fact_id: string;
+          observed_at: string;
+        };
+        Update: {
+          org_id?: string;
+          repository?: string;
+          issue_number?: number;
+          title?: string;
+          state?: string;
+          fact_id?: string;
+          observed_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "otto_tasks_fact_id_fkey";
+            columns: ["fact_id"];
+            isOneToOne: false;
+            referencedRelation: "otto_facts";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "otto_tasks_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       personal_skill_defaults: {
         Row: {
           user_id: string;
@@ -3752,6 +3847,8 @@ export type OrganizationInvitationRow = Database["public"]["Tables"]["organizati
 export type Org = Database["public"]["Tables"]["orgs"]["Row"];
 export type OttoFactRow = Database["public"]["Tables"]["otto_facts"]["Row"];
 export type OttoGitHubPageRow = Database["public"]["Tables"]["otto_github_pages"]["Row"];
+export type OttoResourceRow = Database["public"]["Tables"]["otto_resources"]["Row"];
+export type OttoTaskRow = Database["public"]["Tables"]["otto_tasks"]["Row"];
 export type PersonalSkillDefaultsRow = Database["public"]["Tables"]["personal_skill_defaults"]["Row"];
 export type ReadableVariableRow = Database["public"]["Tables"]["readable_variables"]["Row"];
 export type ResourceObservation = Database["public"]["Tables"]["resource_observations"]["Row"];

@@ -16,6 +16,7 @@ import {
   VaultError,
 } from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
+import { authenticateCaller } from "./caller.ts";
 import { configFromEnv } from "./config.ts";
 import { type ConfiguredControlOptions, handleControlRequest, templateRuntime } from "./control.ts";
 import { createCredentialBindingRecovery } from "./credential-binding-recovery.ts";
@@ -41,6 +42,7 @@ import { orchestratorDiagnosticLog } from "./orchestrator-diagnostics.ts";
 import { createProductionOrchestrators } from "./orchestrator-production.ts";
 import { orchestratorScopedMcpUrl } from "./orchestrator-scoped-gateway.ts";
 import type { OrchestratorServiceBundle } from "./orchestrator-services.ts";
+import { createOttoApi } from "./otto/api.ts";
 import { createOttoRuntime } from "./otto/runtime.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
 import { pruneServerRetention } from "./retention-maintenance.ts";
@@ -344,7 +346,18 @@ export async function startServer(
     modalTokensFor: modal.modalTokensFor,
     goldenTarget: modal.goldenTarget,
     routes: [
-      ...(otto ? [otto.route] : []),
+      ...(otto
+        ? [
+            otto.route,
+            createOttoApi(sql, otto.scope, (request) =>
+              authenticateCaller(request.headers.get("authorization"), {
+                store: authStore,
+                supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
+                now: new Date(),
+              }),
+            ),
+          ]
+        : []),
       createRuntimeArtifactRoute(env.ARMADA_RUNTIME_ARTIFACT_DIR),
       runtimeEnrolments.route,
       runtimeEvents.route,
@@ -436,7 +449,6 @@ export async function startServer(
     goldenRetirements,
     () => pruneServerRetention(sql, control.applicationVault, new Date()),
     [
-      ...(otto ? [otto.lane] : []),
       ...(orchestrators
         ? [
             orchestrators.runtime.createWorker,
@@ -517,7 +529,10 @@ export async function startServer(
     },
   });
   const routineWorker = startRoutineWorker(routineScheduler, options.logError);
-  const allWorkersDone = Promise.all([workers.done, invitationWorker?.done, routineWorker.done]).then(() => {});
+  const ottoWorker = otto?.start();
+  const allWorkersDone = Promise.all([workers.done, invitationWorker?.done, routineWorker.done, ottoWorker?.done]).then(
+    () => {},
+  );
   const stop = server.stop.bind(server);
   let shutdown: Promise<void> | undefined;
   server.stop = (closeActiveConnections?: boolean) => {
@@ -529,6 +544,7 @@ export async function startServer(
     workers.stop();
     invitationWorker?.stop();
     routineWorker.stop();
+    ottoWorker?.stop();
     // Requests may still use the gateway and SQL while finishing a launch.
     // Drain handlers and POST response streams; idle GET SSE needs
     // MCP close to finish. SQL stays alive until the native HTTP drain completes.
