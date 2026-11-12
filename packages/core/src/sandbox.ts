@@ -1,6 +1,7 @@
 import type { Harness } from "./contract.ts";
 import type { SandboxStatus } from "./database.types.ts";
 import type { Sql } from "./golden-store.ts";
+import { isHarness } from "./harnesses.ts";
 import type { MachineSizeEvidence } from "./machine-size.ts";
 import type { OrchestratorSkillReceipt } from "./orchestrator.ts";
 import { type Provider, ProviderError } from "./provider.ts";
@@ -299,7 +300,7 @@ export function createSqlSandboxStore(sql: Sql, options: { turnModels?: true } =
 }
 
 export function mapSandboxRow(row: SandboxRow): SandboxRecord {
-  if (row.harness !== "claude" && row.harness !== "codex") throw new Error("Sandbox row harness is invalid.");
+  if (!isHarness(row.harness)) throw new Error("Sandbox row harness is invalid.");
   if (!isSandboxProvider(row.provider)) throw new Error("Sandbox row provider is invalid.");
   const lifecycleGeneration = decodeLifecycleGeneration(row.lifecycle_generation);
   return {
