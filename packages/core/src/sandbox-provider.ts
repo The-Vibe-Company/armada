@@ -36,13 +36,31 @@ export const PROVIDER_LIMITS: Readonly<Record<SandboxProviderId, ProviderLimits>
  */
 export interface HostCapabilities {
   readonly goldenRestore: "fresh-fork" | "shared-source";
+  /** Dispose a completed disposable builder without creating an unwanted stop checkpoint. */
+  readonly goldenBuilderCleanup: "stop" | "delete";
+  /**
+   * Abandoned builds either stop their recorded builder, or reconcile a durable
+   * reservation and dispose only through its ownership-checked provider port.
+   * Reservation-backed sources must be retained once snapshot/publication starts.
+   */
+  readonly goldenBuilderRecovery: "stop-recorded" | "dispose-reservation";
   /** Snapshot metadata must attest the immutable management credential authority before retirement. */
   readonly snapshotManagementAuthority: boolean;
 }
 
 export const HOST_CAPABILITIES: Readonly<Record<SandboxProviderId, HostCapabilities>> = {
-  boat: { goldenRestore: "fresh-fork", snapshotManagementAuthority: false },
-  modal: { goldenRestore: "shared-source", snapshotManagementAuthority: true },
+  boat: {
+    goldenRestore: "fresh-fork",
+    goldenBuilderCleanup: "stop",
+    goldenBuilderRecovery: "stop-recorded",
+    snapshotManagementAuthority: false,
+  },
+  modal: {
+    goldenRestore: "shared-source",
+    goldenBuilderCleanup: "delete",
+    goldenBuilderRecovery: "dispose-reservation",
+    snapshotManagementAuthority: true,
+  },
 };
 
 /**

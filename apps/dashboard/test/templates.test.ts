@@ -112,9 +112,12 @@ describe("template DTOs", () => {
       state: "succeeded",
       id: REGION,
     });
-    expect(parseLaunchOutcome({ state: "failed", reason: "variable_unavailable" })).toEqual({
+    expect(
+      parseLaunchOutcome({ state: "failed", reason: "credential_busy", message: "Choose another account." }),
+    ).toEqual({
       state: "failed",
-      reason: "variable_unavailable",
+      reason: "credential_busy",
+      message: "Choose another account.",
     });
     expect(parseLaunchOutcome({ state: "allocating", id: REGION })).toEqual({ state: "reconciling", id: REGION });
     expect(parseLaunchOutcome(null)).toBeNull();

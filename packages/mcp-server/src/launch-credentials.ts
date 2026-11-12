@@ -106,6 +106,23 @@ export function launchCredentials(
       // Modal already hydrates this exact sealed state in its private stdin bootstrap.
       return true;
     },
+    async markNeverStarted(actor, credentials, sandboxId) {
+      const binding = credentials.binding;
+      if (ownership && binding)
+        return ownership.markNeverStarted(actor, binding.credentialId, binding.credentialVersion, sandboxId);
+      return false;
+    },
+    async releaseNeverStarted(actor, credentials, sandboxId, deletePhysical) {
+      const binding = credentials.binding;
+      if (ownership && binding)
+        await ownership.releaseNeverStarted(
+          actor,
+          binding.credentialId,
+          binding.credentialVersion,
+          sandboxId,
+          deletePhysical,
+        );
+    },
     async releaseUnallocated(_actor, credentials, sandboxId) {
       const binding =
         "binding" in credentials
@@ -183,8 +200,8 @@ export async function exposedSecrets(
       if (!SECRET_KINDS.includes(row.kind)) continue;
       const value = await decryptSecret(new Uint8Array(row.valueEnc), encryptionKey);
       values.push(value, ...jsonLeaves(value));
-      if (row.kind === "openai" && value.startsWith("{")) {
-        const connection = JSON.parse(parseCredentialValue("openai", value));
+      if ((row.kind === "openai" || row.kind === "anthropic") && value.startsWith("{")) {
+        const connection = JSON.parse(parseCredentialValue(row.kind, value));
         values.push(connection.apiKey);
       }
     }

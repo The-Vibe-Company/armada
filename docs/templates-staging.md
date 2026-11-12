@@ -244,3 +244,21 @@ Coordinator staging checks (workers have no staging credentials):
 5. Confirm readable-only templates and ordinary lifecycle behavior still work.
 
 Later: recovery fencing, taint policy, event/log redaction and erasure semantics.
+
+### Refused launch diagnostics (#1174)
+
+Staging check: **template refusal parity and account switch**. On staging only,
+launch an unpinned template with a busy subscription account, a refused credential,
+and a provider-plan refusal. Compare API/CLI `reason` and `message` with a direct
+launch; the dashboard must display the actionable message, not a generic failure.
+Retry the same request key and verify the saved refusal is unchanged. Choose an
+eligible alternative account in the dialog and submit a new request; a revision
+with a pinned account must not allow an override. Never retry an uncertain
+(`reconciling`) allocation as a new request. Account reconciliation/release is
+covered separately by #1176.
+
+For a busy account with a recorded holder, verify the dialog names the account
+and links its sandbox only while the caller can access that sandbox. Repeat the
+same request after the holder becomes another user's private sandbox: the link
+must disappear. Golden-without-snapshot and provider-plan refusals must retain
+the direct-launch code (for example `conflict` and `payment_required`).

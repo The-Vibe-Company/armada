@@ -16,7 +16,13 @@ import { GITHUB_TOKEN_PATTERN } from "./golden-scan.ts";
 import { GOLDEN_SKILLPACK_SETUP } from "./golden-skillpack.ts";
 import type { HelperReceipt } from "./helper.ts";
 import { isNonMutatingProviderRefusal, type Provider, ProviderError } from "./provider.ts";
-import { assertProviderOf, isSandboxProvider, type ModalBinding, type SandboxProviderId } from "./sandbox-provider.ts";
+import {
+  assertProviderOf,
+  HOST_CAPABILITIES,
+  isSandboxProvider,
+  type ModalBinding,
+  type SandboxProviderId,
+} from "./sandbox-provider.ts";
 
 const MAX_REPOS = 16;
 
@@ -379,9 +385,9 @@ export class GoldenCreateService {
       });
       let stopped = false;
       if (builder && !uncertainSnapshot && !uncertainPublication) {
-        // A disposable Modal builder must not create a durable stop checkpoint.
+        // Use the host cleanup mode: stopping can create an unwanted durable checkpoint.
         try {
-          if (providerId === "modal") {
+          if (HOST_CAPABILITIES[providerId].goldenBuilderCleanup === "delete") {
             const receipt = await provider.delete({ sandboxId: builder.id });
             stopped = receipt.status === "deleted";
             if (!stopped) cleanupSafe = false;
