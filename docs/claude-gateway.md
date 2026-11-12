@@ -41,6 +41,30 @@ proxy is hosted. Bedrock/Vertex/Foundry-native switches remain Later, as do
 additional header maps. See the [official gateway configuration](https://code.claude.com/docs/en/llm-gateway-connect)
 for the API-key and bearer header mapping and [supported-model limitations](https://code.claude.com/docs/en/llm-gateway).
 
+## CLI gateway fields
+
+Read only the key from stdin or a private file, and give the non-secret URL
+and authentication mechanism as separate options:
+
+```sh
+armada creds set anthropic --name gateway --base-url 'https://gateway.example.com/anthropic' --endpoint-auth bearer --file /path/to/private-key
+```
+
+Use `--endpoint-auth api-key` for an x-api-key gateway. Bearer is the default
+when the option is omitted. `--api-version` is Codex-only and is refused for
+Claude. Keys are never arguments; delete private input files afterwards.
+Personal scope is the default, `--org NAME` selects organization scope, and
+`--id UUID --expected-version N` replaces a named account. `--json` keeps the
+existing write-only success shape. Claude gateways are Modal-only and support
+Claude models, not arbitrary non-Claude models.
+
+Coordinator staging addition: create the account with these fields using the
+owner-held endpoint/key, find its ID with `armada creds list --json`, select a
+Modal golden and Claude model at launch, and ask for MODEL_OK initially and on
+the next turn. Expect MODEL_OK through the selected gateway path/header.
+Repeat for each auth mode the gateway supports. Inspect output/argv: no key.
+No migration or new setting is required; server/runtime must include #1195.
+
 ## Coordinator staging check
 
 1. Privately create the named account above with the owner-provided gateway

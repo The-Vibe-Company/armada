@@ -237,6 +237,10 @@ export function createSqlData(sql: Sql): DataSource {
 
     const sandboxes: ServerSandboxStore = {
       activityOwnership: true,
+      async recordUsagePricingContext(id, context) {
+        if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");
+        await createSqlSandboxStore(sql, { turnModels: true }).recordUsagePricingContext!(id, context);
+      },
       async recordTurnModel(id, promptId, requestedModel) {
         if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");
         await createSqlSandboxStore(sql, { turnModels: true }).recordTurnModel!(id, promptId, requestedModel);
@@ -334,6 +338,15 @@ export function createSqlData(sql: Sql): DataSource {
               select value, ordinality as ordinal
               from jsonb_array_elements(coalesce(s.usage_turns->'turns','[]'::jsonb) ||
                 coalesce(($4::text::jsonb)->'turns','[]'::jsonb)) with ordinality
+            ), lifetime_snapshots as (
+              select *,
+                bool_or(value ? 'cacheWriteTokensByTtl') over identity as has_ttl,
+                bool_or(value#>'{cacheWriteTokensByTtl,conflicted}'='true'::jsonb) over identity as ttl_conflicted,
+                max((value#>>'{cacheWriteTokensByTtl,fiveMinute}')::bigint) over identity as ttl_five,
+                max((value#>>'{cacheWriteTokensByTtl,oneHour}')::bigint) over identity as ttl_hour,
+                max((value->>'cacheWriteTokens')::bigint) over identity as ttl_total
+              from snapshots
+              window identity as (partition by value->>'promptId', value->>'model')
             ), merged as (
               select distinct on (value->>'promptId', value->>'model')
                 value || jsonb_strip_nulls(jsonb_build_object(
@@ -342,8 +355,18 @@ export function createSqlData(sql: Sql): DataSource {
                   'outputTokens', max((value->>'outputTokens')::bigint) over identity,
                   'cachedTokens', max((value->>'cachedTokens')::bigint) over identity,
                   'cacheWriteTokens', max((value->>'cacheWriteTokens')::bigint) over identity,
-                  'reasoningTokens', max((value->>'reasoningTokens')::bigint) over identity)) as value
-              from snapshots
+                  'reasoningTokens', max((value->>'reasoningTokens')::bigint) over identity)) ||
+                  -- Keep monotone lifetime subsets across stale writers, without inventing a
+                  -- coherent breakdown when conflicting snapshots exceed the aggregate.
+                  -- A conflict is sticky: ordinary replays carry no authoritative reset/order proof.
+                  case when has_ttl then jsonb_build_object('cacheWriteTokensByTtl',
+                    case when ttl_conflicted or
+                        (ttl_total is not null and coalesce(ttl_five,0)+coalesce(ttl_hour,0)>ttl_total)
+                      then jsonb_build_object('fiveMinute',null,'oneHour',null,'conflicted',true)
+                      when ttl_total is null then jsonb_build_object('fiveMinute',null,'oneHour',null)
+                      else jsonb_build_object('fiveMinute',ttl_five,'oneHour',ttl_hour) end)
+                    else '{}'::jsonb end as value
+              from lifetime_snapshots
               window identity as (partition by value->>'promptId', value->>'model'),
                 diagnostic as (partition by value->>'promptId', value->>'model' order by
                   case when jsonb_typeof(value->'unavailableReason')='object' then

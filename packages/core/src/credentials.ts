@@ -5,9 +5,11 @@ import { decryptSecret, EncryptionKeyError } from "./crypto.ts";
 import type { CredentialKind, CredentialScope } from "./database.types.ts";
 import type { GitHubAccess } from "./github.ts";
 import type { GoldenActor } from "./golden.ts";
+import { mapHarnesses } from "./harnesses.ts";
 import { LaunchError } from "./launch-error.ts";
 import { SKILLPACK_TOKEN_PATTERN } from "./skillpack-token.ts";
 import { redactKnownTokens } from "./token-redaction.ts";
+import type { UsagePricingContext } from "./usage-pricing.ts";
 import { VaultError } from "./vault-error.ts";
 
 /** The credential kinds a launch injects. Claude Code takes a subscription token, Codex an OpenAI key or `auth.json`. */
@@ -31,6 +33,8 @@ export interface CredentialBinding {
 }
 
 export interface HarnessCredentials {
+  /** Server-generated, secret-free price catalog pinned for a new session, not sandbox environment. */
+  usagePricing?: UsagePricingContext;
   binding?: CredentialBinding;
   env: Record<string, string>;
   secrets: string[];
@@ -175,10 +179,9 @@ export const CREDENTIAL_KINDS: Readonly<Record<CredentialKind, KindInfo>> = {
  * The credential kinds each harness runs on. Within one scope, the first kind a harness finds wins. The two Claude
  * kinds never reach the sandbox together. Published by `launch/options` so a client never keeps its own copy.
  */
-export const HARNESS_KINDS: Readonly<Record<Harness, readonly CredentialKind[]>> = {
-  claude: ["claude_oauth", "anthropic"],
-  codex: ["openai", "codex_auth"],
-};
+export const HARNESS_KINDS: Readonly<Record<Harness, readonly CredentialKind[]>> = mapHarnesses(
+  (descriptor) => descriptor.credentialKinds,
+);
 
 export function parseCredentialKind(name: string): CredentialKind {
   const wanted = name.trim().toLowerCase().replaceAll("_", "-");

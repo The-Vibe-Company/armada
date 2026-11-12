@@ -9,15 +9,21 @@ import { createArmadaServer } from "../src/tools.ts";
 // This is the shared HTTP/MCP operation boundary, not a second resolver mock.
 // It protects owner-only injection into running machines without model credentials.
 test.each([
-  { caller: "owner", state: "running", expected: "connected" },
-  { caller: "admin", state: "running", expected: "forbidden" },
-  { caller: "owner", state: "stopped", expected: "conflict" },
-])("legacy GitHub repair authorizes $caller on $state", async ({ caller, state, expected }) => {
+  { caller: "owner", state: "running", providerId: "boat", expected: "connected" },
+  { caller: "admin", state: "running", providerId: "boat", expected: "forbidden" },
+  { caller: "owner", state: "stopped", providerId: "boat", expected: "conflict" },
+  { caller: "owner", state: "running", providerId: "modal", expected: "unsupported" },
+])("legacy GitHub repair authorizes $caller on $providerId $state", async ({ caller, state, providerId, expected }) => {
   const calls: unknown[] = [];
-  const context = repairContext(caller, state, async (...args: unknown[]) => {
-    calls.push(args);
-    return { login: "octocat" };
-  });
+  const context = repairContext(
+    caller,
+    state,
+    async (...args: unknown[]) => {
+      calls.push(args);
+      return { login: "octocat" };
+    },
+    providerId,
+  );
   const provider = await context.provider({} as never);
   if (expected === "connected") {
     expect(await callSharedTool(context, "github_refresh", { id: "sandbox" })).toEqual({
@@ -29,13 +35,19 @@ test.each([
   } else {
     await expect(callSharedTool(context, "github_refresh", { id: "sandbox" })).rejects.toMatchObject({
       code: expected,
+      ...(expected === "unsupported" ? { status: 400 } : {}),
     });
     expect(calls).toEqual([]);
   }
 });
 
-function repairContext(caller: string, state: string, refreshGitHub: () => Promise<{ login: string }>): ToolContext {
-  const provider = { id: "boat", get: async () => ({ state }) };
+function repairContext(
+  caller: string,
+  state: string,
+  refreshGitHub: () => Promise<{ login: string }>,
+  providerId = "boat",
+): ToolContext {
+  const provider = { id: providerId, get: async () => ({ state }) };
   return {
     caller: { userId: caller, orgs: [{ orgId: "org", role: "admin" }], via: "service" },
     data: {
@@ -44,7 +56,8 @@ function repairContext(caller: string, state: string, refreshGitHub: () => Promi
           id: "sandbox",
           ownerId: "owner",
           orgId: "org",
-          provider: "boat",
+          provider: providerId,
+          credentialId: "credential",
           providerSandboxId: "bx",
           status: "running",
         }),

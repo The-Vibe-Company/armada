@@ -1,5 +1,6 @@
 import {
   type Harness,
+  isHarness,
   MODEL_CATALOG,
   PROVIDER_LIMITS,
   type SandboxProviderId,
@@ -93,7 +94,7 @@ export function parseRevision(value: unknown): TemplateRevision | null {
   if (
     !isId(d.goldenId) ||
     (d.provider !== "boat" && d.provider !== "modal") ||
-    (d.harness !== "claude" && d.harness !== "codex") ||
+    !isHarness(d.harness) ||
     typeof d.model !== "string" ||
     typeof d.reasoningEffort !== "string" ||
     !Array.isArray(d.connections) ||

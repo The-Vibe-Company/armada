@@ -19,6 +19,7 @@ import {
   HOST_CAPABILITIES,
   isSandboxProvider,
   type ModalBinding,
+  PROVIDER_LIMITS,
   type ProviderTarget,
   SANDBOX_PROVIDERS,
   type SandboxProviderId,
@@ -207,7 +208,7 @@ export class GoldenBuildJobs {
         providerId === "modal" ? await this.options.provider(currentActor, input.visibility, target) : provider;
       assertProviderOf(verified, providerId);
       const reservation = await reserveGoldenBuild(sql, verified, currentActor, input.existingGolden);
-      if (!reservation && providerId === "boat")
+      if (!reservation && PROVIDER_LIMITS[providerId].defaultGoldenCapacity !== undefined)
         throw new GoldenError("conflict", "Boat durable builds require a capacity reservation.");
       const id = randomUUID();
       return (
@@ -288,7 +289,8 @@ export class GoldenBuildJobs {
         await sql.query("select id from public.golden_backend_slots where build_id=$1", [job.reservation_id])
       ).rows[0];
       if (!slot) throw new GoldenError("build_failed", "Build reservation is no longer owned.");
-    } else if (job.provider !== "modal") throw new GoldenError("build_failed", "Build reservation is missing.");
+    } else if (PROVIDER_LIMITS[job.provider].defaultGoldenCapacity !== undefined)
+      throw new GoldenError("build_failed", "Build reservation is missing.");
   }
   private async context(job: Job): Promise<Input> {
     const raw = JSON.parse(await decryptSecret(job.payload_enc, this.options.encryptionKey));
@@ -315,7 +317,7 @@ export class GoldenBuildJobs {
       ).rows[0];
       if (!identity || !slot || slot.provider !== job.provider || slot.backend_id !== identity.id)
         throw new GoldenError("forbidden", "Build backend binding changed.");
-    } else if (job.provider !== "modal" || provider.maxGoldens !== undefined) {
+    } else if (PROVIDER_LIMITS[job.provider].defaultGoldenCapacity !== undefined || provider.maxGoldens !== undefined) {
       throw new GoldenError("forbidden", "Build capacity policy changed.");
     }
     return provider;

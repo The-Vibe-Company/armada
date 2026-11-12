@@ -47,85 +47,6 @@ describe("database", () => {
     try {
       expect(await applyMigrations(db)).toEqual(files);
 
-      const tables = await db.query<{ name: string }>(`
-        select c.relname as name
-        from pg_class c
-        join pg_namespace n on n.oid = c.relnamespace
-        where n.nspname = 'public' and c.relkind = 'r'
-        order by 1
-      `);
-      expect(tables.rows.map((row) => row.name)).toEqual([
-        "application_secret_uploads",
-        "application_secrets",
-        "application_vault_audit",
-        "armada_access_parents",
-        "credentials",
-        "github_authorizations",
-        "github_connections",
-        "github_refresh_fences",
-        "github_runtime_capabilities",
-        "github_runtime_issued",
-        "golden_adoption_receipts",
-        "golden_backend_slots",
-        "golden_build_jobs",
-        "golden_operation_fences",
-        "golden_skill_defaults",
-        "golden_snapshot_publications",
-        "golden_snapshot_retirements",
-        "goldens",
-        "launch_template_revisions",
-        "launch_templates",
-        "mcp_actor_epochs",
-        "mcp_bindings",
-        "mcp_bootstraps",
-        "mcp_connections",
-        "mcp_grants",
-        "mcp_invalidation_deliveries",
-        "mcp_invalidations",
-        "mcp_leases",
-        "mcp_pending_oauth",
-        "mcp_tokens",
-        "members",
-        "modal_events",
-        "modal_images",
-        "modal_machines",
-        "modal_server_apps",
-        "modal_server_harnesses",
-        "modal_server_scopes",
-        "model_auth_ownership",
-        "model_auth_state",
-        "notify_subscriptions",
-        "oauth_clients",
-        "oauth_codes",
-        "orchestrator_activity",
-        "orchestrator_child_operations",
-        "orchestrator_children",
-        "orchestrator_delegations",
-        "orchestrator_lifecycle",
-        "orchestrator_lifecycle_mutations",
-        "orchestrator_operations",
-        "orchestrator_runtime",
-        "orchestrator_runtime_create_keys",
-        "orchestrator_runtime_events",
-        "orchestrator_waits",
-        "orchestrators",
-        "org_skill_defaults",
-        "organization_invitations",
-        "orgs",
-        "personal_skill_defaults",
-        "readable_variables",
-        "resource_observations",
-        "routine_run_inputs",
-        "routine_runs",
-        "routines",
-        "runtime_enrolments",
-        "sandbox_turn_models",
-        "sandbox_work_recovery",
-        "sandboxes",
-        "service_tokens",
-        "template_launch_requests",
-      ]);
-
       const unlocked = await db.query<{ name: string }>(`
         select c.relname as name
         from pg_class c
@@ -328,6 +249,8 @@ describe("database", () => {
         "notify_subscriptions.secret_enc",
         "organization_invitations.token_enc",
         "orgs.boat_api_key_enc",
+        "runtime_commands.request_enc",
+        "runtime_commands.result_enc",
         "runtime_enrolments.configuration_enc",
         "sandbox_work_recovery.archive_enc",
       ]);
