@@ -1,7 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
 import { posix } from "node:path";
 import type { CreateGoldenRequest, ExecResult, ForkRequest, Provider, SandboxInfo, SnapshotInfo } from "@armada/core";
-import { machineCapacity, ProviderError, parseMachineSize, resolveModelChoice } from "@armada/core";
+import {
+  HARNESSES,
+  machineCapacity,
+  mapHarnesses,
+  ProviderError,
+  parseMachineSize,
+  resolveModelChoice,
+} from "@armada/core";
 import type { App, Sandbox } from "modal";
 import { chooseManagementAuthority, matchesManagementAuthority } from "./authority.ts";
 import { type ModalConnection, modalConnection } from "./client.ts";
@@ -419,7 +426,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       ...(!golden ? { runtimePolicy: "explicit-vm-v1" as const } : {}),
       launchUserId: options.scope.userId,
       managementAuthority: { ...managementAuthority },
-      modelDefaults: { claude: resolveModelChoice("claude", {}), codex: resolveModelChoice("codex", {}) },
+      modelDefaults: mapHarnesses((_, harness) => resolveModelChoice(harness, {})),
       phase: "reserved",
       golden,
       ttlSeconds: ttl,
@@ -686,7 +693,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       scope: managementAuthority.credentialScope,
       ownerId: managementAuthority.credentialOwnerId,
     }),
-    harnesses: ["claude", "codex"],
+    harnesses: HARNESSES,
     capabilities: distribution.capabilities,
     createGolden: (r) => {
       if (source.scope.visibility !== options.scope.visibility)
@@ -893,7 +900,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       // Repository membership/existence is validated by trusted core against the golden. Here reject
       // malformed path data, not shell-escape it or install executable wrappers in a user runner.
       if (
-        !["claude", "codex"].includes(harness) ||
+        !(HARNESSES as readonly string[]).includes(harness) ||
         typeof cwd !== "string" ||
         !posix.isAbsolute(cwd) ||
         posix.normalize(cwd) !== cwd ||
@@ -1027,7 +1034,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
           !request.operationId ||
           (request.conversationId !== null && !request.conversationId) ||
           !request.model ||
-          !["claude", "codex"].includes(request.harness)
+          !(HARNESSES as readonly string[]).includes(request.harness)
         )
           throw new ProviderError({
             provider: "modal",

@@ -4,6 +4,7 @@
  * refresh token or auth state, and the parsers keep only the named fields, so nothing else is ever rendered.
  */
 import type { Harness } from "@armada/core";
+import { HARNESSES } from "@armada/core";
 
 export const ACCOUNT_KINDS = ["claude_oauth", "anthropic", "openai", "codex_auth"] as const;
 /** #603's account statuses; any other value reads as `unknown` rather than as working. */
@@ -232,7 +233,7 @@ export function kindNote(account: Pick<ModelAccount, "kind" | "name">): string |
 export const HARNESS_PATH = "/harness";
 
 /** The harness sections of the Harness page and the add dialog, in this order. */
-export const HARNESS_ORDER: readonly Harness[] = ["claude", "codex"];
+export const HARNESS_ORDER: readonly Harness[] = HARNESSES;
 
 export type Billing = KindInfo["billing"];
 

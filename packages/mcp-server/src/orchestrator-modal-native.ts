@@ -1,3 +1,4 @@
+import { HARNESSES } from "@armada/core";
 import { GOLDEN_ROOT, type Provider, type Sql } from "@armada/core/server";
 import type { ModalOrchestratorCheckpoint, ModalProvider } from "@armada/provider-modal";
 import type { OrchestratorNativeAdapter } from "./orchestrator-backend-resolver.ts";
@@ -52,7 +53,7 @@ export function createModalOrchestratorNativeAdapter(input: {
     if (
       !saved ||
       !saved.model ||
-      !["claude", "codex"].includes(saved.harness) ||
+      !(HARNESSES as readonly string[]).includes(saved.harness) ||
       (saved.repository_dir !== null && !/^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$/.test(saved.repository_dir))
     )
       throw new OrchestratorRuntimeError("conflict");

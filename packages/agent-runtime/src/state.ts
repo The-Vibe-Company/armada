@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { lstat, mkdir, open, readdir, readFile, rename, rm } from "node:fs/promises";
 import { join, relative } from "node:path";
+import { HARNESSES } from "@armada/core";
 import { checkpointIdentity, checkpointIdentityKey, sameCheckpointIdentity } from "./identity.ts";
 import type { CheckpointIdentity } from "./protocol.ts";
 /** One sanitizer for returned output, WAL rows and the only allowlisted native session files. */
@@ -180,7 +181,7 @@ export class HarnessState {
     }
     await mkdir(this.root, { recursive: true, mode: 0o700 });
     if (await this.exists(join(this.root, "session-state.previous"))) throw Error("checkpoint_state_ambiguous");
-    for (const harness of ["claude", "codex"]) {
+    for (const harness of HARNESSES) {
       const live = join(this.root, harness),
         saved = join(this.root, "session-state", harness),
         stage = join(this.root, `${harness}.restore`);
@@ -230,7 +231,11 @@ export class HarnessState {
         if (entry.isDirectory()) await walk(path);
         else if (entry.isFile()) {
           const [harness, ...parts] = rel.split("/");
-          if (!harness || !["claude", "codex"].includes(harness) || !this.allowed(harness, parts.join("/")))
+          if (
+            !harness ||
+            !(HARNESSES as readonly string[]).includes(harness) ||
+            !this.allowed(harness, parts.join("/"))
+          )
             throw Error("checkpoint_saved_state_unexpected");
           files[rel] = createHash("sha256")
             .update(await readFile(path))
@@ -304,7 +309,7 @@ export class HarnessState {
   }
   private async seal(identity?: CheckpointIdentity) {
     const manifest = await this.verifySaved();
-    const live = await Promise.all(["claude", "codex"].map((h) => this.exists(join(this.root, h))));
+    const live = await Promise.all(HARNESSES.map((h) => this.exists(join(this.root, h))));
     if (!live.some(Boolean)) {
       if (manifest && (identity === undefined || sameCheckpointIdentity(manifest.identity, identity))) return;
       throw Error("checkpoint_state_ambiguous");
@@ -313,7 +318,7 @@ export class HarnessState {
     // A previous interrupted rename must not be erased by a retry.
     if (await this.exists(join(this.root, "session-state.previous"))) throw Error("checkpoint_state_ambiguous");
     await rm(stage, { recursive: true, force: true });
-    for (const [index, harness] of ["claude", "codex"].entries()) {
+    for (const [index, harness] of HARNESSES.entries()) {
       if (!live[index] && (await this.exists(join(this.root, "session-state", harness)))) {
         if (
           Object.keys(await this.fingerprints(join(this.root, "session-state"))).some((p) =>
@@ -332,7 +337,7 @@ export class HarnessState {
       ((await this.exists(join(this.root, "session-state")))
         ? await this.fingerprints(join(this.root, "session-state"))
         : {});
-    for (const harness of ["claude", "codex"])
+    for (const harness of HARNESSES)
       if (
         Object.keys(previousFiles).some((p) => p.startsWith(`${harness}/`)) &&
         !Object.keys(files).some((p) => p.startsWith(`${harness}/`))
@@ -357,7 +362,7 @@ export class HarnessState {
       await this.syncDirectory(this.root);
       await rm(previous, { recursive: true, force: true });
     }
-    await Promise.all(["claude", "codex"].map((name) => rm(join(this.root, name), { recursive: true, force: true })));
+    await Promise.all(HARNESSES.map((name) => rm(join(this.root, name), { recursive: true, force: true })));
     await this.syncDirectory(this.root);
   }
 }

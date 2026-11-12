@@ -1,3 +1,4 @@
+import { HARNESSES } from "@armada/core";
 import { modalFailureReceipt } from "./errors.ts";
 import type { ModalResourceReceipt } from "./ports.ts";
 import type { ModalProvider } from "./provider.ts";
@@ -137,7 +138,7 @@ export async function runModalConformance(
     const turns = [];
     if (options.models) {
       const receipts = await Promise.all(
-        (["claude", "codex"] as const).map((harness) =>
+        HARNESSES.map((harness) =>
           provider.prompt({ sandboxId: fork as string, harness, text: "Reply with exactly: armada-conformance-ok" }),
         ),
       );
