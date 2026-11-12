@@ -146,14 +146,25 @@ export function ResourceBrowser({
   const select = useCallback(
     (key: string | null) => {
       const next = key !== null && valid(key) ? key : null;
+      // Keep only our marker, not Next's private history fields: passing __NA
+      // would bypass its native-history URL synchronization.
+      const owned = window.history.state?.armadaResourceDetail === window.location.pathname;
+      if (detailPanel && next === null && owned) {
+        window.history.back();
+        return; // popstate closes the sheet and Radix restores focus once.
+      }
       setChosen(next);
       const url = new URL(window.location.href);
       if (next === null) url.searchParams.delete(ITEM_PARAM);
       else url.searchParams.set(ITEM_PARAM, next);
       if (detailPanel && selected === null && next !== null) {
-        window.history.pushState(null, "", url);
+        window.history.pushState({ armadaResourceDetail: window.location.pathname }, "", url);
       } else {
-        window.history.replaceState(null, "", url);
+        window.history.replaceState(
+          detailPanel && owned && next !== null ? { armadaResourceDetail: window.location.pathname } : null,
+          "",
+          url,
+        );
       }
       if (next !== null) {
         opener.current = next;

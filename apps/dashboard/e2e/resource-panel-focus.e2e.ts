@@ -114,3 +114,25 @@ test("desktop details overlay without moving the list; history, keyboard navigat
   await expect(sheet).toBeHidden();
   await expect(row.locator("[data-select-item]")).toBeFocused();
 });
+
+test("repeated explicit dismissal reuses the list history entry instead of trapping Back", async ({ page }) => {
+  await signIn(page, "alice@example.com", "/templates");
+  await expect(page.getByRole("heading", { name: "Templates", exact: true })).toBeVisible();
+  await page.goto("/environments");
+  const row = goldenRow(page, "shared-golden");
+  await expect(row).toBeVisible();
+  const historyLength = await page.evaluate(() => window.history.length);
+  for (const dismiss of ["escape", "close", "outside"] as const) {
+    const panel = await goldenPanel(page, "shared-golden");
+    if (dismiss === "escape") await page.keyboard.press("Escape");
+    else if (dismiss === "close") await page.getByRole("button", { name: "Close the panel" }).click();
+    else await page.mouse.click(10, 300);
+    await expect(panel).toBeHidden();
+    await expect(row.locator("[data-select-item]")).toBeFocused();
+    await expect(page).toHaveURL(/\/environments$/);
+    expect(await page.evaluate(() => window.history.length)).toBe(historyLength + 1);
+  }
+  await page.evaluate(() => window.history.back());
+  await expect(page).toHaveURL(/\/templates$/);
+  await expect(page.getByRole("heading", { name: "Templates", exact: true })).toBeVisible();
+});
