@@ -49,6 +49,10 @@ to another thread do not invalidate attribution. Intermediate token updates stil
 maintain the next-prompt baseline, but are not published as separate usage rows.
 A resumed native thread without an observed baseline reports null counters for
 its first observed turn; later baselines are known within that runtime process.
+A verified native snapshot received before turn dispatch can now establish a
+resumed baseline; missing, invalid or late snapshots stay unknown. Unclosed
+native turns cannot seed later baselines. See [Codex resumed usage](codex-resumed-usage.md)
+for the timing/validation contract, known limits and coordinator staging check.
 Native restarts caused by steer retain the original Armada-prompt baseline and
 include pre-steer tokens. Missing counters remain null; reported zero remains
 zero. Input and cached tokens preserve native counter semantics: Claude input
