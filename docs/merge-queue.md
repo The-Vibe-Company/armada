@@ -10,7 +10,6 @@ source for these exact check names:
 - `Lint, typecheck and test`
 - `Golden PostgreSQL concurrency`
 - `Golden OS recipe (actual provider image)`
-- `Dashboard e2e`
 - `Binary (linux-x64)`
 - `Binary (linux-arm64)`
 - `Binary (darwin-x64)`
@@ -27,6 +26,10 @@ only merge non-failing PRs enabled, and a **60-minute** status-check timeout.
 This limits runner pressure while validating each candidate together with the
 PRs ahead of it. Merge limits control merges, not the contents of CI builds.
 
+Dashboard browser tests are manual-only for now (owner decision, 2026-11-12).
+Run `bun run e2e` when browser validation is wanted; it is not a PR or merge-queue
+gate. Screenshot evidence workflows are removed; their capture scripts remain.
+
 ## What runs in the queue
 
 | Workflow file | Queue? | Reason |
@@ -34,14 +37,6 @@ PRs ahead of it. Merge limits control merges, not the contents of CI builds.
 | `ci.yml` | Yes, all jobs | Same names and validation as PRs, including all four binaries. Migration versions compare the candidate against `merge_group.base_sha`, not `HEAD^`, to cover the entire queued group. |
 | `apple-quality.yml` | Yes | Compile/test check, with no PR path filter so a required check always reports. Push path filtering is unchanged. |
 | `migrations.yml` | Disposable preview only | No PR path filter; preview runs for PRs and queue candidates. Staging/production jobs retain their main-ref guards and cannot run on queue refs. No production credentials in preview. |
-| `dashboard-account-evidence.yml` | No | PR-only before/after screenshots. |
-| `dashboard-account-forms-evidence.yml` | No | PR-only before/after screenshots. |
-| `dashboard-build-evidence.yml` | No | PR-only before/after screenshots. |
-| `dashboard-consistency-evidence.yml` | No | PR-only before/after screenshots. |
-| `dashboard-conversation-evidence.yml` | No | PR-only before/after screenshots. |
-| `dashboard-fleet-evidence.yml` | No | PR-only before/after screenshots. |
-| `dashboard-landing-evidence.yml` | No | PR-only before/after screenshots. |
-| `dashboard-shell-evidence.yml` | No | PR-only before/after screenshots. |
 | `release.yml` | No | Publishes releases from main/tags or manual dispatch. |
 | `staging-gated-production.yml` | No | Deployment/smoke on main, dispatch or explicit reusable call. |
 | `post-deploy-smoke.yml` | No | Deployment event/manual smoke, not merge validation. |

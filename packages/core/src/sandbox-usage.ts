@@ -1,4 +1,5 @@
 import type { AgentEvent } from "./provider.ts";
+import type { SessionCost, StoredTurnPricing } from "./turn-pricing.ts";
 
 /** Closed, secret-free explanations for an unmeasured Boat turn. */
 export const USAGE_UNAVAILABLE_CODES = [
@@ -63,6 +64,8 @@ export function usageUnavailableReason(code: UsageUnavailableCode): UsageUnavail
  * Cross-harness totals retain these definitions, not a unique-token or price sum.
  */
 export interface TurnTokenUsage {
+  /** Service-owned quote. Native decoders must not copy this from guest events. */
+  pricing?: StoredTurnPricing | null;
   promptId: string;
   model: string | null;
   inputTokens: number | null;
@@ -83,6 +86,8 @@ export interface TurnTokenUsage {
   unavailableReason?: UsageUnavailableReason;
 }
 export interface SandboxUsage {
+  /** Server-owned sum of persisted quotes, never recomputed from current prices by a viewer. */
+  cost?: SessionCost;
   /** Seconds between Armada-recorded compute transitions; null for legacy/incomplete history. */
   computeSeconds: number | null;
   turnCount: number | null;
@@ -99,16 +104,22 @@ function claudeCacheWriteTtl(usage: Record<string, unknown>): Pick<TurnTokenUsag
     hourKey = "cacheCreationEphemeral1hInputTokens";
   if (!Object.hasOwn(usage, fiveKey) && !Object.hasOwn(usage, hourKey)) return {};
   const total = count(usage.cacheCreationInputTokens),
-    five = count(usage[fiveKey]),
-    hour = count(usage[hourKey]);
+    rawFive = usage[fiveKey],
+    rawHour = usage[hourKey],
+    five = count(rawFive),
+    hour = count(rawHour);
   const invalid =
-    total === null ||
-    (Object.hasOwn(usage, fiveKey) && five === null) ||
-    (Object.hasOwn(usage, hourKey) && hour === null) ||
-    (five !== null && five > total) ||
-    (hour !== null && hour > total) ||
-    (five !== null && hour !== null && (!Number.isSafeInteger(five + hour) || five + hour > total));
-  return { cacheWriteTokensByTtl: invalid ? { fiveMinute: null, oneHour: null } : { fiveMinute: five, oneHour: hour } };
+    (rawFive !== null && rawFive !== undefined && five === null) ||
+    (rawHour !== null && rawHour !== undefined && hour === null) ||
+    (total !== null && five !== null && five > total) ||
+    (total !== null && hour !== null && hour > total) ||
+    (five !== null && hour !== null && (!Number.isSafeInteger(five + hour) || (total !== null && five + hour > total)));
+  // Contradictory/invalid detail is not absence: default-rate fallback must not erase it.
+  return {
+    cacheWriteTokensByTtl: invalid
+      ? { fiveMinute: null, oneHour: null, conflicted: true }
+      : { fiveMinute: five, oneHour: hour },
+  };
 }
 
 /** Native final snapshots only, never deltas or account quota reports. */
@@ -155,6 +166,8 @@ export function reportedTurnUsage(events: readonly AgentEvent[]): { turnCount: n
 }
 
 export interface TokenUsageTotals {
+  /** True when totals are known subtotals rather than complete session counts. */
+  incomplete?: boolean;
   inputTokens: number | null;
   outputTokens: number | null;
   cachedTokens: number | null;
@@ -187,8 +200,21 @@ export function summarizeSandboxUsage(usage: SandboxUsage | null | undefined): S
 /** Add totals at read time, including persisted observations predating these fields. */
 export function withUsageTotals(usage: SandboxUsage | null | undefined): SandboxUsage | null {
   if (!usage) return null;
-  const { computeSeconds: _compute, turnCount: _turns, ...tokenTotals } = summarizeSandboxUsage(usage);
-  return { ...usage, tokenTotals };
+  const covered =
+    usage.turnCount !== null && new Set(usage.turns.map((turn) => turn.promptId)).size === usage.turnCount;
+  let incomplete = !covered;
+  const totals = Object.fromEntries(
+    TOKEN_FIELDS.map((key) => {
+      const values = usage.turns.map((turn) => count(turn[key]));
+      const known = values.filter((value): value is number => value !== null);
+      const sum = known.reduce((total, value) => total + value, 0);
+      const valid = Number.isSafeInteger(sum);
+      if (known.length !== values.length || !valid) incomplete = true;
+      // No measured value is not a measured zero. A confirmed empty session is zero.
+      return [key, valid && (known.length > 0 || (covered && usage.turnCount === 0)) ? sum : null];
+    }),
+  ) as unknown as TokenUsageTotals;
+  return { ...usage, tokenTotals: { ...totals, incomplete } };
 }
 
 /** Empty child sets cost zero; any unknown component keeps that component unknown. */

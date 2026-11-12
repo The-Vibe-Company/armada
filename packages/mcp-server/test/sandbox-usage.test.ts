@@ -63,17 +63,27 @@ test.each([
   {
     total: 10,
     detail: { cacheCreationEphemeral5mInputTokens: 8, cacheCreationEphemeral1hInputTokens: 3 },
-    expected: { fiveMinute: null, oneHour: null },
+    expected: { fiveMinute: null, oneHour: null, conflicted: true },
   },
   {
     total: 10,
     detail: { cacheCreationEphemeral5mInputTokens: -1, cacheCreationEphemeral1hInputTokens: 0 },
+    expected: { fiveMinute: null, oneHour: null, conflicted: true },
+  },
+  {
+    total: 10,
+    detail: { cacheCreationEphemeral5mInputTokens: null, cacheCreationEphemeral1hInputTokens: null },
     expected: { fiveMinute: null, oneHour: null },
   },
   {
     total: null,
+    detail: { cacheCreationEphemeral5mInputTokens: 0, cacheCreationEphemeral1hInputTokens: 2 },
+    expected: { fiveMinute: 0, oneHour: 2 },
+  },
+  {
+    total: null,
     detail: { cacheCreationEphemeral5mInputTokens: 2, cacheCreationEphemeral1hInputTokens: 0 },
-    expected: { fiveMinute: null, oneHour: null },
+    expected: { fiveMinute: 2, oneHour: 0 },
   },
 ])(
   "Claude cache-write lifetimes preserve known subsets without inventing missing tokens (%j)",
@@ -171,7 +181,9 @@ test("real SQL runtime includes open and completed intervals and usage follows i
     ];
     await store(p.owner).recordUsage!(id, { turnCount: 2, turns });
     expect((await store(p.owner).get(id))?.usage).toMatchObject({ computeSeconds: 30, turnCount: 2, turns });
-    expect((await store(p.owner).list({ limit: 10 })).rows[0]?.usage?.turns).toEqual(turns);
+    expect((await store(p.owner).list({ limit: 10 })).rows[0]?.usage?.turns).toEqual(
+      turns.map((row) => ({ ...row, pricing: null })),
+    );
     // A late stale writer cannot lower lifetime subsets or erase them with an older CLI result.
     await store(p.owner).recordUsage!(id, {
       turnCount: 2,
@@ -179,7 +191,7 @@ test("real SQL runtime includes open and completed intervals and usage follows i
     });
     const { cacheWriteTokensByTtl: _ttl, ...legacy } = turns[0]!;
     await store(p.owner).recordUsage!(id, { turnCount: 2, turns: [legacy] });
-    expect((await store(p.owner).get(id))?.usage?.turns).toEqual(turns);
+    expect((await store(p.owner).get(id))?.usage?.turns).toEqual(turns.map((row) => ({ ...row, pricing: null })));
     // Conflicting non-monotone lifetime observations must not manufacture an overfull split.
     await store(p.owner).recordUsage!(id, {
       turnCount: 2,
@@ -198,7 +210,7 @@ test("real SQL runtime includes open and completed intervals and usage follows i
         { cacheWriteTokensByTtl: { fiveMinute: null, oneHour: null } },
       ]);
     }
-    expect((await store(p.owner).get(id))?.usage?.turns).toEqual(conflicted);
+    expect((await store(p.owner).get(id))?.usage?.turns).toEqual(conflicted.map((row) => ({ ...row, pricing: null })));
     // Unknown detail is not itself contradictory: later valid native data can fill it.
     const lateDetail = { ...turns[0]!, promptId: "late-detail" };
     await store(p.owner).recordUsage!(id, {
@@ -206,9 +218,10 @@ test("real SQL runtime includes open and completed intervals and usage follows i
       turns: [{ ...lateDetail, cacheWriteTokens: null, cacheWriteTokensByTtl: { fiveMinute: null, oneHour: null } }],
     });
     await store(p.owner).recordUsage!(id, { turnCount: 2, turns: [lateDetail] });
-    expect((await store(p.owner).get(id))?.usage?.turns.find((row) => row.promptId === "late-detail")).toEqual(
-      lateDetail,
-    );
+    expect((await store(p.owner).get(id))?.usage?.turns.find((row) => row.promptId === "late-detail")).toEqual({
+      ...lateDetail,
+      pricing: null,
+    });
     expect((await store(p.owner).list({ limit: 10 })).rows[0]?.usage?.computeSeconds).toBe(30);
     // Stop's activity reservation clears stoppedAt even for an already stopped sandbox.
     await store(p.owner).update(id, { status: "stopping", stoppedAt: null });
@@ -268,14 +281,14 @@ test("native collection persists retry-safe rows and preserves measurements when
     const delayed = await readStatus(provider, store, (await store.get(id))!, { now: new Date("2026-01-01") });
     expect(delayed.status).toBe("ready");
     expect(delayed.usage?.tokenTotals?.inputTokens).toBe(42);
-    expect((await store.get(id))?.usage?.turns).toEqual([row]);
+    expect((await store.get(id))?.usage?.turns).toEqual([{ ...row, pricing: null }]);
     for (const retry of [false, true]) {
       await collectSandboxUsage(provider, store, (await store.get(id))!);
       expect((await store.get(id))?.usage).toMatchObject({ turnCount: 1, turns: [row] });
       if (retry) available = false;
     }
     await collectSandboxUsage(provider, store, (await store.get(id))!);
-    expect((await store.get(id))?.usage?.turns).toEqual([row]);
+    expect((await store.get(id))?.usage?.turns).toEqual([{ ...row, pricing: null }]);
     // Stop still knows its target when provider history and native files are unavailable.
     provider.events = async () => {
       throw new Error("history unavailable");
@@ -284,18 +297,21 @@ test("native collection persists retry-safe rows and preserves measurements when
     await collectSandboxUsage(provider, store, fallback);
     const incomplete = (await store.get(id))?.usage;
     expect(incomplete?.turnCount).toBe(2);
-    expect(incomplete?.tokenTotals?.inputTokens).toBeNull();
+    expect(incomplete?.tokenTotals).toMatchObject({ inputTokens: 42, incomplete: true });
     const later = { ...row, promptId: "unmeasured", inputTokens: 100 };
     await store.recordUsage!(id, { turnCount: 2, turns: [later] });
     // A stale status writer cannot erase a concurrently discovered prompt or lower its counters.
     await store.recordUsage!(id, { turnCount: 1, turns: [{ ...later, inputTokens: 50 }, row] });
     const measured = (await store.get(id))?.usage;
     expect(measured?.turnCount).toBe(2);
-    expect(measured?.turns).toEqual([row, later]);
+    expect(measured?.turns).toEqual([
+      { ...row, pricing: null },
+      { ...later, pricing: null },
+    ]);
     expect(measured?.tokenTotals?.inputTokens).toBe(142);
     const unknownModel = { ...row, model: null, inputTokens: 7 };
     await store.recordUsage!(id, { turnCount: 2, turns: [unknownModel] });
-    expect((await store.get(id))?.usage?.turns).toContainEqual(unknownModel);
+    expect((await store.get(id))?.usage?.turns).toContainEqual({ ...unknownModel, pricing: null });
     // A stale diagnostic writer must not attach an unavailable reason to
     // concurrently retained numeric observations, including unknown-model rows.
     await store.recordUsage!(id, {
@@ -310,7 +326,7 @@ test("native collection persists retry-safe rows and preserves measurements when
         },
       ],
     });
-    expect((await store.get(id))?.usage?.turns).toContainEqual(unknownModel);
+    expect((await store.get(id))?.usage?.turns).toContainEqual({ ...unknownModel, pricing: null });
     const diagnostic = {
       promptId: "diagnostic",
       model: null,

@@ -8,7 +8,7 @@ import {
   validateSkillPins,
 } from "@armada/core";
 import { EFFORT_LABEL, HARNESS_LABELS } from "./labels.ts";
-import type { LaunchAccounts } from "./model-accounts";
+import { accountProblem, accountsFor, type LaunchAccounts } from "./model-accounts";
 import { type ModelFields, modelChoice } from "./model-choice.ts";
 import type { Bucket, ResourceState } from "./resource-list.ts";
 
@@ -43,7 +43,7 @@ export type TemplateDefinition = {
   variables: TemplateVariableBinding[];
   secrets?: { key: string; secretId: string; version: number }[];
   skills: string[];
-  /** A pinned model account (set over the API); absent, each launch resolves the launcher's own. */
+  /** A pinned model account; absent, each launch resolves the launcher's own. */
   modelAccount?: { id: string; version: number };
 };
 
@@ -266,6 +266,7 @@ export type TemplateFormFields = {
   variables: readonly string[];
   skills?: readonly string[];
   secrets?: readonly string[];
+  credential?: string;
 } & ModelFields;
 
 export type TemplateRequest = { name: string; scope: TemplateScope; definition: Record<string, unknown> };
@@ -298,6 +299,18 @@ export function templateRequest(
     return { ok: false, error: `${golden.name} is private: an organization template needs a shared environment.` };
   const model = modelChoice(fields.harness, fields);
   if (!model.ok) return model;
+  let modelAccount: TemplateDefinition["modelAccount"];
+  if (fields.credential) {
+    const accounts = lookups.accounts;
+    if (accounts?.state !== "ready")
+      return { ok: false, error: "Model accounts could not be read. Refresh and try again." };
+    const account = accountsFor(accounts.accounts, model.args.harness).find((row) => row.id === fields.credential);
+    if (!account || accountProblem(account, accounts.now))
+      return { ok: false, error: "The chosen model account is unavailable for this agent. Choose another account." };
+    if (scope === "org" && account.scope !== "org")
+      return { ok: false, error: "Organization templates use organization model accounts only." };
+    modelAccount = { id: account.id, version: account.version };
+  }
   const skills = fields.skills ?? previous?.skills ?? [];
   try {
     validateSkillPins(skills);
@@ -372,6 +385,7 @@ export function templateRequest(
         harness: model.args.harness,
         model: model.args.model,
         reasoningEffort: model.args.reasoningEffort,
+        ...(modelAccount ? { modelAccount } : {}),
         ...(connections.length ? { connections } : {}),
         ...(variables.length ? { variables } : {}),
         ...(skills.length ? { skills: [...skills] } : {}),

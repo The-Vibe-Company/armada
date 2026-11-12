@@ -64,7 +64,14 @@ const MAX_RETRIES = 5;
 const PINNED_PX = 48;
 /** A stopped sandbox takes a message too: the server's `send` restores the same machine, disk and conversation. */
 const LIVE: readonly SandboxStatus[] = ["starting", "ready", "running"];
-const CAN_SEND: readonly SandboxStatus[] = ["ready", "running", "stopped"];
+const CAN_SEND = ["ready", "running", "stopped"] as const satisfies readonly SandboxStatus[];
+/** Why the composer is closed, for every status that takes no message. */
+const CLOSED_COMPOSER: Record<Exclude<SandboxStatus, (typeof CAN_SEND)[number]>, string> = {
+  starting: "The sandbox is starting.",
+  stopping: "The sandbox is stopping.",
+  failed: "The sandbox failed: it takes no new messages.",
+  deleted: "The sandbox was deleted: it takes no new messages.",
+};
 
 type Props = {
   sandboxId: string;
@@ -922,7 +929,7 @@ function Composer({
   const [showModel, setShowModel] = useState(false);
   const [override, setOverride] = useState(false);
   const fieldId = useId();
-  const enabled = CAN_SEND.includes(status);
+  const enabled = (CAN_SEND as readonly SandboxStatus[]).includes(status);
   const restarts = STEER_RESTARTS_TURN[harness];
   /** The highlighted button, which Ctrl/Cmd+Enter presses: steering while a turn runs, unless the model changes. */
   const primary: Intent = running && !override ? "steer" : "send";
@@ -993,9 +1000,7 @@ function Composer({
   if (!enabled) {
     return (
       <p className="border-t bg-muted/30 px-4 py-3 text-sm text-muted-foreground sm:px-6">
-        {status === "starting" || status === "stopping"
-          ? `The sandbox is ${status}.`
-          : `The sandbox is ${status}: it takes no new messages.`}
+        {CLOSED_COMPOSER[status as Exclude<SandboxStatus, (typeof CAN_SEND)[number]>]}
       </p>
     );
   }

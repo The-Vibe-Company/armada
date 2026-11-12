@@ -47,3 +47,47 @@ real JSONL-driver tests; do not inject malformed data or kill staging compute to
 force these cases. No migration, transport change, provider API call or transcript
 copy. Source contract: pinned native types and the
 [official app-server protocol](https://developers.openai.com/codex/app-server/).
+
+## Resume smoke contract (#1246)
+
+The [coordinator capture on #1246](https://github.com/The-Vibe-Company/armada/issues/1246)
+records a real Modal Codex stop/resume/send at 18:41 UTC on 2026-11-12, using
+`native-linear-modal` and gpt-6.1-sol. The same conversation finished its first
+prompt, stopped, then auto-resumed on send and finished the second prompt.
+The first runtime `armada/turnUsage` reported 13212 input, 5 output, 0 cached,
+13209 cache-write and 0 reasoning tokens. The exact resumed prompt `b2c27dd7`
+had an explicit all-null runtime usage snapshot. Status still showed both rows
+20 seconds later; this is unknown accounting, not a missing server write or a
+polling-budget problem. The public event sequence and accounting payloads are
+preserved in `packages/mcp-server/test/fixtures/sandbox-usage/modal-codex-resume.json`.
+The worker made no production calls; the evidence was supplied by the coordinator.
+
+The raw token notifications are not forwarded to public logs. A separate real
+pinned 0.167.0 local app-server capture reproduces the baseline timing:
+`thread/resume` replies without a usage snapshot; only after `turn/start`
+dispatch does the old total arrive, followed by the new cumulative total.
+See `packages/agent-runtime/test/fixtures/codex-resume-recorded.json` and its
+JSONL driver replay. The local trace is not relabeled as Modal wire evidence.
+A post-dispatch old total cannot safely establish a pre-turn baseline; we do
+not infer deltas from it or sum last-request counters. The supported contract
+for this first cold-resumed turn remains explicit unknown, never cumulative
+historical counts or zero. The driver regression publishes exactly one snapshot.
+
+Previously, one unknown turn also erased known session totals. Public
+`usage.tokenTotals` now sums known per-field values and reports `incomplete`
+when any turn/field is missing, invalid or unknown. A field with no measured
+values remains null (a confirmed empty session is zero). Per-turn unknowns
+stay null; these subtotals are not complete session usage or pricing inputs.
+Conservative internal summaries/child aggregation and cost calculation are
+unchanged. No migration or historical backfill is needed: totals are derived
+on read from the retained observations.
+
+The Modal Codex `resume_usage` smoke now requires either measured counters or
+an explicit all-null input/output/cache row for that exact resumed prompt,
+plus numeric retained input/output subtotals and `incomplete: true` in the
+unknown case. Missing rows, stale rows, incomplete unknowns and erased totals
+still fail. Fresh turns still require measured counts. The merge-queue
+tolerance for this step can be removed once the updated smoke runs. The supplied
+Modal observation establishes the contract; running the changed smoke against
+a deployed server remains a coordinator rollout check, not a deployment by this
+worker. No runtime inference, pricing, provider transport or migration changes.

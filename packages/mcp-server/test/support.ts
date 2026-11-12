@@ -26,7 +26,7 @@ import { createSqlVaultStore, GoldenBuildJobs, type GoldenCreateOptions } from "
 import type { PGlite } from "@electric-sql/pglite";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
+import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 import { createSqlData } from "../src/data.ts";
 import { createHandler, type HandlerOptions, type Route } from "../src/http.ts";
 import { sqlOver } from "../src/sql.ts";
@@ -52,8 +52,11 @@ export interface People {
 
 /** A fresh database with the migrations, two orgs, three people, three goldens and encrypted credentials. */
 export async function database(): Promise<{ db: PGlite; people: People }> {
-  const db = await openDatabase();
-  await applyMigrations(db);
+  return seedDatabase(await openMigratedDatabase());
+}
+
+/** Seed the common launch fixtures into an empty database owned by the caller. */
+export async function seedDatabase(db: PGlite): Promise<{ db: PGlite; people: People }> {
   const people: People = {
     org: crypto.randomUUID(),
     otherOrg: crypto.randomUUID(),

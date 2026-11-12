@@ -23,6 +23,7 @@ import {
   removeAccount,
   renameAccount,
   replaceAccountSecret,
+  testAccountConnection,
 } from "@/app/actions/model-accounts";
 import { SubmitButton } from "@/components/action-form";
 import { ChoiceCard } from "@/components/connections";
@@ -108,6 +109,81 @@ function TargetFields({ account, orgId }: { account: ModelAccount; orgId: string
       <input type="hidden" name="id" value={account.id} />
       <input type="hidden" name="version" value={account.version} />
     </>
+  );
+}
+
+/** Testing uses only a bound running sandbox; account secrets/endpoint details never enter this form. */
+function ConnectionTestDialog({ account, orgId }: { account: ModelAccount; orgId: string }) {
+  return (
+    <Dialog>
+      <DialogTrigger asChild>
+        <Button variant="outline" size="sm" aria-label={`Test connection, ${account.name}`}>
+          Test connection
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Test {account.name}</DialogTitle>
+          <DialogDescription>
+            Custom endpoints only. Launch an idle Modal sandbox with this account first. This sends one tiny billable
+            request through its runtime, without starting or resuming a machine.
+          </DialogDescription>
+        </DialogHeader>
+        <ConnectionTestForm key={`${account.id}:${account.version}:${orgId}`} account={account} orgId={orgId} />
+      </DialogContent>
+    </Dialog>
+  );
+}
+function ConnectionTestForm({ account, orgId }: { account: ModelAccount; orgId: string }) {
+  const [state, action, pending] = useActionState(testAccountConnection, null);
+  const [edited, setEdited] = useState(false);
+  const formRef = usePreservedActionForm();
+  const id = useId();
+  return (
+    <form
+      ref={formRef}
+      action={action}
+      onChange={() => setEdited(true)}
+      onSubmit={() => setEdited(false)}
+      className="space-y-4"
+    >
+      <TargetFields account={account} orgId={orgId} />
+      <div className="space-y-2">
+        <Label htmlFor={`${id}-sandbox`}>Running Modal sandbox UUID</Label>
+        <Input
+          id={`${id}-sandbox`}
+          name="sandboxId"
+          required
+          autoComplete="off"
+          spellCheck={false}
+          placeholder="Public Armada sandbox UUID"
+        />
+      </div>
+      <div className="space-y-2">
+        <Label htmlFor={`${id}-model`}>Deployment or model name</Label>
+        <Input
+          id={`${id}-model`}
+          name="model"
+          required
+          maxLength={200}
+          autoComplete="off"
+          spellCheck={false}
+          placeholder="Your endpoint's deployment/model"
+        />
+      </div>
+      <p className="text-xs text-muted-foreground">
+        Only your sandbox in this organization, bound to this account and version. No keys or URLs are accepted. A
+        successful check does not prove streaming or tool compatibility.
+      </p>
+      {pending ? (
+        <p role="status" className="text-sm text-muted-foreground">
+          Checking the runtime connection…
+        </p>
+      ) : (
+        !edited && <ResultLine result={state} />
+      )}
+      <SubmitButton>{pending ? "Checking…" : "Send tiny check"}</SubmitButton>
+    </form>
   );
 }
 
@@ -390,6 +466,11 @@ export function AccountRow({
               Updated <time dateTime={account.updatedAt}>{relativeTime(account.updatedAt, now)}</time>
             </span>
           </p>
+          {info.billing === "api" && account.status === "active" && (
+            <div className="pt-1.5">
+              <ConnectionTestDialog account={account} orgId={orgId} />
+            </div>
+          )}
           {/* A revoked or removed account has no usage to read: its state already says what to do. */}
           {info.billing === "subscription" && account.status === "active" && (
             <div className="pt-1.5">
@@ -663,7 +744,7 @@ function ReplaceDialog({
           <input type="hidden" name="kind" value={account.kind} />
           <input type="hidden" name="name" value={account.name} />
           {account.kind === "openai" ? (
-            <CodexConnectionFields idPrefix={id} requireChoice />
+            <CustomEndpointFields idPrefix={id} kind="openai" requireChoice />
           ) : account.kind === "anthropic" ? (
             <ClaudeReplacementFields idPrefix={id} />
           ) : (
@@ -817,7 +898,16 @@ function ClaudeReplacementFields({ idPrefix }: { idPrefix: string }) {
 }
 
 /** Non-secret endpoint fields are opt-in; the key remains an uncontrolled password input. */
-function CodexConnectionFields({ idPrefix, requireChoice = false }: { idPrefix: string; requireChoice?: boolean }) {
+function CustomEndpointFields({
+  idPrefix,
+  kind,
+  requireChoice = false,
+}: {
+  idPrefix: string;
+  kind: "openai" | "anthropic";
+  requireChoice?: boolean;
+}) {
+  const codex = kind === "openai";
   const [custom, setCustom] = useState(false);
   const [chosen, setChosen] = useState(!requireChoice);
   return (
@@ -856,7 +946,7 @@ function CodexConnectionFields({ idPrefix, requireChoice = false }: { idPrefix: 
       )}
       {custom && (
         <fieldset className="min-w-0 space-y-3 rounded-lg border bg-muted/30 p-4">
-          <legend className="px-1 text-sm font-medium">Codex connection</legend>
+          <legend className="px-1 text-sm font-medium">{codex ? "Codex connection" : "Claude gateway"}</legend>
           <div className="space-y-2">
             <Label htmlFor={`${idPrefix}-base-url`}>Base URL</Label>
             <Input
@@ -867,26 +957,39 @@ function CodexConnectionFields({ idPrefix, requireChoice = false }: { idPrefix: 
               spellCheck={false}
               autoComplete="off"
               aria-describedby={`${idPrefix}-endpoint-hint`}
-              placeholder="https://resource.services.ai.azure.com/…/openai/v1"
+              placeholder={
+                codex ? "https://resource.services.ai.azure.com/…/openai/v1" : "https://gateway.example.com/anthropic"
+              }
             />
           </div>
           <p id={`${idPrefix}-endpoint-hint`} className="text-xs text-muted-foreground">
-            Azure AI Foundry or a Responses-compatible gateway. A pasted URL ending in /responses is accepted. Modal
-            only. Codex cannot use chat-completions-only endpoints such as DeepSeek.
+            {codex
+              ? "Azure AI Foundry or a Responses-compatible gateway. A pasted URL ending in /responses is accepted. Modal only. Codex cannot use chat-completions-only endpoints such as DeepSeek."
+              : "Modal only. Claude Code supports Claude models only. Use the gateway base URL, not /v1/messages. The gateway must support Anthropic Messages, streaming and tool use."}
           </p>
-          <div className="space-y-2">
-            <Label htmlFor={`${idPrefix}-api-version`}>API version (optional)</Label>
-            <Input
-              id={`${idPrefix}-api-version`}
-              name="apiVersion"
-              autoComplete="off"
-              spellCheck={false}
-              placeholder="Not needed for Foundry v1"
-            />
-          </div>
+          {codex ? (
+            <div className="space-y-2">
+              <Label htmlFor={`${idPrefix}-api-version`}>API version (optional)</Label>
+              <Input
+                id={`${idPrefix}-api-version`}
+                name="apiVersion"
+                autoComplete="off"
+                spellCheck={false}
+                placeholder="Not needed for Foundry v1"
+              />
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <Label htmlFor={`${idPrefix}-endpoint-auth`}>Gateway authentication</Label>
+              <NativeSelect id={`${idPrefix}-endpoint-auth`} name="endpointAuth" defaultValue="bearer">
+                <option value="bearer">Bearer token (Authorization)</option>
+                <option value="api-key">API key (x-api-key)</option>
+              </NativeSelect>
+            </div>
+          )}
         </fieldset>
       )}
-      {chosen && <SecretField key={custom ? "custom" : "openai"} idPrefix={idPrefix} kind="openai" />}
+      {chosen && <SecretField key={`${kind}:${custom}`} idPrefix={idPrefix} kind={kind} />}
     </div>
   );
 }
@@ -1040,8 +1143,8 @@ export function AddAccountDialog({
                 <Disclosure summary={`Paste ${info.valueLabel} instead`} defaultOpen={false}>
                   <div className="space-y-4">
                     <p className="text-xs text-muted-foreground">{info.hint}</p>
-                    {kind === "openai" ? (
-                      <CodexConnectionFields idPrefix={id} />
+                    {kind === "openai" || kind === "anthropic" ? (
+                      <CustomEndpointFields key={kind} idPrefix={id} kind={kind} />
                     ) : (
                       <SecretField idPrefix={id} kind={kind} />
                     )}
@@ -1057,11 +1160,15 @@ export function AddAccountDialog({
                   <p className="text-sm">
                     <span className="font-medium">{subscription ? "Sign in on your machine" : "Paste the key"}.</span>{" "}
                     <span className="text-muted-foreground">
-                      {kind === "openai" ? "From OpenAI or your gateway. Billed per token." : info.hint}
+                      {kind === "openai"
+                        ? "From OpenAI or your gateway. Billed per token."
+                        : kind === "anthropic"
+                          ? "From Anthropic or your gateway. Billed per token."
+                          : info.hint}
                     </span>
                   </p>
-                  {kind === "openai" ? (
-                    <CodexConnectionFields idPrefix={id} />
+                  {kind === "openai" || kind === "anthropic" ? (
+                    <CustomEndpointFields key={kind} idPrefix={id} kind={kind} />
                   ) : (
                     <SecretField idPrefix={id} kind={kind} />
                   )}

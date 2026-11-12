@@ -1,6 +1,8 @@
 import {
   type ClaudeEndpoint,
   type CodexEndpoint,
+  type ModelConnectionTestResult,
+  modelConnectionErrorCode,
   parseClaudeEndpoint,
   parseCodexEndpoint,
   resolveModelChoice,
@@ -10,28 +12,7 @@ import { bounded } from "./deadline.ts";
 export type BoundModelConnection =
   | { harness: "codex"; endpoint: CodexEndpoint; apiKey: string }
   | { harness: "claude"; endpoint: ClaudeEndpoint; apiKey: string };
-export interface ModelConnectionTestResult {
-  ok: boolean;
-  status: number | null;
-  error: "provider_rejected" | "invalid_response" | "connection_failed" | null;
-  code: string | null;
-}
-// Only known diagnostic identifiers may leave the runtime. Free-form provider
-// errors/headers can echo keys, so neither they nor generated content are returned.
-const CODES = new Set([
-  "invalid_api_key",
-  "model_not_found",
-  "DeploymentNotFound",
-  "invalid_request_error",
-  "authentication_error",
-  "permission_error",
-  "not_found_error",
-  "rate_limit_error",
-  "overloaded_error",
-  "api_error",
-  "server_error",
-  "insufficient_quota",
-]);
+export type { ModelConnectionTestResult } from "@armada/core";
 
 /** One bounded native-wire request using the runtime's bound connection, never RPC-supplied credentials. */
 export async function testModelConnection(
@@ -90,8 +71,7 @@ export async function testModelConnection(
         if (!body || typeof body !== "object" || Array.isArray(body)) body = {};
         const failure = body.error && typeof body.error === "object" ? (body.error as Record<string, unknown>) : {};
         const rawCode = failure.code ?? failure.type;
-        const code =
-          typeof rawCode === "string" && CODES.has(rawCode) && rawCode !== connection.apiKey ? rawCode : null;
+        const code = rawCode !== connection.apiKey ? modelConnectionErrorCode(rawCode) : null;
         if (!response.ok || body.status === "failed" || body.type === "error")
           return { ok: false, status: response.status, error: "provider_rejected", code };
         const valid =

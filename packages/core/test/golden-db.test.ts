@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { PGlite } from "@electric-sql/pglite";
-import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
+import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 import {
   configFromFlags,
   createSqlGoldenStore,
@@ -17,9 +17,8 @@ const API = "https://github.com/example/api.git";
 
 describe("golden database", () => {
   test("a private golden is invisible to other members, and an org golden is not", async () => {
-    const db = await openDatabase();
+    const db = await openMigratedDatabase();
     try {
-      await applyMigrations(db);
       const people = await fixture(db);
       const store = { ...createSqlGoldenStore(db), ...serviceGoldenOperations(db) };
       const boat = readyProvider();
@@ -80,9 +79,8 @@ describe("golden database", () => {
   });
 
   test("a member cannot insert an org golden, and the database still refuses a secret config", async () => {
-    const db = await openDatabase();
+    const db = await openMigratedDatabase();
     try {
-      await applyMigrations(db);
       const people = await fixture(db);
       const store = createSqlGoldenStore(db);
       await asUser(db, people.admin, () =>
@@ -227,9 +225,8 @@ async function asUser<T>(db: PGlite, userId: string, run: () => Promise<T>): Pro
 
 // Outcome metadata is public to readers but cannot be fabricated by a user JWT.
 test("golden build warnings are server-owned on insert and update", async () => {
-  const db = await openDatabase();
+  const db = await openMigratedDatabase();
   try {
-    await applyMigrations(db);
     const people = await fixture(db);
     const insert = (warning: boolean) =>
       db.query<{ id: string }>(

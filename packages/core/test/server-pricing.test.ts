@@ -44,7 +44,7 @@ test("custom endpoint never falls back to public rates; explicit zero override w
   expect(result.snapshot?.rates.input).toBe("0");
 });
 
-test("missing or invalid observations and unsupported pricing never become zero", () => {
+test("missing or invalid observations and positive unrated classes never become zero", () => {
   for (const patch of [
     { inputTokens: null },
     { cachedTokens: 2000 },
@@ -56,25 +56,29 @@ test("missing or invalid observations and unsupported pricing never become zero"
     expect(priceTurn({ ...turn, ...patch } as TurnTokenUsage, "codex", override(), "30m").unknown).toBe("tokens");
   }
   const publicClaude = resolvePrice({ provider: "anthropic", model: "claude-sonnet-5-5", customEndpoint: false });
-  expect(priceTurn({ ...turn, model: "claude-sonnet-5-5" }, "claude", publicClaude).unknown).toBe("pricing_dimensions");
+  expect(priceTurn({ ...turn, model: "claude-sonnet-5-5" }, "claude", publicClaude).usd).toBe("0.00527");
+  expect(priceTurn({ ...turn, model: "claude-sonnet-5-5" }, "claude", publicClaude, "other").unknown).toBe(
+    "pricing_dimensions",
+  );
   expect(priceTurn(turn, "codex", override({ ...rates, cacheRead: null }), "30m").unknown).toBe("price");
   expect(override({ ...rates, input: "NaN" })).toBeNull();
   const tiered = resolvePrice({ provider: "openai", model: "gpt-5.5", customEndpoint: false });
-  expect(priceTurn({ ...turn, model: "gpt-5.5" }, "codex", tiered, "30m").unknown).toBe("pricing_dimensions");
+  expect(priceTurn({ ...turn, model: "gpt-5.5" }, "codex", tiered, "other").unknown).toBe("pricing_dimensions");
 });
 
-test("image-generation pricing cannot be mistaken for text-token pricing", () => {
+test("rated token classes do not claim unreported non-token image charges", () => {
   const snapshot = resolvePrice({ provider: "openai", model: "gpt-image-2", customEndpoint: false });
-  expect(priceTurn({ ...turn, model: "gpt-image-2", cacheWriteTokens: 0 }, "codex", snapshot, "30m").unknown).toBe(
-    "pricing_dimensions",
+  // This is the default token estimate only, not an image-service invoice.
+  expect(priceTurn({ ...turn, model: "gpt-image-2", cacheWriteTokens: 0 }, "codex", snapshot, "other").usd).toBe(
+    "0.01325",
   );
 });
 
 test.each([
-  { provider: "anthropic" as const, model: "claude-opus-5-5", harness: "claude" as const },
-  { provider: "openai" as const, model: "gpt-4.1-nano", harness: "codex" as const },
-  { provider: "openai" as const, model: "gpt-5-nano", harness: "codex" as const },
-])("unverified service tier never receives a standard-rate amount: $model", ({ provider, model, harness }) => {
+  { provider: "anthropic" as const, model: "claude-opus-5-5", harness: "claude" as const, usd: "4" },
+  { provider: "openai" as const, model: "gpt-4.1-nano", harness: "codex" as const, usd: "0.1" },
+  { provider: "openai" as const, model: "gpt-5-nano", harness: "codex" as const, usd: "0.05" },
+])("catalogue alternate modes do not veto the default token rates: $model", ({ provider, model, harness, usd }) => {
   const snapshot = resolvePrice({ provider, model, customEndpoint: false });
   const result = priceTurn(
     {
@@ -89,8 +93,8 @@ test.each([
     harness,
     snapshot,
   );
-  expect(result.usd).toBeNull();
-  expect(result.unknown).toBe("pricing_dimensions");
+  expect(result.usd).toBe(usd);
+  expect(result.unknown).toBeNull();
 });
 
 test("admission books freeze exact provider rates and basis without guessing custom endpoint prices", () => {
@@ -122,4 +126,30 @@ test("admission books freeze exact provider rates and basis without guessing cus
     credentialVersion: 2,
   });
   expect(custom).toMatchObject({ provider: "openai", basis: "estimated", customEndpoint: true, prices: {} });
+});
+
+// A rate is needed only for a positive disjoint pricing bucket, not its native aggregate.
+test.each([
+  {
+    patch: { inputTokens: 0, outputTokens: 10, cachedTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 },
+    prices: { input: null, output: "2", cacheRead: null, cacheWrite: null, reasoning: null },
+    usd: "0.00002",
+  },
+  {
+    patch: { inputTokens: 20, outputTokens: 0, cachedTokens: 20, cacheWriteTokens: 0, reasoningTokens: null },
+    prices: { input: null, output: null, cacheRead: "0.1", cacheWrite: null, reasoning: "20" },
+    usd: "0.000002",
+  },
+  {
+    patch: { inputTokens: 0, outputTokens: 10, cachedTokens: 0, cacheWriteTokens: 0, reasoningTokens: 10 },
+    prices: { input: null, output: null, cacheRead: null, cacheWrite: null, reasoning: "20" },
+    usd: "0.0002",
+  },
+  {
+    patch: { inputTokens: 0, outputTokens: 0, cachedTokens: 0, cacheWriteTokens: 0, reasoningTokens: null },
+    prices: { input: null, output: null, cacheRead: null, cacheWrite: null, reasoning: null },
+    usd: "0",
+  },
+])("zero-token classes do not require a rate (%j)", ({ patch, prices, usd }) => {
+  expect(priceTurn({ ...turn, ...patch }, "codex", override(prices)).usd).toBe(usd);
 });

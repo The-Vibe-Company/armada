@@ -239,3 +239,53 @@ test.each(
   expect(reads).toBe(0);
   expect(h.requests).toHaveLength(0);
 });
+
+test.each([
+  { result: { ok: true, status: 200, error: null, code: null }, exit: 0, message: "Connection accepted" },
+  {
+    result: { ok: false, status: 200, error: "invalid_response", code: null },
+    exit: 1,
+    message: "HTTP 200 invalid_response",
+  },
+  {
+    result: { ok: false, status: null, error: "connection_failed", code: null },
+    exit: 1,
+    message: "connection failed or timed out",
+  },
+])(
+  "connection test CLI prints closed diagnostics and reflects failure in exit status (%j)",
+  async ({ result, exit, message }) => {
+    const h = setup();
+    h.auth.fetch = (async (input, init) => {
+      const request = new Request(String(input), init);
+      expect(new URL(request.url).pathname).toBe("/api/v1/sandbox/test-model-connection");
+      expect(await request.json()).toEqual({ id: "sandbox", model: "deployment" });
+      return Response.json({ id: "sandbox", test: result });
+    }) as typeof fetch;
+    expect(
+      await run(
+        ["creds", "test", "sandbox", "--model", "deployment"],
+        { out: h.auth.out, err: h.auth.err },
+        { auth: h.auth },
+      ),
+    ).toBe(exit);
+    expect(h.output.join("")).toContain(message);
+  },
+);
+
+test("connection test CLI refuses malformed diagnostic fields rather than echoing them", async () => {
+  const h = setup();
+  const secret = randomUUID();
+  h.auth.fetch = (async () =>
+    Response.json({
+      test: { ok: false, status: 401, error: "provider_rejected", code: secret },
+    })) as unknown as typeof fetch;
+  expect(
+    await run(
+      ["creds", "test", "sandbox", "--model", "deployment", "--json"],
+      { out: h.auth.out, err: h.auth.err },
+      { auth: h.auth },
+    ),
+  ).not.toBe(0);
+  expect(h.output.join("")).not.toContain(secret);
+});
