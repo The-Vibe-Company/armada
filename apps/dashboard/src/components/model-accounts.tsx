@@ -132,7 +132,7 @@ function ConnectionTestDialog({ account, orgId }: { account: ModelAccount; orgId
             request through its runtime, without starting or resuming a machine.
           </DialogDescription>
         </DialogHeader>
-        <ConnectionTestForm account={account} orgId={orgId} />
+        <ConnectionTestForm key={`${account.id}:${account.version}:${orgId}`} account={account} orgId={orgId} />
       </DialogContent>
     </Dialog>
   );
