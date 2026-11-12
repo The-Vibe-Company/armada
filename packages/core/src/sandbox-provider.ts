@@ -41,6 +41,8 @@ export interface HostCapabilities {
    * refusals. Otherwise only a non-mutating save-call refusal clears the attempt.
    */
   readonly retainSourceOnSnapshotUncertainty: boolean;
+  /** Physical lifetime must reserve future logical extension time at worker launch. */
+  readonly reserveExtensionHeadroom: boolean;
   /** Dispose a completed disposable builder without creating an unwanted stop checkpoint. */
   readonly goldenBuilderCleanup: "stop" | "delete";
   /**
@@ -62,6 +64,7 @@ export const HOST_CAPABILITIES: Readonly<Record<SandboxProviderId, HostCapabilit
   boat: {
     goldenRestore: "fresh-fork",
     retainSourceOnSnapshotUncertainty: false,
+    reserveExtensionHeadroom: false,
     goldenSnapshotPublication: "replace-stable",
     goldenBuilderCleanup: "stop",
     goldenBuilderRecovery: "stop-recorded",
@@ -70,6 +73,7 @@ export const HOST_CAPABILITIES: Readonly<Record<SandboxProviderId, HostCapabilit
   modal: {
     goldenRestore: "shared-source",
     retainSourceOnSnapshotUncertainty: true,
+    reserveExtensionHeadroom: true,
     goldenSnapshotPublication: "publish-immutable",
     goldenBuilderCleanup: "delete",
     goldenBuilderRecovery: "dispose-reservation",
