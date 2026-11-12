@@ -1,8 +1,12 @@
 # Application-secret runtime gates (#956)
 
-**Raw application-secret delivery is disabled on both providers.** The vault and
-readable-variable transports do not establish secret-safe sandbox delivery. This
-work must not be deployed as an opt-in secret-delivery feature.
+**Owner override (#1037): template-bound raw secret environment delivery is enabled
+on both providers using the existing readable-variable transport.** See the
+authoritative [template staging checklist](templates-staging.md#secret-bindings-1037).
+The owner explicitly accepts raw values and ordinary sandbox lifecycle behavior;
+the hardening plan below is deferred, not a delivery prerequisite. The transport
+does not promise secret-safe recovery, retention, redaction or erasure. Existing
+taint gates remain for already-marked sandboxes; template delivery adds no taint.
 
 ## Small-PR delivery order
 

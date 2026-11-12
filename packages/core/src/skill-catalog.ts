@@ -1,4 +1,4 @@
-import { validateSkillPins } from "./skillpack.ts";
+import { SKILL_PIN_PATTERN, validateSkillPins } from "./skill-pins.ts";
 import { VaultError } from "./vault-error.ts";
 
 export type SkillCatalogSource = "public" | "private";
@@ -44,37 +44,39 @@ function sourceInput(value: unknown): asserts value is SkillCatalogSource {
   if (value !== "public" && value !== "private") invalid();
 }
 
+/** Upstream syntax is independent of Armada's install eligibility policy. */
+function referenceSyntax(value: unknown, source: SkillCatalogSource): value is string {
+  return (
+    typeof value === "string" &&
+    value.includes("/") === (source === "public") &&
+    value.split("/").every((part) => part.length <= 128) &&
+    SKILL_PIN_PATTERN.test(`${value}@1.0.0`)
+  );
+}
 function referenceInput(value: unknown, source: SkillCatalogSource): asserts value is string {
-  if (
-    typeof value !== "string" ||
-    value.includes("/") !== (source === "public") ||
-    value.split("/").some((part) => part.length > 128)
-  )
-    invalid();
+  if (!referenceSyntax(value, source)) invalid();
   try {
     validateSkillPins([`${value}@1.0.0`]);
   } catch {
     invalid();
   }
 }
-
 function upstreamReference(value: unknown, source: SkillCatalogSource): string {
-  try {
-    referenceInput(value, source);
-    return value;
-  } catch {
-    throw unavailable();
-  }
+  if (!referenceSyntax(value, source)) throw unavailable();
+  return value;
 }
-
 function version(value: unknown, reference: string): string {
   const result = text(value, 128);
-  try {
-    validateSkillPins([`${reference}@${result}`]);
-  } catch {
-    throw unavailable();
-  }
+  if (!SKILL_PIN_PATTERN.test(`${reference}@${result}`)) throw unavailable();
   return result;
+}
+function eligible(item: SkillCatalogItem): boolean {
+  try {
+    for (const value of item.versions) validateSkillPins([`${item.reference}@${value}`]);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function publicItem(value: unknown): SkillCatalogItem {
@@ -175,11 +177,14 @@ export function createSkillCatalog(fetchImpl: typeof fetch = fetch) {
         ) {
           throw unavailable();
         }
-        return { items: row.skills.map(publicItem), nextOffset: next };
+        return { items: row.skills.map(publicItem).filter(eligible), nextOffset: next };
       }
       const rows = await read("/skills?lib=accessible", "private", key);
       if (!Array.isArray(rows)) throw unavailable();
-      const items = rows.map(privateItem).filter((item): item is SkillCatalogItem => item !== null);
+      const items = rows
+        .map(privateItem)
+        .filter((item): item is SkillCatalogItem => item !== null)
+        .filter(eligible);
       const next = offset + PAGE_SIZE;
       return {
         items: items.slice(offset, next),

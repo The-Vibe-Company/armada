@@ -1262,9 +1262,10 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       };
     },
     steer(r) {
-      if (!r.conversationId) throw refusal("invalid_request", "Modal steering requires conversationId.");
       return admit(r.sandboxId, async (row, save) => {
         if (row.golden) throw refusal("invalid_request", "Golden builders cannot run model turns.");
+        if (row.phase === "stopped") throw refusal("sandbox_not_ready", "Stopped sandboxes cannot be steered.");
+        // Protocol 1 selects the sole active turn when no conversation is specified.
         return runner.call(await healthyAdmission(row, save), "steer", {
           sandboxId: r.sandboxId,
           conversationId: r.conversationId,

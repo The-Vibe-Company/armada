@@ -70,6 +70,7 @@ test("connecting stores only ciphertext, Disconnect forgets it, and connecting a
 
   await page.goto("/settings");
   await card.getByRole("button", { name: "Disconnect" }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "Disconnect GitHub", exact: true }).click();
   await expect(card.locator("[data-github-state]")).toHaveAttribute("data-github-state", "not-connected");
   expect(await connections()).toEqual([]);
 
@@ -193,8 +194,25 @@ test("a connected person sees who they are, and disconnecting removes only their
   await expect(card.getByText("bobcat")).toHaveCount(0);
   expect(await page.content()).not.toContain("refresh_token_enc");
 
-  await card.getByRole("button", { name: "Disconnect" }).click();
+  let mutations = 0;
+  page.on("request", (request) => {
+    if (request.method() === "POST") mutations++;
+  });
+  const disconnect = card.getByRole("button", { name: "Disconnect", exact: true });
+  await disconnect.click();
+  const dialog = page.getByRole("alertdialog", { name: "Disconnect GitHub?" });
+  await expect(dialog).toContainText("Revoke Armada's authorization in GitHub settings");
+  await page.screenshot({ path: "test-results/github-disconnect-confirm-desktop.png" });
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(disconnect).toBeFocused();
+  expect(mutations).toBe(0);
+  expect(await connections()).toHaveLength(2);
+  await disconnect.click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "Disconnect GitHub", exact: true }).click();
   await expect(card.locator("[data-github-state]")).toHaveAttribute("data-github-state", "not-connected");
+  await expect(dialog).toHaveCount(0);
+  await expect(card.getByRole("link", { name: "Connect GitHub", exact: true })).toBeFocused();
   const rows = (await (await fetch(`${MOCK}/__test/github-connections`)).json()) as { login: string }[];
   expect(rows.map((row) => row.login)).toEqual(["bobcat"]);
 });
@@ -211,6 +229,7 @@ test("a connection with no installation warns, and Connect sends the person to i
   await expect(card.locator("[data-github-installations='missing']")).toContainText("not installed");
 
   await card.getByRole("button", { name: "Disconnect" }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "Disconnect GitHub", exact: true }).click();
   await expect(card.locator("[data-github-state]")).toHaveAttribute("data-github-state", "not-connected");
 
   const [request] = await Promise.all([

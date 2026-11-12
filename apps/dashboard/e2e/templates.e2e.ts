@@ -8,7 +8,7 @@ const panelOf = (page: Page, name: string) => page.locator(`[data-template-panel
 
 async function panel(page: Page, name: string) {
   const shown = panelOf(page, name);
-  if (!(await shown.isVisible())) await row(page, name).locator("[data-select-item]").click();
+  if (!(await shown.isVisible())) await row(page, name).getByRole("button", { name, exact: true }).click();
   await expect(shown).toBeVisible();
   return shown;
 }
@@ -36,7 +36,9 @@ for (const mobile of [false, true]) {
     await page.setViewportSize(mobile ? { width: 390, height: 844 } : { width: 1280, height: 720 });
     await signIn(page, "alice@example.com", "/templates");
     const nav = page.getByRole("navigation", { name: "Main" });
+    if (mobile) await page.getByRole("button", { name: /Navigation/ }).click();
     await expect(nav.getByRole("link", { name: /Templates/ })).toHaveAttribute("aria-current", "page");
+    if (mobile) await page.keyboard.press("Escape");
     // What needs the viewer first, then what is ready; Bob's personal template is not Alice's to see.
     await expect(page.getByRole("list", { name: "Templates" }).locator(":scope > li")).toHaveText([
       /Modal quick fix/,
@@ -71,7 +73,11 @@ for (const mobile of [false, true]) {
     await dialog.getByLabel("Name").fill("Laptop fit");
     await dialog.getByLabel("Environment").selectOption({ label: "shared-golden on Boat" });
     await dialog.getByRole("button", { name: "Next: tools and variables" }).click();
-    await expect(dialog.getByText("Secrets are not available in templates yet.")).toBeVisible();
+    await expect(
+      dialog.getByText(
+        "Only names and scope are shown. Values are delivered as environment variables to the selected agent.",
+      ),
+    ).toBeVisible();
     if (!mobile) await expect(dialog.getByRole("button", { name: "Publish template" })).toBeInViewport();
     await page.screenshot({
       animations: "disabled",
@@ -104,7 +110,7 @@ test("a missing agent account warns before publication and choosing a usable age
   const dialog = page.getByRole("dialog", { name: "New template" });
   const warning = dialog.getByRole("status");
   await expect(warning).toContainText("No usable Claude Code account is available to you in this organization.");
-  await expect(warning.getByRole("link", { name: "Build > Harness" })).toHaveAttribute("href", "/harness");
+  await expect(warning.getByRole("link", { name: "Start with > Harness" })).toHaveAttribute("href", "/harness");
   await dialog.getByRole("radio", { name: "Codex" }).check();
   await expect(warning).toHaveCount(0);
   await dialog.getByRole("radio", { name: "Claude Code" }).check();
@@ -141,6 +147,9 @@ test("an admin creates an org template from org resources only; it is published 
   await tools.getByRole("checkbox", { name: /Acme Docs/ }).check();
   const variables = dialog.getByRole("group", { name: /Variables/ });
   await variables.getByRole("checkbox", { name: /APP_REGION/ }).check();
+  const secrets = dialog.getByRole("group", { name: /^Secrets/ });
+  await expect(secrets.getByRole("checkbox", { name: /ALICE_DEPLOY_TOKEN/ })).toHaveCount(0);
+  await secrets.getByRole("checkbox", { name: /STRIPE_API_KEY/ }).check();
   await expect(variables).toContainText("1 chosen");
   await dialog.getByRole("button", { name: "Publish template" }).click();
   await expect(dialog).toBeHidden();
@@ -162,8 +171,26 @@ test("an admin creates an org template from org resources only; it is published 
       reasoningEffort: "medium",
       connections: ["00000000-0000-4000-8000-000000000060"],
       variables: [{ key: "APP_REGION", variableId: "00000000-0000-4000-8000-000000000080", version: 3 }],
+      secrets: [{ key: "STRIPE_API_KEY", secretId: "00000000-0000-4000-8000-000000000081", version: 1 }],
     },
   });
+  // A revoked selection remains visible and checked until explicitly removed.
+  await fetch(`${MOCK}/__test/vault-revoke`, {
+    method: "POST",
+    body: JSON.stringify({ id: "00000000-0000-4000-8000-000000000081" }),
+  });
+  await page.reload();
+  const shown = await panel(page, "Sentry triage");
+  await expect(shown).toContainText("STRIPE_API_KEY is expired, revoked, removed or inaccessible");
+  await shown.getByRole("button", { name: "New revision" }).click();
+  const edit = page.getByRole("dialog", { name: "New revision of Sentry triage" });
+  await edit.getByRole("button", { name: "Next: tools and variables" }).click();
+  const retained = edit.getByRole("group", { name: /^Secrets/ }).getByRole("checkbox", { name: /STRIPE_API_KEY/ });
+  await expect(retained).toBeChecked();
+  await expect(edit).toContainText("Unavailable — remove to publish");
+  await retained.uncheck();
+  await edit.getByRole("button", { name: "Publish revision 2" }).click();
+  await expect(edit).toBeHidden();
 });
 
 test("a new revision starts from the current one; the old revision stays and the warning clears", async ({ page }) => {
@@ -392,7 +419,7 @@ test("template picker publishes exact pins and keeps earlier revisions immutable
   await picker.getByLabel("Version", { exact: true }).selectOption("2.0.0");
   await picker.getByRole("button", { name: "Add skill", exact: true }).click();
   await expect(dialog.getByRole("button", { name: "Remove review-code@2.0.0" })).toBeVisible();
-  await page.screenshot({ path: "test-results/template-skill-picker.png", animations: "disabled" });
+  await dialog.screenshot({ path: "test-results/template-skill-picker.png", animations: "disabled" });
   await dialog.getByRole("button", { name: "Publish revision 3" }).click();
   await expect(dialog).toBeHidden();
 

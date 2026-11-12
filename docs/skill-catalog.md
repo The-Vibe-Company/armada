@@ -47,3 +47,9 @@ connected workspace, compare names/versions to Skillpack, choose and launch
 an exact public/private pin, revoke key/membership and confirm safe refusal.
 Public discovery requires Skillpack's existing catalog endpoint to be enabled;
 no Armada-specific change is required there.
+
+Discovery filters valid upstream entries that Armada cannot install (for example
+the managed armada-tools slug). Private filtering precedes local pagination;
+public pages retain Skillpack's original next cursor even when entries are
+filtered. Malformed upstream metadata still fails closed. Direct version/install
+requests retain the canonical strict refusal policy.

@@ -107,8 +107,8 @@ export function NoSecretsNote({ className }: { className?: string }) {
     >
       <LockKeyholeIcon aria-hidden className="mt-0.5 size-3.5 shrink-0" />
       <span>
-        <span className="font-medium text-foreground">Secrets are not available in templates yet.</span> A template
-        delivers readable variables only; anyone who can launch it can see their values.
+        <span className="font-medium text-foreground">Secret values are never shown here.</span> A template delivers
+        chosen secrets to the agent environment; anyone who can launch it can use those values.
       </span>
     </p>
   );
@@ -356,7 +356,7 @@ function TemplateForm({
               ? `Several ${HARNESS_LABELS[harness]} accounts are available. Set a default in `
               : `No usable ${HARNESS_LABELS[harness]} account is available to you in this organization. Add or reconnect one in `}
             <Link className="underline" href={HARNESS_PATH}>
-              Build &gt; Harness
+              Start with &gt; Harness
             </Link>
             {accountSelection === "ambiguous" ? "." : " or choose another agent."} You can save this template, but
             launching it requires {accountSelection === "ambiguous" ? "an unambiguous account selection" : "an account"}
@@ -469,8 +469,45 @@ function TemplateForm({
           initial={editing?.definition.variables.map((binding) => binding.variableId) ?? []}
           hint="Each value is copied into the sandbox at launch, under its own name unless the revision named it otherwise. Publishing uses its current version."
         />
+        <PickList
+          legend="Secrets"
+          name="secrets"
+          icon={<LockKeyholeIcon />}
+          mono
+          empty={
+            lookups.secrets == null
+              ? "Secrets could not be read. Refresh to choose them."
+              : "No secrets yet. Add one in Secrets."
+          }
+          options={[
+            ...(lookups.secrets ?? [])
+              .filter(
+                (row) =>
+                  (row.status === "active" || editing?.definition.secrets?.some((b) => b.secretId === row.id)) &&
+                  (scope === "personal" || row.scope === "org"),
+              )
+              .map((row) => ({
+                id: row.id,
+                label: row.name,
+                note:
+                  row.status !== "active"
+                    ? "Unavailable — remove to publish"
+                    : row.scope === "org"
+                      ? "Org"
+                      : "Personal",
+              })),
+            ...(editing?.definition.secrets ?? [])
+              .filter(
+                (b, i, all) =>
+                  all.findIndex((v) => v.secretId === b.secretId) === i &&
+                  !lookups.secrets?.some((row) => row.id === b.secretId),
+              )
+              .map((b) => ({ id: b.secretId, label: b.key, note: "Unavailable — remove to publish" })),
+          ]}
+          initial={editing?.definition.secrets?.map((b) => b.secretId) ?? []}
+          hint="Only names and scope are shown. Values are delivered as environment variables to the selected agent."
+        />
         <SkillPicker orgId={orgId} value={skills} onChange={setSkills} />
-        <NoSecretsNote />
         {lost && (
           <p role="alert" className="text-sm text-destructive" data-template-lost>
             {lost}

@@ -147,7 +147,7 @@ test("accepted send with failed completion publication reports outcome unknown, 
           dispatched++;
           return Response.json({ ok: true, promptId: "accepted", conversationId: "conversation", status: "queued" });
         }
-        return Response.json({ ok: true, sandbox: sandbox({ state: "idle" }) });
+        return Response.json({ ok: true, sandbox: sandbox({ id: record.providerSandboxId, state: "idle" }) });
       }) as typeof fetch,
     });
     const token = await server.token(server.people.owner);
