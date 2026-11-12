@@ -125,8 +125,8 @@ export async function captureGoldenPublication(
   return proof;
 }
 
-/** Legacy proofs require a singleton succeeded job, exact source and org-only immutable authority.
- * Private pre-provenance credential selection cannot be reconstructed and is intentionally retained. */
+/** Legacy proofs require a singleton succeeded job, exact source and immutable authority.
+ * Without per-snapshot authority, private pre-provenance credential selection is unprovable and retained. */
 export async function captureHistoricalPublication(
   sql: Sql,
   key: string | undefined,
@@ -137,7 +137,7 @@ export async function captureHistoricalPublication(
   snapshot: string,
 ): Promise<Proof | null> {
   try {
-    if (target.visibility !== "org" && target.provider !== "modal") return null;
+    if (target.visibility !== "org" && !HOST_CAPABILITIES[target.provider].snapshotManagementAuthority) return null;
     const rows = (
       await sql.query<{
         id: string;
@@ -701,10 +701,10 @@ export class GoldenSnapshotRetirements {
       return { results: [{ outcome: "deferred", reason: "authority_unavailable" }] };
     }
     if (!backend || !authority) return { results: [{ outcome: "deferred", reason: "authority_unavailable" }] };
-    // Private legacy history cannot prove whether the original build selected a user key or org fallback.
+    // Without snapshot authority, private legacy history cannot prove user-key versus org-fallback selection.
     if (
       (golden.visibility === "org" && (authority.scope !== "org" || authority.ownerId !== golden.orgId)) ||
-      (golden.visibility === "private" && golden.provider !== "modal")
+      (golden.visibility === "private" && !HOST_CAPABILITIES[golden.provider].snapshotManagementAuthority)
     )
       return { results: [{ outcome: "deferred", reason: "historical_authority_unproven" }] };
     if (
