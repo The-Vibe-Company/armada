@@ -5,6 +5,7 @@ import {
   encryptSecret,
   type GoldenActor,
   type Provider,
+  ProviderError,
   type Sql,
   VaultError,
 } from "@armada/core/server";
@@ -280,11 +281,20 @@ export function createSubscriptionBroker(
               "Stop legacy sandboxes and import a fresh revision of this account before enabling shared renewal.",
             );
           const target = await historicalProvider(tx, prior.id);
-          const physical = await target.provider.get(target.providerSandboxId, { signal: AbortSignal.timeout(10_000) });
-          if (
-            physical.id !== target.providerSandboxId ||
-            (physical.state !== "stopped" && physical.physicalExitConfirmed !== true)
-          )
+          // Resolve authority first: a missing provider/key is not proof that its machine is gone.
+          const quiescent = await target.provider
+            .get(target.providerSandboxId, { signal: AbortSignal.timeout(10_000) })
+            .then(
+              (physical) =>
+                physical.id === target.providerSandboxId &&
+                (physical.state === "stopped" || physical.physicalExitConfirmed === true),
+            )
+            .catch((error: unknown) => {
+              if (error instanceof ProviderError && error.provider === target.provider.id && error.code === "not_found")
+                return true;
+              throw error;
+            });
+          if (!quiescent)
             throw new VaultError("credential_busy", "A legacy subscription writer is not confirmed stopped.");
         }
         const owner = await tx.query<{ account_version: number; sandbox_id: string }>(

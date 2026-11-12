@@ -175,7 +175,8 @@ revision. Failed allocations do not exclusively reserve server-owned accounts.
 Legacy refresh-bearing native homes keep their existing fences. To move an
 existing account into shared mode, stop its old sandboxes and import a fresh
 revision of the **same account**. Armada verifies historical physical writers
-are stopped before enrollment. An unrecorded/ambiguous old allocation remains
+are stopped or authoritatively absent before enrollment. Unavailable/uncertain
+observations are not absence proof. An unrecorded/ambiguous old allocation remains
 blocked until the authorized product recovery described below is completed.
 Copying the old auth file under another name is not a
 migration; duplicate sessions and same-owner historical identities are refused.
