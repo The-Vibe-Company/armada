@@ -339,7 +339,13 @@ ${table.columns.map((column) => field(column.name, column.tsType, true, column.n
     .join("\n");
 
   const enums = schema.enums
-    .map((item) => `      ${item.name}: ${item.labels.map((label) => JSON.stringify(label)).join(" | ")};`)
+    .map((item) => {
+      const labels = item.labels.map((label) => JSON.stringify(label));
+      const single = `      ${item.name}: ${labels.join(" | ")};`;
+      return single.length <= 120
+        ? single
+        : `      ${item.name}:\n${labels.map((label) => `        | ${label}`).join("\n")};`;
+    })
     .join("\n");
 
   const aliases = [

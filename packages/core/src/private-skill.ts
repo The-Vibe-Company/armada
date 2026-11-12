@@ -1,4 +1,5 @@
 import type { Harness } from "./contract.ts";
+import { HARNESS_CATALOG } from "./harnesses.ts";
 import type { OrchestratorSkillReceipt } from "./orchestrator.ts";
 import { PRIVATE_SKILL_FAILURES, PrivateSkillError } from "./private-skill-error.ts";
 import type { Provider } from "./provider.ts";
@@ -34,7 +35,7 @@ export async function installPrivateSkill(
   )
     throw new PrivateSkillError("skillpack_request_rejected", "install");
   const [slug, version] = input.reference.split("@");
-  const tool = input.harness === "claude" ? "claude-code" : "codex";
+  const tool = HARNESS_CATALOG[input.harness].skillpackTool;
   // Only fixed failure labels or the validated receipt leave the guest. Never forward CLI stderr/stdout.
   const script = `set +x
 command -v node >/dev/null 2>&1 || { printf 'ARMADA_PRIVATE_FAILURE node_missing\\n' >&2; exit 91; }

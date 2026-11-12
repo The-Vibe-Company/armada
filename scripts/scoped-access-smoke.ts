@@ -1,8 +1,9 @@
+import type { Harness } from "../packages/core/src/contract.ts";
 /** Ordinary sandbox access probe. The owner API only observes and safely cleans up; the native model exercises MCP. */
 export interface ScopedProbeCase {
   org: string;
   provider: "boat" | "modal";
-  harness: "claude" | "codex";
+  harness: Harness;
   goldenId: string;
   modelAccountId: string;
   model: string;

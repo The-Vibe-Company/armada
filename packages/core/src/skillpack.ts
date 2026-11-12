@@ -1,3 +1,4 @@
+import { HARNESS_CATALOG, isHarness } from "./harnesses.ts";
 import type { OrchestratorSkillReceipt } from "./orchestrator.ts";
 import { skillRefusalMessage } from "./skill-diagnostics.ts";
 import { validateSkillPins } from "./skill-pins.ts";
@@ -5,6 +6,11 @@ import { validateSkillPins } from "./skill-pins.ts";
 export { validateSkillPins } from "./skill-pins.ts";
 
 import type { Provider } from "./provider.ts";
+
+function skillpackTool(harness: string): string {
+  if (!isHarness(harness)) throw Error("unsupported_harness");
+  return HARNESS_CATALOG[harness].skillpackTool;
+}
 
 export function parseSkillReceipt(output: string, skill: string, harness: string): OrchestratorSkillReceipt {
   const [reference, version] = skill.split("@");
@@ -24,7 +30,7 @@ export function parseSkillReceipt(output: string, skill: string, harness: string
     workspace?.apiUrl !== "https://skillpack.app/v1" ||
     !entry.targets?.some(
       (target: { tool: string; version: string; packageChecksum: string }) =>
-        target.tool === (harness === "claude" ? "claude-code" : "codex") &&
+        target.tool === skillpackTool(harness) &&
         target.version === version &&
         target.packageChecksum === entry.checksum,
     )
@@ -89,5 +95,5 @@ function quote(value: string): string {
 export function skillInstallCommand(skill: string, projectDir: string, harness: string): string {
   validateSkillPins([skill], true);
   const [reference, version] = skill.split("@");
-  return `export PATH="$PATH:/home/user/.local/bin"; skillpack install ${quote(reference!)} --version ${quote(version!)} --api-url https://skillpack.app/v1 --scope project --project ${quote(projectDir)} --tools ${harness === "claude" ? "claude-code" : "codex"} --pin --yes --json`;
+  return `export PATH="$PATH:/home/user/.local/bin"; skillpack install ${quote(reference!)} --version ${quote(version!)} --api-url https://skillpack.app/v1 --scope project --project ${quote(projectDir)} --tools ${skillpackTool(harness)} --pin --yes --json`;
 }

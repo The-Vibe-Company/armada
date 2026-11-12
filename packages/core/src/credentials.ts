@@ -8,6 +8,7 @@ import type { GoldenActor } from "./golden.ts";
 import { mapHarnesses } from "./harnesses.ts";
 import { LaunchError } from "./launch-error.ts";
 import { type ModelPriceOverrides, parseModelPriceOverrides } from "./model-price-overrides.ts";
+import { OPENCODE_ENDPOINT_ENV, parseOpenCodeEndpoint } from "./opencode-endpoint.ts";
 import { SKILLPACK_TOKEN_PATTERN } from "./skillpack-token.ts";
 import { redactKnownTokens } from "./token-redaction.ts";
 import type { UsagePricingContext } from "./usage-pricing.ts";
@@ -70,6 +71,7 @@ export async function harnessCredentials(
   actor: GoldenActor,
   harness: Harness,
 ): Promise<HarnessCredentials> {
+  if (harness === "opencode") throw new LaunchError("no_credentials", "OpenCode requires a named model account.");
   if (harness === "claude") {
     const token = await resolveCredential(source, actor, "claude_oauth");
     if (!token) {
@@ -168,10 +170,11 @@ interface KindInfo {
   env?: string;
 }
 
-/** OpenCode keys come with OpenCode (v1): the schema has no kind for them yet. */
+/** Credential delivery metadata; supported model accounts are declared by the harness catalog. */
 export const CREDENTIAL_KINDS: Readonly<Record<CredentialKind, KindInfo>> = {
   claude_oauth: { name: "claude-oauth", label: "Claude Code OAuth token", env: "CLAUDE_CODE_OAUTH_TOKEN" },
   anthropic: { name: "anthropic", label: "Anthropic API key", env: "ANTHROPIC_API_KEY" },
+  opencode: { name: "opencode", label: "OpenCode API key or custom endpoint", env: "OPENCODE_API_KEY" },
   openai: { name: "openai", label: "OpenAI API key for Codex", env: "OPENAI_API_KEY" },
   codex_auth: { name: "codex-auth", label: "Codex auth.json" },
   boat: { name: "boat", label: "boat.dev API key" },
@@ -215,6 +218,26 @@ export function parseCredentialValue(kind: CredentialKind, raw: string): string 
       "invalid",
       "A Skillpack token starts with cmp_pat_ followed by 48 lowercase hexadecimal characters.",
     );
+  }
+  if (kind === "opencode" && value.startsWith("{")) {
+    try {
+      const { endpoint, apiKey, prices, ...extra } = JSON.parse(value);
+      if (
+        Object.keys(extra).length ||
+        typeof apiKey !== "string" ||
+        !apiKey ||
+        apiKey.length > MAX_SECRET_LENGTH ||
+        /\s/.test(apiKey)
+      )
+        throw Error();
+      return JSON.stringify({
+        endpoint: parseOpenCodeEndpoint(endpoint),
+        apiKey,
+        ...(prices === undefined ? {} : { prices: parseModelPriceOverrides(prices) }),
+      });
+    } catch {
+      throw new VaultError("invalid", "An OpenCode connection needs endpoint {version:1,baseUrl,models} and apiKey.");
+    }
   }
   if (kind === "anthropic" && value.startsWith("{")) {
     try {
@@ -515,6 +538,15 @@ function open(sealed: Uint8Array, encryptionKey: string | undefined): Promise<st
 
 function deliver(kind: CredentialKind, scope: CredentialScope, value: string): ResolvedCredentials {
   const source = { kind, scope };
+  if (kind === "opencode" && value.startsWith("{")) {
+    const parsed = JSON.parse(parseCredentialValue(kind, value));
+    return {
+      env: { OPENCODE_API_KEY: parsed.apiKey, [OPENCODE_ENDPOINT_ENV]: JSON.stringify(parsed.endpoint) },
+      files: [],
+      sources: [source],
+      ...(parsed.prices ? { modelPrices: parsed.prices as ModelPriceOverrides } : {}),
+    };
+  }
   if (kind === "anthropic" && value.startsWith("{")) {
     const parsed = JSON.parse(parseCredentialValue(kind, value));
     return {

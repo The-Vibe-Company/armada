@@ -20,6 +20,7 @@ test("the old Credentials address lands on Harness, and the navigation names it"
 for (const provider of [
   { label: "OpenAI", kind: "openai", harness: "codex", key: OPENAI_KEY },
   { label: "Anthropic", kind: "anthropic", harness: "claude", key: "sk-ant-api03-e2e-harness-key" },
+  { label: "OpenCode", kind: "opencode", harness: "opencode", key: "fake-opencode-e2e-key" },
 ]) {
   test(`adding a ${provider.label} API key is a first-class dialog choice`, async ({ page }) => {
     await signIn(page, "alice@example.com", "/harness");
@@ -27,11 +28,11 @@ for (const provider of [
     const dialog = page.getByRole("dialog");
     await expect(dialog.getByRole("heading", { name: "Add a model account" })).toBeVisible();
     await expect(dialog.getByRole("radio", { name: /subscription/ })).toHaveCount(2);
-    await expect(dialog.getByRole("radio", { name: /API key/ })).toHaveCount(2);
+    await expect(dialog.getByRole("radio", { name: /API key/ })).toHaveCount(3);
     await expect(dialog.getByLabel("Name")).toHaveValue("");
     await expect(dialog.getByLabel("Name")).toHaveAttribute("placeholder", "Choose a name");
     await dialog.getByRole("radio", { name: new RegExp(`${provider.label} API key`) }).check();
-    // Switching kinds keeps all four choices available, including subscriptions.
+    // Switching kinds keeps all choices available, including subscriptions.
     await expect(dialog.getByRole("radio", { name: /Claude subscription/ })).toBeVisible();
     await dialog.getByLabel("Name").fill("Personal key");
     await dialog.getByRole("textbox", { name: "API key" }).fill(provider.key);
