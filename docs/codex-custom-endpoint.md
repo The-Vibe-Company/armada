@@ -62,3 +62,21 @@ Actual endpoint compatibility remains a staging check, not a unit-test claim.
 
 Deployment prerequisites: rebuild/publish the runtime artifact with the server.
 No schema migration or new environment setting is required.
+
+## Dashboard creation fields
+
+On Models/Harness, open **Add a subscription**, choose **Use an API key
+instead**, select **OpenAI API key**, and name the account. Check **Use a custom
+endpoint (Modal)**. Paste the Foundry base URL (with or without `/responses`),
+leave API version empty for v1, and paste the key in the password field.
+Save with **Add API key**; the named account is available in existing launch
+and template account selectors. Choose a Modal golden and supply your Azure
+model/deployment name at launch.
+
+Coordinator staging check: repeat that creation flow for both pasted URL
+forms using the owner-held endpoint/key, then launch each account and request
+MODEL_OK on initial and subsequent turns. Expect success and no duplicated
+suffix. Inspect account listings/page text: neither key nor connection JSON
+is returned. The separate endpoint-test action and dedicated replacement
+fields are not part of this creation-form slice; replacement still accepts
+the complete connection JSON through the existing flow.

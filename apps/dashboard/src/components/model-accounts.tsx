@@ -883,6 +883,58 @@ function SecretField({ idPrefix, kind }: { idPrefix: string; kind: AccountKind }
   );
 }
 
+/** Non-secret endpoint fields are opt-in; the key remains an uncontrolled password input. */
+function CodexConnectionFields({ idPrefix }: { idPrefix: string }) {
+  const [custom, setCustom] = useState(false);
+  return (
+    <div className="space-y-4">
+      <Label htmlFor={`${idPrefix}-custom`} className="flex items-center gap-2 text-sm font-normal">
+        <Checkbox
+          id={`${idPrefix}-custom`}
+          name="customEndpoint"
+          value="on"
+          checked={custom}
+          onCheckedChange={(value) => setCustom(value === true)}
+        />
+        Use a custom endpoint (Modal)
+      </Label>
+      {custom && (
+        <fieldset className="min-w-0 space-y-3 rounded-lg border bg-muted/30 p-4">
+          <legend className="px-1 text-sm font-medium">Codex connection</legend>
+          <div className="space-y-2">
+            <Label htmlFor={`${idPrefix}-base-url`}>Base URL</Label>
+            <Input
+              id={`${idPrefix}-base-url`}
+              name="baseUrl"
+              type="url"
+              required
+              spellCheck={false}
+              autoComplete="off"
+              aria-describedby={`${idPrefix}-endpoint-hint`}
+              placeholder="https://resource.services.ai.azure.com/…/openai/v1"
+            />
+          </div>
+          <p id={`${idPrefix}-endpoint-hint`} className="text-xs text-muted-foreground">
+            Azure AI Foundry or a Responses-compatible gateway. A pasted URL ending in /responses is accepted. Modal
+            only. Codex cannot use chat-completions-only endpoints such as DeepSeek.
+          </p>
+          <div className="space-y-2">
+            <Label htmlFor={`${idPrefix}-api-version`}>API version (optional)</Label>
+            <Input
+              id={`${idPrefix}-api-version`}
+              name="apiVersion"
+              autoComplete="off"
+              spellCheck={false}
+              placeholder="Not needed for Foundry v1"
+            />
+          </div>
+        </fieldset>
+      )}
+      <SecretField idPrefix={idPrefix} kind="openai" />
+    </div>
+  );
+}
+
 /* ---------------------------------------------------------------- add an account */
 
 /**
@@ -1046,7 +1098,11 @@ export function AddAccountDialog({
                 <Disclosure summary={`Paste ${info.valueLabel} instead`} defaultOpen={false}>
                   <div className="space-y-4">
                     <p className="text-xs text-muted-foreground">{info.hint}</p>
-                    <SecretField idPrefix={id} kind={kind} />
+                    {kind === "openai" ? (
+                      <CodexConnectionFields idPrefix={id} />
+                    ) : (
+                      <SecretField idPrefix={id} kind={kind} />
+                    )}
                     {defaultBox}
                     {state && !state.ok && <ResultLine result={state} />}
                     <SubmitButton>{subscription ? "Add subscription" : "Add API key"}</SubmitButton>
@@ -1058,9 +1114,15 @@ export function AddAccountDialog({
                 <div className="space-y-3 rounded-md border p-3">
                   <p className="text-sm">
                     <span className="font-medium">{subscription ? "Sign in on your machine" : "Paste the key"}.</span>{" "}
-                    <span className="text-muted-foreground">{info.hint}</span>
+                    <span className="text-muted-foreground">
+                      {kind === "openai" ? "From OpenAI or your gateway. Billed per token." : info.hint}
+                    </span>
                   </p>
-                  <SecretField idPrefix={id} kind={kind} />
+                  {kind === "openai" ? (
+                    <CodexConnectionFields idPrefix={id} />
+                  ) : (
+                    <SecretField idPrefix={id} kind={kind} />
+                  )}
                 </div>
                 {defaultBox}
                 {state && !state.ok && <ResultLine result={state} />}
