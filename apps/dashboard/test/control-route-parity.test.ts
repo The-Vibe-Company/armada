@@ -260,7 +260,7 @@ test("every CLI POST control route is admitted by the dashboard proxy", async ()
                       ? ["ready", "--prompt-id", id]
                       : command === "extend"
                         ? ["--ttl", "1h"]
-                        : command === "bind-credential"
+                        : ["bind-credential", "repoint-credential"].includes(command)
                           ? ["--credential-id", id]
                           : []),
                 ];

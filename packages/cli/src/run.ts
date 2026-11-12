@@ -142,8 +142,9 @@ Usage:
                                            Missing/partial evidence abstains. Never resizes or changes defaults.
                                            Human launch guidance uses stderr only; --json launch never requests advice.
   armada bind-credential <sandbox-id> --credential-id UUID [--org UUID] [--json]
-  armada repoint-credential <sandbox-id> --credential-id UUID [--org UUID] [--json]
                                            Owner-only legacy Modal binding recovery; stop safely first; no restart
+  armada repoint-credential <sandbox-id> --credential-id UUID [--org UUID] [--json]
+                                           Change the owner's retained sandbox to another same-harness account
   armada rm <sandbox-id> --yes [--org UUID] [--json]  Permanently delete a stopped sandbox and its recovery archives
   armada extend <sandbox-id> --ttl <duration> [--org UUID] [--json]
   armada detail|status|recovery|stop|interrupt <sandbox-id> [--org UUID] [--json]
