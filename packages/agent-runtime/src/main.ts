@@ -2,7 +2,9 @@ import { createHash } from "node:crypto";
 import { chmod, mkdir, rm, writeFile } from "node:fs/promises";
 import { CODEX_ENDPOINT_ENV, parseCodexEndpoint } from "@armada/core";
 import { runArtifactInstallMode } from "./artifact-cache.ts";
+import { configureClaudeEndpoint } from "./claude-endpoint.ts";
 import { configureCodexEndpoint } from "./codex-endpoint.ts";
+import { enrolRuntime, RuntimeDialout } from "./dialout.ts";
 import { execCredentialValues, validateExecEnvironment } from "./exec-env.ts";
 import { GitHubBroker, type GitHubBrokerConfiguration } from "./github-broker.ts";
 import { type installGitHubTools, prepareGitHubTools, runGitHubInstallMode } from "./github-tools.ts";
@@ -12,9 +14,12 @@ import { quiesceNativeCodex, readNativeCodexAuth } from "./native-auth.ts";
 import type { ExecEnvironment } from "./protocol.ts";
 import { createRedactor, HarnessState } from "./state.ts";
 
-async function main() {
+async function main(dialout = false) {
   // Bootstrap is delivered through a private stdin pipe, never argv or a golden file.
-  const config = JSON.parse(await Bun.stdin.text()) as {
+  const input = JSON.parse(await Bun.stdin.text());
+  const enrolled = dialout ? await enrolRuntime(input) : undefined;
+  const channel = enrolled ? new RuntimeDialout(input.serverUrl, enrolled) : undefined;
+  const config = (enrolled ? enrolled.configuration : input) as {
     root: string;
     cwd: string;
     port: number;
@@ -31,6 +36,13 @@ async function main() {
     execEnv?: ExecEnvironment;
     credentialFreeBuilder?: boolean;
   };
+  if (enrolled)
+    config.grant = {
+      token: enrolled.runtimeToken,
+      sandboxId: enrolled.sandboxId,
+      generation: enrolled.epoch,
+      expiresAt: config.grant.expiresAt,
+    };
   if (config.credentialFreeBuilder !== undefined && typeof config.credentialFreeBuilder !== "boolean")
     throw Error("invalid_exec_environment");
   const codexEndpoint = config.codexEnv[CODEX_ENDPOINT_ENV]
@@ -38,15 +50,21 @@ async function main() {
     : undefined;
   delete config.codexEnv[CODEX_ENDPOINT_ENV];
   if (codexEndpoint) config.codexEnv.ARMADA_CUSTOM_CODEX_ENDPOINT = "1";
+  configureClaudeEndpoint(config.claudeEnv);
   const execEnv = validateExecEnvironment(config.execEnv, config.credentialFreeBuilder);
   if (
     config.credentialFreeBuilder &&
     (codexEndpoint ||
       config.codexAuthJson ||
       [config.claudeEnv, config.codexEnv].some((env) =>
-        ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"].some((key) =>
-          Boolean(env[key]),
-        ),
+        [
+          "OPENAI_API_KEY",
+          "ANTHROPIC_API_KEY",
+          "ANTHROPIC_AUTH_TOKEN",
+          "CLAUDE_CODE_OAUTH_TOKEN",
+          "GH_TOKEN",
+          "GITHUB_TOKEN",
+        ].some((key) => Boolean(env[key])),
       ))
   )
     throw Error("builder_credentials_forbidden");
@@ -61,7 +79,7 @@ async function main() {
   const modelSecrets = [
     config.grant.token,
     ...[config.claudeEnv, config.codexEnv].flatMap((env) =>
-      ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]
+      ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"]
         .map((key) => env[key])
         .filter((v): v is string => typeof v === "string"),
     ),
@@ -117,20 +135,25 @@ async function main() {
           JSON.parse(authJson).tokens?.account_id !== JSON.parse(config.codexAuthJson).tokens?.account_id
         )
           throw Error("native_auth_identity_changed");
-        const response = await fetch(config.ingestUrl, {
-          redirect: "error",
-          method: "POST",
-          headers: { "content-type": "application/json", "x-armada-runner-grant": config.grant.token },
-          body: JSON.stringify({
-            sandboxId: config.grant.sandboxId,
-            generation: config.grant.generation,
-            events: [],
-            nativeAuth: { authJson, expectedRevision: config.nativeAuthRevision },
-          }),
-          signal: AbortSignal.timeout(15000),
-        });
-        if (!response.ok) throw Error("native_auth_publication_unknown");
-        const receipt = (await response.json()) as { authRevision: number; committed: boolean };
+        let receipt: { authRevision: number; committed: boolean };
+        if (channel)
+          receipt = await channel.publishNativeAuth({ authJson, expectedRevision: config.nativeAuthRevision });
+        else {
+          const response = await fetch(config.ingestUrl, {
+            redirect: "error",
+            method: "POST",
+            headers: { "content-type": "application/json", "x-armada-runner-grant": config.grant.token },
+            body: JSON.stringify({
+              sandboxId: config.grant.sandboxId,
+              generation: config.grant.generation,
+              events: [],
+              nativeAuth: { authJson, expectedRevision: config.nativeAuthRevision },
+            }),
+            signal: AbortSignal.timeout(15000),
+          });
+          if (!response.ok) throw Error("native_auth_publication_unknown");
+          receipt = (await response.json()) as { authRevision: number; committed: boolean };
+        }
         if (
           !Number.isSafeInteger(receipt.authRevision) ||
           receipt.authRevision < config.nativeAuthRevision ||
@@ -234,7 +257,7 @@ async function main() {
         exclusiveAuth: config.nativeAuthRevision !== undefined,
       }),
     },
-    {
+    channel ?? {
       async append(batch) {
         const response = await fetch(config.ingestUrl, {
           method: "POST",
@@ -267,23 +290,65 @@ async function main() {
       ghConfigDir: `${config.root}/exec-transient/gh`,
     },
   );
-  Bun.serve({
-    hostname: "0.0.0.0",
-    port: config.port,
-    fetch: (request) => runner.handle(request),
-    maxRequestBodySize: 1048576,
-  });
-
-  setInterval(() => {
+  const flush = setInterval(() => {
     void runner.flushOutbox().catch(() => {});
-  }, 1000).unref();
+  }, 1000);
+  flush.unref();
+  if (channel) {
+    const stop = new AbortController();
+    const shutdown = () => stop.abort();
+    let closing: Promise<void> | undefined;
+    const closeNative = () => {
+      closing ??= Promise.resolve().then(async () => {
+        github.configure(null);
+        githubSocket?.close();
+        await Promise.all(Object.values(runner.drivers).map((driver) => driver.close()));
+      });
+      return closing;
+    };
+    process.once("SIGTERM", shutdown);
+    process.once("SIGINT", shutdown);
+    try {
+      await channel.run(
+        (request) => {
+          // Exec ownership/termination is a separate parity slice. Never start a detached
+          // shell that could outlive this initial dial-out client on revocation.
+          if (request.op === "exec")
+            return Promise.resolve(Response.json({ error: "dialout_exec_not_supported" }, { status: 409 }));
+          return runner.handle(
+            new Request("http://runtime/v1", {
+              method: "POST",
+              headers: { "x-armada-runner-grant": config.grant.token },
+              body: JSON.stringify(request),
+            }),
+          );
+        },
+        stop.signal,
+        closeNative,
+      );
+    } finally {
+      clearInterval(flush);
+      process.removeListener("SIGTERM", shutdown);
+      process.removeListener("SIGINT", shutdown);
+      await closeNative();
+      // Keep WAL available until pending native completion/auth callbacks drain.
+      // SQLite closes naturally when this listener-free process exits.
+    }
+  } else {
+    Bun.serve({
+      hostname: "0.0.0.0",
+      port: config.port,
+      fetch: (request) => runner.handle(request),
+      maxRequestBodySize: 1048576,
+    });
+  }
 }
 void (
   process.argv[2] === "github-install"
     ? runGitHubInstallMode()
     : process.argv[2] === "install-artifact"
       ? runArtifactInstallMode()
-      : main()
+      : main(process.argv[2] === "dialout")
 ).catch(() => {
   process.stderr.write("runner_boot_failed\n");
   process.exitCode = 1;

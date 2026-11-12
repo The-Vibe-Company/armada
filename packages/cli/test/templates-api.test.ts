@@ -272,10 +272,16 @@ test("post-claim launch receipts distinguish confirmed refusal from uncertain al
       ["private unknown reason", "Check current access"],
     ]) {
       const result = await invoke(["template", "launch", id, "--request-key", "durable-1", "--json"], {
-        response: { state, reason },
+        response: {
+          state,
+          reason,
+          ...(reason === "connection_unavailable" ? { message: "Reconnect this tool before retrying." } : {}),
+        },
       });
       expect(result.code).toBe(1);
-      expect(result.err).toContain(help ?? "");
+      expect(result.err).toContain(
+        reason === "connection_unavailable" ? "Reconnect this tool before retrying." : (help ?? ""),
+      );
       expect(result.err).not.toContain("private unknown reason");
       if (state === "failed") {
         expect(result.err).toContain("no sandbox started");
@@ -284,7 +290,7 @@ test("post-claim launch receipts distinguish confirmed refusal from uncertain al
         expect(result.err).toContain("outcome unknown");
         expect(result.err).toContain("same template ID, request key and body");
       }
-      expect(JSON.parse(result.out)).toEqual({ state, reason });
+      expect(JSON.parse(result.out)).toMatchObject({ state, reason });
     }
   }
 });

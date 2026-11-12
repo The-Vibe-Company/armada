@@ -17,52 +17,40 @@ test("the old Credentials address lands on Harness, and the navigation names it"
   await expect(nav.getByRole("link", { name: "Credentials" })).toHaveCount(0);
 });
 
-test("adding a subscription leads with the sign-in; an API key is the secondary way in", async ({ page }) => {
-  await signIn(page, "alice@example.com", "/harness");
-  // One section per harness. Codex has nothing yet: its empty state opens the dialog on the ChatGPT subscription.
-  await expect(page.locator("[data-harness]")).toHaveCount(2);
-  const codex = page.locator('[data-harness="codex"]');
-  await expect(codex.getByText("No Codex subscription yet")).toBeVisible();
-  await codex.getByRole("button", { name: "Add a Codex subscription" }).click();
-
-  const dialog = page.getByRole("dialog");
-  await expect(dialog.getByRole("heading", { name: "Add a subscription" })).toBeVisible();
-  await expect(dialog.getByRole("radio", { name: /ChatGPT subscription/ })).toBeChecked();
-  await expect(dialog.getByRole("radio", { name: /Claude subscription/ })).toBeVisible();
-  await expect(dialog.getByRole("radio", { name: /API key/ })).toHaveCount(0);
-
-  // The API key is one click away, for the same harness, and back again.
-  await dialog.getByRole("button", { name: "Use an API key instead" }).click();
-  await expect(dialog.getByRole("heading", { name: "Add an API key" })).toBeVisible();
-  await expect(dialog.getByRole("radio", { name: /OpenAI API key/ })).toBeChecked();
-  await expect(dialog.getByRole("radio", { name: /subscription/ })).toHaveCount(0);
-  await dialog.getByRole("button", { name: "Use a subscription instead" }).click();
-  await expect(dialog.getByRole("radio", { name: /ChatGPT subscription/ })).toBeChecked();
-  await dialog.getByRole("button", { name: "Use an API key instead" }).click();
-
-  await dialog.getByLabel("Name").fill("Team key");
-  await dialog.getByRole("textbox", { name: "API key" }).fill(OPENAI_KEY);
-  await dialog.getByRole("button", { name: "Add API key" }).click();
-  await expect(dialog).toHaveCount(0);
-  await expect(codex.locator('[data-account="Team key"]')).toBeVisible();
-  expect(await page.content()).not.toContain(OPENAI_KEY);
-  // The next opening leads with the subscription again, not the API key chosen last time.
-  await page.getByRole("button", { name: "Add a subscription", exact: true }).click();
-  await expect(dialog.getByRole("heading", { name: "Add a subscription" })).toBeVisible();
-  await expect(dialog.getByRole("radio", { name: /Claude subscription/ })).toBeChecked();
-  await page.keyboard.press("Escape");
-
-  const calls = (
-    (await (await fetch(`${MOCK}/__test/accounts`, { method: "POST", body: "{}" })).json()) as {
-      calls: { route: string; body: Record<string, unknown> }[];
-    }
-  ).calls;
-  expect(
-    calls
-      .filter((call) => call.route === "creds/accounts/set")
-      .map((call) => [call.body.scope, call.body.kind, call.body.name]),
-  ).toEqual([["user", "openai", "Team key"]]);
-});
+for (const provider of [
+  { label: "OpenAI", kind: "openai", harness: "codex", key: OPENAI_KEY },
+  { label: "Anthropic", kind: "anthropic", harness: "claude", key: "sk-ant-api03-e2e-harness-key" },
+]) {
+  test(`adding a ${provider.label} API key is a first-class dialog choice`, async ({ page }) => {
+    await signIn(page, "alice@example.com", "/harness");
+    await page.getByRole("button", { name: "Add a model account", exact: true }).click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog.getByRole("heading", { name: "Add a model account" })).toBeVisible();
+    await expect(dialog.getByRole("radio", { name: /subscription/ })).toHaveCount(2);
+    await expect(dialog.getByRole("radio", { name: /API key/ })).toHaveCount(2);
+    await expect(dialog.getByLabel("Name")).toHaveValue("");
+    await expect(dialog.getByLabel("Name")).toHaveAttribute("placeholder", "Choose a name");
+    await dialog.getByRole("radio", { name: new RegExp(`${provider.label} API key`) }).check();
+    // Switching kinds keeps all four choices available, including subscriptions.
+    await expect(dialog.getByRole("radio", { name: /Claude subscription/ })).toBeVisible();
+    await dialog.getByLabel("Name").fill("Personal key");
+    await dialog.getByRole("textbox", { name: "API key" }).fill(provider.key);
+    await dialog.getByRole("button", { name: "Add API key" }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(page.locator(`[data-harness="${provider.harness}"] [data-account="Personal key"]`)).toBeVisible();
+    expect(await page.content()).not.toContain(provider.key);
+    const calls = (
+      (await (await fetch(`${MOCK}/__test/accounts`, { method: "POST", body: "{}" })).json()) as {
+        calls: { route: string; body: Record<string, unknown> }[];
+      }
+    ).calls;
+    expect(
+      calls
+        .filter((call) => call.route === "creds/accounts/set")
+        .map((call) => [call.body.scope, call.body.kind, call.body.name]),
+    ).toEqual([["user", provider.kind, "Personal key"]]);
+  });
+}
 
 function seeded(id: number, name: string, extra: Record<string, unknown> = {}) {
   const now = "2026-11-08T10:00:00.000Z";
