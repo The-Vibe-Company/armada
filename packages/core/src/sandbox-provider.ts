@@ -42,11 +42,21 @@ export interface HostCapabilities {
    * Reservation-backed sources must be retained once snapshot/publication starts.
    */
   readonly goldenBuilderRecovery: "stop-recorded" | "dispose-reservation";
+  /** Snapshot metadata must attest the immutable management credential authority before retirement. */
+  readonly snapshotManagementAuthority: boolean;
 }
 
 export const HOST_CAPABILITIES: Readonly<Record<SandboxProviderId, HostCapabilities>> = {
-  boat: { goldenRestore: "fresh-fork", goldenBuilderRecovery: "stop-recorded" },
-  modal: { goldenRestore: "shared-source", goldenBuilderRecovery: "dispose-reservation" },
+  boat: {
+    goldenRestore: "fresh-fork",
+    goldenBuilderRecovery: "stop-recorded",
+    snapshotManagementAuthority: false,
+  },
+  modal: {
+    goldenRestore: "shared-source",
+    goldenBuilderRecovery: "dispose-reservation",
+    snapshotManagementAuthority: true,
+  },
 };
 
 /**
