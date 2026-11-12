@@ -1038,7 +1038,11 @@ type LifecycleFault =
   | "lost_resume"
   | "stop_failed"
   | "lost_launch";
-function lifecycleFixture(fault: LifecycleFault = "none") {
+function lifecycleFixture(
+  fault: LifecycleFault = "none",
+  extra?: (call: Call) => Response | undefined,
+  flags: readonly string[] = ["--lifecycle"],
+) {
   let provider = "boat";
   let harness = "codex";
   let id = "";
@@ -1063,6 +1067,8 @@ function lifecycleFixture(fault: LifecycleFault = "none") {
       if (fault === "lost_launch") throw new Error("secret launch outcome");
       return json({ sandbox: { id, provider } });
     }
+    const override = extra?.(call);
+    if (override) return override;
     if (call.path.startsWith("sandbox/") && !["sandbox/list", "sandbox/launch"].includes(call.path))
       expect(call.body.id).toBe(id);
     if (call.path === "sandbox/status")
@@ -1128,7 +1134,7 @@ function lifecycleFixture(fault: LifecycleFault = "none") {
         ARMADA_URL: "https://armada-mcp-staging.up.railway.app",
         ARMADA_SMOKE_CASES: JSON.stringify(cases),
       },
-      ["--lifecycle"],
+      flags,
       {
         ...fake.io,
         fetch: (url, init) =>
@@ -1209,5 +1215,161 @@ test("lifecycle failures reject false receipts and report unknown launches or le
       expect(summary.launchOutcomeUnknown).toBe(true);
     }
     expect(fake.lines.join("")).not.toContain("secret");
+  }
+});
+
+function githubAccessFixture(
+  fault:
+    | "none"
+    | "native_denied"
+    | "bad_receipt"
+    | "refresh_unknown"
+    | "refresh_identity"
+    | "native_identity"
+    | "managed"
+    | "managed_denied"
+    | "managed_unknown"
+    | "generic_dependency" = "none",
+  standalone = false,
+) {
+  let refreshes = 0;
+  let nativeReads = 0;
+  const paths: string[] = [];
+  const fake = lifecycleFixture(
+    "none",
+    (call) => {
+      if (call.path === "sandbox/send") {
+        const prompt = String(call.body.prompt);
+        expect(prompt).toContain("login=$(cd '/home/user/repo' && gh api user --jq .login");
+        expect(prompt).toContain("git -C '/home/user/repo' ls-remote origin HEAD");
+        expect(prompt).not.toContain("push origin");
+        expect(prompt).not.toContain("GH_TOKEN");
+        const path = /> '([^']+)'$/.exec(prompt)?.[1];
+        expect(path).toBeDefined();
+        paths.push(path!);
+        if (fault === "managed_unknown" && paths.length === 2)
+          return json({ error: { code: "outcome_unknown", message: "secret admitted prompt" } }, 503);
+      }
+      if (call.path === "sandbox/exec" && String(call.body.command).startsWith("head -c 128 --")) {
+        nativeReads++;
+        const command = String(call.body.command);
+        expect(command).toContain(`'${paths.at(-1)}'`);
+        expect(command).toContain("rm -f --");
+        return json({
+          exitCode: 0,
+          timedOut: false,
+          stdout:
+            fault === "bad_receipt"
+              ? "secret-remote-body"
+              : fault === "native_denied" || (fault === "managed_denied" && nativeReads === 2)
+                ? "0 1\n"
+                : `0 0\n${fault === "native_identity" && nativeReads === 2 ? "other-user" : "smoke-user"}`,
+        });
+      }
+      if (call.path === "github/refresh") {
+        refreshes++;
+        expect(call.body.org).toBe(selected.org);
+        expect(call.body.id).toBe("life-1");
+        if (["managed", "managed_denied", "managed_unknown", "generic_dependency"].includes(fault))
+          return json(
+            {
+              error: {
+                code: "dependency_unavailable",
+                message:
+                  fault === "generic_dependency"
+                    ? "secret dependency outage"
+                    : "Use the next prompt to reconcile this provider's managed GitHub runtime.",
+              },
+            },
+            503,
+          );
+        return fault === "refresh_unknown"
+          ? json({ error: { code: "outcome_unknown", message: "secret remote detail" } }, 503)
+          : json({
+              id: "life-1",
+              status: "connected",
+              login: fault === "refresh_identity" && refreshes === 2 ? "other-user" : "smoke-user",
+            });
+      }
+    },
+    standalone ? ["--github-access"] : ["--lifecycle", "--github-access"],
+  );
+  return { ...fake, paths, refreshes: () => refreshes };
+}
+
+test("native GitHub access survives two idempotent refreshes and a retained resume without pushes or stale receipts", async () => {
+  for (const standalone of [false, true]) {
+    const fake = githubAccessFixture("none", standalone);
+    expect(await fake.run()).toBe(true);
+    expect(fake.refreshes()).toBe(2);
+    expect(new Set(fake.paths).size).toBe(2);
+    for (const step of [
+      "github_access_at_launch",
+      "github_refresh_1",
+      "github_refresh_2",
+      standalone ? "github_access_after_refresh" : "github_access_after_resume",
+    ])
+      expect(fake.receipts()).toContainEqual({ case: 0, step, pass: true });
+    expect(fake.calls.filter((call) => call.path === "sandbox/launch")).toHaveLength(1);
+    expect(fake.calls.filter((call) => call.path === "sandbox/stop")).toHaveLength(standalone ? 1 : 2);
+    expect(fake.lines.join("")).not.toContain("smoke-user");
+    expect(fake.lines.join("")).not.toContain("secret");
+  }
+});
+
+test("GitHub access rejects denied, malformed and switched identities and never replays unknown refreshes", async () => {
+  for (const fault of [
+    "native_denied",
+    "bad_receipt",
+    "refresh_unknown",
+    "refresh_identity",
+    "native_identity",
+  ] as const) {
+    const fake = githubAccessFixture(fault);
+    expect(await fake.run()).toBe(false);
+    expect(fake.calls.filter((call) => call.path === "sandbox/launch")).toHaveLength(1);
+    if (fault === "refresh_unknown") expect(fake.refreshes()).toBe(1);
+    if (fault === "native_denied" || fault === "bad_receipt") expect(fake.refreshes()).toBe(0);
+    expect(fake.receipts().some((line) => line.pass === false)).toBe(true);
+    const summary = fake.receipts().find((line) => line.step === "lifecycle_cleanup_summary");
+    expect(summary.pass).toBe(true);
+    expect(summary.leftoverSandboxIds).toEqual([]);
+    expect(fake.lines.join("")).not.toContain("secret");
+    expect(fake.lines.join("")).not.toContain("other-user");
+  }
+});
+
+test("managed GitHub uses the shipped next-prompt reconciliation instruction twice on every pair", async () => {
+  for (const provider of ["boat", "modal"])
+    for (const harness of ["claude", "codex"]) {
+      const fake = githubAccessFixture("managed");
+      expect(await fake.run([{ ...selected, provider, harness }])).toBe(true);
+      expect(fake.refreshes()).toBe(1);
+      expect(new Set(fake.paths).size).toBe(4);
+      for (const attempt of [1, 2]) {
+        expect(fake.receipts()).toContainEqual({ case: 0, step: `github_refresh_${attempt}`, pass: true });
+        expect(fake.receipts()).toContainEqual({
+          case: 0,
+          step: "github_refresh_evidence",
+          pass: true,
+          attempt,
+          mechanism: "next_prompt",
+        });
+        expect(fake.receipts()).toContainEqual({ case: 0, step: `github_reconcile_${attempt}_access`, pass: true });
+      }
+      expect(fake.calls.filter((call) => call.path === "sandbox/stop")).toHaveLength(2);
+      expect(fake.lines.join("")).not.toContain("smoke-user");
+    }
+});
+
+test("managed reconciliation never masks generic dependency outages, native denial or unknown admitted prompts", async () => {
+  for (const fault of ["generic_dependency", "managed_denied", "managed_unknown"] as const) {
+    const fake = githubAccessFixture(fault);
+    expect(await fake.run()).toBe(false);
+    expect(fake.refreshes()).toBe(1);
+    expect(fake.paths).toHaveLength(fault === "generic_dependency" ? 1 : 2);
+    expect(fake.calls.filter((call) => call.path === "sandbox/stop")).toHaveLength(1);
+    expect(fake.lines.join("")).not.toContain("secret");
+    expect(fake.receipts()).toContainEqual(expect.objectContaining({ case: 0, step: "github_refresh_1", pass: false }));
   }
 });
