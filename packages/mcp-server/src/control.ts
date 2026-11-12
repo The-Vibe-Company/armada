@@ -4,10 +4,12 @@ import {
   assertEmail,
   assertEmailCode,
   assertProvider,
+  BodyTooLargeError,
   createServiceToken,
   createSqlAuthStore,
   exchangeSupabaseCode,
   listServiceTokens,
+  readBoundedText,
   refreshSupabaseSession,
   revokeServiceToken,
   type Session,
@@ -311,6 +313,7 @@ export async function handleControlRequest(request: Request, options: ControlOpt
       headers: { "cache-control": "no-store", "server-timing": timing.header() },
     });
   } catch (error) {
+    if (error instanceof BodyTooLargeError) return fail(413, "invalid", error.message);
     const failureCode = apiFailureCode(error);
     if (failureCode)
       return Response.json(
@@ -457,6 +460,7 @@ async function tokenRevokeRoute(request: Request, options: ControlOptions): Prom
     });
     return Response.json({ ok: true }, { headers: { "cache-control": "no-store" } });
   } catch (error) {
+    if (error instanceof BodyTooLargeError) return fail(413, "invalid", error.message);
     return tokenRouteFailure(error, true);
   }
 }
@@ -494,6 +498,7 @@ async function tokenCreateRoute(request: Request, options: ControlOptions): Prom
       { headers: { "cache-control": "no-store" } },
     );
   } catch (error) {
+    if (error instanceof BodyTooLargeError) return fail(413, "invalid", error.message);
     return tokenRouteFailure(error);
   }
 }
@@ -540,7 +545,8 @@ async function emailVerifyRoute(request: Request, options: ControlOptions): Prom
       { accessToken: session.accessToken, refreshToken: session.refreshToken, expiresAt: session.expiresAt },
       { headers: { "cache-control": "no-store" } },
     );
-  } catch {
+  } catch (error) {
+    if (error instanceof BodyTooLargeError) return fail(413, "invalid", error.message);
     return fail(401, "unauthorized", "Email code was refused.");
   }
 }
@@ -576,6 +582,7 @@ async function emailStartRoute(request: Request, options: ControlOptions): Promi
     });
     return Response.json({ ok: true }, { headers: { "cache-control": "no-store" } });
   } catch (error) {
+    if (error instanceof BodyTooLargeError) return fail(413, "invalid", error.message);
     const status = error instanceof Error && error.message.includes("Too many") ? 429 : 400;
     return fail(
       status,
@@ -598,6 +605,7 @@ async function exchangeRoute(request: Request, options: ControlOptions): Promise
       : await nativeExchange(options, code, verifier);
     return Response.json(result, { headers: { "cache-control": "no-store" } });
   } catch (error) {
+    if (error instanceof BodyTooLargeError) return fail(413, "invalid", error.message);
     if (error instanceof ProviderRoutingError) return fail(503, error.code, error.message);
     if (error instanceof LaunchError)
       return fail(
@@ -664,6 +672,7 @@ async function refreshRoute(request: Request, options: ControlOptions): Promise<
     const refreshed = options.refreshNative ? await options.refreshNative(token) : await nativeRefresh(options, token);
     return Response.json(refreshed, { headers: { "cache-control": "no-store" } });
   } catch (error) {
+    if (error instanceof BodyTooLargeError) return fail(413, "invalid", error.message);
     if (error instanceof ProviderRoutingError) return fail(503, error.code, error.message);
     if (error instanceof LaunchError)
       return fail(
@@ -1832,9 +1841,9 @@ async function readVaultBody(request: Request): Promise<Record<string, unknown>>
 async function readJsonBody(request: Request, vault: boolean): Promise<Record<string, unknown>> {
   const invalid = (message: string) =>
     new VaultError("invalid", vault ? "Invalid application vault request." : message);
-  const reader = request.body?.getReader();
+  const reader = vault ? request.body?.getReader() : undefined;
   const decoder = new TextDecoder("utf-8", { fatal: vault });
-  let text = "",
+  let text = vault ? "" : await readBoundedText(request, MAX_BODY_BYTES),
     bytes = 0;
   try {
     if (reader) {

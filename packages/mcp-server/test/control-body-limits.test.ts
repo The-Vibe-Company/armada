@@ -58,7 +58,7 @@ test("control streams enforce separate byte caps and cancel without reading the 
     // Split a multibyte character across chunks; character count is below either cap.
     const bytes = encoder.encode(JSON.stringify({ value: "é".repeat(cap / 2) }));
     const result = await call(route, [bytes.slice(0, 12), bytes.slice(12), encoder.encode("never read")], true);
-    expect(result.response.status).toBe(400);
+    expect(result.response.status).toBe(route === "unknown" ? 413 : 400);
     expect(await result.response.json()).toMatchObject({ error: { code: "invalid", message } });
     expect(result.cancelled).toBe(true);
     expect(result.pulls).toBe(2);
