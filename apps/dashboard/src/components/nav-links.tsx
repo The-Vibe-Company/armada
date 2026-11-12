@@ -9,6 +9,7 @@ import {
   LayoutTemplateIcon,
   PackageIcon,
   PlugIcon,
+  RadarIcon,
   SettingsIcon,
   UsersIcon,
   VariableIcon,
@@ -38,6 +39,7 @@ const GROUPS = [
       { href: "/sandboxes", label: "Sandboxes", icon: BoxesIcon },
       { href: "/routines", label: "Routines", icon: CalendarClockIcon },
       { href: "/templates", label: "Templates", icon: LayoutTemplateIcon },
+      { href: "/otto", label: "Otto", icon: RadarIcon },
     ],
   },
   {
