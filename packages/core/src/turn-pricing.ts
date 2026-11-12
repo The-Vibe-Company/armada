@@ -30,3 +30,12 @@ export interface StoredTurnPricing extends PricedTurn {
   /** A single observed input tuple, not a synthetic union of independently maximized counters. */
   inputs: PricingInputs | null;
 }
+
+/** Exact server aggregate. No partial priced subtotal is presented as a complete session amount. */
+export interface SessionCost {
+  currency: "USD";
+  usd: string | null;
+  basis: CostBasis | null;
+  unknown: "admission" | "coverage" | PricedTurn["unknown"];
+  unpricedTurns: number | null;
+}

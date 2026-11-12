@@ -201,6 +201,15 @@ const sandboxUsage = z
   .object({
     computeSeconds: z.number().nullable(),
     turnCount: z.number().nullable(),
+    cost: z
+      .object({
+        currency: z.literal("USD"),
+        usd: z.string().nullable(),
+        basis: z.enum(["estimated", "api_equivalent"]).nullable(),
+        unknown: z.enum(["admission", "coverage", "price", "tokens", "pricing_dimensions"]).nullable(),
+        unpricedTurns: z.number().int().nonnegative().nullable(),
+      })
+      .optional(),
     tokenTotals: z
       .object({
         inputTokens: z.number().nullable(),
