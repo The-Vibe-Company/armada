@@ -252,6 +252,7 @@ describe("database", () => {
         "runtime_commands.request_enc",
         "runtime_commands.result_enc",
         "runtime_enrolments.configuration_enc",
+        "runtime_events.event_enc",
         "sandbox_work_recovery.archive_enc",
       ]);
 
