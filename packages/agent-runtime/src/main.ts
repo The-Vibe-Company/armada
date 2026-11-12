@@ -8,6 +8,7 @@ import { enrolRuntime, RuntimeDialout } from "./dialout.ts";
 import { execCredentialValues, validateExecEnvironment } from "./exec-env.ts";
 import { GitHubBroker, type GitHubBrokerConfiguration } from "./github-broker.ts";
 import { type installGitHubTools, prepareGitHubTools, runGitHubInstallMode } from "./github-tools.ts";
+import { runHarnessInstallMode } from "./harness-cache.ts";
 import { checkpointIdentityKey } from "./identity.ts";
 import { ClaudeDriver, CodexDriver, type Grant, Journal, type McpConfiguration, Runner } from "./index.ts";
 import { testModelConnection } from "./model-connection-test.ts";
@@ -411,7 +412,9 @@ void (
     ? runGitHubInstallMode()
     : process.argv[2] === "install-artifact"
       ? runArtifactInstallMode()
-      : main(process.argv[2] === "dialout")
+      : process.argv[2] === "install-harness"
+        ? runHarnessInstallMode()
+        : main(process.argv[2] === "dialout")
 ).catch(() => {
   process.stderr.write("runner_boot_failed\n");
   process.exitCode = 1;
