@@ -17,6 +17,19 @@ Compatibility coverage keeps --file -h as a filename, keeps malformed scope/vers
 values as errors, and does not turn text after -- into a help flag.
 Existing metadata-only output and input redaction assertions remain intact.
 
+## Required coordinator evidence — pending
+
+The ticket amendment still requires a coordinator-owned command-family live
+audit. The local results above and the client-only script below do **not**
+complete that requirement. No exemption has been granted for this PR.
+Before merge, the coordinator must attach the pinned staging results and
+relevant human/TTY observations, or explicitly amend the ticket for this slice.
+Workers must not obtain credentials or fabricate missing observations.
+
+The coordinator determines which Boat/sign-in checks are genuinely inapplicable
+to a pre-authentication help alias. This document does not waive them. Do not
+publish real secret values or mutate existing credentials for evidence.
+
 ## Coordinator's client audit (macOS/Linux, Python 3.9+)
 
 Save the following as vault-help-audit.py and run it against a pinned executable:
@@ -30,9 +43,10 @@ help must work before login or value input. No GNU timeout/util-linux script is
 needed. Raw evidence is private; post the index and relevant redacted errors.
 
 The coordinator can repeat the same forms from a native terminal to check
-readability/no-color behavior. There is no provider-specific or authenticated
-behavior change in this slice; do not create sandboxes, log in, write vault
-entries or disclose real values just to exercise these help paths.
+readability/no-color behavior. The script itself does not authenticate, invoke
+providers or write entries; any additional staging coverage must use separately
+authorized disposable fixtures. Record provider/authentication applicability,
+revision, exit codes, observed results, failures and coverage limits explicitly.
 Coordinator observations remain separate from worker local evidence.
 
 ```python
