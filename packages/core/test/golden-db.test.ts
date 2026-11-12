@@ -8,8 +8,8 @@ import {
   goldenForLaunch,
   type Provider,
   type SandboxInfo,
-  snapshotGolden,
 } from "../src/index.ts";
+import { snapshotGolden } from "../src/server.ts";
 import { serviceGoldenOperations } from "./support/service-golden-operations.ts";
 
 const WEB = "https://github.com/example/web.git";

@@ -116,7 +116,6 @@ export {
   goldenForSettings,
   providerIdOf,
   type SnapshottedGolden,
-  snapshotGolden,
   waitSnapshot,
 } from "./golden.ts";
 export type { GoldenBuildStatus } from "./golden-build-status.ts";
@@ -355,5 +354,4 @@ export {
   VaultError,
   type VaultErrorCode,
 } from "./vault-error.ts";
-export { createSqlVaultStore } from "./vault-store.ts";
 export { VERSION } from "./version.ts";

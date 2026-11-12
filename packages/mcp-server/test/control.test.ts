@@ -3,7 +3,6 @@ import { createMemoryAuthStore, generateToken, memorySessionStore, sha256Hex } f
 import {
   API_FAILURE_HELP,
   CREDENTIAL_BUSY_MESSAGE,
-  createSqlVaultStore,
   DEFAULT_LAUNCH_TTL_SECONDS,
   encryptSecret,
   GitHubHydrationError,
@@ -19,6 +18,7 @@ import {
   VaultError,
   type VaultStore,
 } from "@armada/core";
+import { createSqlVaultStore } from "@armada/core/server";
 import { appendModalEvents, createSqlModalStore, type Machine, type Scope, scopeKey } from "@armada/provider-modal";
 import type { PGlite } from "@electric-sql/pglite";
 import { AppService } from "modal";
