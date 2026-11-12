@@ -262,7 +262,7 @@ export function ResourceBrowser({
               aria-describedby={undefined}
               className={
                 detailPanel
-                  ? "fixed inset-y-0 right-0 z-50 w-full outline-none sm:max-w-xl data-[state=open]:animate-in data-[state=open]:slide-in-from-right data-[state=closed]:animate-out data-[state=closed]:slide-out-to-right motion-reduce:animate-none"
+                  ? "fixed inset-y-0 right-0 z-50 w-full outline-none sm:max-w-xl data-[state=open]:animate-in data-[state=open]:slide-in-from-right motion-reduce:animate-none"
                   : "fixed inset-x-0 top-[8dvh] bottom-0 z-50 outline-none"
               }
               ref={(node) => {
