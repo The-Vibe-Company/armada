@@ -3,6 +3,7 @@ import { readdirSync } from "node:fs";
 import type { PGlite } from "@electric-sql/pglite";
 import { applyMigrations, migrationsDir, openDatabase } from "../../../scripts/db/apply.ts";
 import { generateDatabaseTypes } from "../../../scripts/db/generate.ts";
+import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 import { encryptSecret, HARNESSES, type SandboxState, type Visibility } from "../src/index.ts";
 
 const PROVIDER_STATES = [
@@ -252,6 +253,7 @@ describe("database", () => {
         "runtime_commands.request_enc",
         "runtime_commands.result_enc",
         "runtime_enrolments.configuration_enc",
+        "runtime_events.event_enc",
         "sandbox_work_recovery.archive_enc",
       ]);
 
@@ -877,9 +879,8 @@ describe("database", () => {
 });
 
 async function withDb(run: (db: PGlite) => Promise<void>): Promise<void> {
-  const db = await openDatabase();
+  const db = await openMigratedDatabase();
   try {
-    await applyMigrations(db);
     await run(db);
   } finally {
     await db.close();

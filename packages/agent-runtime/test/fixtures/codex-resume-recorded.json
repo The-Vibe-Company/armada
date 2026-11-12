@@ -1,0 +1,111 @@
+[
+  {
+    "phase": "fresh",
+    "method": "start-response",
+    "model": "gpt-6.1-sol"
+  },
+  {
+    "phase": "fresh",
+    "method": "turn/start-dispatch"
+  },
+  {
+    "phase": "fresh",
+    "method": "thread/tokenUsage/updated",
+    "params": {
+      "threadId": "recorded-thread",
+      "turnId": "recorded-fresh",
+      "tokenUsage": {
+        "total": {
+          "totalTokens": 13148,
+          "inputTokens": 13143,
+          "cachedInputTokens": 0,
+          "cacheWriteInputTokens": 13140,
+          "outputTokens": 5,
+          "reasoningOutputTokens": 0
+        },
+        "last": {
+          "totalTokens": 13148,
+          "inputTokens": 13143,
+          "cachedInputTokens": 0,
+          "cacheWriteInputTokens": 13140,
+          "outputTokens": 5,
+          "reasoningOutputTokens": 0
+        },
+        "modelContextWindow": 475000
+      }
+    }
+  },
+  {
+    "phase": "fresh",
+    "method": "turn/completed",
+    "status": "completed"
+  },
+  {
+    "phase": "resume",
+    "method": "resume-response",
+    "model": "gpt-6.1-sol"
+  },
+  {
+    "phase": "resume",
+    "method": "turn/start-dispatch"
+  },
+  {
+    "phase": "resume",
+    "method": "thread/tokenUsage/updated",
+    "params": {
+      "threadId": "recorded-thread",
+      "turnId": "recorded-resume",
+      "tokenUsage": {
+        "total": {
+          "totalTokens": 13148,
+          "inputTokens": 13143,
+          "cachedInputTokens": 0,
+          "cacheWriteInputTokens": 13140,
+          "outputTokens": 5,
+          "reasoningOutputTokens": 0
+        },
+        "last": {
+          "totalTokens": 13148,
+          "inputTokens": 13143,
+          "cachedInputTokens": 0,
+          "cacheWriteInputTokens": 13140,
+          "outputTokens": 5,
+          "reasoningOutputTokens": 0
+        },
+        "modelContextWindow": 475000
+      }
+    }
+  },
+  {
+    "phase": "resume",
+    "method": "thread/tokenUsage/updated",
+    "params": {
+      "threadId": "recorded-thread",
+      "turnId": "recorded-resume",
+      "tokenUsage": {
+        "total": {
+          "totalTokens": 26316,
+          "inputTokens": 26306,
+          "cachedInputTokens": 13140,
+          "cacheWriteInputTokens": 13160,
+          "outputTokens": 10,
+          "reasoningOutputTokens": 0
+        },
+        "last": {
+          "totalTokens": 13168,
+          "inputTokens": 13163,
+          "cachedInputTokens": 13140,
+          "cacheWriteInputTokens": 20,
+          "outputTokens": 5,
+          "reasoningOutputTokens": 0
+        },
+        "modelContextWindow": 475000
+      }
+    }
+  },
+  {
+    "phase": "resume",
+    "method": "turn/completed",
+    "status": "completed"
+  }
+]

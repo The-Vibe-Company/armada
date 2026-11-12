@@ -26,10 +26,10 @@ import { createSqlVaultStore, GoldenBuildJobs, type GoldenCreateOptions } from "
 import type { PGlite } from "@electric-sql/pglite";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 import { createSqlData } from "../src/data.ts";
 import { createHandler, type HandlerOptions, type Route } from "../src/http.ts";
 import { sqlOver } from "../src/sql.ts";
-import { migratedDatabase } from "./migrated-database.ts";
 
 export const PUBLIC_URL = "https://armada.example.com";
 export const ENCRYPTION_KEY = btoa(String.fromCharCode(...new Uint8Array(32).map((_, index) => index + 1)));
@@ -52,7 +52,7 @@ export interface People {
 
 /** A fresh database with the migrations, two orgs, three people, three goldens and encrypted credentials. */
 export async function database(): Promise<{ db: PGlite; people: People }> {
-  const db = await migratedDatabase();
+  const db = await openMigratedDatabase();
   const people: People = {
     org: crypto.randomUUID(),
     otherOrg: crypto.randomUUID(),

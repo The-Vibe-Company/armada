@@ -300,13 +300,12 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
       credentialVersion: account.version,
       model: "gpt-6.1-sol",
       skills: [catalogReference],
-      prompt: "Read the installed notes skill before coding.",
     };
     const childResponse = await scoped("launch", { selection: childSelection }, "production-child");
     expect(childResponse?.status).toBe(200);
     const childReceipt = (await childResponse?.json()) as { result: { state: string; sandboxId: string } };
     expect(childReceipt.result.state).toBe("succeeded");
-    expect(childPreparation).toEqual(["install", "prompt"]);
+    expect(childPreparation).toEqual(["install"]);
     expect(
       (
         await sql.query<{ skills: unknown; conversation_ids: string[] }>(
@@ -314,7 +313,7 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
           [childReceipt.result.sandboxId],
         )
       ).rows[0],
-    ).toEqual({ skills: [catalogReceipt], conversation_ids: ["conv_2"] });
+    ).toEqual({ skills: [catalogReceipt], conversation_ids: [] });
     const unrelatedStore = createSqlData(sql)({ ...caller, userId: p.admin }).sandboxes;
     await expect(unrelatedStore.recordSkills!(childReceipt.result.sandboxId, [])).rejects.toThrow(
       "Skill receipts could not be recorded.",
@@ -335,7 +334,7 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
         message: "scoped_operation_unavailable",
       },
     });
-    expect(childPreparation).toEqual(["install", "prompt"]);
+    expect(childPreparation).toEqual(["install"]);
 
     expect(
       (await sql.query("select sandbox_id from orchestrator_children where orchestrator_id=$1", [id])).rows,
@@ -361,6 +360,10 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
     placement.setExecOutput({
       stdout: `Source: https://github.com/The-Vibe-Company/armada/tree/${revision}/.agents/skills\n`,
     });
+    // The original smoke's "exact" payload omitted sandboxId. The real server
+    // rejects that shape before dispatch; the corrected instruction must bind it.
+    const missingTarget = await scoped("message", { text: "child hello" }, "missing-child-target");
+    expect(missingTarget?.status).toBe(400);
     const messagedChild = await scoped(
       "message",
       { sandboxId: childReceipt.result.sandboxId, text: "child hello" },
@@ -392,7 +395,7 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
           childReceipt.result.sandboxId,
         ])
       ).rows,
-    ).toEqual([{ requested_model: "gpt-6.1-sol" }, { requested_model: "gpt-6.1-sol" }]);
+    ).toEqual([{ requested_model: "gpt-6.1-sol" }]);
     const stoppedChild = await scoped("stop", { sandboxId: childReceipt.result.sandboxId }, "production-child-stop");
     expect(await stoppedChild?.json()).toMatchObject({ result: { state: "succeeded" } });
     expect(placement.execs.filter((r) => r.preservationStage === "collect_exec")).toHaveLength(

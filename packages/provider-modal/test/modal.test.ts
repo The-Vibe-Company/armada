@@ -3527,3 +3527,32 @@ test("Modal lifecycle refusals do not resume stopped steer or admit send during 
   expect(f.creates).toBe(creates);
   expect((await f.store.get(row.id)).phase).toBe("stopped");
 });
+
+test("connection probe uses only the active runtime and validates its receipt without restoring stopped machines", async () => {
+  const f = fixture(scope, db);
+  const row = await runningFork(f);
+  const expected = { ok: false, status: 401, error: "provider_rejected", code: "invalid_api_key" } as const;
+  let receipt: unknown = expected;
+  f.onRpc(async (_machine, op, input) => {
+    if (op !== "testModelConnection") return undefined;
+    expect(input).toEqual({ harness: "codex", model: "deployment" });
+    return receipt;
+  });
+  expect(await f.provider.testModelConnection!({ sandboxId: row.id, harness: "codex", model: "deployment" })).toEqual(
+    expected,
+  );
+  receipt = { ok: false, status: 401, error: "provider_rejected", code: "private-diagnostic" };
+  await expect(
+    f.provider.testModelConnection!({ sandboxId: row.id, harness: "codex", model: "deployment" }),
+  ).rejects.toMatchObject({ code: "unavailable" });
+  await f.store.lease(row.id, async (machine, save) =>
+    save({ ...machine, phase: "stopped", info: { ...machine.info, state: "stopped" } }),
+  );
+  const creates = f.creates;
+  f.log.length = 0;
+  await expect(
+    f.provider.testModelConnection!({ sandboxId: row.id, harness: "codex", model: "deployment" }),
+  ).rejects.toMatchObject({ code: "sandbox_not_ready" });
+  expect(f.creates).toBe(creates);
+  expect(f.log).toEqual([]);
+});
