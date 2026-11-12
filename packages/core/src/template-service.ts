@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
 import type { ApplicationVaultActor } from "./application-vault.ts";
+import { HARNESS_KINDS } from "./credentials.ts";
 import { decryptSecret } from "./crypto.ts";
 import type { GoldenActor, GoldenOperation, GoldenRecord } from "./golden.ts";
 import { GoldenError } from "./golden-config.ts";
 import { GOLDEN_SELECT, type GoldenRow, mapGoldenRow, type Sql } from "./golden-store.ts";
+import { isHarness } from "./harnesses.ts";
 import { type LaunchOptions, type LaunchStores, launchSandbox } from "./launch.ts";
 import { LaunchError } from "./launch-error.ts";
 import { parseMachineSize } from "./machine-size.ts";
@@ -270,8 +272,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       if (!c || c.status !== "active" || (enforceModelScope && scope === "org" && c.scope !== "org"))
         unavailable("model_account_unavailable");
       if (c.version !== def.modelAccount.version) unavailable("model_account_version_changed");
-      if (!(def.harness === "codex" ? ["openai", "codex_auth"] : ["anthropic", "claude_oauth"]).includes(c.kind))
-        unavailable("model_account_incompatible");
+      if (!HARNESS_KINDS[def.harness].some((kind) => kind === c.kind)) unavailable("model_account_incompatible");
     }
     return { golden: g, variables: values, connections };
   }
@@ -290,7 +291,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       "skills",
     ]);
     if (d.provider !== "boat" && d.provider !== "modal") invalid();
-    if (d.harness !== "claude" && d.harness !== "codex") invalid();
+    if (!isHarness(d.harness)) invalid();
     let choice: ReturnType<typeof resolveModelChoice>;
     try {
       choice = resolveModelChoice(d.harness, {
