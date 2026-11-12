@@ -185,7 +185,7 @@ export {
   type ModelConnectionTestResult,
   modelConnectionErrorCode,
 } from "./model-connection-test.ts";
-export type { ModelPriceOverrides } from "./model-price-overrides.ts";
+export { type ModelPriceOverrides, parseModelPriceOverrides } from "./model-price-overrides.ts";
 export {
   MODEL_PRICE_SOURCES,
   MODEL_PRICES,
@@ -202,6 +202,15 @@ export {
   resolveModelChoice,
 } from "./models.ts";
 export * from "./orchestrator.ts";
+export type {
+  OttoCompleteness,
+  OttoFact,
+  OttoOrphan,
+  OttoPage,
+  OttoResource,
+  OttoTask,
+  OttoTruth,
+} from "./otto/index.ts";
 export {
   dedupeEvents,
   type PromptOutcome,
@@ -367,7 +376,6 @@ export {
 } from "./vault.ts";
 export {
   APPLICATION_VAULT_CONFLICT_MESSAGES,
-  CREDENTIAL_BUSY_MESSAGE,
   VaultError,
   type VaultErrorCode,
 } from "./vault-error.ts";

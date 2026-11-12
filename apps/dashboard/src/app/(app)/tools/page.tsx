@@ -106,7 +106,6 @@ export default async function ToolsPage({ searchParams }: Props) {
 
   return (
     <ResourceBrowser
-      detailPanel
       title={TITLE}
       description={DESCRIPTION}
       meta={list.connections.length > 0 ? list.connections.length : undefined}

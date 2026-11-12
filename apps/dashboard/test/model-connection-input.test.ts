@@ -118,3 +118,40 @@ test("Claude replacement requires a destination and refuses malformed or ambiguo
   expect(JSON.stringify(failure)).not.toContain(key);
   expect(JSON.stringify(failure)).not.toContain("password");
 });
+
+test.each(["openai", "anthropic"] as const)("dashboard composes exact optional prices on %s connections", (kind) => {
+  const form = data("https://gateway.example/v1", randomUUID());
+  form.set("endpointAuth", "bearer");
+  form.set("priceModel", " deployment ");
+  form.set("priceInput", "0");
+  form.set("priceOutput", "12.345678901234");
+  for (const cached of ["", "0.25"]) {
+    form.set("priceCachedInput", cached);
+    const result = customAccountValue(kind, form);
+    expect(result.ok && JSON.parse(result.value).prices).toEqual({
+      deployment: {
+        input: "0",
+        output: "12.345678901234",
+        cacheRead: cached || null,
+        cacheWrite: null,
+        reasoning: null,
+      },
+    });
+  }
+});
+
+test("invalid dashboard price fields refuse the connection without reflecting supplied values", () => {
+  const key = randomUUID();
+  for (const fields of [
+    { priceModel: "deployment" },
+    { priceModel: "deployment", priceInput: key, priceOutput: "1" },
+    { priceModel: "deployment", priceInput: "1", priceOutput: "2", priceCachedInput: "-1" },
+  ]) {
+    const form = data("https://gateway.example/v1", key);
+    for (const [name, value] of Object.entries(fields)) form.set(name, value);
+    const result = customAccountValue("openai", form);
+    expect(result.ok).toBe(false);
+    expect(JSON.stringify(result)).not.toContain(key);
+    expect(!result.ok && result.error).toContain("USD per million");
+  }
+});

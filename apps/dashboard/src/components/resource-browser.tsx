@@ -15,7 +15,6 @@ import {
   useMemo,
   useRef,
   useState,
-  useSyncExternalStore,
 } from "react";
 import { createPortal } from "react-dom";
 import { PageHeader } from "@/components/page-header";
@@ -35,10 +34,10 @@ import { cn } from "@/lib/utils";
 
 /**
  * The skeleton every Build page shares (#808): the readiness strip on top, one dense list (a row per item, its
- * state and its one expected action). Environments and Templates opt into a modal right-hand detail panel;
- * other families retain inline desktop details until migrated. A
- * page's create flow is a `CreateDialog` passed as `actions` (#896, #898), never this panel. The page renders
- * each row's cells and panel on the server; this component only chooses which panel shows.
+ * state and its one expected action). Selecting a row opens its detail in a modal right-hand panel over the list
+ * (#1153): full screen on a phone, `?item=` in the URL, Back, Escape, the close button or a click outside close it,
+ * and focus returns to the row. A page's create flow is a `CreateDialog` passed as `actions` (#896, #898), never this
+ * panel. The page renders each row's cells and panel on the server; this component only chooses which panel shows.
  *
  * Every panel stays mounted, hidden when another is selected: a form that follows a build keeps its state while
  * the person looks at another row.
@@ -93,7 +92,6 @@ export function ResourceBrowser({
   footer,
   empty,
   initial,
-  detailPanel = false,
 }: {
   title: string;
   description: string;
@@ -111,8 +109,6 @@ export function ResourceBrowser({
   empty: ReactNode;
   /** The panel open on the first render: the `?item=` of the URL, or what the page follows. */
   initial: string | null;
-  /** Opt in one page family at a time to the shared right-hand modal detail. */
-  detailPanel?: boolean;
 }) {
   const keys = useMemo(() => new Set(rows.map((row) => row.key)), [rows]);
   const valid = useCallback((key: string | null) => key !== null && keys.has(key), [keys]);
@@ -126,21 +122,20 @@ export function ResourceBrowser({
   const rootRef = useRef<HTMLElement>(null);
   const titleRef = useRef<HTMLHeadingElement>(null);
   const opener = useRef<string | null>(null);
-  const wide = useSyncExternalStore(subscribeWide, readWide, () => true);
-  const sheet = selected !== null && (detailPanel || !wide);
+  const open = selected !== null;
   useEffect(() => {
-    if (detailPanel && selected !== null) opener.current = selected;
-  }, [detailPanel, selected]);
-  // The portal target never changes. Moving this host, rather than changing React
-  // parents, retains every detail form and build follower across breakpoints.
+    if (selected !== null) opener.current = selected;
+  }, [selected]);
+  // The portal target never changes. Parking this host while the panel is closed, rather than changing React
+  // parents, retains every detail form and build follower across closing and reopening.
   const [host, setHost] = useState<HTMLDivElement | null>(null);
-  const desktopHost = useRef<HTMLDivElement>(null);
+  const parking = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     setHost(document.createElement("div"));
   }, []);
   useLayoutEffect(() => {
-    if (host && !sheet) desktopHost.current?.appendChild(host);
-  }, [host, sheet]);
+    if (host && !open) parking.current?.appendChild(host);
+  }, [host, open]);
   const restoreFocus = useCallback(() => {
     const back = opener.current ?? selected;
     opener.current = null;
@@ -167,13 +162,13 @@ export function ResourceBrowser({
   // tree's focus. The destination entry owns the target, not the closing tree.
   const returnedRow = useRef<HTMLElement | null>(null);
   const restoreHistoryFocus = useCallback(() => {
-    if (!detailPanel || selected !== null) return;
+    if (selected !== null) return;
     const key = resourceReturnFocus();
     const row = key && rootRef.current?.querySelector<HTMLElement>(`[data-select-item="${CSS.escape(key)}"]`);
     if (!row || row.getClientRects().length === 0) return;
     if (returnedRow.current !== row || document.activeElement === document.body) row.focus();
     returnedRow.current = row;
-  }, [detailPanel, selected]);
+  }, [selected]);
   // Re-run for a new destination tree; the post-commit frame also follows the
   // old FocusScope cleanup. Never keep forcing focus after user interaction.
   useLayoutEffect(restoreHistoryFocus);
@@ -182,14 +177,13 @@ export function ResourceBrowser({
     return () => cancelAnimationFrame(frame);
   });
   useEffect(() => {
-    if (!detailPanel) return;
     document.addEventListener("pointerdown", clearResourceReturnFocus, true);
     document.addEventListener("keydown", clearResourceReturnFocus, true);
     return () => {
       document.removeEventListener("pointerdown", clearResourceReturnFocus, true);
       document.removeEventListener("keydown", clearResourceReturnFocus, true);
     };
-  }, [detailPanel]);
+  }, []);
 
   const select = useCallback(
     (key: string | null) => {
@@ -197,7 +191,7 @@ export function ResourceBrowser({
       // Keep only our marker, not Next's private history fields: passing __NA
       // would bypass its native-history URL synchronization.
       const owned = ownsResourceDetail();
-      if (detailPanel && next === null && owned) {
+      if (next === null && owned) {
         window.history.back();
         return; // popstate closes the sheet and Radix restores focus once.
       }
@@ -205,7 +199,7 @@ export function ResourceBrowser({
       const url = new URL(window.location.href);
       if (next === null) url.searchParams.delete(ITEM_PARAM);
       else url.searchParams.set(ITEM_PARAM, next);
-      if (detailPanel && selected === null && next !== null) {
+      if (selected === null && next !== null) {
         pushResourceDetail(url);
       } else {
         replaceResourceUrl(url);
@@ -213,15 +207,12 @@ export function ResourceBrowser({
       if (next !== null) {
         opener.current = next;
         requestAnimationFrame(() => titleRef.current?.focus());
-      } else if (wide && !detailPanel) {
-        restoreFocus();
       }
     },
-    [valid, restoreFocus, wide, detailPanel, selected],
+    [valid, selected],
   );
 
   useEffect(() => {
-    if (!detailPanel) return;
     const reconcile = () => setChosen(new URL(window.location.href).searchParams.get(ITEM_PARAM));
     const sync = () => {
       syncResourceHistory();
@@ -242,22 +233,7 @@ export function ResourceBrowser({
       live = false;
       window.removeEventListener("popstate", sync);
     };
-  }, [detailPanel]);
-
-  // Escape closes the panel, unless a dialog opened from it is the one being closed.
-  useEffect(() => {
-    if (selected === null || !wide || detailPanel) return;
-    function onKey(event: KeyboardEvent) {
-      if (event.key !== "Escape" || event.defaultPrevented) return;
-      const overlays = document.querySelectorAll<HTMLElement>(
-        '[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"], [role="menu"][data-state="open"]',
-      );
-      if ([...overlays].some((overlay) => overlay.getClientRects().length > 0)) return;
-      select(null);
-    }
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [selected, select, wide, detailPanel]);
+  }, []);
 
   const shown = query ? rows.filter((row) => matchesQuery(row.search, query)) : rows;
   const current = rows.find((row) => row.key === selected) ?? null;
@@ -315,16 +291,15 @@ export function ResourceBrowser({
                   panelId={panelId}
                   selected={selected === row.key}
                   onSelect={() => select(row.key)}
-                  linked={detailPanel}
                 />
               ))}
             </ul>
           )}
           {footer}
         </div>
-        <div ref={desktopHost} className="lg:order-first" />
+        <div ref={parking} hidden />
         <Dialog
-          open={sheet}
+          open={open}
           onOpenChange={(open) => {
             if (!open) select(null);
           }}
@@ -334,11 +309,7 @@ export function ResourceBrowser({
             <DialogPrimitive.Content
               aria-labelledby={titleId}
               aria-describedby={undefined}
-              className={
-                detailPanel
-                  ? "fixed inset-y-0 right-0 z-50 w-full outline-none sm:max-w-xl data-[state=open]:animate-in data-[state=open]:slide-in-from-right motion-reduce:animate-none"
-                  : "fixed inset-x-0 top-[8dvh] bottom-0 z-50 outline-none"
-              }
+              className="fixed inset-y-0 right-0 z-50 w-full outline-none sm:max-w-xl data-[state=open]:animate-in data-[state=open]:slide-in-from-right motion-reduce:animate-none"
               ref={(node) => {
                 if (node && host) node.appendChild(host);
               }}
@@ -348,8 +319,7 @@ export function ResourceBrowser({
               }}
               onCloseAutoFocus={(event) => {
                 event.preventDefault();
-                // Resizing is not closing the selected resource.
-                if (detailPanel || !readWide()) restoreFocus();
+                restoreFocus();
               }}
             />
           </DialogPortal>
@@ -360,15 +330,7 @@ export function ResourceBrowser({
               id={panelId}
               data-resource-panel
               onKeyDown={(event) => {
-                if (
-                  !detailPanel ||
-                  event.defaultPrevented ||
-                  event.altKey ||
-                  event.ctrlKey ||
-                  event.metaKey ||
-                  event.shiftKey
-                )
-                  return;
+                if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
                 const target = event.target as HTMLElement;
                 if (
                   target.closest(
@@ -393,11 +355,7 @@ export function ResourceBrowser({
               }}
               aria-labelledby={titleId}
               hidden={selected === null}
-              className={
-                detailPanel
-                  ? "flex h-dvh flex-col overflow-hidden border-l bg-background shadow-2xl"
-                  : "fixed inset-x-0 top-[8dvh] bottom-0 z-50 flex flex-col overflow-hidden rounded-t-2xl border bg-background shadow-2xl lg:static lg:order-first lg:z-auto lg:max-h-[65dvh] lg:rounded-xl lg:bg-card lg:shadow-xs"
-              }
+              className="flex h-dvh flex-col overflow-hidden border-l bg-background shadow-2xl"
             >
               <div className="flex items-start justify-between gap-3 border-b px-4 py-3">
                 <div className="min-w-0 space-y-0.5">
@@ -413,30 +371,26 @@ export function ResourceBrowser({
                   {current?.subtitle && <div className="text-xs text-muted-foreground">{current.subtitle}</div>}
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
-                  {detailPanel && (
-                    <>
-                      <Button
-                        variant="ghost"
-                        size="icon-sm"
-                        aria-label="Previous item"
-                        title="Previous item (↑ or K)"
-                        disabled={currentIndex <= 0}
-                        onClick={() => move(-1)}
-                      >
-                        <ChevronUpIcon />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon-sm"
-                        aria-label="Next item"
-                        title="Next item (↓ or J)"
-                        disabled={currentIndex < 0 || currentIndex >= shown.length - 1}
-                        onClick={() => move(1)}
-                      >
-                        <ChevronDownIcon />
-                      </Button>
-                    </>
-                  )}
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label="Previous item"
+                    title="Previous item (↑ or K)"
+                    disabled={currentIndex <= 0}
+                    onClick={() => move(-1)}
+                  >
+                    <ChevronUpIcon />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label="Next item"
+                    title="Next item (↓ or J)"
+                    disabled={currentIndex < 0 || currentIndex >= shown.length - 1}
+                    onClick={() => move(1)}
+                  >
+                    <ChevronDownIcon />
+                  </Button>
                   <Button variant="ghost" size="icon-sm" onClick={() => select(null)} aria-label="Close the panel">
                     <XIcon />
                   </Button>
@@ -462,9 +416,7 @@ function Row({
   selected,
   onSelect,
   panelId,
-  linked,
 }: {
-  linked: boolean;
   row: ResourceRow;
   selected: boolean;
   onSelect: () => void;
@@ -488,9 +440,10 @@ function Row({
           <div className="flex min-w-0 items-center gap-2">
             <Button
               variant="ghost"
-              asChild={linked}
+              asChild
               onClick={(event) => {
-                if (linked && (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey)) return;
+                // A modified click keeps the browser's own behaviour: a new tab or window on the `?item=` link.
+                if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
                 event.preventDefault();
                 onSelect();
               }}
@@ -499,13 +452,9 @@ function Row({
               data-select-item={row.key}
               className="h-auto min-w-0 shrink justify-start rounded-none p-0 text-left font-medium hover:bg-transparent dark:hover:bg-transparent motion-safe:active:not-disabled:scale-none focus-visible:ring-0 after:absolute after:inset-0 after:content-['']"
             >
-              {linked ? (
-                <a href={`?item=${encodeURIComponent(row.key)}`}>
-                  <span className="truncate">{row.name}</span>
-                </a>
-              ) : (
+              <a href={`?item=${encodeURIComponent(row.key)}`}>
                 <span className="truncate">{row.name}</span>
-              )}
+              </a>
             </Button>
             {row.tags}
           </div>
@@ -575,14 +524,6 @@ export function SelectItem({ item, ...props }: { item: string } & Omit<Component
   const { select, panelId } = useBrowser();
   return <Button {...props} onClick={() => select(item)} aria-controls={panelId} />;
 }
-
-const WIDE = "(min-width: 64rem)";
-function subscribeWide(change: () => void): () => void {
-  const query = window.matchMedia(WIDE);
-  query.addEventListener("change", change);
-  return () => query.removeEventListener("change", change);
-}
-const readWide = () => window.matchMedia(WIDE).matches;
 
 /** Focus handoffs from nested dialogs must target the current visible frame, never a retained route's ID. */
 export function visibleResourcePanelTitle(): HTMLElement | undefined {

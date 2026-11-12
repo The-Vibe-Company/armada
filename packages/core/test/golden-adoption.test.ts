@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
+import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 import { createGoldenAdoption } from "../src/golden-adoption.ts";
 import { createSqlGoldenStore } from "../src/golden-store.ts";
 import type { Provider } from "../src/provider.ts";
@@ -9,9 +9,8 @@ const owner = "22222222-2222-4222-8222-222222222222";
 const other = "33333333-3333-4333-8333-333333333333";
 
 test("adoption checks current provenance, authorization, confirmation, and preserves every legacy row", async () => {
-  const db = await openDatabase();
+  const db = await openMigratedDatabase();
   try {
-    await applyMigrations(db);
     await db.query("insert into auth.users(id,email) values ($1,'a@test'),($2,'b@test')", [owner, other]);
     await db.query("insert into orgs(id,name) values ($1,'org')", [org]);
     await db.query("insert into members(org_id,user_id,role) values ($1,$2,'admin'),($1,$3,'member')", [

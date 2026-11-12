@@ -16,6 +16,7 @@ import {
   VaultError,
 } from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
+import { authenticateCaller } from "./caller.ts";
 import { configFromEnv } from "./config.ts";
 import { type ConfiguredControlOptions, handleControlRequest, templateRuntime } from "./control.ts";
 import { createCredentialBindingRecovery } from "./credential-binding-recovery.ts";
@@ -41,6 +42,8 @@ import { orchestratorDiagnosticLog } from "./orchestrator-diagnostics.ts";
 import { createProductionOrchestrators } from "./orchestrator-production.ts";
 import { orchestratorScopedMcpUrl } from "./orchestrator-scoped-gateway.ts";
 import type { OrchestratorServiceBundle } from "./orchestrator-services.ts";
+import { createOttoApi } from "./otto/api.ts";
+import { createOttoRuntime } from "./otto/runtime.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
 import { pruneServerRetention } from "./retention-maintenance.ts";
 import { startRoutineWorker } from "./routine-worker.ts";
@@ -54,6 +57,7 @@ import { createSandboxArmadaAccess } from "./sandbox-armada-access.ts";
 import { createSandboxLifecycle } from "./sandbox-lifecycle.ts";
 import { startServerWorkers } from "./server-workers.ts";
 import { bunSql } from "./sql.ts";
+import { createSubscriptionMigration } from "./subscription-migration.ts";
 
 export { bunSql };
 
@@ -96,16 +100,15 @@ export async function startServer(
   );
   await catalogAuthentication("slack"); // Reject invalid deployment ciphertext before serving.
   const sql = bunSql(config.databaseUrl, config.databasePoolMax);
-  const modelAuth = createModelAuthOwnership(
-    sql,
-    config.encryptionKey,
-    undefined,
-    undefined,
-    (tx, id) => createHistoricalSandboxProviderResolver(providers)(tx, id),
-    { origin: config.publicUrl },
-  );
+  let subscriptionMigration: ReturnType<typeof createSubscriptionMigration>;
+  const modelAuth = createModelAuthOwnership(sql, config.encryptionKey, undefined, undefined, {
+    origin: config.publicUrl,
+    prepareAccount: (actor, id, version) => subscriptionMigration.prepareAccount(actor, id, version),
+    prepareTurn: (provider, id, caller) => subscriptionMigration.prepareTurn(provider, id, caller),
+  });
   const store = createSqlVaultStore(sql);
   const authStore = createSqlAuthStore(sql);
+  const otto = createOttoRuntime(sql, env);
   const githubApp = githubAppFromEnv(env);
   const sandboxArmadaAccess = createSandboxArmadaAccess({
     sql,
@@ -203,6 +206,12 @@ export async function startServer(
     modalProviderFor,
     modalTokensFor: modal.modalTokensFor,
   });
+  subscriptionMigration = createSubscriptionMigration(
+    sql,
+    createHistoricalSandboxProviderResolver(providers),
+    (provider, id, caller, quiesced) => modelAuth.capture(provider, id, caller, quiesced),
+    modelAuth.broker!,
+  );
   const goldenAdoption = createGoldenAdoption(sql);
 
   const goldenBuilds = new GoldenBuildJobs({
@@ -224,7 +233,7 @@ export async function startServer(
     orchestratorPairs: config.orchestratorPairs,
     publicUrl: config.publicUrl,
     modelAuth,
-    credentialBindingRecovery: createCredentialBindingRecovery(sql, config.encryptionKey, modelAuth),
+    credentialBindingRecovery: createCredentialBindingRecovery(sql, config.encryptionKey),
     modelUsage: createModelUsageApi(sql),
     goldenRetirements,
     invitations: invitationsFromEnv(sql, env),
@@ -342,6 +351,18 @@ export async function startServer(
     modalTokensFor: modal.modalTokensFor,
     goldenTarget: modal.goldenTarget,
     routes: [
+      ...(otto
+        ? [
+            otto.route,
+            createOttoApi(sql, otto.scope, (request) =>
+              authenticateCaller(request.headers.get("authorization"), {
+                store: authStore,
+                supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
+                now: new Date(),
+              }),
+            ),
+          ]
+        : []),
       createRuntimeArtifactRoute(env.ARMADA_RUNTIME_ARTIFACT_DIR),
       runtimeEnrolments.route,
       runtimeEvents.route,
@@ -432,14 +453,16 @@ export async function startServer(
     options.logError,
     goldenRetirements,
     () => pruneServerRetention(sql, control.applicationVault, new Date()),
-    orchestrators
-      ? [
-          orchestrators.runtime.createWorker,
-          ...("lifecycle" in orchestrators
-            ? [orchestrators.lifecycle]
-            : [orchestrators.lifecycleWorker, orchestrators.childWorker, orchestrators.eventWorker]),
-        ]
-      : [],
+    [
+      ...(orchestrators
+        ? [
+            orchestrators.runtime.createWorker,
+            ...("lifecycle" in orchestrators
+              ? [orchestrators.lifecycle]
+              : [orchestrators.lifecycleWorker, orchestrators.childWorker, orchestrators.eventWorker]),
+          ]
+        : []),
+    ],
   );
   const invitationWorker =
     env.ARMADA_INVITATION_MAIL === "supabase" && control.invitations
@@ -511,7 +534,10 @@ export async function startServer(
     },
   });
   const routineWorker = startRoutineWorker(routineScheduler, options.logError);
-  const allWorkersDone = Promise.all([workers.done, invitationWorker?.done, routineWorker.done]).then(() => {});
+  const ottoWorker = otto?.start();
+  const allWorkersDone = Promise.all([workers.done, invitationWorker?.done, routineWorker.done, ottoWorker?.done]).then(
+    () => {},
+  );
   const stop = server.stop.bind(server);
   let shutdown: Promise<void> | undefined;
   server.stop = (closeActiveConnections?: boolean) => {
@@ -523,6 +549,7 @@ export async function startServer(
     workers.stop();
     invitationWorker?.stop();
     routineWorker.stop();
+    ottoWorker?.stop();
     // Requests may still use the gateway and SQL while finishing a launch.
     // Drain handlers and POST response streams; idle GET SSE needs
     // MCP close to finish. SQL stays alive until the native HTTP drain completes.

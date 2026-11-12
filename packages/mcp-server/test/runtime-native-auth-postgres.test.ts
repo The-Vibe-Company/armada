@@ -1,7 +1,6 @@
 import { expect, test } from "bun:test";
 import { encryptSecret } from "@armada/core/server";
 import { SQL } from "bun";
-import { createModelAuthOwnership } from "../src/model-auth.ts";
 import { createRuntimeEnrolments, RuntimeEnrolmentDenied } from "../src/runtime-enrolment.ts";
 import { createRuntimeNativeAuth } from "../src/runtime-native-auth.ts";
 import { sqlOver } from "../src/sql.ts";
@@ -42,12 +41,6 @@ test.skipIf(!url)(
       await admin.unsafe(
         "insert into credentials(id,scope,owner_id,kind,value_enc) values($1,'user',$2,'codex_auth',$3)",
         [account, owner, await encryptSecret(auth(0), key)],
-      );
-      await createModelAuthOwnership(sql, key).claimLegacy(
-        { userId: owner, orgId: org, role: "member" },
-        account,
-        1,
-        sandbox,
       );
       await admin.unsafe(
         "insert into goldens(id,org_id,owner_id,name,visibility,config) values($1,$2,$3,'native-publication-race','private','{}')",
@@ -96,15 +89,11 @@ test.skipIf(!url)(
       await changing;
       expect(await publishing).toBeInstanceOf(RuntimeEnrolmentDenied);
       expect(
-        Number(
-          (await admin.unsafe("select auth_revision from model_auth_state where account_id=$1", [account]))[0]
-            .auth_revision,
-        ),
-      ).toBe(0);
+        await admin.unsafe("select auth_revision from model_auth_state where account_id=$1", [account]),
+      ).toHaveLength(0);
     } finally {
       replace.resolve();
       await Promise.allSettled([changing, publishing]);
-      await admin.unsafe("delete from model_auth_ownership where account_id=$1", [account]);
       await admin.unsafe("delete from model_auth_state where account_id=$1", [account]);
       await admin.unsafe("delete from sandboxes where id=$1", [sandbox]);
       await admin.unsafe("delete from goldens where id=$1", [golden]);
