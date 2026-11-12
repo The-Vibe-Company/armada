@@ -53,6 +53,27 @@ const owner: GoldenActor = { userId: OWNER, orgId: ORG, role: "member" };
 const other: GoldenActor = { userId: OTHER, orgId: ORG, role: "member" };
 
 describe("launch", () => {
+  test("custom Codex endpoints refuse Boat before allocation", async () => {
+    const world = setup({ golden: golden("org") });
+    world.stores.credentials.resolve = async () => ({
+      env: { ARMADA_CODEX_ENDPOINT: JSON.stringify({ version: 1, baseUrl: "https://example.com/v1" }) },
+      secrets: [],
+      codexAuthJson: false,
+    });
+    let forks = 0;
+    world.provider.fork = async () => {
+      forks++;
+      throw Error("must not allocate");
+    };
+    await expect(
+      launchSandbox(world.provider, world.stores, owner, {
+        golden: "web",
+        harness: "codex",
+      }),
+    ).rejects.toMatchObject({ code: "invalid_request", message: "Custom Codex endpoints currently require Modal." });
+    expect(forks).toBe(0);
+  });
+
   test.each(["invalid_request", "unavailable", "rate_limited"] as const)(
     "native admission releases only a confirmed unallocated fork (%s)",
     async (code) => {

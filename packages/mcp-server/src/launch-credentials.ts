@@ -8,6 +8,7 @@ import {
   type Harness,
   type HarnessCredentials,
   type LaunchCredentialResolver,
+  parseCredentialValue,
   resolveCredentials,
   resolveGitHubAccess,
   resolveSkillpackCredential,
@@ -182,6 +183,10 @@ export async function exposedSecrets(
       if (!SECRET_KINDS.includes(row.kind)) continue;
       const value = await decryptSecret(new Uint8Array(row.valueEnc), encryptionKey);
       values.push(value, ...jsonLeaves(value));
+      if (row.kind === "openai" && value.startsWith("{")) {
+        const connection = JSON.parse(parseCredentialValue("openai", value));
+        values.push(connection.apiKey);
+      }
     }
   }
   return values;
