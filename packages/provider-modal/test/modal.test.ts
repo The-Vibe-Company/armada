@@ -3393,19 +3393,37 @@ test("orchestrator stop seals the final acknowledged checkpoint watermark, not i
 test("unscoped Modal steer preserves no_running_turn and 409 at the control boundary", async () => {
   const f = fixture();
   const row = await runningFork(f);
+
+  const journal = new Journal(":memory:", (s) => s);
+  const driver: Driver = {
+    start() {
+      throw new Error("No turn should be started by steer");
+    },
+    async close() {},
+  };
+  const runner = new Runner(
+    journal,
+    {
+      token: "fixture-steer-runner-grant",
+      sandboxId: row.id,
+      generation: "1",
+      expiresAt: Date.now() + 60000,
+    },
+    { claude: driver, codex: driver },
+    {
+      async append() {
+        return { acknowledgedSequence: 0 };
+      },
+    },
+  );
   const transport = createRunnerTransport(
     async () => ({
       url: "https://runner.test",
       connectToken: "connect",
-      grant: "grant",
+      grant: "fixture-steer-runner-grant",
       expiresAt: Date.now() + 60000,
     }),
-    async (_url, init) => {
-      const packet = JSON.parse(String(init?.body));
-      expect(packet).toMatchObject({ op: "steer", text: "ignore" });
-      expect(packet.conversationId).toBeUndefined();
-      return Response.json({ error: "no_running_turn" }, { status: 409 });
-    },
+    (async (url, init) => runner.handle(new Request(String(url), init))) as typeof fetch,
   );
   f.onRpc(async (machine, op, input) => {
     if (op === "steer") return transport.call(machine, op, input);
@@ -3446,7 +3464,7 @@ test("unscoped Modal steer preserves no_running_turn and 409 at the control boun
     options,
   );
   if (!response) throw new Error("Missing control response");
-  const body = await response.json();
+  const body = (await response.json()) as { error: { code: string; message: string } };
   expect(body).toMatchObject({ error: { code: "no_running_turn" } });
   expect(response.status).toBe(409);
   expect(sandboxFailure("/api/v1/sandbox/steer", response.status, body.error.code, body.error.message)).toMatchObject({
@@ -3457,14 +3475,35 @@ test("unscoped Modal steer preserves no_running_turn and 409 at the control boun
   expect(await f.provider.prompt({ sandboxId: row.id, harness: "claude", text: "continue" })).toHaveProperty(
     "promptId",
   );
+  journal.close();
 });
 
-test("stopped Modal steer refuses without resuming compute", async () => {
+test("Modal lifecycle refusals do not resume stopped steer or admit send during transitions", async () => {
   const f = fixture();
   const row = await runningFork(f);
+
+  const active = await f.store.get(row.id);
+  for (const phase of ["booting", "terminate"] as const) {
+    await f.store.lease(row.id, async (machine, save) => {
+      await save({
+        ...machine,
+        phase,
+        info: { ...machine.info, state: phase === "booting" ? "starting" : "stopping" },
+      });
+    });
+    await expect(f.provider.prompt({ sandboxId: row.id, harness: "claude", text: "not yet" })).rejects.toMatchObject({
+      code: "sandbox_not_ready",
+    });
+  }
+  await f.store.lease(row.id, async (_machine, save) => {
+    await save(active);
+  });
   await f.provider.stop({ sandboxId: row.id });
   const creates = f.creates;
   await expect(f.provider.steer({ sandboxId: row.id, text: "ignore" })).rejects.toMatchObject({
+    code: "sandbox_not_ready",
+  });
+  await expect(f.provider.extendLifetime({ sandboxId: row.id, ttlSeconds: 60 })).rejects.toMatchObject({
     code: "sandbox_not_ready",
   });
   expect(f.creates).toBe(creates);
