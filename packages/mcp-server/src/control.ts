@@ -17,10 +17,12 @@ import {
   supabaseAuthorizeUrl,
   verifyEmailCode,
 } from "@armada/auth";
+import type { Harness } from "@armada/core";
 import {
   API_FAILURE_STATUS,
   GitHubHydrationError,
   goldenForSettings,
+  isHarness,
   MAX_SANDBOX_EXTENSION_TTL_SECONDS,
   parseMachineSize,
   parseMachineSizePolicy,
@@ -1452,7 +1454,7 @@ async function launchRoute(options: ControlOptions, caller: Caller, body: Record
   const name = required(body, "golden");
   const repo = body.repo === undefined ? undefined : required(body, "repo");
   const harness = required(body, "harness");
-  if (harness !== "claude" && harness !== "codex") throw new VaultError("invalid", "The agent is claude or codex.");
+  if (!isHarness(harness)) throw new VaultError("invalid", "The agent is claude or codex.");
   const data = options.data(caller);
   const actor = await launchActor(data, caller, name, optional(body, "org"));
   const golden = await goldenForLaunch(
@@ -1615,11 +1617,7 @@ function launchJson(result: LaunchResult) {
   };
 }
 
-function modelChoice(
-  harness: "claude" | "codex",
-  model: string | undefined,
-  reasoningEffort: string | undefined,
-): ModelChoice {
+function modelChoice(harness: Harness, model: string | undefined, reasoningEffort: string | undefined): ModelChoice {
   try {
     return resolveModelChoice(harness, { model, reasoningEffort });
   } catch (error) {
