@@ -30,11 +30,10 @@ import {
 } from "@/components/ui/sidebar";
 import { cn } from "@/lib/utils";
 
-/** Relationships stay visible on desktop and in the phone navigation menu. */
+/** The menu contains group labels and destinations only; relationships belong on the pages. */
 const GROUPS = [
   {
     label: "Run",
-    description: "Each sandbox is one launch.",
     links: [
       { href: "/sandboxes", label: "Sandboxes", hint: "Running agents and logs", icon: BoxesIcon },
       { href: "/routines", label: "Routines", hint: "Scheduled template launches", icon: Clock3Icon },
@@ -42,7 +41,6 @@ const GROUPS = [
   },
   {
     label: "Start with",
-    description: "A machine and an agent account.",
     links: [
       {
         href: "/environments",
@@ -55,7 +53,6 @@ const GROUPS = [
   },
   {
     label: "Give the agent",
-    description: "Tools, instructions and configuration.",
     links: [
       { href: "/tools", label: "Tools", hint: "MCP connections your agents can use", icon: PlugIcon },
       { href: "/skills", label: "Skills", hint: "The Skillpack key for private skills", icon: PackageIcon },
@@ -69,7 +66,6 @@ const GROUPS = [
   },
   {
     label: "Save a combination",
-    description: "Templates bring these choices together.",
     links: [
       {
         href: "/templates",
@@ -81,7 +77,6 @@ const GROUPS = [
   },
   {
     label: "Account",
-    description: "Membership and connections.",
     links: [
       { href: "/orgs", label: "Organizations", hint: "Members and roles", icon: UsersIcon },
       { href: "/settings", label: "Settings", hint: "Sandbox providers, provider keys and GitHub", icon: SettingsIcon },
@@ -122,7 +117,6 @@ export function NavLinks({ className }: { className?: string }) {
             <SidebarGroupLabel asChild className="h-auto px-2 text-xs font-medium text-foreground">
               <h2>{group.label}</h2>
             </SidebarGroupLabel>
-            <p className="px-2 pt-1 pb-2 text-xs leading-relaxed text-muted-foreground">{group.description}</p>
             <SidebarGroupContent>
               <SidebarMenu className="gap-0.5">
                 {group.links.map(({ href, label, hint, icon: Icon }) => {

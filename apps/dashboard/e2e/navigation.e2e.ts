@@ -4,7 +4,7 @@ import { reset, signIn } from "./helpers";
 test.beforeEach(reset);
 
 // The browser boundary owns discoverability, active routes and phone menu behavior.
-// A flat Build bucket, hidden group copy, or broken menu interaction fails this contract.
+// Descriptive menu sub-text or broken route/menu interactions fail this contract.
 for (const phone of [false, true]) {
   test(`relationship navigation stays usable on ${phone ? "phone" : "desktop"}`, async ({ page }) => {
     await page.setViewportSize({ width: phone ? 390 : 1280, height: phone ? 844 : 900 });
@@ -17,15 +17,13 @@ for (const phone of [false, true]) {
       await expect(nav.getByRole("link", { name: "Environments" })).toBeHidden();
       await toggle.click();
     }
-    await expect(nav.getByRole("region", { name: "Start with", exact: true })).toContainText(
-      "A machine and an agent account.",
-    );
-    await expect(nav.getByRole("region", { name: "Give the agent" })).toContainText(
-      "Tools, instructions and configuration.",
-    );
-    await expect(nav.getByRole("region", { name: "Save a combination" })).toContainText(
-      "Templates bring these choices together.",
-    );
+    for (const label of ["Start with", "Give the agent", "Save a combination"]) {
+      await expect(nav.getByRole("heading", { name: label, exact: true })).toBeVisible();
+    }
+    // The owner explicitly rejects explanatory sentences beneath menu labels.
+    await expect(nav).not.toContainText("A machine and an agent account.");
+    await expect(nav).not.toContainText("Tools, instructions and configuration.");
+    await expect(nav).not.toContainText("Templates bring these choices together.");
     const environment = nav.getByRole("link", { name: "Environments", exact: true });
     await expect(environment).toHaveAttribute("aria-current", "page");
     await page.screenshot({
