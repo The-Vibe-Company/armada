@@ -51,6 +51,7 @@ import { createRuntimeArtifactRoute } from "./runtime-artifacts.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import { createRuntimeEvents } from "./runtime-events.ts";
+import { createRuntimeModelAccess } from "./runtime-model-access.ts";
 import { createRuntimeNativeAuth } from "./runtime-native-auth.ts";
 import { createRuntimeSockets, type RuntimeSocketData } from "./runtime-sockets.ts";
 import { createSandboxArmadaAccess } from "./sandbox-armada-access.ts";
@@ -365,6 +366,7 @@ export async function startServer(
         : []),
       createRuntimeArtifactRoute(env.ARMADA_RUNTIME_ARTIFACT_DIR),
       runtimeEnrolments.route,
+      createRuntimeModelAccess(sql, config.encryptionKey, modelAuth.broker),
       runtimeEvents.route,
       runtimeCommands.route,
       ...(orchestrators && "scopedToolsRoute" in orchestrators
