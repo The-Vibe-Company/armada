@@ -3246,6 +3246,31 @@ const server = Bun.serve({
         route.startsWith("creds/accounts/")
       )
         return accounts(route, body, request);
+      if (route === "sandbox/test-model-connection") {
+        const userId = viewer(request);
+        if (!userId) return controlFail(401, "unauthorized", "Sign in again.");
+        const machine = state.sandboxes.find((row) => row.id === body.id);
+        if (!machine || machine.owner_id !== userId)
+          return controlFail(403, "forbidden", "Only the sandbox owner may test.");
+        const account = state.credentials.find((row) => row.id === machine.credential_id);
+        if (
+          machine.provider !== "modal" ||
+          !["ready", "running"].includes(String(machine.status)) ||
+          !account ||
+          account.status !== "active" ||
+          account.version !== machine.credential_version
+        )
+          return controlFail(409, "conflict", "The bound sandbox/account is not ready.");
+        // No live credentials: fixed native-wire outcomes prove UI transport/rendering only.
+        state.controlCalls.push({ operation: route, body });
+        return json({
+          id: body.id,
+          test:
+            body.model === "missing-deployment"
+              ? { ok: false, status: 404, error: "provider_rejected", code: "model_not_found" }
+              : { ok: true, status: 200, error: null, code: null },
+        });
+      }
       if (route === "sandbox/bind-credential") return bindCredential(body, viewer(request));
       if (route.startsWith("variables/") || route.startsWith("secrets/")) return vaultRoute(route, body, request);
       if (route.startsWith("routines/")) return routineRoute(route, body, request);

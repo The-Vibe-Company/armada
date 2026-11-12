@@ -1,3 +1,4 @@
+import { isModelConnectionTestResult } from "@armada/core";
 import { type ArmadaApiOptions, ControlError, controlPost } from "./control.ts";
 import {
   type AccountScope,
@@ -56,6 +57,17 @@ export function createAccountControl(options: ArmadaApiOptions) {
   }
 
   return {
+    async testConnection(body: { id: string; model: string; org: string }) {
+      const payload = await controlPost(
+        { ...options, timeoutMs: 45000 },
+        "/api/v1/sandbox/test-model-connection",
+        body,
+        "model connection checks",
+      );
+      if (!isModelConnectionTestResult(payload.test))
+        throw new ControlError("The server returned an invalid connection-test receipt.");
+      return payload.test;
+    },
     holder: (target: AccountTarget & { version: number }) => post("creds/accounts/holder", target),
     release: (target: AccountTarget & { sandboxId: string; version: number; value?: string }) =>
       post("creds/accounts/release", target),

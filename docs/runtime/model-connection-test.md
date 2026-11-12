@@ -96,5 +96,30 @@ conversation. Repeat with a newly launched invalid-key account: expect exit1,
 HTTP401 and a recognized code when supplied by the provider. Rotate/revoke the
 bound account, retry the old sandbox, and expect refusal before runtime I/O.
 A non-owner admin, stopped sandbox, extra request key/URL, or malformed receipt
-must fail closed. No model key leaves the existing private bootstrap. Public
-dashboard Test Connection controls are a subsequent slice.
+must fail closed. No model key leaves the existing private bootstrap. The Models page uses this surface as described below.
+
+## Models page
+
+Each active API-key account on Models offers **Test connection**. This is for
+custom endpoints only; subscription and vendor-default checks are not supported.
+Open the dialog, enter the public UUID of your already-running Modal sandbox
+and the endpoint's deployment/model, then **Send tiny check**. Launch an idle
+sandbox with this account first if needed; the action never creates/resumes one.
+The dashboard checks user-JWT sandbox metadata for the exact selected account,
+version, owner and organization before the API call. The API independently
+revalidates current authorization/credential state. No URL, key or private
+runtime access is entered or returned by this form.
+
+The dialog shows pending, safe HTTP/provider rejection, or connectivity accepted.
+It keeps inputs for a deliberate retry, hides an older result when inputs change,
+and never silently retries or claims full harness compatibility. Each invocation
+may incur one tiny provider charge. Unknown server diagnostics fail closed.
+
+Coordinator staging addition: on Models open Test connection for the owner
+Foundry/gateway account, enter its idle Modal sandbox UUID and deployment, and
+expect connectivity accepted. A newly launched invalid-key sandbox must show
+HTTP401/safe provider code, not credential text. Wrong owner/account/version/org
+or stopped/non-Modal sandbox must refuse without runtime I/O. Inspect that no
+prompt/conversation is created. Check mobile layout and keyboard focus in the
+centered dialog. Requires the deployed public server/runtime probe slice; no
+migration or new setting, and workers have no owner credentials.
