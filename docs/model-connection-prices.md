@@ -46,5 +46,23 @@ rates via `--id`/`--expected-version`, launch a new session, and confirm only th
 new session uses the new snapshot. Inspect CLI output/listings for no key.
 
 No migration or new environment setting. This CLI-only slice needs the existing
-server connection-price support (already on main). Dashboard price fields are a
-separate slice. No staging credentials are held by workers.
+server connection-price support (already on main). No staging credentials are held by workers.
+
+## Dashboard
+
+On Models, create an API-key account with a custom endpoint, or choose Replace
+key and explicitly select the custom destination. Check **Set model prices
+(optional)**, enter the **Priced model ID**, **Input** and **Output** rates, and
+optionally **Cached input**. These rates use USD per million tokens and the exact
+model/deployment ID, not its display name. A blank cached rate remains unknown;
+zero is an explicit zero rate. Unchecking the option removes its unsaved rates.
+
+Existing sealed prices cannot be read back. When replacing a connection,
+re-enter all rates to retain them; saving without price fields removes the old
+rates for newly admitted sessions. Previously frozen session snapshots do not
+change. No key, endpoint envelope or price JSON is copied into client state.
+
+Coordinator staging check: repeat the creation and replacement checks above
+using these dashboard controls for Foundry and a Claude gateway. Compare the new
+session's server price snapshot with the entered rates; repeat without cached
+input and then without any prices to confirm unknown is not displayed as zero.

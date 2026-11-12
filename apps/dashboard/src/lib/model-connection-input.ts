@@ -1,5 +1,17 @@
-import { parseClaudeEndpoint, parseCodexEndpoint, parseCredentialValue } from "@armada/core";
+import { parseClaudeEndpoint, parseCodexEndpoint, parseCredentialValue, parseModelPriceOverrides } from "@armada/core";
 import type { AccountKind } from "./model-accounts";
+
+/** Blank pricing is absent; decimal strings retain the server pricing contract's precision. */
+function formModelPrices(data: FormData) {
+  const fields = ["priceModel", "priceInput", "priceCachedInput", "priceOutput"].map((name) => {
+    const raw = data.get(name);
+    if (raw !== null && typeof raw !== "string") throw Error();
+    return typeof raw === "string" ? raw.trim() : "";
+  });
+  if (fields.every((value) => value === "")) return undefined;
+  const [model, input, cacheRead, output] = fields;
+  return parseModelPriceOverrides({ [model ?? ""]: { input, output, ...(cacheRead ? { cacheRead } : {}) } });
+}
 
 /** Compose only on the server: never copy a key into hidden fields or client state. */
 export function customAccountValue(
@@ -8,6 +20,16 @@ export function customAccountValue(
 ): { ok: true; value: string } | { ok: false; error: string } {
   if (kind !== "openai" && kind !== "anthropic")
     return { ok: false, error: "Choose an API-key account for a custom endpoint." };
+  let prices: ReturnType<typeof formModelPrices>;
+  try {
+    prices = formModelPrices(data);
+  } catch {
+    return {
+      ok: false,
+      error:
+        "Enter an exact model ID and non-negative decimal input/output prices in USD per million tokens. Cached input is optional.",
+    };
+  }
   try {
     const baseUrl = data.get("baseUrl");
     const rawVersion = data.get("apiVersion");
@@ -20,7 +42,13 @@ export function customAccountValue(
         : parseClaudeEndpoint({ version: 1, baseUrl: baseUrl.trim(), auth: data.get("endpointAuth") });
     const key = data.get("value");
     if (typeof key !== "string" || key.trim().startsWith("{")) throw Error();
-    return { ok: true, value: parseCredentialValue(kind, JSON.stringify({ endpoint, apiKey: key.trim() })) };
+    return {
+      ok: true,
+      value: parseCredentialValue(
+        kind,
+        JSON.stringify({ endpoint, apiKey: key.trim(), ...(prices ? { prices } : {}) }),
+      ),
+    };
   } catch {
     return {
       ok: false,
@@ -58,20 +86,10 @@ export function replacementClaudeAccountValue(
   const raw = data.get("value");
   if (typeof raw !== "string" || raw.trim().startsWith("{"))
     return { ok: false, error: "Paste only the new key, not connection JSON." };
+  if (mode === "custom") return customAccountValue("anthropic", data);
   try {
-    if (mode === "anthropic") return { ok: true, value: parseCredentialValue("anthropic", raw) };
-    const baseUrl = data.get("baseUrl");
-    if (typeof baseUrl !== "string" || (data.get("apiVersion") !== null && data.get("apiVersion") !== ""))
-      throw Error();
-    const endpoint = parseClaudeEndpoint({ version: 1, baseUrl: baseUrl.trim(), auth: data.get("endpointAuth") });
-    return { ok: true, value: parseCredentialValue("anthropic", JSON.stringify({ endpoint, apiKey: raw.trim() })) };
+    return { ok: true, value: parseCredentialValue("anthropic", raw) };
   } catch {
-    return {
-      ok: false,
-      error:
-        mode === "anthropic"
-          ? "Paste a valid Anthropic API key."
-          : "Enter an HTTPS Claude gateway base URL, bearer or API-key authentication, and a valid key. URL credentials, query strings and fragments are not supported.",
-    };
+    return { ok: false, error: "Paste a valid Anthropic API key." };
   }
 }
