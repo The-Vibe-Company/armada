@@ -61,10 +61,10 @@ test("the tree orders tasks by issue and never attaches a resource to a task the
 });
 
 test("ownership reads as the server reports it; an unknown owner carries its observation time", () => {
-  expect(ownerLook(pr(1, 1), "me", NOW)).toEqual({ tone: "neutral", label: "Owner unknown · last observed 5 min ago" });
-  expect(ownerLook(pr(1, 1, { owner: { state: "owned", userId: "me" } }), "me", NOW).label).toBe("Owned by you");
-  expect(ownerLook(pr(1, 1, { owner: { state: "owned", userId: "x" } }), "me", NOW).label).toBe("Owned by a member");
-  expect(ownerLook(pr(1, 1, { owner: { state: "orphan", userId: null } }), "me", NOW)).toEqual({
+  expect(ownerLook(pr(1, 1), "me")).toEqual({ tone: "neutral", label: "Owner unknown" });
+  expect(ownerLook(pr(1, 1, { owner: { state: "owned", userId: "me" } }), "me").label).toBe("Owned by you");
+  expect(ownerLook(pr(1, 1, { owner: { state: "owned", userId: "x" } }), "me").label).toBe("Owned by a member");
+  expect(ownerLook(pr(1, 1, { owner: { state: "orphan", userId: null } }), "me")).toEqual({
     tone: "warning",
     label: "Orphan",
   });

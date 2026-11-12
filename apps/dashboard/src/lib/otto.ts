@@ -269,14 +269,15 @@ export function countLabel(value: number | null | undefined): string {
 
 export type OwnerLook = { tone: "success" | "warning" | "neutral"; label: string };
 
-export function ownerLook(resource: OttoResource, viewerId: string, now: number): OwnerLook {
+/** A row's short owner state; an unknown owner's observation time is beside it, in {@link unknownLabel}. */
+export function ownerLook(resource: OttoResource, viewerId: string): OwnerLook {
   if (resource.owner.state === "orphan") return { tone: "warning", label: "Orphan" };
   if (resource.owner.state === "owned")
     return {
       tone: "success",
       label: resource.owner.userId === viewerId ? "Owned by you" : "Owned by a member",
     };
-  return { tone: "neutral", label: `Owner ${unknownLabel(resource.observedAt, now).toLowerCase()}` };
+  return { tone: "neutral", label: "Owner unknown" };
 }
 
 const REASONS: Record<string, string> = {

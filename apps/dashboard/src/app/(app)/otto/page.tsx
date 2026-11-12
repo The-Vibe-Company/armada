@@ -154,7 +154,7 @@ function Summary({ snapshot, now }: { snapshot: OttoSnapshot; now: number }) {
         {facts.map(([label, value]) => (
           <div key={label} className="min-w-0 space-y-1 bg-card px-4 py-3">
             <dt className="text-xs text-muted-foreground">{label}</dt>
-            <dd className="truncate text-sm font-medium tabular-nums">{value}</dd>
+            <dd className="text-sm font-medium break-words tabular-nums">{value}</dd>
           </div>
         ))}
       </dl>
@@ -195,17 +195,22 @@ function taskRow(node: OttoTreeNode, snapshot: OttoSnapshot, now: number): Resou
     ? [plural(prs, "pull request"), plural(sandboxes, "sandbox")].filter(Boolean).join(", ")
     : "Nothing linked";
   const state =
-    task.state === "open"
-      ? { tone: "info" as const, label: "Open" }
-      : { tone: "neutral" as const, label: unknownLabel(observedAt, now) };
+    task.state === "open" ? { tone: "info" as const, label: "Open" } : { tone: "neutral" as const, label: "Unknown" };
   return {
     key: taskKey(task),
     name: `#${task.issueNumber} ${task.title}`,
     search: `${task.issueNumber} ${task.title} task issue`,
     mark: <CircleDotIcon aria-hidden className="size-4 shrink-0 text-muted-foreground" />,
     tags: <RowTag>Task</RowTag>,
-    meta: `Expected proof: not reported · ${owns}`,
-    state: <StateCell tone={state.tone} label={state.label} data-unknown={task.state === "open" ? undefined : ""} />,
+    meta: `Expected proof unknown · ${observedAt ? `observed ${relativeAge(observedAt, now) ?? "at an unknown time"}` : "never observed"}`,
+    state: (
+      <StateCell
+        tone={state.tone}
+        label={state.label}
+        detail={task.state === "open" ? undefined : unknownLabel(observedAt, now)}
+        data-unknown={task.state === "open" ? undefined : ""}
+      />
+    ),
     fact: owns,
     attrs: { "data-otto-task": String(task.issueNumber) },
     panelAttrs: { "data-otto-panel": taskKey(task) },
@@ -263,7 +268,7 @@ function resourceRow(
   now: number,
   child: boolean,
 ): ResourceRow {
-  const owner = ownerLook(resource, viewerId, now);
+  const owner = ownerLook(resource, viewerId);
   const head = prHead(resource);
   const url = pullRequestUrl(snapshot.repository, resource);
   const status = typeof resource.evidence.status === "string" ? resource.evidence.status : null;
@@ -286,8 +291,7 @@ function resourceRow(
       </span>
     ),
     tags: <RowTag>{resource.kind === "pr" ? "Pull request" : "Sandbox"}</RowTag>,
-    meta:
-      resource.kind === "pr" ? (head?.ref ?? "Branch unknown") : `Launched on ${launchBranch ?? "an unknown branch"}`,
+    meta: `${resource.kind === "pr" ? (head?.ref ?? "Branch unknown") : `Launched on ${launchBranch ?? "an unknown branch"}`} · ${observed ? `observed ${observed}` : "never observed"}`,
     state: (
       <StateCell
         tone={owner.tone}
@@ -305,7 +309,14 @@ function resourceRow(
         <PanelSection title="Owner">
           <Facts
             items={[
-              ["Owner", resource.owner.state === "unknown" ? <Unknown key="o">{owner.label}</Unknown> : owner.label],
+              [
+                "Owner",
+                resource.owner.state === "unknown" ? (
+                  <Unknown key="o">{unknownLabel(resource.observedAt, now)}</Unknown>
+                ) : (
+                  owner.label
+                ),
+              ],
               ["Why", reasonText(resource.reason)],
               ["Task", task],
               ["Observed", observed ?? <Unknown key="w">{unknownLabel(null, now)}</Unknown>],
