@@ -178,6 +178,7 @@ export {
   type PinnedMcpStdio,
   parsePinnedMcpStdio,
 } from "./mcp-stdio.ts";
+export type { ModelPriceOverrides } from "./model-price-overrides.ts";
 export {
   MODEL_PRICE_SOURCES,
   MODEL_PRICES,

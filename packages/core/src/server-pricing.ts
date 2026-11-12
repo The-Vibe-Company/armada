@@ -78,7 +78,7 @@ export function priceTurn(
   turn: TurnTokenUsage,
   harness: Harness,
   snapshot: PriceSnapshot | null,
-  /** A caller must verify the cache-write TTL from native data, not infer it from the price table. */
+  /** Verify native TTL for public vendor rates. Explicit connection rates are flat across lifetimes. */
   cacheWriteTtl: "5m" | "30m" | null = null,
 ): PricedTurn {
   // Copy so neither a subsequent connection edit nor caller mutation changes this result's provenance.
@@ -100,8 +100,8 @@ export function priceTurn(
   if (!Number.isSafeInteger(uncached) || uncached < 0) return unknown("tokens");
   if (
     write > 0 &&
-    (cacheWriteTtl === null ||
-      (frozen.source === "models.dev" && cacheWriteTtl !== (harness === "claude" ? "5m" : "30m")))
+    frozen.source === "models.dev" &&
+    (cacheWriteTtl === null || cacheWriteTtl !== (harness === "claude" ? "5m" : "30m"))
   )
     return unknown("pricing_dimensions");
   const rates = frozen.rates;
