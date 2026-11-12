@@ -13,6 +13,7 @@ import {
 } from "./golden.ts";
 import { GoldenError } from "./golden-config.ts";
 import { isNonMutatingProviderRefusal, type Provider, ProviderError } from "./provider.ts";
+import { HOST_CAPABILITIES } from "./sandbox-provider.ts";
 
 /**
  * Boat keeps its stable replacement name. Modal saves a new immutable version per attempt;
@@ -38,15 +39,15 @@ export async function snapshotGolden(
   let failed = false;
   try {
     await store.assertBackendBinding?.(golden, provider);
-    const modal = golden.provider === "modal";
-    if (modal) {
+    const immutablePublication = HOST_CAPABILITIES[golden.provider].goldenSnapshotPublication === "publish-immutable";
+    if (immutablePublication) {
       if (!store.compareAndSetSnapshot)
         throw new GoldenError("conflict", "Modal snapshot publication requires a compare-and-swap store.");
       golden = (await connectGolden(provider, store, actor, name, limits)).golden;
     }
     const master = golden.providerSandboxId;
     if (!master) throw new GoldenError("conflict", `Golden '${golden.name}' has no sandbox yet. Create it first.`);
-    const requested = modal
+    const requested = immutablePublication
       ? `golden-${golden.id}-${crypto.randomUUID()}`
       : boatSnapshotName({
           orgId: golden.orgId,
@@ -74,13 +75,13 @@ export async function snapshotGolden(
     try {
       uncertain = true;
       info = await provider.snapshot({ sandboxId: master, name: requested });
-      if (modal) actual = info.name;
+      if (immutablePublication) actual = info.name;
     } catch (error) {
       if (isNonMutatingProviderRefusal(error)) uncertain = false;
-      if (modal) throw retained(error);
+      if (immutablePublication) throw retained(error);
       if (!saveInProgress(error)) throw error;
     }
-    if (modal) {
+    if (immutablePublication) {
       if (!actual || actual === golden.providerSnapshotId)
         throw new GoldenError("snapshot_failed", "Provider returned an unsafe snapshot reference. Last-good retained.");
       if (info?.sourceSandboxId !== undefined && info.sourceSandboxId !== master)
@@ -102,7 +103,7 @@ export async function snapshotGolden(
       try {
         info = await waitSnapshot(provider, actual, limits);
       } catch (error) {
-        if (modal) throw retained(error);
+        if (immutablePublication) throw retained(error);
         throw error;
       }
     }
@@ -110,11 +111,15 @@ export async function snapshotGolden(
       uncertain = false;
       throw new GoldenError("snapshot_failed", info.error ?? `Snapshot of '${golden.name}' failed.`);
     }
-    if (modal && (info.name !== actual || info.sourceSandboxId !== master))
+    if (immutablePublication && (info.name !== actual || info.sourceSandboxId !== master))
       throw new GoldenError("snapshot_failed", "Ready snapshot source could not be verified. Last-good retained.");
-    if (modal) actual = info.name;
-    await releaseOperation?.retain?.({ kind: "snapshot", sandboxId: modal ? null : master, snapshotId: actual });
-    if (modal) {
+    if (immutablePublication) actual = info.name;
+    await releaseOperation?.retain?.({
+      kind: "snapshot",
+      sandboxId: immutablePublication ? null : master,
+      snapshotId: actual,
+    });
+    if (immutablePublication) {
       try {
         await provider.stop({ sandboxId: master });
       } catch (error) {
@@ -130,7 +135,7 @@ export async function snapshotGolden(
           committed = (await store.findByName(actor.orgId, golden.name)).find(
             (row) =>
               row.id === golden.id &&
-              row.provider === "modal" &&
+              row.provider === golden.provider &&
               row.providerSnapshotId === actual &&
               row.providerSandboxId === null,
           );
