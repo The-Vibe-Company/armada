@@ -1,4 +1,5 @@
 import {
+  CODEX_ENDPOINT_ENV,
   type CredentialKind,
   type CredentialReader,
   decryptSecret,
@@ -16,6 +17,7 @@ import {
 } from "@armada/core";
 
 import {
+  createUsagePricingContext,
   installPrivateSkill,
   PrivateSkillError,
   sshHydrateAuthState,
@@ -177,7 +179,14 @@ export function launchCredentials(
             actor.userId,
           )
         : undefined;
-      return toHarnessCredentials(resolved, access);
+      const credentials = toHarnessCredentials(resolved, access);
+      credentials.usagePricing = createUsagePricingContext({
+        harness,
+        credentialKind: resolved.sources[0]?.kind ?? null,
+        ...(credentials.binding ?? {}),
+        customEndpoint: Boolean(credentials.env[CODEX_ENDPOINT_ENV]),
+      });
+      return credentials;
     },
   };
 }

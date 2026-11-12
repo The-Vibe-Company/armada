@@ -41,6 +41,7 @@ const ROW_ALIASES: Record<string, string> = {
   application_vault_audit: "ApplicationVaultAuditRow",
   readable_variables: "ReadableVariableRow",
   sandbox_turn_models: "SandboxTurnModelRow",
+  sandbox_usage_pricing: "SandboxUsagePricingRow",
   sandbox_work_recovery: "SandboxWorkRecovery",
   orchestrator_activity: "OrchestratorActivity",
   orchestrator_child_operations: "OrchestratorChildOperation",

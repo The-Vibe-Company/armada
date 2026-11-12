@@ -3105,6 +3105,32 @@ export type Database = {
           },
         ];
       };
+      sandbox_usage_pricing: {
+        Row: {
+          sandbox_id: string;
+          context: Json;
+          created_at: string;
+        };
+        Insert: {
+          sandbox_id: string;
+          context: Json;
+          created_at?: string;
+        };
+        Update: {
+          sandbox_id?: string;
+          context?: Json;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "sandbox_usage_pricing_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: true;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       sandbox_work_recovery: {
         Row: {
           id: string;
@@ -3541,6 +3567,7 @@ export type RoutineRunInputRow = Database["public"]["Tables"]["routine_run_input
 export type RoutineRunRow = Database["public"]["Tables"]["routine_runs"]["Row"];
 export type RoutineRow = Database["public"]["Tables"]["routines"]["Row"];
 export type SandboxTurnModelRow = Database["public"]["Tables"]["sandbox_turn_models"]["Row"];
+export type SandboxUsagePricingRow = Database["public"]["Tables"]["sandbox_usage_pricing"]["Row"];
 export type SandboxWorkRecovery = Database["public"]["Tables"]["sandbox_work_recovery"]["Row"];
 export type Sandbox = Database["public"]["Tables"]["sandboxes"]["Row"];
 export type ServiceToken = Database["public"]["Tables"]["service_tokens"]["Row"];

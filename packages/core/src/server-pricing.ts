@@ -1,7 +1,10 @@
 import type { Harness } from "./contract.ts";
+import type { CredentialKind } from "./database.types.ts";
 import table from "./pricing/models-dev.json";
 import { type TokenRates, validRates } from "./pricing/rates.ts";
+import { costBasis } from "./sandbox-cost.ts";
 import type { TurnTokenUsage } from "./sandbox-usage.ts";
+import type { UsagePricingContext } from "./usage-pricing.ts";
 
 export type { TokenRates } from "./pricing/rates.ts";
 export interface PriceSnapshot {
@@ -120,4 +123,35 @@ export function priceTurn(
     total += BigInt(tokens) * units(rate);
   }
   return { usd: dollars(total), unknown: null, snapshot: frozen };
+}
+
+/** Freeze the whole supported provider catalog before work, including models only reported at turn end. */
+export function createUsagePricingContext(input: {
+  harness: Harness;
+  credentialKind: CredentialKind | null;
+  credentialId?: string;
+  credentialVersion?: number;
+  customEndpoint: boolean;
+}): UsagePricingContext {
+  const provider = input.harness === "claude" ? "anthropic" : "openai";
+  const prices: Record<string, PriceSnapshot> = {};
+  if (!input.customEndpoint) {
+    for (const key of Object.keys(table.models)) {
+      if (!key.startsWith(`${provider}/`)) continue;
+      const model = key.slice(provider.length + 1);
+      const snapshot = resolvePrice({ provider, model, customEndpoint: false });
+      if (snapshot) prices[model] = snapshot;
+    }
+  }
+  return {
+    schemaVersion: 1,
+    capturedAt: new Date().toISOString(),
+    catalogRevision: table.sha256,
+    provider,
+    basis: costBasis(input.credentialKind),
+    credentialId: input.credentialId ?? null,
+    credentialVersion: input.credentialVersion ?? null,
+    customEndpoint: input.customEndpoint,
+    prices,
+  };
 }

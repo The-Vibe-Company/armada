@@ -7,6 +7,7 @@ import { type Provider, ProviderError } from "./provider.ts";
 import { isSandboxProvider, type SandboxProviderId } from "./sandbox-provider.ts";
 import { type SandboxUsage, withUsageTotals } from "./sandbox-usage.ts";
 import type { TaskOutcome } from "./task-outcome.ts";
+import type { UsagePricingContext } from "./usage-pricing.ts";
 
 /** An Armada sandbox: the metadata of one fork of a golden. The provider keeps the disk and the conversations. */
 export interface ResourceProject {
@@ -91,6 +92,8 @@ export interface SandboxPatch {
  * to its current organization owner/admin for interior. Lists use the separate SandboxListMetadata projection.
  */
 export interface SandboxStore {
+  /** Service-only, first-write-wins session pricing admission. Legacy stores omit it and remain unpriced. */
+  recordUsagePricingContext?(id: string, context: UsagePricingContext): Promise<void>;
   recordTurnModel?(id: string, promptId: string, requestedModel: string | null): Promise<void>;
   readTurnModel?(id: string, promptId: string): Promise<{ requestedModel: string | null; evidence: unknown } | null>;
   recordTurnModelEvidence?(id: string, promptId: string, evidence: unknown): Promise<void>;
@@ -214,7 +217,7 @@ export const MAX_STATUS_REASON_LENGTH = 2000;
 const COLUMNS = `skills, preservation_note, task_outcome, task_prompt_id, credential_id, credential_version, id, provider::text as provider, provider_sandbox_id, golden_id, org_id, owner_id, harness::text as harness, status::text as status,
   conversation_ids, created_at, stopped_at, deleted_at, status_reason, model, reasoning_effort, machine_size, resource_project, visibility, repository_dir, expires_at, effective_ttl_seconds, requested_ttl_seconds, last_observed_at, lifecycle_error, lifecycle_generation, stop_requested_at`;
 
-/** Turn evidence is service-role-only; caller-role stores must not gain these ports. */
+/** Turn and pricing evidence is service-role-only; caller-role stores must not gain these ports. */
 export function createSqlSandboxStore(sql: Sql, options: { turnModels?: true } = {}): SandboxStore {
   return {
     ...(options.turnModels ? sqlTurnModelStore(sql) : {}),
@@ -374,8 +377,15 @@ function decodeLifecycleGeneration(value: SandboxRow["lifecycle_generation"]): n
 
 function sqlTurnModelStore(
   sql: Sql,
-): Pick<SandboxStore, "recordTurnModel" | "readTurnModel" | "recordTurnModelEvidence"> {
+): Pick<SandboxStore, "recordTurnModel" | "readTurnModel" | "recordTurnModelEvidence" | "recordUsagePricingContext"> {
   return {
+    async recordUsagePricingContext(id, context) {
+      await sql.query(
+        `insert into public.sandbox_usage_pricing(sandbox_id,context) values($1::uuid,$2::text::jsonb)
+         on conflict (sandbox_id) do nothing`,
+        [id, JSON.stringify(context)],
+      );
+    },
     async recordTurnModel(id, promptId, requestedModel) {
       await sql.query(
         `insert into public.sandbox_turn_models(sandbox_id,prompt_id,requested_model)
