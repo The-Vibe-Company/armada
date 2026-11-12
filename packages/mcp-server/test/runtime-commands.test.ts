@@ -361,3 +361,171 @@ test.each(["timeout", "abort", "replacement", "stop"] as const)(
     }
   },
 );
+
+test("Codex agent bridge translates Boat identity and reconciles prompt/status/journal without native APIs", async () => {
+  const { createRuntimeAgent } = await import("../src/runtime-agent.ts");
+  const { Journal, Runner } = await import("../../agent-runtime/src/index.ts");
+  const { mkdtemp, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const f = await fixture();
+  const root = await mkdtemp(join(tmpdir(), "runtime-agent-"));
+  const journal = new Journal(join(root, "journal"), (value) => value);
+  try {
+    const active = await f.enrol();
+    const inputs: import("../../agent-runtime/src/protocol.ts").RuntimePromptRequest[] = [];
+    const driver: import("../../agent-runtime/src/protocol.ts").Driver = {
+      start(context) {
+        inputs.push(context.request);
+        context.session("native-session");
+        context.emit({ kind: "message", text: "Armada answer", partial: false, tools: [], responseKind: "assistant" });
+        return { done: Promise.resolve("finished"), async interrupt() {}, async steer() {} };
+      },
+      async close() {},
+    };
+    const runner = new Runner(
+      journal,
+      {
+        token: active.runtimeToken,
+        sandboxId: f.id,
+        generation: active.epoch,
+        expiresAt: Date.now() + 60000,
+      },
+      { codex: driver, claude: driver },
+    );
+    const serve = async () => {
+      const pending = await f.bridge().next(active.runtimeToken, active.epoch);
+      if (!pending.command) throw Error("missing admitted command");
+      const response = await runner.handle(
+        new Request("http://runtime/v1", {
+          method: "POST",
+          headers: { "x-armada-runner-grant": active.runtimeToken },
+          body: JSON.stringify(pending.command),
+        }),
+      );
+      expect(
+        (
+          await f.request("results", active.runtimeToken, active.epoch, {
+            epoch: active.epoch,
+            requestId: pending.command.requestId,
+            status: response.status,
+            body: await response.json(),
+          })
+        ).status,
+      ).toBe(200);
+    };
+    const agent = createRuntimeAgent(f.bridge(), {
+      ownerId: f.people.owner,
+      sandboxId: f.id,
+      providerSandboxId: "bx-physical",
+      cwd: root,
+      defaults: { model: "gpt-5.4", reasoningEffort: "high" },
+    });
+    f.onWait(serve);
+    expect(await agent.health()).toEqual({ runtime: "armada", epoch: active.epoch });
+    const request = { sandboxId: "bx-physical", harness: "codex" as const, text: "answer", model: "gpt-5.4" };
+    // Lose a caller's wait before execution. Identity in the safe error allows
+    // reconciliation rather than minting another prompt after uncertain admission.
+    let uncertain: import("@armada/core").ProviderError | undefined;
+    try {
+      await agent.prompt(request, "stable-first-prompt");
+    } catch (error) {
+      uncertain = error as import("@armada/core").ProviderError;
+    }
+    expect(uncertain?.details).toEqual({ runtimeRequestId: "stable-first-prompt", runtimeOutcome: "unknown" });
+    expect(inputs).toHaveLength(0);
+    f.onWait(serve);
+    const receipt = await agent.prompt(request, "stable-first-prompt");
+    expect(inputs).toEqual([
+      {
+        sandboxId: f.id,
+        harness: "codex",
+        text: "answer",
+        model: "gpt-5.4",
+        reasoningEffort: "high",
+        cwd: root,
+      },
+    ]);
+    expect(await agent.prompt(request, "stable-first-prompt")).toEqual(receipt);
+    expect(inputs).toHaveLength(1);
+    f.onWait(serve);
+    expect(await agent.getPrompt({ sandboxId: "bx-physical", promptId: receipt.promptId })).toMatchObject({
+      status: "finished",
+      done: true,
+    });
+    f.onWait(serve);
+    const page = await agent.events({ sandboxId: "bx-physical", conversationId: receipt.conversationId });
+    expect(page.events.some((event) => event.kind === "message" && event.text === "Armada answer")).toBe(true);
+    f.onWait(serve);
+    expect(await agent.events({ sandboxId: "bx-physical", cursor: page.cursor ?? "0" })).toMatchObject({
+      events: [],
+      cursor: page.cursor,
+      hasMore: false,
+    });
+    f.onWait(serve);
+    await expect(agent.getPrompt({ sandboxId: "bx-physical", promptId: "missing" })).rejects.toMatchObject({
+      provider: "boat",
+      code: "not_found",
+      retryable: false,
+    });
+    for (const refused of [
+      () => agent.prompt({ ...request, sandboxId: "another-machine" }),
+      () => agent.prompt({ ...request, harness: "claude" }),
+      () => agent.events({ sandboxId: "bx-physical", direction: "backward" }),
+      () => agent.events({ sandboxId: "bx-physical", limit: 0 }),
+    ])
+      await expect(refused()).rejects.toMatchObject({ code: "invalid_request" });
+    expect(inputs).toHaveLength(1);
+  } finally {
+    journal.close();
+    await f.db.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test.each(["wrong-id", "unknown-error", "prototype-error", "stale-health"] as const)(
+  "agent bridge refuses %s replies without reflecting private diagnostics",
+  async (kind) => {
+    const { createRuntimeAgent } = await import("../src/runtime-agent.ts");
+    const agent = createRuntimeAgent(
+      {
+        async call(_owner, request) {
+          return {
+            epoch: "2",
+            requestId: request.requestId,
+            status: kind.endsWith("error") ? 409 : 200,
+            body: kind.endsWith("error")
+              ? { error: kind === "prototype-error" ? "constructor" : "private-diagnostic-marker" }
+              : {
+                  version: 1,
+                  requestId: kind === "wrong-id" ? "foreign" : request.requestId,
+                  result: { ready: true, generation: "1" },
+                },
+          };
+        },
+      },
+      {
+        ownerId: "owner",
+        sandboxId: "logical",
+        providerSandboxId: "physical",
+        cwd: "/project",
+        defaults: { model: "gpt-5.4", reasoningEffort: "high" },
+      },
+    );
+    let failure: unknown;
+    try {
+      if (kind === "stale-health") await agent.health();
+      else await agent.prompt({ sandboxId: "physical", harness: "codex", text: "answer" }, "known-request");
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({
+      provider: "boat",
+      retryable: false,
+      code: kind === "stale-health" ? "sandbox_not_ready" : kind === "wrong-id" ? "unavailable" : "unknown",
+    });
+    expect(String(failure)).not.toContain("private-diagnostic-marker");
+    if (kind !== "stale-health")
+      expect(failure).toMatchObject({ details: { runtimeRequestId: "known-request", runtimeOutcome: "unknown" } });
+  },
+);
