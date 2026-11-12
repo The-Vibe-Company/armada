@@ -41,10 +41,12 @@ test("Tools history, direct links, keyboard navigation and nested confirmation s
   await signIn(page, "alice@example.com", "/variables");
   await page.goto("/tools");
   const row = page.locator('[data-connection="Alice Linear"]').filter({ visible: true });
+  // Raw history/keyboard/mouse input bypasses locator actionability. Wait for the layer to settle first.
   for (const dismiss of ["back", "close", "outside"] as const) {
     await row.locator("[data-select-item]").click();
     const sheet = page.getByRole("dialog", { name: "Alice Linear", exact: true });
     await expect(sheet).toBeVisible();
+    await sheet.getByRole("button", { name: "Close the panel" }).click({ trial: true });
     if (dismiss === "back") await page.evaluate(() => history.back());
     else if (dismiss === "close") await page.getByRole("button", { name: "Close the panel" }).click();
     else await page.mouse.click(10, 300);
@@ -61,8 +63,10 @@ test("Tools history, direct links, keyboard navigation and nested confirmation s
   await page.goto(new URL(href, page.url()).href);
   const sheet = page.getByRole("dialog", { name: "Alice Linear", exact: true });
   await expect(sheet).toBeVisible();
+  await sheet.getByRole("button", { name: "Close the panel" }).click({ trial: true });
   await page.reload();
   await expect(sheet).toBeVisible();
+  await sheet.getByRole("button", { name: "Close the panel" }).click({ trial: true });
   const url = page.url();
   await page.keyboard.press("k");
   await expect(page).not.toHaveURL(url);
@@ -71,16 +75,19 @@ test("Tools history, direct links, keyboard navigation and nested confirmation s
   await sheet.getByRole("button", { name: "Delete", exact: true }).click();
   const confirmation = page.getByRole("alertdialog");
   await expect(confirmation).toBeVisible();
+  await confirmation.getByRole("button", { name: "Cancel", exact: true }).click({ trial: true });
   await expect(confirmation.getByRole("button", { name: "Cancel", exact: true })).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(confirmation).toBeHidden();
   await expect(sheet).toBeVisible();
+  await sheet.getByRole("button", { name: "Close the panel" }).click({ trial: true });
   await page.keyboard.press("Escape");
   await expect(sheet).toBeHidden();
   await expect(page).toHaveURL(/\/tools$/);
   await row.locator("[data-select-item]").click();
   await sheet.getByRole("button", { name: "Delete", exact: true }).click();
   await expect(confirmation).toBeVisible();
+  await confirmation.getByRole("button", { name: "Cancel", exact: true }).click({ trial: true });
   await page.evaluate(() => history.back());
   await expect(confirmation).toBeHidden();
   await expect(sheet).toBeHidden();
