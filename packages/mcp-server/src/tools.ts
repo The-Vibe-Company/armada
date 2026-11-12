@@ -441,6 +441,12 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         )
         .max(64)
         .optional(),
+      secrets: z
+        .array(
+          z.object({ key: z.string(), secretId: z.string().uuid(), version: z.number().int().positive() }).strict(),
+        )
+        .max(64)
+        .optional(),
       skills: z.array(z.string()).max(20).optional(),
     })
     .strict();
@@ -529,7 +535,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         description:
           operation === "launch"
             ? "Launch an immutable template revision. requestKey is required: same key/body returns the recorded request and never allocates twice. Readable variables are NOT secrets; no secret bindings or authority-enlarging overrides."
-            : "Manage immutable personal/organization launch presets. Org writes require admin; bindings reference exact environment, tools, model account and readable variable versions. No secrets.",
+            : "Manage immutable personal/organization launch presets. Org writes require admin; bindings reference exact environment, tools, model account, readable variable versions and secret IDs/versions. Secret values are never accepted; secret values are delivered only to the selected native harness environment.",
         inputSchema: templateInputs[operation],
         outputSchema: z.object({}).passthrough(),
       },
@@ -1990,7 +1996,15 @@ function errorResult(error: unknown, tool: string, logError: (line: string) => v
   return {
     isError: true,
     ...(error instanceof LaunchError && error.reason
-      ? { structuredContent: { error: { code, message, details: { reason: error.reason, action: error.action } } } }
+      ? {
+          structuredContent: {
+            error: {
+              code,
+              message,
+              details: { reason: error.reason, action: error.action, ...(error.stage ? { stage: error.stage } : {}) },
+            },
+          },
+        }
       : {}),
     ...(error instanceof GitHubHydrationError ? { _meta: { error: { code, message, details: error.details } } } : {}),
     content: [

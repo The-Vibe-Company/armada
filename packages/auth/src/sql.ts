@@ -6,7 +6,7 @@ export interface SqlQuery {
   query<T extends Record<string, unknown>>(sql: string, params?: readonly unknown[]): Promise<{ rows: T[] }>;
 }
 
-/** Service-role SQL. The CLI does not use this: a user JWT goes through `createUserStore`. */
+/** Service-role SQL. The API-only CLI calls the server, never the database directly. */
 export function createSqlAuthStore(db: SqlQuery): AuthStore {
   return {
     async findTokenByHash(kind, hash) {

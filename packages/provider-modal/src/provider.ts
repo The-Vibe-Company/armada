@@ -28,7 +28,9 @@ import type {
 import { createSshPreparation, SSH_PORT } from "./ssh.ts";
 import { scopeKey } from "./store.ts";
 
+export type ModalPromptPhase = "modal_prepare" | "modal_before_prompt" | "modal_admit" | "modal_health" | "modal_rpc";
 export interface ModalProviderOptions extends ModalConnection {
+  measure?<T>(phase: ModalPromptPhase, work: () => Promise<T>): Promise<T>;
   /** Server-owned history projection only. No live App/runner calls in get/events/getPrompt.
    * Never use this provider for admission or lifecycle decisions. */
   storedReads?: boolean;
@@ -104,6 +106,7 @@ export function assertSourceTargetScopes(source: Scope, target: Scope): void {
 }
 export function createModalProvider(options: ModalProviderOptions): ModalProvider {
   const { store, runner, distribution } = options;
+  const measure: NonNullable<ModalProviderOptions["measure"]> = options.measure ?? ((_phase, work) => work());
   const source = options.source ?? { scope: options.scope, store };
   assertSourceTargetScopes(source.scope, options.scope);
   const managementAuthority = chooseManagementAuthority(source.scope, options.managementAuthority);
@@ -488,7 +491,9 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
   }
   async function healthyAdmission(row: Machine, save: (row: Machine) => Promise<void>): Promise<Machine> {
     const active = await readyLeased(row, save);
-    const health = await runner.call<{ generation: string; ready: boolean }>(active, "health", {});
+    const health = await measure("modal_health", () =>
+      runner.call<{ generation: string; ready: boolean }>(active, "health", {}),
+    );
     if (!health || health.generation !== String(active.generation) || health.ready !== true)
       throw refusal("sandbox_not_ready", "Runner admission is not open for this generation.");
     return active;
@@ -1192,37 +1197,45 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         ]);
       let expected: string | undefined;
       if (options.beforePrompt) {
-        expected = await admit(r.sandboxId, async (row, save) => {
-          if (row.golden) throw refusal("invalid_request", "Golden builders cannot run model turns.");
-          return incarnation(await healthyAdmission(row, save));
-        });
+        expected = await measure("modal_prepare", () =>
+          admit(r.sandboxId, async (row, save) => {
+            if (row.golden) throw refusal("invalid_request", "Golden builders cannot run model turns.");
+            // Preparation needs an active physical incarnation, not a native health
+            // probe that is repeated after the hook. Final admission below owns health.
+            return incarnation(await readyLeased(row, save));
+          }),
+        );
         // configureMcp takes its own lease. Invoking this under admission would deadlock.
-        await options.beforePrompt(provider, r.sandboxId);
+        await measure("modal_before_prompt", () => options.beforePrompt!(provider, r.sandboxId));
       }
-      return admit(r.sandboxId, async (row, save) => {
-        if (row.golden) throw refusal("invalid_request", "Golden builders cannot run model turns.");
-        if (expected !== undefined && (row.phase !== "active" || incarnation(row) !== expected))
-          throw refusal(
-            "conflict",
-            "Prompt preparation belongs to a different physical incarnation; turn not submitted.",
+      return measure("modal_admit", () =>
+        admit(r.sandboxId, async (row, save) => {
+          if (row.golden) throw refusal("invalid_request", "Golden builders cannot run model turns.");
+          if (expected !== undefined && (row.phase !== "active" || incarnation(row) !== expected))
+            throw refusal(
+              "conflict",
+              "Prompt preparation belongs to a different physical incarnation; turn not submitted.",
+            );
+          const active = await healthyAdmission(row, save);
+          if (expected !== undefined && (active.phase !== "active" || incarnation(active) !== expected))
+            throw refusal("conflict", "Runner incarnation changed during admission; turn not submitted.");
+          const choice = resolveModelChoice(r.harness, r, active.modelDefaults?.[r.harness]);
+          const cwd = active.harnessCwds?.[r.harness];
+          return measure("modal_rpc", () =>
+            runner.call(active, "prompt", {
+              input: {
+                sandboxId: r.sandboxId,
+                harness: r.harness,
+                text: r.text,
+                ...choice,
+                ...(r.conversationId !== undefined ? { conversationId: r.conversationId } : {}),
+                ...(r.fast !== undefined ? { fast: r.fast } : {}),
+                ...(cwd !== undefined ? { cwd } : {}),
+              },
+            }),
           );
-        const active = await healthyAdmission(row, save);
-        if (expected !== undefined && (active.phase !== "active" || incarnation(active) !== expected))
-          throw refusal("conflict", "Runner incarnation changed during admission; turn not submitted.");
-        const choice = resolveModelChoice(r.harness, r, active.modelDefaults?.[r.harness]);
-        const cwd = active.harnessCwds?.[r.harness];
-        return runner.call(active, "prompt", {
-          input: {
-            sandboxId: r.sandboxId,
-            harness: r.harness,
-            text: r.text,
-            ...choice,
-            ...(r.conversationId !== undefined ? { conversationId: r.conversationId } : {}),
-            ...(r.fast !== undefined ? { fast: r.fast } : {}),
-            ...(cwd !== undefined ? { cwd } : {}),
-          },
-        });
-      });
+        }),
+      );
     },
     async getPrompt(r) {
       const row = await store.get(r.sandboxId);
@@ -1262,9 +1275,10 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       };
     },
     steer(r) {
-      if (!r.conversationId) throw refusal("invalid_request", "Modal steering requires conversationId.");
       return admit(r.sandboxId, async (row, save) => {
         if (row.golden) throw refusal("invalid_request", "Golden builders cannot run model turns.");
+        if (row.phase === "stopped") throw refusal("sandbox_not_ready", "Stopped sandboxes cannot be steered.");
+        // Protocol 1 selects the sole active turn when no conversation is specified.
         return runner.call(await healthyAdmission(row, save), "steer", {
           sandboxId: r.sandboxId,
           conversationId: r.conversationId,

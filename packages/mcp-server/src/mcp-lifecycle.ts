@@ -340,7 +340,7 @@ export function createMcpLifecycle(options: {
         role: "admin" | "member";
         template_request_id: string | null;
       }>(
-        `select s.id,s.org_id,s.owner_id,m.role,${options.prepareReadableVariables ? "(select r.id from public.template_launch_requests r where r.sandbox_id=s.id and r.manifest->'variables'<>'{}'::jsonb)" : "null::uuid"} as template_request_id from public.sandboxes s join public.members m on m.org_id=s.org_id and m.user_id=$3::uuid where s.provider=$1 and s.provider_sandbox_id=$2 and s.org_id=$4::uuid and (s.owner_id=$3::uuid or m.role='admin') and not exists(select 1 from public.armada_access_parents o where o.kind='orchestrator' and o.sandbox_id=s.id)`,
+        `select s.id,s.org_id,s.owner_id,m.role,${options.prepareReadableVariables ? "(select r.id from public.template_launch_requests r where r.sandbox_id=s.id and (r.manifest->'variables'<>'{}'::jsonb or jsonb_array_length(coalesce(r.manifest->'definition'->'secrets','[]'::jsonb))>0))" : "null::uuid"} as template_request_id from public.sandboxes s join public.members m on m.org_id=s.org_id and m.user_id=$3::uuid where s.provider=$1 and s.provider_sandbox_id=$2 and s.org_id=$4::uuid and (s.owner_id=$3::uuid or m.role='admin') and not exists(select 1 from public.armada_access_parents o where o.kind='orchestrator' and o.sandbox_id=s.id)`,
         [provider.id, providerSandboxId, caller.userId, caller.orgId],
       );
       const row = r.rows[0];

@@ -1,7 +1,7 @@
 # Template slice 4 staging acceptance
 
 For #936. API/MCP staging checks; CLI management is documented in
-[templates-cli.md](templates-cli.md). No template UI, secret bindings, grants,
+[templates-cli.md](templates-cli.md). Includes template UI and secret delivery; no new grants,
 routines or application-secret security guarantees. **Do not run against production.**
 The operator must apply `20261111100000_launch_templates.sql` to disposable staging;
 this PR does not apply or deploy it. Its timestamp is above main and the open-PR
@@ -16,7 +16,8 @@ Authenticated POST routes under `/api/v1/templates/`: `create`, `list`, `get`,
 proxy admits all six. The matching MCP tools are `template_create`,
 `template_list`, `template_get`, `template_publish`, `template_delete`,
 `template_launch`; they share the service and strict validation. Query parameters at the control service,
-unknown fields and secret bindings are refused. The public proxy strips query
+unknown fields are refused. Secret ID/version bindings are supported as described below;
+secret values are delivered through the selected native harness environment. The public proxy strips query
 parameters before forwarding; they have no effect there. No raw environment override exists.
 
 All inputs require `org` (UUID). Create additionally accepts `name`, `scope`
@@ -202,3 +203,44 @@ No staging credentials are available to the worker. No migration is required.
 Next slices: personal/org/environment defaults with documented precedence and
 one-launch opt-out; CLI; dashboard Skills, template and environment forms. This
 slice does not introduce defaults, opt-out or orchestrator dependencies.
+
+## Secret bindings (#1037)
+
+Create/publish definitions accept optional `secrets` bindings:
+`{ key: "APP_TOKEN", secretId: "<vault secret UUID>", version: 1 }`.
+Variables and secrets share a combined maximum of 64 environment entries. Before
+allocation, the complete decrypted environment is checked against the transport
+limits (8 KiB per value, 64 KiB total), with a value-free refusal on overflow.
+Only references are stored or returned. Publication and launch check current
+membership, personal ownership, org scope, status, expiry and version.
+
+At final start, values are decrypted in memory and merged with readable variables
+for the existing provider native-harness environment configuration operation.
+Later turns re-resolve the same references under current access/version checks.
+Rotation requires publishing a new revision; revoke/expiry refuses subsequent
+delivery. Values never enter Armada manifests, receipts, or API responses.
+Previously delivered values may remain in sandbox memory/files; revocation does
+not erase them. Agents can intentionally print, copy or exfiltrate delivered values.
+
+CLI: repeat `--secret KEY:UUID:VERSION` on create/publish, or supply reference-only
+`secrets` in a definition file. Dashboard: choose names/scope in the Secrets picker.
+No reveal API or value field is introduced.
+
+Owner-approved pragmatic path: reuse readable delivery, including Boat's /run
+configuration file. That file is readable inside the sandbox. No taint marker is
+added, and no recovery/retention gate is built or relaxed: template secrets follow
+ordinary existing sandbox lifecycle behavior. This does not promise recovery,
+snapshot or event redaction guarantees. Hardening is follow-up, not a prerequisite.
+
+Coordinator staging checks (workers have no staging credentials):
+1. On Modal × Codex and Boat × Codex, create a random secret via the write-only
+   vault, bind its ID/version in a template (CLI and dashboard), and launch.
+2. Have the agent verify environment access without printing the value (report
+   only a boolean). Check template/list/launch responses contain references only.
+3. Publish/edit and verify secret selections and aliases survive. Rotate and
+   confirm old-version new launch/later delivery refuses, then republish and retry.
+4. Revoke and confirm subsequent delivery refuses. A caller without personal
+   secret access must be refused. Do not claim delivered copies were erased.
+5. Confirm readable-only templates and ordinary lifecycle behavior still work.
+
+Later: recovery fencing, taint policy, event/log redaction and erasure semantics.

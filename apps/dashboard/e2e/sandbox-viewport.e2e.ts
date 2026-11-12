@@ -90,12 +90,18 @@ test("the history stays on its newest message when its height changes, and comes
   // Open details take the history's place on a phone; closed again, the history is back as it was, on its latest.
   const toggle = page.getByRole("button", { name: "Details" });
   await toggle.click();
-  await expect(page.getByRole("region", { name: "Details" }).getByText("Golden", { exact: true })).toBeVisible();
+  const details = page.getByRole("region", { name: "Details" });
+  await expect(details.getByText("Golden", { exact: true })).toBeVisible();
+  // A nested disclosure may stay open: only the outer Details toggle should take the history's place.
+  await details.getByRole("button", { name: "Per turn" }).click();
+  await expect(details.getByRole("table", { name: "Cost per turn" })).toBeVisible();
   await toggle.click();
   await expect.poll(() => messages.evaluate((element) => element.clientHeight)).toBe(before);
   await expect.poll(atLatest).toBe(true);
   await expect(messages.getByText("Step 39:")).toBeInViewport({ ratio: 1 });
   expect((await overflow(page)).vertical).toBe(0);
+  await expect(page.getByRole("textbox", { name: "Message" })).toBeInViewport({ ratio: 1 });
+  await expect(page.getByRole("button", { name: "Send", exact: true })).toBeInViewport({ ratio: 1 });
 });
 
 test("a history that grows back to its bottom follows new messages again", async ({ page }) => {

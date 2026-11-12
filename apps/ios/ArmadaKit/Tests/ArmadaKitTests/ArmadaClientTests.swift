@@ -234,3 +234,28 @@ private actor RefreshTransport: ArmadaTransport {
         await #expect(throws: cause) { _ = try await client.organizations() }
     }
 }
+
+@Test func idleSteerIsDistinctFromOtherConflictsWithoutAutomaticRetry() async throws {
+    for (status, body, cause) in [
+        (409, #"{"error":{"code":"no_running_turn","message":"No turn is running."}}"#, ArmadaError.noRunningTurn),
+        (409, #"{"error":{"code":"no_running_turn"}}"#, .noRunningTurn),
+        (409, #"{"error":{"code":"sandbox_not_ready","message":"Still starting."}}"#, .conflict),
+        (409, #"{"error":{"code":"conflict","message":"State changed."}}"#, .conflict),
+        (409, "not JSON", .conflict),
+        (503, #"{"error":{"code":"no_running_turn","message":"Untrusted outage."}}"#, .unavailable),
+    ] {
+        let transport = ScriptedTransport([.init(status: 200, body: login), .init(status: status, body: body)])
+        let client = try ArmadaClient(transport: transport, storage: MemoryStorage())
+        try await client.verifyEmail(email: "person@example.test", code: "123456")
+        do {
+            let _: OK = try await client.post("sandbox/steer", Empty())
+            Issue.record("Expected steer refusal")
+        } catch {
+            #expect(ArmadaServerFailure.underlying(error) == cause)
+            if cause == .noRunningTurn {
+                #expect(SandboxMutationFailure.classify(error) == .refused)
+            }
+        }
+        #expect(await transport.requests.count == 2)
+    }
+}
