@@ -46,41 +46,63 @@ next separate slice.
 
 ## Runner headroom (2026-11-12)
 
-Unit shards are reduced from twelve to seven; every discovered file still runs
-exactly once. Weights are refreshed after the fixture-restore changes, not copied
-from the old twelve-shard baseline. The measurement includes test/hook execution;
-runner allocation, checkout, install, runtime build and PostgreSQL startup still
-need their own headroom. Real PR/merge-group deadline enforcement remains 120s.
+Unit shards are reduced from twelve to **eight**. Every discovered file still
+runs exactly once. Each file runs in its own Bun process, with `--no-orphans`:
+regrouping files exposed a stuck native-driver test that passed on its own;
+Bun's fresh-global `--isolate` mode did not reliably remove the native hang.
+Process isolation preserves all assertions and avoids contaminating later files
+with runtime/native state. A failed file does not prevent remaining files from
+running, and any nonzero child exit fails the shard. There are no retries or
+raised test timeouts.
 
-Required-lane job count drops from 22 to 14 per merge-group run (seven unit,
+Weights now measure complete per-file subprocess wall time, including cold
+imports, setup and teardown, not only the sum of test bodies. The scheduler logs
+`Completed <file> in <seconds>s` so these can be refreshed without API polling.
+New files still receive a conservative 1s estimate, and the coverage guard checks
+disjoint, exhaustive assignment.
+
+### Measurement and sizing
+
+A disposable Ubuntu 24.04 container supplied ordinary Git/gh/sudo/Node/Python,
+with no host HOME or credential environment and networking disabled. This avoids
+sandbox launchers injecting live credentials into offline process-boundary tests.
+Each container had two CPUs and 4 GiB; at most two containers ran concurrently.
+All 352 files passed with process isolation. Seven baseline shard walls were
+61, 63, 66, 68, 66, 57 and 52 seconds. Measured per-file walls totalled **433.923s**.
+
+Refreshed longest-processing-time assignment estimates:
+
+| Shards | Slowest test-process load | With 30s runner/setup/SQL allowance |
+| --- | --- | --- |
+| 6 | 72.323s | 102.323s |
+| 7 | 61.991s | 91.991s |
+| **8** | **54.243s** | **84.243s** |
+| 9 | 48.216s | 78.216s |
+
+Eight is the smallest count with headroom under ~90s using that allowance.
+This is sizing evidence, not a claim of measured GitHub PR/merge-group latency.
+The 120s guard still counts queue/setup and the verification aggregate.
+
+### Required names and capacity
+
+Required-lane job count drops from **22 to 15** per merge-group run (eight unit,
 static, migration/classification, three binaries, PostgreSQL conformance and
 verification). A recipe-affected PR adds one informational Docker job; main adds
-that job and the Intel binary. No echo-only marker job is retained.
+that job and the Intel binary. Lint and typecheck already share one runner. No
+marker-only Golden OS or budget job remains; the ruleset changes above are needed.
 
-The organisation API available to the delivery agent returns `plan: null`, not an
-Actions concurrency limit. An administrator must confirm that limit; do not infer
-it from paid minutes or assume the public Free/Team default. With limit `L` and
-`R` slots reserved for PRs/other workflows, a conservative queue cap is
-`floor((L - R) / 14)`. Keep the coordinator's temporary queue cap of two until
-that capacity is confirmed. Browser measurement jobs in the stacked PRs also
-consume this shared pool; a smaller unit matrix alone cannot guarantee headroom.
+The organisation API available to this delivery agent returns `plan: null`, not
+an Actions concurrency limit. An administrator must confirm the actual limit;
+do not infer it from paid minutes or assume a public Free/Team default. With
+limit `L` and `R` slots reserved for PRs/browser/other workflows, a conservative
+queue cap is `floor((L - R) / 15)`. The coordinator's temporary cap of two is not
+proven safe without that capacity information. Browser measurement jobs in the
+stacked PRs also consume the shared pool; do not promote the browser gate before
+both capacity and full PR/merge-group timings are verified.
 
-Local serial baseline on merged main: 352 discovered files, 369.99s wall,
-370.306s summed JUnit suite times (the latter includes overlapping suite bookkeeping).
-Six dashboard files hit an incomplete local Next installation and were revalidated
-after restoring that installation from Bun's existing cache: all 448 dashboard
-tests passed. Those unmeasured files retain the planner's conservative 1s default.
-With refreshed weights, seven LPT shards estimate 53.75–53.76s each. Six shards
-would need at least 62.7s of tests; allowing 30s for runner/setup/SQL leaves no
-90s headroom. Seven is the smallest count under that allowance (about 84s).
-This is a sizing estimate, not a claim of observed GitHub runner timing; the live
-120s guard remains authoritative for PR/merge-group admission.
-
-Fresh local shard validation (up to three processes on a four-CPU sandbox): all
-seven pass; observed test-process walls were 56.70s, 36.71s, 59.59s, 70.08s,
-56.71s, 58.53s and 40.81s. Shard two's first attempt reproduced the known
-managed-REST broker test timeout at 5000ms. Its original cases now run in three
-separate contract groups (canonical requests, endpoint denial, prefix denial),
-with unchanged assertions and timeout, no retries. The repaired shard passed;
-this is a code correction, not a retry-based flake policy. These local test walls
-exclude GitHub service/setup/runner queue time and are not a two-minute CI claim.
+Final eight-shard validation repeated all **352 files exactly once**, with all
+child exits successful. Test-process walls were **45, 52, 48, 47, 49, 52, 67 and
+68 seconds** under the same container limits. These are not GitHub job walls:
+setup/service initialization, queue allocation and the final aggregate still
+need verification in the PR/merge-group runs. No 90s/120s live-CI claim is made
+from the local sizing model.

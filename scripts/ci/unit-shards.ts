@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url";
 import durations from "./test-durations.json";
 
-export const SHARD_COUNT = 7;
+export const SHARD_COUNT = 8;
 const root = fileURLToPath(new URL("../../", import.meta.url));
 
 // Bun's default discovery names; explicit ./ paths below are exact files, not filters.
@@ -58,12 +58,21 @@ if (import.meta.main) {
     const index = Number(process.argv[2]);
     if (!Number.isInteger(index) || index < 1 || index > SHARD_COUNT)
       throw new Error(`Expected shard 1..${SHARD_COUNT} or --check`);
-    const child = Bun.spawn([process.execPath, "test", ...shards[index - 1]!.map((path) => `./${path}`)], {
-      cwd: root,
-      stdin: "inherit",
-      stdout: "inherit",
-      stderr: "inherit",
-    });
-    process.exit(await child.exited);
+    let failed = false;
+    // Each file owns its runtime and native handles; larger shards must not reuse
+    // process-global driver state or leave test workers behind after cancellation.
+    for (const path of shards[index - 1]!) {
+      const started = performance.now();
+      const child = Bun.spawn([process.execPath, "test", "--no-orphans", `./${path}`], {
+        cwd: root,
+        stdin: "inherit",
+        stdout: "inherit",
+        stderr: "inherit",
+      });
+      const code = await child.exited;
+      if (code !== 0) failed = true;
+      console.log(`Completed ${path} in ${((performance.now() - started) / 1000).toFixed(3)}s`);
+    }
+    process.exit(failed ? 1 : 0);
   }
 }

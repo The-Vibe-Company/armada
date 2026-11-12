@@ -46,7 +46,7 @@ jobs:
               changed=true
             fi
             golden=false
-            if grep -Eq '^(packages/(agent-runtime/(src/|package\.json$)|provider-modal/src/|core/src/|core/test/golden-os\.test\.ts$|mcp-server/src/github-boat\.ts$|mcp-server/test/github-boat-os\.test\.ts$|provider-modal/test/ssh-os\.test\.ts$)|scripts/(prepare-runtime\.ts$|golden-os-image\.ts$|fixtures/golden-os/)|bun.lock$|package.json$|tsconfig[^/]*$|\.github/(actions/|workflows/ci\.yml$))' /tmp/changed-paths; then
+            if grep -Eq '^(packages/(agent-runtime/(src/|package\.json$)|provider-modal/(src/|package\.json$)|core/(src/|package\.json$)|core/test/golden-os\.test\.ts$|mcp-server/src/github-boat\.ts$|mcp-server/test/github-boat-os\.test\.ts$|provider-modal/test/ssh-os\.test\.ts$)|scripts/(prepare-runtime\.ts$|golden-os-image\.ts$|fixtures/golden-os/)|bun.lock$|package.json$|tsconfig[^/]*$|\.github/(actions/|workflows/ci\.yml$))' /tmp/changed-paths; then
               golden=true
             fi
             printf 'golden=%s\nbinary=%s\n' "$golden" "$changed" >> "$GITHUB_OUTPUT"
@@ -96,11 +96,11 @@ jobs:
         run: bun scripts/ci/unit-shards.ts --check
 
   unit-tests:
-    name: Unit tests (${{ matrix.shard }}/7)
+    name: Unit tests (${{ matrix.shard }}/8)
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     services:
