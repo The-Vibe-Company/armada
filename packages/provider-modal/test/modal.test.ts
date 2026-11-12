@@ -13,6 +13,9 @@ import {
 import { type Image, ModalClient, type Sandbox } from "modal";
 import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import { type Driver, Journal, Runner } from "../../agent-runtime/src/index.ts";
+import { createMemoryAuthStore } from "../../auth/src/index.ts";
+import { sandboxFailure } from "../../cli/src/sandbox-errors.ts";
+import { type ControlOptions, handleControlRequest } from "../../mcp-server/src/control.ts";
 import { createManagedParentMcp } from "../../mcp-server/src/mcp-managed-parent.ts";
 import { createManagedOrchestratorRuntime } from "../../mcp-server/src/orchestrator-managed-runtime.ts";
 import { createModalOrchestratorNativeAdapter } from "../../mcp-server/src/orchestrator-modal-native.ts";
@@ -2012,6 +2015,23 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     const merged = mergeModalResourceReceipts([receipt, ...persisted]);
     expect(merged.find((x) => x.sandboxId === builder.id)?.snapshotImages).toEqual(receipt.snapshotImages);
   });
+  test.each([true, false])("prompt performs one final health probe after preparation (healthy=%s)", async (healthy) => {
+    let prepared = false;
+    const f = fixture(scope, db, async () => {
+      prepared = true;
+    });
+    const row = await runningFork(f);
+    f.log.length = 0;
+    f.onRpc(async (machine, op) =>
+      op === "health" ? { generation: String(machine.generation), ready: healthy || !prepared } : undefined,
+    );
+    const send = f.provider.prompt({ sandboxId: row.id, harness: "codex", text: "prepared work" });
+    if (healthy) await send;
+    else await expect(send).rejects.toMatchObject({ code: "sandbox_not_ready" });
+    expect(prepared).toBe(true);
+    expect(f.log.filter((op) => op === "health")).toHaveLength(1);
+    expect(f.log.filter((op) => op === "prompt")).toHaveLength(healthy ? 1 : 0);
+  });
   test("beforePrompt sees ready first/restored generation outside the lease, configures before native submission, and supports parallel stable turns", async () => {
     const observed: string[] = [];
     const hydrated: { generation: number; variables: unknown }[] = [];
@@ -3385,4 +3405,125 @@ test("orchestrator stop seals the final acknowledged checkpoint watermark, not i
   expect(receipt).toMatchObject({ state: "stopped", eventWatermark: 1, acknowledgedSequence: 1 });
   expect(await f.provider.readOrchestratorCheckpoint(request)).toEqual(receipt);
   expect((await f.provider.get(parent.id)).state).toBe("stopped");
+});
+
+test("unscoped Modal steer preserves no_running_turn and 409 at the control boundary", async () => {
+  const f = fixture();
+  const row = await runningFork(f);
+
+  const journal = new Journal(":memory:", (s) => s);
+  const driver: Driver = {
+    start() {
+      throw new Error("No turn should be started by steer");
+    },
+    async close() {},
+  };
+  const runner = new Runner(
+    journal,
+    {
+      token: "fixture-steer-runner-grant",
+      sandboxId: row.id,
+      generation: "1",
+      expiresAt: Date.now() + 60000,
+    },
+    { claude: driver, codex: driver },
+    {
+      async append() {
+        return { acknowledgedSequence: 0 };
+      },
+    },
+  );
+  const transport = createRunnerTransport(
+    async () => ({
+      url: "https://runner.test",
+      connectToken: "connect",
+      grant: "fixture-steer-runner-grant",
+      expiresAt: Date.now() + 60000,
+    }),
+    (async (url, init) => runner.handle(new Request(String(url), init))) as typeof fetch,
+  );
+  f.onRpc(async (machine, op, input) => {
+    if (op === "steer") return transport.call(machine, op, input);
+  });
+  const authStore = createMemoryAuthStore();
+  authStore.addMembership(scope.userId, { orgId: scope.orgId, name: "modal", role: "admin" });
+  const record = {
+    id: row.id,
+    provider: "modal",
+    providerSandboxId: row.id,
+    orgId: scope.orgId,
+    ownerId: scope.userId,
+    harness: "claude",
+    credentialId: "bound",
+    status: "ready",
+    conversationIds: [],
+  };
+  const options = {
+    authStore,
+    supabase: {
+      supabaseUrl: "https://supabase.test",
+      anonKey: "anon",
+      fetch: async () => Response.json({ id: scope.userId }),
+    },
+    store: createSqlVaultStore(db),
+    encryptionKey: Buffer.alloc(32, 5).toString("base64"),
+    data: () => ({ sandboxes: { get: async () => record, update: async () => {} } }),
+    providers: { resolve: async () => f.provider },
+  } as unknown as ControlOptions;
+  const response = await handleControlRequest(
+    new Request("https://armada.test/api/v1/sandbox/steer", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: scope.userId })).replace(/=+$/, "")}.sig`,
+      },
+      body: JSON.stringify({ id: row.id, text: "ignore" }),
+    }),
+    options,
+  );
+  if (!response) throw new Error("Missing control response");
+  const body = (await response.json()) as { error: { code: string; message: string } };
+  expect(body).toMatchObject({ error: { code: "no_running_turn" } });
+  expect(response.status).toBe(409);
+  expect(sandboxFailure("/api/v1/sandbox/steer", response.status, body.error.code, body.error.message)).toMatchObject({
+    code: "no_running_turn",
+    exitCode: 1,
+  });
+  expect((await f.store.get(row.id)).phase).toBe("active");
+  expect(await f.provider.prompt({ sandboxId: row.id, harness: "claude", text: "continue" })).toHaveProperty(
+    "promptId",
+  );
+  journal.close();
+});
+
+test("Modal lifecycle refusals do not resume stopped steer or admit send during transitions", async () => {
+  const f = fixture();
+  const row = await runningFork(f);
+
+  const active = await f.store.get(row.id);
+  for (const phase of ["booting", "terminate"] as const) {
+    await f.store.lease(row.id, async (machine, save) => {
+      await save({
+        ...machine,
+        phase,
+        info: { ...machine.info, state: phase === "booting" ? "starting" : "stopping" },
+      });
+    });
+    await expect(f.provider.prompt({ sandboxId: row.id, harness: "claude", text: "not yet" })).rejects.toMatchObject({
+      code: "sandbox_not_ready",
+    });
+  }
+  await f.store.lease(row.id, async (_machine, save) => {
+    await save(active);
+  });
+  await f.provider.stop({ sandboxId: row.id });
+  const creates = f.creates;
+  await expect(f.provider.steer({ sandboxId: row.id, text: "ignore" })).rejects.toMatchObject({
+    code: "sandbox_not_ready",
+  });
+  if (!f.provider.extendLifetime) throw new Error("Modal must support lifetime extension");
+  await expect(f.provider.extendLifetime({ sandboxId: row.id, ttlSeconds: 60 })).rejects.toMatchObject({
+    code: "sandbox_not_ready",
+  });
+  expect(f.creates).toBe(creates);
+  expect((await f.store.get(row.id)).phase).toBe("stopped");
 });

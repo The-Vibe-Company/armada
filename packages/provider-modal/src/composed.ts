@@ -36,7 +36,15 @@ export interface ResolvedModalManagementCredentials extends ModalManagementProve
 export interface ComposedModalOptions
   extends Pick<
     ModalProviderOptions,
-    "scope" | "appName" | "client" | "tokenId" | "tokenSecret" | "managementAuthority" | "beforeResume" | "beforePrompt"
+    | "scope"
+    | "appName"
+    | "client"
+    | "tokenId"
+    | "tokenSecret"
+    | "managementAuthority"
+    | "beforeResume"
+    | "beforePrompt"
+    | "measure"
   > {
   storedReads?: boolean;
   /** Immutable golden visibility/binding, with userId set to the authenticated caller. */

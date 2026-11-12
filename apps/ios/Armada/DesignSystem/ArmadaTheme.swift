@@ -20,7 +20,8 @@ enum ArmadaTheme {
     static let primaryCTA = adaptive(light: 0x0B0B0F, dark: 0xFFFFFF)
     static let primaryCTAText = adaptive(light: 0xFFFFFF, dark: 0x000000)
     static let actionBlue = color(0x007AFF)
-    static let linkBlue = adaptive(light: 0x007AFF, dark: 0x0A84FF)
+    // Small inline links need 4.5:1 against the pale assistant bubble as well as white.
+    static let linkBlue = adaptive(light: 0x0066CC, dark: 0x0A84FF)
     static let userBubbleLink = adaptive(light: 0x0A84FF, dark: 0x007AFF)
     static let live = color(0x34C759)
     static let danger = color(0xFF3B30)
