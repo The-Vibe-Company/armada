@@ -3445,10 +3445,11 @@ test("unscoped Modal steer preserves no_running_turn and 409 at the control boun
     }),
     options,
   );
-  const body = await response!.json();
+  if (!response) throw new Error("Missing control response");
+  const body = await response.json();
   expect(body).toMatchObject({ error: { code: "no_running_turn" } });
-  expect(response!.status).toBe(409);
-  expect(sandboxFailure("/api/v1/sandbox/steer", response!.status, body.error.code, body.error.message)).toMatchObject({
+  expect(response.status).toBe(409);
+  expect(sandboxFailure("/api/v1/sandbox/steer", response.status, body.error.code, body.error.message)).toMatchObject({
     code: "no_running_turn",
     exitCode: 1,
   });
@@ -3456,4 +3457,16 @@ test("unscoped Modal steer preserves no_running_turn and 409 at the control boun
   expect(await f.provider.prompt({ sandboxId: row.id, harness: "claude", text: "continue" })).toHaveProperty(
     "promptId",
   );
+});
+
+test("stopped Modal steer refuses without resuming compute", async () => {
+  const f = fixture();
+  const row = await runningFork(f);
+  await f.provider.stop({ sandboxId: row.id });
+  const creates = f.creates;
+  await expect(f.provider.steer({ sandboxId: row.id, text: "ignore" })).rejects.toMatchObject({
+    code: "sandbox_not_ready",
+  });
+  expect(f.creates).toBe(creates);
+  expect((await f.store.get(row.id)).phase).toBe("stopped");
 });
