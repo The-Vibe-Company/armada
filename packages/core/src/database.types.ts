@@ -2729,6 +2729,91 @@ export type Database = {
         };
         Relationships: [];
       };
+      otto_facts: {
+        Row: {
+          id: string;
+          org_id: string;
+          repository: string;
+          subject: string;
+          kind: string;
+          value: string;
+          observed_at: string;
+          source: string;
+          source_id: string;
+          completeness: string;
+          evidence: Json;
+        };
+        Insert: {
+          id?: string;
+          org_id: string;
+          repository: string;
+          subject: string;
+          kind: string;
+          value: string;
+          observed_at?: string;
+          source: string;
+          source_id: string;
+          completeness: string;
+          evidence: Json;
+        };
+        Update: {
+          id?: string;
+          org_id?: string;
+          repository?: string;
+          subject?: string;
+          kind?: string;
+          value?: string;
+          observed_at?: string;
+          source?: string;
+          source_id?: string;
+          completeness?: string;
+          evidence?: Json;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "otto_facts_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      otto_github_pages: {
+        Row: {
+          org_id: string;
+          repository: string;
+          path: string;
+          etag: string | null;
+          items: Json;
+          next_path: string | null;
+        };
+        Insert: {
+          org_id: string;
+          repository: string;
+          path: string;
+          etag?: string | null;
+          items: Json;
+          next_path?: string | null;
+        };
+        Update: {
+          org_id?: string;
+          repository?: string;
+          path?: string;
+          etag?: string | null;
+          items?: Json;
+          next_path?: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "otto_github_pages_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       personal_skill_defaults: {
         Row: {
           user_id: string;
@@ -3665,6 +3750,8 @@ export type OrchestratorIdentityRow = Database["public"]["Tables"]["orchestrator
 export type OrgSkillDefaultsRow = Database["public"]["Tables"]["org_skill_defaults"]["Row"];
 export type OrganizationInvitationRow = Database["public"]["Tables"]["organization_invitations"]["Row"];
 export type Org = Database["public"]["Tables"]["orgs"]["Row"];
+export type OttoFactRow = Database["public"]["Tables"]["otto_facts"]["Row"];
+export type OttoGitHubPageRow = Database["public"]["Tables"]["otto_github_pages"]["Row"];
 export type PersonalSkillDefaultsRow = Database["public"]["Tables"]["personal_skill_defaults"]["Row"];
 export type ReadableVariableRow = Database["public"]["Tables"]["readable_variables"]["Row"];
 export type ResourceObservation = Database["public"]["Tables"]["resource_observations"]["Row"];
