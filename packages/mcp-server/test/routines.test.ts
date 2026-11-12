@@ -255,3 +255,61 @@ test("routine lifecycle enables, pauses and preserves accessible history after d
     await f.db.close();
   }
 });
+
+test("cron API validates schedules, previews three instants from the database clock and enables the next calendar slot", async () => {
+  const f = await fixture();
+  try {
+    const templateId = await f.template();
+    const { intervalHours: _, ...config } = f.config(templateId);
+    const item = (
+      await f.command("create", { ...config, scope: "personal", cron: "0 9 * * MON-FRI", timezone: "Europe/Paris" })
+    ).item as Routine;
+    expect(item).toMatchObject({
+      cron: "0 9 * * MON-FRI",
+      timezone: "Europe/Paris",
+      intervalHours: null,
+      status: "paused",
+      nextDueAt: null,
+    });
+    expect(item.scheduleDescription).toContain("09:00");
+    const legacy = (await f.command("create", { ...config, scope: "personal", intervalHours: 7 })).item as Routine;
+    expect(legacy).toMatchObject({ cron: null, timezone: "UTC", intervalHours: 7, status: "paused" });
+    expect(legacy.scheduleDescription).toContain("legacy UTC timing");
+    const legacyUpdated = (
+      await f.command("update", { ...config, intervalHours: 25, id: legacy.id, expectedVersion: 1 })
+    ).item as Routine;
+    expect(legacyUpdated).toMatchObject({ cron: null, intervalHours: 25, version: 2 });
+    const preview = await f.command("preview", { cron: item.cron, timezone: item.timezone });
+    const dates = preview.nextRuns as string[];
+    expect(dates).toHaveLength(3);
+    expect(dates.every((date, index) => date > (index ? dates[index - 1]! : (preview.asOf as string)))).toBe(true);
+    for (const date of dates) {
+      const local = new Intl.DateTimeFormat("en-GB", {
+        timeZone: "Europe/Paris",
+        hour: "2-digit",
+        minute: "2-digit",
+        weekday: "short",
+      }).format(new Date(date));
+      expect(local).toMatch(/^(Mon|Tue|Wed|Thu|Fri).*09:00$/);
+    }
+    const enabled = (await f.command("enable", { id: item.id, expectedVersion: 1 })).item as Routine;
+    expect(new Date(enabled.nextDueAt!).toISOString()).toBe(dates[0]!);
+    for (const invalid of [
+      { cron: "*/30 * * * *", timezone: "UTC" },
+      { cron: "0 9 * * *", timezone: "Moon/Base" },
+      { cron: "0 9 * * *", timezone: "UTC", intervalHours: 24 },
+      { cron: "0 9 * * *" },
+    ]) {
+      await expect(f.command("create", { ...config, scope: "personal", ...invalid })).rejects.toMatchObject({
+        code: "invalid",
+      });
+    }
+    const updated = (
+      await f.command("update", { ...config, id: item.id, expectedVersion: 2, cron: "30 10 * * *", timezone: "UTC" })
+    ).item as Routine;
+    expect(updated).toMatchObject({ cron: "30 10 * * *", timezone: "UTC", version: 3, status: "enabled" });
+    expect(new Date(updated.nextDueAt!).getUTCMinutes()).toBe(30);
+  } finally {
+    await f.db.close();
+  }
+});

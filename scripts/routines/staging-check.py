@@ -22,6 +22,7 @@ REASONS = {
     "owner_authorization_changed": "Execution owner access changed.",
     "launch_failed": "Template launch failed; check owner credentials and references.",
     "launch_uncertain": "Launch outcome uncertain; do not create a replacement claim.",
+    "schedule_unavailable": "Schedule unavailable; inspect cron and time zone.",
 }
 DEFINITION_KEYS = {"goldenId", "provider", "harness", "model", "reasoningEffort", "modelAccount",
                    "connections", "variables", "skills"}
@@ -219,7 +220,7 @@ class Scenario:
             raise CheckFailure("Expected a new template with only immutable revision 1.")
         self.routine_attempted = True
         routine = self.api.call("routines/create", name=self.name, scope="personal", templateId=self.template_id,
-                                templateRevision=1, prompt=self.prompt, intervalHours=1, ttlSeconds=900,
+                                templateRevision=1, prompt=self.prompt, cron="0 * * * *", timezone="UTC", ttlSeconds=900,
                                 maxRunsPerDay=2)["item"]
         self.routine_id = identifier(routine["id"])
         print("Temporary template " + self.template_id + "; routine " + self.routine_id, flush=True)
@@ -228,10 +229,11 @@ class Scenario:
                                 expectedVersion=positive(routine["version"]))["item"]
         version = positive(enabled.get("version"))
         if (enabled.get("status") != "enabled" or enabled.get("templateId") != self.template_id
-                or enabled.get("templateRevision") != 1 or enabled.get("intervalHours") != 1
+                or enabled.get("templateRevision") != 1 or enabled.get("cron") != "0 * * * *"
+                or enabled.get("timezone") != "UTC"
                 or enabled.get("prompt") != self.prompt or not enabled.get("nextDueAt")):
             raise CheckFailure("Enabled routine lost its exact pinned configuration.")
-        print("Enabled a one-hour Codex routine on %s; first firing is not immediate." % source["provider"], flush=True)
+        print("Enabled hourly UTC Codex cron on %s; first firing is at the next calendar hour." % source["provider"], flush=True)
         first_end, first = enabled_at + HOUR + 600, None
         while time.monotonic() < first_end:
             history = self.history()

@@ -11,7 +11,7 @@ import { Button } from "@/components/ui/button";
 import { listSelectedRoutines } from "@/lib/data/routines";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { viewerTemplates } from "@/lib/data/templates";
-import { canManageRoutine, intervalLabel, type RoutineItem } from "@/lib/routines";
+import { canManageRoutine, type RoutineItem, scheduleLabel } from "@/lib/routines";
 import type { TemplateHeader } from "@/lib/templates";
 
 export const metadata: Metadata = { title: "Routines" };
@@ -77,7 +77,7 @@ export default async function RoutinesPage({
             {template?.name ?? "Unavailable template"} · revision {item.templateRevision}
           </div>
           <div className="mt-0.5 truncate @3xl:hidden">
-            {intervalLabel(item.intervalHours)} · {dueLabel(item)}
+            {scheduleLabel(item)} · {dueLabel(item)}
           </div>
         </>
       ),
@@ -89,7 +89,7 @@ export default async function RoutinesPage({
       ),
       fact: (
         <div className="space-y-0.5">
-          <p>{intervalLabel(item.intervalHours)}</p>
+          <p>{scheduleLabel(item)}</p>
           <p className="text-xs text-muted-foreground">
             {item.nextDueAt ? "Next " : ""}
             {dueLabel(item)}
@@ -99,7 +99,7 @@ export default async function RoutinesPage({
       action: manage ? <RoutineToggle item={item} orgId={orgId} /> : undefined,
       attrs: { "data-routine": item.name },
       panelAttrs: { "data-routine-panel": item.name },
-      subtitle: `${intervalLabel(item.intervalHours)} · ${item.scope === "org" ? "Organization" : "Personal"}`,
+      subtitle: `${scheduleLabel(item)} · ${item.scope === "org" ? "Organization" : "Personal"}`,
       detail: (
         <div className="space-y-5">
           {item.pauseReason && (

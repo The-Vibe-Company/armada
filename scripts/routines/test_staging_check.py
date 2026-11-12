@@ -119,7 +119,7 @@ class CoordinatorTests(unittest.TestCase):
         create = next(b for r, b in api.calls if r == "templates/create")
         self.assertNotIn("goldenBinding", create["definition"])
         routine = next(b for r, b in api.calls if r == "routines/create")
-        self.assertEqual((routine["templateId"], routine["templateRevision"], routine["intervalHours"]), (TEMPLATE, 1, 1))
+        self.assertEqual((routine["templateId"], routine["templateRevision"], routine["cron"], routine["timezone"]), (TEMPLATE, 1, "0 * * * *", "UTC"))
         self.assertFalse(any(r in ("templates/delete", "templates/create") and b.get("id") == SOURCE for r, b in api.calls))
 
     def test_false_prompt_and_post_pause_occurrence_fail_and_clean(self):

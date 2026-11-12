@@ -2911,6 +2911,7 @@ export type Database = {
           lease_until: string | null;
           created_at: string;
           updated_at: string;
+          missed_count_capped: boolean;
         };
         Insert: {
           id?: string;
@@ -2934,6 +2935,7 @@ export type Database = {
           lease_until?: string | null;
           created_at?: string;
           updated_at?: string;
+          missed_count_capped?: boolean;
         };
         Update: {
           id?: string;
@@ -2957,6 +2959,7 @@ export type Database = {
           lease_until?: string | null;
           created_at?: string;
           updated_at?: string;
+          missed_count_capped?: boolean;
         };
         Relationships: [
           {
@@ -2992,7 +2995,7 @@ export type Database = {
           template_id: string;
           template_revision: number;
           prompt: string;
-          interval_hours: number;
+          interval_hours: number | null;
           max_runs_per_day: number;
           ttl_seconds: number;
           status: string;
@@ -3002,6 +3005,8 @@ export type Database = {
           next_due_at: string | null;
           consecutive_failures: number;
           pause_reason: string | null;
+          cron: string | null;
+          timezone: string;
         };
         Insert: {
           id?: string;
@@ -3012,7 +3017,7 @@ export type Database = {
           template_id: string;
           template_revision: number;
           prompt: string;
-          interval_hours: number;
+          interval_hours?: number | null;
           max_runs_per_day: number;
           ttl_seconds: number;
           status?: string;
@@ -3022,6 +3027,8 @@ export type Database = {
           next_due_at?: string | null;
           consecutive_failures?: number;
           pause_reason?: string | null;
+          cron?: string | null;
+          timezone?: string;
         };
         Update: {
           id?: string;
@@ -3032,7 +3039,7 @@ export type Database = {
           template_id?: string;
           template_revision?: number;
           prompt?: string;
-          interval_hours?: number;
+          interval_hours?: number | null;
           max_runs_per_day?: number;
           ttl_seconds?: number;
           status?: string;
@@ -3042,6 +3049,8 @@ export type Database = {
           next_due_at?: string | null;
           consecutive_failures?: number;
           pause_reason?: string | null;
+          cron?: string | null;
+          timezone?: string;
         };
         Relationships: [
           {

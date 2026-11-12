@@ -236,7 +236,7 @@ describe("database", () => {
         "orgs UPDATE(boat_api_key_enc,name)",
         "personal_skill_defaults SELECT",
         "readable_variables SELECT",
-        "routine_runs SELECT(configuration_version,created_at,id,missed_intervals,org_id,owner_id,reason,request_key,routine_id,scheduled_due_at,state,task_checked_at,task_state,template_request_id,updated_at)",
+        "routine_runs SELECT(configuration_version,created_at,id,missed_count_capped,missed_intervals,org_id,owner_id,reason,request_key,routine_id,scheduled_due_at,state,task_checked_at,task_state,template_request_id,updated_at)",
         "routines SELECT",
         "sandboxes SELECT",
         "sandboxes UPDATE(conversation_ids,deleted_at,status,status_reason,stopped_at)",
