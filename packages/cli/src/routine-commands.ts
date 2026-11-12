@@ -7,27 +7,31 @@ import type { VaultIo } from "./vault-commands.ts";
 
 const HELP = `Scheduled template launches (run as the routine owner):
   armada routine create NAME --file config.json [--scope personal|org] [--org NAME|UUID] [--json]
-  armada routine create NAME --template UUID --revision N (--prompt TEXT | --prompt-file PATH) [--interval-hours N] [--ttl 1h] [--max-runs-per-day N] [--scope personal|org] [--org NAME|UUID] [--json]
+  armada routine create NAME --template UUID --revision N (--prompt TEXT | --prompt-file PATH) --cron EXPRESSION --timezone IANA_ZONE [--ttl 1h] [--max-runs-per-day N] [--scope personal|org] [--org NAME|UUID] [--json]
   armada routine list [--org NAME|UUID] [--json]
   armada routine show NAME|ID [--org NAME|UUID] [--json]
-  armada routine update NAME|ID --expected-version N --file config.json [--org NAME|UUID] [--json]
+  armada routine update NAME|ID --expected-version N (--file config.json | --cron EXPRESSION --timezone IANA_ZONE) [--org NAME|UUID] [--json]
   armada routine enable NAME|ID --expected-version N [--org NAME|UUID] [--json]
   armada routine pause NAME|ID --expected-version N [--org NAME|UUID] [--json]
   armada routine delete NAME|ID --expected-version N [--org NAME|UUID] [--json]
   armada routine runs NAME|ID [--org NAME|UUID] [--json]
 
-Create JSON contains templateId, templateRevision, prompt and optional intervalHours,
-ttlSeconds, maxRunsPerDay (defaults: 24 hours, 3600 seconds, 24 launches/day).
+Create JSON requires templateId, templateRevision, prompt, cron and timezone.
+Optional ttlSeconds and maxRunsPerDay default to 3600 seconds and 24 launches/day.
 Update JSON replaces ALL mutable configuration and requires every field above plus
-name. Create takes name from NAME. Neither file accepts org, owner or scope.
+name. Inline update changes only the schedule, retaining current mutable fields;
+--expected-version still guards that complete replacement. Create takes name from
+NAME. Neither file accepts org, owner, scope or intervalHours.
 With --org, create requires explicit --scope personal|org; otherwise scope defaults
 to personal in the organization selected by armada org use. Names must be exact
 and unambiguous. Use the ID for history of deleted routines.
 --prompt-file reads UTF-8 bytes without trimming; use - for piped stdin. Prompts are
-readable configuration, not a place for secrets. The minimum interval is ONE HOUR
-(integer 1–720); TTL is 5 minutes–24 hours; daily cap is 1–24 admitted launches.
+readable configuration, not a place for secrets. Quote the standard five-field cron
+expression and choose an IANA time zone (for example Europe/Paris or UTC).
+Runs must remain at least ONE HOUR apart, including DST transitions.
+TTL is 5 minutes–24 hours; daily cap is 1–24 admitted launches.
 New routines are paused. Enable schedules the next occurrence, not an immediate manual launch.
-Updating an enabled routine restarts its interval. Copy version from show/list;
+Updating an enabled routine selects the next matching cron occurrence. Copy version from show/list;
 conflicts are not retried. Pause/delete stop new admissions, not already admitted runs.
 Runs shows the latest 100 decisions, including readable skip/failure reasons and
 original-prompt outcomes. Launch success is not task success; unknown is not success.
@@ -43,13 +47,14 @@ const ROUTES = {
   runs: "history",
 } as const;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const CONFIG = ["name", "templateId", "templateRevision", "prompt", "intervalHours", "ttlSeconds", "maxRunsPerDay"];
+const CONFIG = ["name", "templateId", "templateRevision", "prompt", "cron", "timezone", "ttlSeconds", "maxRunsPerDay"];
 const INLINE = [
   "--template",
   "--revision",
   "--prompt",
   "--prompt-file",
-  "--interval-hours",
+  "--cron",
+  "--timezone",
   "--max-runs-per-day",
   "--ttl",
 ];
@@ -69,7 +74,7 @@ export async function routineCommand(argv: readonly string[], io: VaultIo): Prom
     "--json",
     ...(versioned ? ["--expected-version"] : []),
     ...(action === "create" ? ["--scope", "--file", ...INLINE] : []),
-    ...(action === "update" ? ["--file"] : []),
+    ...(action === "update" ? ["--file", "--cron", "--timezone"] : []),
   ]);
   for (const key of args.options.keys()) {
     if (!allowed.has(key)) throw invalid();
@@ -77,6 +82,7 @@ export async function routineCommand(argv: readonly string[], io: VaultIo): Prom
   }
   if (args.positionals.length !== (action === "list" ? 0 : 1)) throw invalid();
   const body: Record<string, unknown> = {};
+  let scheduleUpdate: { cron: string; timezone: string } | undefined;
   if (versioned) body.expectedVersion = number(single(args, "--expected-version"), 1, 2147483647);
   const org = single(args, "--org");
   if (action === "create") {
@@ -108,28 +114,32 @@ export async function routineCommand(argv: readonly string[], io: VaultIo): Prom
       }
       if (action === "create") config.name = body.name;
     } else {
-      if (action === "update") throw invalid("Update requires --file with the complete mutable configuration.");
-      config = {
-        name: body.name,
-        templateId: single(args, "--template"),
-        templateRevision: number(single(args, "--revision"), 1, 2147483647),
-      };
-      const prompt = single(args, "--prompt"),
-        path = single(args, "--prompt-file");
-      if ((prompt === undefined) === (path === undefined))
-        throw invalid("Provide exactly one of --prompt or --prompt-file.");
-      try {
-        config.prompt = path === undefined ? prompt : await (path === "-" ? io.readStdin() : io.readFile(path));
-      } catch {
-        throw invalid("Could not read the routine prompt from --prompt-file.");
+      if (action === "update") {
+        scheduleUpdate = schedule(single(args, "--cron"), single(args, "--timezone"));
+        config = {};
+      } else {
+        config = {
+          name: body.name,
+          templateId: single(args, "--template"),
+          templateRevision: number(single(args, "--revision"), 1, 2147483647),
+        };
+        const prompt = single(args, "--prompt"),
+          path = single(args, "--prompt-file");
+        if ((prompt === undefined) === (path === undefined))
+          throw invalid("Provide exactly one of --prompt or --prompt-file.");
+        try {
+          config.prompt = path === undefined ? prompt : await (path === "-" ? io.readStdin() : io.readFile(path));
+        } catch {
+          throw invalid("Could not read the routine prompt from --prompt-file.");
+        }
+        Object.assign(config, schedule(single(args, "--cron"), single(args, "--timezone")));
+        if (args.options.has("--max-runs-per-day"))
+          config.maxRunsPerDay = number(single(args, "--max-runs-per-day"), 1, 24);
+        const ttl = single(args, "--ttl");
+        if (ttl !== undefined) config.ttlSeconds = parseTtl(ttl);
       }
-      if (args.options.has("--interval-hours")) config.intervalHours = number(single(args, "--interval-hours"), 1, 720);
-      if (args.options.has("--max-runs-per-day"))
-        config.maxRunsPerDay = number(single(args, "--max-runs-per-day"), 1, 24);
-      const ttl = single(args, "--ttl");
-      if (ttl !== undefined) config.ttlSeconds = parseTtl(ttl);
     }
-    validate(config, action === "update");
+    if (!scheduleUpdate) validate(config, action === "update");
     Object.assign(body, config);
   }
   const selected = org ?? (await io.auth.preferences?.read(armadaApiUrl(io.auth.env.ARMADA_URL)));
@@ -152,6 +162,20 @@ export async function routineCommand(argv: readonly string[], io: VaultIo): Prom
       body.id = matches[0].id;
     }
   }
+  if (scheduleUpdate) {
+    const { item } = await control<{ item: Routine }>(io.auth, "routines/get", { org: body.org, id: body.id });
+    const config = {
+      name: item.name,
+      templateId: item.templateId,
+      templateRevision: item.templateRevision,
+      prompt: item.prompt,
+      ttlSeconds: item.ttlSeconds,
+      maxRunsPerDay: item.maxRunsPerDay,
+      ...scheduleUpdate,
+    };
+    validate(config, true);
+    Object.assign(body, config);
+  }
   const route = ROUTES[action as keyof typeof ROUTES];
   const result = await control<Record<string, unknown>>(io.auth, `routines/${route}`, body);
   if (flag(args, "--json")) io.auth.out(`${JSON.stringify(result)}\n`);
@@ -170,7 +194,7 @@ export async function routineCommand(argv: readonly string[], io: VaultIo): Prom
     io.auth.out(`${format(item)}\n`);
     if (action === "show")
       io.auth.out(
-        `Template: ${item.templateId} revision ${item.templateRevision}\n${item.scheduleDescription ? `Schedule: ${item.scheduleDescription}` : `Interval: ${item.intervalHours}h`}  TTL: ${item.ttlSeconds}s  Daily cap: ${item.maxRunsPerDay}\nNext due: ${item.nextDueAt ?? "none"}  Consecutive failures: ${item.consecutiveFailures}\nPause reason: ${routineReasonHelp(item.pauseReason) ?? "none"}\nPrompt:\n${item.prompt}\n`,
+        `Template: ${item.templateId} revision ${item.templateRevision}\n${item.cron ? `Cron: ${item.cron}  Time zone: ${item.timezone}\n` : ""}TTL: ${item.ttlSeconds}s  Daily cap: ${item.maxRunsPerDay}\nConsecutive failures: ${item.consecutiveFailures}\nPause reason: ${routineReasonHelp(item.pauseReason) ?? "none"}\nPrompt:\n${item.prompt}\n`,
       );
     if (result.admittedRunsMayFinish)
       io.auth.err("Already admitted runs may still finish; running sandboxes were not stopped.\n");
@@ -180,7 +204,7 @@ export async function routineCommand(argv: readonly string[], io: VaultIo): Prom
 function number(value: unknown, min: number, max: number): number {
   const parsed = typeof value === "string" && /^[1-9]\d*$/.test(value) ? Number(value) : value;
   if (typeof parsed !== "number" || !Number.isSafeInteger(parsed) || parsed < min || parsed > max)
-    throw invalid("Routine intervals, limits and versions must be integers within the documented bounds.");
+    throw invalid("Routine limits, revisions and versions must be integers within the documented bounds.");
   return parsed;
 }
 function validate(config: Record<string, unknown>, full: boolean) {
@@ -202,8 +226,8 @@ function validate(config: Record<string, unknown>, full: boolean) {
     config.prompt.includes("\0")
   )
     throw invalid();
+  schedule(config.cron, config.timezone);
   for (const [key, min, max] of [
-    ["intervalHours", 1, 720],
     ["ttlSeconds", 300, 86400],
     ["maxRunsPerDay", 1, 24],
   ] as const) {
@@ -213,6 +237,27 @@ function validate(config: Record<string, unknown>, full: boolean) {
     }
   }
 }
+function schedule(cron: unknown, timezone: unknown): { cron: string; timezone: string } {
+  if (
+    typeof cron !== "string" ||
+    !cron.trim() ||
+    cron.length > 200 ||
+    cron.includes("\0") ||
+    typeof timezone !== "string" ||
+    !timezone.trim() ||
+    timezone.length > 100 ||
+    timezone.includes("\0")
+  )
+    throw invalid("Provide both --cron and --timezone, or cron and timezone in configuration JSON.");
+  // The API is the only cron/calendar validator; the CLI never imports a server parser.
+  return { cron, timezone };
+}
 function format(item: Routine): string {
-  return `${item.id}  ${item.name}  ${item.scope}  ${item.status}  version ${item.version}`;
+  const words =
+    item.scheduleDescription ??
+    (item.intervalHours !== null && item.intervalHours !== undefined
+      ? `Every ${item.intervalHours} hours (legacy UTC interval)`
+      : `${item.cron ?? "Schedule unavailable"} (${item.timezone ?? "UTC"})`);
+  const next = item.status === "enabled" ? (item.nextDueAt ?? "not scheduled") : `none (${item.status})`;
+  return `${item.id}  ${item.name}  ${item.scope}  ${item.status}  version ${item.version}  ${words}  Next: ${next}`;
 }
