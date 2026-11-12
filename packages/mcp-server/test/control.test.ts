@@ -43,6 +43,8 @@ for (const failure of [
   "provider_unavailable",
   "dependency_unavailable",
   "outcome_unknown",
+  "rate_limited",
+  "payment_required",
 ] as const) {
   test(`launch HTTP separates ${failure} without parsing diagnostic text`, async () => {
     await withServer(async ({ db, options }) => {
@@ -70,7 +72,8 @@ for (const failure of [
       boat.provider.fork = async () => {
         throw new ProviderError({
           provider: "boat",
-          code: "unavailable",
+          code: failure === "rate_limited" || failure === "payment_required" ? failure : "unavailable",
+          ...(failure === "rate_limited" ? { status: 429 } : {}),
           message: "credential_refused expired revoked (not a classification input)",
           retryable: true,
           ...(failure === "provider_unavailable" ? { status: 503 } : {}),
@@ -102,7 +105,15 @@ for (const failure of [
         },
       );
       expect(response?.status).toBe(
-        failure === "credential_refused" ? 422 : failure === "provider_unavailable" ? 502 : 503,
+        failure === "credential_refused"
+          ? 422
+          : failure === "provider_unavailable"
+            ? 502
+            : failure === "rate_limited"
+              ? 429
+              : failure === "payment_required"
+                ? 402
+                : 503,
       );
       expect(await response?.json()).toMatchObject({ error: { code: failure } });
       expect((await db.query("select id from sandboxes")).rows).toEqual([]);
