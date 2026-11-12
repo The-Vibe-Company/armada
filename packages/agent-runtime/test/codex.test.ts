@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { type AgentEvent, type Provider, promptOutcome } from "@armada/core";
 import { CodexDriver, type DriverEvent, type Turn } from "../src/index.ts";
 
 const nativeTest = process.platform === "linux" ? test : test.skip;
@@ -331,6 +332,119 @@ nativeTest.each([true, false])(
       await next.partial;
       await next.turn.interrupt();
       expect(await next.turn.done).toBe("interrupted");
+    } finally {
+      await driver.close();
+    }
+  },
+);
+
+nativeTest("external subscription refresh completes an already-running Codex turn over private RPC", async () => {
+  const requests: boolean[] = [];
+  const events: DriverEvent[] = [];
+  const driver = new CodexDriver({
+    executable: `${import.meta.dir}/fixtures/app-server.ts`,
+    cwd: import.meta.dir,
+    env: { PATH: process.env.PATH ?? "/usr/bin:/bin", ARMADA_EXTERNAL_AUTH: "1" },
+    subscriptionAccess: async (refresh) => {
+      requests.push(refresh);
+      return {
+        accessToken: refresh ? "synthetic-refreshed-access" : "synthetic-initial-access",
+        chatgptAccountId: "synthetic-account",
+        chatgptPlanType: null,
+      };
+    },
+  });
+  try {
+    const turn = driver.start({
+      request: { sandboxId: "s", harness: "codex", text: "continue through renewal" },
+      signal: new AbortController().signal,
+      session: () => {},
+      emit: (event) => events.push(event),
+    });
+    expect(await turn.done).toBe("finished");
+    expect(requests).toEqual([false, true]);
+    expect(events).toContainEqual({
+      kind: "message",
+      text: "renewed turn completed",
+      partial: false,
+      tools: [],
+      messageId: "renewed",
+      textMode: "snapshot",
+    });
+    expect(JSON.stringify(events)).not.toContain("synthetic-refreshed-access");
+    expect(JSON.stringify(events)).not.toContain("account/chatgptAuthTokens/refresh");
+  } finally {
+    await driver.close();
+  }
+});
+
+nativeTest.each([
+  [
+    "usageLimitExceeded",
+    { primary: { usedPercent: 100, resetsAt: 1794268800 }, secondary: { usedPercent: 25, resetsAt: 1894268800 } },
+    "2026-11-10T00:00:00.000Z",
+    "updated",
+  ],
+  [
+    "rateLimitExceeded",
+    { primary: { usedPercent: 100, resetsAt: 1794268800 }, secondary: { usedPercent: 100, resetsAt: 1794270000 } },
+    "2026-11-10T00:20:00.000Z",
+    "updated",
+  ],
+  [
+    "usageLimitExceeded",
+    { primary: { usedPercent: 100, resetsAt: "private-vendor-error-body" } },
+    undefined,
+    "updated",
+  ],
+  ["usageLimitExceeded", { primary: { usedPercent: 25, resetsAt: 1794268800 } }, undefined, "updated"],
+  ["usageLimitExceeded", { primary: { usedPercent: 100, resetsAt: 1794268800 } }, "2026-11-10T00:00:00.000Z", "read"],
+  ["usageLimitExceeded", { primary: { usedPercent: 100, resetsAt: 1794268800 } }, "2026-11-10T00:20:00.000Z", "raced"],
+] as const)(
+  "native %s preserves only exhausted-window reset evidence in public outcomes (%j; reset=%s; source=%s)",
+  async (text, snapshot, resetsAt, source) => {
+    const events: DriverEvent[] = [];
+    const driver = new CodexDriver({
+      executable: `${import.meta.dir}/fixtures/app-server.ts`,
+      cwd: import.meta.dir,
+      env: {
+        PATH: process.env.PATH ?? "/usr/bin:/bin",
+        ARMADA_LIMITS: JSON.stringify({ limitId: "codex", ...snapshot }),
+        ARMADA_LIMIT_SOURCE: source,
+        ...(source !== "updated" ? { CODEX_HOME: "synthetic-codex-home" } : {}),
+      },
+    });
+    try {
+      const turn = driver.start({
+        request: { sandboxId: "s", harness: "codex", text },
+        signal: new AbortController().signal,
+        session: () => {},
+        emit: (event) => events.push(event),
+      });
+      const code = text === "rateLimitExceeded" ? "rate_limited" : "usage_limit_exceeded";
+      await expect(turn.done).rejects.toMatchObject({ code });
+      const publicEvents = events.filter(
+        (event) =>
+          event.kind !== "other" || !["account/rateLimits/updated", "account/rateLimits/read"].includes(event.type),
+      );
+      expect(JSON.stringify(publicEvents)).not.toContain("private-vendor-error-body");
+      const limit = { code, ...(resetsAt ? { resetsAt } : {}) };
+      expect(publicEvents.find((event) => event.kind === "other" && event.type === "usage_limit")).toMatchObject({
+        data: limit,
+      });
+      const outcome = await promptOutcome(
+        { id: "modal" } as Provider,
+        { sandboxId: "s", promptId: "p" },
+        {
+          state: { promptId: "p", status: "failed", done: true },
+          events: [
+            ...publicEvents.map((event, i) => ({ ...event, id: String(i), at: i, promptId: "p" }) as AgentEvent),
+            { kind: "prompt", id: "failed", at: 100, promptId: "p", text: "", status: "failed", reason: code },
+          ],
+        },
+      );
+      expect(outcome).toMatchObject({ state: "failed", limit });
+      expect(outcome.state === "failed" && outcome.reason).toContain(resetsAt ?? "Try again after the limit resets.");
     } finally {
       await driver.close();
     }

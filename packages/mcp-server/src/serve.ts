@@ -94,8 +94,13 @@ export async function startServer(
   );
   await catalogAuthentication("slack"); // Reject invalid deployment ciphertext before serving.
   const sql = bunSql(config.databaseUrl, config.databasePoolMax);
-  const modelAuth = createModelAuthOwnership(sql, config.encryptionKey, undefined, undefined, (tx, id) =>
-    createHistoricalSandboxProviderResolver(providers)(tx, id),
+  const modelAuth = createModelAuthOwnership(
+    sql,
+    config.encryptionKey,
+    undefined,
+    undefined,
+    (tx, id) => createHistoricalSandboxProviderResolver(providers)(tx, id),
+    { origin: config.publicUrl },
   );
   const store = createSqlVaultStore(sql);
   const authStore = createSqlAuthStore(sql);
@@ -342,6 +347,7 @@ export async function startServer(
             }),
           ]
         : []),
+      ...(modelAuth.broker ? [modelAuth.broker.route] : []),
       modal.route,
       mcp.route,
       (request) => handleControlRequest(request, control),

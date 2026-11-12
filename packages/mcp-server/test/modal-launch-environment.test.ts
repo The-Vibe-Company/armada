@@ -292,3 +292,70 @@ test("Modal native Codex bootstrap still requires actual rotating-account owners
 
 // Token resolution in these fixtures must not leak audit records to stdout.
 captureGitHubAuditLogs();
+
+test("shared Codex Modal bootstrap contains only the private access grant, never refresh-bearing auth", async () => {
+  const { db, people } = await database();
+  try {
+    const scope: Scope = {
+      orgId: people.org,
+      userId: people.owner,
+      visibility: "private",
+      binding: { workspace: "ws", environment: "main", appId: "ap-shared" },
+    };
+    await db.query("insert into modal_server_scopes(scope,context) values($1,$2::jsonb)", [
+      scopeKey(scope),
+      JSON.stringify(scope),
+    ]);
+    const raw = JSON.stringify({
+      tokens: {
+        access_token: "private-initial-access",
+        refresh_token: "private-shared-refresh",
+        account_id: "shared-account",
+      },
+    });
+    const account = (
+      await db.query<{ id: string }>(
+        "insert into credentials(scope,owner_id,kind,value_enc) values('user',$1,'codex_auth',$2) returning id",
+        [people.owner, await encryptSecret(raw, ENCRYPTION_KEY)],
+      )
+    ).rows[0]!;
+    const auth = createModelAuthOwnership(db, ENCRYPTION_KEY, undefined, undefined, undefined, {
+      origin: "https://armada.example",
+    });
+    await auth.broker!.enroll({ userId: people.owner, orgId: people.org, role: "member" }, account.id, 1);
+    const resolver = modalLaunchEnvironment({
+      sql: db,
+      modelAuth: auth,
+      vault: createSqlVaultStore(db),
+      encryptionKey: ENCRYPTION_KEY,
+      scope,
+      scopeKey: scopeKey(scope),
+      callerUserId: people.owner,
+    });
+    const machine: Machine = {
+      info: {
+        id: "shared-machine",
+        name: "shared",
+        state: "ready",
+        providerState: "active",
+        labels: { sandbox: crypto.randomUUID(), credentialId: account.id, credentialVersion: "1" },
+      },
+      launchUserId: people.owner,
+      golden: false,
+      phase: "active",
+      generation: 1,
+      ttlSeconds: 3600,
+      physicalName: "shared-machine",
+    };
+    const configuration = await resolver(machine, { ARMADA_SERVER_CODEX: "1" });
+    expect(configuration.subscription?.url).toBe("https://armada.example/api/internal/model/access");
+    expect(configuration.subscription?.capability).toBeTruthy();
+    expect(configuration.codexAuthJson).toBeUndefined();
+    expect(configuration.nativeAuthRevision).toBeUndefined();
+    expect(JSON.stringify(configuration)).not.toContain("private-shared-refresh");
+    expect(JSON.stringify(configuration)).not.toContain("private-initial-access");
+    expect(configuration.codexEnv.ARMADA_CODEX_AUTH_JSON).toBeUndefined();
+  } finally {
+    await db.close();
+  }
+});
