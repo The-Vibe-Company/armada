@@ -4,24 +4,6 @@ import Foundation
 /// strings of `@armada/core` (`HARNESSES`, `SandboxProviderId`, `PROMPT_STATUSES`,
 /// `sandbox_status`, `MACHINE_SIZES`). A value this build does not know is preserved and shown
 /// as-is rather than coerced into a known case.
-enum Harness: String, CaseIterable, Identifiable, Hashable, Sendable {
-    case claude
-    case codex
-
-    var id: String { rawValue }
-
-    var label: String {
-        switch self {
-        case .claude: "Claude Code"
-        case .codex: "Codex"
-        }
-    }
-
-    /// Claude Code joins a running turn; Codex interrupts it and continues with the message
-    /// (`STEER_RESTARTS_TURN` in the dashboard). Only the wording depends on it; the server decides.
-    var steerRestartsTurn: Bool { self == .codex }
-}
-
 enum ProviderID: Hashable, Sendable {
     case boat
     case modal
