@@ -424,6 +424,9 @@ owner API. Preexisting, parent, unverified and unclaimed IDs are never blindly
 stopped. `scoped_cleanup_summary` retains parent/local request key, operation
 UUIDs and leftover/unverified/unattributed IDs/uncertainty without raw tool text.
 Unknown mutations are never replayed; reconcile reported handles before rerun.
+If the parent's stop cannot be confirmed, cleanup still attempts safe known
+children but must report an unquiesced producer/future-child uncertainty. A
+snapshot taken while a parent remains active is never declared final/clean.
 
 Budget: one additional native parent task per worker and one idle child plus one
 tiny child message per supported pair; no extra parent allocations. Parent

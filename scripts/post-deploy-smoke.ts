@@ -875,7 +875,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
         }
       }
     }
-    if (scoped && !(await scoped.cleanup(sandboxId))) passed = false;
+    if (scoped && !(await scoped.cleanup(sandboxId, stopped))) passed = false;
     if (preservation)
       io.out(
         JSON.stringify({

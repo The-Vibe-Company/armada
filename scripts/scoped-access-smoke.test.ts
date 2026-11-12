@@ -44,6 +44,7 @@ function fixture(enabled = true) {
     sendUnknown: false,
     notReady: false,
     logsFail: false,
+    waitRunning: false,
     logsIncomplete: false,
     listPages: 1,
     incomplete: false,
@@ -164,7 +165,7 @@ function fixture(enabled = true) {
       }
       if (path === "sandbox/wait") {
         expect(body).toEqual({ org: item.org, id: parent, prompt_id: "turn", timeout_seconds: 0 });
-        return { prompt: { promptId: "turn", state: "finished" } } as T;
+        return { prompt: { promptId: "turn", state: state.waitRunning ? "running" : "finished" } } as T;
       }
       if (path === "logs/read") {
         state.logReads++;
@@ -214,7 +215,7 @@ describe("ordinary scoped Armada smoke", () => {
       f.state.notReady = true;
       f.state.listPages = 2;
       await run(f);
-      expect(await f.probe.cleanup(parent)).toBe(true);
+      expect(await f.probe.cleanup(parent, true)).toBe(true);
       expect(f.stopped).toEqual([child]);
       expect(f.state.sends).toBe(2); // Only the closed pre-admission not-ready rejection is retried.
       expect(f.output[0]).toMatchObject({
@@ -233,7 +234,7 @@ describe("ordinary scoped Armada smoke", () => {
       f.state[mode] = true;
       f.state.after = [parent];
       await run(f);
-      expect(await f.probe.cleanup(parent)).toBe(true);
+      expect(await f.probe.cleanup(parent, true)).toBe(true);
       expect(f.stopped).toEqual([]);
     },
   );
@@ -246,7 +247,7 @@ describe("ordinary scoped Armada smoke", () => {
       at(tools, 0).result = { isError: true, output: { message: "scoped_authority_denied" } };
     };
     await run(f);
-    expect(await f.probe.cleanup(parent)).toBe(true);
+    expect(await f.probe.cleanup(parent, true)).toBe(true);
   });
 
   test.each(["success", "generic", "wrong-selection", "wrong-args", "wrong-marker"])(
@@ -332,7 +333,7 @@ describe("ordinary scoped Armada smoke", () => {
           ),
         );
       await run(f);
-      expect(await f.probe.cleanup(parent)).toBe(true);
+      expect(await f.probe.cleanup(parent, true)).toBe(true);
     },
   );
 
@@ -342,7 +343,7 @@ describe("ordinary scoped Armada smoke", () => {
       tools.unshift({ ...at(tools, 0), result: undefined } as unknown as WireTool);
     };
     await run(f);
-    expect(await f.probe.cleanup(parent)).toBe(true);
+    expect(await f.probe.cleanup(parent, true)).toBe(true);
   });
 
   test("unknown parent send is never replayed and late receipts are safely adopted after quiescence", async () => {
@@ -350,7 +351,7 @@ describe("ordinary scoped Armada smoke", () => {
     f.state.sendUnknown = true;
     await expect(run(f)).rejects.toThrow("sensitive-network-error");
     expect(f.state.sends).toBe(1);
-    expect(await f.probe.cleanup(parent)).toBe(false);
+    expect(await f.probe.cleanup(parent, true)).toBe(false);
     expect(f.stopped).toEqual([child]);
     expect(f.output[0]).toMatchObject({
       parentId: parent,
@@ -369,7 +370,7 @@ describe("ordinary scoped Armada smoke", () => {
       tools.splice(1);
     };
     await expect(run(f)).rejects.toThrow("scoped_launch_unproven");
-    expect(await f.probe.cleanup(parent)).toBe(false);
+    expect(await f.probe.cleanup(parent, true)).toBe(false);
     expect(f.stopped).toEqual([child]);
     expect(f.state.sends).toBe(1);
     expect(f.output[0]).toMatchObject({ unknownLaunch: true, operationIds: [operation], claimedSandboxIds: [child] });
@@ -389,7 +390,7 @@ describe("ordinary scoped Armada smoke", () => {
           parent;
       };
     await run(f).catch(() => {});
-    expect(await f.probe.cleanup(parent)).toBe(false);
+    expect(await f.probe.cleanup(parent, true)).toBe(false);
     expect(f.stopped).toEqual([]);
     expect(f.output[0]?.pass).toBe(false);
   });
@@ -405,7 +406,7 @@ describe("ordinary scoped Armada smoke", () => {
     late.id = "late";
     (late.result.output as { structuredContent: { result: Obj } }).structuredContent.result.sandboxId = other;
     f.state.tools.push(late);
-    expect(await f.probe.cleanup(parent)).toBe(false);
+    expect(await f.probe.cleanup(parent, true)).toBe(false);
     expect(f.stopped).toEqual([child, other]);
     expect(f.output[0]).toMatchObject({ leftoverSandboxIds: [child], claimedSandboxIds: [child, other] });
   });
@@ -416,7 +417,7 @@ describe("ordinary scoped Armada smoke", () => {
       (at(tools).input.selection as Obj).credentialId = other;
     };
     await expect(run(f)).rejects.toThrow("scoped_launch_unproven");
-    expect(await f.probe.cleanup(parent)).toBe(true);
+    expect(await f.probe.cleanup(parent, true)).toBe(true);
     expect(f.stopped).toEqual([child]);
     expect(f.output[0]).toMatchObject({ operationIds: [operation], claimedSandboxIds: [child] });
   });
@@ -429,7 +430,7 @@ describe("ordinary scoped Armada smoke", () => {
       at(tools).result.output = output;
     };
     await expect(run(f)).rejects.toThrow("scoped_launch_unproven");
-    expect(await f.probe.cleanup(parent)).toBe(false);
+    expect(await f.probe.cleanup(parent, true)).toBe(false);
     expect(f.stopped).toEqual([]);
   });
 
@@ -445,7 +446,7 @@ describe("ordinary scoped Armada smoke", () => {
         tools.splice(1);
       };
       await expect(run(f)).rejects.toThrow("scoped_launch_unproven");
-      expect(await f.probe.cleanup(parent)).toBe(false);
+      expect(await f.probe.cleanup(parent, true)).toBe(false);
       expect(f.stopped).toEqual([]);
       expect(f.output[0]).toMatchObject({ unattributedSandboxIds: [child], claimedSandboxIds: [] });
       if (mode === "missing-receipt") expect(f.output[0]?.unknownLaunch).toBe(true);
@@ -457,10 +458,27 @@ describe("ordinary scoped Armada smoke", () => {
     f.state.logsIncomplete = true;
     await expect(run(f)).rejects.toThrow("scoped_incomplete_logs");
     expect(f.state.logReads).toBe(20);
-    expect(await f.probe.cleanup(parent)).toBe(false);
+    expect(await f.probe.cleanup(parent, true)).toBe(false);
     expect(f.state.logReads).toBe(40);
     expect(f.stopped).toEqual([child]); // Complete individual receipt remains safe despite incomplete overall evidence.
     expect(f.output[0]).toMatchObject({ unknownEvidence: true });
+  });
+
+  test("an unquiesced parent cannot produce a falsely final clean child inventory", async () => {
+    const f = fixture();
+    f.state.noTools = true;
+    f.state.after = [parent];
+    f.state.waitRunning = true;
+    await expect(run(f)).rejects.toThrow("poll exhausted");
+    expect(await f.probe.cleanup(parent, false)).toBe(false);
+    expect(f.stopped).toEqual([]);
+    expect(f.output[0]).toMatchObject({
+      pass: false,
+      parentId: parent,
+      unknownParent: true,
+      unknownFutureChildren: true,
+    });
+    expect(f.output[0]?.launchRequestKey).toMatch(/^smoke-scoped-/);
   });
 
   test("snapshot must complete before any native compute; unreadable evidence never becomes cleanup authority", async () => {
@@ -472,7 +490,7 @@ describe("ordinary scoped Armada smoke", () => {
     const g = fixture();
     g.state.logsFail = true;
     await expect(run(g)).rejects.toThrow("secret-error");
-    expect(await g.probe.cleanup(parent)).toBe(false);
+    expect(await g.probe.cleanup(parent, true)).toBe(false);
     expect(g.stopped).toEqual([]);
     expect(g.output[0]).toMatchObject({ unknownEvidence: true, unattributedSandboxIds: [child] });
     expect(JSON.stringify(g.output)).not.toContain("secret-error");

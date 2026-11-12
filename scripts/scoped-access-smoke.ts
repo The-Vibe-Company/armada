@@ -381,10 +381,20 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
         });
       });
     },
-    async cleanup(id?: string): Promise<boolean> {
+    async cleanup(id: string | undefined, parentQuiesced: boolean): Promise<boolean> {
       return io.withCleanup(async () => {
         const parent = parentId ?? id;
-        let ok = true;
+        const unknownParent = !!parent && !parentQuiesced;
+        let ok = !unknownParent;
+        if (parent) {
+          try {
+            await io.step("scoped_parent_quiesced", async () => {
+              if (!parentQuiesced) fail("scoped_parent_unquiesced");
+            });
+          } catch {
+            ok = false;
+          }
+        }
         const leftover: string[] = [];
         const unverified: string[] = [];
         let unattributed: string[] = [];
@@ -437,6 +447,9 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
             leftoverSandboxIds: leftover,
             unverifiedSandboxIds: unverified,
             unattributedSandboxIds: unattributed,
+            parentQuiesced: parent ? parentQuiesced : null,
+            unknownParent,
+            unknownFutureChildren: unknownParent,
             unknownSend: sendUnknown,
             unknownLaunch: launchUnknown,
             unknownEvidence: evidenceUnknown,
