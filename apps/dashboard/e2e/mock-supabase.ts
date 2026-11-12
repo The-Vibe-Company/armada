@@ -44,6 +44,7 @@ type State = {
   /** Named model accounts (#603) as `creds/list` returns them: safe metadata, never a value. */
   /** Every `sandbox/bind-credential` body, and the next refusal to answer with, once. */
   bindCalls: Row[];
+  repointCalls: Row[];
   failNextBind: { status: number; code: string; message: string } | null;
   /** Every CLI GitHub callback the dashboard relayed, with the credentials headers it carried (none expected). */
   githubCliCalls: { body: Row; authorization: string | null; cookie: string | null }[];
@@ -350,6 +351,7 @@ function seed(): State {
     toolCalls: [],
     failNextTool: null,
     bindCalls: [],
+    repointCalls: [],
     failNextBind: null,
     launches: [],
     accountCalls: [],
@@ -1087,6 +1089,31 @@ function mcp(message: RpcMessage, userId: string | null): Response {
  * `POST /api/v1/sandbox/bind-credential`, with the checks #603's server makes: the owner, a stopped Modal sandbox
  * still unbound, and one of the caller's compatible accounts. The binding is a compare-and-set; nothing restarts.
  */
+/** UI receipt boundary; actual handoff and quiescence are server owner-boundary tests. */
+function repointCredential(body: Row, userId: string | null): Response {
+  state.repointCalls.push({ id: body.id, credentialId: body.credentialId, org: body.org });
+  const target = state.sandboxes.find((row) => row.id === body.id && row.owner_id === userId);
+  if (!target) return controlFail(404, "not_found", "Only the sandbox owner can change its account.");
+  const account = state.credentials.find(
+    (row) =>
+      row.id === body.credentialId && row.status === "active" && MODEL_KINDS[String(row.kind)] === target.harness,
+  );
+  if (!account) return controlFail(400, "credential_refused", "Choose an eligible account.");
+  target.credential_id = account.id;
+  target.credential_version = account.version;
+  target.credential_note = "The sandbox account changed. Its workspace and conversations are retained.";
+  target.status = "stopped";
+  target.stopped_at = new Date().toISOString();
+  return json({
+    id: target.id,
+    credentialId: account.id,
+    credentialVersion: account.version,
+    harness: target.harness,
+    status: "bound",
+    note: target.credential_note,
+  });
+}
+
 function bindCredential(body: Row, userId: string | null): Response {
   if (!userId) return json({ error: "Unauthorized." }, 401);
   state.bindCalls.push({ ...body });
@@ -3152,6 +3179,7 @@ function control(url: URL, body: Row): Response {
       sent: state.sent,
       toolCalls: state.toolCalls,
       bindCalls: state.bindCalls,
+      repointCalls: state.repointCalls,
       launches: state.launches,
       goldenCalls: state.goldenCalls,
       goldenStatusCalls: state.goldenStatusCalls,
@@ -3246,6 +3274,7 @@ const server = Bun.serve({
         route.startsWith("creds/accounts/")
       )
         return accounts(route, body, request);
+      if (route === "sandbox/repoint-credential") return repointCredential(body, viewer(request));
       if (route === "sandbox/bind-credential") return bindCredential(body, viewer(request));
       if (route.startsWith("variables/") || route.startsWith("secrets/")) return vaultRoute(route, body, request);
       if (route.startsWith("routines/")) return routineRoute(route, body, request);

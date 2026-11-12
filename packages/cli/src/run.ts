@@ -142,6 +142,7 @@ Usage:
                                            Missing/partial evidence abstains. Never resizes or changes defaults.
                                            Human launch guidance uses stderr only; --json launch never requests advice.
   armada bind-credential <sandbox-id> --credential-id UUID [--org UUID] [--json]
+  armada repoint-credential <sandbox-id> --credential-id UUID [--org UUID] [--json]
                                            Owner-only legacy Modal binding recovery; stop safely first; no restart
   armada rm <sandbox-id> --yes [--org UUID] [--json]  Permanently delete a stopped sandbox and its recovery archives
   armada extend <sandbox-id> --ttl <duration> [--org UUID] [--json]
@@ -305,6 +306,7 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
       "status",
       "advice",
       "bind-credential",
+      "repoint-credential",
       "rm",
       "extend",
       "report",
@@ -344,6 +346,7 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
     "launch",
     "list",
     "bind-credential",
+    "repoint-credential",
     "detail",
     "status",
     "advice",
@@ -392,6 +395,7 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
       return launch(rest, io, deps);
     case "list":
     case "bind-credential":
+    case "repoint-credential":
     case "detail":
     case "recovery":
     case "status":

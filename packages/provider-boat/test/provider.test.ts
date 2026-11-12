@@ -1205,3 +1205,28 @@ test.each(["provisioning", "archived", "suspended", "PRIVATE_STATE"])(
     }
   },
 );
+
+test("account handoff activity observation sees every conversation and command without interrupting work", async () => {
+  const active = fakeBoat({
+    body: {
+      ok: true,
+      conversations: [
+        { id: "older-conversation", running: true },
+        { id: "latest", running: false },
+      ],
+    },
+  });
+  expect(await active.provider.hasActiveTurns?.(ID)).toBe(true);
+  expect(active.requests.map(({ method }) => method)).toEqual(["GET"]);
+  const commands = fakeBoat(
+    { body: { ok: true, conversations: [{ id: "latest", running: false }] } },
+    { body: { ok: true, commands: [{ id: "background", status: "running" }] } },
+  );
+  expect(await commands.provider.hasActiveTurns?.(ID)).toBe(true);
+  const unknown = fakeBoat(
+    { body: { ok: true, conversations: [] } },
+    { body: { ok: true, commands: [{ id: "lost", status: "unrecognized" }] } },
+  );
+  await expect(unknown.provider.hasActiveTurns?.(ID)).rejects.toBeInstanceOf(ProviderError);
+  expect([...commands.requests, ...unknown.requests].every(({ method }) => method === "GET")).toBe(true);
+});

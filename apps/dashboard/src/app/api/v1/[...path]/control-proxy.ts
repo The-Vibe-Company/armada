@@ -90,6 +90,7 @@ const PRIVATE_POST_PATHS = new Set([
   "sandbox/launch-sized-v1",
   "sandbox/launch-access-v1",
   "sandbox/bind-credential",
+  "sandbox/repoint-credential",
   "sandbox/list",
   "sandbox/detail",
   "sandbox/status",

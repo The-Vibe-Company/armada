@@ -27,6 +27,8 @@ export interface SandboxRecord {
   machineSize?: MachineSizeEvidence | null;
   credentialId?: string | null;
   credentialVersion?: number | null;
+  credentialNote?: string | null;
+  credentialDeliveryPending?: boolean;
   expiresAt?: string;
   effectiveTtlSeconds?: number;
   requestedTtlSeconds?: number | null;
@@ -181,6 +183,8 @@ export interface SandboxRow {
   resource_project?: ResourceProject | null;
   credential_id?: string | null;
   credential_version?: number | null;
+  credential_note?: string | null;
+  credential_delivery_pending?: boolean;
   id: string;
   provider: string;
   provider_sandbox_id: string;
@@ -211,7 +215,7 @@ export interface SandboxRow {
 /** The longest failure reason kept; a longer one is cut. */
 export const MAX_STATUS_REASON_LENGTH = 2000;
 
-const COLUMNS = `skills, preservation_note, task_outcome, task_prompt_id, credential_id, credential_version, id, provider::text as provider, provider_sandbox_id, golden_id, org_id, owner_id, harness::text as harness, status::text as status,
+const COLUMNS = `skills, preservation_note, task_outcome, task_prompt_id, credential_id, credential_version, credential_note, credential_delivery_pending, id, provider::text as provider, provider_sandbox_id, golden_id, org_id, owner_id, harness::text as harness, status::text as status,
   conversation_ids, created_at, stopped_at, deleted_at, status_reason, model, reasoning_effort, machine_size, resource_project, visibility, repository_dir, expires_at, effective_ttl_seconds, requested_ttl_seconds, last_observed_at, lifecycle_error, lifecycle_generation, stop_requested_at`;
 
 /** Turn evidence is service-role-only; caller-role stores must not gain these ports. */
@@ -327,6 +331,8 @@ export function mapSandboxRow(row: SandboxRow): SandboxRecord {
     ...(row.visibility ? { visibility: row.visibility } : {}),
     credentialId: row.credential_id ?? null,
     credentialVersion: row.credential_version ?? null,
+    credentialNote: row.credential_note ?? null,
+    credentialDeliveryPending: row.credential_delivery_pending ?? false,
     harness: row.harness,
     status: row.status as SandboxStatus,
     conversationIds: row.conversation_ids,

@@ -1,7 +1,7 @@
 /** Sandbox command failures may contain guest secrets; only closed reasons leave the client. */
 export function sandboxFailure(path: string, status: number, serverCode: unknown, serverMessage: unknown) {
   if (
-    !/^\/api\/v1\/sandbox\/(?:list|detail|status|recovery|advice|report|bind-credential|send|steer|interrupt|exec|stop|extend|wait)$/.test(
+    !/^\/api\/v1\/sandbox\/(?:list|detail|status|recovery|advice|report|bind-credential|repoint-credential|send|steer|interrupt|exec|stop|extend|wait)$/.test(
       path,
     ) &&
     !/^\/api\/v1\/sandboxes\/[0-9a-f-]+(?:\?.*)?$/i.test(path) &&

@@ -984,6 +984,16 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         return { acknowledged: true };
       });
     },
+    async hasActiveTurns(sandboxId) {
+      const row = await store.get(sandboxId);
+      assertMachineSource(row);
+      if (row.phase === "stopped") return false;
+      if (row.phase !== "active")
+        throw refusal("unavailable", "Native activity cannot be verified in the current phase.");
+      const result = await provider.observeOrchestrator!({ sandboxId, physicalGeneration: String(row.generation) });
+      if (result.state === "unknown") throw refusal("unavailable", "Native activity remains unknown.");
+      return result.state === "active";
+    },
     async observeOrchestrator({ sandboxId, physicalGeneration, conversationId }) {
       return admit(sandboxId, async (row) => {
         if (row.golden || row.phase !== "active" || physicalGeneration !== String(row.generation))

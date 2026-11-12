@@ -96,6 +96,7 @@ export interface LaunchCredentialResolver {
     sandboxId: string,
     provider: Provider,
     providerSandboxId: string,
+    credentialRevision?: number,
   ): Promise<boolean>;
   /** Record pre-dispatch proof when eligible. True selects owned-native cleanup, NOT deletion eligibility or proof; the locked release rechecks admission. */
   markNeverStarted?(actor: GoldenActor, credentials: HarnessCredentials, sandboxId: string): Promise<boolean>;

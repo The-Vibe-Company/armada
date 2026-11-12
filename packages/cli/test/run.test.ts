@@ -31,6 +31,7 @@ describe("run", () => {
     "status",
     "advice",
     "bind-credential",
+    "repoint-credential",
     "rm",
     "extend",
     "report",

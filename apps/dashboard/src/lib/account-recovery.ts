@@ -30,6 +30,7 @@ export type RecoverySandbox = {
   owner_id: string;
   status: SandboxStatus;
   credential_id?: string | null;
+  credential_delivery_pending?: boolean;
 };
 
 /**
@@ -37,7 +38,12 @@ export type RecoverySandbox = {
  * one. Boat is never concerned, and a row read without the column (a database before #603) is not either.
  */
 export function needsAccountChoice(sandbox: RecoverySandbox): boolean {
-  return sandbox.provider === "modal" && sandbox.credential_id === null && sandbox.status !== "deleted";
+  return (
+    sandbox.provider === "modal" &&
+    sandbox.credential_id === null &&
+    !sandbox.credential_delivery_pending &&
+    sandbox.status !== "deleted"
+  );
 }
 
 /**

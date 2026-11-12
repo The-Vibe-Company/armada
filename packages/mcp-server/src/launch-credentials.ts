@@ -94,7 +94,7 @@ export function launchCredentials(
         return; // Unknown legacy bindings are not silently claimed or rehydrated.
       await ownership.claim(actor, binding.credentialId, binding.credentialVersion, sandboxId);
     },
-    async hydrateNative(actor, credentials, sandboxId, provider, providerSandboxId) {
+    async hydrateNative(actor, credentials, sandboxId, provider, providerSandboxId, credentialRevision) {
       const binding =
         "binding" in credentials
           ? (credentials.binding as { credentialId: string; credentialVersion: number } | undefined)
@@ -102,7 +102,13 @@ export function launchCredentials(
       if (!ownership || !binding || !(await ownership.managed(sandboxId))) return false;
       const saved = await ownership.bootstrap(actor, binding.credentialId, binding.credentialVersion, sandboxId);
       if (!saved?.authJson) throw new Error("Native hydration state is unavailable.");
-      if (provider.id === "boat") await sshHydrateAuthState(provider, providerSandboxId, saved.authJson);
+      if (provider.id === "boat")
+        await sshHydrateAuthState(
+          provider,
+          providerSandboxId,
+          saved.authJson,
+          credentialRevision === undefined ? {} : { credentialRevision },
+        );
       // Modal already hydrates this exact sealed state in its private stdin bootstrap.
       return true;
     },

@@ -1,5 +1,5 @@
 import { MODEL_CATALOG, type SandboxListMetadata } from "@armada/core";
-import { ArrowLeftIcon, ClockAlertIcon, LockIcon } from "lucide-react";
+import { ArrowLeftIcon, ClockAlertIcon, KeyRoundIcon, LockIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
@@ -75,11 +75,15 @@ export default async function SandboxPage({ params }: Props) {
   const configured = mcpUrl() !== null;
   const recovery = needsAccountChoice(sandbox);
   const owner = sandbox.owner_id === viewer.id;
+  const canRepoint = owner && !recovery && sandbox.status !== "deleted";
+  const credentialPending = "credential_delivery_pending" in sandbox && sandbox.credential_delivery_pending === true;
+  const credentialNote =
+    "credential_note" in sandbox && typeof sandbox.credential_note === "string" ? sandbox.credential_note : null;
   const [golden, applied, kinds, choices] = await Promise.all([
     findGoldenLabel(supabase, sandbox.golden_id),
     listSandboxConnections(sandbox),
     credentialKinds(supabase, [sandbox.credential_id]),
-    recovery && owner && bindableStatus(sandbox.status) !== "failed"
+    canRepoint || (recovery && owner && bindableStatus(sandbox.status) !== "failed")
       ? readAccountChoices(viewer, sandbox.harness, sandbox.org_id)
       : undefined,
   ]);
@@ -145,6 +149,18 @@ export default async function SandboxPage({ params }: Props) {
         {preservation && <PreservationNotice preservation={preservation} className="max-w-2xl" />}
       </div>
 
+      {(credentialNote || credentialPending) && (
+        <Alert role="status">
+          <KeyRoundIcon />
+          <AlertTitle>{credentialPending ? "Account change pending" : "Sandbox account updated"}</AlertTitle>
+          <AlertDescription>
+            {credentialPending
+              ? "Account delivery is incomplete. Retry the account change before sending another prompt."
+              : credentialNote}
+          </AlertDescription>
+        </Alert>
+      )}
+
       {life.notice && (
         <Alert data-lifecycle-notice={life.notice.kind} className="border-warning/40">
           <ClockAlertIcon className="text-warning" />
@@ -178,6 +194,19 @@ export default async function SandboxPage({ params }: Props) {
         </div>
         <SandboxDetailsPanel>
           <SandboxAttention sandbox={sandbox} viewer={viewer} />
+          {canRepoint && (
+            <details className="rounded-xl border bg-card p-4">
+              <summary className="cursor-pointer text-sm font-medium">Change account</summary>
+              <SandboxAccountChoice
+                sandboxId={sandbox.id}
+                status={sandbox.status}
+                owner={owner}
+                mode="repoint"
+                {...(choices ? { choices } : {})}
+                harnessLabel={HARNESS_LABELS[sandbox.harness] ?? sandbox.harness}
+              />
+            </details>
+          )}
           <Card className="gap-3 py-5">
             <CardHeader className="px-5">
               <CardTitle className="text-sm">Details</CardTitle>

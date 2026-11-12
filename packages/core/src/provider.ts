@@ -205,6 +205,8 @@ export interface Provider {
   /** Events oldest first, after `cursor`. Poll with the cursor of the previous page. */
   events(request: EventsRequest): Promise<EventPage>;
 
+  /** Read-only whole-sandbox activity check; false is authoritative idle, never silence. */
+  hasActiveTurns?(sandboxId: string): Promise<boolean>;
   /** Interrupt and prove all relevant turns settled. Refuse while interruption is pending. */
   quiesce?(request: InterruptRequest): Promise<void>;
   /** Reset the physical lifetime without restoring or replacing compute. Returns the confirmed hard deadline. */

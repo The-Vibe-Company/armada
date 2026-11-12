@@ -19,6 +19,7 @@ import { createBoatProvider } from "@armada/provider-boat";
 import { configFromEnv } from "./config.ts";
 import { type ConfiguredControlOptions, handleControlRequest, templateRuntime } from "./control.ts";
 import { createCredentialBindingRecovery } from "./credential-binding-recovery.ts";
+import { createCredentialRepoint } from "./credential-repoint.ts";
 import { createSqlData } from "./data.ts";
 import { retryDatabaseBoot } from "./database-boot.ts";
 import { createDatabaseReadiness } from "./database-readiness.ts";
@@ -215,6 +216,7 @@ export async function startServer(
     publicUrl: config.publicUrl,
     modelAuth,
     credentialBindingRecovery: createCredentialBindingRecovery(sql, config.encryptionKey, modelAuth),
+    credentialRepoint: createCredentialRepoint(sql, config.encryptionKey, providers, modelAuth),
     modelUsage: createModelUsageApi(sql),
     goldenRetirements,
     invitations: invitationsFromEnv(sql, env),
@@ -298,6 +300,7 @@ export async function startServer(
     orchestratorPairs: config.orchestratorPairs,
     ...(orchestrators ? { orchestrators: orchestrators.runtime } : {}),
     modelAuth,
+    ...(control.credentialRepoint ? { credentialRepoint: control.credentialRepoint } : {}),
     publicUrl: config.publicUrl,
     loginProviders: (env.ARMADA_AUTH_PROVIDERS ?? "")
       .split(",")

@@ -53,6 +53,7 @@ import { apiFailureCode } from "./api-failure.ts";
 import type { Caller } from "./caller.ts";
 import { describeFailure } from "./caller.ts";
 import { CREDENTIAL_BINDING_GUIDANCE } from "./credential-binding.ts";
+import type { CredentialRepoint } from "./credential-repoint.ts";
 import { DataError, type SandboxView, type ScopedData } from "./data.ts";
 import { redactForLog } from "./log.ts";
 import { isPrivateModelEvent } from "./model-usage.ts";
@@ -74,6 +75,7 @@ import { recordStopDispatch } from "./work-preservation.ts";
 
 /** Everything a tool call may use, for one authenticated request. */
 export interface ToolContext {
+  credentialRepoint?: CredentialRepoint;
   measure?: import("./request-timing.ts").RequestTiming["measure"];
   storedProvider?(target: ProviderTarget): Promise<Provider>;
   templates?: TemplateService;
@@ -152,6 +154,8 @@ const effortInput = z.string().min(1).optional().describe("The reasoning effort;
 const modelOutput = {
   credentialId: z.string().nullable().optional(),
   credentialVersion: z.number().int().nullable().optional(),
+  credentialNote: z.string().nullable().optional(),
+  credentialDeliveryPending: z.boolean().optional(),
   model: z.string().nullable().describe("The requested next-send default, not proof of the observed model."),
   reasoningEffort: z.string().nullable(),
 };
@@ -633,7 +637,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
   const live = async (sandboxId: string, allowUnbound = false) => {
     const found = await visible(sandboxId);
     if (found.status === "deleted") throw new ToolError("conflict", `Sandbox '${sandboxId}' is deleted.`);
-    if (!allowUnbound && found.provider === "modal" && !found.credentialId)
+    if (!allowUnbound && found.provider === "modal" && !found.credentialId && !found.credentialDeliveryPending)
       throw new VaultError("credential_binding_required", CREDENTIAL_BINDING_GUIDANCE);
     return {
       sandbox: found,
@@ -1262,6 +1266,11 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     async (args) => {
       const found = await visible(args.id);
       if (found.status === "deleted") throw new ToolError("conflict", "Sandbox is deleted.");
+      if (found.credentialDeliveryPending)
+        throw new VaultError(
+          "conflict",
+          "Account delivery is pending. Retry the account change before reading output.",
+        );
       const provider =
         found.provider === "modal" && context.storedProvider
           ? await context.storedProvider(found)
@@ -1333,23 +1342,35 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       },
       output: {
         id: z.string(),
+        credentialNote: z.string().nullable().optional(),
         promptId: z.string(),
         conversationId: z.string(),
         status: z.enum(["queued", "running", "finished", "failed", "interrupted"]),
       },
     },
     async (args) => {
-      const { sandbox: found, provider } = await live(args.id);
+      let { sandbox: found, provider } = await live(args.id);
       if (args.prompt.trim() === "") throw new ToolError("invalid_request", "The prompt is empty.");
-      if (found.credentialId)
-        await measure("send_credentials", () =>
-          context.launchCredentials.resolve(
-            { userId: caller.userId, orgId: found.orgId, role: "member" },
-            found.harness,
-            found.credentialId ?? undefined,
-            found.credentialVersion ?? undefined,
-          ),
-        );
+      if (found.credentialDeliveryPending && context.credentialRepoint) {
+        await context.credentialRepoint.fallback(caller, found.id);
+        ({ sandbox: found, provider } = await live(args.id));
+      }
+      if (found.credentialId) {
+        try {
+          await measure("send_credentials", () =>
+            context.launchCredentials.resolve(
+              { userId: caller.userId, orgId: found.orgId, role: "member" },
+              found.harness,
+              found.credentialId ?? undefined,
+              found.credentialVersion ?? undefined,
+            ),
+          );
+        } catch (error) {
+          const rebound = await context.credentialRepoint?.fallback(caller, found.id);
+          if (!rebound) throw error;
+          ({ sandbox: found, provider } = await live(args.id));
+        }
+      }
       const choice = turnModel(found, { model: args.model, reasoningEffort: args.reasoning_effort });
       const conversation = args.conversation_id ?? found.conversationIds.at(-1);
       const machine = await measure("send_state", () => provider.get(found.providerSandboxId));
@@ -1416,6 +1437,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
             },
             result: {
               id: found.id,
+              credentialNote: found.credentialNote ?? null,
               promptId: receipt.promptId,
               conversationId: receipt.conversationId,
               status: receipt.status,

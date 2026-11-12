@@ -10,6 +10,8 @@ import type { Provider } from "./provider.ts";
 
 export { PRIVATE_SSH_FAILURES, PrivateSshError } from "./private-skill-error.ts";
 export interface SshExecDeps {
+  /** Trusted model-account handoff epoch; no caller-controlled path or command. */
+  credentialRevision?: number;
   /** Opt in only for the private GitHub repair installer, never generic guest output. */
   githubHydration?: boolean;
   onWarning?: (warning: GoldenBuildWarning) => void;
@@ -54,6 +56,8 @@ export async function sshHydrateAuthState(
       throw Error();
     const script = [
       "set +x",
+      "mkdir -p /home/user/.armada && test ! -L /home/user/.armada && test ! -L /home/user/.armada/credential-handoff.lock",
+      "exec 8>/home/user/.armada/credential-handoff.lock && flock -x -w 30 8",
       "node <<'ARMADA_PRIVATE_HYDRATE'",
       "const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');",
       "const target=" + JSON.stringify(path) + ";",
@@ -61,6 +65,9 @@ export async function sshHydrateAuthState(
       "try {",
       " const text=JSON.parse(process.env.ARMADA_GIT_TOKEN).authJson; delete process.env.ARMADA_GIT_TOKEN;",
       " if(typeof text!=='string'||Buffer.byteLength(text)>65536)throw Error('invalid'); JSON.parse(text);",
+      " const revision=" +
+        JSON.stringify(String(deps.credentialRevision ?? 0)) +
+        "; const fence='/home/user/.armada/credential-revision'; const prior=fs.existsSync(fence)?fs.readFileSync(fence,'utf8').trim():'0'; if(!/^[0-9]+$/.test(prior)||BigInt(revision)<BigInt(prior))throw Error('stale');",
       " const home=fs.lstatSync('/home/user'); if(home.isSymbolicLink()||!home.isDirectory())throw Error('unsafe');",
       " const parts=path.dirname(target).split('/').filter(Boolean);",
       " for(let n=1;n<=parts.length;n++){const dir='/'+parts.slice(0,n).join('/');",

@@ -24,6 +24,7 @@ import {
   describeFailure,
   type SupabaseProject,
 } from "./caller.ts";
+import type { CredentialRepoint } from "./credential-repoint.ts";
 import type { DataSource } from "./data.ts";
 import { exposedSecrets, type GitHubLaunchOptions, launchCredentials } from "./launch-credentials.ts";
 import { redactForLog } from "./log.ts";
@@ -47,6 +48,7 @@ export interface HandlerOptions {
   orchestratorPairs?: readonly OrchestratorPair[];
   orchestrators?: OrchestratorRuntime;
   modelAuth?: ModelAuthOwnership;
+  credentialRepoint?: CredentialRepoint;
   publicUrl: string;
   /** Enabled social login providers. Empty by default: email login always works. */
   loginProviders?: ClientConfig["providers"];
@@ -162,6 +164,7 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
     const server = createArmadaServer(
       {
         caller,
+        ...(options.credentialRepoint ? { credentialRepoint: options.credentialRepoint } : {}),
         ...(options.skillDefaults ? { skillDefaults: options.skillDefaults } : {}),
         ...(options.templates ? { templates: options.templates } : {}),
         ...(options.applicationVault ? { applicationVault: options.applicationVault } : {}),

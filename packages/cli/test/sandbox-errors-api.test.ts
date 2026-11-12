@@ -48,6 +48,7 @@ test.each(
     ["rm", id, "--yes"],
     ["report", id, "blocked", "--prompt-id", id, "--reason", "audit"],
     ["bind-credential", id, "--credential-id", id],
+    ["repoint-credential", id, "--credential-id", id],
   ].map((args) => ({ args })),
 )("missing sandbox gets actionable not_found and a legacy code: $args", async ({ args }) => {
   const { exit, err } = await capture([...args, "--json"], 404, "not_found");
@@ -55,7 +56,9 @@ test.each(
   const failure = JSON.parse(err).error;
   expect(failure.code).toBe("not_found");
   expect(failure.legacyCode).toBe(
-    ["recovery", "advice", "report", "bind-credential"].includes(args[0] ?? "") ? "unavailable" : "conflict",
+    ["recovery", "advice", "report", "bind-credential", "repoint-credential"].includes(args[0] ?? "")
+      ? "unavailable"
+      : "conflict",
   );
   expect(failure.message).toContain("not found or not accessible");
   expect(failure.message).toContain("armada list --json");

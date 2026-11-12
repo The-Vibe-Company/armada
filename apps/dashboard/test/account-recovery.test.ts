@@ -56,6 +56,8 @@ describe("legacy account recovery", () => {
   test("only a Modal sandbox recorded without an account needs a choice", () => {
     const base = { provider: "modal", owner_id: "u", status: "stopped" as const };
     expect(needsAccountChoice({ ...base, credential_id: null })).toBe(true);
+    // A handoff temporarily detaches its pin; resume that operation, not legacy first-binding.
+    expect(needsAccountChoice({ ...base, credential_id: null, credential_delivery_pending: true })).toBe(false);
     expect(needsAccountChoice({ ...base, credential_id: "00000000-0000-4000-8000-000000000001" })).toBe(false);
     expect(needsAccountChoice({ ...base, provider: "boat", credential_id: null })).toBe(false);
     // A database before the #603 migration has no column: never mistaken for an unbound sandbox.

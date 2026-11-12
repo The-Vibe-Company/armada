@@ -78,7 +78,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const GOLDEN_COLUMNS = `g.id, g.org_id, g.name, g.visibility::text as visibility, g.owner_id,
   g.provider::text as provider, g.provider_sandbox_id, g.provider_snapshot_id, g.modal_workspace,
   g.modal_environment, g.modal_app_id, g.config, g.size_policy, g.build_warnings, g.helper_receipt, g.created_at`;
-const SANDBOX_COLUMNS = `public.sandbox_usage(s) as usage, s.preservation_note, s.task_outcome, s.task_prompt_id, s.credential_id, s.credential_version, s.id, s.provider::text as provider, s.provider_sandbox_id, s.golden_id, s.org_id, s.owner_id, s.harness::text as harness,
+const SANDBOX_COLUMNS = `public.sandbox_usage(s) as usage, s.preservation_note, s.task_outcome, s.task_prompt_id, s.credential_id, s.credential_version, s.credential_note, s.credential_delivery_pending, s.id, s.provider::text as provider, s.provider_sandbox_id, s.golden_id, s.org_id, s.owner_id, s.harness::text as harness,
   s.status::text as status, s.conversation_ids, s.created_at, s.stopped_at, s.deleted_at, s.status_reason,
   s.skills,s.expires_at,s.effective_ttl_seconds,s.requested_ttl_seconds,s.last_observed_at,s.lifecycle_error,s.lifecycle_generation,s.stop_requested_at,s.model, s.reasoning_effort, s.machine_size,s.resource_project, s.repository_dir, g.name as golden, s.visibility::text as visibility, s.access_owner_id,
   s.source_golden_visibility::text as source_golden_visibility, g.modal_workspace,

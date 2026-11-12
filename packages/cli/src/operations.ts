@@ -196,7 +196,8 @@ export async function operation(
         );
       body.ttl_seconds = parseTtl(ttl);
     }
-    if (command === "bind-credential") {
+    if (command === "bind-credential" || command === "repoint-credential") {
+      if (command === "repoint-credential") uuid(id, "sandbox id");
       const credentialId = single(args, "--credential-id");
       uuid(credentialId, "credential id");
       body.credentialId = credentialId;

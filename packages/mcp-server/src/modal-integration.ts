@@ -205,15 +205,13 @@ export async function createModalIntegration(options: {
               }),
           }
         : {}),
-      ...(options.beforePrompt
-        ? {
-            beforePrompt: (provider, sandboxId) =>
-              options.beforePrompt!(provider, sandboxId, {
-                userId: context.caller.userId,
-                orgId: context.target.orgId,
-              }),
-          }
-        : {}),
+      beforePrompt: async (provider, sandboxId) => {
+        await modelAuth.assertCredentialReady(provider, sandboxId);
+        await options.beforePrompt?.(provider, sandboxId, {
+          userId: context.caller.userId,
+          orgId: context.target.orgId,
+        });
+      },
       resolveHarnessEnvironment: modalLaunchEnvironment({
         modelAuth,
         sql: options.sql,
@@ -225,7 +223,20 @@ export async function createModalIntegration(options: {
         ...(options.github ? { github: options.github } : {}),
       }),
     };
-    return (await createComposedModalProvider(composed)).provider;
+    const connected = (await createComposedModalProvider(composed)).provider;
+    return new Proxy(connected, {
+      get(target, property, receiver) {
+        const value = Reflect.get(target, property, receiver);
+        if (property === "events")
+          return async (request: Parameters<Provider["events"]>[0]) => {
+            await modelAuth.assertCredentialReady(target, request.sandboxId);
+            const result = await target.events(request);
+            await modelAuth.assertCredentialReady(target, request.sandboxId);
+            return result;
+          };
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
   };
   async function goldenTarget(
     target: Omit<ProviderTarget, "modal">,

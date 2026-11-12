@@ -3076,6 +3076,44 @@ export type Database = {
           },
         ];
       };
+      sandbox_model_credentials: {
+        Row: {
+          sandbox_id: string;
+          operation_id: string;
+          credential_id: string;
+          credential_version: number;
+          configuration_enc: string;
+          quota_history_mixed: boolean;
+          redaction_enc: string;
+        };
+        Insert: {
+          sandbox_id: string;
+          operation_id: string;
+          credential_id: string;
+          credential_version: number;
+          configuration_enc: string;
+          quota_history_mixed?: boolean;
+          redaction_enc: string;
+        };
+        Update: {
+          sandbox_id?: string;
+          operation_id?: string;
+          credential_id?: string;
+          credential_version?: number;
+          configuration_enc?: string;
+          quota_history_mixed?: boolean;
+          redaction_enc?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "sandbox_model_credentials_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: true;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       sandbox_turn_models: {
         Row: {
           sandbox_id: string;
@@ -3187,6 +3225,8 @@ export type Database = {
           stop_generation: number;
           preservation_stop_generation: number | null;
           application_secret_tainted: boolean;
+          credential_note: string | null;
+          credential_delivery_pending: boolean;
         };
         Insert: {
           id?: string;
@@ -3240,6 +3280,8 @@ export type Database = {
           stop_generation?: number;
           preservation_stop_generation?: number | null;
           application_secret_tainted?: boolean;
+          credential_note?: string | null;
+          credential_delivery_pending?: boolean;
         };
         Update: {
           id?: string;
@@ -3293,6 +3335,8 @@ export type Database = {
           stop_generation?: number;
           preservation_stop_generation?: number | null;
           application_secret_tainted?: boolean;
+          credential_note?: string | null;
+          credential_delivery_pending?: boolean;
         };
         Relationships: [
           {
@@ -3540,6 +3584,7 @@ export type ResourceObservation = Database["public"]["Tables"]["resource_observa
 export type RoutineRunInputRow = Database["public"]["Tables"]["routine_run_inputs"]["Row"];
 export type RoutineRunRow = Database["public"]["Tables"]["routine_runs"]["Row"];
 export type RoutineRow = Database["public"]["Tables"]["routines"]["Row"];
+export type SandboxModelCredentialRow = Database["public"]["Tables"]["sandbox_model_credentials"]["Row"];
 export type SandboxTurnModelRow = Database["public"]["Tables"]["sandbox_turn_models"]["Row"];
 export type SandboxWorkRecovery = Database["public"]["Tables"]["sandbox_work_recovery"]["Row"];
 export type Sandbox = Database["public"]["Tables"]["sandboxes"]["Row"];

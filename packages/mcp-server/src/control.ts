@@ -102,6 +102,7 @@ import { apiFailureCode } from "./api-failure.ts";
 import { AuthUnavailable, authenticateCaller, type Caller, type SupabaseProject } from "./caller.ts";
 import { databasePoolMax } from "./config.ts";
 import { type CredentialBindingRecovery, createCredentialBindingRecovery } from "./credential-binding-recovery.ts";
+import { type CredentialRepoint, createCredentialRepoint } from "./credential-repoint.ts";
 import { createSqlData, type DataSource, type ScopedData } from "./data.ts";
 import type { GitHubAccountApi } from "./github-account.ts";
 import { providerRegistry } from "./http.ts";
@@ -152,6 +153,7 @@ export interface ControlOptions {
   orchestrators?: OrchestratorRuntime;
   modelAuth?: ModelAuthOwnership;
   credentialBindingRecovery?: CredentialBindingRecovery;
+  credentialRepoint?: CredentialRepoint;
   modelUsage?: ModelUsageApi;
   invitations?: Invitations;
   providerValidator?: ProviderValidator;
@@ -888,6 +890,7 @@ async function dispatch(
       {
         ...(options.goldenAdoption ? { goldenAdoption: options.goldenAdoption } : {}),
         caller: scopedCaller,
+        ...(options.credentialRepoint ? { credentialRepoint: options.credentialRepoint } : {}),
         ...(options.connections ? { connections: options.connections } : {}),
         data: options.data(scopedCaller),
         measure: (phase, work) => measured(options, phase, work),
@@ -1050,6 +1053,13 @@ async function dispatch(
         kind: parseCredentialKind(required(body, "kind")),
       });
       return { ok: true };
+    case "sandbox/repoint-credential":
+      if (!options.credentialRepoint) throw new VaultError("unavailable", "Account re-pointing is not configured.");
+      return options.credentialRepoint.repoint(caller, {
+        id: required(body, "id"),
+        credentialId: required(body, "credentialId"),
+        ...(org ? { org: (await resolveOrg(store, userId, org)).id } : {}),
+      });
     case "sandbox/bind-credential":
       if (!options.credentialBindingRecovery)
         throw new VaultError("unavailable", "Binding recovery is not configured.");
@@ -1754,7 +1764,10 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
     createBoatProvider({
       apiKey,
       beforePrompt: async (provider, id) => {
-        if (caller) await lifecycle().beforePrompt(provider, id, caller);
+        if (caller) {
+          await modelAuth.assertCredentialReady(provider, id);
+          await lifecycle().beforePrompt(provider, id, caller);
+        }
       },
     });
   let modal: ReturnType<typeof createModalIntegration> | undefined;
@@ -1787,6 +1800,7 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
   return {
     ...(env.ARMADA_PUBLIC_URL ? { publicUrl: env.ARMADA_PUBLIC_URL } : {}),
     credentialBindingRecovery: createCredentialBindingRecovery(sql, encryptionKey, modelAuth),
+    credentialRepoint: createCredentialRepoint(sql, encryptionKey, providers, modelAuth),
     invitations: invitationsFromEnv(sql, env),
     templates,
     skillDefaults: createSkillDefaultsService(sql),

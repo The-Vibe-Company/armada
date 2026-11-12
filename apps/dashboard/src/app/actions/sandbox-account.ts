@@ -41,3 +41,36 @@ export async function bindSandboxAccount(_previous: ActionResult | null, data: F
   revalidatePath(`/sandboxes/${id}`);
   return done("Account bound. Send a message to resume the sandbox.");
 }
+
+/** Explicit same-harness account change; the server owns quiescence and native delivery. */
+export async function repointSandboxAccount(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
+  const id = formString(data, "sandbox"),
+    credentialId = formString(data, "credential");
+  if (!isUuid(id) || !isUuid(credentialId)) return fail("Choose a sandbox and an account first.");
+  if (formString(data, "confirm") !== "yes") return fail("Confirm the account first.");
+  const viewer = await requireViewer();
+  const sandbox = await getSandbox(await createClient(), id);
+  if (!sandbox || sandbox.owner_id !== viewer.id) return fail("Only the sandbox owner can change its account.");
+  if (sandbox.status === "deleted") return fail("A deleted sandbox cannot change accounts.");
+  const serverUrl = mcpUrl();
+  if (!serverUrl || !viewer.token) return fail("The Armada server is not configured for this dashboard.");
+  try {
+    await createControlClient({ serverUrl, token: viewer.token }).post("sandbox/repoint-credential", {
+      id,
+      credentialId,
+      org: sandbox.org_id,
+    });
+  } catch (error) {
+    if (!(error instanceof ControlError)) throw error;
+    if (error.code === "forbidden" || error.code === "not_found")
+      return fail("Only the current sandbox owner, still a member of its organization, can change its account.");
+    if (error.code === "conflict" || error.code === "credential_binding_unsafe")
+      return fail("Finish or stop active work and wait for sandbox operations to settle, then try again.");
+    if (error.code === "credential_refused" || error.code === "no_credentials")
+      return fail("Choose an active account for this sandbox's harness.");
+    return fail("The account change could not be confirmed. Refresh the sandbox before retrying.");
+  }
+  revalidatePath(`/sandboxes/${id}`);
+  revalidatePath("/sandboxes");
+  return done("Account changed. The workspace and conversations are retained.");
+}

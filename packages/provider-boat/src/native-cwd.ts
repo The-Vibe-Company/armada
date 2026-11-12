@@ -565,9 +565,48 @@ try:
  except BaseException:
   raise
 except FileNotFoundError: pass
+q="/home/user/.armada/model-credentials.json"
+try:
+ f=os.open(q,os.O_RDONLY|os.O_NOFOLLOW)
+ with os.fdopen(f) as r:
+  st=os.fstat(r.fileno())
+  assert stat.S_ISREG(st.st_mode) and st.st_uid==os.getuid() and not st.st_mode&0o077 and st.st_size<=131072
+  c=json.load(r)
+ for k in ("OPENAI_API_KEY","OPENAI_BASE_URL","ANTHROPIC_API_KEY","CLAUDE_CODE_OAUTH_TOKEN","ARMADA_CODEX_AUTH_JSON","ARMADA_CODEX_ENDPOINT","ARMADA_SERVER_CODEX"): e.pop(k,None)
+ if c.get("harness")==sys.argv[1]:
+  with open("/home/user/.armada/credential-revision") as fence: assert fence.read().strip()==c.get("revision")
+  if sys.argv[1]=="codex":
+   access="/home/user/.armada/model-access.json"
+   if os.path.exists(access):
+    assert c.get("nativeMode")=="broker"
+    import base64
+    with open(access) as source: capability=json.load(source)["capability"]
+    body=capability.split(".")[0]; claim=json.loads(base64.urlsafe_b64decode(body+"="*((-len(body))%4)))
+    assert claim.get("accountId")==c.get("credentialId") and claim.get("version")==c.get("credentialVersion") and claim.get("sandboxId")==c.get("sandboxId")
+   elif c.get("native"):
+    assert c.get("nativeMode")=="file"
+    with open("/home/user/.codex/auth.json") as source: auth=json.load(source)
+    assert auth.get("tokens",{}).get("account_id")==c.get("nativeAccountId")
+   elif os.path.exists("/home/user/.codex/auth.json"):
+    with open("/home/user/.codex/auth.json") as source: auth=json.load(source)
+    assert not auth.get("tokens") and (not auth.get("OPENAI_API_KEY") or auth["OPENAI_API_KEY"]==c["env"].get("OPENAI_API_KEY"))
+  assert all(k in ("OPENAI_API_KEY","ARMADA_CODEX_ENDPOINT","ANTHROPIC_API_KEY","CLAUDE_CODE_OAUTH_TOKEN") and isinstance(v,str) for k,v in c["env"].items())
+  e.update(c["env"])
+  if sys.argv[1]=="codex":
+   options=["-c",'model_provider="openai"']
+   endpoint=e.pop("ARMADA_CODEX_ENDPOINT",None)
+   if endpoint:
+    from urllib.parse import urlsplit
+    v=json.loads(endpoint);u=urlsplit(v["baseUrl"])
+    assert v.get("version")==1 and u.scheme=="https" and u.hostname and not u.username and not u.password and not u.query and not u.fragment
+    details='{name="Armada connection",base_url='+json.dumps(v["baseUrl"])+',env_key="OPENAI_API_KEY",wire_api="responses",requires_openai_auth=false'
+    if v.get("apiVersion"): details+=',query_params={"api-version"='+json.dumps(v["apiVersion"])+'}'
+    options=["-c",'model_provider="armada"',"-c","model_providers.armada="+details+'}']
+   args=sys.argv[3:];position=args.index("--") if "--" in args else len(args);sys.argv[3:]=args[:position]+options+args[position:]
+except FileNotFoundError: pass
 os.execve("/bin/bash",["bash","-c",sys.argv[2],"--"]+sys.argv[3:],e)`;
   // Ordinary native Claude retains its no-Python path when no values were delivered.
-  return `if [ -f ${quote(`/run/armada-readable-variables/${harness}.json`)} ]; then exec /usr/bin/python3 -I -c ${quote(loader)} ${quote(harness)} ${quote(command)} "$@"; fi; ${command}`;
+  return `if [ -f ${quote(`/run/armada-readable-variables/${harness}.json`)} ] || [ -f /home/user/.armada/model-credentials.json ]; then exec /usr/bin/python3 -I -c ${quote(loader)} ${quote(harness)} ${quote(command)} "$@"; fi; ${command}`;
 }
 
 /** Keep the nested installer below Linux's per-argument limit. */

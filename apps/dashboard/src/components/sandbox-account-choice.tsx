@@ -5,7 +5,7 @@ import { KeyRoundIcon, Loader2Icon } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useId, useState, useTransition } from "react";
-import { bindSandboxAccount } from "@/app/actions/sandbox-account";
+import { bindSandboxAccount, repointSandboxAccount } from "@/app/actions/sandbox-account";
 import { StopButton } from "@/components/sandbox-actions";
 import {
   AlertDialog,
@@ -34,19 +34,27 @@ type Props = {
   /** Absent for a viewer who is not the owner: their accounts are never read. */
   choices?: AccountChoices;
   harnessLabel: string;
+  mode?: "bind" | "repoint";
 };
 
 /**
  * A legacy Modal sandbox has no pinned account: its owner chooses one, deliberately and once, before it resumes.
  * Nothing is preselected, and the choice is confirmed before it is sent; a refusal keeps the selection.
  */
-export function SandboxAccountChoice({ sandboxId, status, owner, choices, harnessLabel }: Props) {
+export function SandboxAccountChoice({ sandboxId, status, owner, choices, harnessLabel, mode = "bind" }: Props) {
   const router = useRouter();
   const [selected, setSelected] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [result, setResult] = useState<ActionResult | null>(null);
   const [pending, startTransition] = useTransition();
-  const gate = bindableStatus(status);
+  const repoint = mode === "repoint";
+  const gate = repoint
+    ? ["ready", "stopped", "failed"].includes(status)
+      ? "ready"
+      : ["starting", "stopping"].includes(status)
+        ? "wait"
+        : "stop-first"
+    : bindableStatus(status);
   const accounts = choices?.state === "ready" ? choices.accounts : [];
   const account = accounts.find((item) => item.id === selected);
 
@@ -59,30 +67,41 @@ export function SandboxAccountChoice({ sandboxId, status, owner, choices, harnes
     startTransition(async () => {
       let outcome: ActionResult;
       try {
-        outcome = await bindSandboxAccount(null, data);
+        outcome = await (repoint ? repointSandboxAccount : bindSandboxAccount)(null, data);
       } catch {
         outcome = { ok: false, error: "The account could not be bound. Try again." };
       }
       setConfirming(false);
       setResult(outcome);
-      if (outcome.ok) router.refresh();
+      if (outcome.ok) {
+        setSelected(null);
+        router.refresh();
+      }
     });
   }
 
   return (
     <section
-      id="account"
-      aria-labelledby="account-title"
-      className="shrink-0 space-y-4 rounded-xl border border-warning/40 bg-warning/5 px-4 py-4 sm:px-6"
+      id={repoint ? "account-change" : "account"}
+      aria-labelledby={repoint ? "account-change-title" : "account-title"}
+      className={
+        repoint
+          ? "mt-3 space-y-4"
+          : "shrink-0 space-y-4 rounded-xl border border-warning/40 bg-warning/5 px-4 py-4 sm:px-6"
+      }
     >
       <div className="space-y-1">
-        <h2 id="account-title" className="flex items-center gap-2 text-base font-semibold">
+        <h2
+          id={repoint ? "account-change-title" : "account-title"}
+          className="flex items-center gap-2 text-base font-semibold"
+        >
           <KeyRoundIcon className="size-4 text-warning" aria-hidden="true" />
-          Choose this sandbox's account
+          {repoint ? "Change this sandbox’s account" : "Choose this sandbox's account"}
         </h2>
         <p className="text-sm text-muted-foreground">
-          It was launched before accounts were pinned. Its turns will run on the account you choose, which cannot be
-          changed later. The workspace and conversations are kept.
+          {repoint
+            ? "Choose an eligible account for future turns, or renew the selected account’s version. The server safely stops idle compute when needed and delivers the new account before another prompt. Active work must finish first. Files and conversations are kept."
+            : "It was launched before accounts were pinned. Its turns will run on the account you choose. The workspace and conversations are kept."}
         </p>
       </div>
 
@@ -150,15 +169,17 @@ export function SandboxAccountChoice({ sandboxId, status, owner, choices, harnes
           <AlertDialogHeader>
             <AlertDialogTitle>Use {account?.name} for this sandbox?</AlertDialogTitle>
             <AlertDialogDescription>
-              Its turns run on this {account?.scope === "org" ? "org" : "personal"} {account?.kindLabel}. This cannot be
-              changed later.
+              Its future turns run on this {account?.scope === "org" ? "org" : "personal"} {account?.kindLabel}.
+              {repoint
+                ? " Idle compute may be stopped safely while the account changes; files and conversations remain."
+                : " The workspace and conversations remain."}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel disabled={pending}>Cancel</AlertDialogCancel>
             <Button type="button" onClick={bind} disabled={pending}>
               {pending && <Loader2Icon className="animate-spin" />}
-              Bind account
+              {repoint ? "Change account" : "Bind account"}
             </Button>
           </AlertDialogFooter>
         </AlertDialogContent>

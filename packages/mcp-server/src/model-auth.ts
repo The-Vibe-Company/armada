@@ -119,7 +119,8 @@ export function createModelAuthOwnership(
         `select s.id from public.sandboxes s left join public.model_auth_state state
            on state.account_id=$1::uuid and state.account_version=$2
            where s.id=$3::uuid and s.owner_id=$4::uuid and s.org_id=$5::uuid
-           and s.credential_id=$1::uuid and s.credential_version is not distinct from $2::integer
+           and ((s.credential_id=$1::uuid and s.credential_version is not distinct from $2::integer)
+             or (s.credential_delivery_pending and exists(select 1 from public.sandbox_model_credentials pending where pending.sandbox_id=s.id and pending.credential_id=$1::uuid and pending.credential_version=$2)))
            and s.status in ('failed','stopped','deleted')
            and (s.activity_until is null or s.activity_until<now())
            and (s.reconcile_lease_until is null or s.reconcile_lease_until<now()) and s.stop_requested_at is null
@@ -146,7 +147,7 @@ export function createModelAuthOwnership(
       }
       if (fresh) {
         await tx.query(
-          "update public.sandboxes set status='deleted',deleted_at=coalesce(deleted_at,now()),status_reason=null,credential_id=null,credential_version=null,activity_lease_id=null,activity_until=null,reconcile_lease=null,reconcile_lease_until=null,lifecycle_generation=lifecycle_generation+1 where id=$1::uuid",
+          "update public.sandboxes set status='deleted',deleted_at=coalesce(deleted_at,now()),status_reason=null,credential_id=null,credential_version=null,credential_delivery_pending=false,activity_lease_id=null,activity_until=null,reconcile_lease=null,reconcile_lease_until=null,lifecycle_generation=lifecycle_generation+1 where id=$1::uuid",
           [sandboxId],
         );
       } else {
@@ -166,8 +167,19 @@ export function createModelAuthOwnership(
     });
   }
 
-  return {
+  const ownership = {
     state,
+    async assertCredentialReady(provider: Provider, providerId: string) {
+      const pending = await sql.query(
+        "select 1 from public.sandboxes where provider=$1::public.sandbox_provider and provider_sandbox_id=$2 and credential_delivery_pending",
+        [provider.id, providerId],
+      );
+      if (pending.rows.length)
+        throw new VaultError(
+          "conflict",
+          "Account delivery is pending. Retry the account change before sending another prompt.",
+        );
+    },
     async managed(sandboxId: string): Promise<boolean> {
       return (
         (
@@ -201,7 +213,7 @@ export function createModelAuthOwnership(
              and state.source_generation='launch:never-started')) as "requiresReconnect",
            (o.account_version is not null and ($2>o.account_version or (s.id is not null and coalesce(state.auth_revision=0,false)
              and state.source_generation='launch:never-started'))
-             and (s.id is null or (s.credential_id=$1::uuid and s.credential_version is not distinct from o.account_version and s.status in ('failed','stopped','deleted')
+             and (s.id is null or (((s.credential_id=$1::uuid and s.credential_version is not distinct from o.account_version) or (s.credential_delivery_pending and exists(select 1 from public.sandbox_model_credentials pending where pending.sandbox_id=s.id and pending.credential_id=$1::uuid and pending.credential_version=o.account_version))) and s.status in ('failed','stopped','deleted')
              and (s.activity_until is null or s.activity_until<now())
              and (s.reconcile_lease_until is null or s.reconcile_lease_until<now())
              and s.stop_requested_at is null))) as releasable
@@ -222,6 +234,11 @@ export function createModelAuthOwnership(
       });
     },
     async markNeverStarted(actor: GoldenActor, id: string, version: number, sandboxId: string) {
+      const handedOff = await sql.query(
+        `select 1 from public.sandboxes s join public.members m on m.org_id=s.org_id and m.user_id=$2::uuid where s.id=$1::uuid and s.owner_id=$2::uuid and s.org_id=$3::uuid and (s.credential_delivery_pending or s.credential_note is not null) and (s.credential_id is distinct from $4::uuid or s.credential_version is distinct from $5)`,
+        [sandboxId, actor.userId, actor.orgId, id, version],
+      );
+      if (handedOff.rows.length) return true;
       if (!sql.transaction) throw new VaultError("unavailable", "Native cleanup requires transactions.");
       return sql.transaction(async (tx) => {
         await authorize(tx, actor, id, version);
@@ -433,6 +450,7 @@ export function createModelAuthOwnership(
       caller: { userId: string; orgId: string },
       events: Awaited<ReturnType<Provider["events"]>>["events"],
     ) {
+      await this.assertCredentialReady(provider, providerId);
       const pendingCommand = async () => {
         const pending = await sql.query(
           `select 1 from public.sandboxes s join public.model_auth_state state
@@ -479,6 +497,16 @@ export function createModelAuthOwnership(
       return events.map((event) => safe(event) as typeof event);
     },
     async beforeStop(provider: Provider, providerId: string, caller: { userId: string; orgId: string }) {
+      // A pending selection has not admitted model work; its previous writer was already quiesced.
+      if (
+        (
+          await sql.query(
+            "select 1 from public.sandboxes where provider=$1::public.sandbox_provider and provider_sandbox_id=$2 and credential_delivery_pending",
+            [provider.id, providerId],
+          )
+        ).rows.length
+      )
+        return;
       if ((await provider.get(providerId)).state === "stopped") return;
       let secrets: string[];
       try {
@@ -494,6 +522,7 @@ export function createModelAuthOwnership(
       await this.capture(provider, providerId, caller, true);
     },
     async beforePrompt(provider: Provider, providerId: string, caller: { userId: string; orgId: string }) {
+      await this.assertCredentialReady(provider, providerId);
       await this.beforeResume(provider, providerId, caller);
       const secrets = await this.capture(provider, providerId, caller);
       if (provider.id === "boat" && secrets.length > 0) await sshNativeAuthAdmission(provider, providerId, true);
@@ -796,14 +825,17 @@ export function createModelAuthOwnership(
         credential_version: number | null;
         harness: string;
         kind: string | null;
+        credential_delivery_pending: boolean;
       }>(
-        `select s.credential_id,s.credential_version,s.harness,c.kind
+        `select s.credential_id,s.credential_version,s.harness,c.kind,s.credential_delivery_pending
          from public.sandboxes s left join public.credentials c on c.id=s.credential_id
          where s.id=$1::uuid and s.owner_id=$2::uuid and s.org_id=$3::uuid and s.deleted_at is null
 `,
         [sandboxId, actor.userId, actor.orgId],
       );
       const row = result.rows[0];
+      if (row?.credential_delivery_pending && _userExec)
+        throw new VaultError("conflict", "Account delivery is pending. Retry the account change before exec.");
       if (!row) throw new VaultError("not_found", "No native sandbox binding.");
       if (row.harness === "codex" && (!row.credential_id || row.credential_version === null || !row.kind))
         throw new VaultError(
@@ -912,6 +944,26 @@ export function createModelAuthOwnership(
       });
     },
   };
+  const capture = ownership.capture;
+  ownership.capture = async (...args: Parameters<typeof capture>): Promise<string[]> => {
+    const values = await capture.apply(ownership, args);
+    const [provider, providerId, caller] = args;
+    const rows = await sql.query<{ redaction_enc: Uint8Array }>(
+      `select material.redaction_enc from public.sandbox_model_credentials material
+      join public.sandboxes s on s.id=material.sandbox_id join public.members m on m.org_id=s.org_id and m.user_id=$4::uuid
+      where s.provider=$1::public.sandbox_provider and s.provider_sandbox_id=$2 and s.org_id=$3::uuid
+      and (s.owner_id=$4::uuid or m.role='admin')`,
+      [provider.id, providerId, caller.orgId, caller.userId],
+    );
+    for (const row of rows.rows) {
+      const parsed: unknown = JSON.parse(await decryptSecret(new Uint8Array(row.redaction_enc), encryptionKey));
+      if (!Array.isArray(parsed) || parsed.some((value) => typeof value !== "string"))
+        throw Error("Account redaction state is invalid.");
+      values.push(...parsed);
+    }
+    return values;
+  };
+  return ownership;
 }
 export type ModelAuthOwnership = ReturnType<typeof createModelAuthOwnership>;
 

@@ -3,6 +3,11 @@ import { chmod, mkdir, rm, writeFile } from "node:fs/promises";
 import { CODEX_ENDPOINT_ENV, parseCodexEndpoint } from "@armada/core";
 import { runArtifactInstallMode } from "./artifact-cache.ts";
 import { configureCodexEndpoint } from "./codex-endpoint.ts";
+import {
+  completeCredentialRepoint,
+  prepareCredentialRepoint,
+  scrubRepointCredentialFiles,
+} from "./credential-repoint.ts";
 import { execCredentialValues, validateExecEnvironment } from "./exec-env.ts";
 import { GitHubBroker, type GitHubBrokerConfiguration } from "./github-broker.ts";
 import { type installGitHubTools, prepareGitHubTools, runGitHubInstallMode } from "./github-tools.ts";
@@ -26,6 +31,7 @@ async function main() {
     mcp?: McpConfiguration;
     ingestUrl: string;
     codexAuthJson?: string;
+    credentialRepoint?: string;
     nativeAuthRevision?: number;
     nativeAuthSecrets?: string[];
     execEnv?: ExecEnvironment;
@@ -159,7 +165,15 @@ async function main() {
   const sourceIdentity = journal.assertRestoreSource(config.grant);
   const fenced = journal.checkpointPending(config.grant);
   let survivingAuth: string | undefined;
-  if (!fenced && config.nativeAuthRevision !== undefined) {
+  const resetCredentials =
+    !fenced &&
+    (await prepareCredentialRepoint(
+      config.root,
+      config.credentialRepoint,
+      (values) => journal.registerSecrets(values),
+      () => journal.sanitize(),
+    ));
+  if (!fenced && !resetCredentials && config.nativeAuthRevision !== undefined) {
     await quiesceNativeCodex(config.root, config.codexExecutable);
     survivingAuth = readNativeCodexAuth(config.root, (values) => journal.registerSecrets(values));
     if (survivingAuth) {
@@ -187,6 +201,7 @@ async function main() {
       env.XDG_DATA_HOME = `${env.HOME}/.local/share`;
       await mkdir(env.HOME, { recursive: true, mode: 0o700 });
     }
+    if (resetCredentials) await scrubRepointCredentialFiles(config.root);
     config.claudeEnv.CLAUDE_CONFIG_DIR = `${config.root}/claude`;
     config.codexEnv.CODEX_HOME = `${config.root}/codex`;
     await configureCodexEndpoint(config.codexEnv.CODEX_HOME, codexEndpoint);
@@ -267,6 +282,7 @@ async function main() {
       ghConfigDir: `${config.root}/exec-transient/gh`,
     },
   );
+  if (!fenced) await completeCredentialRepoint(config.root, config.credentialRepoint);
   Bun.serve({
     hostname: "0.0.0.0",
     port: config.port,

@@ -494,6 +494,27 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
     async retireBestEffort(sandboxId: string): Promise<void> {
       await archive(sandboxId);
     },
+    async hasActiveTurns(sandboxId: string) {
+      if ((await provider.conversations(sandboxId)).some((value) => value.running)) return true;
+      let cursor: string | undefined;
+      for (let page = 0; page < 50; page++) {
+        const result = await call(() =>
+          api.commandHistory(
+            { sandboxId, limit: 200, ...(cursor ? { cursor } : {}) },
+            { signal: AbortSignal.timeout(10_000) },
+          ),
+        );
+        for (const command of result.commands) {
+          if (command.status === "running") return true;
+          if (!["exited", "timed_out", "failed", "killed"].includes(command.status))
+            throw unexpectedAnswer("command activity");
+        }
+        if (!result.nextCursor) return false;
+        if (result.nextCursor === cursor) throw unexpectedAnswer("command activity cursor");
+        cursor = result.nextCursor;
+      }
+      throw unexpectedAnswer("bounded command activity");
+    },
     async conversations(sandboxId: string) {
       const response = await call(() => api.conversations({ sandboxId }, { signal: AbortSignal.timeout(10_000) }));
       // Unknown activity cannot prove that it is safe to capture work or stop.

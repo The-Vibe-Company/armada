@@ -217,10 +217,10 @@ export function createModelUsageApi(
       const id = requestedId.toLowerCase();
       const budget = readSignal();
       const queryAuthorization = () =>
-        sql.query<{ version: number; sandbox_id: string | null }>(
-          `select c.version,visible.id as sandbox_id from public.credentials c
+        sql.query<{ version: number; sandbox_id: string | null; mixed: boolean }>(
+          `select c.version,visible.id as sandbox_id,coalesce(visible.mixed,false) as mixed from public.credentials c
            left join lateral (
-             select s.id from public.sandboxes s join public.goldens g on g.id=s.golden_id
+             select s.id,exists(select 1 from public.sandbox_model_credentials material where material.sandbox_id=s.id and material.quota_history_mixed) as mixed from public.sandboxes s join public.goldens g on g.id=s.golden_id
              where s.credential_id=c.id and s.credential_version=c.version and s.deleted_at is null
              and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)
              and s.org_id=g.org_id
@@ -245,6 +245,9 @@ export function createModelUsageApi(
         if (sandboxId) throw new VaultError("not_found", "No authorized pinned sandbox.");
         return { accountId: id, version, status: "unavailable", observedAt: null, windows: [] };
       }
+      // Older native quota envelopes do not identify the account revision. Never relabel their retained history.
+      if (permitted.rows[0]?.mixed)
+        return { accountId: id, version, status: "unavailable", observedAt: null, windows: [] };
       const key = `${id}:${version}:${boundSandbox}`;
       const time = now().getTime();
       const prior = cache.get(key);

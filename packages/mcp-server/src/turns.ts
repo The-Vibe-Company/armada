@@ -48,6 +48,8 @@ export interface StatusReport {
   taskOutcome?: TaskOutcome | null;
   credentialId?: string | null;
   credentialVersion?: number | null;
+  credentialNote?: string | null;
+  credentialDeliveryPending?: boolean;
   id: string;
   golden: string;
   visibility: SandboxView["visibility"];
@@ -306,6 +308,8 @@ function report(
     skills: sandbox.skills ?? [],
     reasoningEffort: sandbox.reasoningEffort,
     credentialId: sandbox.credentialId ?? null,
+    credentialNote: sandbox.credentialNote ?? null,
+    credentialDeliveryPending: sandbox.credentialDeliveryPending ?? false,
     credentialVersion: sandbox.credentialVersion ?? null,
     status,
     statusReason:

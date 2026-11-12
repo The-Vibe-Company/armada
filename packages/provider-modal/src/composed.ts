@@ -18,6 +18,7 @@ export interface HarnessEnvironment {
   claudeEnv: Record<string, string>;
   codexEnv: Record<string, string>;
   codexAuthJson?: string;
+  credentialRepoint?: string;
   nativeAuthRevision?: number;
   nativeAuthSecrets?: string[];
   mcp?: McpConfiguration;
@@ -145,6 +146,9 @@ async function composeModalProvider(options: ComposedModalOptions) {
         codexExecutable: "/usr/local/bin/codex",
         claudeEnv: withTrustedHarnessPath(harness.claudeEnv),
         codexEnv: withTrustedHarnessPath(harness.codexEnv),
+        ...("credentialRepoint" in harness && harness.credentialRepoint !== undefined
+          ? { credentialRepoint: harness.credentialRepoint }
+          : {}),
         ...("codexAuthJson" in harness && harness.codexAuthJson !== undefined
           ? { codexAuthJson: harness.codexAuthJson }
           : {}),
