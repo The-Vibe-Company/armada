@@ -236,11 +236,12 @@ test("an edge 404 while no deployment serves is a temporary outage, and Check ag
   await expect(alert).not.toContainText("Application not found");
   const card = goldenRow(page, "shared-golden");
   await expect(card.locator("[data-launch-paused]")).toHaveText("Launch paused. The provider status is unavailable.");
-  await expect((await goldenPanel(page, "shared-golden")).locator("[data-rebuild-paused]")).toHaveText(
-    "Rebuilding paused: provider status unavailable.",
-  );
+  const detail = await goldenPanel(page, "shared-golden");
+  await expect(detail.locator("[data-rebuild-paused]")).toHaveText("Rebuilding paused: provider status unavailable.");
 
   await post("/__test/provider-status-fail", {});
+  await page.keyboard.press("Escape");
+  await expect(detail).toBeHidden();
   await alert.getByRole("link", { name: "Check again" }).click();
   await expect(alert).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Launch from shared-golden" })).toBeVisible();
