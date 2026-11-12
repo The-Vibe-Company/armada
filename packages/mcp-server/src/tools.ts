@@ -649,6 +649,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     const found = await measure("sandbox_read", () => visible(sandboxId));
     const useStored = stored && found.provider === "modal" && context.storedProvider !== undefined;
     const provider =
+      found.credentialDeliveryPending ||
       found.status === "deleted" ||
       found.status === "starting" ||
       found.status === "stopping" ||

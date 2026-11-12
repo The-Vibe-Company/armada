@@ -479,6 +479,7 @@ test("membership revoked during native delivery refuses ACK until a new authoriz
 test("a claim committed before a lost admission ACK remains recoverable through the product even with a detached public pin", async () => {
   const f = await fixture({ native: true });
   try {
+    await f.db.query("update sandboxes set task_prompt_id='retained-turn' where id=$1", [f.id]);
     const original = f.auth.claim.bind(f.auth);
     const interrupted = spyOn(f.auth, "claim").mockImplementationOnce(async (...args) => {
       await original(...args);
@@ -493,6 +494,35 @@ test("a claim committed before a lost admission ACK remains recoverable through 
       credentialDeliveryPending: true,
       status: "stopped",
     });
+    // Production Modal turn/event reads are fenced while delivery is pending.
+    // Status/wait must still expose the durable recovery state, without I/O.
+    const context = { ...f.context, storedProvider: async () => f.provider };
+    const liveProvider = spyOn(context, "provider");
+    const storedProvider = spyOn(context, "storedProvider");
+    const nativeRead = spyOn(f.provider, "getPrompt").mockImplementation(async () => {
+      await f.auth.assertCredentialReady(f.provider, f.physical);
+      throw Error("Pending native reads must remain fenced.");
+    });
+    try {
+      for (const [tool, args] of [
+        ["status", { id: f.id }],
+        ["wait", { id: f.id, timeout_seconds: 0 }],
+      ] as const)
+        expect(await callSharedTool(context, tool, args)).toMatchObject({
+          id: f.id,
+          status: "stopped",
+          credentialDeliveryPending: true,
+          credentialNote: expect.stringContaining("pending"),
+          prompt: null,
+        });
+      expect(liveProvider).not.toHaveBeenCalled();
+      expect(storedProvider).not.toHaveBeenCalled();
+      expect(nativeRead).not.toHaveBeenCalled();
+    } finally {
+      liveProvider.mockRestore();
+      storedProvider.mockRestore();
+      nativeRead.mockRestore();
+    }
     const actor = { userId: f.people.owner, orgId: f.people.org, role: "member" as const };
     expect(await f.auth.holder(actor, f.target.id, 1)).toMatchObject({ sandboxId: f.id, requiresReconnect: true });
     await f.db.query("update credentials set value_enc=$2 where id=$1", [

@@ -94,6 +94,7 @@ export async function readStatus(
   // Registration is not readiness. Only the launch owner (or lifecycle recovery
   // after its lease expires) may publish completion; status must remain readable.
   if (
+    sandbox.credentialDeliveryPending ||
     sandbox.status === "starting" ||
     sandbox.status === "stopping" ||
     sandbox.stopRequestedAt ||
