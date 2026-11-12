@@ -37,7 +37,7 @@ Repeat for `--provider modal --harness codex` with its own golden/account.
 The current sandbox-access admission supports Boat/Codex and Modal/Codex only;
 selecting Claude does not enable an unsupported server pair.
 `--repo <configured repository>` is optional. Deadline defaults to 900 seconds
-(`--timeout 60..1800`), followed by a separate 90-second cleanup grace. Requests
+(`--timeout 60..1800`), followed by a separate 660-second cleanup grace. Requests
 have socket and monotonic wall deadlines and bounded response sizes; redirects
 are refused, including on the guest-side anonymous probe.
 
@@ -211,3 +211,47 @@ Optionally add `--repo armada` only if `armada` is actually configured on each
 selected golden. This is not a promise of a live pass: old-grant audit, native
 negative-control evidence, provider readiness and approved staging rollout remain
 prerequisites. This change performed no live staging rerun.
+
+
+## Canonical public routes and status 404s
+
+The checker uses the same public owner operations as the current CLI:
+**POST** `/api/v1/sandbox/status` and `/api/v1/sandbox/stop`, JSON `{id, org}`,
+the selected owner bearer, and `Accept: application/json`. All owner operations
+carry the selected org. There is no GET/alias/private-origin fallback. Routes and
+org were already aligned; the explicit Accept header now matches the CLI too.
+A staging `404/not_found` does not by itself establish a route mismatch, a race,
+or that compute stopped. `404/unknown_route` is distinct and is never retried or
+redirected to another route.
+
+Only a new run resource independently confirmed in owner=`me`, selected-golden
+inventory may receive up to two additional **initial read-only** status attempts
+for exact HTTP 404 `not_found`. Once a status succeeds, this exception is over;
+other errors and unknown-route replies are not retried. Observation delay is a
+possibility, not a proven cause of the reported staging failure.
+
+Cleanup sends stop **first** for each already authorized/adopted run ID. It never
+requires status to succeed before the mutation, and never stops an uncorrelated
+native-result ID. A matching stopped acknowledgement is sufficient; pending or
+stopping acknowledgements use bounded read-only status/explicit stopped owner-list
+confirmation. A 404 alone is not confirmation. Within the remaining grace, failure for one known resource
+does not short-circuit cleanup attempts for the others, and the existing incomplete
+allocation audit still prevents `cleanupConfirmed` from becoming true.
+
+Stop uses the CLI's 660-second request budget, bounded by remaining time. Cleanup
+has a separate **660-second (11-minute) overall grace**, so a legitimate Modal
+checkpoint is not aborted by the former 30-second request/90-second grace. There
+are no stop retry loops. Final cleanup may repeat the same known ID's idempotent,
+server-fenced stop after a scenario failure; it never retries launch/send.
+Partitions and exhausted deadlines still need operator follow-up.
+
+Compare a retained parent using the **same origin, exported token and org**:
+
+```sh
+ARMADA_URL="$STAGING_URL" armada status "$PARENT_ID" --org "$STAGING_ORG" --json
+```
+
+A default CLI origin/session could differ from the checker's. Do not infer a
+server/proxy route bug merely because a later/default CLI command sees a parent.
+Use the existing explicit-org/golden rerun commands above, omitting `--repo`; this
+change performs no live staging rerun and does not assert the source of the 404.
