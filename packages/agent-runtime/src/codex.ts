@@ -273,7 +273,7 @@ export class CodexDriver implements Driver {
       });
       child.stdin.write(`${JSON.stringify({ method: "initialized", params: {} })}\n`);
       // Official API-key login uses the private JSONL channel, never argv or an auth-file read.
-      if (this.options.env.OPENAI_API_KEY) {
+      if (this.options.env.OPENAI_API_KEY && !this.options.env.ARMADA_CUSTOM_CODEX_ENDPOINT) {
         const login: LoginAccountParams = { type: "apiKey", apiKey: this.options.env.OPENAI_API_KEY };
         const result = await rpc<LoginAccountResponse>("account/login/start", login);
         if (result.type !== "apiKey") throw new HarnessError("authentication_failed");
