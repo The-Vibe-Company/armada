@@ -38,7 +38,11 @@ blanket fail-closed policy for complex catalogue entries and absent native TTL.
   public fallback.
 
 Publication and stored-quote validation share the same calculator eligibility;
-there is no stricter shadow guard in session aggregation. Previously known
+there is no stricter shadow guard in session aggregation. Numeric witnesses must
+still match one actual observation, never an independently max-merged counter
+union. TTL comparisons use effective pricing meaning: absent/default are
+equivalent, and zero writes or flat connection rates do not depend on TTL. Raw
+TTL evidence remains stored; explicit non-default public writes still block. Previously known
 amounts/source stay frozen. A formerly blocked quote can become known during the
 next ordinary collection/retry from its existing validated input witness and
 frozen rates. No current-rate backfill, automatic closed-ledger scan or migration

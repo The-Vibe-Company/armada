@@ -125,8 +125,12 @@ function storedInputs(value: unknown): PricingInputs | null {
     cacheWriteTtl: v.cacheWriteTtl,
   } as unknown as PricingInputs;
 }
-const equal = (a: PricingInputs, b: PricingInputs) =>
-  fields.every((k) => a[k] === b[k]) && a.cacheWriteTtl === b.cacheWriteTtl;
+const effectiveTtl = (input: PricingInputs, harness: Harness, price: PriceSnapshot | null) =>
+  input.cacheWriteTokens === 0 || price?.source === "connection"
+    ? null
+    : (input.cacheWriteTtl ?? (harness === "claude" ? "5m" : "30m"));
+const equal = (a: PricingInputs, b: PricingInputs, harness: Harness, price: PriceSnapshot | null) =>
+  fields.every((k) => a[k] === b[k]) && effectiveTtl(a, harness, price) === effectiveTtl(b, harness, price);
 function complete(input: PricingInputs, price: PriceSnapshot, harness: Harness): boolean {
   // One eligibility policy for publication and projection; do not maintain stricter shadow TTL/rate guards.
   return (
@@ -143,15 +147,15 @@ export function stampTurnPricing(
   harness: Harness,
 ): TurnTokenUsage[] {
   const old = new Map(prior.map((row) => [key(row), row]));
-  const observedInputs = new Map<string, Set<string>>();
+  const observedInputs = new Map<string, PricingInputs[]>();
   for (const row of observations) {
     const identity = key(row);
     let tuples = observedInputs.get(identity);
     if (!tuples) {
-      tuples = new Set();
+      tuples = [];
       observedInputs.set(identity, tuples);
     }
-    tuples.add(JSON.stringify(inputs(row, harness)));
+    tuples.push(inputs(row, harness));
   }
   const contexts = new Map<string, TurnPriceContext>();
   for (const candidate of admitted) {
@@ -169,11 +173,12 @@ export function stampTurnPricing(
       witness = storedInputs(saved?.inputs);
     // A max-per-field native merge is not necessarily a tuple any harness actually reported.
     const observed =
-      (witness && equal(witness, current)) || observedInputs.get(key(row))?.has(JSON.stringify(current)) === true;
+      (witness && equal(witness, current, harness, frozen.snapshot)) ||
+      observedInputs.get(key(row))?.some((input) => equal(input, current, harness, frozen.snapshot)) === true;
     const oldUsd = saved?.usd;
     if (
       witness &&
-      equal(witness, current) &&
+      equal(witness, current, harness, frozen.snapshot) &&
       frozen.snapshot &&
       complete(witness, frozen.snapshot, harness) &&
       typeof oldUsd === "string" &&
@@ -255,7 +260,7 @@ export function withServerCost(usage: SandboxUsage | null, harness: Harness): Sa
     if (
       !valid ||
       !witness ||
-      !equal(witness, inputs(row, harness)) ||
+      !equal(witness, inputs(row, harness), harness, valid.snapshot) ||
       !valid.snapshot ||
       !complete(witness, valid.snapshot, harness) ||
       saved?.unknown !== null ||
