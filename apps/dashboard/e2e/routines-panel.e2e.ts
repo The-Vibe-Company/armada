@@ -42,13 +42,16 @@ test("Routines history, direct links, keyboard navigation and reload stay cohere
   await signIn(page, "alice@example.com", "/variables");
   await page.goto("/routines");
   const row = page.locator('[data-routine="Morning review"]').filter({ visible: true });
+  // Raw history/keyboard/mouse input bypasses locator actionability. Wait for the layer to settle first.
   for (const dismiss of ["back", "reload-back", "close", "outside"] as const) {
     await row.locator("[data-select-item]").click();
     const sheet = page.getByRole("dialog", { name: "Morning review", exact: true });
     await expect(sheet).toBeVisible();
+    await sheet.getByRole("button", { name: "Close the panel" }).click({ trial: true });
     if (dismiss === "reload-back") {
       await page.reload();
       await expect(sheet).toBeVisible();
+      await sheet.getByRole("button", { name: "Close the panel" }).click({ trial: true });
       await page.goBack();
     } else if (dismiss === "back") await page.evaluate(() => history.back());
     else if (dismiss === "close") await page.getByRole("button", { name: "Close the panel" }).click();
@@ -66,8 +69,10 @@ test("Routines history, direct links, keyboard navigation and reload stay cohere
   await page.goto(new URL(href, page.url()).href);
   const sheet = page.getByRole("dialog", { name: "Morning review", exact: true });
   await expect(sheet).toBeVisible();
+  await sheet.getByRole("button", { name: "Close the panel" }).click({ trial: true });
   await page.reload();
   await expect(sheet).toBeVisible();
+  await sheet.getByRole("button", { name: "Close the panel" }).click({ trial: true });
   const url = page.url();
   await page.keyboard.press("j");
   await expect(page).not.toHaveURL(url);

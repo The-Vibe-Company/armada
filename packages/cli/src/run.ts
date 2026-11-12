@@ -194,6 +194,8 @@ Usage:
   armada creds set <kind> [--org <name>] [--file <path>]
                                            Store a credential, encrypted; the value is read from stdin or a file
                                            Model accounts: --name NAME creates; --id UUID --expected-version N replaces
+                                           Codex: --base-url URL [--api-version VERSION]; key still comes from stdin/file
+                                           Custom endpoints require Modal and the Responses API, not chat completions
   armada routine --help                    Create, inspect, enable, pause and manage scheduled template launches
   armada template --help                   Create, publish, list, get, delete and launch immutable templates
   armada vars --help                       Readable variables: set/list/read; stdin/file writes only
