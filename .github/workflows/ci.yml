@@ -59,15 +59,21 @@ jobs:
       - run: bun run lint
       - run: bun scripts/generate-ios-harness.ts --check
       - run: bun run typecheck
+      - run: bun packages/agent-runtime/build.ts
+      - run: bun scripts/validate-runtime-native.ts
+      - name: Real checkpoint process boundary
+        run: |
+          sudo unshare --pid --fork --mount-proc "$(which bun)" packages/provider-modal/test/checkpoint-process-conformance.ts
+          sudo unshare --pid --fork --mount-proc "$(which bun)" packages/provider-modal/test/checkpoint-process-conformance.ts --native-pidfds
       - name: Check complete unit shard coverage
         run: bun scripts/ci/unit-shards.ts --check
 
   unit-tests:
-    name: Unit tests (${{ matrix.shard }}/4)
+    name: Unit tests (${{ matrix.shard }}/12)
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     services:
@@ -89,11 +95,6 @@ jobs:
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
       - run: bun packages/agent-runtime/build.ts
-      - run: bun scripts/validate-runtime-native.ts
-      - name: Real checkpoint process boundary
-        run: |
-          sudo unshare --pid --fork --mount-proc "$(which bun)" packages/provider-modal/test/checkpoint-process-conformance.ts
-          sudo unshare --pid --fork --mount-proc "$(which bun)" packages/provider-modal/test/checkpoint-process-conformance.ts --native-pidfds
       - name: Apply migrations to disposable PostgreSQL
         env:
           PGHOST: 127.0.0.1

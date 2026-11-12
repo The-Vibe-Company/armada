@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url";
 import durations from "./test-durations.json";
 
-export const SHARD_COUNT = 4;
+export const SHARD_COUNT = 12;
 const root = fileURLToPath(new URL("../../", import.meta.url));
 
 // Bun's default discovery names; explicit ./ paths below are exact files, not filters.
@@ -26,7 +26,7 @@ export function validatePlan(files: string[], shards: string[][]): void {
     new Set(assigned).size !== assigned.length ||
     assigned.some((file) => !expected.has(file))
   ) {
-    throw new Error("Every test file must occur in exactly one of four nonempty shards");
+    throw new Error(`Every test file must occur in exactly one of ${SHARD_COUNT} nonempty shards`);
   }
 }
 
@@ -56,7 +56,8 @@ if (import.meta.main) {
   );
   if (process.argv[2] !== "--check") {
     const index = Number(process.argv[2]);
-    if (!Number.isInteger(index) || index < 1 || index > SHARD_COUNT) throw new Error("Expected shard 1..4 or --check");
+    if (!Number.isInteger(index) || index < 1 || index > SHARD_COUNT)
+      throw new Error(`Expected shard 1..${SHARD_COUNT} or --check`);
     const child = Bun.spawn([process.execPath, "test", ...shards[index - 1]!.map((path) => `./${path}`)], {
       cwd: root,
       stdin: "inherit",
