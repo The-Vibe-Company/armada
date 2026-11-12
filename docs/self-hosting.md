@@ -139,6 +139,8 @@ Every `packages/*/package.json` carries the same version, the one `armada --vers
 
 ## CI and releases
 
-`.github/workflows/ci.yml` runs on every pull request and on `main`: lint, typecheck and test; the dashboard e2e on a production build; and, per platform, the compiled binary, its npm packages, an install with npm and Bun and a smoke run.
+`.github/workflows/ci.yml` runs on every pull request and on `main`: lint, typecheck and test; and, per platform, the compiled binary, its npm packages, an install with npm and Bun and a smoke run.
 
 Release Please opens the version PR from conventional commits. Merging it publishes `@the-vibe-company/armada` and its platform packages to npm with provenance: [releasing.md](releasing.md).
+
+Dashboard browser tests are manual-only: run `bun run e2e` against the local mock. They do not gate PRs or the merge queue.

@@ -26,6 +26,7 @@ import {
   renameAccount,
   replaceAccountSecret,
   subscriptionHolder,
+  testAccountConnection,
 } from "@/app/actions/model-accounts";
 import { SubmitButton } from "@/components/action-form";
 import { ChoiceCard } from "@/components/connections";
@@ -111,6 +112,81 @@ function TargetFields({ account, orgId }: { account: ModelAccount; orgId: string
       <input type="hidden" name="id" value={account.id} />
       <input type="hidden" name="version" value={account.version} />
     </>
+  );
+}
+
+/** Testing uses only a bound running sandbox; account secrets/endpoint details never enter this form. */
+function ConnectionTestDialog({ account, orgId }: { account: ModelAccount; orgId: string }) {
+  return (
+    <Dialog>
+      <DialogTrigger asChild>
+        <Button variant="outline" size="sm" aria-label={`Test connection, ${account.name}`}>
+          Test connection
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Test {account.name}</DialogTitle>
+          <DialogDescription>
+            Custom endpoints only. Launch an idle Modal sandbox with this account first. This sends one tiny billable
+            request through its runtime, without starting or resuming a machine.
+          </DialogDescription>
+        </DialogHeader>
+        <ConnectionTestForm key={`${account.id}:${account.version}:${orgId}`} account={account} orgId={orgId} />
+      </DialogContent>
+    </Dialog>
+  );
+}
+function ConnectionTestForm({ account, orgId }: { account: ModelAccount; orgId: string }) {
+  const [state, action, pending] = useActionState(testAccountConnection, null);
+  const [edited, setEdited] = useState(false);
+  const formRef = usePreservedActionForm();
+  const id = useId();
+  return (
+    <form
+      ref={formRef}
+      action={action}
+      onChange={() => setEdited(true)}
+      onSubmit={() => setEdited(false)}
+      className="space-y-4"
+    >
+      <TargetFields account={account} orgId={orgId} />
+      <div className="space-y-2">
+        <Label htmlFor={`${id}-sandbox`}>Running Modal sandbox UUID</Label>
+        <Input
+          id={`${id}-sandbox`}
+          name="sandboxId"
+          required
+          autoComplete="off"
+          spellCheck={false}
+          placeholder="Public Armada sandbox UUID"
+        />
+      </div>
+      <div className="space-y-2">
+        <Label htmlFor={`${id}-model`}>Deployment or model name</Label>
+        <Input
+          id={`${id}-model`}
+          name="model"
+          required
+          maxLength={200}
+          autoComplete="off"
+          spellCheck={false}
+          placeholder="Your endpoint's deployment/model"
+        />
+      </div>
+      <p className="text-xs text-muted-foreground">
+        Only your sandbox in this organization, bound to this account and version. No keys or URLs are accepted. A
+        successful check does not prove streaming or tool compatibility.
+      </p>
+      {pending ? (
+        <p role="status" className="text-sm text-muted-foreground">
+          Checking the runtime connection…
+        </p>
+      ) : (
+        !edited && <ResultLine result={state} />
+      )}
+      <SubmitButton>{pending ? "Checking…" : "Send tiny check"}</SubmitButton>
+    </form>
   );
 }
 
@@ -406,6 +482,11 @@ export function AccountRow({
               Updated <time dateTime={account.updatedAt}>{relativeTime(account.updatedAt, now)}</time>
             </span>
           </p>
+          {info.billing === "api" && account.status === "active" && (
+            <div className="pt-1.5">
+              <ConnectionTestDialog account={account} orgId={orgId} />
+            </div>
+          )}
           {/* A revoked or removed account has no usage to read: its state already says what to do. */}
           {info.billing === "subscription" && account.status === "active" && (
             <div className="pt-1.5">

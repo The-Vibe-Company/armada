@@ -287,7 +287,7 @@ test("native collection persists retry-safe rows and preserves measurements when
     await collectSandboxUsage(provider, store, fallback);
     const incomplete = (await store.get(id))?.usage;
     expect(incomplete?.turnCount).toBe(2);
-    expect(incomplete?.tokenTotals?.inputTokens).toBeNull();
+    expect(incomplete?.tokenTotals).toMatchObject({ inputTokens: 42, incomplete: true });
     const later = { ...row, promptId: "unmeasured", inputTokens: 100 };
     await store.recordUsage!(id, { turnCount: 2, turns: [later] });
     // A stale status writer cannot erase a concurrently discovered prompt or lower its counters.
