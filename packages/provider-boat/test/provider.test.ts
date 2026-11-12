@@ -257,6 +257,22 @@ describe("sandboxes", () => {
     ]);
   });
 
+  test("get rejects mismatched or missing sandbox identities before accepting a fresh observation", async () => {
+    const boat = fakeBoat(
+      { body: { ok: true, type: "sandbox.info", sandbox: sandbox({ id: "bx_98765432", state: "archived" }) } },
+      { body: { ok: true, type: "sandbox.info", sandbox: sandbox({ id: "" }) } },
+      { body: { ok: true, type: "sandbox.info", sandbox: sandbox({ state: "running" }) } },
+    );
+    for (let i = 0; i < 2; i++)
+      await expect(boat.provider.get(ID)).rejects.toMatchObject({
+        provider: "boat",
+        code: "unknown",
+        retryable: false,
+      });
+    expect(await boat.provider.get(ID)).toMatchObject({ id: ID, state: "running" });
+    expect(boat.requests.map((request) => request.method)).toEqual(["GET", "GET", "GET"]);
+  });
+
   test("get reports the ssh endpoint when the machine has no public IPv4", async () => {
     const boat = fakeBoat({
       body: {
