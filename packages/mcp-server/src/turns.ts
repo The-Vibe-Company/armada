@@ -1,4 +1,4 @@
-import type { MachineSizeEvidence } from "@armada/core";
+import type { MachineSizeEvidence, PlanLimit } from "@armada/core";
 import {
   type AgentEvent,
   dedupeEvents,
@@ -40,6 +40,7 @@ export interface PromptReport {
   state: PromptOutcome["state"];
   /** Why the turn failed or was interrupted, from the prompt event or the usage-limit or expired-login event. */
   reason: string | null;
+  limit?: PlanLimit;
 }
 
 export interface StatusReport {
@@ -188,6 +189,7 @@ export async function readStatus(
       evidence.modelSelectionReason === "model_selection_mismatch";
     prompt = {
       ...evidence,
+      ...(!selectionFailed && outcome.state === "failed" && outcome.limit ? { limit: outcome.limit } : {}),
       promptId: target.promptId,
       conversationId: target.conversationId,
       state: selectionFailed ? "failed" : outcome.state,

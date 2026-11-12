@@ -779,6 +779,27 @@ describe("tools", () => {
       [launched.data.id],
     );
     expect(cleared.rows[0]?.status_reason).toBeNull();
+    // A failed native subscription turn preserves safe reset evidence in the public report.
+    const resetsAt = "2026-11-10T00:00:00.000Z";
+    boat.sandbox("bx_1").events.push({
+      id: "safe-plan-limit",
+      at: 10,
+      kind: "other",
+      type: "usage_limit",
+      promptId: "prompt_2",
+      data: { code: "usage_limit_exceeded", resetsAt, message: "private-vendor-body" },
+    });
+    boat.finish("bx_1", "prompt_2", "failed");
+    const exhausted = await call(mcp, "status", { id: launched.data.id });
+    expect(exhausted.data).toMatchObject({
+      status: "ready",
+      prompt: {
+        state: "failed",
+        reason: `Plan limit reached. Resets at ${resetsAt}.`,
+        limit: { code: "usage_limit_exceeded", resetsAt },
+      },
+    });
+    expect(JSON.stringify(exhausted.data)).not.toContain("private-vendor-body");
   });
 
   test("a session in several orgs sees each org's goldens, and launch takes the org that has the golden", async () => {

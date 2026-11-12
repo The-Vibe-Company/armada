@@ -812,7 +812,7 @@ function ReplaceDialog({
           <input type="hidden" name="kind" value={account.kind} />
           <input type="hidden" name="name" value={account.name} />
           {account.kind === "openai" ? (
-            <CodexConnectionFields idPrefix={id} requireChoice />
+            <CustomEndpointFields idPrefix={id} kind="openai" requireChoice />
           ) : account.kind === "anthropic" ? (
             <ClaudeReplacementFields idPrefix={id} />
           ) : (
@@ -966,7 +966,16 @@ function ClaudeReplacementFields({ idPrefix }: { idPrefix: string }) {
 }
 
 /** Non-secret endpoint fields are opt-in; the key remains an uncontrolled password input. */
-function CodexConnectionFields({ idPrefix, requireChoice = false }: { idPrefix: string; requireChoice?: boolean }) {
+function CustomEndpointFields({
+  idPrefix,
+  kind,
+  requireChoice = false,
+}: {
+  idPrefix: string;
+  kind: "openai" | "anthropic";
+  requireChoice?: boolean;
+}) {
+  const codex = kind === "openai";
   const [custom, setCustom] = useState(false);
   const [chosen, setChosen] = useState(!requireChoice);
   return (
@@ -1005,7 +1014,7 @@ function CodexConnectionFields({ idPrefix, requireChoice = false }: { idPrefix: 
       )}
       {custom && (
         <fieldset className="min-w-0 space-y-3 rounded-lg border bg-muted/30 p-4">
-          <legend className="px-1 text-sm font-medium">Codex connection</legend>
+          <legend className="px-1 text-sm font-medium">{codex ? "Codex connection" : "Claude gateway"}</legend>
           <div className="space-y-2">
             <Label htmlFor={`${idPrefix}-base-url`}>Base URL</Label>
             <Input
@@ -1016,26 +1025,39 @@ function CodexConnectionFields({ idPrefix, requireChoice = false }: { idPrefix: 
               spellCheck={false}
               autoComplete="off"
               aria-describedby={`${idPrefix}-endpoint-hint`}
-              placeholder="https://resource.services.ai.azure.com/…/openai/v1"
+              placeholder={
+                codex ? "https://resource.services.ai.azure.com/…/openai/v1" : "https://gateway.example.com/anthropic"
+              }
             />
           </div>
           <p id={`${idPrefix}-endpoint-hint`} className="text-xs text-muted-foreground">
-            Azure AI Foundry or a Responses-compatible gateway. A pasted URL ending in /responses is accepted. Modal
-            only. Codex cannot use chat-completions-only endpoints such as DeepSeek.
+            {codex
+              ? "Azure AI Foundry or a Responses-compatible gateway. A pasted URL ending in /responses is accepted. Modal only. Codex cannot use chat-completions-only endpoints such as DeepSeek."
+              : "Modal only. Claude Code supports Claude models only. Use the gateway base URL, not /v1/messages. The gateway must support Anthropic Messages, streaming and tool use."}
           </p>
-          <div className="space-y-2">
-            <Label htmlFor={`${idPrefix}-api-version`}>API version (optional)</Label>
-            <Input
-              id={`${idPrefix}-api-version`}
-              name="apiVersion"
-              autoComplete="off"
-              spellCheck={false}
-              placeholder="Not needed for Foundry v1"
-            />
-          </div>
+          {codex ? (
+            <div className="space-y-2">
+              <Label htmlFor={`${idPrefix}-api-version`}>API version (optional)</Label>
+              <Input
+                id={`${idPrefix}-api-version`}
+                name="apiVersion"
+                autoComplete="off"
+                spellCheck={false}
+                placeholder="Not needed for Foundry v1"
+              />
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <Label htmlFor={`${idPrefix}-endpoint-auth`}>Gateway authentication</Label>
+              <NativeSelect id={`${idPrefix}-endpoint-auth`} name="endpointAuth" defaultValue="bearer">
+                <option value="bearer">Bearer token (Authorization)</option>
+                <option value="api-key">API key (x-api-key)</option>
+              </NativeSelect>
+            </div>
+          )}
         </fieldset>
       )}
-      {chosen && <SecretField key={custom ? "custom" : "openai"} idPrefix={idPrefix} kind="openai" />}
+      {chosen && <SecretField key={`${kind}:${custom}`} idPrefix={idPrefix} kind={kind} />}
     </div>
   );
 }
@@ -1189,8 +1211,8 @@ export function AddAccountDialog({
                 <Disclosure summary={`Paste ${info.valueLabel} instead`} defaultOpen={false}>
                   <div className="space-y-4">
                     <p className="text-xs text-muted-foreground">{info.hint}</p>
-                    {kind === "openai" ? (
-                      <CodexConnectionFields idPrefix={id} />
+                    {kind === "openai" || kind === "anthropic" ? (
+                      <CustomEndpointFields key={kind} idPrefix={id} kind={kind} />
                     ) : (
                       <SecretField idPrefix={id} kind={kind} />
                     )}
@@ -1206,11 +1228,15 @@ export function AddAccountDialog({
                   <p className="text-sm">
                     <span className="font-medium">{subscription ? "Sign in on your machine" : "Paste the key"}.</span>{" "}
                     <span className="text-muted-foreground">
-                      {kind === "openai" ? "From OpenAI or your gateway. Billed per token." : info.hint}
+                      {kind === "openai"
+                        ? "From OpenAI or your gateway. Billed per token."
+                        : kind === "anthropic"
+                          ? "From Anthropic or your gateway. Billed per token."
+                          : info.hint}
                     </span>
                   </p>
-                  {kind === "openai" ? (
-                    <CodexConnectionFields idPrefix={id} />
+                  {kind === "openai" || kind === "anthropic" ? (
+                    <CustomEndpointFields key={kind} idPrefix={id} kind={kind} />
                   ) : (
                     <SecretField idPrefix={id} kind={kind} />
                   )}

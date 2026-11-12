@@ -1,5 +1,5 @@
 import type { AgentEvent } from "./provider.ts";
-import type { StoredTurnPricing } from "./turn-pricing.ts";
+import type { SessionCost, StoredTurnPricing } from "./turn-pricing.ts";
 
 /** Closed, secret-free explanations for an unmeasured Boat turn. */
 export const USAGE_UNAVAILABLE_CODES = [
@@ -86,6 +86,8 @@ export interface TurnTokenUsage {
   unavailableReason?: UsageUnavailableReason;
 }
 export interface SandboxUsage {
+  /** Server-owned sum of persisted quotes, never recomputed from current prices by a viewer. */
+  cost?: SessionCost;
   /** Seconds between Armada-recorded compute transitions; null for legacy/incomplete history. */
   computeSeconds: number | null;
   turnCount: number | null;

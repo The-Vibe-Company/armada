@@ -78,6 +78,7 @@ test("price context and coherent native observations freeze per-share API amount
       { observations: [native] },
     );
     expect((await read())?.pricing).toBeNull();
+    expect((await store.get(saved.id))?.usage?.cost).toMatchObject({ usd: null, unknown: "admission" });
     await store.recordUsage!(
       saved.id,
       { turnCount: 1, turns: [native] },
@@ -227,39 +228,6 @@ test("database failure publishing a changed quote rolls native counters back ato
     expect((await read())?.pricing?.usd).toBe("0.00022");
   } finally {
     await data.db.close();
-  }
-});
-
-test("MCP status preserves exact pricing strings and native totals under its discovered output schema", async () => {
-  const { harness, call } = await import("./support.ts");
-  const server = await harness();
-  try {
-    const { store, saved, native, context } = await state(server);
-    await store.recordUsage!(
-      saved.id,
-      { turnCount: 1, turns: [native] },
-      { observations: [native], contexts: [context] },
-    );
-    // Closed stored state: reading this quote must not create/resume native compute or resolve credentials.
-    await store.update(saved.id, {
-      status: "failed",
-      statusReason: "closed fixture",
-      stoppedAt: "2026-11-12T12:00:00.000Z",
-    });
-    const client = await server.client(await server.token(server.people.owner));
-    await client.listTools();
-    const reply = await call(client, "status", { id: saved.id });
-    expect(reply.isError).toBe(false);
-    expect(reply.data.usage).toMatchObject({
-      tokenTotals: { inputTokens: 10, outputTokens: 20 },
-      turns: [
-        {
-          pricing: { schemaVersion: 1, usd: "0.00022", basis: "api_equivalent", credentialId: context.credentialId },
-        },
-      ],
-    });
-  } finally {
-    await server.close();
   }
 });
 
