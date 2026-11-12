@@ -1,3 +1,4 @@
+import { CODEX_ENDPOINT_ENV } from "./codex-endpoint.ts";
 import { HARNESSES, type Harness } from "./contract.ts";
 import { CODEX_AUTH_ENV, type HarnessCredentials, redact } from "./credentials.ts";
 import {
@@ -277,6 +278,8 @@ export async function launchSandbox(
   const snapshot = golden.providerSnapshotId;
   if (!snapshot) throw new GoldenError("conflict", `Golden '${golden.name}' has no snapshot yet.`);
   const credentials = await stores.credentials.resolve(actor, harness, request.credentialId);
+  if (credentials.env[CODEX_ENDPOINT_ENV] && provider.id !== "modal")
+    throw new LaunchError("invalid_request", "Custom Codex endpoints currently require Modal.");
   const github: GitHubAccess = credentials.github ?? { status: "not_connected", message: GITHUB_NOT_CONNECTED };
   const connected = github.status === "connected" ? github : null;
   const env = connected ? { ...credentials.env, ...githubEnv(connected.token) } : credentials.env;
