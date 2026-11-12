@@ -1,5 +1,16 @@
 # Persistent orchestrator runtime (#662)
 
+> **Compatibility-window recovery:** the current CLI no longer implements the
+> orchestrator command. For existing-compute inspection/recovery only, define
+> `armada_legacy` using the exact **2.21.0** npm invocation in the
+> [pinned recovery setup](cli-orchestrators.md#existing-compute-recovery-during-the-compatibility-window)
+> and verify its version before running the commands below. Use the existing
+> owner's session and approved `ARMADA_URL`; never log credentials. The sandbox
+> replacement does not recover existing managed parents. Create/smoke examples
+> below are historical, not current deployment instructions or authorization
+> to allocate compute. Server/database retirement remains gated.
+
+
 ## Release and deployment boundary
 
 ## Boat best-effort and Modal native continuity (#752)
@@ -26,32 +37,21 @@ Use the existing Boat golden **two-repos-prod-test**, its ID from
 `armada golden list --org ORG --json`, and an authorized named account for the
 selected harness. Keep the ordinary server/database/encryption configuration and
 already-deployed foundation/runtime/lifecycle schema. No new migration is needed.
-After deployment, the operator (not this implementation session) runs, with the
-owner's `ARMADA_TOKEN` already in the environment:
+The CLI-only postflight smoke and public orchestrator command were retired in
+step 3 of #984. Do not run the historical CLI create/send/stop/resume procedure.
+Use [ordinary sandbox scoped Armada access](sandbox-armada-access.md), delivered
+in #1002, for new work. Backend/native/HTTP conformance and cleanup remain
+separately gated; this removal does not stop existing orchestrators or release
+their compute.
 
-```sh
-armada orchestrator capabilities --json
-ARMADA_ORCHESTRATOR_SMOKE=create_real_compute \
-  bun scripts/orchestrator-smoke.ts https://APPROVED_ORIGIN \
-  ORG BOAT_GOLDEN_ID boat claude CLAUDE_MODEL CLAUDE_ACCOUNT [REPO]
-ARMADA_ORCHESTRATOR_SMOKE=create_real_compute \
-  bun scripts/orchestrator-smoke.ts https://APPROVED_ORIGIN \
-  ORG BOAT_GOLDEN_ID boat codex CODEX_MODEL CODEX_ACCOUNT [REPO]
-```
-
-Each smoke creates a new owned disposable parent, sends a prompt, reads cursor
-events, stops, resumes with no text, checks stable identity and **unverified**
-continuity, then stops again. Retain original operation keys/receipts on failure;
-never blindly rerun an uncertain mutation. Operator cleanup targets only these
-new fixtures. For rollback stop those parents while the runtime is available,
-remove the Boat pairs from the setting and restart; keep logical history.
 Authority revocation, delegation, ownership, idempotency and generation fences
 remain mandatory. Best-effort is not a claim of verified harness restoration.
 
 Local live probe: `boat --json info self` returned HTTP401 (CLI session not
 signed in). No stop was attempted on this delivery sandbox and no native live
-continuation is claimed; the operator smoke is required to observe actual Boat
-behavior with an authorized fixture.
+continuation was claimed. The historical operator smoke requirement was never
+evidence of actual Boat behavior; the retired CLI smoke is not a current
+instruction to allocate a fixture.
 
 ## Enable Modal × Codex (operator only, default off)
 
@@ -92,37 +92,23 @@ API-key account can launch children under its normal policy. Keep the caller's
 GitHub connection valid when the golden requires it.
 
 Restart the server through the normal deployment process, then authenticate as
-the owning member and check `armada orchestrator capabilities --json` against its
+the owning member and check `armada_legacy orchestrator capabilities --json` against its
 origin. Only explicitly selected supported pairs report `enabled: true`; Boat pairs
 report best-effort continuity and Modal × Claude remains unavailable. This reports real configured adapter availability, **not** a
 claim that operator live conformance has already passed. Owner create/detail/
 send/steer/events/stop/resume use the shared `/api/v1` runtime across CLI,
 dashboard and iOS. Delegated waits stay denied and are not required for this flow.
 
-### Approved live postflight and rollback
+### Historical live postflight; retained cleanup constraints
 
 The coordinator—not the implementation session—runs postflight against production
 with the owner's account immediately after enabling. No separate nonproduction
 origin exists or is required by this approved procedure. Use a **new owned**
 Modal × Codex orchestrator, never an existing user's fixture or old Modal App.
-With `ARMADA_TOKEN` already exported on the operator host:
-
-```sh
-ARMADA_ORCHESTRATOR_SMOKE=create_real_compute \
-  bun scripts/orchestrator-smoke.ts https://approved-production-origin.example \
-  ORG MODAL_GOLDEN modal codex MODEL CODEX_ACCOUNT [REPO]
-```
-
-`ARMADA_BIN` optionally selects the installed CLI. The script sets `ARMADA_URL`
-from the explicit origin and checks the selected pair before allocation. It runs
-create → send a trivial prompt → cursor events until native completion → stop →
-no-text resume → stop, requiring stable sandbox/conversation and native continuity,
-and prints a JSON pass/fail receipt. Keep that receipt and the exact original
-idempotency keys after failure; **do not blindly rerun** an uncertain mutation.
-Compute may remain running. The script does not auto-delete. The coordinator owns
-cleanup/deletion of this new disposable provider resource after final stop;
-delete only the new fixture resource, not the shared App or golden. Logical
-identity and history are not deleted by rollback.
+The CLI-only `scripts/orchestrator-smoke.ts` runner and its public command
+were retired in step 3 of #984. They are no longer an executable postflight.
+The native/HTTP service and rollback/compute-release retirement remain gated on
+coordinator authorization; this client removal is not that authorization.
 
 The full native matrix below remains the operator's evidence checklist, including
 private grant ACK/scrub, generation fencing, long turns and log redaction. A short
@@ -330,11 +316,14 @@ sessions. Claude has no verified equivalent: Modal × Claude and native-continui
 claims for Boat × Claude remain disabled until a real driver supplies one.
 Boat × Claude is available only under the best-effort policy above.
 
-## Operator live-conformance evidence checklist
+## Historical live-conformance evidence checklist
 
-For the approved Modal × Codex rollout, the coordinator uses a newly owned
-production fixture after enabling, never the historical stopped Modal App. Any
-future pair needs its own native evidence:
+The original Modal × Codex rollout required a newly owned production fixture,
+never the historical stopped Modal App. This checklist is retained as evidence
+context, not a current rollout procedure or permission to allocate a managed
+parent. Any future native validation requires separate coordinator authorization;
+new work uses ordinary sandboxes with scoped Armada access. The original
+evidence requirements were:
 
 1. Install the reviewed pinned public skills before first prompt; record source
    revision/provenance and prove unrelated files survive/conflicts fail clearly.
@@ -354,8 +343,10 @@ future pair needs its own native evidence:
 
 Existing account/foundation, runtime215, native-binding216 and lifecycle217
 schema must already be deployed in migration order; this PR adds no migration.
-Modal × Codex is opt-in under the approved operator postflight procedure above;
-Boat pairs are separately opt-in best-effort; Modal × Claude remains disabled. Rollback retains identity/history/native state.
+Historically, Modal × Codex was opt-in under that operator postflight procedure;
+Boat pairs were separately opt-in best-effort; Modal × Claude remained disabled.
+These historical settings are not a new enablement instruction. Existing-compute
+rollback retains identity/history/native state.
 
 ## Skill selection
 

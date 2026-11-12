@@ -106,7 +106,7 @@ public enum SandboxMutationFailure: Sendable, Equatable {
         switch ArmadaServerFailure.underlying(error) {
         case .signedOut: .signedOut
         case .forbidden, .http(404): .noAccess
-        case .invalidRequest, .conflict: .refused
+        case .invalidRequest, .conflict, .noRunningTurn: .refused
         default: .unconfirmed
         }
     }

@@ -131,8 +131,9 @@ ARMADA_CONFORMANCE_ORIGIN=https://approved-nonproduction-origin.example \
 ```
 
 This historical runner is not the approved #717 rollout procedure (it retains its
-original nonproduction guard). Use `scripts/orchestrator-smoke.ts` and the operator
-evidence checklist in the runtime document for the approved production postflight.
+original nonproduction guard). The CLI-only smoke was retired in step 3 of #984;
+it cannot be used as an operator postflight. Native/HTTP conformance guidance and
+backend retirement remain separately gated.
 
 The runner checks a successful exact scoped-tool call after minute15 in the
 same native turn, quiescent owner stop, actual no-text resume with the same

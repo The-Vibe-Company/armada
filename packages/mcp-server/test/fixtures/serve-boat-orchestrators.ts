@@ -4,8 +4,6 @@ import assert from "node:assert/strict";
 import { createServiceToken, createSqlAuthStore } from "@armada/auth";
 import * as core from "@armada/core/server";
 import { applyMigrations, openDatabase } from "../../../../scripts/db/apply.ts";
-import { run } from "../../../cli/src/run.ts";
-import { memorySessionStore } from "../../../cli/src/session.ts";
 import { connectionFixture, exerciseConnections, fixtureSql } from "./orchestrator-connections.ts";
 import { checkSandboxSkillLaunch } from "./sandbox-skill-launch.ts";
 import { catalogLock, catalogReceipt, catalogReference } from "./skillpack-catalog.ts";
@@ -298,29 +296,68 @@ const server = await startServer(
   { log: (line) => logs.push(line), logError: (line) => logs.push(line) },
 );
 const origin = `http://127.0.0.1:${server.port}`;
-async function cli(args: string[], expected = 0) {
-  let out = "",
-    err = "";
-  const auth = {
-    env: { ARMADA_URL: origin, ARMADA_TOKEN: token.token },
-    session: memorySessionStore(),
-    now: () => new Date(),
-    open: () => {},
-    fetch: fakeFetch,
-    out: (value: string) => {
-      out += value;
-    },
-    err: (value: string) => {
-      err += value;
-    },
+type OwnerInput = {
+  id?: string;
+  configuration?: core.OrchestratorCreate;
+  expectedRevision?: number;
+  text?: string;
+  key?: string;
+  cursor?: string;
+  all?: boolean;
+};
+async function owner(action: string, input: OwnerInput, expected = 0) {
+  const read = ["capabilities", "list", "detail", "events"].includes(action);
+  const path =
+    action === "create" || action === "list"
+      ? "/orchestrators"
+      : action === "capabilities"
+        ? "/orchestrators/capabilities"
+        : `/orchestrators/${input.id}${action === "detail" ? "" : `/${action === "send" ? "message" : action}`}`;
+  const query = new URLSearchParams(action === "capabilities" ? {} : { orgId });
+  if (input.cursor !== undefined) query.set("cursor", input.cursor);
+  const headers = {
+    authorization: `Bearer ${token.token}`,
+    "content-type": "application/json",
+    ...(input.key ? { "idempotency-key": input.key } : {}),
   };
-  const code = await run(["orchestrator", ...args, "--json"], auth, { auth });
-  assert.equal(code, expected, `${args.join(" ")}: ${err}\n${out}\n${logs.join("\n")}\n${requests.join("\n")}`);
-  return JSON.parse(out || err);
+  async function request() {
+    const response = await realFetch(`${origin}/api/v1${path}${read && query.size ? `?${query}` : ""}`, {
+      method: read ? "GET" : "POST",
+      headers,
+      ...(!read
+        ? {
+            body: JSON.stringify(
+              input.configuration ?? {
+                orgId,
+                expectedRevision: input.expectedRevision,
+                ...(input.text === undefined ? {} : { text: input.text }),
+              },
+            ),
+          }
+        : {}),
+    });
+    const payload: any = await response.json();
+    const result = response.ok && payload.state !== "failed" && payload.state !== "uncertain" ? 0 : 1;
+    assert.equal(result, expected, `${action}: ${JSON.stringify(payload)}\n${logs.join("\n")}\n${requests.join("\n")}`);
+    return payload;
+  }
+  const payload = await request();
+  if (action === "events" && input.all) {
+    while (payload.hasMore) {
+      assert(payload.cursor && payload.cursor !== query.get("cursor"), "Event cursor must advance.");
+      query.set("cursor", payload.cursor);
+      const next = await request();
+      payload.events.push(...next.events);
+      payload.cursor = next.cursor;
+      payload.hasMore = next.hasMore;
+    }
+  }
+  return payload;
 }
+
 async function waitForCreate(operation: { id: string; orchestratorId: string }): Promise<core.OrchestratorDetail> {
   for (let attempt = 0; attempt < 150; attempt++) {
-    const detail: core.OrchestratorDetail = await cli(["detail", operation.orchestratorId, "--org", orgId]);
+    const detail: core.OrchestratorDetail = await owner("detail", { id: operation.orchestratorId });
     const receipt = detail.operations.find((item) => item.id === operation.id);
     if (receipt && receipt.state !== "pending") return detail;
   }
@@ -332,22 +369,14 @@ try {
   for (const harness of ["codex", "claude"] as const) {
     const promptsBeforeHarness = prompts;
     const model = core.resolveModelChoice(harness, {}).model;
-    const selectors = [
-      "--skill",
-      catalogReference,
-      "--org",
-      orgId,
-      "--golden",
-      golden.id,
-      "--provider",
-      "boat",
-      "--agent",
+    const selection = {
+      skill: catalogReference,
+      goldenId: golden.id,
+      provider: "boat" as const,
       harness,
-      "--model",
       model,
-      "--model-account",
-      models.get(harness)!,
-    ];
+      modelAccountId: models.get(harness)!,
+    };
     const allocationsBeforeRefusal = machines.size;
     const refusedSelection = await realFetch(`${origin}/api/v1/orchestrators`, {
       method: "POST",
@@ -381,29 +410,20 @@ try {
       0,
       "Denied selection must not reserve an async create",
     );
-    const create = await cli([
-      "create",
-      `Boat ${harness}`,
-      ...selectors,
-      "--idempotency-key",
-      `create-${harness}`,
-      "--connections",
-      selected.first.id,
-    ]);
+    const create = await owner("create", {
+      configuration: { version: 1, orgId, name: `Boat ${harness}`, ...selection, connections: [selected.first.id] },
+      key: `create-${harness}`,
+    });
     const id = create.orchestratorId;
     let detail = await waitForCreate(create);
     assert(detail);
     assert.equal(detail.orchestrator.state, "ready", JSON.stringify({ detail, logs, requests }));
     assert.equal(detail.orchestrator.configuration.skill, catalogReference);
     assert.deepEqual(detail.orchestrator.skillReceipt, catalogReceipt);
-    const empty = await cli([
-      "create",
-      `Boat empty ${harness}`,
-      ...selectors,
-      "--no-connections",
-      "--idempotency-key",
-      `empty-create-${harness}`,
-    ]);
+    const empty = await owner("create", {
+      configuration: { version: 1, orgId, name: `Boat empty ${harness}`, ...selection, connections: [] },
+      key: `empty-create-${harness}`,
+    });
     const emptyDetail = await waitForCreate(empty);
     assert.equal(emptyDetail.orchestrator.state, "ready", JSON.stringify(emptyDetail));
     assert.deepEqual(emptyDetail.connections, []);
@@ -434,7 +454,7 @@ try {
       sawPrompt: (ids) =>
         assert.deepEqual(lastPromptServers, ids.map((id) => `armada_${id.replaceAll("-", "_")}`).sort()),
     });
-    revision = (await cli(["detail", id, "--org", orgId])).orchestrator.revision;
+    revision = (await owner("detail", { id: id })).orchestrator.revision;
     const parentNativeId = (
       await sql.query<{ provider_sandbox_id: string }>("select provider_sandbox_id from public.sandboxes where id=$1", [
         detail.orchestrator.sandboxId,
@@ -447,18 +467,14 @@ try {
         "Only create and changed MCP generations reinstall the managed wrapper",
       );
     const act = async (action: string, text?: string, expected = 0) => {
-      const result = await cli(
-        [
-          action,
-          id,
-          ...(text ? [text] : []),
-          "--org",
-          orgId,
-          "--expected-revision",
-          String(revision),
-          "--idempotency-key",
-          `${harness}-${action}-${revision}`,
-        ],
+      const result = await owner(
+        action,
+        {
+          id: id,
+          expectedRevision: Number(String(revision)),
+          key: `${harness}-${action}-${revision}`,
+          ...(text ? { text } : {}),
+        },
         expected,
       );
       if (result.revision) revision = result.revision;
@@ -508,7 +524,7 @@ try {
     assert.equal(receipt?.kind, "prompt_receipt");
     assert.equal(receipt.promptId, `prompt-${prompts}`);
     assert.equal(prompts, promptsBeforeHarness + 4, "Three connection turns and the owner send must reach Boat");
-    const page: core.OrchestratorEventPage = await cli(["events", id, "--org", orgId, "--all"]);
+    const page: core.OrchestratorEventPage = await owner("events", { id: id, all: true });
     const agentEvents = page.events
       .filter((item: core.OrchestratorEvent) => item.kind === "agent")
       .map((item: core.OrchestratorEvent) => (item.kind === "agent" ? item.event : undefined));
@@ -528,36 +544,32 @@ try {
     const refused = await act("steer", "too late", 1);
     assert.equal(refused.state, "failed", JSON.stringify(refused));
     assert.equal(refused.errorCode, "no_running_turn");
-    detail = await cli(["detail", id, "--org", orgId]);
+    detail = await owner("detail", { id: id });
     assert.equal(detail.orchestrator.state, "ready");
     assert.equal(detail.orchestrator.blockedReason, null);
     const conversationId = detail.orchestrator.conversationId;
     const steerDispatches = requests.filter((request) => request.endsWith("/steer")).length;
     await act("send", "new turn");
-    detail = await cli(["detail", id, "--org", orgId]);
+    detail = await owner("detail", { id: id });
     assert.equal(detail.orchestrator.conversationId, conversationId);
     assert.equal(detail.orchestrator.state, "ready");
-    const replayedSteer = await cli(
-      [
-        "steer",
-        id,
-        "too late",
-        "--org",
-        orgId,
-        "--expected-revision",
-        String(steerRevision),
-        "--idempotency-key",
-        `${harness}-steer-${steerRevision}`,
-      ],
+    const replayedSteer = await owner(
+      "steer",
+      {
+        id: id,
+        text: "too late",
+        expectedRevision: Number(String(steerRevision)),
+        key: `${harness}-steer-${steerRevision}`,
+      },
       1,
     );
     assert.deepEqual(replayedSteer, refused);
     assert.equal(requests.filter((request) => request.endsWith("/steer")).length, steerDispatches);
     await act("stop");
-    detail = await cli(["detail", id, "--org", orgId]);
+    detail = await owner("detail", { id: id });
     assert.equal(detail.orchestrator.state, "stopped");
     await act("resume");
-    detail = await cli(["detail", id, "--org", orgId]);
+    detail = await owner("detail", { id: id });
     assert.equal(detail.orchestrator.state, "ready");
     assert.equal(detail.orchestrator.continuity, "unverified", JSON.stringify(detail));
     await act("send", "continue");
@@ -567,15 +579,11 @@ try {
         4,
         "A fresh physical boot must reinstall before continuing the same conversation",
       );
-    const continued: core.OrchestratorEventPage = await cli([
-      "events",
-      id,
-      "--org",
-      orgId,
-      "--cursor",
-      page.cursor ?? "",
-      "--all",
-    ]);
+    const continued: core.OrchestratorEventPage = await owner("events", {
+      id: id,
+      cursor: page.cursor ?? "",
+      all: true,
+    });
     assert(
       continued.events.some(
         (item) => item.kind === "agent" && item.event.kind === "message" && item.event.text === `reply ${prompts}`,
@@ -584,11 +592,11 @@ try {
     );
     failStop = true;
     await act("stop", undefined, 1);
-    detail = await cli(["detail", id, "--org", orgId]);
+    detail = await owner("detail", { id: id });
     assert.equal(detail.orchestrator.state, "blocked");
     const retirementRevision = revision;
     const recovered = await act("recover");
-    const retired: core.OrchestratorEventPage = await cli(["events", id, "--org", orgId, "--all"]);
+    const retired: core.OrchestratorEventPage = await owner("events", { id: id, all: true });
     assert(
       retired.events.some(
         (item) => item.kind === "agent" && item.event.kind === "message" && item.event.text === "unread archival tail",
@@ -596,19 +604,14 @@ try {
       JSON.stringify(retired),
     );
     const physicalStops = stops;
-    const replay = await cli([
-      "recover",
-      id,
-      "--org",
-      orgId,
-      "--expected-revision",
-      String(retirementRevision),
-      "--idempotency-key",
-      `${harness}-recover-${retirementRevision}`,
-    ]);
+    const replay = await owner("recover", {
+      id: id,
+      expectedRevision: Number(String(retirementRevision)),
+      key: `${harness}-recover-${retirementRevision}`,
+    });
     assert.equal(replay.id, recovered.id);
     assert.equal(stops, physicalStops, "Completed retirement replay must not issue provider I/O");
-    detail = await cli(["detail", id, "--org", orgId]);
+    detail = await owner("detail", { id: id });
     assert.equal(detail.orchestrator.state, "stopped");
     assert.equal(
       prompts,
@@ -617,26 +620,20 @@ try {
     );
   }
   const beforeFailurePrompts = prompts;
-  const failed = await cli([
-    "create",
-    "missing method",
-    "--org",
-    orgId,
-    "--golden",
-    golden.id,
-    "--provider",
-    "boat",
-    "--agent",
-    "codex",
-    "--model",
-    core.resolveModelChoice("codex", {}).model,
-    "--model-account",
-    models.get("codex")!,
-    "--skill",
-    "example/missing@1.0.0",
-    "--idempotency-key",
-    "missing-method",
-  ]);
+  const failed = await owner("create", {
+    configuration: {
+      version: 1,
+      orgId,
+      name: "missing method",
+      goldenId: golden.id,
+      provider: "boat",
+      harness: "codex",
+      model: core.resolveModelChoice("codex", {}).model,
+      modelAccountId: models.get("codex")!,
+      skill: "example/missing@1.0.0",
+    },
+    key: "missing-method",
+  });
   const blocked = await waitForCreate(failed);
   assert.equal(blocked.orchestrator.state, "blocked");
   assert.equal(blocked.orchestrator.skillReceipt, null);

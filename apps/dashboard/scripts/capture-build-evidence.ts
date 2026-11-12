@@ -24,11 +24,13 @@ try {
         const page = await context.newPage();
         await signIn(page, "alice@example.com", unconfigured ? "/harness" : "/sandboxes");
         if (unconfigured) {
-          // Approved baselines may predate or already include the accessible
-          // status notice. The candidate must retain status semantics.
-          const notice = (
-            phase === "before" ? page.getByRole("alert").or(page.getByRole("status")) : page.getByRole("status")
-          ).filter({ hasText: "The Armada server is not configured" });
+          // The base may already include the non-blocking status treatment.
+          // Candidate evidence still requires that treatment; baseline evidence supports either revision.
+          const currentNotice = page.getByRole("status").filter({ hasText: "The Armada server is not configured" });
+          const notice =
+            phase === "before"
+              ? currentNotice.or(page.getByRole("alert").filter({ hasText: "The Armada server is not configured" }))
+              : currentNotice;
           await expect(notice).toBeVisible();
           await expect(page.locator("html")).toHaveClass(theme === "dark" ? /dark/ : /light/);
           await page.screenshot({

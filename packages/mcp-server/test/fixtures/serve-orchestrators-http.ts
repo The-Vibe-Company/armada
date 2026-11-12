@@ -7,7 +7,6 @@ import * as core from "@armada/core/server";
 import type { Machine, Scope } from "@armada/provider-modal";
 import { applyMigrations, openDatabase } from "../../../../scripts/db/apply.ts";
 import { ArmadaApiError, createArmadaApiClient } from "../../../cli/src/armada-api.ts";
-import { run } from "../../../cli/src/run.ts";
 import { memorySessionStore } from "../../../cli/src/session.ts";
 import { fakeModalRuntime } from "./fake-modal-runtime.ts";
 import { connectionFixture, exerciseConnections, fixtureSql } from "./orchestrator-connections.ts";
@@ -234,37 +233,51 @@ async function auditedFetch(input: string | URL | Request, init?: RequestInit): 
   });
   return response;
 }
-async function cli(args: string[], expectedStatus: number, expectedError?: string) {
-  let out = "",
-    err = "";
-  const auth = {
-    env: { ARMADA_URL: activeOrigin, ARMADA_TOKEN: token.token },
-    session: memorySessionStore(),
-    now: () => new Date(),
-    open: () => {},
-    fetch: auditedFetch,
-    out: (text: string) => {
-      out += text;
-    },
-    err: (text: string) => {
-      err += text;
-    },
-  };
+type OwnerInput = {
+  id?: string;
+  configuration?: core.OrchestratorCreate;
+  expectedRevision?: number;
+  text?: string;
+  key?: string;
+  cursor?: string;
+  all?: boolean;
+};
+async function owner(action: string, input: OwnerInput, expectedStatus: number, expectedError?: string) {
+  const read = ["capabilities", "list", "detail", "events"].includes(action);
+  const path =
+    action === "create" || action === "list"
+      ? "/orchestrators"
+      : action === "capabilities"
+        ? "/orchestrators/capabilities"
+        : `/orchestrators/${input.id}${action === "detail" ? "" : `/${action === "send" ? "message" : action}`}`;
+  const query = new URLSearchParams(action === "capabilities" ? {} : { orgId });
+  if (input.cursor !== undefined) query.set("cursor", input.cursor);
   const count = routes.length;
-  const code = await run(["orchestrator", ...args, "--json"], auth, { auth });
-  assert.equal(routes.length, count + 1, "CLI must issue exactly one real request.");
-  assert.equal(routes.at(-1)?.status, expectedStatus, `CLI route ${JSON.stringify(routes.at(-1))}: ${err}`);
+  const result = await http(
+    read ? "GET" : "POST",
+    path + (read && query.size ? `?${query}` : ""),
+    read
+      ? undefined
+      : (input.configuration ?? {
+          orgId,
+          expectedRevision: input.expectedRevision,
+          ...(input.text === undefined ? {} : { text: input.text }),
+        }),
+    input.key,
+  );
+  assert.equal(routes.length, count + 1, "Owner operation must issue exactly one real HTTP request.");
+  assert.equal(
+    result.response.status,
+    expectedStatus,
+    `Owner route ${JSON.stringify(routes.at(-1))}: ${JSON.stringify(result.payload)}`,
+  );
   if (expectedError) {
-    assert.equal(code, 1);
-    assert.equal(JSON.parse(err).error.code, expectedError);
-    assert(!err.includes("Armada server request failed (404)"));
+    assert.equal((result.payload as { error: { code: string } }).error.code, expectedError);
     return null;
   }
-  assert.equal(err, "");
-  const payload = JSON.parse(out);
-  assert.equal(code, payload.state === "failed" || payload.state === "uncertain" ? 1 : 0, err);
-  return payload;
+  return result.payload as any;
 }
+
 async function http<T = unknown>(method: string, path: string, body?: object, key = "serve-direct-key") {
   const response = await auditedFetch(`${activeOrigin}/api/v1${path}`, {
     method,
@@ -276,52 +289,44 @@ async function http<T = unknown>(method: string, path: string, body?: object, ke
 const invalidGoldenId = crypto.randomUUID();
 async function waitForOperation(parentId: string, operationId: string) {
   for (let attempt = 0; attempt < 100; attempt++) {
-    const detail = await cli(["detail", parentId, "--org", orgId], 200);
+    const detail = await owner("detail", { id: parentId }, 200);
     const operation = detail.operations.find((item: { id: string }) => item.id === operationId);
     if (operation?.state !== "pending") return { detail, operation };
   }
   throw Error("Create did not settle after bounded real HTTP polling.");
 }
 async function auditOwnerRoutes(expectedRevision: number) {
-  assert.equal((await cli(["capabilities"], 200)).enabled, true);
-  assert((await cli(["list", "--org", orgId], 200)).items.some((item: { id: string }) => item.id === id));
-  assert.equal((await cli(["detail", id, "--org", orgId], 200)).orchestrator.revision, expectedRevision);
-  assert.equal((await cli(["events", id, "--org", orgId], 200)).version, 1);
-  const invalid = await cli(
-    [
-      "create",
-      "invalid-golden",
-      "--org",
-      orgId,
-      "--golden",
-      invalidGoldenId,
-      "--provider",
-      "modal",
-      "--agent",
-      "codex",
-      "--model",
-      "gpt-6.1-sol",
-      "--model-account",
-      modelId,
-      "--idempotency-key",
-      "serve-invalid-create",
-    ],
+  assert.equal((await owner("capabilities", {}, 200)).enabled, true);
+  assert((await owner("list", {}, 200)).items.some((item: { id: string }) => item.id === id));
+  assert.equal((await owner("detail", { id: id }, 200)).orchestrator.revision, expectedRevision);
+  assert.equal((await owner("events", { id: id }, 200)).version, 1);
+  const invalid = await owner(
+    "create",
+    {
+      configuration: {
+        version: 1,
+        orgId,
+        name: "invalid-golden",
+        goldenId: invalidGoldenId,
+        provider: "modal",
+        harness: "codex",
+        model: "gpt-6.1-sol",
+        modelAccountId: modelId,
+      },
+      key: "serve-invalid-create",
+    },
     202,
   );
   assert.equal((await waitForOperation(invalid.orchestratorId, invalid.id)).operation.state, "failed");
   for (const action of ["send", "steer", "stop", "resume"]) {
-    await cli(
-      [
-        action,
-        id,
-        ...(["send", "steer"].includes(action) ? ["synthetic-private-message"] : []),
-        "--org",
-        orgId,
-        "--expected-revision",
-        "0",
-        "--idempotency-key",
-        `serve-${action}`,
-      ],
+    await owner(
+      action,
+      {
+        id: id,
+        expectedRevision: Number("0"),
+        key: `serve-${action}`,
+        ...(["send", "steer"].includes(action) ? { text: "synthetic-private-message" } : {}),
+      },
       409,
       "conflict",
     );
@@ -378,20 +383,14 @@ try {
     mcpConfigurations: 0,
     epochInstalls: 0,
   });
-  const recovered = await cli(
-    ["recover", id, "--org", orgId, "--expected-revision", "1", "--idempotency-key", "serve-recover"],
-    202,
-  );
+  const recovered = await owner("recover", { id: id, expectedRevision: Number("1"), key: "serve-recover" }, 202);
   assert.equal(recovered.state, "succeeded");
   // The actual Next catch-all handlers proxy to the actual serve socket. This
   // was the missing production boundary in the original direct-handler tests.
   activeOrigin = proxyOrigin;
   const readsBeforeReplay = fake.providerReads();
   const effectsBeforeReplay = { ...effects };
-  const proxyRecovered = await cli(
-    ["recover", id, "--org", orgId, "--expected-revision", "1", "--idempotency-key", "serve-recover"],
-    202,
-  );
+  const proxyRecovered = await owner("recover", { id: id, expectedRevision: Number("1"), key: "serve-recover" }, 202);
   assert.deepEqual(proxyRecovered, recovered);
   assert.equal(
     fake.providerReads(),
@@ -413,7 +412,7 @@ try {
     mcpConfigurations: 0,
     epochInstalls: 0,
   });
-  assert.equal((await cli(["detail", id, "--org", orgId], 200)).orchestrator.state, "stopped");
+  assert.equal((await owner("detail", { id: id }, 200)).orchestrator.state, "stopped");
   assert.equal(
     (
       await sql.query<{ state: string }>("select state from orchestrator_operations where id=$1", [
@@ -422,7 +421,7 @@ try {
     ).rows[0]?.state,
     "failed",
   );
-  // This deliberately unclaimed path reproduces the observed CLI fallback family;
+  // This deliberately unclaimed path reproduces the observed old-client fallback family;
   // registered owner paths above must never be mistaken for an undeployed route.
   const api = await createArmadaApiClient(
     { env: { ARMADA_URL: origin, ARMADA_TOKEN: token.token }, fetch: auditedFetch, session: memorySessionStore() },
@@ -468,29 +467,23 @@ try {
     "Denied selection must not reserve an async create",
   );
   fake.expectConnections(1);
-  const admitted = await cli(
-    [
-      "create",
-      "actual-managed-create",
-      "--skill",
-      catalogReference,
-      "--org",
-      orgId,
-      "--golden",
-      golden.id,
-      "--provider",
-      "modal",
-      "--agent",
-      "codex",
-      "--model",
-      "gpt-6.1-sol",
-      "--model-account",
-      modelId,
-      "--idempotency-key",
-      "serve-actual-create",
-      "--connections",
-      selected.first.id,
-    ],
+  const admitted = await owner(
+    "create",
+    {
+      configuration: {
+        version: 1,
+        orgId,
+        name: "actual-managed-create",
+        skill: catalogReference,
+        goldenId: golden.id,
+        provider: "modal",
+        harness: "codex",
+        model: "gpt-6.1-sol",
+        modelAccountId: modelId,
+        connections: [selected.first.id],
+      },
+      key: "serve-actual-create",
+    },
     202,
   );
   assert.equal(admitted.state, "pending");
@@ -537,20 +530,11 @@ try {
       assert.deepEqual(fake.lastPromptServers(), ids.map((id) => `armada_${id.replaceAll("-", "_")}`).sort()),
   });
   fake.expectConnections(0);
-  let turnRevision = (await cli(["detail", admitted.orchestratorId, "--org", orgId], 200)).orchestrator.revision;
+  let turnRevision = (await owner("detail", { id: admitted.orchestratorId }, 200)).orchestrator.revision;
   async function turn(action: string, text: string, requestKey: string) {
-    const result = await cli(
-      [
-        action,
-        admitted.orchestratorId,
-        text,
-        "--org",
-        orgId,
-        "--expected-revision",
-        String(turnRevision),
-        "--idempotency-key",
-        requestKey,
-      ],
+    const result = await owner(
+      action,
+      { id: admitted.orchestratorId, text: text, expectedRevision: Number(String(turnRevision)), key: requestKey },
       202,
     );
     turnRevision = result.revision;
@@ -560,7 +544,7 @@ try {
   const refused = await turn("steer", "too late", "idle-steer");
   assert.equal(refused.state, "failed", JSON.stringify(refused));
   assert.equal(refused.errorCode, "no_running_turn");
-  const afterRefusal = await cli(["detail", admitted.orchestratorId, "--org", orgId], 200);
+  const afterRefusal = await owner("detail", { id: admitted.orchestratorId }, 200);
   assert.equal(afterRefusal.orchestrator.state, "ready");
   assert.equal(afterRefusal.orchestrator.blockedReason, null);
   assert.equal((await turn("send", "new turn", "idle-next-send")).state, "succeeded");
@@ -614,26 +598,22 @@ try {
   ).rows[0];
   assert.equal(stoppedChild?.status, "stopped");
   assert(stoppedChild?.physical_id);
-  const explicitNone = await cli(
-    [
-      "create",
-      "explicit-none-parent",
-      "--org",
-      orgId,
-      "--golden",
-      golden.id,
-      "--provider",
-      "modal",
-      "--agent",
-      "codex",
-      "--model",
-      "gpt-6.1-sol",
-      "--model-account",
-      modelId,
-      "--no-connections",
-      "--idempotency-key",
-      "explicit-none-parent",
-    ],
+  const explicitNone = await owner(
+    "create",
+    {
+      configuration: {
+        version: 1,
+        orgId,
+        name: "explicit-none-parent",
+        goldenId: golden.id,
+        provider: "modal",
+        harness: "codex",
+        model: "gpt-6.1-sol",
+        modelAccountId: modelId,
+        connections: [],
+      },
+      key: "explicit-none-parent",
+    },
     202,
   );
   const emptyInitialized = await waitForOperation(explicitNone.orchestratorId, explicitNone.id);
@@ -752,27 +732,22 @@ try {
   }
   const epochsBeforeFailure = effects.epochInstalls;
   const callsBeforeFailure = effects.modelCalls;
-  const failed = await cli(
-    [
-      "create",
-      "missing method",
-      "--org",
-      orgId,
-      "--golden",
-      golden.id,
-      "--provider",
-      "modal",
-      "--agent",
-      "codex",
-      "--model",
-      "gpt-6.1-sol",
-      "--model-account",
-      modelId,
-      "--skill",
-      "example/missing@1.0.0",
-      "--idempotency-key",
-      "missing-method",
-    ],
+  const failed = await owner(
+    "create",
+    {
+      configuration: {
+        version: 1,
+        orgId,
+        name: "missing method",
+        goldenId: golden.id,
+        provider: "modal",
+        harness: "codex",
+        model: "gpt-6.1-sol",
+        modelAccountId: modelId,
+        skill: "example/missing@1.0.0",
+      },
+      key: "missing-method",
+    },
     202,
   );
   const blocked = await waitForOperation(failed.orchestratorId, failed.id);
@@ -781,17 +756,13 @@ try {
   assert.equal(blocked.detail.orchestrator.conversationId, null);
   assert.equal(effects.epochInstalls, epochsBeforeFailure, "No delegated authority after failed install");
   assert.equal(effects.modelCalls, callsBeforeFailure, "No first turn after failed install");
-  const failedStopped = await cli(
-    [
-      "recover",
-      failed.orchestratorId,
-      "--org",
-      orgId,
-      "--expected-revision",
-      String(blocked.detail.orchestrator.revision),
-      "--idempotency-key",
-      "cleanup-missing-method",
-    ],
+  const failedStopped = await owner(
+    "recover",
+    {
+      id: failed.orchestratorId,
+      expectedRevision: Number(String(blocked.detail.orchestrator.revision)),
+      key: "cleanup-missing-method",
+    },
     202,
   );
   assert.equal(
