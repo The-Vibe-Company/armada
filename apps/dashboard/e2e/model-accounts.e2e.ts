@@ -615,3 +615,80 @@ for (const legacy of [false, true]) {
     expect(await launches()).toEqual([]);
   });
 }
+
+for (const unknownVersion of [false, true]) {
+  test(`an existing trapped subscription can recover ${unknownVersion ? "unversioned history" : "its older unrecorded holder"}`, async ({
+    page,
+  }) => {
+    const work = account(91, "Work", { kind: "codex_auth", is_default: true });
+    const id = String(work.id);
+    const sandboxId = "00000000-0000-4000-8000-000000000099";
+    await mock("/__test/accounts", {
+      seed: [work],
+      holders: {
+        [id]: {
+          sandboxId,
+          storedVersion: unknownVersion ? null : 1,
+          currentVersion: 1,
+          requiresReconnect: true,
+          releasable: false,
+          orphan: !unknownVersion,
+          unknownVersion,
+        },
+      },
+    });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await signIn(page, "alice@example.com", "/harness");
+    const row = page.locator('[data-account="Work"]');
+    await row.getByRole("button", { name: "Find subscription holder" }).click();
+    await expect(
+      row.getByText(unknownVersion ? sandboxId : `Unrecorded launch: ${sandboxId}`, { exact: true }),
+    ).toBeVisible();
+    await expect(row.getByRole("button", { name: "Release subscription", exact: true })).toBeDisabled();
+    await row
+      .getByRole("button", { name: unknownVersion ? "Reconnect and release" : "Reconnect subscription", exact: true })
+      .click();
+    const dialog = page.getByRole("dialog");
+    await dialog.getByLabel("auth.json", { exact: true }).fill(
+      JSON.stringify({
+        tokens: {
+          access_token: "synthetic-reconnected-access",
+          refresh_token: "synthetic-reconnected-refresh",
+          account_id: "synthetic-account",
+        },
+      }),
+    );
+    await dialog
+      .getByRole("button", { name: unknownVersion ? "Reconnect and release" : "Save auth.json", exact: true })
+      .click();
+    await expect(dialog).toHaveCount(0);
+    if (!unknownVersion) {
+      // SQL tests own the guarded recovery decision; this fixture supplies its eligible UI receipt.
+      await mock("/__test/accounts", {
+        holders: {
+          [id]: {
+            sandboxId,
+            storedVersion: 1,
+            currentVersion: 2,
+            requiresReconnect: false,
+            releasable: true,
+            orphan: true,
+          },
+        },
+      });
+      await row.getByRole("button", { name: "Find subscription holder" }).click();
+      await expect(row.getByRole("button", { name: "Release subscription", exact: true })).toBeEnabled();
+      await row.getByRole("button", { name: "Release subscription", exact: true }).click();
+    }
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await expect(row.getByText("Subscription released. You can launch again.")).toBeVisible();
+    await expect(row.getByRole("button", { name: "Release subscription", exact: true })).toHaveCount(0);
+    const calls = (await mock("/__test/accounts")).calls as { route: string; body: Row }[];
+    expect(calls.findLast((call) => call.route === "creds/accounts/release")?.body).toMatchObject({
+      id,
+      version: unknownVersion ? 1 : 2,
+      sandboxId,
+      ...(unknownVersion ? { value: "[sent]" } : {}),
+    });
+  });
+}

@@ -26,7 +26,7 @@ import { LaunchError, type LaunchInitializationStage } from "./launch-error.ts";
 import { type MachineSize, resolveMachineSize } from "./machine-size.ts";
 import { type ModelChoice, resolveModelChoice } from "./models.ts";
 import { PrivateSkillError } from "./private-skill-error.ts";
-import { isNonMutatingProviderRefusal, type Provider } from "./provider.ts";
+import { isNonMutatingProviderRefusal, type Provider, ProviderError } from "./provider.ts";
 import { resolveRepositoryDir } from "./repository-context.ts";
 import type { SandboxRecord, SandboxStore } from "./sandbox.ts";
 import { sandboxActivity } from "./sandbox-activity.ts";
@@ -97,6 +97,15 @@ export interface LaunchCredentialResolver {
     provider: Provider,
     providerSandboxId: string,
   ): Promise<boolean>;
+  /** Record pre-dispatch proof when eligible. True selects owned-native cleanup, NOT deletion eligibility or proof; the locked release rechecks admission. */
+  markNeverStarted?(actor: GoldenActor, credentials: HarnessCredentials, sandboxId: string): Promise<boolean>;
+  /** Hold native ownership and sandbox admission locks while confirming physical deletion. */
+  releaseNeverStarted?(
+    actor: GoldenActor,
+    credentials: HarnessCredentials,
+    sandboxId: string,
+    deletePhysical: () => Promise<void>,
+  ): Promise<void>;
   releaseUnallocated?(actor: GoldenActor, credentials: HarnessCredentials, sandboxId: string): Promise<void>;
   /** Validate the pinned native owner without rehydrating imported auth state. */
   assertTurn?(actor: GoldenActor, sandboxId: string, resuming: boolean): Promise<void>;
@@ -340,6 +349,7 @@ export async function launchSandbox(
         throw error;
       });
 
+    let promptDispatched = false;
     const activityLeaseId = stores.sandboxes.activityOwnership ? crypto.randomUUID() : undefined;
     let record: SandboxRecord;
     try {
@@ -384,7 +394,9 @@ export async function launchSandbox(
       });
       childRecorded = true;
     } catch (error) {
-      await quietly(() => provider.delete({ sandboxId: forked.id }));
+      await quietly(async () => {
+        if (await deleteNeverStartedSandbox(provider, forked.id)) noAllocation = true;
+      });
       throw error;
     }
 
@@ -515,6 +527,7 @@ export async function launchSandbox(
           ),
         };
       }
+      promptDispatched = true;
       const receipt = await provider
         .prompt({ sandboxId: ready.id, harness, text: prompt, signal, ...choice })
         .catch((error: unknown) => {
@@ -580,7 +593,18 @@ export async function launchSandbox(
       const failure = withSandbox(error, record.id, secrets);
       if (!activityLeaseId)
         await quietly(() => stores.sandboxes.update(record.id, { status: "failed", statusReason: failure.message }));
-      await quietly(() => provider.stop({ sandboxId: forked.id }));
+      let nativeCleanupOwned = false;
+      if (!promptDispatched && stores.credentials.releaseNeverStarted) {
+        await quietly(async () => {
+          if (!(await stores.credentials.markNeverStarted?.(actor, credentials, id))) return;
+          nativeCleanupOwned = true;
+          await stores.credentials.releaseNeverStarted?.(actor, credentials, id, async () => {
+            if (!(await deleteNeverStartedSandbox(provider, forked.id)))
+              throw new Error("Physical deletion is not confirmed.");
+          });
+        });
+      }
+      if (!nativeCleanupOwned) await quietly(() => provider.stop({ sandboxId: forked.id }));
       throw failure;
     }
   } catch (error) {
@@ -598,6 +622,24 @@ export async function launchSandbox(
         if (!failed) throw error;
       });
     }
+  }
+}
+
+/** Confirm absence once, without treating an accepted asynchronous deletion as completion. */
+export async function deleteNeverStartedSandbox(provider: Provider, sandboxId: string): Promise<boolean> {
+  try {
+    const receipt = await provider.delete({ sandboxId });
+    if (receipt.status === "deleted") return true;
+  } catch (error) {
+    if (error instanceof ProviderError && error.code === "not_found") return true;
+    throw error;
+  }
+  try {
+    await provider.get(sandboxId);
+    return false;
+  } catch (error) {
+    if (error instanceof ProviderError && error.code === "not_found") return true;
+    return false;
   }
 }
 
