@@ -1,8 +1,8 @@
 # Model connections (#1162)
 
 Design slice of #1160; no runtime, schema or UI change in this PR.
-Owner hold: draft for discussion; all implementation slices below are proposals,
-not authorization to start. No implementation until the owner approves the approach.
+Binding owner decisions in #1162 govern this design. Start Azure AI Foundry
+for Codex on Modal now, in parallel with #1161; do not wait for Boat parity.
 
 ## Current state
 
@@ -44,15 +44,22 @@ without user action. Boat/Modal/Skillpack credentials remain untouched.
 Retain RLS, column grants, org-admin writes and whole-account resolution rules.
 New migration versions must exceed every version on fresh origin/main.
 
-## Runtime boundary
+## Runtime boundary and transport-independent payload
 
 Resolve/authorize one connection server-side, then freeze its ID/version, model
 and non-secret options in the launch manifest; recheck at admission/later turns.
 Never silently fall back to a default/vendor endpoint if selection is invalid.
-Deliver the resolved secret separately over the private provider/runtime channel,
-not in the persisted manifest, exec text, argv, events or logs.
-Extend the existing runtime protocol with a typed per-harness connection payload;
-runtime owns isolated auth/config files (owner-only permissions) and child env.
+Use one versioned resolved payload: `{ schemaVersion: 1, connectionId,
+connectionVersion, harness, mode, model, endpoint?, options?, auth }`.
+`auth` is a discriminated secret value (API key, Claude token or Codex auth JSON),
+not a public DTO; never persist it in manifests, exec text, argv, events or logs.
+Deliver this object through today's private Modal bootstrap. #1161's enrolment
+fetch can serve the identical object later: no Modal IDs or transport fields.
+The future host passes only a single-use enrolment token; runtime fetches config
+and credentials at start/resume, opens a new epoch, and returns refreshed
+subscription tokens to the server. #1161 owns enrolment/epochs/dial-out transport;
+this lane does not implement them or migrate Modal's tunnel early.
+Runtime owns isolated auth/config files (owner-only permissions) and child env.
 Codex uses a runtime-owned `CODEX_HOME/config.toml` provider plus secret env;
 custom mode must bypass the existing built-in OpenAI login branch. Claude gets
 only the selected base URL/auth variables, not competing subscription/API auth.
@@ -79,10 +86,25 @@ Sources: [Codex advanced configuration](https://developers.openai.com/codex/conf
 [Vertex](https://code.claude.com/docs/en/google-vertex-ai),
 [Foundry](https://code.claude.com/docs/en/microsoft-foundry).
 Recheck these against the pinned harness versions during each implementation.
-Azure URL/API-version and deployment must match the owner's real resource;
-no universal Azure URL/version is assumed. This slice supports Responses only:
+For the owner's verified Azure v1 endpoint, accept a pasted base URL with or
+without trailing `/responses`; normalize to `/openai/v1`, preserving the project
+path. No `api-version` is needed there; bearer API-key auth was verified by the
+coordinator. Never receive the owner's real key in a worker. Legacy Azure paths
+may need explicit `apiVersion`; do not impose it on v1. This slice supports Responses only:
 a chat-completions-only endpoint (e.g. DeepSeek) is not a Codex connection.
 Claude Code supports Claude models only. Show these limits in CLI and UI.
+
+## Binding programme boundaries
+
+Hosts supply machines, stdin command execution, persistence and outbound HTTPS;
+agent features belong only to runtime. #1161 owns the compiled OS/arch artifact,
+selected pinned harness download, digest bootstrap and later WS/HTTPS dial-out
+with acknowledged journal batches. Versions change only at start/resume.
+Keep Codex app-server and Claude Agent SDK drivers; #1164 owns ACP v1 OpenCode.
+#1163 prices runtime-reported per-turn tokens server-side; missing means unknown.
+Boat Codex opt-in precedes Claude/default/native-runner deletion. Docker follows
+OpenCode; Modal moves to dial-out last and then deletes its tunnel. Do not bring
+those later steps into this lane's Modal-first PRs.
 
 ## Independently mergeable slices and staging checks
 
@@ -92,7 +114,7 @@ Only the coordinator uses staging credentials/deploys; workers never do.
 1. **Design (this PR):** after deploy, no behavior changes expected. Coordinator
    opens this document, confirms the object/options/slice boundaries, and runs
    an existing saved account's launch; expect its normal successful response.
-2. **Codex server/schema/runtime/API (Modal):** coordinator creates a custom
+2. **Azure-first Codex server/schema/runtime/API (Modal, start now):** coordinator creates a custom
    connection through the control API using their Azure resource/key and model
    deployment, selects it at launch, sends “Reply exactly MODEL_OK”, then sends
    a second turn; expect MODEL_OK both times through Azure. Repeat for a generic
@@ -120,21 +142,7 @@ payload on Boat and repeat checks 2–4 there; #1161 owns native-runner removal.
 
 Replace fixed model-kind-to-env dispatch with the runtime connection renderer
 as each harness migrates; retain only legacy input adapters, not two renderers.
-Remove duplicate client account/endpoint validation in favor of server options.
 No removal of Boat's native path here; it belongs to #1161 after parity.
 Later: direct Bedrock/Vertex/Foundry cloud identity flows, rotating credential
 helpers, arbitrary headers, model discovery, enterprise endpoint allowlists and
 multi-tenant egress hardening. Do not build these for the owner-team first slice.
-
-## Open questions for the owner
-
-1. **Reuse credential rows or introduce a separate connection table?** Recommend
-   extending existing model credential rows, preserving IDs, sealed values and
-   template references; keep provider credentials outside the connection DTO.
-2. **Ship custom endpoints on Modal first or wait for Boat runtime parity?**
-   Recommend Modal first with an explicit unsupported-on-Boat error until #1161;
-   never introduce a temporary Boat exec/configuration path.
-3. **Which endpoint/auth options belong in the first release?** Recommend Codex
-   Azure/Responses with static keys and Claude gateways with bearer/API-key auth;
-   defer direct Bedrock/Vertex/Foundry identity flows and arbitrary headers.
-   OpenCode options stay with #1164; price calculation stays with #1163.
