@@ -325,6 +325,7 @@ export {
   type TemplateRefusalReason,
   templateRefusalHelp,
 } from "./templates.ts";
+export { redactKnownTokens } from "./token-redaction.ts";
 export { type ModelSelectionReason, type TurnModelEvidence, turnModelEvidence } from "./turn-model.ts";
 export {
   type AccountMutation,

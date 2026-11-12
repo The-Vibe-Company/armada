@@ -86,19 +86,54 @@ export async function authenticateCaller(
  * of another project, an expired one or a signed-out session is refused. Null when refused.
  */
 export async function verifySupabaseUser(token: string, project: SupabaseProject): Promise<string | null> {
-  let response: Response;
-  try {
+  const controller = new AbortController();
+  let response: Response | undefined;
+  const cancelBody = () => {
+    if (response?.body && !response.body.locked) void response.body.cancel().catch(() => {});
+  };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      cancelBody();
+      reject(new AuthUnavailable("Supabase verification timed out."));
+    }, 10_000);
+  });
+  const verify = async (): Promise<string | null> => {
     response = await (project.fetch ?? fetch)(`${assertSupabaseUrl(project.supabaseUrl)}/auth/v1/user`, {
       headers: { apikey: project.anonKey, authorization: `Bearer ${token}`, accept: "application/json" },
+      signal: controller.signal,
     });
+    // A custom transport may finish after cancellation. Do not consume its late response.
+    if (controller.signal.aborted) {
+      cancelBody();
+      throw new AuthUnavailable("Supabase verification timed out.");
+    }
+    if (response.status === 400 || response.status === 401 || response.status === 403) {
+      cancelBody();
+      return null;
+    }
+    if (!response.ok) {
+      cancelBody();
+      throw new AuthUnavailable(`Supabase answered ${response.status}.`);
+    }
+    const user: unknown = await response.json();
+    const id = typeof user === "object" && user !== null && "id" in user ? user.id : undefined;
+    if (typeof id !== "string" || !UUID.test(id)) {
+      throw new AuthUnavailable("Supabase returned an invalid identity.");
+    }
+    return id.toLowerCase();
+  };
+  try {
+    // The deadline covers both headers and the entire JSON body, even for custom transports.
+    return await Promise.race([verify(), deadline]);
   } catch (error) {
-    throw new AuthUnavailable("Supabase is unreachable.", error);
+    if (error instanceof AuthUnavailable) throw error;
+    // Transport/parser exceptions can include response contents or request credentials.
+    throw new AuthUnavailable("Supabase verification is unavailable.");
+  } finally {
+    clearTimeout(timer);
   }
-  if (response.status === 400 || response.status === 401 || response.status === 403) return null;
-  if (!response.ok) throw new AuthUnavailable(`Supabase answered ${response.status}.`);
-  const user: unknown = await response.json().catch(() => null);
-  const id = typeof user === "object" && user !== null && "id" in user ? user.id : undefined;
-  return typeof id === "string" && UUID.test(id) ? id.toLowerCase() : null;
 }
 
 export function bearerToken(header: string | null): string | null {

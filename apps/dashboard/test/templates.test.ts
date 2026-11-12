@@ -246,8 +246,8 @@ describe("template launch", () => {
       "Publish a new revision",
     );
     for (const [reason, action] of [
-      ["model_account_ambiguous", "Set a default in Build > Harness"],
-      ["model_account_refused", "Reconnect it in Build > Harness"],
+      ["model_account_ambiguous", "Set a default in Start with > Harness"],
+      ["model_account_refused", "Reconnect it in Start with > Harness"],
     ]) {
       const message = templateFailure(409, `Template launch refused: ${reason}.`);
       expect(message).toContain(action);

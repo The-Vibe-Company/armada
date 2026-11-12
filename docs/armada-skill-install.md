@@ -1,7 +1,9 @@
 # Public Armada skill delivery (#986, infrastructure slice)
 
 The tool-knowledge skill and command/flag drift check shipped in #1003.
-This PR integrates installation and discovery without changing that content.
+The current pin includes the reviewed wait/recovery correction from #1073,
+including the skill and its recovery reference; it does not claim unrelated
+routine additions from #1027.
 Authoring/evaluation provenance is in [armada-skill-evaluation.md](armada-skill-evaluation.md).
 
 ## Investigation and recommendation
@@ -16,8 +18,8 @@ armada skill install --project . --yes
 
 This is the same noninteractive command for a human or agent. It requires Git,
 not Armada login, provider credentials, a Skillpack key, or a Node package
-manager. By default it fetches the reviewed #1003 commit
-e188088162039ebf48588f36b2e23d854d8b174b and reports that commit. An exact
+manager. By default it fetches the reviewed recovery-content commit
+edae17036da335f41e91af7e6ade7a42473d6a45 and reports that commit. An exact
 40-character commit can be selected with --revision. The complete
 .agents/skills/armada directory, including setup/recovery references, is copied
 to both agent roots. The legacy armada-manager/review bundle is not installed.

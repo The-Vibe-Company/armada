@@ -1,11 +1,13 @@
 import { LogOutIcon } from "lucide-react";
 import type { ReactNode } from "react";
+import { AppSidebar } from "@/components/app-sidebar";
 import { BrandMark } from "@/components/brand-mark";
 import { CommandMenu, CommandMenuTrigger } from "@/components/command-menu";
 import { NavLinks } from "@/components/nav-links";
 import { OrgSwitcher } from "@/components/org-switcher";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
+import { SidebarProvider } from "@/components/ui/sidebar";
 import { Toaster } from "@/components/ui/toast";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { listMemberships, requireViewer } from "@/lib/data/viewer";
@@ -19,47 +21,55 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
   const viewer = await requireViewer();
   const memberships = await listMemberships(await createClient(), viewer.id);
   const selected = await selectedOrganization();
+  const header = (
+    <>
+      <div className="flex items-center justify-between gap-2 px-4 pt-3 pb-2 md:px-5 md:pt-5 md:pb-4">
+        <div className="flex items-center gap-2.5 text-[15px] font-semibold tracking-tight">
+          <BrandMark />
+          Armada
+        </div>
+        <div className="flex items-center gap-1 md:hidden">
+          <CommandMenuTrigger compact />
+          <ThemeToggle />
+          <SignOut compact />
+        </div>
+      </div>
+      <OrgSwitcher memberships={memberships} selected={selected?.org.id ?? null} role={selected?.role ?? null} />
+      <div className="hidden px-3 pb-2 md:block">
+        <CommandMenuTrigger />
+      </div>
+    </>
+  );
   return (
-    <div data-shell className="flex min-h-dvh flex-col md:flex-row">
-      <aside className="border-b bg-sidebar md:sticky md:top-0 md:flex md:h-dvh md:w-64 md:shrink-0 md:flex-col md:border-r md:border-b-0">
-        <div className="flex items-center justify-between gap-2 px-4 pt-3 pb-2 md:px-5 md:pt-5 md:pb-4">
-          <div className="flex items-center gap-2.5 text-[15px] font-semibold tracking-tight">
-            <BrandMark />
-            Armada
-          </div>
-          <div className="flex items-center gap-1 md:hidden">
-            <CommandMenuTrigger compact />
-            <ThemeToggle />
-            <SignOut compact />
-          </div>
-        </div>
-        <OrgSwitcher memberships={memberships} selected={selected?.org.id ?? null} role={selected?.role ?? null} />
-        <div className="hidden px-3 pb-2 md:block">
-          <CommandMenuTrigger />
-        </div>
-        <NavLinks className="grid grid-cols-6 gap-1 px-3 pb-3 md:flex md:flex-col md:gap-0.5 md:overflow-y-auto md:pb-4" />
-        <div className="mt-auto hidden border-t px-3 py-3 md:block">
-          <div className="flex items-center gap-2.5 px-2 pb-2">
-            <span
-              aria-hidden="true"
-              className="flex size-7 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-semibold text-muted-foreground uppercase ring-1 ring-border"
-            >
-              {viewer.email.charAt(0)}
-            </span>
-            <p className="min-w-0 truncate text-xs text-muted-foreground" title={viewer.email}>
-              Signed in as <span className="text-foreground">{viewer.email}</span>
-            </p>
-          </div>
-          <div className="flex items-center justify-between">
-            <SignOut />
-            <ThemeToggle />
-          </div>
-        </div>
-      </aside>
+    <SidebarProvider data-shell className="min-h-dvh flex-col md:flex-row">
+      <AppSidebar
+        header={header}
+        footer={
+          <>
+            <div className="flex items-center gap-2.5 px-2 pb-2">
+              <span
+                aria-hidden="true"
+                className="flex size-7 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-semibold text-muted-foreground uppercase ring-1 ring-border"
+              >
+                {viewer.email.charAt(0)}
+              </span>
+              <p className="min-w-0 truncate text-xs text-muted-foreground" title={viewer.email}>
+                Signed in as <span className="text-foreground">{viewer.email}</span>
+              </p>
+            </div>
+            <div className="flex items-center justify-between">
+              <SignOut />
+              <ThemeToggle />
+            </div>
+          </>
+        }
+      >
+        <NavLinks className="px-3 pb-3 md:pb-4" />
+      </AppSidebar>
       <CommandMenu />
       <Toaster />
       <main className="mx-auto w-full max-w-6xl min-w-0 flex-1 space-y-6 px-4 py-6 md:px-10 md:py-10">{children}</main>
-    </div>
+    </SidebarProvider>
   );
 }
 
