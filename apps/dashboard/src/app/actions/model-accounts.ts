@@ -7,6 +7,7 @@ import { type ActionResult, done, fail, formString, isUuid } from "@/lib/action"
 import { ControlError } from "@/lib/control";
 import { viewerAccountControl } from "@/lib/data/model-accounts";
 import { selectedOrganization } from "@/lib/data/selected-org";
+import { requireViewer } from "@/lib/data/viewer";
 import {
   ACCOUNT_KINDS,
   type AccountKind,
@@ -16,7 +17,9 @@ import {
   HARNESS_PATH,
   KIND_INFO,
 } from "@/lib/model-accounts";
+import { connectionTestOutcome, matchesConnectionTestSandbox } from "@/lib/model-connection-check";
 import { customCodexAccountValue, replacementCodexAccountValue } from "@/lib/model-connection-input";
+import { createClient } from "@/lib/supabase/server";
 
 type Scoped = { control: AccountControl; scope: AccountScope; org: string };
 
@@ -257,5 +260,44 @@ export async function reconnectAndReleaseSubscription(
   } catch (error) {
     if (error instanceof ControlError) return fail(error.message);
     throw error;
+  }
+}
+
+/** A tiny runtime check: no secret input and no automatic machine launch/resume. */
+export async function testAccountConnection(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
+  const context = await scoped(data);
+  if (!isScoped(context)) return context;
+  const accountId = formString(data, "id");
+  const sandboxId = formString(data, "sandboxId");
+  const revision = version(data);
+  const model = formString(data, "model");
+  if (!isUuid(accountId) || !isUuid(sandboxId) || revision === null || revision < 1 || !model || model.length > 200)
+    return fail("Enter the running Modal sandbox UUID and deployment/model name.");
+  const viewer = await requireViewer();
+  const supabase = await createClient();
+  const { data: sandbox, error } = await supabase
+    .from("sandboxes")
+    .select("id,owner_id,org_id,provider,status,credential_id,credential_version")
+    .eq("id", sandboxId)
+    .eq("owner_id", viewer.id)
+    .eq("org_id", context.org)
+    .maybeSingle();
+  if (
+    error ||
+    !matchesConnectionTestSandbox(sandbox, {
+      id: sandboxId,
+      ownerId: viewer.id,
+      orgId: context.org,
+      accountId,
+      version: revision,
+    })
+  )
+    return fail(
+      "Use your running Modal sandbox bound to this exact account version in the selected organization. No machine was started or resumed.",
+    );
+  try {
+    return connectionTestOutcome(await context.control.testConnection({ id: sandboxId, model, org: context.org }));
+  } catch (error) {
+    return explain(error);
   }
 }
