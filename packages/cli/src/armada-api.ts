@@ -6,6 +6,7 @@ import {
   githubHydrationPhase,
   type InvitationApiError,
   type InvitationErrorReason,
+  providerRateLimitMessage,
   TEMPLATE_REFUSAL_HELP,
 } from "@armada/core";
 import { sandboxFailure } from "./sandbox-errors.ts";
@@ -286,7 +287,7 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
           throw new ArmadaApiError(
             "rate_limited",
             429,
-            "The provider refused allocation because a rate or account limit was reached. Check the selected provider account limits before retrying.",
+            providerRateLimitMessage((payload as { error?: { details?: unknown } }).error?.details),
           );
         if (response.status === 402 && failureCode === "payment_required")
           throw new ArmadaApiError(

@@ -536,3 +536,40 @@ test("unavailable task evidence is unknown, not a launch failure or auto-pause",
     await f.db.close();
   }
 });
+
+test("calendar admission counts missed occurrences once and pauses unavailable schedules without compute", async () => {
+  const f = await fixture();
+  try {
+    await f.db.query(
+      "update routines set cron='0 * * * *',timezone='UTC',interval_hours=null,status='enabled',next_due_at=date_trunc('hour',now())-interval '2000 hours' where id=$1",
+      [f.routine.id],
+    );
+    await createRoutineScheduler(f.sql, { launch: f.launch, observe: f.observe }).tick();
+    expect(f.boat.forks).toHaveLength(1);
+    const row = (
+      await f.db.query<{ next_due_at: Date; expected: Date }>(
+        "select next_due_at,date_trunc('hour',now())+interval '1 hour' as expected from routines where id=$1",
+        [f.routine.id],
+      )
+    ).rows[0]!;
+    expect(row.next_due_at).toEqual(row.expected);
+    const run = (
+      await f.db.query<{ missed_intervals: number; missed_count_capped: boolean }>(
+        "select missed_intervals,missed_count_capped from routine_runs where routine_id=$1",
+        [f.routine.id],
+      )
+    ).rows[0];
+    expect(run).toEqual({ missed_intervals: 1000, missed_count_capped: true });
+    await f.db.query("update routines set timezone='Invalid/Zone',next_due_at=now()-interval '1 second' where id=$1", [
+      f.routine.id,
+    ]);
+    await createRoutineScheduler(f.sql, { launch: f.launch, observe: f.observe }).tick();
+    expect(f.boat.forks).toHaveLength(1);
+    expect((await f.runs()).at(-1)).toMatchObject({ state: "skipped", reason: "schedule_unavailable" });
+    expect(
+      (await f.db.query("select status,next_due_at,pause_reason from routines where id=$1", [f.routine.id])).rows[0],
+    ).toEqual({ status: "paused", next_due_at: null, pause_reason: "schedule_unavailable" });
+  } finally {
+    await f.db.close();
+  }
+});

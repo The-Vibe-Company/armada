@@ -18,11 +18,13 @@ export interface ProviderLimits {
   maxTtlSeconds: number;
   /** In words, for error messages. */
   maxTtlLabel: string;
+  /** Default independent golden capacity when the adapter declares no override. Omitted means unlimited. */
+  defaultGoldenCapacity?: number;
 }
 
 export const PROVIDER_LIMITS: Readonly<Record<SandboxProviderId, ProviderLimits>> = {
   /** boat.dev's documented TTL maximum. */
-  boat: { maxTtlSeconds: 2_592_000, maxTtlLabel: "30 days" },
+  boat: { maxTtlSeconds: 2_592_000, maxTtlLabel: "30 days", defaultGoldenCapacity: 1 },
   /** Modal's documented maximum lifetime of one sandbox machine. */
   modal: { maxTtlSeconds: 86_400, maxTtlLabel: "24 hours" },
 };

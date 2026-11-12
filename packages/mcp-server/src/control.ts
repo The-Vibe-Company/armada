@@ -24,6 +24,8 @@ import {
   MAX_SANDBOX_EXTENSION_TTL_SECONDS,
   parseMachineSize,
   parseMachineSizePolicy,
+  providerRateLimitDetails,
+  providerRateLimitMessage,
 } from "@armada/core";
 import {
   type ApplicationVault,
@@ -346,6 +348,10 @@ export async function handleControlRequest(request: Request, options: ControlOpt
     if (error instanceof AuthUnavailable)
       return fail(503, "dependency_unavailable", "Authentication is temporarily unavailable.");
     if (error instanceof ProviderError) {
+      const limit =
+        error.provider === "boat" && error.code === "rate_limited" && error.status === 429
+          ? providerRateLimitDetails({ ...error.details, provider: "boat", retryAfterSeconds: error.retryAfterSeconds })
+          : undefined;
       const status =
         error.code === "rate_limited"
           ? 429
@@ -362,15 +368,17 @@ export async function handleControlRequest(request: Request, options: ControlOpt
         {
           error: {
             code: error.code,
-            message: error.message,
-            ...(error.details?.keepSource === true
-              ? {
-                  details: {
-                    keepSource: true,
-                    sourceSandboxId: error.details.sourceSandboxId,
-                  },
-                }
-              : {}),
+            message: limit ? providerRateLimitMessage(limit) : error.message,
+            ...(limit
+              ? { details: limit }
+              : error.details?.keepSource === true
+                ? {
+                    details: {
+                      keepSource: true,
+                      sourceSandboxId: error.details.sourceSandboxId,
+                    },
+                  }
+                : {}),
           },
         },
         { status, headers: { "cache-control": "no-store" } },

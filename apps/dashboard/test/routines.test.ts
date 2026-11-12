@@ -7,6 +7,7 @@ import {
   routineFailure,
   routineRequest,
   runDescription,
+  scheduleLabel,
 } from "../src/lib/routines.ts";
 
 const ORG = "00000000-0000-4000-8000-000000000010",
@@ -80,6 +81,17 @@ test("routine form preserves exact prompt, pins its selected revision and valida
 
 test("routine DTOs reject unsafe links and unknown states, and do not carry raw diagnostics", () => {
   expect(parseRoutine(item)).toMatchObject({ id: ID, prompt: item.prompt, templateRevision: 2 });
+  const calendar = {
+    ...item,
+    intervalHours: null,
+    cron: "0 9 * * MON-FRI",
+    timezone: "Europe/Paris",
+    scheduleDescription: "At 09:00, Monday through Friday, Europe/Paris",
+  };
+  const parsedCalendar = parseRoutine(calendar);
+  expect(parsedCalendar).toMatchObject({ cron: calendar.cron, intervalHours: null });
+  expect(parsedCalendar && scheduleLabel(parsedCalendar)).toBe(calendar.scheduleDescription);
+  expect(parseRoutine({ ...calendar, timezone: null })).toBeNull();
   expect(parseRoutine({ ...item, intervalHours: 0 })).toBeNull();
   expect(parseRoutine({ ...item, scope: ["org"] })).toBeNull();
   expect(parseRoutine({ ...item, pauseReason: "credential-bearing provider message" })?.pauseReason).toBe("unknown");

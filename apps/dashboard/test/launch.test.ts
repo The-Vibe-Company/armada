@@ -64,6 +64,16 @@ test("a provider refusal keeps the server's code, whatever its status", async ()
   const error = await launchSandbox(answering(refusal, 403), { ...args, size: "xlarge" }).catch((caught) => caught);
   expect(error).toBeInstanceOf(ControlError);
   expect(error).toMatchObject({ code: "forbidden", message: "Requested size cannot be allocated." });
+  const seen: unknown[] = [];
+  const limit = {
+    error: {
+      code: "rate_limited",
+      message:
+        "The Boat plan start limit per day has been reached. Boat says the next start is available at 2026-11-12T08:08:00.000Z.",
+    },
+  };
+  expect(await launchSandbox(answering(limit, 429, seen), args).catch((caught) => caught)).toMatchObject(limit.error);
+  expect(seen).toHaveLength(1);
   const unavailable = { error: { code: "payment_required", message: "Plan limit." } };
   expect(await launchSandbox(answering(unavailable, 503), args).catch((caught) => caught)).toMatchObject({
     code: "payment_required",

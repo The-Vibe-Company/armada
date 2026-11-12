@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { createSqlVaultStore } from "@armada/core";
+import { createSqlVaultStore } from "@armada/core/server";
 import { operation } from "../../cli/src/operations.ts";
 import { memorySessionStore } from "../../cli/src/session.ts";
 import { handleControlRequest } from "../src/control.ts";

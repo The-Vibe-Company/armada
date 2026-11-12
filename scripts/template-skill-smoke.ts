@@ -75,7 +75,7 @@ function metadata(value: Connections, org: string): Metadata[] {
   if (rows.some((entry) => !entry || typeof entry.kind !== "string")) fail("invalid_response");
   return rows;
 }
-function verifyReceipts(receipts: unknown, pins: string[]): asserts receipts is Receipt[] {
+export function verifyReceipts(receipts: unknown, pins: string[]): asserts receipts is Receipt[] {
   if (!Array.isArray(receipts) || receipts.length !== pins.length) fail("invalid_receipt");
   for (const pin of pins) {
     const found = receipts.filter((receipt) => receipt?.reference === pin);
@@ -191,6 +191,8 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
           revision: record.resource!.currentRevision,
           requestKey: record.requestKey,
           ttlSeconds: 900,
+          // Explicit template pins are isolated from the separate defaults probe.
+          skipSkillDefaults: true,
           prompt: `Read the environment variable ${key} using your terminal tool. Reply with only its exact value, with no formatting or other text. Do not modify files.`,
         });
         if (typeof result?.id === "string" && result.id) record.sandboxId = result.id;

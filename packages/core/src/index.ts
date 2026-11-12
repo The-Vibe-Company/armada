@@ -116,7 +116,6 @@ export {
   goldenForSettings,
   providerIdOf,
   type SnapshottedGolden,
-  snapshotGolden,
   waitSnapshot,
 } from "./golden.ts";
 export type { GoldenBuildStatus } from "./golden-build-status.ts";
@@ -237,6 +236,7 @@ export {
   type SteerRequest,
   type ToolCall,
 } from "./provider.ts";
+export { providerRateLimitDetails, providerRateLimitMessage } from "./provider-limit.ts";
 export { validateReadableVariables } from "./readable-variables.ts";
 export { resolveRepositoryDir } from "./repository-context.ts";
 export {
@@ -354,5 +354,4 @@ export {
   VaultError,
   type VaultErrorCode,
 } from "./vault-error.ts";
-export { createSqlVaultStore } from "./vault-store.ts";
 export { VERSION } from "./version.ts";

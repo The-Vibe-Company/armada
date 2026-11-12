@@ -15,7 +15,7 @@ const routes = [
   ["tools", "/tools", "Tools"],
   ["variables", "/variables", "Variables"],
   ["skills", "/skills", "Skills"],
-  ["harness", "/harness", "Harness"],
+  ["harness", "/harness", "Models"],
   ["organizations", "/orgs", "Organizations"],
   ["members", `/orgs/${ACME}`, "Acme"],
   ["settings", "/settings", "Settings"],
@@ -95,7 +95,13 @@ try {
         await signIn(page, "alice@example.com", "/environments");
         for (const [name, path, title] of routes) {
           await page.goto(path);
-          await expect(page.getByRole("heading", { level: 1, name: title, exact: true })).toBeVisible();
+          await expect(
+            page.getByRole("heading", {
+              level: 1,
+              name: name === "harness" && phase === "before" ? /^(?:Harness|Models)$/ : title,
+              exact: true,
+            }),
+          ).toBeVisible();
           if (["environments", "templates", "tools", "variables"].includes(name))
             await expect(
               page.getByRole("list", { name: name === "variables" ? "Variables and secrets" : title, exact: true }),
@@ -127,7 +133,13 @@ try {
         await post("provider-status-fail", { fail: { status: 503, code: "unavailable", message: "Try again soon." } });
         for (const [name, path, title] of routes.filter(([name]) => ["settings", "environments"].includes(name))) {
           await page.goto(path);
-          await expect(page.getByRole("heading", { level: 1, name: title, exact: true })).toBeVisible();
+          await expect(
+            page.getByRole("heading", {
+              level: 1,
+              name: name === "harness" && phase === "before" ? /^(?:Harness|Models)$/ : title,
+              exact: true,
+            }),
+          ).toBeVisible();
           await expect(page.locator('[data-setup-state="unavailable"]').first()).toBeVisible();
           await capture(page, `${name}-unavailable`);
         }
@@ -141,7 +153,13 @@ try {
         await signIn(page, "carol@example.com", "/orgs");
         for (const [name, path, title] of noOrg) {
           await page.goto(path);
-          await expect(page.getByRole("heading", { level: 1, name: title, exact: true })).toBeVisible();
+          await expect(
+            page.getByRole("heading", {
+              level: 1,
+              name: name === "harness" && phase === "before" ? /^(?:Harness|Models)$/ : title,
+              exact: true,
+            }),
+          ).toBeVisible();
           await capture(page, `${name}-no-membership`);
         }
       } finally {

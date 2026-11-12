@@ -8,7 +8,6 @@ import { resolveGitHubAccess } from "../src/github.ts";
 import {
   addMember,
   createOrg,
-  createSqlVaultStore,
   listCredentials,
   listMembers,
   listOrgs,
@@ -26,6 +25,7 @@ import {
   VaultError,
   type VaultStore,
 } from "../src/index.ts";
+import { createSqlVaultStore } from "../src/server.ts";
 
 const KEY = Buffer.alloc(32, 9).toString("base64");
 const CLAUDE = "sk-ant-oat01-user-token";

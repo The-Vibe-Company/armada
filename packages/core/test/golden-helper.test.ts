@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { builtinModules } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import manifest from "../helper/manifest.json";
@@ -75,7 +76,7 @@ test("browser core entry excludes native payloads while sharing release digests"
         setup(builder) {
           builder.onResolve({ filter: /.*/ }, ({ path }) => {
             // Private installation must be injected, not pull native SSH I/O into browser core.
-            if (["child_process", "fs", "fs/promises", "os"].includes(path.replace(/^node:/, "")))
+            if (path.startsWith("node:") || builtinModules.includes(path))
               throw new Error(`Browser core cannot import ${path}`);
             return undefined;
           });

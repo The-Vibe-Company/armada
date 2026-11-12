@@ -23,6 +23,7 @@ const PRIVATE_POST_PATHS = new Set([
   "routines/pause",
   "routines/delete",
   "routines/history",
+  "routines/preview",
   "variables/list",
   "variables/read",
   "variables/set",
