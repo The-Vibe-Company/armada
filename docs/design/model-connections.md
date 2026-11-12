@@ -1,6 +1,8 @@
 # Model connections (#1162)
 
 Design slice of #1160; no runtime, schema or UI change in this PR.
+Owner hold: draft for discussion; all implementation slices below are proposals,
+not authorization to start. No implementation until the owner approves the approach.
 
 ## Current state
 
@@ -123,3 +125,16 @@ No removal of Boat's native path here; it belongs to #1161 after parity.
 Later: direct Bedrock/Vertex/Foundry cloud identity flows, rotating credential
 helpers, arbitrary headers, model discovery, enterprise endpoint allowlists and
 multi-tenant egress hardening. Do not build these for the owner-team first slice.
+
+## Open questions for the owner
+
+1. **Reuse credential rows or introduce a separate connection table?** Recommend
+   extending existing model credential rows, preserving IDs, sealed values and
+   template references; keep provider credentials outside the connection DTO.
+2. **Ship custom endpoints on Modal first or wait for Boat runtime parity?**
+   Recommend Modal first with an explicit unsupported-on-Boat error until #1161;
+   never introduce a temporary Boat exec/configuration path.
+3. **Which endpoint/auth options belong in the first release?** Recommend Codex
+   Azure/Responses with static keys and Claude gateways with bearer/API-key auth;
+   defer direct Bedrock/Vertex/Foundry identity flows and arbitrary headers.
+   OpenCode options stay with #1164; price calculation stays with #1163.
