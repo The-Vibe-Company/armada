@@ -171,7 +171,7 @@ describe("Skillpack metadata adapter", () => {
       { skills: [], next_offset: "50" },
       { skills: Array(51).fill(publicSkill), next_offset: null },
       { skills: [{ ...publicSkill, version: "latest" }], next_offset: null },
-      { skills: [{ ...publicSkill, skill_slug: "armada-tools" }], next_offset: null },
+      { skills: [{ ...publicSkill, skill_slug: "armada-tools", version: "latest" }], next_offset: null },
       { skills: [{ ...publicSkill, description: "x".repeat(8193) }], next_offset: null },
     ]) {
       await errorCode(
@@ -222,5 +222,34 @@ describe("Skillpack metadata adapter", () => {
       createSkillCatalog(fakeFetch(() => new Response("LEAK not JSON"))).list({ source: "public" }),
       "unavailable",
     );
+  });
+});
+
+test("public discovery filters managed skills without discarding eligible entries or the upstream cursor", async () => {
+  const rows = [
+    { ...publicSkill, skill_slug: "armada-tools" },
+    ...Array.from({ length: 49 }, (_, i) => ({ ...publicSkill, skill_slug: `notes-${i}` })),
+  ];
+  const catalog = createSkillCatalog(fakeFetch(() => Response.json({ skills: rows, next_offset: 50 })));
+  const page = await catalog.list({ source: "public" });
+  expect(page.nextOffset).toBe(50);
+  expect(page.items).toHaveLength(49);
+  expect(page.items[0]?.reference).toBe("team/notes-0");
+  expect(page.items.at(-1)?.reference).toBe("team/notes-48");
+});
+test("private discovery filters managed skills before local pagination", async () => {
+  const rows = [
+    { ...privateSkill, slug: "armada-tools" },
+    ...Array.from({ length: 50 }, (_, i) => ({ ...privateSkill, slug: `notes-${i}` })),
+  ];
+  const catalog = createSkillCatalog(fakeFetch(() => Response.json(rows)));
+  const page = await catalog.list({ source: "private" }, "synthetic-key");
+  expect(page.items).toHaveLength(50);
+  expect(page.items[0]?.reference).toBe("notes-0");
+  expect(page.items.at(-1)?.reference).toBe("notes-49");
+  expect(page.nextOffset).toBeNull();
+  expect(await catalog.list({ source: "private", offset: 50 }, "synthetic-key")).toEqual({
+    items: [],
+    nextOffset: null,
   });
 });
