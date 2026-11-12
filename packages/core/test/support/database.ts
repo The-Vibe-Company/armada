@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach } from "bun:test";
 import type { PGlite } from "@electric-sql/pglite";
-import { openMigratedDatabase } from "../../../../scripts/test-support/migrated-database.ts";
+import { openMigratedDatabase, resetMigratedDatabaseRows } from "../../../../scripts/test-support/migrated-database.ts";
 
 /**
  * One real migrated database per serial test file, with empty application rows
@@ -20,7 +20,7 @@ export function migratedDatabase(): () => PGlite {
     reset = `truncate table ${tables.rows.map((row) => row.name).join(", ")} restart identity cascade`;
   });
   beforeEach(async () => {
-    await db!.exec(reset);
+    await resetMigratedDatabaseRows(db!, reset);
   });
   afterAll(async () => {
     await db?.close();
