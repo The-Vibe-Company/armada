@@ -30,6 +30,7 @@ import {
 } from "@/app/actions/connections";
 import { SubmitButton } from "@/components/action-form";
 import { CreateDialog } from "@/components/create-dialog";
+import { useResourceSelected } from "@/components/resource-browser";
 import { StateCell } from "@/components/state-cell";
 import {
   AlertDialog,
@@ -1023,6 +1024,12 @@ export function ToolPanel({
   const [result, setResult] = useState<ActionResult | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [dialog, setDialog] = useState<RowDialog>(null);
+  const selected = useResourceSelected(connection.id);
+  // The detail tree stays mounted; its portalled dialogs must not outlive it
+  // when browser Back changes the selected resource.
+  useEffect(() => {
+    if (!selected) setDialog(null);
+  }, [selected]);
   const [, startTransition] = useTransition();
   const target = { org: connection.orgId, id: connection.id };
   const remote = connection.transport !== "stdio";
@@ -1060,7 +1067,7 @@ export function ToolPanel({
   const opener = useRef<HTMLElement | null>(null);
   const restoreFocus = useCallback((event: Event) => {
     event.preventDefault();
-    opener.current?.focus();
+    if (opener.current?.getClientRects().length) opener.current.focus();
   }, []);
   function open(next: RowDialog) {
     return (event: { currentTarget: HTMLElement }) => {
@@ -1193,7 +1200,7 @@ export function ToolPanel({
         <>
           <RenameDialog
             connection={connection}
-            open={dialog === "rename"}
+            open={selected && dialog === "rename"}
             onOpenChange={closeDialog}
             onResult={setResult}
             onCloseAutoFocus={restoreFocus}
@@ -1201,14 +1208,14 @@ export function ToolPanel({
           {custom && (
             <EditConnectionDialog
               connection={connection}
-              open={dialog === "edit"}
+              open={selected && dialog === "edit"}
               onOpenChange={closeDialog}
               onResult={setResult}
               onCloseAutoFocus={restoreFocus}
             />
           )}
           <ConfirmAction
-            open={dialog === "revoke"}
+            open={selected && dialog === "revoke"}
             onOpenChange={closeDialog}
             onCloseAutoFocus={restoreFocus}
             action={revokeConnection}
@@ -1219,7 +1226,7 @@ export function ToolPanel({
             confirm="Revoke access"
           />
           <ConfirmAction
-            open={dialog === "delete"}
+            open={selected && dialog === "delete"}
             onOpenChange={closeDialog}
             onCloseAutoFocus={restoreFocus}
             action={deleteConnection}
