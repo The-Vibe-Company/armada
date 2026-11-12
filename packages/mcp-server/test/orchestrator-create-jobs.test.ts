@@ -5,7 +5,10 @@ import { launchCredentials } from "../src/launch-credentials.ts";
 import { launchOrchestratorParent } from "../src/orchestrator-launch.ts";
 import { LifecycleRuntimeStore, lifecycleDetail } from "../src/orchestrator-lifecycle-integration.ts";
 import { OrchestratorRuntime } from "../src/orchestrator-runtime.ts";
-import { database, ENCRYPTION_KEY, fakeBoat } from "./support.ts";
+import { rowOnlyDatabase } from "./row-only-database.ts";
+import { ENCRYPTION_KEY, fakeBoat } from "./support.ts";
+
+const database = rowOnlyDatabase();
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -173,7 +176,6 @@ test.each([false, true])(
     } finally {
       f.gate.resolve();
       await f.runtime.createWorker.drain();
-      await f.db.close();
     }
   },
   20_000,
@@ -219,7 +221,6 @@ test("only queued tagged work dispatches; expired dispatched work becomes uncert
   } finally {
     f.gate.resolve();
     await f.runtime.createWorker.drain();
-    await f.db.close();
   }
 }, 20_000);
 
@@ -256,7 +257,6 @@ test("revoked membership fails only tagged queued intent, emits a correlated fai
   } finally {
     f.gate.resolve();
     await f.runtime.createWorker.drain();
-    await f.db.close();
   }
 }, 20_000);
 
@@ -298,7 +298,6 @@ test.each([false, true])(
     } finally {
       f.gate.resolve();
       await f.runtime.createWorker.drain();
-      await f.db.close();
     }
   },
 );
@@ -370,7 +369,6 @@ test.each(["refused", "succeeded"])("requested skill readiness stays creating un
     f.gate.resolve();
     release.resolve();
     await f.runtime.createWorker.drain();
-    await f.db.close();
   }
 });
 
@@ -440,6 +438,5 @@ test("busy account refusal is terminal before allocation and retains the reason 
   } finally {
     f.gate.resolve();
     await f.runtime.createWorker.drain();
-    await f.db.close();
   }
 });

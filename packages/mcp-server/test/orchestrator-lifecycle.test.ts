@@ -1,6 +1,5 @@
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { expect, test } from "bun:test";
 import { createSqlSandboxStore, reserveOrchestratorOperation, type Sql } from "@armada/core/server";
-import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 import { recordOrchestratorActivity } from "../src/orchestrator-activity.ts";
 import { createOrchestratorLifecycle } from "../src/orchestrator-lifecycle.ts";
 import type {
@@ -14,26 +13,13 @@ import {
 } from "../src/orchestrator-lifecycle-integration.ts";
 import { configureOrchestratorLifecycle } from "../src/orchestrator-lifecycle-settings.ts";
 import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
-import { fakeBoat, seedDatabase } from "./support.ts";
+import { rowOnlyDatabase } from "./row-only-database.ts";
+import { fakeBoat } from "./support.ts";
 
-// Serial, row-only fixtures: reset before EACH fixture (one test builds two),
-// retaining real commits while excluding prior rows from the global worker scan.
-let db: Awaited<ReturnType<typeof openMigratedDatabase>>;
-let reset: string;
-beforeAll(async () => {
-  db = await openMigratedDatabase();
-  const tables = await db.query<{ name: string }>(
-    "select format('%I.%I', schemaname, tablename) as name from pg_tables where schemaname in ('public', 'auth')",
-  );
-  reset = `truncate table ${tables.rows.map((row) => row.name).join(", ")} restart identity cascade`;
-});
-afterAll(async () => {
-  await db?.close();
-});
+const database = rowOnlyDatabase();
 
 async function fixture() {
-  await db.exec(reset);
-  const { people } = await seedDatabase(db);
+  const { db, people } = await database();
   const sql: Sql = {
     query: (q, v) => db.query(q, v),
     transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
