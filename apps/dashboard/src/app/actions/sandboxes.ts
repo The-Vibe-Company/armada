@@ -1,6 +1,6 @@
 "use server";
 
-import type { Harness } from "@armada/core";
+import { type Harness, validateSkillPins } from "@armada/core";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { type ActionResult, done, fail, formString, isUuid } from "@/lib/action";
@@ -146,6 +146,12 @@ export async function launchFromGolden(_previous: ActionResult | null, data: For
   if (!(await isSelectedOrganization(parsed.args.org))) return fail("Switch to that organization first.");
   const blocker = await newWorkBlocker(parsed.args.org, parsed.args.provider);
   if (blocker) return fail(blocker);
+  const skills = data.getAll("skills");
+  try {
+    validateSkillPins(skills);
+  } catch {
+    return fail("Choose at most 20 distinct skills pinned to exact versions. Armada tools are managed automatically.");
+  }
   const viewer = await requireViewer();
   const serverUrl = mcpUrl();
   if (!serverUrl || !viewer.token) return fail("The Armada server is not configured for this dashboard.");
@@ -189,6 +195,7 @@ export async function launchFromGolden(_previous: ActionResult | null, data: For
       { serverUrl, token: viewer.token },
       {
         ...parsed.args,
+        ...(skills.length ? { skills } : {}),
         ...(connections === undefined ? {} : { connections }),
         ...(repository.repo === undefined ? {} : { repo: repository.repo }),
         ...(account.id === undefined ? {} : { credentialId: account.id }),

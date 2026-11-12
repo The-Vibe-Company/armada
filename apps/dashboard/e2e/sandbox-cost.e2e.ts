@@ -32,7 +32,7 @@ test("a sandbox with usage shows its cost, one without says so", async ({ page }
   await expect(card.getByRole("definition").filter({ hasText: /^100K$/ })).toBeVisible(); // priced cache writes
   await expect(card.getByText("12 min", { exact: true })).toBeVisible();
   await expect(card.getByText("claude-opus-5-5", { exact: true })).toBeVisible();
-  await card.getByText("Per turn").click();
+  await card.getByRole("button", { name: "Per turn" }).click();
   const turns = card.getByRole("table", { name: "Cost per turn" });
   await expect(turns.getByRole("row")).toHaveCount(3);
   await expect(turns.getByRole("row").nth(1)).toContainText("$0.83");
@@ -66,7 +66,7 @@ test("partial token reporting stays Not reported in the card and per-turn table"
   const output = card.locator("dl > div").filter({ has: page.getByText("Output", { exact: true }) });
   await expect(output.locator("dd")).toHaveText("Not reported");
   await expect(card.locator("p[title]")).toHaveText("$0.83");
-  await card.getByText("Per turn").click();
+  await card.getByRole("button", { name: "Per turn" }).click();
   await expect(card.getByRole("row").nth(2)).toContainText("Not reported");
   await page.screenshot({ path: "test-results/sandbox-cost-missing-counters.png", animations: "disabled" });
 });

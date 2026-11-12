@@ -24,6 +24,8 @@ export type LaunchArgs = {
   reasoning_effort: string;
   /** Connection ids (never names) whose MCP servers the sandbox gets. */
   connections?: string[];
+  /** Additional exact Skillpack pins; omitted keeps the server’s configured defaults. */
+  skills?: string[];
   /** Repository context: a golden `repos[].dir` used as the native initial cwd. Absent: the default, none. */
   repo?: string;
   /**

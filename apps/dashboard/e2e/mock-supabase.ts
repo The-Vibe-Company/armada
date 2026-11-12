@@ -51,6 +51,9 @@ type State = {
   launches: Row[];
   /** The route of each of `launches`, in order. */
   launchRoutes: string[];
+  skillCatalogUnavailable?: boolean;
+  skillCatalogMalformed?: boolean;
+  skillCatalogLongDescription?: boolean;
   /** Golden build and capability requests contain metadata only, never tokens. */
   goldenCalls: { route: string; body: Row; authorized: boolean }[];
   goldenGate: {
@@ -657,11 +660,6 @@ function orAny(row: Row, expression: string): boolean {
 
 function project(table: string, row: Row, select: string | null): Row | Fail {
   const columns = !select || select === "*" ? null : select.split(",").map((column) => column.trim());
-  if (table === "credentials" && (!columns || columns.includes("value_enc"))) {
-    if (columns?.includes("value_enc")) {
-      return { status: 401, code: "42501", message: "permission denied for table credentials" };
-    }
-  }
   if (table === "github_connections") {
     if (!columns || columns.includes("refresh_token_enc")) {
       return { status: 401, code: "42501", message: "permission denied for table github_connections" };
@@ -670,13 +668,7 @@ function project(table: string, row: Row, select: string | null): Row | Fail {
   if (table === "orgs" && !columns) {
     return { status: 401, code: "42501", message: "permission denied for table orgs" };
   }
-  if (!columns) {
-    if (table === "credentials") {
-      const { value_enc: _hidden, ...rest } = row;
-      return rest;
-    }
-    return row;
-  }
+  if (!columns) return row;
   return Object.fromEntries(columns.map((column) => [column, row[column]]));
 }
 
@@ -695,6 +687,13 @@ async function rest(request: Request, url: URL): Promise<Response> {
   const select = url.searchParams.get("select");
 
   if (request.method === "GET") {
+    // Column grants apply to the query, even when filtering or paging returns no rows.
+    if (table === "credentials") {
+      const columns = select?.split(",").map((column) => column.trim());
+      if (!select || !columns || columns.includes("*") || columns.includes("value_enc")) {
+        return pgError({ status: 401, code: "42501", message: "permission denied for table credentials" });
+      }
+    }
     let rows = visibleRows(table, userId).filter((row) => matches(row, url.searchParams));
     const order = url.searchParams.get("order");
     if (order) {
@@ -1061,6 +1060,53 @@ function bindCredential(body: Row, userId: string | null): Response {
  * exactly one of its `config.repos[].dir`, and every named connection is the caller's to use in the org, personal or
  * org, and connected (#681: the legacy visibility plays no part). The sandbox row records what was launched.
  */
+/** Remote metadata boundary only: installs remain the launch service's contract. */
+function skillCatalogRoute(route: string, body: Row, request: Request): Response {
+  const user = viewer(request);
+  if (!user) return controlFail(401, "unauthorized", "Sign in again.");
+  if (!isMember(body.org, user)) return controlFail(404, "not_found", "No such organization.");
+  if (state.skillCatalogUnavailable) return controlFail(503, "unavailable", "The Skillpack catalog is unavailable.");
+  if (state.skillCatalogMalformed)
+    return json(route === "skillpack/versions" ? { versions: "invalid" } : { items: [{}], nextOffset: null });
+  if (route === "skillpack/versions")
+    return json({
+      versions:
+        body.source === "private" ? (body.reference === "release-notes" ? ["1.0.0"] : ["2.1.0", "2.0.0"]) : ["1.4.0"],
+    });
+  return json({
+    items:
+      body.source === "private"
+        ? [
+            {
+              reference: "review-code",
+              name: "Code review",
+              description: state.skillCatalogLongDescription
+                ? "Additional context. ".repeat(200)
+                : "Review changes for correctness, security and test coverage.",
+              visibility: "private",
+              versions: ["2.1.0"],
+            },
+            {
+              reference: "release-notes",
+              name: "Release notes",
+              description: "Turn shipped changes into concise release notes.",
+              visibility: "private",
+              versions: ["1.0.0"],
+            },
+          ]
+        : [
+            {
+              reference: "example/browser-testing",
+              name: "Browser testing",
+              description: "Check real browser flows and capture readable evidence.",
+              visibility: "public",
+              versions: ["1.4.0"],
+            },
+          ],
+    nextOffset: null,
+  });
+}
+
 function launchRoute(body: Row, userId: string | null, route = "sandbox/launch"): Response {
   if (!userId) return controlFail(401, "unauthorized", "Sign in again.");
   state.launches.push(body);
@@ -1380,6 +1426,7 @@ function templateRoute(route: string, body: Row, request: Request): Response {
       reasoningEffort: d.reasoningEffort ?? "high",
       connections: d.connections ?? [],
       variables: d.variables ?? [],
+      ...(Array.isArray(d.secrets) && d.secrets.length ? { secrets: d.secrets } : {}),
       skills: d.skills ?? [],
     };
   };
@@ -2737,6 +2784,18 @@ function control(url: URL, body: Row): Response {
     });
     return json({ ok: true });
   }
+  if (url.pathname === "/__test/skill-catalog-long-description") {
+    state.skillCatalogLongDescription = body.enabled === true;
+    return json({ ok: true });
+  }
+  if (url.pathname === "/__test/skill-catalog-malformed") {
+    state.skillCatalogMalformed = body.malformed === true;
+    return json({ ok: true });
+  }
+  if (url.pathname === "/__test/skill-catalog-unavailable") {
+    state.skillCatalogUnavailable = body.unavailable === true;
+    return json({ ok: true });
+  }
   if (url.pathname === "/__test/sandbox-lifecycle") {
     // The additive #565 fields on one sandbox row, as the database would hold them; the status is left alone.
     const row = state.sandboxes.find((item) => item.id === body.id);
@@ -2916,6 +2975,8 @@ const server = Bun.serve({
     if (url.pathname.startsWith("/api/v1/")) {
       const route = url.pathname.slice("/api/v1/".length);
       if (route === "auth/email/start") return json({ ok: true });
+      if (route === "skillpack/catalog" || route === "skillpack/versions")
+        return skillCatalogRoute(route, body, request);
       if (route === "golden/build/status") return goldenJobStatus(body, request);
       if (route === "golden/create" || route === "golden/update") return goldenBuild(route, body, request);
       if (route === "golden/capabilities") return goldenCapabilities(body, request);
