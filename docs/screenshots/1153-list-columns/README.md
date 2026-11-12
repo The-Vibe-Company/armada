@@ -4,7 +4,9 @@ Before (main) on the left, after on the right. The same mock data, captured from
 sides. Desktop (1280 px) and phone (390 px), light and dark.
 
 Desktop: the state and fact columns now start at one x in every row, whatever the width of the row's action (Retry,
-Reconnect, Configure, Launch or none). Phone: unchanged; a row without an action keeps the whole width for its name.
+Reconnect, Configure, Launch or none). The cost, accepted for the alignment: on desktop a row without an action now
+keeps the action column empty, so a long meta line ends a little earlier (Templates, "Modal quick fix"). Phone:
+unchanged; a row without an action keeps the whole width for its name.
 
 ## Tools
 
