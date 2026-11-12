@@ -148,7 +148,7 @@ jobs:
   # Keep the ruleset's required name; never turn skipped/cancelled children green.
   verify:
     name: Lint, typecheck and test
-    needs: [static-checks, unit-tests]
+    needs: [ci-budget, expensive-inputs, migration-versions, static-checks, unit-tests, golden-concurrency, golden-os, binary]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 1
@@ -160,6 +160,16 @@ jobs:
         run: |
           test "$STATIC_RESULT" = success
           test "$UNIT_RESULT" = success
+      - if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        name: Enforce elapsed workflow budget (including queue and setup)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > /tmp/run.json
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?filter=latest&per_page=100" --jq '.jobs[]' | jq -s . > /tmp/jobs.json
+          node scripts/ci/check-budget.cjs /tmp/run.json /tmp/jobs.json
 
   golden-concurrency:
     name: Golden PostgreSQL concurrency
@@ -308,18 +318,10 @@ jobs:
             dist/armada-server-${{ matrix.target }}
           if-no-files-found: error
 
+  # Compatibility name: enforcement lives in verify, avoiding a second runner queue.
   ci-budget:
     name: CI budget (120s)
-    if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}
-    needs: [expensive-inputs, migration-versions, static-checks, unit-tests, verify, golden-concurrency, golden-os, binary]
     runs-on: ubuntu-latest
     timeout-minutes: 1
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: Enforce elapsed workflow budget (including queue and setup)
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > /tmp/run.json
-          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?filter=latest&per_page=100" --jq '.jobs[]' | jq -s . > /tmp/jobs.json
-          node scripts/ci/check-budget.cjs /tmp/run.json /tmp/jobs.json
+      - run: echo "120s enforcement runs in the required Lint, typecheck and test check."
