@@ -111,10 +111,10 @@ private final class Route: @unchecked Sendable {
     }
     func waitForStart() async -> TransportProtocol {
         await withCheckedContinuation { continuation in
-            let value = lock.withLock {
+            let value = lock.withLock { () -> TransportProtocol? in
                 if let loader { return loader }
                 started = continuation
-                return nil as TransportProtocol?
+                return nil
             }
             if let value { continuation.resume(returning: value) }
         }
