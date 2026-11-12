@@ -320,3 +320,58 @@ test("revocation closes native work before waiting for an in-flight command to d
     await outcome;
   }
 });
+
+test("HTTPS fallback keeps its epoch alive while a native command is blocked and revocation tears it down", async () => {
+  const time = clock(),
+    stop = new AbortController(),
+    entered = deferred(),
+    nativeStopped = deferred();
+  let closed = false,
+    contacts = 0;
+  const channel = new RuntimeDialout("https://armada.example", session, {
+    ...time,
+    socket() {
+      throw Error("upgrade rejected");
+    },
+    async fetch(url, options) {
+      if (options.signal?.aborted) throw new DOMException("aborted", "AbortError");
+      if (url.pathname.endsWith("/session")) {
+        contacts++;
+        return new Response(null, { status: 401 });
+      }
+      return Response.json({
+        epoch: "1",
+        command: { version: 1, sandboxId: "logical", requestId: "native-wait", op: "health" },
+      });
+    },
+  });
+  const work = channel.run(
+    async () => {
+      entered.resolve();
+      await nativeStopped.promise;
+      return Response.json({});
+    },
+    stop.signal,
+    async () => {
+      closed = true;
+      nativeStopped.resolve();
+    },
+  );
+  const outcome = work.then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  try {
+    await entered.promise;
+    expect([...time.timers].some((timer) => timer.ms === 20000 && timer.repeat)).toBe(true);
+    time.fire(20000);
+    expect(await outcome).toBeInstanceOf(RuntimeChannelRevoked);
+    expect(contacts).toBe(1);
+    expect(closed).toBe(true);
+    expect(time.timers.size).toBe(0);
+  } finally {
+    stop.abort();
+    nativeStopped.resolve();
+    await outcome;
+  }
+});
