@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
+import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 import { encryptSecret } from "../src/crypto.ts";
 import { GoldenBuildJobs } from "../src/golden-build-jobs.ts";
 import { createSqlGoldenStore } from "../src/golden-store.ts";
@@ -14,8 +14,7 @@ const binding: ModalBinding = { workspace: "verified-workspace", environment: "p
 
 /** Actual queue/transactions/vault and service; only GitHub HTTP and the remote VM provider are synthetic. */
 async function fixture() {
-  const db = await openDatabase();
-  await applyMigrations(db);
+  const db = await openMigratedDatabase();
   const userId = crypto.randomUUID(),
     orgId = crypto.randomUUID(),
     admin = crypto.randomUUID();
