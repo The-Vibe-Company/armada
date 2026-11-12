@@ -18,11 +18,13 @@ import uuid
 
 LIMIT = 1024 * 1024
 PRODUCTION = {"armada.thevibecompany.co", "armada.thevibecompany.com"}
+OWNER_ROUTES = {"list": "sandbox/list", "status": "sandbox/status", "send": "sandbox/send",
+                "stop": "sandbox/stop", "exec": "sandbox/exec"}
 API_STEPS = {"golden/list": "golden_list", "sandbox/list": "sandbox_list", "sandbox/status": "sandbox_status",
              "logs/read": "logs_read", "sandbox/launch-access-v1": "parent_launch", "sandbox/launch": "control_launch",
              "sandbox/send": "parent_resume", "sandbox/stop": "sandbox_stop", "sandbox/exec": "control_probe",
              "orchestrator-tools/read": "old_grant_read"}
-API_CODES = set("invalid invalid_config invalid_request unauthorized forbidden not_found conflict unsupported unavailable no_credentials start_failed init_failed prompt_failed payment_required provider_not_configured sandbox_not_ready no_running_turn credential_busy credential_binding_required credential_binding_unsafe credential_refused github_hydration_failed provider_unavailable dependency_unavailable outcome_unknown scoped_authority_denied invalid_epoch_authority".split())
+API_CODES = set("invalid invalid_config invalid_request unauthorized forbidden not_found unknown_route conflict unsupported unavailable no_credentials start_failed init_failed prompt_failed payment_required provider_not_configured sandbox_not_ready no_running_turn credential_busy credential_binding_required credential_binding_unsafe credential_refused github_hydration_failed provider_unavailable dependency_unavailable outcome_unknown scoped_authority_denied invalid_epoch_authority".split())
 API_REASONS = API_CODES | set("helper_missing helper_receipt_invalid helper_capability_unsupported skillpack_credential_missing skillpack_credential_refused skillpack_credential_unreadable skillpack_skill_unavailable skillpack_cli_unavailable skillpack_download_unavailable skillpack_transport_failed visibility_not_persisted native_auth_write_failed repository_ownership_mismatch".split())
 LOCAL_REASONS = set("api_refused_or_unexpected response_invalid response_too_large request_outcome_unknown request_deadline_exceeded request_timeout redirect_refused deadline_exceeded interrupted terminated unsupported_api_route".split())
 
@@ -30,6 +32,13 @@ LOCAL_REASONS = set("api_refused_or_unexpected response_invalid response_too_lar
 
 class Failure(Exception):
     pass
+
+
+class ApiFailure(Failure):
+    def __init__(self, status, code):
+        super().__init__("api_refused_or_unexpected")
+        self.status = status
+        self.code = code if code in API_CODES else "unknown_code"
 
 
 class Parser(argparse.ArgumentParser):
@@ -248,6 +257,9 @@ class Run:
         self.api_step = "preflight"
         self.failed_step = None
         self._api_trace = None
+        self.inventory_confirmed = set()
+        self.status_seen = set()
+        self.status_retry_budget = {}
 
     def remaining(self):
         remaining = self.deadline - time.monotonic()
@@ -263,6 +275,8 @@ class Run:
         try:
             if route not in API_STEPS:
                 raise Failure("unsupported_api_route")
+            if route != "orchestrator-tools/read":
+                body = dict(body, org=self.org)
             with request_deadline(min(timeout, self.remaining())):
                 return self._request(route, body, token, expected, code, timeout)
         except BaseException as error:
@@ -282,7 +296,7 @@ class Run:
         request = urllib.request.Request(self.address + "/api/v1/" + route,
                                         data=json.dumps(body).encode(), method="POST",
                                         headers={"Authorization": "Bearer " + (self.token if token is None else token),
-                                                 "Content-Type": "application/json"})
+                                                 "Content-Type": "application/json", "Accept": "application/json"})
         try:
             response = self.opener.open(request, timeout=min(timeout, self.remaining()))
         except urllib.error.HTTPError as error:
@@ -313,7 +327,7 @@ class Run:
                     self._api_trace.update(code="unknown_code", reason="unknown_reason")
 
             if response.code != expected or (code and value.get("error", {}).get("code") != code):
-                raise Failure("api_refused_or_unexpected")
+                raise ApiFailure(response.code, self._api_trace["code"])
             if not isinstance(value, dict) or (expected == 200 and "error" in value):
                 raise Failure("response_invalid")
             return value
@@ -327,7 +341,27 @@ class Run:
             response.close()
 
     def tool(self, method, **body):
-        return self.call("sandbox/" + method, dict(body, org=self.org))
+        if method not in OWNER_ROUTES:
+            raise Failure("unsupported_api_route")
+        return self.call(OWNER_ROUTES[method], dict(body, org=self.org), timeout=660 if method == "stop" else 30)
+
+    def status(self, resource, **body):
+        previous_failure = self.failed_step
+        while True:
+            try:
+                value = self.tool("status", id=resource, **body)
+                if value.get("id") != resource:
+                    raise Failure("status_identity_unconfirmed")
+                self.status_seen.add(resource)
+                self.failed_step = previous_failure
+                return value
+            except ApiFailure as error:
+                eligible = resource in self.inventory_confirmed and resource not in self.status_seen
+                left = self.status_retry_budget.setdefault(resource, 2) if eligible else 0
+                if error.status != 404 or error.code != "not_found" or left == 0:
+                    raise
+                self.status_retry_budget[resource] = left - 1
+                time.sleep(min(1, self.remaining()))
 
     def listing(self):
         rows = []
@@ -362,6 +396,8 @@ class Run:
         return resource
 
     def verify_resource(self, resource, owner=None):
+        if resource in self.baseline:
+            raise Failure("resource_not_new_or_distinct")
         rows = [row for row in self.listing() if row.get("id") == resource]
         if len(rows) != 1:
             raise Failure("resource_identity_unconfirmed")
@@ -374,14 +410,15 @@ class Run:
                 or row.get("harness") != self.args.harness or created < self.started - 5
                 or (owner and row.get("ownerId") != owner)):
             raise Failure("resource_identity_unconfirmed")
-        state = self.tool("status", id=resource)
+        self.inventory_confirmed.add(resource)
+        state = self.status(resource)
         if state.get("golden") != self.args.golden or state.get("model") != self.args.model:
             raise Failure("resource_selection_unconfirmed")
         return row
 
     def settled(self, resource, prompt):
         while True:
-            value = self.tool("status", id=resource, prompt_id=prompt)
+            value = self.status(resource, prompt_id=prompt)
             if value.get("settled"):
                 if value.get("prompt", {}).get("state") != "finished":
                     raise Failure("agent_turn_not_finished")
@@ -389,11 +426,28 @@ class Run:
             time.sleep(min(2, self.remaining()))
 
     def stop(self, resource):
-        if self.tool("status", id=resource).get("status") != "stopped":
-            result = self.tool("stop", id=resource)
-            if result.get("preservationNote") == "checkpoint_failed_disk_not_retained":
-                raise Failure("checkpoint_not_retained")
-        while self.tool("status", id=resource).get("status") != "stopped":
+        if resource not in self.ids or resource in self.baseline:
+            raise Failure("stop_target_not_owned_by_run")
+        previous_failure = self.failed_step
+        result = self.tool("stop", id=resource)
+        if result.get("id") != resource:
+            raise Failure("stop_acknowledgement_unconfirmed")
+        if result.get("preservationNote") == "checkpoint_failed_disk_not_retained":
+            raise Failure("checkpoint_not_retained")
+        if result.get("status") == "stopped":
+            return
+        while True:
+            try:
+                state = self.status(resource)
+                if state.get("id") == resource and state.get("status") == "stopped":
+                    return
+            except ApiFailure as error:
+                if error.status != 404 or error.code != "not_found":
+                    raise
+                if any(row.get("id") == resource and row.get("status") == "stopped"
+                       for row in self.listing()):
+                    self.failed_step = previous_failure
+                    return
             time.sleep(min(2, self.remaining()))
 
     def launch(self, access, prompt):
@@ -506,7 +560,7 @@ class Run:
                                      and (method != "message" or call["input"].get("text") == self.marker + " Reply exactly " + self.answer))
         if not all(required.values()) or not assistant_has(self.logs(self.child), self.answer):
             raise Failure("child_roundtrip_evidence_missing")
-        if self.tool("status", id=self.child).get("status") != "stopped":
+        if self.status(self.child).get("status") != "stopped":
             raise Failure("delegated_stop_not_confirmed")
         self.checks.append("scoped_launch_message_read_stop_and_child_answer")
         old = None
@@ -581,7 +635,7 @@ class Run:
         self.checks.append("control_anonymous_gateway_denied_no_successful_native_call")
 
     def cleanup(self):
-        self.deadline = time.monotonic() + 90
+        self.deadline = time.monotonic() + 660
         failed = False
         # Fence known producers BEFORE inventory: a timed-out turn may still allocate.
         fenced = {resource for resource in (self.parent, self.control) if resource}
