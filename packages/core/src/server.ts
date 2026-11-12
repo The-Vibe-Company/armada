@@ -52,6 +52,12 @@ export {
 } from "./private-skill.ts";
 export { isNonMutatingProviderRefusal } from "./provider.ts";
 export {
+  advanceRoutineSchedule,
+  nextRoutineDates,
+  parseRoutineSchedule,
+  type RoutineSchedule,
+} from "./routine-schedule.ts";
+export {
   createRoutineScheduler,
   type RoutineLaunchAdmission,
   type RoutineSchedulerRuntime,

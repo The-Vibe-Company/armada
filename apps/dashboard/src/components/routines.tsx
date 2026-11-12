@@ -173,7 +173,7 @@ function RoutineForm({
             required
           />
           <p className="text-xs text-muted-foreground">
-            Minimum one hour. Enabling starts the first interval, not an immediate launch.
+            Minimum one hour. Enabling follows the saved calendar schedule.
           </p>
         </div>
         <details className="rounded-lg border px-3 py-2">

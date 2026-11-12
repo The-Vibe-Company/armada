@@ -1,5 +1,7 @@
 import type { ApplicationVaultActor } from "./application-vault.ts";
 import type { Sql } from "./golden-store.ts";
+import { cronForLegacyInterval } from "./routine-legacy-schedule.ts";
+import { nextRoutineDates, parseRoutineSchedule } from "./routine-schedule.ts";
 import { type Routine, routineReasonHelp } from "./routines.ts";
 import { VaultError } from "./vault-error.ts";
 
@@ -12,7 +14,9 @@ type Row = {
   template_id: string;
   template_revision: number;
   prompt: string;
-  interval_hours: number;
+  interval_hours: number | null;
+  cron: string | null;
+  timezone: string;
   max_runs_per_day: number;
   ttl_seconds: number;
   status: "enabled" | "paused" | "deleted";
@@ -24,6 +28,14 @@ type Row = {
   updated_at: string | Date;
 };
 function dto(r: Row): Routine {
+  let description = `Every ${r.interval_hours} hours (legacy UTC timing; choose a cron to change it)`;
+  if (r.cron) {
+    try {
+      description = parseRoutineSchedule(r.cron, r.timezone).description;
+    } catch {
+      description = "Schedule unavailable. Check its cron and time zone.";
+    }
+  }
   return {
     id: r.id,
     orgId: r.org_id,
@@ -34,6 +46,9 @@ function dto(r: Row): Routine {
     templateRevision: r.template_revision,
     prompt: r.prompt,
     intervalHours: r.interval_hours,
+    cron: r.cron,
+    timezone: r.timezone,
+    scheduleDescription: description,
     maxRunsPerDay: r.max_runs_per_day,
     ttlSeconds: r.ttl_seconds,
     status: r.status,
@@ -66,6 +81,8 @@ const configFields = [
   "templateRevision",
   "prompt",
   "intervalHours",
+  "cron",
+  "timezone",
   "maxRunsPerDay",
   "ttlSeconds",
 ];
@@ -85,6 +102,7 @@ export function createRoutineService(sql: Sql) {
       enable: ["org", "id", "expectedVersion"],
       pause: ["org", "id", "expectedVersion"],
       history: ["org", "id"],
+      preview: ["org", "cron", "timezone"],
     };
     if (!Object.hasOwn(fields, operation) || Object.keys(input).some((k) => !fields[operation]?.includes(k))) invalid();
     const org = id(input.org);
@@ -99,6 +117,17 @@ export function createRoutineService(sql: Sql) {
           ])
         ).rows[0];
         if (!member) throw new VaultError("forbidden", "Routine access denied.");
+        const now = ["create", "update", "enable", "preview"].includes(operation)
+          ? new Date((await tx.query<{ now: Date }>("select now() as now")).rows[0]!.now)
+          : null;
+        if (operation === "preview") {
+          const schedule = parseRoutineSchedule(input.cron, input.timezone);
+          return {
+            ...schedule,
+            nextRuns: nextRoutineDates(schedule, now!).map((d) => d.toISOString()),
+            asOf: now!.toISOString(),
+          };
+        }
         if (operation === "list")
           return {
             items: (
@@ -132,8 +161,9 @@ export function createRoutineService(sql: Sql) {
               template_request_id: string | null;
               task_state: string | null;
               task_checked_at: string | Date | null;
+              missed_count_capped: boolean;
             }>(
-              `select r.id,r.scheduled_due_at,r.configuration_version,r.state,r.reason,r.template_request_id,r.task_state,r.task_checked_at,
+              `select r.id,r.scheduled_due_at,r.configuration_version,r.state,r.reason,r.template_request_id,r.task_state,r.task_checked_at,r.missed_count_capped,
                 r.missed_intervals,r.created_at,r.updated_at,
                 case when exists(select 1 from public.sandboxes s where s.id=r.sandbox_id
                   and s.org_id=$2 and s.owner_id=$3) then r.sandbox_id else null end as sandbox_id
@@ -150,6 +180,7 @@ export function createRoutineService(sql: Sql) {
                 reason: r.reason,
                 reasonHelp: routineReasonHelp(r.reason),
                 missedIntervals: r.missed_intervals,
+                missedCountCapped: r.missed_count_capped,
                 createdAt: r.created_at,
                 updatedAt: r.updated_at,
                 sandboxId: r.sandbox_id,
@@ -220,10 +251,13 @@ export function createRoutineService(sql: Sql) {
             )
           ).rows[0];
           if (!available) throw new VaultError("not_found", "Routine template revision unavailable.");
+          const next = current!.cron
+            ? nextRoutineDates(parseRoutineSchedule(current!.cron, current!.timezone), now!, 1)[0]!
+            : new Date(now!.getTime() + current!.interval_hours! * 3600000);
           const row = (
             await tx.query<Row>(
-              "update public.routines set status='enabled',next_due_at=now()+interval_hours*interval '1 hour',consecutive_failures=0,pause_reason=null,version=version+1,updated_at=now() where id=$1 returning *",
-              [current!.id],
+              "update public.routines set status='enabled',next_due_at=$2,consecutive_failures=0,pause_reason=null,version=version+1,updated_at=now() where id=$1 returning *",
+              [current!.id, next],
             )
           ).rows[0]!;
           return { item: dto(row) };
@@ -232,9 +266,38 @@ export function createRoutineService(sql: Sql) {
           templateId = id(input.templateId),
           revision = integer(input.templateRevision, 1, 2147483647);
         const prompt = text(input.prompt, 32000),
-          interval = integer(input.intervalHours === undefined && !current ? 24 : input.intervalHours, 1, 720),
           max = integer(input.maxRunsPerDay === undefined && !current ? 24 : input.maxRunsPerDay, 1, 24),
           ttl = integer(input.ttlSeconds === undefined && !current ? 3600 : input.ttlSeconds, 300, 86400);
+        let cron: string | null, timezone: string, interval: number | null;
+        if (input.cron !== undefined || input.timezone !== undefined) {
+          if (input.intervalHours !== undefined)
+            throw new VaultError("invalid", "Use cron and timezone, not intervalHours with a cron schedule.");
+          const schedule = parseRoutineSchedule(input.cron, input.timezone);
+          cron = schedule.cron;
+          timezone = schedule.timezone;
+          interval = null;
+        } else {
+          interval = integer(input.intervalHours === undefined && !current ? 24 : input.intervalHours, 1, 720);
+          if (current && current.interval_hours === interval) {
+            cron = current.cron;
+            timezone = current.timezone;
+          } else {
+            const schedule = cronForLegacyInterval(interval, new Date(now!.getTime() + interval * 3600000));
+            if (!schedule)
+              throw new VaultError(
+                "invalid",
+                "This elapsed interval cannot be expressed exactly as cron. Supply cron and timezone.",
+              );
+            cron = schedule.cron;
+            timezone = schedule.timezone;
+          }
+        }
+        const next =
+          current?.status === "enabled"
+            ? cron
+              ? nextRoutineDates(parseRoutineSchedule(cron, timezone), now!, 1)[0]!
+              : new Date(now!.getTime() + interval! * 3600000)
+            : null;
         // An org routine must not turn an author's personal template into shared automation.
         const template = (
           await tx.query<{ id: string }>(
@@ -244,17 +307,17 @@ export function createRoutineService(sql: Sql) {
           )
         ).rows[0];
         if (!template) throw new VaultError("not_found", "Routine template revision unavailable.");
-        const params = [name, templateId, revision, prompt, interval, max, ttl];
+        const params = [name, templateId, revision, prompt, interval, max, ttl, cron, timezone];
         const row = current
           ? (
               await tx.query<Row>(
-                "update public.routines set name=$1,template_id=$2,template_revision=$3,prompt=$4,interval_hours=$5,max_runs_per_day=$6,ttl_seconds=$7,next_due_at=case when status='enabled' then now()+$5::integer*interval '1 hour' else null end,version=version+1,updated_at=now() where id=$8 returning *",
-                [...params, current.id],
+                "update public.routines set name=$1,template_id=$2,template_revision=$3,prompt=$4,interval_hours=$5,max_runs_per_day=$6,ttl_seconds=$7,cron=$8,timezone=$9,next_due_at=$10,version=version+1,updated_at=now() where id=$11 returning *",
+                [...params, next, current.id],
               )
             ).rows[0]!
           : (
               await tx.query<Row>(
-                "insert into public.routines(name,template_id,template_revision,prompt,interval_hours,max_runs_per_day,ttl_seconds,org_id,owner_id,scope) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) returning *",
+                "insert into public.routines(name,template_id,template_revision,prompt,interval_hours,max_runs_per_day,ttl_seconds,cron,timezone,org_id,owner_id,scope) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) returning *",
                 [...params, org, actor.userId, scope],
               )
             ).rows[0]!;

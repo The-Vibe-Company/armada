@@ -26,7 +26,7 @@ and unambiguous. Use the ID for history of deleted routines.
 --prompt-file reads UTF-8 bytes without trimming; use - for piped stdin. Prompts are
 readable configuration, not a place for secrets. The minimum interval is ONE HOUR
 (integer 1–720); TTL is 5 minutes–24 hours; daily cap is 1–24 admitted launches.
-New routines are paused. Enable starts the first interval from now, not immediately.
+New routines are paused. Enable schedules the next occurrence, not an immediate manual launch.
 Updating an enabled routine restarts its interval. Copy version from show/list;
 conflicts are not retried. Pause/delete stop new admissions, not already admitted runs.
 Runs shows the latest 100 decisions, including readable skip/failure reasons and
@@ -170,7 +170,7 @@ export async function routineCommand(argv: readonly string[], io: VaultIo): Prom
     io.auth.out(`${format(item)}\n`);
     if (action === "show")
       io.auth.out(
-        `Template: ${item.templateId} revision ${item.templateRevision}\nInterval: ${item.intervalHours}h  TTL: ${item.ttlSeconds}s  Daily cap: ${item.maxRunsPerDay}\nNext due: ${item.nextDueAt ?? "none"}  Consecutive failures: ${item.consecutiveFailures}\nPause reason: ${routineReasonHelp(item.pauseReason) ?? "none"}\nPrompt:\n${item.prompt}\n`,
+        `Template: ${item.templateId} revision ${item.templateRevision}\n${item.scheduleDescription ? `Schedule: ${item.scheduleDescription}` : `Interval: ${item.intervalHours}h`}  TTL: ${item.ttlSeconds}s  Daily cap: ${item.maxRunsPerDay}\nNext due: ${item.nextDueAt ?? "none"}  Consecutive failures: ${item.consecutiveFailures}\nPause reason: ${routineReasonHelp(item.pauseReason) ?? "none"}\nPrompt:\n${item.prompt}\n`,
       );
     if (result.admittedRunsMayFinish)
       io.auth.err("Already admitted runs may still finish; running sandboxes were not stopped.\n");
