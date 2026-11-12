@@ -48,36 +48,28 @@ export function compile(target: Target, outfile: string, entry = ENTRY): string 
   return outfile;
 }
 
-export function compileServer(target: Target, outfile: string): string {
+function prepareRuntime(): void {
   const prepared = Bun.spawnSync([process.execPath, join(ROOT, "scripts/prepare-runtime.ts")], {
     cwd: ROOT,
     stdout: "inherit",
     stderr: "inherit",
   });
   if (prepared.exitCode !== 0) throw new Error("Pinned runtime preparation failed.");
-  return compile(target, outfile, SERVER_ENTRY);
 }
 
 if (import.meta.main) {
   const { values } = parseArgs({
     options: { target: { type: "string" }, all: { type: "boolean", default: false } },
   });
+  if (values.target && !(TARGETS as readonly string[]).includes(values.target)) {
+    throw new Error(`Unknown target ${values.target}; expected one of ${TARGETS.join(", ")}.`);
+  }
+  const selected = values.all ? TARGETS : [values.target ? (values.target as Target) : hostTarget()];
+  prepareRuntime();
   const dist = join(ROOT, "dist");
-  if (values.all) {
-    for (const target of TARGETS) {
-      compile(target, join(dist, `armada-${target}`));
-      compileServer(target, join(dist, `armada-server-${target}`));
-    }
-  } else if (values.target) {
-    if (!(TARGETS as readonly string[]).includes(values.target)) {
-      throw new Error(`Unknown target ${values.target}; expected one of ${TARGETS.join(", ")}.`);
-    }
-    const target = values.target as Target;
-    compile(target, join(dist, `armada-${target}`));
-    compileServer(target, join(dist, `armada-server-${target}`));
-  } else {
-    const target = hostTarget();
-    compile(target, join(dist, "armada"));
-    compileServer(target, join(dist, "armada-server"));
+  for (const target of selected) {
+    const suffix = values.all || values.target ? `-${target}` : "";
+    compile(target, join(dist, `armada${suffix}`));
+    compile(target, join(dist, `armada-server${suffix}`), SERVER_ENTRY);
   }
 }
