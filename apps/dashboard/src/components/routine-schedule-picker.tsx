@@ -97,8 +97,13 @@ export function RoutineSchedulePicker({
     };
   }, [request, onValidated]);
   const change = (patch: Partial<RoutineScheduleChoice>) => {
-    onValidated(null);
-    setChoice((previous) => ({ ...previous, ...patch }));
+    const next = { ...choice, ...patch },
+      compiled = presetToCron(next);
+    // Different controls can represent the same calendar (e.g. a preset opened
+    // as custom cron). Keep its receipt; otherwise an unchanged effect key would
+    // never restore submission after invalidation.
+    if (!compiled.ok || compiled.cron !== cron) onValidated(null);
+    setChoice(next);
   };
   const formatter = current?.ok
     ? new Intl.DateTimeFormat("en", {
@@ -142,7 +147,7 @@ export function RoutineSchedulePicker({
             id={`${base}-zone`}
             value={timezone}
             onChange={(event) => {
-              onValidated(null);
+              if (event.target.value !== timezone) onValidated(null);
               setTimezone(event.target.value);
             }}
           >

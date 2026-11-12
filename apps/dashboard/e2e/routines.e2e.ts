@@ -81,6 +81,7 @@ for (const mobile of [false, true]) {
     await expect(
       dialog.getByRole("region", { name: "Schedule preview", exact: true }).getByRole("listitem"),
     ).toHaveCount(3);
+    if (mobile) await page.screenshot({ path: "test-results/routines-create-phone-top.png", animations: "disabled" });
     await dialog.getByRole("button", { name: "Create routine", exact: true }).scrollIntoViewIfNeeded();
     await expect(dialog.getByRole("button", { name: "Create routine", exact: true })).toBeInViewport();
     await page.screenshot({
@@ -199,6 +200,7 @@ test("empty and unavailable states stay actionable without echoing upstream erro
 });
 
 test("human schedule controls keep weekly choices accessible and block unsafe custom cron", async ({ page }) => {
+  await page.setViewportSize({ width: 1360, height: 1000 });
   await signIn(page, "alice@example.com", "/routines");
   await page.getByRole("button", { name: "New", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "New routine" });
@@ -221,6 +223,8 @@ test("human schedule controls keep weekly choices accessible and block unsafe cu
   await expect(dialog.getByRole("button", { name: "Create routine", exact: true })).toBeEnabled();
   await page.screenshot({ path: "test-results/routines-cron-monthly.png", animations: "disabled" });
   await schedule.selectOption({ label: "Custom cron" });
+  // Switching representation without changing the schedule must keep a valid preview usable.
+  await expect(dialog.getByRole("button", { name: "Create routine", exact: true })).toBeEnabled();
   await dialog.getByLabel("Cron expression", { exact: true }).fill("*/5 * * * *");
   await expect(dialog.getByRole("button", { name: "Create routine", exact: true })).toBeDisabled();
   await expect(dialog.getByRole("alert")).toBeVisible();
