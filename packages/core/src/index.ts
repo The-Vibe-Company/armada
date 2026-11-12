@@ -180,6 +180,12 @@ export {
   parsePinnedMcpStdio,
 } from "./mcp-stdio.ts";
 export {
+  isModelConnectionTestResult,
+  MODEL_CONNECTION_ERROR_CODES,
+  type ModelConnectionTestResult,
+  modelConnectionErrorCode,
+} from "./model-connection-test.ts";
+export {
   MODEL_PRICE_SOURCES,
   MODEL_PRICES,
   MODEL_PRICES_AS_OF,

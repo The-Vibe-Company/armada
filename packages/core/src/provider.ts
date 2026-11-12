@@ -1,5 +1,6 @@
 import type { Harness } from "./contract.ts";
 import type { MachineSize } from "./machine-size.ts";
+import type { ModelConnectionTestResult } from "./model-connection-test.ts";
 import type { ProviderTarget } from "./sandbox-provider.ts";
 
 /**
@@ -175,6 +176,12 @@ export interface Provider {
   get(sandboxId: string, options?: { signal?: AbortSignal }): Promise<SandboxInfo>;
   list(request?: ListRequest): Promise<Page<SandboxInfo>>;
 
+  /** One runtime-owned custom connection probe; never starts/resumes a machine or a conversation. */
+  testModelConnection?(request: {
+    sandboxId: string;
+    harness: "claude" | "codex";
+    model: string;
+  }): Promise<ModelConnectionTestResult>;
   /** Trusted final-harness-only bootstrap. Never applied to exec, golden build or init. */
   configureReadableVariables?(request: {
     sandboxId: string;

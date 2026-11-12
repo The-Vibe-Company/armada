@@ -62,3 +62,39 @@ existing gateway-compatible anthropic-version 2023-06-01 documented in the
 
 Prerequisites: current custom connection bootstrap and updated runtime artifact.
 No migration/new settings. Workers hold no owner credentials or staging access.
+
+## Public server and CLI surface
+
+The server exposes authenticated `POST /api/v1/sandbox/test-model-connection`
+with `{id,model,org?}`; `id` is the public Armada sandbox UUID, not a provider
+or host ID. The API derives harness and bound credentials from that sandbox.
+Only its owner can run a check. It revalidates the account's current status
+and version, refuses non-custom accounts and stopped/starting/unbound or
+non-Modal sandboxes, and never starts/resumes a machine. Extra request fields
+(including keys and URLs) are refused. A short activity lease protects the
+check from idle-stop races without creating a conversation or clearing task
+outcomes. Runtime receipts are validated against the shared closed DTO before
+returning `{id,test:{ok,status,error,code}}`.
+
+```sh
+armada creds test PUBLIC_SANDBOX_UUID --model AZURE_DEPLOYMENT --json
+```
+
+A probe rejection is an HTTP200 API response with `test.ok:false`, because
+the control request itself completed. CLI returns exit1 and the real safe
+HTTP status/code (or transport failure), not a success claim. Exit0 means
+connectivity accepted, not full streaming/tools/harness compatibility. An
+invalid/untrusted receipt is an API failure, never dumped to the terminal.
+The command accepts no key, URL, file or arbitrary prompt. Each call may incur
+one tiny provider charge; there is no automatic retry. The CLI waits up to
+45 seconds, covering the 15-second runtime probe and API admission budget.
+
+Coordinator staging addition: launch an **idle** Modal sandbox with the saved
+Foundry/gateway account and no prompt, then use its public UUID in the command
+above with the owner deployment/model. Expect `ok:true` and no new prompt or
+conversation. Repeat with a newly launched invalid-key account: expect exit1,
+HTTP401 and a recognized code when supplied by the provider. Rotate/revoke the
+bound account, retry the old sandbox, and expect refusal before runtime I/O.
+A non-owner admin, stopped sandbox, extra request key/URL, or malformed receipt
+must fail closed. No model key leaves the existing private bootstrap. Public
+dashboard Test Connection controls are a subsequent slice.

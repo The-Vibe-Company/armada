@@ -97,6 +97,7 @@ const PRIVATE_POST_PATHS = new Set([
   "sandbox/report",
   "sandbox/advice",
   "sandbox/send",
+  "sandbox/test-model-connection",
   "sandbox/stop",
   "sandbox/extend",
   "sandbox/wait",

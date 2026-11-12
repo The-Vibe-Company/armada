@@ -1,6 +1,7 @@
 import {
   type CredentialInfo,
   credentialName,
+  isModelConnectionTestResult,
   type MemberInfo,
   type OrgCredentials,
   type OrgSummary,
@@ -227,6 +228,43 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
       });
       io.auth.out("Imported native credential account, encrypted. Allowance may be unavailable.\n");
       return 0;
+    }
+    case "test": {
+      const id = one(
+        args.positionals,
+        "armada creds test <sandbox-id> --model <deployment-model> [--org <name>] [--json]",
+      );
+      if ([...args.options.keys()].some((key) => !["--org", "--model", "--json"].includes(key)))
+        throw usage("Connection tests accept only --model, --org and --json; keys and URLs are never accepted.");
+      const model = single(args, "--model");
+      if (!model) throw usage("Connection tests require --model <deployment-model>.");
+      const response = await control<{ test: unknown } | null>(
+        io.auth,
+        "sandbox/test-model-connection",
+        {
+          id,
+          model,
+          org,
+        },
+        AbortSignal.timeout(45000),
+      );
+      if (!response || !isModelConnectionTestResult(response.test))
+        throw new VaultError("unavailable", "The server returned an invalid connection-test result.");
+      const result = response.test;
+      if (flag(args, "--json")) io.auth.out(JSON.stringify({ id, ...result }) + "\n");
+      else if (result.ok)
+        io.auth.out(
+          "Connection accepted (HTTP " + result.status + "). This is not a full harness compatibility test.\n",
+        );
+      else
+        io.auth.out(
+          "Connection check failed: " +
+            (result.status === null
+              ? "connection failed or timed out"
+              : "HTTP " + result.status + " " + (result.code ?? result.error)) +
+            ".\n",
+        );
+      return result.ok ? 0 : 1;
     }
     case "set": {
       const [name] = expect(args.positionals, 1, "armada creds set <kind> [--org <name>] [--file <path>]");
