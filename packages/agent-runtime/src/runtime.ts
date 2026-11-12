@@ -152,6 +152,33 @@ export class Runner {
           headers: { "content-type": "application/json" },
         });
       }
+      if (r.op === "testModelConnection") {
+        if (
+          this.credentialFreeBuilder ||
+          this.barrier ||
+          this.journal.checkpointPending(this.grant) ||
+          this.resumingNative ||
+          this.active.size ||
+          this.commands.size ||
+          !this.execution.testModelConnection ||
+          !["claude", "codex"].includes(r.harness) ||
+          typeof r.model !== "string" ||
+          !r.model ||
+          r.model.length > 200 ||
+          r.requestId.length > 128 ||
+          Object.keys(r).some((key) => !["version", "requestId", "sandboxId", "op", "harness", "model"].includes(key))
+        )
+          throw Error("model_connection_test_denied");
+        const work = this.execution.testModelConnection(r.harness, r.model, request.signal);
+        this.commands.add(work);
+        try {
+          const result = await work;
+          // This health check is fresh and transient: no prompt, event or replay-cache row.
+          return Response.json({ version: 1, requestId: r.requestId, result });
+        } finally {
+          this.commands.delete(work);
+        }
+      }
       if (r.op === "configureReadableVariables") {
         if (
           this.credentialFreeBuilder ||
@@ -285,6 +312,7 @@ export class Runner {
           | "configureMcp"
           | "configureGitHub"
           | "configureReadableVariables"
+          | "testModelConnection"
           | "resourceObservation"
           | "installOrchestratorEpoch"
           | "scrubOrchestratorEpoch";
