@@ -8,7 +8,7 @@ export function validateReadableVariables(input: unknown): Record<string, string
     if (
       !/^[A-Z][A-Z0-9_]{0,127}$/.test(key) ||
       /^(ARMADA_|BOAT_|MODAL_|ANTHROPIC_|OPENAI_|OPENCODE_|CLAUDE_|CODEX_|GH_|GITHUB_|MCP_|LD_|DYLD_)/i.test(key) ||
-      /^(PATH|HOME|SHELL|ENV|BASH_ENV|NODE_OPTIONS|PYTHONPATH|SSL_CERT_FILE|HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|NO_PROXY)$/.test(
+      /^(PATH|HOME|XDG_DATA_HOME|XDG_CONFIG_HOME|XDG_CACHE_HOME|XDG_STATE_HOME|SHELL|ENV|BASH_ENV|NODE_OPTIONS|PYTHONPATH|SSL_CERT_FILE|HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|NO_PROXY)$/.test(
         key,
       ) ||
       typeof value !== "string" ||

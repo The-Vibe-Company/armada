@@ -1,3 +1,4 @@
+#!/usr/bin/env bun
 import { readFileSync } from "node:fs";
 
 const command = process.argv[2];

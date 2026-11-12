@@ -5,7 +5,7 @@ import { decryptSecret, EncryptionKeyError } from "./crypto.ts";
 import type { CredentialKind, CredentialScope } from "./database.types.ts";
 import type { GitHubAccess } from "./github.ts";
 import type { GoldenActor } from "./golden.ts";
-import { mapHarnesses } from "./harnesses.ts";
+import { HARNESS_CATALOG, mapHarnesses } from "./harnesses.ts";
 import { LaunchError } from "./launch-error.ts";
 import { type ModelPriceOverrides, parseModelPriceOverrides } from "./model-price-overrides.ts";
 import { OPENCODE_ENDPOINT_ENV, parseOpenCodeEndpoint } from "./opencode-endpoint.ts";
@@ -501,7 +501,7 @@ export async function resolveCredentials(
   }
   throw new VaultError(
     "missing_credential",
-    `No ${input.harness === "claude" ? "Claude" : "Codex"} credential for you or your org. Run 'armada creds set ${credentialName(kinds[0] ?? "claude_oauth")}'.`,
+    `No ${HARNESS_CATALOG[input.harness].label} credential for you or your org. Run 'armada creds set ${credentialName(kinds[0] ?? "claude_oauth")}'.`,
   );
 }
 

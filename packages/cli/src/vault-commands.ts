@@ -183,7 +183,7 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
       args.options.has("--endpoint-auth") ||
       priceOptions.some((name) => args.options.has(name)))
   )
-    throw usage("Endpoint options are only supported by creds set openai or anthropic.");
+    throw usage("Endpoint options are only supported by creds set openai, anthropic or opencode.");
   switch (sub) {
     case "login":
     case "import": {
@@ -332,7 +332,7 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
       }
       let prices: ReturnType<typeof parseModelPriceOverrides> | undefined;
       if (priceOptions.some((name) => args.options.has(name))) {
-        if (!endpoint) throw usage("Price options require creds set openai or anthropic --base-url.");
+        if (!endpoint) throw usage("Price options require creds set openai, anthropic or opencode --base-url.");
         const model = single(args, "--price-model");
         const input = single(args, "--price-input");
         const output = single(args, "--price-output");

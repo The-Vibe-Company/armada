@@ -16,7 +16,7 @@ Armada-hosted proxy. The suggested `deepseek-flash` model ID follows the
 the retired `deepseek-chat` alias is not a launch default. API keys are stdin/file input only, never CLI arguments.
 
 ```sh
-armada creds set opencode --name deepseek --base-url https://api.deepseek.com/v1 \
+armada creds set opencode --name deepseek --base-url https://api.deepseek.com \
   --models deepseek-flash --file /private/deepseek-key
 armada creds list --json
 armada launch MODAL_GOLDEN --provider modal --agent opencode \
@@ -62,8 +62,17 @@ Publish both architecture builds if Modal uses both. Only selected OpenCode
 launches fetch this artifact, and only at start/resume when its verified native
 binary/cache is missing. Older goldens need no model key or new native installer
 baked into them. Wrong/missing bytes fail closed. No npm/latest fetch happens
-inside a prompt and native auto-update is disabled. Credentials arrive separately
-in private stdin bootstrap; only the selected driver receives them.
+inside a prompt and native auto-update is disabled. Native title generation is
+disabled: Armada owns names and avoids unreported auxiliary model requests. Credentials arrive separately
+in private stdin bootstrap; only the selected driver receives them. `OPENCODE_*`
+and the four native `XDG_*_HOME` routing names are reserved readable-variable names so configuration cannot redirect
+native credentials/history outside the checkpoint boundary.
+
+Native Task delegation/custom agent modes are not exposed in this first slice:
+execution is fixed to build mode with Task denied until child-session graph
+checkpointing/metering is implemented. Unexpected child-session exports fail
+closed rather than claiming portable continuity. Ordinary read/edit/bash/MCP
+tools remain available.
 
 Session exports are redacted/0600, verified by vendor import, and checkpointed; SQLite/auth/config/cache are
 excluded. A pending/failed export blocks stale resume and checkpoint rather than
@@ -97,3 +106,8 @@ streaming fake-compatible-endpoint turn (10 input/5 output), redacted export,
 checkpoint/restore, no-text native resume and follow-up with fresh 10/5 counters.
 It requested `stream_options.include_usage:true`. No real model key was used;
 this is not a claim that the deployed DeepSeek lifecycle has passed.
+
+The real pinned CLI also passed a fake tool loop with `bash` and interleaved
+reasoning replay: two model steps were metered as 13 input / 7 output / 2 reasoning
+(tokens once, not only the final 3/2 step). After export/restore, follow-up usage
+was 3/2, excluding prior history. No real provider key was used in that probe.

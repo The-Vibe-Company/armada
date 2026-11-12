@@ -10,11 +10,10 @@ import { configureOpenCodeEndpoint } from "../src/opencode-endpoint.ts";
 test("OpenCode exports sanitized history and imports it before no-text resume and follow-up", async () => {
   const root = await mkdtemp(join(tmpdir(), "opencode-state-"));
   const driver = new OpenCodeDriver({
-    executable: process.execPath,
-    args: [`${import.meta.dir}/fixtures/opencode.ts`],
+    executable: `${import.meta.dir}/fixtures/opencode.ts`,
     root: join(root, "opencode"),
     cwd: root,
-    env: {},
+    env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
     redact: createRedactor(["private-key-for-test"]),
   });
   const context = {
@@ -59,6 +58,9 @@ test("OpenCode translates a sealed-compatible endpoint into memory-only native c
   configureOpenCodeEndpoint(env);
   const config = JSON.parse(env.OPENCODE_CONFIG_CONTENT!);
   expect(config.enabled_providers).toEqual(["armada"]);
+  expect(config.agent.title.disable).toBe(true);
+  expect(config.default_agent).toBe("build");
+  expect(config.agent.build.permission.task).toBe("deny");
   expect(config.provider.armada).toMatchObject({
     npm: "@ai-sdk/openai-compatible",
     options: { baseURL: "https://api.deepseek.com/v1", apiKey: "fake-key" },
@@ -80,10 +82,9 @@ test("OpenCode translates a sealed-compatible endpoint into memory-only native c
 test("OpenCode refuses stale history and checkpoint after an unacknowledged export", async () => {
   const { HarnessState } = await import("../src/state.ts");
   const root = await mkdtemp(join(tmpdir(), "opencode-export-failure-"));
-  const env: Record<string, string> = {};
+  const env: Record<string, string> = { PATH: process.env.PATH ?? "/usr/bin:/bin" };
   const driver = new OpenCodeDriver({
-    executable: process.execPath,
-    args: [`${import.meta.dir}/fixtures/opencode.ts`],
+    executable: `${import.meta.dir}/fixtures/opencode.ts`,
     root: join(root, "opencode"),
     cwd: root,
     env,
@@ -114,10 +115,9 @@ test("OpenCode refuses stale history and checkpoint after an unacknowledged expo
 // The pin's ACP usage is only the last model step. Native export counters cover all new tool/model steps.
 test("OpenCode meters every new native assistant step once, excludes loaded history and normalizes reasoning output", async () => {
   const root = await mkdtemp(join(tmpdir(), "opencode-turn-tokens-"));
-  const env = { EXPORT_STAGE: "1" };
+  const env = { EXPORT_STAGE: "1", PATH: process.env.PATH ?? "/usr/bin:/bin" };
   const driver = new OpenCodeDriver({
-    executable: process.execPath,
-    args: [`${import.meta.dir}/fixtures/opencode.ts`],
+    executable: `${import.meta.dir}/fixtures/opencode.ts`,
     root,
     cwd: root,
     env,

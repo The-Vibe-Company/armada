@@ -74,10 +74,9 @@ export class OpenCodeDriver implements Driver {
       cwd: string;
       env: Record<string, string>;
       redact(text: string): string;
-      args?: string[];
     },
   ) {
-    this.acp = new AcpDriver({ ...options, args: [...(options.args ?? []), "acp"] });
+    this.acp = new AcpDriver({ ...options, args: ["acp"] });
   }
   configureReadableVariables(variables: Record<string, string>) {
     this.acp.configureReadableVariables(variables);
@@ -87,7 +86,7 @@ export class OpenCodeDriver implements Driver {
     return join(this.options.root, "sessions", `${id}.json`);
   }
   private async command(args: string[], cwd: string): Promise<string> {
-    const child = this.children.spawn(this.options.executable, [...(this.options.args ?? []), ...args], {
+    const child = this.children.spawn(this.options.executable, args, {
       cwd,
       env: this.options.env,
     });
@@ -135,6 +134,23 @@ export class OpenCodeDriver implements Driver {
   private async save(id: string, cwd: string) {
     const saved = JSON.parse(await this.command(["export", id], cwd));
     if (saved?.info?.id !== id || !Array.isArray(saved.messages)) throw new HarnessError("invalid_harness_protocol");
+    if (
+      saved.messages.some(
+        (message: unknown) =>
+          record(message) &&
+          Array.isArray(message.parts) &&
+          message.parts.some(
+            (part: unknown) =>
+              record(part) &&
+              part.type === "tool" &&
+              part.tool === "task" &&
+              record(part.state) &&
+              record(part.state.metadata) &&
+              typeof part.state.metadata.sessionId === "string",
+          ),
+      )
+    )
+      throw new HarnessError("invalid_harness_protocol");
     const path = this.path(id);
     await mkdir(join(this.options.root, "sessions"), { recursive: true, mode: 0o700 });
     const temp = `${path}.${crypto.randomUUID()}.tmp`;
@@ -184,19 +200,21 @@ export class OpenCodeDriver implements Driver {
     return {
       done: (async () => {
         const { turn, cwd, baseline } = await ready;
-        try {
-          return await turn.done;
-        } finally {
-          if (sessionId) {
-            try {
-              const saved = await this.save(sessionId, cwd);
-              c.emit({ kind: "other", type: "armada/turnUsage", data: exportedTurnUsage(saved, baseline) });
-            } catch (error) {
-              c.emit({ kind: "other", type: "armada/turnUsage", data: exportedTurnUsage(null, baseline) });
-              throw error;
-            }
+        const result = await turn.done.then(
+          (value) => ({ ok: true as const, value }),
+          (error: unknown) => ({ ok: false as const, error }),
+        );
+        if (sessionId) {
+          try {
+            const saved = await this.save(sessionId, cwd);
+            c.emit({ kind: "other", type: "armada/turnUsage", data: exportedTurnUsage(saved, baseline) });
+          } catch (error) {
+            c.emit({ kind: "other", type: "armada/turnUsage", data: exportedTurnUsage(null, baseline) });
+            throw error;
           }
         }
+        if (!result.ok) throw result.error;
+        return result.value;
       })(),
       interrupt: async () => {
         const { turn } = await ready;
