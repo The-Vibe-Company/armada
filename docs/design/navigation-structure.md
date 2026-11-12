@@ -1,8 +1,8 @@
-# Three-group navigation — draft pending owner confirmation
+# Three-group navigation — owner confirmed
 
-**Do not mark ready or merge until the coordinator relays the owner's confirmation of this structure.** Refs #1038. The immediate removal of sidebar sub-text is the separate, independently ready #1152; this draft builds on it.
+The owner confirmed this structure: **"Oui, fais-le"**, relayed by the coordinator on 2026-11-12. Refs #1038. The immediate removal of sidebar sub-text is the separate #1152; this PR builds on it.
 
-## Proposed structure
+## Confirmed structure
 
 ```text
 Run                 Library             Account
@@ -28,7 +28,7 @@ Navigation is exercised in light/dark, desktop/phone, expanded/icon-only states:
 
 ## Before / after
 
-Before: #1152 at `8d70b72b04aacd454d311141d517e098339217b2` (sentences already removed; old five-group structure). After: this draft. Same mock organization/data, 1280×900 desktop and 390×844 phone. Expanded desktop crops preserve readable sidebar text; click them for full-viewport context. Icon-only before images show the previous off-canvas behavior.
+Before: #1152 at `8d70b72b04aacd454d311141d517e098339217b2` (sentences already removed; old five-group structure). After: this implementation. Same mock organization/data, 1280×900 desktop and 390×844 phone. Expanded desktop crops preserve readable sidebar text; click them for full-viewport context. Icon-only before images show the previous off-canvas behavior.
 
 ### Light — desktop
 
