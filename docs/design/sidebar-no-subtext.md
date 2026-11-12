@@ -1,6 +1,12 @@
 # Sidebar sub-text removal — before / after
 
-Refs #1038. This is only the immediate removal of descriptive sentences. The five groups, destinations, icons and active styling stay unchanged; the proposed three-group structure is a separate draft, not part of #1152.
+Refs #1038. This document records the immediate removal of descriptive sentences in #1152. The captures below are historical evidence of that slice, before the three-group navigation landed.
+
+## Integration with main
+
+The #1155 three-group navigation is now on main. #1152 retains **Run**, **Library** and **Account**, including Models at the unchanged `/harness` route, collapsed navigation and the phone Sheet. There are no descriptive sentences beneath group labels or items. The original screenshot review finding is addressed by the before/after pairs below; they do not depict the current three-group layout.
+
+For desktop, phone and collapsed light/dark captures of the integrated layout, see [the three-group navigation evidence](navigation-structure.md). Relationships remain on pages, not in the menu. No additional navigation redesign is part of this slice.
 
 Baseline: `0324b7bc` (parent of this PR's original `8d70b72b`), rebuilt with its descriptive sidebar component against the same disposable mock. After: #1152 without the descriptive sentences. Light and dark; 1280×900 desktop and 390×844 phone. Desktop crops keep menu text at native size; click a crop for the full viewport. Phone captures show the open navigation Sheet.
 
