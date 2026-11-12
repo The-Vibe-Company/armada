@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { Sql, TurnPriceContext, TurnTokenUsage } from "@armada/core";
-import { type Provider, priceTurn, resolvePrice } from "@armada/core/server";
+import { createUsagePricingContext, type Provider, priceTurn, resolvePrice } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
 import { collectSandboxUsage } from "../src/turns.ts";
 import { database, fakeBoat } from "./support.ts";
@@ -251,3 +251,99 @@ test("unrecognized stored quote metadata cannot lend an amount or observation wi
     await data.db.close();
   }
 });
+
+test.each([
+  { label: "contradictory subsets", writes: 10, five: 8, hour: 3, initialUsd: null, nextUsd: null },
+  { label: "non-default subset with missing total", writes: null, five: 0, hour: 2, initialUsd: null, nextUsd: null },
+  {
+    label: "irrelevant diagnostics with zero writes",
+    writes: 0,
+    five: 1,
+    hour: 0,
+    initialUsd: "0.00022",
+    nextUsd: "0.00042",
+  },
+  {
+    label: "reported default compatible with omitted TTL",
+    writes: 10,
+    five: 10,
+    hour: 0,
+    initialUsd: "0.000245",
+    nextUsd: "0.000445",
+  },
+])(
+  "$label preserves evidence and applicable prices across native replay",
+  async ({ writes, five, hour, initialUsd, nextUsd }) => {
+    const data = await database();
+    try {
+      const { store, saved, native, context } = await state(data);
+      await store.recordUsagePricingContext!(
+        saved.id,
+        createUsagePricingContext({
+          harness: "claude",
+          credentialKind: "claude_oauth",
+          customEndpoint: false,
+          credentialId: context.credentialId!,
+          credentialVersion: 1,
+        }),
+      );
+      let total: number | null = writes;
+      let output = 20;
+      let detail: Record<string, number> = {
+        cacheCreationEphemeral5mInputTokens: five,
+        cacheCreationEphemeral1hInputTokens: hour,
+      };
+      const provider: Provider = {
+        ...fakeBoat().provider,
+        id: "modal",
+        async events() {
+          return {
+            events: [
+              {
+                id: "lifetime-result",
+                at: 2,
+                kind: "other",
+                type: "result",
+                promptId: native.promptId,
+                data: {
+                  modelUsage: {
+                    [native.model!]: {
+                      inputTokens: 10,
+                      outputTokens: output,
+                      cacheReadInputTokens: 0,
+                      cacheCreationInputTokens: total,
+                      ...detail,
+                    },
+                  },
+                },
+              },
+            ],
+            hasMore: false,
+          };
+        },
+      };
+      await collectSandboxUsage(provider, store, (await store.get(saved.id))!, native.promptId);
+      const read = async () => (await store.get(saved.id))?.usage;
+      expect((await read())?.turns[0]?.pricing?.usd).toBe(initialUsd);
+      const replays: Record<string, number>[] =
+        writes === null
+          ? [{}, { cacheCreationEphemeral5mInputTokens: 0, cacheCreationEphemeral1hInputTokens: 2 }]
+          : nextUsd === null
+            ? [{ cacheCreationEphemeral5mInputTokens: 10, cacheCreationEphemeral1hInputTokens: 0 }, {}]
+            : [{}, {}];
+      for (const replay of replays) {
+        total = writes === 0 ? 0 : 10;
+        output = nextUsd === null ? 20 : 40;
+        detail = replay;
+        await collectSandboxUsage(provider, store, (await store.get(saved.id))!, native.promptId);
+        expect((await read())?.turns[0]?.pricing?.usd).toBe(nextUsd);
+        expect((await read())?.cost?.usd).toBe(nextUsd);
+        expect((await read())?.turns[0]?.cacheWriteTokensByTtl).toMatchObject(
+          writes === null ? { oneHour: 2 } : five === writes ? { fiveMinute: five, oneHour: 0 } : { conflicted: true },
+        );
+      }
+    } finally {
+      await data.db.close();
+    }
+  },
+);
