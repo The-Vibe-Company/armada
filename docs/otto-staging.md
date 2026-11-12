@@ -25,3 +25,35 @@ Do not apply migrations or deploy from a worker. Coordinator staging actions:
 
 No sandbox tokens, provider operations, effects, task completion, or launch policy
 changes are introduced. Journal stores selected metadata only, not webhook bodies.
+
+## Read model API and current-fleet limits
+
+Slice 3 adds authenticated GET `summary`, `tasks`, `resources`, `orphans`, `facts`
+under `/api/v1/otto/`. Pass `org_id=<bound UUID>` and optionally the exact bound
+`repository`. Use `limit=1..100` and the opaque `nextCursor` returned by each view.
+Every page carries `items`, `observedAt`, `completeness`, `nextCursor`; responses
+are not cached. Resource/task projections are server-owned and disposable.
+The facts cursor is an observation-time/UUID pair. No write API is exposed.
+
+**Acceptance limitation requiring owner decision:** existing metadata identifies
+sandbox *user* owners and launch-time repository branches, not current worker
+responsibility for a PR. Otto deliberately does not turn launch defaults,
+agent-declared outcomes, or free-text prompts into facts. Consequently current
+PR ownership and orphan classification are unknown; `/orphans` exposes unknown
+candidates, not confirmed detections. `orphanCount` is null. Historical daily
+orphan detection is not claimed. The `day` field is the UTC evaluation day, not
+an invented first-seen timestamp. Unknown cannot satisfy staging acceptance for
+confirmed ownership or orphans.
+
+To complete that acceptance, identify an authoritative already-observed structured
+sandbox↔PR/branch/task source (including legacy non-Armada Boat workers), or approve
+a separate observation contract. Do not change protected runtime/provider files
+in this ticket to manufacture the missing source. A launch branch is returned as
+context with `branchIsCurrent:false`. Private workers are filtered before any
+projection/response; no hidden candidates or absence-based orphan assertions.
+
+Coordinator validation: compare all pages of resources with a complete `gh pr list`
+for the configured repository. Then validate known and missing-owner examples
+against the agreed authoritative source. Reconciliation stale by ten minutes,
+missing token, expired credentials, or incomplete pagination must show unknown,
+never zero PRs or completed tasks. The dashboard slice remains unimplemented.
