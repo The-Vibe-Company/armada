@@ -224,22 +224,22 @@
      * position), the header and composer stay where they were, and the details scroll in the space it left.
      */
     @media (max-width: 63.99rem) {
-      [data-fit="body"]:has(> [data-fit="side"] [aria-expanded="true"]) > [data-fit="column"] {
+      [data-fit="body"]:has(> section[data-fit="side"][data-state="open"]) > [data-fit="column"] {
         flex: none;
       }
-      [data-fit="body"]:has(> [data-fit="side"] [aria-expanded="true"]) [data-fit="history"] {
+      [data-fit="body"]:has(> section[data-fit="side"][data-state="open"]) [data-fit="history"] {
         flex: 0 0 0;
         min-height: 0;
         overflow: hidden;
         visibility: hidden;
       }
-      [data-fit="body"]:has(> [data-fit="side"] [aria-expanded="true"]) > [data-fit="side"] {
+      [data-fit="body"]:has(> section[data-fit="side"][data-state="open"]) > [data-fit="side"] {
         flex: 1 1 0;
         min-height: 0;
         display: flex;
         flex-direction: column;
       }
-      [data-fit="body"]:has(> [data-fit="side"] [aria-expanded="true"]) [data-fit="side-content"] {
+      [data-fit="body"]:has(> section[data-fit="side"][data-state="open"]) [data-fit="side-content"] {
         flex: 1 1 0;
         min-height: 0;
         overflow-y: auto;

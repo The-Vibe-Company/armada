@@ -183,3 +183,37 @@ apply job's concurrency lock. Environment branch restrictions and optional
 reviewer approval remain essential; do not run external repairs concurrently.
 Keep the reconciliation record and Actions run links for audit. A failed repair
 may have partially changed history: inspect fresh history before retrying.
+
+## Running-code schema readiness
+
+The standalone server embeds the highest migration version in its source checkout
+at build time. Source runs derive it from that checkout. It cannot be overridden
+by an environment variable. At boot, before starting background workers or
+listening, the server reads max(version) from
+supabase_migrations.schema_migrations using its existing database pool and
+refuses a missing, empty, unreadable or older history. Connection-admission retry
+still applies; an outdated schema fails immediately rather than retrying writes.
+
+/healthz uses the same version check (single-flight, cached for one second,
+two-second answer deadline). A database behind the running code returns 503, just
+like an unreachable database, so the existing public production probe fails too.
+A database ahead of the binary remains ready: additive schema changes must remain
+compatible with old code during deployment. This is a version check, not a
+catalog/drift audit: it trusts Supabase history and does not prove every object
+exists or that partial SQL was applied correctly.
+
+The server database role needs SELECT on the Supabase history table. Before
+rollout, the coordinator must verify that permission and that recorded versions
+match actual applied schema in staging; never repair history merely to pass health.
+No new migration or database write is required by this check.
+
+Coordinator staging checks (workers have no staging credentials):
+1. Verify a current-history server boots and /healthz returns 200.
+2. In an isolated staging database, boot a newer binary against older history:
+   startup must refuse before listening; the previous deployment must stay active.
+3. Against an already-running test server, make history older/unreadable in that
+   isolated database; health must return 503 after the short cache expires. Restore
+   accurate history/permissions and verify recovery to 200. Never falsify shared
+   staging or production history for this test.
+4. Confirm the public production probe treats that 503 as failure before enabling
+   production rollout. No production changes or probes were performed by the worker.

@@ -17,7 +17,7 @@ type TemplateCall = { route: string; body: Record<string, unknown>; authorized: 
 
 async function mockState(): Promise<{
   templateCalls: TemplateCall[];
-  templates: { name: string; status: string; currentRevision: number; scope: string }[];
+  templates: { id: string; name: string; status: string; currentRevision: number; scope: string }[];
   templateRevisions: { templateId: string; revision: number; definition: Record<string, unknown> }[];
 }> {
   return (await fetch(`${MOCK}/__test/state`)).json();
@@ -403,4 +403,42 @@ test("a new revision cannot be published while its tools cannot be read: nothing
   await dialog.getByRole("button", { name: "Back" }).click();
   await dialog.getByLabel("Environment").press("Enter");
   expect((await mockState()).templateCalls.filter((call) => call.route === "templates/publish")).toHaveLength(0);
+});
+
+test("template picker publishes exact pins and keeps earlier revisions immutable when preserving or clearing them", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 960 });
+  await signIn(page, "alice@example.com", "/templates");
+  await (await panel(page, "Backend with docs")).getByRole("button", { name: "New revision" }).click();
+  const dialog = page.getByRole("dialog", { name: "New revision of Backend with docs" });
+  await dialog.getByRole("button", { name: "Next: tools and variables" }).click();
+  await dialog.getByRole("button", { name: "Add skills", exact: true }).click();
+  const picker = page.getByRole("dialog", { name: "Choose additional skills" });
+  await picker.getByRole("option", { name: /Code review/ }).click();
+  await picker.getByLabel("Version", { exact: true }).selectOption("2.0.0");
+  await picker.getByRole("button", { name: "Add skill", exact: true }).click();
+  await expect(dialog.getByRole("button", { name: "Remove review-code@2.0.0" })).toBeVisible();
+  await dialog.screenshot({ path: "test-results/template-skill-picker.png", animations: "disabled" });
+  await dialog.getByRole("button", { name: "Publish revision 3" }).click();
+  await expect(dialog).toBeHidden();
+
+  for (const revision of [4, 5]) {
+    await (await panel(page, "Backend with docs")).getByRole("button", { name: "New revision" }).click();
+    await dialog.getByRole("button", { name: "Next: tools and variables" }).click();
+    await expect(dialog.getByRole("button", { name: "Remove review-code@2.0.0" })).toBeVisible();
+    if (revision === 5) await dialog.getByRole("button", { name: "Remove review-code@2.0.0" }).click();
+    await dialog.getByRole("button", { name: `Publish revision ${revision}` }).click();
+    await expect(dialog).toBeHidden();
+  }
+  const state = await mockState();
+  const template = state.templates.find((t) => t.name === "Backend with docs");
+  const revisions = state.templateRevisions.filter((r) => r.templateId === template?.id);
+  expect(revisions.map((r) => r.definition.skills ?? [])).toEqual([
+    [],
+    [],
+    ["review-code@2.0.0"],
+    ["review-code@2.0.0"],
+    [],
+  ]);
 });

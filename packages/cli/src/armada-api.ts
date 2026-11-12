@@ -281,6 +281,20 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
           phase ? { phase } : undefined,
         );
       }
+      if (/^\/api\/v1\/sandbox\/launch(?:-sized-v1|-access-v1)?$/.test(path)) {
+        if (response.status === 429 && failureCode === "rate_limited")
+          throw new ArmadaApiError(
+            "rate_limited",
+            429,
+            "The provider refused allocation because a rate or account limit was reached. Check the selected provider account limits before retrying.",
+          );
+        if (response.status === 402 && failureCode === "payment_required")
+          throw new ArmadaApiError(
+            "payment_required",
+            402,
+            "The provider account cannot create machines. Check billing or credits on the selected provider account before retrying.",
+          );
+      }
       if (path === "/api/v1/sandbox/launch" && response.status >= 500)
         throw new AuthError("Launch outcome unknown. Run armada list to check before retrying.", "unavailable");
       const sandboxError = sandboxFailure(path, response.status, failureCode, apiMessage(payload, ""));

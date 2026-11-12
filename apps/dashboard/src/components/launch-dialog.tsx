@@ -21,6 +21,7 @@ import { ConnectionStatusBadge } from "@/components/connections";
 import { MachineSizeField } from "@/components/machine-size-field";
 import { ModKey } from "@/components/mod-key";
 import { EFFORT_LABEL, type ModelCatalog, ModelFields } from "@/components/model-fields";
+import { SkillPicker } from "@/components/skill-picker";
 import { TemplateLaunchForm } from "@/components/templates";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -161,10 +162,24 @@ function LaunchForm({ golden, provider, orgId, catalog, connections, accounts, r
     model: catalog.claude.defaultModel,
     effort: catalog.claude.defaultReasoningEffort,
   });
+  const initialAccount = (agent: Harness) => {
+    if (accounts.state !== "ready") return "";
+    const resolved = launchDefault(accounts.accounts, agent, accounts.now);
+    return resolved.state === "resolved" ? resolved.account.id : "";
+  };
+  const [credential, setCredential] = useState(() => initialAccount("claude"));
+  const [armadaAccess, setArmadaAccess] = useState(false);
+  const usableCodexAccount = (value: string) =>
+    accounts.state === "ready" &&
+    accountsFor(accounts.accounts, "codex").some(
+      (account) => account.id === value && accountProblem(account, accounts.now) === null,
+    );
+  const canDelegate = harness === "codex" && usableCodexAccount(credential);
   const access = useLaunchAccess(connections);
   const root = useRef<HTMLDivElement>(null);
   const advanced = useRef<HTMLDivElement>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [skills, setSkills] = useState<string[]>([]);
   useVisibleViewport(root);
 
   useEffect(() => {
@@ -223,6 +238,7 @@ function LaunchForm({ golden, provider, orgId, catalog, connections, accounts, r
       : []),
     ...(sizing ? [{ key: "size", icon: <ServerIcon />, text: sizeFact(size) }] : []),
     { key: "mcp", icon: <PlugIcon />, text: mcpFact(access) },
+    ...(armadaAccess && canDelegate ? [{ key: "armada", icon: <RocketIcon />, text: "Armada access" }] : []),
   ];
 
   return (
@@ -271,7 +287,11 @@ function LaunchForm({ golden, provider, orgId, catalog, connections, accounts, r
               legend="Agent"
               name="harness"
               value={harness}
-              onChange={setHarness}
+              onChange={(next) => {
+                setHarness(next);
+                setCredential(initialAccount(next));
+                setArmadaAccess(false);
+              }}
               options={(Object.keys(catalog) as Harness[]).map((value) => ({ value, label: HARNESS_LABELS[value] }))}
             />
             {repositories.length > 1 && (
@@ -279,10 +299,20 @@ function LaunchForm({ golden, provider, orgId, catalog, connections, accounts, r
             )}
           </div>
           {/* Who is billed stays in view: it is never a collapsed default. */}
-          <AccountField key={harness} idPrefix={id} harness={harness} accounts={accounts} />
+          <AccountField
+            key={harness}
+            idPrefix={id}
+            harness={harness}
+            accounts={accounts}
+            onChange={(next) => {
+              setCredential(next);
+              setArmadaAccess(false);
+            }}
+          />
           {access.alerts(() => {
             focusLaunch.current = true;
           })}
+          <SkillPicker orgId={orgId} value={skills} onChange={setSkills} />
           <Collapsible
             ref={advanced}
             open={advancedOpen}
@@ -338,6 +368,24 @@ function LaunchForm({ golden, provider, orgId, catalog, connections, accounts, r
                 />
               )}
               {access.fields(id)}
+              <div className="space-y-1.5">
+                <Label htmlFor={`${id}-armada-access`} className="flex min-h-11 items-center gap-2">
+                  <Checkbox
+                    id={`${id}-armada-access`}
+                    name="armada_access"
+                    checked={armadaAccess && canDelegate}
+                    onCheckedChange={(checked) => setArmadaAccess(checked === true)}
+                    disabled={!canDelegate}
+                    aria-describedby={`${id}-armada-access-hint`}
+                  />
+                  Armada access
+                </Label>
+                <p id={`${id}-armada-access-hint`} className="text-xs text-pretty text-muted-foreground">
+                  {canDelegate
+                    ? "Let this private sandbox launch and manage up to 3 child sandboxes in this organization, using the selected environment and account."
+                    : "Choose Codex and an active account to enable Armada access."}
+                </p>
+              </div>
             </CollapsibleContent>
           </Collapsible>
         </div>
@@ -403,10 +451,12 @@ function AccountField({
   idPrefix,
   harness,
   accounts,
+  onChange,
 }: {
   idPrefix: string;
   harness: Harness;
   accounts: LaunchAccounts;
+  onChange: (id: string) => void;
 }) {
   const label = HARNESS_LABELS[harness];
   if (accounts.state === "legacy") return null;
@@ -463,6 +513,7 @@ function AccountField({
           id={`${idPrefix}-account`}
           name="credential"
           defaultValue={preset}
+          onChange={(event) => onChange(event.target.value)}
           required
           aria-describedby={`${idPrefix}-account-hint`}
           className="w-full bg-background"

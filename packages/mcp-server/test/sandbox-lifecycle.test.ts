@@ -94,6 +94,7 @@ test("an expired observation lease cannot publish a delayed terminal result", as
 // Primary regression owner: actual SDK HTTP decoding plus migrated SQL persistence.
 for (const outcome of [
   "external-stop",
+  "invalid-stop-time",
   "expired",
   "expired-external-stop",
   "interrupt-pending",
@@ -102,6 +103,8 @@ for (const outcome of [
   "stale",
   "manual-stop",
 ] as const) {
+  const externalStop = outcome === "external-stop" || outcome === "invalid-stop-time";
+  const validStoppedAt = "2026-11-11T00:00:00.000Z";
   test(`lifecycle reconciles Boat ${outcome} without deleting retained data`, async () => {
     const { db, people } = await database();
     try {
@@ -128,7 +131,7 @@ for (const outcome of [
         effectiveTtlSeconds: 60,
       });
       if (outcome === "manual-stop") await db.query("update sandboxes set status='stopping' where id=$1", [id]);
-      if (outcome !== "external-stop" && outcome !== "stale" && outcome !== "manual-stop")
+      if (!externalStop && outcome !== "stale" && outcome !== "manual-stop")
         await db.query("update sandboxes set expires_at=now()-interval '1 second' where id=$1", [id]);
       const requests: string[] = [];
       let stopped = false;
@@ -157,8 +160,14 @@ for (const outcome of [
           return Response.json({
             ok: true,
             sandbox: sandbox({
+              stoppedAt:
+                outcome === "external-stop"
+                  ? validStoppedAt
+                  : outcome === "invalid-stop-time"
+                    ? "not-a-date"
+                    : undefined,
               state:
-                stopped || outcome === "external-stop" || outcome === "expired-external-stop" || outcome === "stale"
+                stopped || externalStop || outcome === "expired-external-stop" || outcome === "stale"
                   ? "archived"
                   : "running",
             }),
@@ -174,13 +183,15 @@ for (const outcome of [
           requested_ttl_seconds: number;
           usage_runtime_seconds: number | null;
           status_reason: string | null;
-        }>("select * from sandboxes where id=$1", [id])
+          stop_time_finite: boolean | null;
+          provider_stop_retained: boolean | null;
+        }>(
+          "select *,isfinite(stopped_at) as stop_time_finite,stopped_at=$2::timestamptz as provider_stop_retained from sandboxes where id=$1",
+          [id, validStoppedAt],
+        )
       ).rows[0]!;
       expect(row.status).toBe(
-        outcome === "external-stop" ||
-          outcome === "expired" ||
-          outcome === "expired-external-stop" ||
-          outcome === "manual-stop"
+        externalStop || outcome === "expired" || outcome === "expired-external-stop" || outcome === "manual-stop"
           ? "stopped"
           : outcome === "stale"
             ? "running"
@@ -193,8 +204,10 @@ for (const outcome of [
       );
       expect(row.effective_ttl_seconds).toBe(60);
       expect(row.requested_ttl_seconds).toBe(60);
-      // Without a provider timestamp, confirmed stops close the observed interval locally.
-      if (["external-stop", "expired", "expired-external-stop", "manual-stop"].includes(outcome)) {
+      if (outcome === "external-stop") expect(row.provider_stop_retained).toBe(true);
+      // Confirmed stops close observed intervals; absent/bad timestamps fall back locally.
+      if (externalStop || ["expired", "expired-external-stop", "manual-stop"].includes(outcome)) {
+        expect(row.stop_time_finite).toBe(true);
         expect(row.usage_runtime_seconds).not.toBeNull();
         expect(row.usage_runtime_seconds!).toBeGreaterThanOrEqual(0);
       }
@@ -202,10 +215,7 @@ for (const outcome of [
         expect(row.lifecycle_error).toContain("Retrying");
       expect(requests.some((r) => r.startsWith("DELETE"))).toBe(false);
       expect(requests.filter((r) => r.startsWith("POST") && r.endsWith("/stop")).length).toBe(
-        outcome === "external-stop" ||
-          outcome === "expired-external-stop" ||
-          outcome === "stale" ||
-          outcome === "interrupt-pending"
+        externalStop || outcome === "expired-external-stop" || outcome === "stale" || outcome === "interrupt-pending"
           ? 0
           : 1,
       );
@@ -415,6 +425,61 @@ test("replicas lease one observation and resume admission fences old writes whil
     await db.close();
   }
 });
+
+for (const status of ["running", "starting", "failed", "stopping"] as const) {
+  test(`removed-owner ${status} sandbox reports blocked cleanup without provider authority`, async () => {
+    const { db, people } = await database();
+    try {
+      const id = crypto.randomUUID();
+      const golden = (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0]!;
+      await db.query(
+        `insert into sandboxes(id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status,expires_at)
+        values($1,'boat','bx_23456789',$2,$3,$4,'claude',$5,now()-interval '1 second')`,
+        [id, golden.id, people.org, people.owner, status],
+      );
+      await db.query("delete from members where org_id=$1 and user_id=$2", [people.org, people.owner]);
+      let resolutions = 0;
+      const worker = createSandboxLifecycle(bunLikeSql(db), async () => {
+        resolutions++;
+        throw new Error("Provider authority must not be requested");
+      });
+      expect(await worker.reconcileOne()).toBe(true);
+      const row = (
+        await db.query<{
+          status: string;
+          lifecycle_error: string;
+          stopped_at: Date | null;
+          stop_requested_at: Date | null;
+          last_observed_at: Date | null;
+          reconcile_lease: string | null;
+          reconcile_lease_until: Date | null;
+          retry_seconds: number;
+        }>(
+          `select *,extract(epoch from (reconcile_after-now()))::float8 as retry_seconds
+        from sandboxes where id=$1`,
+          [id],
+        )
+      ).rows[0]!;
+      expect(row.lifecycle_error).toBe(
+        "Cleanup blocked: removed-owner authority is unavailable. Automatic cleanup requires service-owned worker authority.",
+      );
+      expect(row.status).toBe(status);
+      expect(row.stopped_at).toBeNull();
+      expect(row.stop_requested_at).toBeNull();
+      expect(row.last_observed_at).toBeNull();
+      expect(row.reconcile_lease).toBeNull();
+      expect(row.reconcile_lease_until).toBeNull();
+      expect(row.retry_seconds).toBeGreaterThan(0);
+      expect(row.retry_seconds).toBeLessThanOrEqual(60);
+      expect(await worker.reconcileOne()).toBe(false);
+      await db.query("update sandboxes set reconcile_after=now()-interval '1 second' where id=$1", [id]);
+      expect(await worker.reconcileOne()).toBe(true);
+      expect(resolutions).toBe(0);
+    } finally {
+      await db.close();
+    }
+  });
+}
 
 test("timed-out provider observations stay bounded until their raw work settles", async () => {
   const { db, people } = await database();

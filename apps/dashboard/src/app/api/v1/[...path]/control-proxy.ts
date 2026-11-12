@@ -5,14 +5,8 @@ const MAX_BODY_BYTES = 128 * 1024;
 
 const PUBLIC_POST_PATHS = new Set(["auth/refresh", "auth/exchange", "auth/email/start", "auth/email/verify"]);
 const PRIVATE_POST_PATHS = new Set([
-  "routines/create",
-  "routines/list",
-  "routines/get",
-  "routines/update",
-  "routines/enable",
-  "routines/pause",
-  "routines/delete",
-  "routines/history",
+  "skillpack/catalog",
+  "skillpack/versions",
   "skills/defaults/get",
   "skills/defaults/set",
   "templates/create",
@@ -21,6 +15,14 @@ const PRIVATE_POST_PATHS = new Set([
   "templates/publish",
   "templates/delete",
   "templates/launch",
+  "routines/create",
+  "routines/list",
+  "routines/get",
+  "routines/update",
+  "routines/enable",
+  "routines/pause",
+  "routines/delete",
+  "routines/history",
   "variables/list",
   "variables/read",
   "variables/set",
@@ -205,7 +207,8 @@ export async function forwardControl(
       : fail(400, "Invalid request body.");
   }
   const target = new URL(`${CONTROL_PREFIX}${relative}`, upstream);
-  if (orchestrator || sandboxDeletion) target.search = new URL(request.url).search;
+  if (orchestrator || sandboxDeletion || relative === "skillpack/catalog" || relative === "skillpack/versions")
+    target.search = new URL(request.url).search;
   const idempotencyKey = orchestrator && method === "POST" ? request.headers.get("idempotency-key") : null;
   let response: Response;
   try {

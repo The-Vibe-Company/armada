@@ -95,6 +95,7 @@ test("two accounts of one service: the deliberate default is preselected, and th
   dialog = await openLaunch(page);
   await dialog.getByRole("radio", { name: "Codex" }).check();
   await expect(dialog.locator('[data-account-field="none"]')).toContainText("No Codex account.");
+  await expect(dialog.getByLabel("Armada access", { exact: true })).toBeDisabled();
 });
 
 async function accountId(name: string): Promise<unknown> {
@@ -508,3 +509,109 @@ test("on a phone the terminal sign-in stays inside the add dialog, even for a lo
   const login = await dialog.locator("[data-terminal-login]").boundingBox();
   expect(login && login.x + login.width <= (box?.x ?? 0) + (box?.width ?? 0)).toBe(true);
 });
+
+test("Armada access is opt-in, keeps its chosen account and settings after refusal, and uses only its versioned route", async ({
+  page,
+}, testInfo) => {
+  await mock("/__test/reset", { sizePolicies: true, refuseSize: "xlarge" });
+  const codex = account(61, "Codex work", { kind: "openai", is_default: true });
+  await mock("/__test/accounts", { seed: [codex] });
+  await signIn(page, "alice@example.com", "/environments");
+  const dialog = await openLaunchDialog(page, "shared-golden");
+  const access = dialog.getByLabel("Armada access", { exact: true });
+  await expect(access).not.toBeChecked();
+  await expect(access).toBeDisabled();
+  await dialog.getByRole("radio", { name: "Codex", exact: true }).check();
+  await expect(access).toBeEnabled();
+  await expect(access).not.toBeChecked();
+  await expect(dialog.getByLabel("Account")).toHaveValue(String(codex.id));
+  await access.focus();
+  await page.keyboard.press("Space");
+  await expect(access).toBeChecked();
+  await expect(dialog.getByText(/up to 3 child sandboxes/)).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("armada-access-desktop.png"), animations: "disabled" });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await access.scrollIntoViewIfNeeded();
+  await expect(dialog.getByRole("button", { name: "Launch", exact: true })).toBeInViewport();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  await page.screenshot({ path: testInfo.outputPath("armada-access-mobile.png"), animations: "disabled" });
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await dialog.getByLabel("Task").fill("Drive a child sandbox");
+  await dialog.getByLabel("Project").selectOption("api");
+  await dialog.getByLabel("Machine size").selectOption("xlarge");
+  const advanced = dialog.locator("[data-launch-advanced]").getByRole("button", { name: /^Advanced/ });
+  await advanced.click();
+  await expect(dialog.locator("[data-launch-summary]")).toContainText("Armada access");
+  await dialog.getByRole("button", { name: "Launch", exact: true }).click();
+  await expect(dialog.getByRole("alert")).toContainText("Requested size cannot be allocated.");
+  await expect(access).toBeChecked();
+  await expect(dialog.getByLabel("Task")).toHaveValue("Drive a child sandbox");
+  await expect(dialog.getByLabel("Account")).toHaveValue(String(codex.id));
+  await advanced.click();
+  await dialog.getByLabel("Machine size").selectOption("large");
+  await dialog.getByRole("button", { name: "Launch", exact: true }).click();
+  await page.waitForURL(/\/sandboxes\/[0-9a-f-]{36}$/);
+  const state = await mock("/__test/state");
+  expect(state.launchRoutes).toEqual(["sandbox/launch-access-v1", "sandbox/launch-access-v1"]);
+  expect((state.launches as Row[]).at(-1)).toMatchObject({
+    armadaAccessVersion: 1,
+    armadaAccess: { maxActiveChildren: 3 },
+    harness: "codex",
+    credentialId: codex.id,
+    repo: "api",
+    size: "large",
+    sizePolicyVersion: 1,
+    prompt: "Drive a child sandbox",
+  });
+});
+
+test("changing the account or agent clears Armada access and an off launch remains ordinary", async ({ page }) => {
+  const codex = account(62, "Codex work", { kind: "openai", is_default: true });
+  const other = account(63, "Other Codex", { kind: "openai", is_default: false });
+  await mock("/__test/accounts", { seed: [codex, other] });
+  await signIn(page, "alice@example.com", "/environments");
+  const dialog = await openLaunchDialog(page, "shared-golden");
+  const access = dialog.getByLabel("Armada access", { exact: true });
+  await dialog.getByRole("radio", { name: "Codex", exact: true }).check();
+  await access.check();
+  await dialog.getByLabel("Account").selectOption(String(other.id));
+  await expect(access).not.toBeChecked();
+  await expect(dialog.locator("[data-launch-summary]")).not.toContainText("Armada access");
+  await access.check();
+  await dialog.getByRole("radio", { name: "Claude Code", exact: true }).check();
+  await expect(access).toBeDisabled();
+  await expect(access).not.toBeChecked();
+  await expect(dialog.locator("[data-launch-summary]")).not.toContainText("Armada access");
+  await dialog.getByRole("radio", { name: "Codex", exact: true }).check();
+  await expect(access).not.toBeChecked();
+  await dialog.getByRole("button", { name: "Launch", exact: true }).click();
+  await page.waitForURL(/\/sandboxes\/[0-9a-f-]{36}$/);
+  const state = await mock("/__test/state");
+  expect(state.launchRoutes).toEqual(["sandbox/launch"]);
+  expect((state.launches as Row[])[0]).not.toHaveProperty("armadaAccess");
+  expect((state.launches as Row[])[0]).not.toHaveProperty("armadaAccessVersion");
+});
+
+for (const legacy of [false, true]) {
+  test(`crafted Armada access is refused independently of the checkbox (${legacy ? "legacy account server" : "Claude"})`, async ({
+    page,
+  }) => {
+    if (legacy) await mock("/__test/accounts", { legacy: true });
+    await signIn(page, "alice@example.com", "/environments");
+    const dialog = await openLaunchDialog(page, "shared-golden");
+    if (legacy) await dialog.getByRole("radio", { name: "Codex", exact: true }).check();
+    await expect(dialog.getByLabel("Armada access", { exact: true })).toBeDisabled();
+    await dialog.locator("form").evaluate((form) => {
+      const flag = document.createElement("input");
+      flag.type = "hidden";
+      flag.name = "armada_access";
+      flag.value = "on";
+      form.append(flag);
+    });
+    await dialog.getByRole("button", { name: "Launch", exact: true }).click();
+    await expect(dialog.getByRole("alert")).toHaveText(
+      legacy ? "Armada access requires an explicit named Codex account." : "Armada access is available for Codex only.",
+    );
+    expect(await launches()).toEqual([]);
+  });
+}
