@@ -1798,7 +1798,12 @@ test.each(["claude", "codex"] as const)(
         expect(restored.codexAuthJson).toBe(nativeToken(token));
         expect(restored.nativeAuthRevision).toBe(0);
         await expect(
-          modelAuth.claim({ userId: ADA, orgId: org.id, role: "member" }, winner.credentialId, 1, crypto.randomUUID()),
+          modelAuth.claimLegacy(
+            { userId: ADA, orgId: org.id, role: "member" },
+            winner.credentialId,
+            1,
+            crypto.randomUUID(),
+          ),
         ).rejects.toMatchObject({ code: "credential_busy" });
       }
       const refusedBinding = await post(ADA, winner.credentialId === chosen ? alternate : chosen);

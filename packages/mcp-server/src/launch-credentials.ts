@@ -78,12 +78,7 @@ export function launchCredentials(
       if (!credentials.codexAuthJson) return;
       if (!ownership) return; // Embedders without managed auth retain their legacy native path.
       if (ownership.broker && credentials.binding) {
-        await ownership.claim(
-          actor,
-          credentials.binding.credentialId,
-          credentials.binding.credentialVersion,
-          sandboxId,
-        );
+        await ownership.broker.enroll(actor, credentials.binding.credentialId, credentials.binding.credentialVersion);
         return;
       }
       try {
@@ -102,7 +97,7 @@ export function launchCredentials(
         typeof binding.credentialVersion !== "number"
       )
         return; // Unknown legacy bindings are not silently claimed or rehydrated.
-      await ownership.claim(actor, binding.credentialId, binding.credentialVersion, sandboxId);
+      await ownership.claimLegacy(actor, binding.credentialId, binding.credentialVersion, sandboxId);
     },
     async hydrateNative(actor, credentials, sandboxId, provider, providerSandboxId) {
       const binding =
