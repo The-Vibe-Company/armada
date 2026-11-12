@@ -4,7 +4,7 @@ import type { GoldenActor, GoldenRecord } from "./golden.ts";
 import { GoldenError } from "./golden-config.ts";
 import { assertSqlGoldenMutation, type GoldenRow, mapGoldenRow, type Sql } from "./golden-store.ts";
 import { isNonMutatingProviderRefusal, type Provider, ProviderError } from "./provider.ts";
-import { HOST_CAPABILITIES, type ProviderTarget, type SandboxProviderId } from "./sandbox-provider.ts";
+import { HOST_CAPABILITIES, PROVIDER_LIMITS, type ProviderTarget, type SandboxProviderId } from "./sandbox-provider.ts";
 
 interface Target extends ProviderTarget {
   ownerId: string;
@@ -185,11 +185,11 @@ export async function captureHistoricalPublication(
     )
       return null;
     if (
-      target.provider === "boat" &&
+      PROVIDER_LIMITS[target.provider].defaultGoldenCapacity !== undefined &&
       !(
         await sql.query(
-          "select 1 from public.golden_backend_slots where golden_id=$1 and provider='boat' and backend_id=$2",
-          [goldenId, proof.backend_id],
+          "select 1 from public.golden_backend_slots where golden_id=$1 and provider=$3 and backend_id=$2",
+          [goldenId, proof.backend_id, target.provider],
         )
       ).rows.length
     )
@@ -444,7 +444,7 @@ export class GoldenSnapshotRetirements {
     )
       return "authority_changed";
     if (
-      c.provider === "boat" &&
+      PROVIDER_LIMITS[c.provider].defaultGoldenCapacity !== undefined &&
       !(
         await this.options.sql.query(
           "select 1 from public.golden_backend_slots where provider=$1 and backend_id=$2 and golden_id=$3",
@@ -708,11 +708,11 @@ export class GoldenSnapshotRetirements {
     )
       return { results: [{ outcome: "deferred", reason: "historical_authority_unproven" }] };
     if (
-      golden.provider === "boat" &&
+      PROVIDER_LIMITS[golden.provider].defaultGoldenCapacity !== undefined &&
       !(
         await sql.query(
-          "select 1 from public.golden_backend_slots where golden_id=$1 and provider='boat' and backend_id=$2",
-          [golden.id, backend],
+          "select 1 from public.golden_backend_slots where golden_id=$1 and provider=$3 and backend_id=$2",
+          [golden.id, backend, golden.provider],
         )
       ).rows.length
     )
