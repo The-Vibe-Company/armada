@@ -85,7 +85,6 @@ export default async function VariablesPage({ searchParams }: Props) {
 
   return (
     <ResourceBrowser
-      detailPanel
       title={TITLE}
       description={DESCRIPTION}
       meta={rows.length > 0 ? rows.length : undefined}

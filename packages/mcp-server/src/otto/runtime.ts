@@ -12,7 +12,7 @@ export function createOttoRuntime(sql: Sql, env: Record<string, string | undefin
   const scope: OttoScope = { orgId, repository };
   const observer = createOttoObserver(sql, scope);
   let nextAt = 0;
-  return {
+  const runtime = {
     scope,
     route: observer.webhook(env.ARMADA_OTTO_WEBHOOK_SECRET, env.ARMADA_OTTO_MAIN_BRANCH ?? "main") as Route,
     lane: {
@@ -38,6 +38,33 @@ export function createOttoRuntime(sql: Sql, env: Record<string, string | undefin
         return false;
       },
       async drain() {},
+    },
+  };
+  return {
+    ...runtime,
+    start() {
+      const shutdown = new AbortController();
+      const done = (async () => {
+        while (!shutdown.signal.aborted) {
+          try {
+            await runtime.lane.reconcileOne(AbortSignal.any([shutdown.signal, AbortSignal.timeout(30_000)]));
+          } catch {
+            /* The journal/read API remains unknown; never log credentials. */
+          }
+          if (!shutdown.signal.aborted)
+            await new Promise<void>((resolve) => {
+              const wake = () => {
+                clearTimeout(timer);
+                shutdown.signal.removeEventListener("abort", wake);
+                resolve();
+              };
+              const timer = setTimeout(wake, 60_000);
+              timer.unref();
+              shutdown.signal.addEventListener("abort", wake, { once: true });
+            });
+        }
+      })();
+      return { done, stop: () => shutdown.abort() };
     },
   };
 }
