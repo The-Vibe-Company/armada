@@ -11,8 +11,8 @@ import {
 } from "@armada/core/server";
 import { type ControlOptions, createSqlData, handleControlRequest } from "@armada/mcp-server";
 import type { PGlite } from "@electric-sql/pglite";
-import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
+import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 import { goldenHelperReport } from "../../core/test/support/golden-helper.ts";
 import type { AuthIo } from "../src/auth-commands.ts";
 import { run } from "../src/run.ts";
@@ -37,9 +37,8 @@ describe("golden command", () => {
     // golden create is server-orchestrated now (no separate connect/snapshot step for a golden
     // built this way, and no BOAT_API_KEY): the CLI sends the parsed --repo/--init config to
     // /api/v1/golden/create, which admits the durable disposable-builder job, then polls its status.
-    const db = await openDatabase();
+    const db = await openMigratedDatabase();
     try {
-      await applyMigrations(db);
       const people = await fixture(db);
       await db.query(
         "insert into github_connections (user_id, github_id, login, refresh_token_enc) values ($1, 583231, 'octocat', $2)",
@@ -162,9 +161,8 @@ describe("golden command", () => {
   test("golden list acts as the logged-in user too, not only ARMADA_TOKEN (golden-api-list.test.ts covers that)", async () => {
     const org = "11111111-1111-4111-8111-111111111111";
     const user = "22222222-2222-4222-8222-222222222222";
-    const db = await openDatabase();
+    const db = await openMigratedDatabase();
     try {
-      await applyMigrations(db);
       await db.query("insert into auth.users (id) values ($1)", [user]);
       await db.query("insert into orgs (id, name) values ($1, 'Example')", [org]);
       await db.query("insert into members (org_id, user_id, role) values ($1, $2, 'member')", [org, user]);
