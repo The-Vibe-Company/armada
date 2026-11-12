@@ -8,7 +8,6 @@ const SECRET = "boat-personal-super-secret-key";
 test("a personal hosting key is stored encrypted and never shown again", async ({ page }) => {
   await signIn(page, "alice@example.com", "/settings");
   const mine = page.locator('[data-credentials="user"]');
-  await mine.getByLabel("Kind").selectOption("boat");
   await mine.getByLabel("Value", { exact: true }).fill(SECRET);
   await mine.getByRole("button", { name: "Save key" }).click();
   await expect(mine.getByText("boat.dev API key saved.")).toBeVisible();
@@ -74,7 +73,8 @@ test("a personal hosting key is stored encrypted and never shown again", async (
   release();
   await expect(dialog).toHaveCount(0);
   await expect(remove).toHaveCount(0);
-  await expect(mine.getByLabel("Kind")).toBeFocused();
+  // Focus lands where the key would be entered again.
+  await expect(mine.getByLabel("Value", { exact: true })).toBeFocused();
 });
 
 test("a value with spaces is refused before anything is stored", async ({ page }) => {
@@ -118,8 +118,9 @@ test("a Modal token is saved from its two fields as one encrypted pair, never sh
 }) => {
   await signIn(page, "alice@example.com", "/settings");
   const mine = page.locator('[data-credentials="user"]');
-  await expect(mine.getByLabel("Kind")).toBeVisible();
-  await expect(mine.getByLabel("Kind").locator("option", { hasText: "Modal" })).toHaveCount(0);
+  // The one-value form names its single kind instead of offering a one-option select; Modal has its own form.
+  await expect(mine.getByRole("heading", { name: "boat.dev API key", level: 3 })).toBeVisible();
+  await expect(mine.getByLabel("Kind")).toHaveCount(0);
   const modal = mine.locator("[data-modal-token]");
   await modal.getByLabel("Token ID").fill(MODAL_ID);
   await modal.getByLabel("Token secret").fill(MODAL_SECRET);
@@ -145,6 +146,7 @@ test("a Modal token is saved from its two fields as one encrypted pair, never sh
   await mine.getByRole("button", { name: "Remove Modal token" }).click();
   await page.getByRole("alertdialog").getByRole("button", { name: "Remove key", exact: true }).click();
   await expect(mine.getByRole("button", { name: "Remove Modal token" })).toHaveCount(0);
+  await expect(modal.getByLabel("Token ID")).toBeFocused();
 });
 
 test("a Modal token pair the server would refuse is reported without echoing it and nothing is stored", async ({
