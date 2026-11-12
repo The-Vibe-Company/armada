@@ -1,6 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
 import { posix } from "node:path";
-import type { CreateGoldenRequest, ExecResult, ForkRequest, Provider, SandboxInfo, SnapshotInfo } from "@armada/core";
+import type {
+  CreateGoldenRequest,
+  ExecResult,
+  ForkRequest,
+  Harness,
+  Provider,
+  SandboxInfo,
+  SnapshotInfo,
+} from "@armada/core";
 import {
   HARNESSES,
   machineCapacity,
@@ -63,7 +71,7 @@ export interface ModalProvider extends Provider {
     operationId: string;
     physicalGeneration: string;
     conversationId: string | null;
-    harness: "claude" | "codex";
+    harness: Harness;
     model: string;
     reasoningEffort?: string;
     cwd?: string;
@@ -85,7 +93,7 @@ export interface ModalProvider extends Provider {
   configureGitHub: NonNullable<Provider["configureGitHub"]>;
   findGoldenBuilder: NonNullable<Provider["findGoldenBuilder"]>;
   disposeGoldenBuilder: NonNullable<Provider["disposeGoldenBuilder"]>;
-  prepareNativeHarnessCwd(request: { sandboxId: string; harness: "claude" | "codex"; cwd: string }): Promise<void>;
+  prepareNativeHarnessCwd(request: { sandboxId: string; harness: Harness; cwd: string }): Promise<void>;
   configureMcp(request: { sandboxId: string; configuration: McpConfiguration }): Promise<{ revision: string }>;
   restoreGoldenMaster(request: { sandboxId?: string; snapshotId: string }): Promise<SandboxInfo>;
   resourceReceipts(): Promise<ModalResourceReceipt[]>;

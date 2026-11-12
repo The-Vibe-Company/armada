@@ -17,6 +17,7 @@ import {
   supabaseAuthorizeUrl,
   verifyEmailCode,
 } from "@armada/auth";
+import type { Harness } from "@armada/core";
 import {
   API_FAILURE_STATUS,
   GitHubHydrationError,
@@ -1582,11 +1583,7 @@ function launchJson(result: LaunchResult) {
   };
 }
 
-function modelChoice(
-  harness: "claude" | "codex",
-  model: string | undefined,
-  reasoningEffort: string | undefined,
-): ModelChoice {
+function modelChoice(harness: Harness, model: string | undefined, reasoningEffort: string | undefined): ModelChoice {
   try {
     return resolveModelChoice(harness, { model, reasoningEffort });
   } catch (error) {

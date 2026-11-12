@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash, timingSafeEqual } from "node:crypto";
-import type { ExecRequest, ExecResult } from "@armada/core";
+import type { ExecRequest, ExecResult, Harness } from "@armada/core";
 import { HARNESSES, validateReadableVariables } from "@armada/core";
 import { validateHarnessCwd } from "./cwd.ts";
 import { HarnessError } from "./errors.ts";
@@ -43,7 +43,7 @@ export class Runner {
   constructor(
     readonly journal: Journal,
     readonly grant: Grant,
-    readonly drivers: Record<"claude" | "codex", Driver>,
+    readonly drivers: Record<Harness, Driver>,
     private ingest?: IngestClient,
     mcp?: McpConfiguration,
     private stripTransientAuth?: () => Promise<void>,

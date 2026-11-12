@@ -1,3 +1,4 @@
+import type { Harness } from "@armada/core";
 import { HARNESSES } from "@armada/core";
 import { GOLDEN_ROOT, type Provider, type Sql } from "@armada/core/server";
 import type { ModalOrchestratorCheckpoint, ModalProvider } from "@armada/provider-modal";
@@ -29,7 +30,7 @@ export function createModalOrchestratorNativeAdapter(input: {
     const saved = (
       await input.sql.query<{
         conversation_id: string | null;
-        harness: "claude" | "codex";
+        harness: Harness;
         model: string | null;
         reasoning_effort: string | null;
         repository_dir: string | null;

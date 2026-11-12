@@ -138,11 +138,16 @@ export async function runModalConformance(
     const turns = [];
     if (options.models) {
       const receipts = await Promise.all(
-        HARNESSES.map((harness) =>
-          provider.prompt({ sandboxId: fork as string, harness, text: "Reply with exactly: armada-conformance-ok" }),
-        ),
+        HARNESSES.map(async (harness) => ({
+          harness,
+          receipt: await provider.prompt({
+            sandboxId: fork as string,
+            harness,
+            text: "Reply with exactly: armada-conformance-ok",
+          }),
+        })),
       );
-      for (const receipt of receipts) {
+      for (const { harness, receipt } of receipts) {
         for (let i = 0; i < 600; i++) {
           const state = await provider.getPrompt({ sandboxId: fork, promptId: receipt.promptId });
           if (state.done) {
@@ -152,7 +157,7 @@ export async function runModalConformance(
           if (i === 599) throw Error("model_turn_timeout");
           await Bun.sleep(options.pollMs ?? 250);
         }
-        turns.push(receipt);
+        turns.push({ harness, receipt });
       }
       checks.push("real concurrent Claude and Codex sessions");
     }
@@ -171,10 +176,10 @@ export async function runModalConformance(
     stopped = false;
     if (restored.detached || restored.exitCode !== 0) throw Error("restore_marker_missing");
     checks.push("checkpoint / durable save / same logical ID restore");
-    for (const [index, receipt] of turns.entries()) {
+    for (const { harness, receipt } of turns) {
       const next = await provider.prompt({
         sandboxId: fork,
-        harness: index === 0 ? "claude" : "codex",
+        harness,
         conversationId: receipt.conversationId,
         text: "Reply with exactly: resumed-ok",
       });
