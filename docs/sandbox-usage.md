@@ -63,7 +63,12 @@ must not become zeros. Known lifetime subsets must not exceed aggregate
 Repeat status and list reads: the stored nested detail remains stable and
 metadata-only viewers still receive null usage. Stale writers retain previously
 observed lifetime subsets; conflicting non-monotone observations whose merged
-subsets exceed aggregate writes produce an unknown breakdown. Old native CLI results without
+subsets exceed aggregate writes produce an unknown breakdown with `conflicted: true`.
+This conflict evidence is sticky for that prompt/model: replaying either earlier
+observation cannot restore known buckets. There is no automatic conflict recovery
+without authoritative ordering/reset evidence; ordinary later status writes do
+not provide it. Missing-detail unknowns without a conflict can still be completed
+by later valid native observations. Old native CLI results without
 TTL detail retain their previous shape. An undercount is preserved as a subset,
 not filled with guessed tokens. Native TTL selection cannot be forced by these
 commands; offline regressions cover mixed, missing, partial and invalid buckets.

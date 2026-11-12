@@ -73,7 +73,12 @@ export interface TurnTokenUsage {
   /** Native Claude cache-write subsets, not additional input. Absence means TTL detail was not reported.
    * Their sum may be less than cacheWriteTokens (legacy/unclassified writes); never assume the remainder is 5m.
    */
-  cacheWriteTokensByTtl?: { fiveMinute: number | null; oneHour: number | null };
+  cacheWriteTokensByTtl?: {
+    fiveMinute: number | null;
+    oneHour: number | null;
+    /** Sticky server-observed contradiction for this prompt/model; replay cannot resolve it. */
+    conflicted?: true;
+  };
   /** Why no counters could be collected; never a raw provider/guest error. */
   unavailableReason?: UsageUnavailableReason;
 }

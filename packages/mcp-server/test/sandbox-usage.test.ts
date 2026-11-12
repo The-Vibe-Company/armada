@@ -185,9 +185,30 @@ test("real SQL runtime includes open and completed intervals and usage follows i
       turnCount: 2,
       turns: [{ ...turns[0]!, cacheWriteTokensByTtl: { fiveMinute: 0, oneHour: 3 } }],
     });
-    expect((await store(p.owner).get(id))?.usage?.turns).toEqual([
-      { ...turns[0]!, cacheWriteTokensByTtl: { fiveMinute: null, oneHour: null } },
+    const conflicted = [
+      { ...turns[0]!, cacheWriteTokensByTtl: { fiveMinute: null, oneHour: null, conflicted: true as const } },
+    ];
+    expect((await store(p.owner).get(id))?.usage?.turns).toMatchObject([
+      { cacheWriteTokensByTtl: { fiveMinute: null, oneHour: null } },
     ]);
+    // Neither original observation (nor an older CLI row) is new evidence resolving the conflict.
+    for (const replay of [turns[0]!, { ...turns[0]!, cacheWriteTokensByTtl: { fiveMinute: 0, oneHour: 3 } }, legacy]) {
+      await store(p.owner).recordUsage!(id, { turnCount: 2, turns: [replay] });
+      expect((await store(p.owner).get(id))?.usage?.turns).toMatchObject([
+        { cacheWriteTokensByTtl: { fiveMinute: null, oneHour: null } },
+      ]);
+    }
+    expect((await store(p.owner).get(id))?.usage?.turns).toEqual(conflicted);
+    // Unknown detail is not itself contradictory: later valid native data can fill it.
+    const lateDetail = { ...turns[0]!, promptId: "late-detail" };
+    await store(p.owner).recordUsage!(id, {
+      turnCount: 2,
+      turns: [{ ...lateDetail, cacheWriteTokens: null, cacheWriteTokensByTtl: { fiveMinute: null, oneHour: null } }],
+    });
+    await store(p.owner).recordUsage!(id, { turnCount: 2, turns: [lateDetail] });
+    expect((await store(p.owner).get(id))?.usage?.turns.find((row) => row.promptId === "late-detail")).toEqual(
+      lateDetail,
+    );
     expect((await store(p.owner).list({ limit: 10 })).rows[0]?.usage?.computeSeconds).toBe(30);
     // Stop's activity reservation clears stoppedAt even for an already stopped sandbox.
     await store(p.owner).update(id, { status: "stopping", stoppedAt: null });

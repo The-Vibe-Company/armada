@@ -337,6 +337,7 @@ export function createSqlData(sql: Sql): DataSource {
             ), lifetime_snapshots as (
               select *,
                 bool_or(value ? 'cacheWriteTokensByTtl') over identity as has_ttl,
+                bool_or(value#>'{cacheWriteTokensByTtl,conflicted}'='true'::jsonb) over identity as ttl_conflicted,
                 max((value#>>'{cacheWriteTokensByTtl,fiveMinute}')::bigint) over identity as ttl_five,
                 max((value#>>'{cacheWriteTokensByTtl,oneHour}')::bigint) over identity as ttl_hour,
                 max((value->>'cacheWriteTokens')::bigint) over identity as ttl_total
@@ -353,9 +354,12 @@ export function createSqlData(sql: Sql): DataSource {
                   'reasoningTokens', max((value->>'reasoningTokens')::bigint) over identity)) ||
                   -- Keep monotone lifetime subsets across stale writers, without inventing a
                   -- coherent breakdown when conflicting snapshots exceed the aggregate.
+                  -- A conflict is sticky: ordinary replays carry no authoritative reset/order proof.
                   case when has_ttl then jsonb_build_object('cacheWriteTokensByTtl',
-                    case when ttl_total is null or coalesce(ttl_five,0)+coalesce(ttl_hour,0)>ttl_total
-                      then jsonb_build_object('fiveMinute',null,'oneHour',null)
+                    case when ttl_conflicted or
+                        (ttl_total is not null and coalesce(ttl_five,0)+coalesce(ttl_hour,0)>ttl_total)
+                      then jsonb_build_object('fiveMinute',null,'oneHour',null,'conflicted',true)
+                      when ttl_total is null then jsonb_build_object('fiveMinute',null,'oneHour',null)
                       else jsonb_build_object('fiveMinute',ttl_five,'oneHour',ttl_hour) end)
                     else '{}'::jsonb end as value
               from lifetime_snapshots
