@@ -42,6 +42,75 @@ test("native usage snapshots replace replays without summing quota or missing va
   ).toBeNull();
 });
 
+// The extractor owns native-field mapping; SQL/replay tests below own persistence and visibility.
+test.each([
+  {
+    total: 0,
+    detail: { cacheCreationEphemeral5mInputTokens: 0, cacheCreationEphemeral1hInputTokens: 0 },
+    expected: { fiveMinute: 0, oneHour: 0 },
+  },
+  {
+    total: 10,
+    detail: { cacheCreationEphemeral5mInputTokens: 6, cacheCreationEphemeral1hInputTokens: 4 },
+    expected: { fiveMinute: 6, oneHour: 4 },
+  },
+  {
+    total: 10,
+    detail: { cacheCreationEphemeral5mInputTokens: 3, cacheCreationEphemeral1hInputTokens: 2 },
+    expected: { fiveMinute: 3, oneHour: 2 },
+  },
+  { total: 10, detail: { cacheCreationEphemeral5mInputTokens: 0 }, expected: { fiveMinute: 0, oneHour: null } },
+  {
+    total: 10,
+    detail: { cacheCreationEphemeral5mInputTokens: 8, cacheCreationEphemeral1hInputTokens: 3 },
+    expected: { fiveMinute: null, oneHour: null },
+  },
+  {
+    total: 10,
+    detail: { cacheCreationEphemeral5mInputTokens: -1, cacheCreationEphemeral1hInputTokens: 0 },
+    expected: { fiveMinute: null, oneHour: null },
+  },
+  {
+    total: null,
+    detail: { cacheCreationEphemeral5mInputTokens: 2, cacheCreationEphemeral1hInputTokens: 0 },
+    expected: { fiveMinute: null, oneHour: null },
+  },
+])(
+  "Claude cache-write lifetimes preserve known subsets without inventing missing tokens (%j)",
+  ({ total, detail, expected }) => {
+    const event: AgentEvent = {
+      id: "result",
+      at: 1,
+      promptId: "p",
+      kind: "other",
+      type: "result",
+      data: {
+        modelUsage: {
+          sonnet: {
+            inputTokens: 1,
+            outputTokens: 2,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: total,
+            ...detail,
+          },
+        },
+      },
+    };
+    expect(reportedTurnUsage([event, event]).turns).toEqual([
+      {
+        promptId: "p",
+        model: "sonnet",
+        inputTokens: 1,
+        outputTokens: 2,
+        cachedTokens: 0,
+        cacheWriteTokens: total,
+        reasoningTokens: null,
+        cacheWriteTokensByTtl: expected,
+      },
+    ]);
+  },
+);
+
 test("real SQL runtime includes open and completed intervals and usage follows interior visibility", async () => {
   const { db, people: p } = await database();
   try {
@@ -49,7 +118,7 @@ test("real SQL runtime includes open and completed intervals and usage follows i
     const id = crypto.randomUUID();
     await db.query(
       `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status)
-      values($1,$2,$3,$4,'boat','usage-test','codex','ready')`,
+      values($1,$2,$3,$4,'boat','usage-test','claude','ready')`,
       [id, golden, p.org, p.owner],
     );
     // Read open intervals at the same statement timestamp as their explicit endpoints.
@@ -89,8 +158,57 @@ test("real SQL runtime includes open and completed intervals and usage follows i
     await db.query("update sandboxes set status='stopped',stopped_at='2026-01-01T00:01:20Z' where id=$1", [id]);
     const store = (userId: string) =>
       createSqlData(db)({ userId, via: "service", orgs: [{ orgId: p.org, role: "member" }] }).sandboxes;
-    await store(p.owner).recordUsage!(id, { turnCount: 2, turns: [] });
-    expect((await store(p.owner).get(id))?.usage).toMatchObject({ computeSeconds: 30, turnCount: 2, turns: [] });
+    const turns = [
+      {
+        promptId: "claude",
+        model: "sonnet",
+        inputTokens: 1,
+        outputTokens: 2,
+        cachedTokens: 0,
+        cacheWriteTokens: 3,
+        cacheWriteTokensByTtl: { fiveMinute: 2, oneHour: 1 },
+      },
+    ];
+    await store(p.owner).recordUsage!(id, { turnCount: 2, turns });
+    expect((await store(p.owner).get(id))?.usage).toMatchObject({ computeSeconds: 30, turnCount: 2, turns });
+    expect((await store(p.owner).list({ limit: 10 })).rows[0]?.usage?.turns).toEqual(turns);
+    // A late stale writer cannot lower lifetime subsets or erase them with an older CLI result.
+    await store(p.owner).recordUsage!(id, {
+      turnCount: 2,
+      turns: [{ ...turns[0]!, cacheWriteTokens: 2, cacheWriteTokensByTtl: { fiveMinute: 1, oneHour: 1 } }],
+    });
+    const { cacheWriteTokensByTtl: _ttl, ...legacy } = turns[0]!;
+    await store(p.owner).recordUsage!(id, { turnCount: 2, turns: [legacy] });
+    expect((await store(p.owner).get(id))?.usage?.turns).toEqual(turns);
+    // Conflicting non-monotone lifetime observations must not manufacture an overfull split.
+    await store(p.owner).recordUsage!(id, {
+      turnCount: 2,
+      turns: [{ ...turns[0]!, cacheWriteTokensByTtl: { fiveMinute: 0, oneHour: 3 } }],
+    });
+    const conflicted = [
+      { ...turns[0]!, cacheWriteTokensByTtl: { fiveMinute: null, oneHour: null, conflicted: true as const } },
+    ];
+    expect((await store(p.owner).get(id))?.usage?.turns).toMatchObject([
+      { cacheWriteTokensByTtl: { fiveMinute: null, oneHour: null } },
+    ]);
+    // Neither original observation (nor an older CLI row) is new evidence resolving the conflict.
+    for (const replay of [turns[0]!, { ...turns[0]!, cacheWriteTokensByTtl: { fiveMinute: 0, oneHour: 3 } }, legacy]) {
+      await store(p.owner).recordUsage!(id, { turnCount: 2, turns: [replay] });
+      expect((await store(p.owner).get(id))?.usage?.turns).toMatchObject([
+        { cacheWriteTokensByTtl: { fiveMinute: null, oneHour: null } },
+      ]);
+    }
+    expect((await store(p.owner).get(id))?.usage?.turns).toEqual(conflicted);
+    // Unknown detail is not itself contradictory: later valid native data can fill it.
+    const lateDetail = { ...turns[0]!, promptId: "late-detail" };
+    await store(p.owner).recordUsage!(id, {
+      turnCount: 2,
+      turns: [{ ...lateDetail, cacheWriteTokens: null, cacheWriteTokensByTtl: { fiveMinute: null, oneHour: null } }],
+    });
+    await store(p.owner).recordUsage!(id, { turnCount: 2, turns: [lateDetail] });
+    expect((await store(p.owner).get(id))?.usage?.turns.find((row) => row.promptId === "late-detail")).toEqual(
+      lateDetail,
+    );
     expect((await store(p.owner).list({ limit: 10 })).rows[0]?.usage?.computeSeconds).toBe(30);
     // Stop's activity reservation clears stoppedAt even for an already stopped sandbox.
     await store(p.owner).update(id, { status: "stopping", stoppedAt: null });
