@@ -27,6 +27,7 @@ function fixture(handler?: (call: Call) => Response | undefined | Promise<Respon
   const lines: string[] = [];
   let clock = 0;
   let stopping = false;
+  let lastPromptId = "prompt-id";
   const io = {
     now: () => clock,
     sleep: async (ms: number) => {
@@ -49,8 +50,22 @@ function fixture(handler?: (call: Call) => Response | undefined | Promise<Respon
       calls.push(call);
       if (call.path === "sandbox/launch") stopping = false;
       if (call.path === "sandbox/stop") stopping = true;
+      if (call.path === "sandbox/wait") lastPromptId = String(call.body.prompt_id);
       const override = await handler?.(call);
-      if (override) return override;
+      if (override) {
+        if (call.path === "sandbox/status" && override.ok) {
+          const body = (await override.clone().json()) as Record<string, unknown>;
+          if (!Object.hasOwn(body, "usage"))
+            return json({
+              ...body,
+              usage: {
+                turns: [{ promptId: lastPromptId, inputTokens: 10, outputTokens: 2 }],
+                tokenTotals: { inputTokens: 10, outputTokens: 2 },
+              },
+            });
+        }
+        return override;
+      }
       switch (call.path) {
         case "sandbox/launch":
           return json({ sandbox: { id: "sandbox-id", provider: call.body.provider } });
@@ -63,7 +78,14 @@ function fixture(handler?: (call: Call) => Response | undefined | Promise<Respon
         case "sandbox/stop":
           return json({ status: "stopped" });
         case "sandbox/status":
-          return json({ status: stopping ? "stopped" : "ready", providerState: stopping ? "archived" : "active" });
+          return json({
+            status: stopping ? "stopped" : "ready",
+            providerState: stopping ? "archived" : "active",
+            usage: {
+              turns: [{ promptId: "prompt-id", inputTokens: 10, outputTokens: 2 }],
+              tokenTotals: { inputTokens: 10, outputTokens: 2 },
+            },
+          });
         default:
           throw new Error("Unexpected fake API call");
       }
@@ -486,6 +508,7 @@ test("reports closed server errors without retrying ambiguous sends", async () =
 test("unknown stop outcomes are observed once, including Modal checkpoint fallback warnings", async () => {
   for (const unknown of [false, true]) {
     let stopping = false;
+
     let reads = 0;
     const fake = fixture((call) => {
       if (call.path === "sandbox/stop") {
@@ -516,6 +539,7 @@ test("unknown stop outcomes are observed once, including Modal checkpoint fallba
 test("unknown cleanup stops poll failed terminal states and bound unsettled stops", async () => {
   for (const terminal of [true, false]) {
     let stopping = false;
+
     const fake = fixture((call) => {
       if (call.path === "sandbox/send") return json({ error: { code: "forbidden" } }, 403);
       if (call.path === "sandbox/stop") {
@@ -538,6 +562,7 @@ test("unknown cleanup stops poll failed terminal states and bound unsettled stop
 
 test("exhausted unknown stops reserve cleanup for observation rather than redispatch", async () => {
   let stopping = false;
+
   const fake = fixture((call) => {
     if (call.path === "sandbox/stop") {
       stopping = true;
@@ -621,6 +646,7 @@ test("GitHub slice validates native receipts twice and cleans scratch before san
   for (const failReceipt of [false, true]) {
     let provider = "boat";
     let stopping = false;
+
     const fake = fixture((call) => {
       if (call.path === "sandbox/launch") {
         provider = String(call.body.provider);
@@ -694,6 +720,7 @@ test("GitHub failures retain numeric evidence, reject arbitrary receipts, and cl
   for (const scenario of ["send_rejected", "invalid_receipt", "exec_failed"] as const) {
     let provider = "boat";
     let stopping = false;
+
     const fake = fixture((call) => {
       if (call.path === "sandbox/launch") {
         provider = String(call.body.provider);
@@ -868,6 +895,7 @@ describe("preservation checks", () => {
           }));
         let launches = 0;
         let stopping = false;
+
         let sandboxId = "";
         const recoveryId = crypto.randomUUID();
         const otherId = crypto.randomUUID();
@@ -1259,7 +1287,7 @@ type LifecycleFault =
   | "lost_resume"
   | "stop_failed"
   | "lost_launch";
-function lifecycleFixture(fault: LifecycleFault = "none", onExec?: () => Response | undefined) {
+function lifecycleFixture(fault: LifecycleFault = "none", handler?: (call: Call) => Response | undefined) {
   let provider = "boat";
   let harness = "codex";
   let id = "";
@@ -1270,7 +1298,8 @@ function lifecycleFixture(fault: LifecycleFault = "none", onExec?: () => Respons
   let readiness = 0;
   let expiry = "";
   const fake = fixture((call) => {
-    if (call.path === "sandbox/exec" && onExec) return onExec();
+    const override = handler?.(call);
+    if (override) return override;
     if (call.path === "sandbox/launch") {
       launches++;
       provider = String(call.body.provider);
@@ -1516,6 +1545,106 @@ test("vault transport catches canary echoes in error envelopes, cleans metadata 
   });
 });
 
+test("GitHub refresh reuses the lifecycle worker, proves launch/access continuity and reports Modal's shipped refusal", async () => {
+  for (const provider of ["boat", "modal"]) {
+    for (const harness of ["claude", "codex"]) {
+      const fake = lifecycleFixture("none", (call) => {
+        if (call.path === "github/refresh")
+          return provider === "boat"
+            ? json({ id: call.body.id, status: "connected", login: "owner" })
+            : json({ error: { code: "unsupported" } }, 400);
+      });
+      expect(await fake.run([{ ...selected, provider, harness }], ["--github-refresh"])).toBe(true);
+      expect(fake.calls.filter((call) => call.path === "sandbox/launch")).toHaveLength(1);
+      expect(fake.calls.filter((call) => call.path === "sandbox/send")).toHaveLength(2);
+      expect(fake.calls.filter((call) => call.path === "github/refresh")).toHaveLength(provider === "boat" ? 2 : 1);
+      const reports = fake.receipts();
+      expect(reports).toContainEqual({ case: 0, step: "github_launch_access", pass: true });
+      expect(reports.findIndex((line) => line.step === "time_to_ready")).toBeLessThan(
+        reports.findIndex((line) => line.step === "github_launch_access"),
+      );
+      if (provider === "boat") {
+        for (const phase of ["first", "second"]) {
+          expect(reports).toContainEqual({ case: 0, step: `github_refresh_${phase}`, pass: true });
+          expect(reports).toContainEqual({ case: 0, step: `github_refresh_access_${phase}`, pass: true });
+        }
+      } else {
+        expect(reports).toContainEqual({ case: 0, step: "github_refresh_unsupported", pass: true });
+        expect(reports).toContainEqual({
+          case: 0,
+          step: "github_refresh_idempotency",
+          skip: true,
+          reason: "legacy_boat_only",
+        });
+      }
+      expect(JSON.stringify(reports)).not.toContain("owner");
+    }
+  }
+});
+
+test("GitHub refresh rejects false receipts, identity changes and broken access without replay or losing cleanup", async () => {
+  for (const fault of [
+    "wrong_id",
+    "wrong_status",
+    "changed_login",
+    "second_refusal",
+    "lost_second",
+    "launch_access",
+    "after_refresh_access",
+    "modal_admitted",
+    "modal_wrong_refusal",
+  ]) {
+    let refreshes = 0;
+    let accesses = 0;
+    const provider = fault.startsWith("modal") ? "modal" : "boat";
+    const fake = lifecycleFixture("none", (call) => {
+      if (call.path === "sandbox/exec" && String(call.body.command).includes("ls-remote")) {
+        accesses++;
+        if ((fault === "launch_access" && accesses === 1) || (fault === "after_refresh_access" && refreshes > 0))
+          return json({ exitCode: 1, timedOut: false });
+      }
+      if (call.path === "github/refresh") {
+        refreshes++;
+        if (fault === "lost_second" && refreshes === 2) throw new Error("secret ambiguous repair");
+        if ((fault === "second_refusal" && refreshes === 2) || fault === "modal_wrong_refusal")
+          return json({ error: { code: "forbidden" } }, 403);
+        return json({
+          id: fault === "wrong_id" ? "wrong" : call.body.id,
+          status: fault === "wrong_status" ? "disconnected" : "connected",
+          login: fault === "changed_login" && refreshes === 2 ? "other" : "owner",
+        });
+      }
+    });
+    expect(await fake.run([{ ...selected, provider }], ["--github-refresh"])).toBe(false);
+    expect(refreshes).toBeLessThanOrEqual(provider === "boat" ? 2 : 1);
+    expect(fake.calls.filter((call) => call.path === "sandbox/stop")).toHaveLength(1);
+    expect(fake.receipts().at(-1)).toMatchObject({
+      step: "lifecycle_cleanup_summary",
+      pass: true,
+      leftoverSandboxIds: [],
+    });
+    expect(JSON.stringify(fake.receipts())).not.toContain("secret");
+  }
+});
+
+test("GitHub refresh refuses modes that bypass its ordinary lifecycle worker before traffic", async () => {
+  for (const args of [
+    ["--github-refresh"],
+    ["--github-refresh", "--templates-skills"],
+    ["--github-refresh", "--lifecycle", "--orchestrator"],
+  ]) {
+    const fake = fixture();
+    const staging = "https://armada-mcp-staging.up.railway.app";
+    expect(
+      await postDeploySmoke({ ...env, ARMADA_URL: staging }, args, {
+        ...fake.io,
+        fetch: (url, init) => fake.io.fetch(url.replace(staging, env.ARMADA_URL), init),
+      }),
+    ).toBe(false);
+    expect(fake.calls).toHaveLength(0);
+  }
+});
+
 test("the advertised smoke workflow invocation admits ordinary staging checks without an orchestrator option", async () => {
   const workflow = Bun.YAML.parse(
     readFileSync(new URL("../.github/workflows/post-deploy-smoke.yml", import.meta.url), "utf8"),
@@ -1636,7 +1765,8 @@ test("golden runtime integrity probes are staging-only, fail closed, and retain 
 test("readiness timing excludes slow integrity probes and survives either probe failing", async () => {
   for (const failedExec of [0, 1, 2]) {
     let execs = 0;
-    const fake = lifecycleFixture("none", () => {
+    const fake = lifecycleFixture("none", (call) => {
+      if (call.path !== "sandbox/exec") return;
       execs++;
       fake.advance(30_000);
       if (execs === failedExec) return json({ exitCode: 1, timedOut: false });
@@ -1663,4 +1793,25 @@ test("readiness timing excludes slow integrity probes and survives either probe 
       });
     expect(fake.calls.some((call) => call.path === "sandbox/stop")).toBe(true);
   }
+});
+
+test("Modal smoke refuses a finished turn whose status never reports usage and still stops compute", async () => {
+  const fake = fixture((call) =>
+    call.path === "sandbox/status"
+      ? json({
+          status: "ready",
+          providerState: "active",
+          usage: { turns: [], tokenTotals: { inputTokens: null, outputTokens: null } },
+        })
+      : undefined,
+  );
+  expect(
+    await postDeploySmoke(
+      { ...env, ARMADA_SMOKE_CASES: JSON.stringify([{ ...selected, provider: "modal" }]) },
+      [],
+      fake.io,
+    ),
+  ).toBe(false);
+  expect(fake.receipts()).toContainEqual({ case: 0, step: "usage", pass: false, code: "poll_limit_exceeded" });
+  expect(fake.calls.some((call) => call.path === "sandbox/stop")).toBe(true);
 });

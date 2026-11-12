@@ -1,4 +1,4 @@
-import { type Provider, ProviderError, type Sql } from "@armada/core/server";
+import { HOST_CAPABILITIES, isSandboxProvider, type Provider, ProviderError, type Sql } from "@armada/core/server";
 
 import { INTERRUPTED_LAUNCH_REASON } from "./turns.ts";
 import { preserveBeforeStop, recordStopDispatch } from "./work-preservation.ts";
@@ -87,7 +87,11 @@ export function createSandboxLifecycle(sql: Sql, providerFor: (id: string) => Pr
         if (
           !physicalExit &&
           !["stopped", "deleted"].includes(info.state) &&
-          !(provider.id === "boat" && info.state === "stopping") &&
+          !(
+            isSandboxProvider(provider.id) &&
+            HOST_CAPABILITIES[provider.id].waitForPendingStop &&
+            info.state === "stopping"
+          ) &&
           (row.stop_requested_at !== null || row.status === "stopping" || row.status === "starting" || expired)
         ) {
           signal?.throwIfAborted();
