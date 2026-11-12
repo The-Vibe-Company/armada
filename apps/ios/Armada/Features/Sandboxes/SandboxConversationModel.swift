@@ -127,6 +127,10 @@ final class SandboxConversationModel {
         guard !isDeleted else { return }
         await feed.follow(fetch, onSignedOut: onSignedOut)
         guard !Task.isCancelled, case .stopped(let failure) = feed.connection else { return }
+        if case .noAccess = failure.category {
+            handleReadFailure(failure)
+            return
+        }
         // The history may be refused because the sandbox was deleted meanwhile: its state says so.
         guard await loadState(), !isDeleted else { return }
         handleReadFailure(failure)
