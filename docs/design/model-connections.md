@@ -5,7 +5,6 @@ Binding owner decisions in #1162 govern this design. Start Azure AI Foundry
 for Codex on Modal now, in parallel with #1161; do not wait for Boat parity.
 
 ## Current state
-
 - `packages/core/src/credentials.ts`: named, versioned model accounts; personal
   scope precedes org scope, explicit selection fails closed, multiple accounts
   require a default or selection. Kinds: `claude_oauth`, `anthropic`, `openai`,
@@ -86,9 +85,9 @@ Sources: [Codex advanced configuration](https://developers.openai.com/codex/conf
 [Vertex](https://code.claude.com/docs/en/google-vertex-ai),
 [Foundry](https://code.claude.com/docs/en/microsoft-foundry).
 Recheck these against the pinned harness versions during each implementation.
-For the owner's verified Azure v1 endpoint, accept a pasted base URL with or
-without trailing `/responses`; normalize to `/openai/v1`, preserving the project
-path. No `api-version` is needed there; bearer API-key auth was verified by the
+Accept `https://<resource>.services.ai.azure.com/api/projects/<project>/openai/v1`
+and the same URL ending in `/responses`; remove only that optional suffix,
+preserving the project path. No `api-version` is needed; bearer auth was verified by the
 coordinator. Never receive the owner's real key in a worker. Legacy Azure paths
 may need explicit `apiVersion`; do not impose it on v1. This slice supports Responses only:
 a chat-completions-only endpoint (e.g. DeepSeek) is not a Codex connection.
@@ -126,7 +125,9 @@ Only the coordinator uses staging credentials/deploys; workers never do.
    expose the redacted real error. Repeat existing Claude subscription/API key.
 4. **CLI + dashboard Models:** coordinator creates/tests both connections in
    Models and CLI (secret from stdin/file), picks each in a launch and template,
-   publishes and launches the template; expect MODEL_OK. Test sends one tiny
+   publishes and launches the template; expect MODEL_OK. For Azure, repeat in
+   CLI and dashboard with both pasted URL forms above: expect successful initial
+   and subsequent turns, with no duplicated `/responses`. Test sends one tiny
    harness request, warns of possible billing, and displays success or redacted
    error. Inspect list/get/events/logs: no secrets. PR supplies final commands
    and click steps, including unknown-price and incompatible-harness states.
