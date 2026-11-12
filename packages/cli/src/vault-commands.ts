@@ -4,6 +4,7 @@ import {
   type MemberInfo,
   type OrgCredentials,
   type OrgSummary,
+  parseCodexEndpoint,
   parseCredentialKind,
   parseCredentialValue,
   parseRole,
@@ -158,9 +159,11 @@ async function members(argv: readonly string[], io: VaultIo): Promise<number> {
 
 export async function credsCommand(argv: readonly string[], io: VaultIo): Promise<number> {
   const [sub, ...rest] = argv;
-  const args = parseArgs(rest, ["--id", "--expected-version"]);
+  const args = parseArgs(rest, ["--id", "--expected-version", "--base-url", "--api-version"]);
   const org = single(args, "--org");
   const scope = org === undefined ? "user" : "org";
+  if (sub !== "set" && (args.options.has("--base-url") || args.options.has("--api-version")))
+    throw usage("Endpoint options are only supported by creds set openai.");
   switch (sub) {
     case "login":
     case "import": {
@@ -228,7 +231,26 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
     case "set": {
       const [name] = expect(args.positionals, 1, "armada creds set <kind> [--org <name>] [--file <path>]");
       const kind = parseCredentialKind(name ?? "");
-      const value = parseCredentialValue(kind, await readValue(args, io));
+      const baseUrl = single(args, "--base-url");
+      const apiVersion = single(args, "--api-version");
+      if (apiVersion !== undefined && baseUrl === undefined) throw usage("--api-version requires --base-url.");
+      if (baseUrl !== undefined && kind !== "openai") throw usage("--base-url currently supports openai (Codex) only.");
+      if (baseUrl !== undefined && !single(args, "--name") && !single(args, "--id"))
+        throw usage("A custom endpoint requires --name to create an account or --id to replace one.");
+      let endpoint: ReturnType<typeof parseCodexEndpoint> | undefined;
+      if (baseUrl !== undefined) {
+        try {
+          endpoint = parseCodexEndpoint({ version: 1, baseUrl, ...(apiVersion !== undefined ? { apiVersion } : {}) });
+        } catch {
+          throw usage(
+            "Invalid Codex endpoint. Use an HTTPS Responses base URL without URL credentials, query or fragment.",
+          );
+        }
+      }
+      const raw = await readValue(args, io);
+      if (endpoint && raw.trim().startsWith("{"))
+        throw usage("With --base-url, supply only the API key through stdin or --file, not connection JSON.");
+      const value = parseCredentialValue(kind, endpoint ? JSON.stringify({ endpoint, apiKey: raw.trim() }) : raw);
       await control(
         io.auth,
         single(args, "--id") !== undefined || single(args, "--name") !== undefined ? "creds/accounts/set" : "creds/set",
@@ -247,6 +269,8 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
         io.auth.out(`${JSON.stringify({ ok: true })}\n`);
         return 0;
       }
+      if (endpoint)
+        io.auth.out("Custom Codex endpoint: Modal only; requires the Responses API (not chat completions).\n");
       io.auth.out(
         `Stored ${credentialName(kind)} for ${scope === "org" ? `org ${org}` : "you"}, encrypted. It is never shown again.\n`,
       );

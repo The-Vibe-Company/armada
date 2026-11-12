@@ -36,6 +36,8 @@ export const PROVIDER_LIMITS: Readonly<Record<SandboxProviderId, ProviderLimits>
  */
 export interface HostCapabilities {
   readonly goldenRestore: "fresh-fork" | "shared-source";
+  /** Dispose a completed disposable builder without creating an unwanted stop checkpoint. */
+  readonly goldenBuilderCleanup: "stop" | "delete";
   /**
    * Stable replacement updates a named snapshot in place. Immutable publication
    * verifies a fresh source-bound reference, stops the master and publishes by CAS.
@@ -55,12 +57,14 @@ export const HOST_CAPABILITIES: Readonly<Record<SandboxProviderId, HostCapabilit
   boat: {
     goldenRestore: "fresh-fork",
     goldenSnapshotPublication: "replace-stable",
+    goldenBuilderCleanup: "stop",
     goldenBuilderRecovery: "stop-recorded",
     snapshotManagementAuthority: false,
   },
   modal: {
     goldenRestore: "shared-source",
     goldenSnapshotPublication: "publish-immutable",
+    goldenBuilderCleanup: "delete",
     goldenBuilderRecovery: "dispose-reservation",
     snapshotManagementAuthority: true,
   },
