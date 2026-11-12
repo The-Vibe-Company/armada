@@ -128,16 +128,9 @@ function storedInputs(value: unknown): PricingInputs | null {
 const equal = (a: PricingInputs, b: PricingInputs) =>
   fields.every((k) => a[k] === b[k]) && a.cacheWriteTtl === b.cacheWriteTtl;
 function complete(input: PricingInputs, price: PriceSnapshot, harness: Harness): boolean {
-  const { inputTokens: i, outputTokens: o, cachedTokens: c, cacheWriteTokens: w, reasoningTokens: r } = input;
+  // One eligibility policy for publication and projection; do not maintain stricter shadow TTL/rate guards.
   return (
-    count(i) &&
-    count(o) &&
-    count(c) &&
-    count(w) &&
-    (harness !== "codex" || c + w <= i) &&
-    (r === null || r <= o) &&
-    (price.rates.reasoning === null || count(r)) &&
-    (price.source !== "models.dev" || w === 0 || input.cacheWriteTtl === (harness === "claude" ? "5m" : "30m"))
+    priceTurn({ ...input, promptId: "stored", model: price.model }, harness, price, input.cacheWriteTtl).usd !== null
   );
 }
 
@@ -182,7 +175,6 @@ export function stampTurnPricing(
       witness &&
       equal(witness, current) &&
       frozen.snapshot &&
-      !frozen.snapshot.unsupported &&
       complete(witness, frozen.snapshot, harness) &&
       typeof oldUsd === "string" &&
       /^(0|[1-9]\d{0,31})(\.\d{1,18})?$/.test(oldUsd) &&
@@ -190,12 +182,7 @@ export function stampTurnPricing(
     )
       return { ...row, pricing: { ...frozen, usd: oldUsd, unknown: null, inputs: witness } };
     const priced = observed
-      ? priceTurn(
-          row,
-          harness,
-          frozen.snapshot,
-          current.cacheWriteTtl === "5m" || current.cacheWriteTtl === "30m" ? current.cacheWriteTtl : null,
-        )
+      ? priceTurn(row, harness, frozen.snapshot, current.cacheWriteTtl)
       : { usd: null, unknown: "tokens" as const, snapshot: frozen.snapshot };
     const pricing: StoredTurnPricing = { ...frozen, ...priced, inputs: observed ? current : null };
     return { ...row, pricing };
@@ -270,7 +257,6 @@ export function withServerCost(usage: SandboxUsage | null, harness: Harness): Sa
       !witness ||
       !equal(witness, inputs(row, harness)) ||
       !valid.snapshot ||
-      valid.snapshot.unsupported ||
       !complete(witness, valid.snapshot, harness) ||
       saved?.unknown !== null ||
       typeof usd !== "string" ||

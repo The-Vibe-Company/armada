@@ -35,8 +35,9 @@ there is no distinct reasoning charge: output already includes those tokens. A
 configured distinct reasoning rate requires a measured reasoning count; consumers
 must split it from output rather than charge both rates for the same tokens.
 A configured flat `cacheWrite` rate applies across lifetimes, so the calculator
-does not require TTL for that connection rate. Public vendor rates still require
-verified TTL; native cache-write **counts** must always be known (never invented).
+does not require TTL for that connection rate. Public vendor rates use the provider default when TTL is absent; an explicit
+unsupported lifetime remains unknown. Native cache-write **counts** must always
+be known (never invented). See [default token rates](default-token-rates.md).
 
 Up to 64 exact model IDs, no whitespace/control characters, no aliases or suffix
 stripping. Unknown fields/tier schedules/currencies, numeric/exponential rates,

@@ -11,11 +11,29 @@ import { call, ENCRYPTION_KEY, fakeBoat, harness, PUBLIC_URL } from "./support.t
 // Primary owner boundary: real credential admission -> native collector -> SQL -> HTTP/MCP/CLI JSON.
 // The only fake is the native provider; no supplied quotes or test-only pricing contexts.
 test.each([
-  { agent: "claude" as const, model: "claude-sonnet-5-5", basis: "api_equivalent", usd: "0.00022", sum: "0.00068" },
-  { agent: "codex" as const, model: "gpt-3.5-turbo", basis: "estimated", usd: "0.000035", sum: "0.00011" },
+  {
+    agent: "claude" as const,
+    model: "claude-sonnet-5-5",
+    basis: "api_equivalent",
+    usd: "0.00022",
+    sum: "0.00068",
+    input: 10,
+    output: 20,
+    write: 0,
+  },
+  {
+    agent: "codex" as const,
+    model: "gpt-6.1-sol",
+    basis: "estimated",
+    usd: "0.032901",
+    sum: "0.033361",
+    input: 13137,
+    output: 6,
+    write: 13134,
+  },
 ])(
   "$agent admission actually produces persisted amounts returned identically by status and CLI",
-  async ({ agent, model, basis, usd, sum }) => {
+  async ({ agent, model, basis, usd, sum, input: nativeInput, output: nativeOutput, write: nativeWrite }) => {
     let control: ControlOptions | undefined;
     const server = await harness({
       routes: [async (request) => (control ? await handleControlRequest(request, control) : null)],
@@ -77,14 +95,21 @@ test.each([
             ? {
                 modelUsage: {
                   [model]: {
-                    inputTokens: 10,
-                    outputTokens: 20,
+                    inputTokens: nativeInput,
+                    outputTokens: nativeOutput,
                     cacheReadInputTokens: 0,
                     cacheCreationInputTokens: 0,
                   },
                 },
               }
-            : { model, inputTokens: 10, outputTokens: 20, cachedTokens: 0, cacheWriteTokens: 0, reasoningTokens: 4 },
+            : {
+                model,
+                inputTokens: nativeInput,
+                outputTokens: nativeOutput,
+                cachedTokens: 0,
+                cacheWriteTokens: nativeWrite,
+                reasoningTokens: 0,
+              },
       });
       await collectSandboxUsage(provider, store, (await store.get(launched.sandbox.id))!, promptId);
       const persisted = (
@@ -94,6 +119,24 @@ test.each([
         )
       ).rows[0]!.usage_turns;
       expect(persisted.turns[0]?.pricing).toMatchObject({ usd, basis, snapshot: { model } });
+      if (agent === "codex") {
+        expect(persisted.turns[0]?.pricing).toMatchObject({
+          snapshot: { unsupported: true },
+          inputs: { inputTokens: 13137, outputTokens: 6, cacheWriteTokens: 13134, cacheWriteTtl: null },
+        });
+        // Legacy publication blocked exactly this witnessed tuple. Retry uses the same frozen source,
+        // even without fresh native history; known amounts are not repriced.
+        await db.query(
+          `update sandboxes set usage_turns=jsonb_set(jsonb_set(usage_turns,
+          '{turns,0,pricing,usd}','null'::jsonb),'{turns,0,pricing,unknown}','"pricing_dimensions"'::jsonb) where id=$1`,
+          [launched.sandbox.id],
+        );
+        await store.recordUsage!(launched.sandbox.id, { turnCount: 1, turns: [] }, { observations: [] });
+        expect((await store.get(launched.sandbox.id))?.usage?.turns[0]?.pricing).toMatchObject({
+          usd,
+          snapshot: { revision: (persisted.turns[0]?.pricing as { snapshot: { revision: string } }).snapshot.revision },
+        });
+      }
       const cost = { currency: "USD", usd, basis, unknown: null, unpricedTurns: 0 } as const;
       expect((await store.get(launched.sandbox.id))?.usage?.cost).toEqual(cost);
       expect((await store.list({ limit: 10 })).rows[0]?.usage?.cost).toEqual(cost);
@@ -118,8 +161,8 @@ test.each([
       await client.listTools();
       expect((await call(client, "status", { id: launched.sandbox.id })).data.usage).toMatchObject({
         cost,
-        tokenTotals: { inputTokens: 10, outputTokens: 20 },
-        turns: [{ inputTokens: 10, outputTokens: 20, pricing: { usd, basis, snapshot: { model } } }],
+        tokenTotals: { inputTokens: nativeInput, outputTokens: nativeOutput },
+        turns: [{ inputTokens: nativeInput, outputTokens: nativeOutput, pricing: { usd, basis, snapshot: { model } } }],
       });
       let output = "",
         errors = "";

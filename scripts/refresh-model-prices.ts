@@ -25,7 +25,6 @@ for (const provider of ["anthropic", "openai"]) {
     const cost = model.cost;
     const input = rate(cost.input),
       output = rate(cost.output);
-    if (input === null || output === null) throw new Error("Missing base rates");
     models[`${provider}/${id}`] = {
       rates: {
         input,
@@ -34,8 +33,8 @@ for (const provider of ["anthropic", "openai"]) {
         cacheWrite: rate(cost.cache_write),
         reasoning: rate(cost.reasoning),
       },
-      // Aggregate turns cannot select context/service tiers or account for audio/tool charges.
-      // Modes can override prices or provider routing outside model.cost; never assume standard service.
+      // Retain catalogue complexity as provenance. Server token estimates use admitted/default rates,
+      // not a guessed tier invoice; this marker does not veto zero or otherwise rate-backed classes.
       unsupported:
         Object.keys(model.experimental?.modes ?? {}).length > 0 ||
         (model.type !== undefined && model.type !== "text") ||
