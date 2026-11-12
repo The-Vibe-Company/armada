@@ -12,7 +12,7 @@ nativeTest("Codex waits for interrupt terminal then sends steer once on the same
   const driver = new CodexDriver({
     executable: `${import.meta.dir}/fixtures/app-server.ts`,
     cwd: import.meta.dir,
-    env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+    env: { PATH: process.env.PATH ?? "/usr/bin:/bin", ARMADA_RESUME_USAGE_BASELINE: "before" },
   });
   let turn: Turn | undefined;
   let steering: Promise<void> | undefined;
@@ -54,11 +54,11 @@ nativeTest("Codex waits for interrupt terminal then sends steer once on the same
         type: "armada/turnUsage",
         data: {
           model: "gpt-6.1-sol",
-          inputTokens: null,
-          outputTokens: null,
-          cachedTokens: null,
-          cacheWriteTokens: null,
-          reasoningTokens: null,
+          inputTokens: 200,
+          outputTokens: 40,
+          cachedTokens: 60,
+          cacheWriteTokens: 20,
+          reasoningTokens: 8,
         },
       },
     ]);
@@ -383,5 +383,105 @@ nativeTest.each([
   } finally {
     await driver.close();
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+// Native baseline timing is independent of current-turn totals and `last` request counters.
+nativeTest.each(["before", "after", "partial", "foreign", "invalid", "regressed", "lost-optional", "late"])(
+  "Codex resumed baseline %s is adopted only before dispatch on the verified thread",
+  async (mode) => {
+    const driver = new CodexDriver({
+      executable: `${import.meta.dir}/fixtures/app-server.ts`,
+      cwd: import.meta.dir,
+      env: {
+        PATH: process.env.PATH ?? "/usr/bin:/bin",
+        ARMADA_RESUME_USAGE_BASELINE: mode,
+        ...(mode === "after" ? { CODEX_HOME: import.meta.dir } : {}),
+      },
+    });
+    const events: DriverEvent[] = [];
+    try {
+      if (mode === "invalid") {
+        const seed = driver.start({
+          request: { sandboxId: "s", harness: "codex", text: "redirect" },
+          signal: AbortSignal.timeout(3000),
+          session() {},
+          emit() {},
+        });
+        expect(await seed.done).toBe("finished");
+      }
+      const turn = driver.start({
+        request: { sandboxId: "s", harness: "codex", text: "redirect" },
+        sessionId: mode === "invalid" ? "fixture-thread" : "persisted-thread",
+        signal: AbortSignal.timeout(3000),
+        session() {},
+        emit(event) {
+          events.push(event);
+        },
+      });
+      expect(await turn.done).toBe("finished");
+      const measured = mode === "before" || mode === "after" || mode === "partial";
+      expect(events.filter((event) => event.kind === "other" && event.type === "armada/turnUsage")).toEqual([
+        {
+          kind: "other",
+          type: "armada/turnUsage",
+          data: {
+            model: "gpt-6.1-sol",
+            inputTokens: measured ? 100 : null,
+            outputTokens: measured ? 20 : null,
+            cachedTokens: measured ? 30 : null,
+            cacheWriteTokens: measured && mode !== "partial" ? 10 : null,
+            reasoningTokens: measured && mode !== "partial" ? 4 : null,
+          },
+        },
+      ]);
+    } finally {
+      await driver.close();
+    }
+  },
+);
+
+nativeTest("Codex process loss cannot publish partial resumed totals or seed the next prompt baseline", async () => {
+  const driver = new CodexDriver({
+    executable: `${import.meta.dir}/fixtures/app-server.ts`,
+    cwd: import.meta.dir,
+    env: { PATH: process.env.PATH ?? "/usr/bin:/bin", ARMADA_RESUME_USAGE_BASELINE: "before" },
+  });
+  const events: DriverEvent[] = [];
+  const start = (text: string) =>
+    driver.start({
+      request: { sandboxId: "s", harness: "codex", text },
+      sessionId: "persisted-thread",
+      signal: AbortSignal.timeout(3000),
+      session() {},
+      emit(event) {
+        events.push(event);
+      },
+    });
+  try {
+    await expect(start("usage-process-lost").done).rejects.toMatchObject({ code: "harness_process_lost" });
+    expect(events.filter((e) => e.kind === "other" && e.type === "armada/turnUsage")).toEqual([
+      {
+        kind: "other",
+        type: "armada/turnUsage",
+        data: {
+          model: "gpt-6.1-sol",
+          inputTokens: null,
+          outputTokens: null,
+          cachedTokens: null,
+          cacheWriteTokens: null,
+          reasoningTokens: null,
+        },
+      },
+    ]);
+    events.length = 0;
+    // The synthetic next peer supplies only a post-dispatch total; no new pre-turn baseline.
+    driver.configureReadableVariables({ ARMADA_RESUME_USAGE_BASELINE: "late" });
+    expect(await start("redirect").done).toBe("finished");
+    expect(events.find((e) => e.kind === "other" && e.type === "armada/turnUsage")).toMatchObject({
+      data: { inputTokens: null, outputTokens: null, cachedTokens: null },
+    });
+  } finally {
+    await driver.close();
   }
 });
