@@ -507,7 +507,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
         )
       ).rows[0];
     });
-    if (existing) return replay(existing, bodyDigest, actor, org);
+    if (existing) return replay(existing, bodyDigest);
     const selection = await transaction(async (tx) => {
       const a = await member(tx, actor, org);
       const h = await header(tx, a, id(input.id));
@@ -618,7 +618,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       claimed = true;
       return result;
     });
-    if (!claimed) return replay(request, bodyDigest, actor, org);
+    if (!claimed) return replay(request, bodyDigest);
     const m = request.manifest;
     let allocating = false;
     let fenceConsumed = false;
@@ -781,44 +781,10 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
           state === "failed" || safeReason.startsWith("skillpack_") ? JSON.stringify(output) : null,
         ],
       );
-      return withBusyDetails(output, actor, org, m.account.id);
+      return output;
     }
   }
-  async function withBusyDetails(
-    output: Record<string, unknown>,
-    actor: ApplicationVaultActor,
-    org: string,
-    accountId: string,
-  ): Promise<Record<string, unknown>> {
-    if (output.reason !== "credential_busy") return output;
-    // Refusal hints are live, authorized reads, never durable disclosure receipts:
-    // a replay must not expose a holder after its visibility or membership changes.
-    return transaction(async (tx) => {
-      const a = await member(tx, actor, org);
-      const row = (
-        await tx.query<{ id: string; name: string; sandbox_id: string | null }>(
-          `select c.id,c.name,s.id as sandbox_id from public.credentials c
-         left join public.model_auth_ownership o on o.account_id=c.id
-         left join public.sandboxes s on s.id=o.sandbox_id and s.org_id=$2
-           and s.deleted_at is null and (s.visibility='org' or s.owner_id=$3)
-         where c.id=$1 and ((c.scope='user' and c.owner_id=$3) or (c.scope='org' and c.owner_id=$2))`,
-          [accountId, org, a.userId],
-        )
-      ).rows[0];
-      return row
-        ? {
-            ...output,
-            busyAccount: { id: row.id, name: row.name, ...(row.sandbox_id ? { sandboxId: row.sandbox_id } : {}) },
-          }
-        : output;
-    });
-  }
-  async function replay(
-    row: RequestRow,
-    bodyDigest: string,
-    actor: ApplicationVaultActor,
-    org: string,
-  ): Promise<Record<string, unknown>> {
+  async function replay(row: RequestRow, bodyDigest: string): Promise<Record<string, unknown>> {
     if (row.digest !== bodyDigest)
       throw new VaultError("conflict", "Request key already used with a different request.");
     const output = row.result ?? {
@@ -833,7 +799,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
         : {}),
       manifest: row.manifest,
     };
-    return withBusyDetails(output, actor, org, row.manifest.account.id);
+    return output;
   }
   async function revalidate(actor: ApplicationVaultActor, org: string, m: Manifest) {
     await transaction(async (tx) => {

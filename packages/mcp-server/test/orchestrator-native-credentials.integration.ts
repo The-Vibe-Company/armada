@@ -5,7 +5,7 @@ import { launchOrchestratorParent } from "../src/orchestrator-launch.ts";
 import { OrchestratorRuntimeStore } from "../src/orchestrator-runtime-store.ts";
 import { database } from "./support.ts";
 
-test("parent launch preserves native credential admission before allocation and releases unallocated ownership", async () => {
+test("parent launch preserves credential admission before allocation", async () => {
   const { db, people: p } = await database();
   const sql: core.Sql = {
     query: (q, v) => db.query(q, v),
@@ -34,17 +34,13 @@ test("parent launch preserves native credential admission before allocation and 
       key: "native-admission",
       skillRevision: "a".repeat(40),
     });
-    let forks = 0,
-      released = 0;
+    let forks = 0;
     const credentials = { env: {}, secrets: [], codexAuthJson: false, binding: { credentialId, credentialVersion: 1 } };
     // Prototype hooks ensure no spread/copy of a partial resolver can silently drop ownership.
     const lifecycle = Object.assign(
       Object.create({
         async admit() {
           throw Error("native admission denied");
-        },
-        async releaseUnallocated() {
-          released++;
         },
       }),
       { resolve: async () => credentials },
@@ -80,7 +76,6 @@ test("parent launch preserves native credential admission before allocation and 
       }),
     ).rejects.toThrow("native admission denied");
     expect(forks).toBe(0);
-    expect(released).toBe(1);
   } finally {
     await db.close();
   }

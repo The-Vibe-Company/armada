@@ -229,7 +229,7 @@ test("Modal bootstrap and restore use the explicit pinned account rather than cu
   }
 });
 
-test("Modal native Codex bootstrap still requires actual rotating-account ownership", async () => {
+test("legacy Modal native bootstrap refuses an unregistered sandbox pin", async () => {
   const { db, people } = await database();
   try {
     const scope: Scope = {
@@ -280,10 +280,10 @@ test("Modal native Codex bootstrap still requires actual rotating-account owners
       modelAuth: createModelAuthOwnership(db, ENCRYPTION_KEY),
     });
     await expect(resolve(machine, { ARMADA_CODEX_AUTH_JSON: "initial-native-selection" })).rejects.toMatchObject({
-      code: "credential_binding_required",
+      code: "not_found",
     });
     await expect(resolve({ ...machine, generation: 2 }, {})).rejects.toMatchObject({
-      code: "credential_binding_required",
+      code: "not_found",
     });
   } finally {
     await db.close();
@@ -319,7 +319,7 @@ test("shared Codex Modal bootstrap contains only the private access grant, never
         [people.owner, await encryptSecret(raw, ENCRYPTION_KEY)],
       )
     ).rows[0]!;
-    const auth = createModelAuthOwnership(db, ENCRYPTION_KEY, undefined, undefined, undefined, {
+    const auth = createModelAuthOwnership(db, ENCRYPTION_KEY, undefined, undefined, {
       origin: "https://armada.example",
     });
     await auth.broker!.enroll({ userId: people.owner, orgId: people.org, role: "member" }, account.id, 1);

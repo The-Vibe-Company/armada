@@ -1,12 +1,6 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { createSqlAuthStore } from "@armada/auth";
-import {
-  CREDENTIAL_BUSY_MESSAGE,
-  createSqlVaultStore,
-  mutateCredentialAccount,
-  ProviderError,
-  VaultError,
-} from "@armada/core/server";
+import { createSqlVaultStore, mutateCredentialAccount, ProviderError, VaultError } from "@armada/core/server";
 import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
 import helperManifest from "../../core/helper/manifest.json";
 import { createSqlData } from "../src/data.ts";
@@ -1693,13 +1687,13 @@ captureGitHubAuditLogs();
 test("MCP launch preserves the closed busy account code and safe action", async () => {
   const { token, client, people, boat } = await start({
     providerFor: () => {
-      throw new VaultError("credential_busy", CREDENTIAL_BUSY_MESSAGE);
+      throw new VaultError("credential_busy", "The model account is unavailable. Check its current credentials.");
     },
   });
   const mcp = await client(await token(people.owner));
   const result = await call(mcp, "launch", { golden: "shared", harness: "claude" });
   expect(result.isError).toBe(true);
   expect(result.text).toContain("error code: credential_busy");
-  expect(result.text).toContain(CREDENTIAL_BUSY_MESSAGE);
+  expect(result.text).toContain("The model account is unavailable. Check its current credentials.");
   expect(boat.forks).toHaveLength(0);
 });

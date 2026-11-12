@@ -77,35 +77,9 @@ export function launchCredentials(
       if (!repaired) throw new VaultError("unavailable", "GitHub is not connected for the sandbox owner.");
       return repaired;
     },
-    async admit(actor, credentials, sandboxId) {
-      if (!credentials.codexAuthJson) return;
-      if (!ownership) return; // Embedders without managed auth retain their legacy native path.
-      if (ownership.broker && credentials.binding) {
-        await ownership.claim(
-          actor,
-          credentials.binding.credentialId,
-          credentials.binding.credentialVersion,
-          sandboxId,
-        );
-        return;
-      }
-      try {
-        const source = JSON.parse(credentials.env.ARMADA_CODEX_AUTH_JSON ?? "{}");
-        if (typeof source.tokens?.refresh_token !== "string") return;
-      } catch {
-        return;
-      }
-      const binding = "binding" in credentials ? credentials.binding : undefined;
-      if (
-        !binding ||
-        typeof binding !== "object" ||
-        !("credentialId" in binding) ||
-        !("credentialVersion" in binding) ||
-        typeof binding.credentialId !== "string" ||
-        typeof binding.credentialVersion !== "number"
-      )
-        return; // Unknown legacy bindings are not silently claimed or rehydrated.
-      await ownership.claim(actor, binding.credentialId, binding.credentialVersion, sandboxId);
+    async admit(actor, credentials) {
+      if (credentials.codexAuthJson && ownership?.broker && credentials.binding)
+        await ownership.broker.enroll(actor, credentials.binding.credentialId, credentials.binding.credentialVersion);
     },
     async hydrateNative(actor, credentials, sandboxId, provider, providerSandboxId) {
       const binding =
@@ -131,31 +105,6 @@ export function launchCredentials(
       if (provider.id === "boat") await sshHydrateAuthState(provider, providerSandboxId, saved.authJson);
       // Modal already hydrates this exact sealed state in its private stdin bootstrap.
       return true;
-    },
-    async markNeverStarted(actor, credentials, sandboxId) {
-      const binding = credentials.binding;
-      if (ownership && binding)
-        return ownership.markNeverStarted(actor, binding.credentialId, binding.credentialVersion, sandboxId);
-      return false;
-    },
-    async releaseNeverStarted(actor, credentials, sandboxId, deletePhysical) {
-      const binding = credentials.binding;
-      if (ownership && binding)
-        await ownership.releaseNeverStarted(
-          actor,
-          binding.credentialId,
-          binding.credentialVersion,
-          sandboxId,
-          deletePhysical,
-        );
-    },
-    async releaseUnallocated(_actor, credentials, sandboxId) {
-      const binding =
-        "binding" in credentials
-          ? (credentials.binding as { credentialId: string; credentialVersion: number } | undefined)
-          : undefined;
-      if (ownership && binding)
-        await ownership.releaseUnallocated(binding.credentialId, binding.credentialVersion, sandboxId);
     },
     async nativeSecrets(actor, sandboxId, provider, providerSandboxId, phase = "after") {
       if (!ownership) return [];

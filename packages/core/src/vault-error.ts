@@ -28,7 +28,3 @@ export const APPLICATION_VAULT_CONFLICT_MESSAGES = {
   nameInUse:
     "An application vault name is already in use. Update or delete the existing entry; delete revoked secrets before reusing their names.",
 } as const;
-
-/** Closed, non-secret admission failure shared by launch and orchestrator clients. */
-export const CREDENTIAL_BUSY_MESSAGE =
-  "This subscription account is already in use or has unreconciled sandbox history. Stop its sandbox and reconcile the account, or choose another account such as the organization API key.";

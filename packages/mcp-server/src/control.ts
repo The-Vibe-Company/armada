@@ -44,7 +44,6 @@ import {
   createSqlMcpRegistry,
   createSqlVaultStore,
   createTemplateService,
-  deleteNeverStartedSandbox,
   ENCRYPTION_KEY_ENV,
   EncryptionKeyError,
   type GitHubApp,
@@ -112,7 +111,6 @@ import { exposedSecrets, launchCredentials } from "./launch-credentials.ts";
 import { launchOptions } from "./launch-options.ts";
 import { catalogAuthenticationFromEnv } from "./mcp-catalog-client.ts";
 import { createMcpLifecycle } from "./mcp-lifecycle.ts";
-import { createHistoricalSandboxProviderResolver } from "./mcp-sandbox-provider.ts";
 import { createModalIntegration } from "./modal-integration.ts";
 import { createModelAuthOwnership, type ModelAuthOwnership, modelAuthCapabilities } from "./model-auth.ts";
 import { createModelUsageApi, isPrivateModelEvent, type ModelUsageApi } from "./model-usage.ts";
@@ -756,39 +754,6 @@ async function dispatch(
       operation as Parameters<ApplicationVault["command"]>[2],
       body,
     );
-  }
-  if (route === "creds/accounts/holder" || route === "creds/accounts/release") {
-    if (!options.modelAuth) throw new VaultError("unavailable", "Subscription ownership is not configured.");
-    const id = required(body, "id");
-    const version = requiredNumber(body, "version");
-    if (!UUID.test(id) || !Number.isInteger(version) || version < 0)
-      throw new VaultError("invalid", "Account ID and revision are required.");
-    const requested = optional(body, "org");
-    const member = caller.orgs.find((m) => !requested || m.orgId === requested);
-    if (!member) throw new VaultError("forbidden", "Organization membership is required.");
-    if (body.scope === "org" && member.role !== "admin")
-      throw new VaultError("forbidden", "Only an organization admin can release its subscription account.");
-    const actor = { userId: caller.userId, orgId: member.orgId, role: member.role };
-    const holder = await options.modelAuth.holder(actor, id, version);
-    if (route.endsWith("holder")) return holder ?? { sandboxId: null };
-    const sandboxId = required(body, "sandboxId");
-    if (!UUID.test(sandboxId) || !holder || holder.sandboxId !== sandboxId)
-      throw new VaultError("conflict", "The subscription holder changed. Reload and try again.");
-    if (
-      holder.orphan ||
-      holder.unknownVersion ||
-      (holder.storedVersion !== null && holder.currentVersion > holder.storedVersion)
-    ) {
-      await options.modelAuth.releaseFailed(actor, id, version, sandboxId, undefined, optional(body, "value"));
-      return { ok: true };
-    }
-    if (!options.logs) throw new VaultError("unavailable", "Sandbox control unavailable.");
-    const target = await options.logs(caller, sandboxId);
-    await options.modelAuth.releaseFailed(actor, id, version, sandboxId, async () => {
-      if (!(await deleteNeverStartedSandbox(target.provider, target.providerSandboxId)))
-        throw new VaultError("conflict", "Physical deletion is not confirmed; ownership retained.");
-    });
-    return { ok: true };
   }
   if (route === "creds/accounts/auth-capabilities")
     return { ...modelAuthCapabilities, nativeSubscriptionParallelSandboxes: Boolean(options.modelAuth?.broker) };
@@ -1776,16 +1741,10 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
     modalProviderFor: async (tokens, binding, context) =>
       (await modalIntegration()).modalProviderFor(tokens, binding, context),
   });
-  const modelAuth = createModelAuthOwnership(
-    sql,
-    encryptionKey,
-    undefined,
-    undefined,
-    createHistoricalSandboxProviderResolver(providers),
-  );
+  const modelAuth = createModelAuthOwnership(sql, encryptionKey, undefined, undefined);
   return {
     ...(env.ARMADA_PUBLIC_URL ? { publicUrl: env.ARMADA_PUBLIC_URL } : {}),
-    credentialBindingRecovery: createCredentialBindingRecovery(sql, encryptionKey, modelAuth),
+    credentialBindingRecovery: createCredentialBindingRecovery(sql, encryptionKey),
     invitations: invitationsFromEnv(sql, env),
     templates,
     skillDefaults: createSkillDefaultsService(sql),

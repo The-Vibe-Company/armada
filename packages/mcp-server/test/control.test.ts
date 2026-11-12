@@ -2,7 +2,6 @@ import { describe, expect, spyOn, test } from "bun:test";
 import { createMemoryAuthStore, generateToken, memorySessionStore, sha256Hex } from "@armada/auth";
 import {
   API_FAILURE_HELP,
-  CREDENTIAL_BUSY_MESSAGE,
   DEFAULT_LAUNCH_TTL_SECONDS,
   encryptSecret,
   GitHubHydrationError,
@@ -1797,9 +1796,6 @@ test.each(["claude", "codex"] as const)(
       else {
         expect(restored.codexAuthJson).toBe(nativeToken(token));
         expect(restored.nativeAuthRevision).toBe(0);
-        await expect(
-          modelAuth.claim({ userId: ADA, orgId: org.id, role: "member" }, winner.credentialId, 1, crypto.randomUUID()),
-        ).rejects.toMatchObject({ code: "credential_busy" });
       }
       const refusedBinding = await post(ADA, winner.credentialId === chosen ? alternate : chosen);
       expect(refusedBinding.status).toBe(409);
@@ -1823,7 +1819,7 @@ test("HTTP launch keeps build-5 refusal code and adds the busy account reason", 
     options.providerFor = () => fakeBoat().provider;
     options.providers = {
       resolve: async () => {
-        throw new VaultError("credential_busy", CREDENTIAL_BUSY_MESSAGE);
+        throw new VaultError("credential_busy", "The model account is unavailable. Check its current credentials.");
       },
     };
     const bearer = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`;
@@ -1837,7 +1833,11 @@ test("HTTP launch keeps build-5 refusal code and adds the busy account reason", 
     ))!;
     expect(response.status).toBe(409);
     expect(await response.json()).toEqual({
-      error: { code: "conflict", reason: "credential_busy", message: CREDENTIAL_BUSY_MESSAGE },
+      error: {
+        code: "conflict",
+        reason: "credential_busy",
+        message: "The model account is unavailable. Check its current credentials.",
+      },
     });
   });
 });

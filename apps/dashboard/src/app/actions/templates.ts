@@ -32,7 +32,6 @@ type Context = { templates: Templates; org: string; admin: boolean };
 /** A launch whose outcome is not known: the dialog keeps its request key, so trying again starts nothing new. */
 export type TemplateLaunchResult = ActionResult & {
   pending?: true;
-  busyAccount?: { id: string; name: string; sandboxId?: string };
 };
 
 async function scoped(data: FormData): Promise<Context | ActionResult> {
@@ -232,6 +231,5 @@ export async function launchFromTemplate(
     );
   return {
     ...fail(outcome.message ?? launchReason(outcome.reason)),
-    ...(outcome.busyAccount ? { busyAccount: outcome.busyAccount } : {}),
   };
 }

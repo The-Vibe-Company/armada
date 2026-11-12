@@ -378,7 +378,7 @@ test("busy account refusal is terminal before allocation and retains the reason 
   const f = await fixture();
   try {
     f.credentials.admit = async () => {
-      throw new core.VaultError("credential_busy", core.CREDENTIAL_BUSY_MESSAGE);
+      throw new core.VaultError("credential_busy", "The model account is unavailable. Check its current credentials.");
     };
     const admitted = await f.runtime.create(f.caller, f.configuration, "busy-account");
     f.gate.resolve();
@@ -389,7 +389,7 @@ test("busy account refusal is terminal before allocation and retains the reason 
       continuity: "not_started",
       sandboxId: null,
       blockedReason: "credential_busy",
-      failureMessage: core.CREDENTIAL_BUSY_MESSAGE,
+      failureMessage: "The model account is unavailable. Check its current credentials.",
     });
     // Build 5 synthesizes Codable for precisely these six parent state values.
     const build5States = ["creating", "ready", "stopping", "stopped", "resuming", "blocked"];
@@ -400,12 +400,12 @@ test("busy account refusal is terminal before allocation and retains the reason 
     expect(detail.operations[0]).toMatchObject({
       state: "failed",
       errorCode: "credential_busy",
-      errorMessage: core.CREDENTIAL_BUSY_MESSAGE,
+      errorMessage: "The model account is unavailable. Check its current credentials.",
     });
     expect(await f.runtime.create(f.caller, f.configuration, "busy-account")).toMatchObject({
       state: "failed",
       errorCode: "credential_busy",
-      errorMessage: core.CREDENTIAL_BUSY_MESSAGE,
+      errorMessage: "The model account is unavailable. Check its current credentials.",
     });
     const events = await f.db.query<{ event: unknown }>(
       "select event from orchestrator_runtime_events where orchestrator_id=$1",
@@ -417,7 +417,7 @@ test("busy account refusal is terminal before allocation and retains the reason 
         ...admitted,
         state: "failed",
         errorCode: "credential_busy",
-        errorMessage: core.CREDENTIAL_BUSY_MESSAGE,
+        errorMessage: "The model account is unavailable. Check its current credentials.",
       },
     });
     await expect(

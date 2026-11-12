@@ -60,7 +60,7 @@ uses the existing pinned SSH/stdin transport, not Provider.exec or credential-be
 broker process holds its GitHub-only Journal registry in memory; the supervised wrappers request
 redaction before forwarding output. The existing noninteractive sudo policy installs/supervises the
 gh/git helpers, and their actual command child drops back to the worker UID. Future Boat Claude and
-Codex parent wrappers also redact arbitrary stdout/stderr via the safe redaction-only channel. Model native-auth publication, exclusive-writer and checkpoint ACK rules
+Codex parent wrappers also redact arbitrary stdout/stderr via the safe redaction-only channel. Model native-auth publication, shared renewal and checkpoint ACK rules
 remain separate and unchanged. GitHub acquisition is not an async callback passed into the synchronous
 model `refreshNativeSecrets` hook. Epoch install/scrub remains a distinct quiescent operation.
 

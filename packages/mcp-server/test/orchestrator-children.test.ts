@@ -11,7 +11,6 @@ import {
   type Sql,
 } from "@armada/core/server";
 import { launchCredentials } from "../src/launch-credentials.ts";
-import { createModelAuthOwnership } from "../src/model-auth.ts";
 import { callOrchestrator } from "../src/orchestrator-api.ts";
 import { launchOrchestratorChild } from "../src/orchestrator-child-launch.ts";
 import { createOrchestratorChildren, type OrchestratorChildExecutor } from "../src/orchestrator-children.ts";
@@ -1291,63 +1290,6 @@ test("production owner lifecycle routes authenticate settings/waits without prom
     ).toBe(5);
     await sql.query("delete from members where org_id=$1 and user_id=$2", [p.org, p.owner]);
     expect((await request("settings")).status).toBe(404); // SQL membership recheck, even if auth cache fixture still lists it.
-  } finally {
-    await db.close();
-  }
-});
-
-test("delegated native child preserves actual ownership admission and fails busy before allocation", async () => {
-  const { db, sql, p, parent, authority, token, selection } = await fixture("ready", "codex_auth");
-  try {
-    const ownership = createModelAuthOwnership(sql, ENCRYPTION_KEY);
-    await ownership.claim({ userId: p.owner, orgId: p.org, role: "member" }, selection.credentialId, 1, parent.id);
-    await sql.query("update sandboxes set credential_id=$2,credential_version=1 where id=$1", [
-      parent.id,
-      selection.credentialId,
-    ]);
-    const credentials = launchCredentials(createSqlVaultStore(sql), ENCRYPTION_KEY, undefined, ownership);
-    const boat = fakeBoat();
-    const children = createOrchestratorChildren(sql, authority, {
-      launch: (operation, selected) =>
-        launchOrchestratorChild({
-          sql,
-          provider: boat.provider,
-          operation,
-          selection: selected,
-          stores: { goldens: createSqlGoldenStore(sql), sandboxes: createSqlSandboxStore(sql), credentials },
-          namedCredentials: credentials,
-        }),
-      async message() {
-        throw Error("unexpected message");
-      },
-      async stop() {
-        throw Error("unexpected stop");
-      },
-      async read() {
-        throw Error("unexpected read");
-      },
-      async reconcile(operation) {
-        return { operationId: operation.id, sandboxId: operation.sandboxId, state: "unknown" };
-      },
-    });
-    const result = await children.launch(token, "native-parent-account-busy", {
-      ...selection,
-      harness: "codex",
-      model: "gpt-6.1-sol",
-    });
-    expect(result.state).toBe("failed");
-    expect(boat.forks).toHaveLength(0);
-    expect(
-      (
-        await sql.query("select state,error_code,provider_sandbox_id from orchestrator_child_operations where id=$1", [
-          result.id,
-        ])
-      ).rows,
-    ).toEqual([{ state: "failed", error_code: "child_preallocation_rejected", provider_sandbox_id: null }]);
-    expect(
-      (await sql.query("select sandbox_id from model_auth_ownership where account_id=$1", [selection.credentialId]))
-        .rows,
-    ).toEqual([{ sandbox_id: parent.id }]);
   } finally {
     await db.close();
   }

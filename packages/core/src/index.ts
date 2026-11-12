@@ -360,7 +360,6 @@ export {
 } from "./vault.ts";
 export {
   APPLICATION_VAULT_CONFLICT_MESSAGES,
-  CREDENTIAL_BUSY_MESSAGE,
   VaultError,
   type VaultErrorCode,
 } from "./vault-error.ts";

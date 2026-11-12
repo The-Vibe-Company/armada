@@ -821,16 +821,6 @@ export function TemplateLaunchForm({ target }: { target: TemplateLaunchTarget })
         {state && !state.ok && (
           <p role="alert" className={cn("text-sm", state.pending ? "text-warning" : "text-destructive")}>
             {state.error}{" "}
-            {state.busyAccount && (
-              <span>
-                Account: {state.busyAccount.name}.{" "}
-                {state.busyAccount.sandboxId && (
-                  <Link className="underline underline-offset-4" href={`/sandboxes/${state.busyAccount.sandboxId}`}>
-                    Open its sandbox
-                  </Link>
-                )}
-              </span>
-            )}
             {state.pending && (
               <Link className="underline underline-offset-4" href="/sandboxes">
                 Open Sandboxes

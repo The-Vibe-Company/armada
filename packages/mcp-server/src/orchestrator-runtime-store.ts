@@ -10,7 +10,7 @@ import type {
   PromptStatus,
 } from "@armada/core";
 import { boundEventEntries, coalesceEventMessages, reportedTurnUsage, truncateEvent } from "@armada/core";
-import { CREDENTIAL_BUSY_MESSAGE, createSqlMcpLaunchPort, createSqlMcpRegistry, type Sql } from "@armada/core/server";
+import { createSqlMcpLaunchPort, createSqlMcpRegistry, type Sql } from "@armada/core/server";
 import type { OrchestratorRuntimeFoundation } from "./orchestrator-runtime-foundation.ts";
 
 export class OrchestratorRuntimeError extends Error {
@@ -307,7 +307,9 @@ export class OrchestratorRuntimeStore {
           state: receipt.state as OrchestratorOperation["state"],
           revision: receipt.revision,
           errorCode: persisted.rows[0]?.error_code ?? null,
-          ...(persisted.rows[0]?.error_code === "credential_busy" ? { errorMessage: CREDENTIAL_BUSY_MESSAGE } : {}),
+          ...(persisted.rows[0]?.error_code === "credential_busy"
+            ? { errorMessage: "The model account is unavailable. Check its current credentials." }
+            : {}),
         },
       };
     });
@@ -458,7 +460,9 @@ export class OrchestratorRuntimeStore {
       state: row.state,
       revision: Number(row.revision),
       errorCode: row.error_code,
-      ...(row.error_code === "credential_busy" ? { errorMessage: CREDENTIAL_BUSY_MESSAGE } : {}),
+      ...(row.error_code === "credential_busy"
+        ? { errorMessage: "The model account is unavailable. Check its current credentials." }
+        : {}),
     }));
   }
 
@@ -649,7 +653,9 @@ export class OrchestratorRuntimeStore {
       state: row.state,
       revision: Number(row.revision),
       errorCode: row.error_code,
-      ...(row.error_code === "credential_busy" ? { errorMessage: CREDENTIAL_BUSY_MESSAGE } : {}),
+      ...(row.error_code === "credential_busy"
+        ? { errorMessage: "The model account is unavailable. Check its current credentials." }
+        : {}),
     };
   }
 
@@ -791,7 +797,9 @@ export class OrchestratorRuntimeStore {
             state: existing.state,
             revision: Number(existing.revision),
             errorCode: existing.error_code,
-            ...(existing.error_code === "credential_busy" ? { errorMessage: CREDENTIAL_BUSY_MESSAGE } : {}),
+            ...(existing.error_code === "credential_busy"
+              ? { errorMessage: "The model account is unavailable. Check its current credentials." }
+              : {}),
           },
         };
       }
@@ -1007,7 +1015,9 @@ export class OrchestratorRuntimeStore {
               ...reservation.operation,
               state: "failed",
               errorCode,
-              ...(errorCode === "credential_busy" ? { errorMessage: CREDENTIAL_BUSY_MESSAGE } : {}),
+              ...(errorCode === "credential_busy"
+                ? { errorMessage: "The model account is unavailable. Check its current credentials." }
+                : {}),
             },
           }),
         ],

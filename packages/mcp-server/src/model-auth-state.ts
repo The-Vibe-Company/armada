@@ -43,13 +43,14 @@ export function createNativeStateStore(sql: Sql, key: string | undefined) {
       await cleanupAuthorization(tx);
     }
     const rows = await tx.query<{ value_enc: Uint8Array }>(
-      `select c.value_enc from public.credentials c join public.model_auth_ownership o on o.account_id=c.id
+      `select c.value_enc from public.credentials c
+       join public.sandboxes s on s.credential_id=c.id and s.credential_version=c.version
        where c.id=$1::uuid and c.version=$2 and c.status='active' and c.kind='codex_auth'
-       and o.account_version=$2 and o.sandbox_id=$3::uuid
+       and s.id=$3::uuid and s.owner_id=$4::uuid and s.org_id=$5::uuid and s.deleted_at is null
        and (c.expires_at is null or c.expires_at>now())
        and ((c.scope='user' and c.owner_id=$4::uuid) or (c.scope='org' and c.owner_id=$5::uuid))
        and ($6::boolean or exists(select 1 from public.members m where m.user_id=$4::uuid and m.org_id=$5::uuid))
-       for update of c,o`,
+       for update of c,s`,
       [accountId, version, sandboxId, actor.userId, actor.orgId, !member.rows.length && !!cleanupAuthorization],
     );
     const row = rows.rows[0];
@@ -82,17 +83,9 @@ export function createNativeStateStore(sql: Sql, key: string | undefined) {
          from public.sandboxes s, public.members m
          where s.id=$1::uuid and s.owner_id=$2::uuid and s.org_id=$3::uuid and s.deleted_at is null
          and m.org_id=s.org_id and m.user_id=s.owner_id
-         and state.account_id=s.credential_id and state.account_version=s.credential_version`,
+         and state.account_id=s.credential_id and state.account_version=s.credential_version
+         and state.source_generation not like 'server:%'`,
         [sandboxId, actor.userId, actor.orgId],
-      );
-    },
-    /** Caller already holds the authorized account/ownership locks before provider hydration. */
-    async initialize(tx: Sql, accountId: string, version: number, raw: string) {
-      const initial = nativeState(raw);
-      await tx.query(
-        `insert into public.model_auth_state(account_id,account_version,auth_revision,state_enc,source_generation)
-        values($1::uuid,$2,0,$3::bytea,'launch:unallocated') on conflict do nothing`,
-        [accountId, version, await encryptSecret(JSON.stringify(initial), key)],
       );
     },
     /** Redaction-only retired state can never hydrate or revive a replaced/revoked binding. */
@@ -127,6 +120,7 @@ export function createNativeStateStore(sql: Sql, key: string | undefined) {
         const row = result.rows[0];
         if (!row) throw new VaultError("unavailable", "Retired native identity is unknown.");
         const previous = JSON.parse(await decryptSecret(new Uint8Array(row.state_enc), key)) as NativeState;
+        if (row.source_generation.startsWith("server:")) return previous.secrets;
         if (JSON.parse(previous.authJson).tokens.account_id !== JSON.parse(observed.authJson).tokens.account_id)
           throw new VaultError("conflict", "Retired native identity changed.");
         if (previous.retired && previous.authJson === observed.authJson) {
@@ -220,6 +214,9 @@ export function createNativeStateStore(sql: Sql, key: string | undefined) {
           [input.accountId, input.version],
         );
         const row = result.rows[0];
+        // Account/state locks serialize this with broker adoption. A legacy
+        // preflight may have run earlier, but never owns shared renewal writes.
+        if (row?.source_generation.startsWith("server:")) return row.auth_revision;
         const previous = row
           ? (JSON.parse(await decryptSecret(new Uint8Array(row.state_enc), key)) as NativeState)
           : undefined;
