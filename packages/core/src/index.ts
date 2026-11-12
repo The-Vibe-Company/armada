@@ -107,9 +107,7 @@ export {
 } from "./github.ts";
 export {
   assertGoldenMutation,
-  type CreatedGolden,
   connectGolden,
-  createGolden,
   type GoldenActor,
   type GoldenLimits,
   type GoldenRecord,
