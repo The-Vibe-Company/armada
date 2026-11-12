@@ -54,6 +54,7 @@ function CredentialSection({
   canManage: boolean;
 }) {
   const byKind = new Map(rows.map((row) => [row.kind, row]));
+  const single = SINGLE_VALUE_KINDS.length === 1 ? SINGLE_VALUE_KINDS[0] : undefined;
   return (
     <div data-credentials={scope} className="space-y-4">
       {/* What is stored, apart from the forms that store it. */}
@@ -93,7 +94,7 @@ function CredentialSection({
                         description={`This removes your saved ${info.label}. You will need to save it again to build or launch private goldens with this provider. Organization providers are not affected.`}
                         confirm="Remove key"
                         pendingLabel="Removing…"
-                        successFocusId={`kind-${owner}`}
+                        successFocusId={info.kind === "modal" ? `modal-id-${owner}` : `value-${owner}`}
                       >
                         <input type="hidden" name="id" value={row.id} />
                       </ConfirmedAction>
@@ -114,23 +115,29 @@ function CredentialSection({
         <div className="grid gap-4 lg:grid-cols-2">
           <div className="space-y-3 rounded-lg border p-4" data-hosting-form="key">
             <div className="space-y-0.5">
-              <h3 className="text-sm font-semibold">Save a key</h3>
-              <p className="text-sm text-muted-foreground">Replaces the one stored for that kind.</p>
+              <h3 className="text-sm font-semibold">{single ? single.label : "Save a key"}</h3>
+              <p className="text-sm text-muted-foreground">
+                {single ? "Replaces the one stored." : "Replaces the one stored for that kind."}
+              </p>
             </div>
             <ActionForm action={saveCredential} resetOnSuccess className="grid gap-3">
               <input type="hidden" name="scope" value={scope} />
               <input type="hidden" name="owner" value={owner} />
-              <div className="grid gap-3 sm:grid-cols-[minmax(0,12rem)_minmax(0,1fr)]">
-                <div className="space-y-2">
-                  <Label htmlFor={`kind-${owner}`}>Kind</Label>
-                  <NativeSelect id={`kind-${owner}`} name="kind" defaultValue="boat">
-                    {SINGLE_VALUE_KINDS.map((info) => (
-                      <option key={info.kind} value={info.kind}>
-                        {info.label}
-                      </option>
-                    ))}
-                  </NativeSelect>
-                </div>
+              {/* One kind needs no choice: a select with a single option is a control that does nothing. */}
+              {single && <input type="hidden" name="kind" value={single.kind} />}
+              <div className={single ? "grid gap-3" : "grid gap-3 sm:grid-cols-[minmax(0,12rem)_minmax(0,1fr)]"}>
+                {!single && (
+                  <div className="space-y-2">
+                    <Label htmlFor={`kind-${owner}`}>Kind</Label>
+                    <NativeSelect id={`kind-${owner}`} name="kind" defaultValue="boat">
+                      {SINGLE_VALUE_KINDS.map((info) => (
+                        <option key={info.kind} value={info.kind}>
+                          {info.label}
+                        </option>
+                      ))}
+                    </NativeSelect>
+                  </div>
+                )}
                 <div className="space-y-2">
                   <Label htmlFor={`value-${owner}`}>Value</Label>
                   <Input

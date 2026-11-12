@@ -9,8 +9,10 @@ import { createProviderMetadata } from "../src/provider-metadata.ts";
 import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
 import { readStatus } from "../src/turns.ts";
 import { encryptedRecoveryExec } from "./fixtures/recovery-exec.ts";
+import { rowOnlyDatabase } from "./row-only-database.ts";
 import { bunLikeSql, call, ENCRYPTION_KEY, harness, PUBLIC_URL, SECRETS, type TestServer } from "./support.ts";
 
+const sharedDatabase = rowOnlyDatabase();
 let server: TestServer | undefined;
 
 afterEach(async () => {
@@ -19,7 +21,7 @@ afterEach(async () => {
 });
 
 async function start(options: Parameters<typeof harness>[0] = {}) {
-  server = await harness(options);
+  server = await harness(options, await sharedDatabase());
   return server;
 }
 
@@ -1037,7 +1039,9 @@ describe("tools", () => {
   });
 
   test("failed model record inserts do not fail an accepted launch or send", async () => {
-    const { token, client, people, boat, db } = await start();
+    // This case creates a trigger: keep it off the row-only shared connection.
+    server = await harness();
+    const { token, client, people, boat, db } = server;
     const mcp = await client(await token(people.member));
     await db.exec(
       `create function reject_model_record() returns trigger language plpgsql as $$ begin raise exception 'record unavailable'; end $$; create trigger reject_model_record before insert on sandbox_turn_models for each row execute function reject_model_record();`,
