@@ -122,6 +122,79 @@ describe("launch", () => {
       expect(released).toBe(0);
     },
   );
+  test.each(["deleted", "pending", "absent", "already_deleted", "dispatch", "unmanaged", "leased"])(
+    "failed launch releases native admission only after definitive pre-dispatch deletion (%s)",
+    async (outcome) => {
+      const world = setup({ golden: golden("org") });
+      const events: string[] = [];
+      world.stores.credentials.markNeverStarted = async () => {
+        events.push("marked");
+        return outcome !== "unmanaged";
+      };
+      world.stores.credentials.releaseNeverStarted = async (_actor, _credentials, _id, deletePhysical) => {
+        if (outcome === "leased") throw Error("Another operation won admission");
+        await deletePhysical();
+        events.push("released");
+      };
+      world.provider.delete = async () => {
+        events.push("delete");
+        if (outcome === "already_deleted")
+          throw new ProviderError({ provider: "boat", code: "not_found", message: "Deleted", retryable: false });
+        return { status: outcome === "absent" ? "pending" : outcome };
+      };
+      if (outcome === "absent")
+        world.provider.get = async () => {
+          throw new ProviderError({ provider: "boat", code: "not_found", message: "Deleted", retryable: false });
+        };
+      if (outcome === "dispatch")
+        world.provider.prompt = async () => {
+          throw Error("ambiguous dispatch");
+        };
+      else
+        world.stores.connections = {
+          validate: async () => {},
+          bind: async () => {},
+          prepare: async () => {
+            throw Error("initialization failed");
+          },
+        };
+      await expect(
+        launchSandbox(world.provider, world.stores, owner, { golden: "web", harness: "claude", prompt: "go" }),
+      ).rejects.toBeInstanceOf(LaunchError);
+      expect(world.stopped).toEqual(
+        outcome === "pending" ? [] : ["dispatch", "unmanaged"].includes(outcome) ? ["bx_1"] : [],
+      );
+      expect(events).toEqual(
+        ["deleted", "absent", "already_deleted"].includes(outcome)
+          ? ["marked", "delete", "released"]
+          : outcome === "pending"
+            ? ["marked", "delete"]
+            : ["unmanaged", "leased"].includes(outcome)
+              ? ["marked"]
+              : [],
+      );
+    },
+  );
+
+  test.each(["deleted", "pending"])(
+    "registration failure releases native admission only after confirmed deletion (%s)",
+    async (status) => {
+      const world = setup({ golden: golden("org") });
+      let released = 0;
+      world.stores.sandboxes.insert = async () => {
+        throw Error("registration unavailable");
+      };
+      world.stores.credentials.releaseUnallocated = async () => {
+        released++;
+      };
+      world.provider.delete = async () => ({ status });
+      await expect(
+        launchSandbox(world.provider, world.stores, owner, { golden: "web", harness: "claude" }),
+      ).rejects.toThrow("registration unavailable");
+      expect(released).toBe(status === "deleted" ? 1 : 0);
+    },
+  );
+
   test("native ownership refusal happens before any provider receives credentials", async () => {
     const world = setup({ golden: golden("org") });
     world.stores.credentials.admit = async () => {

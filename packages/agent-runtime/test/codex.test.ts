@@ -61,18 +61,6 @@ nativeTest("Codex waits for interrupt terminal then sends steer once on the same
           reasoningTokens: null,
         },
       },
-      {
-        kind: "other",
-        type: "armada/turnUsage",
-        data: {
-          model: "gpt-6.1-sol",
-          inputTokens: null,
-          outputTokens: null,
-          cachedTokens: null,
-          cacheWriteTokens: null,
-          reasoningTokens: null,
-        },
-      },
     ]);
   } finally {
     await driver.close();
@@ -101,18 +89,6 @@ nativeTest("Codex usage snapshot includes all native turns restarted by steer wi
     expect(await turn.done).toBe("finished");
     await steering;
     expect(events.filter((e) => e.kind === "other" && e.type === "armada/turnUsage")).toEqual([
-      {
-        kind: "other",
-        type: "armada/turnUsage",
-        data: {
-          model: "gpt-6.1-sol",
-          inputTokens: 100,
-          outputTokens: 20,
-          cachedTokens: 30,
-          cacheWriteTokens: 10,
-          reasoningTokens: 4,
-        },
-      },
       {
         kind: "other",
         type: "armada/turnUsage",
@@ -155,6 +131,20 @@ nativeTest.each([
     });
     await expect(turn.done).rejects.toMatchObject({ code });
     expect(events.filter((e) => e.kind === "other" && e.type === "turn/completed")).toHaveLength(1);
+    expect(events.filter((e) => e.kind === "other" && e.type === "armada/turnUsage")).toEqual([
+      {
+        kind: "other",
+        type: "armada/turnUsage",
+        data: {
+          model: "gpt-6.1-sol",
+          inputTokens: 100,
+          outputTokens: 20,
+          cachedTokens: 30,
+          cacheWriteTokens: 10,
+          reasoningTokens: 4,
+        },
+      },
+    ]);
   } finally {
     await driver.close();
   }
@@ -346,3 +336,52 @@ nativeTest.each([true, false])(
     }
   },
 );
+
+// Real JSONL driver boundary: native resolution is independent of requested/default model.
+nativeTest.each([
+  { requested: undefined, resumed: false, native: "native-selected", reroute: "", expected: "native-selected" },
+  { requested: "requested-alias", resumed: false, native: "native-selected", reroute: "", expected: "native-selected" },
+  { requested: "requested-alias", resumed: true, native: "native-selected", reroute: "", expected: "native-selected" },
+  { requested: "requested-alias", resumed: false, native: "missing", reroute: "", expected: null },
+  { requested: undefined, resumed: false, native: "native-selected", reroute: "current", expected: null },
+  { requested: undefined, resumed: false, native: "native-selected", reroute: "foreign", expected: "native-selected" },
+])("Codex usage trusts native model metadata (%j)", async ({ requested, resumed, native, reroute, expected }) => {
+  const root = await mkdtemp(join(tmpdir(), "armada-codex-model-"));
+  const events: DriverEvent[] = [];
+  const driver = new CodexDriver({
+    executable: `${import.meta.dir}/fixtures/app-server.ts`,
+    cwd: root,
+    env: {
+      PATH: process.env.PATH ?? "/usr/bin:/bin",
+      ARMADA_CWD_PROOF: "1",
+      ARMADA_USAGE_MODEL: native,
+      ARMADA_USAGE_REROUTE: reroute,
+    },
+  });
+  try {
+    const turn = driver.start({
+      request: { sandboxId: "s", harness: "codex", text: "redirect", ...(requested ? { model: requested } : {}) },
+      ...(resumed ? { sessionId: "persisted-thread" } : {}),
+      signal: AbortSignal.timeout(3000),
+      session: () => {},
+      emit: (event) => {
+        events.push(event);
+      },
+    });
+    expect(await turn.done).toBe("finished");
+    const usage = events.filter((event) => event.kind === "other" && event.type === "armada/turnUsage");
+    expect(usage).toHaveLength(1);
+    expect(usage[0]).toMatchObject({ data: { model: expected, inputTokens: resumed ? null : 100 } });
+    const calls = JSON.parse(await readFile(join(root, "native-cwd-proof.json"), "utf8")) as {
+      method: string;
+      model: string | null;
+    }[];
+    expect(calls.find((call) => call.method === (resumed ? "thread/resume" : "thread/start"))?.model).toBe(
+      requested ?? null,
+    );
+    expect(calls.find((call) => call.method === "turn/start")?.model).toBe(native === "missing" ? null : native);
+  } finally {
+    await driver.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});

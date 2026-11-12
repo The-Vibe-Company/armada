@@ -110,7 +110,7 @@ jobs:
         run: |
           env -i PATH="$PATH" HOME="$HOME" ARMADA_URL="$ARMADA_URL" ARMADA_TOKEN="$ARMADA_TOKEN" \
             ARMADA_SMOKE_CASES="$ARMADA_SMOKE_CASES" ARMADA_SMOKE="$ARMADA_SMOKE" \
-            bun scripts/post-deploy-smoke.ts --work-preservation --templates-skills --lifecycle --vault --default-skills
+            bun scripts/post-deploy-smoke.ts --work-preservation --templates-skills --lifecycle --vault --default-skills --golden-runtime
       - name: Report blocked production
         if: failure()
         run: echo "::error::Staging deployment or smoke failed; production migrations and deployments are blocked."

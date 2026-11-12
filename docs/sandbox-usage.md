@@ -20,8 +20,33 @@ idempotent per-turn snapshots. List uses that last saved collection; it does not
 start compute or scan every sandbox. Collection failure or a history above the
 budget retains the previous observation; unknown turn count remains null.
 
-Claude uses final SDK result modelUsage snapshots. Codex runtime converts native
+Claude uses final SDK result modelUsage snapshots. The pinned SDK restores
+cumulative per-model totals when resuming a transcript; they are not the new
+Armada prompt's counts. The runtime now nulls normalized model token counters
+and SDK cost estimates for resumed queries without a verified pre-prompt baseline
+(`usageAccounting.reason: resumed_baseline_unverified`). Fresh queries retain
+reported counters. A native session-ID change during a prompt also invalidates
+whole-prompt attribution (`session_reset`), including across steer. No cumulative
+snapshot is treated as a delta or replaced with main-loop-only `usage`, which
+excludes subagents. Native model IDs/metadata remain available. This conservative
+slice does not recover a baseline from transcript history or driver memory; even
+later resumed turns remain unknown until that separate work is implemented.
+Intermediate native result events during steer carry empty `modelUsage`, null
+SDK cost estimates, and `usageAccounting.reason: intermediate_result`. Only the
+final native result publishes prompt accounting, so a later session reset cannot
+leave measured shares for model IDs omitted from the final result. Existing
+historical observations are not automatically corrected. Codex runtime converts native
 thread cumulative token totals to turn deltas, never sums last-request counters.
+Codex emits one normalized usage snapshot at the end of an Armada prompt (also
+on failure/interruption when usage was observed), rather than per-update model
+shares. Its model is the native thread start/resume response, never the requested
+alias or a hard-coded default. When no model is requested, native configuration
+selects the model; subsequent native turn starts use the resolved model. Missing
+native model metadata stays null. A `model/rerouted` notification for that thread
+makes the entire prompt's model unknown: cumulative totals cannot allocate tokens
+across models, including native turns restarted by steer. Notifications belonging
+to another thread do not invalidate attribution. Intermediate token updates still
+maintain the next-prompt baseline, but are not published as separate usage rows.
 A resumed native thread without an observed baseline reports null counters for
 its first observed turn; later baselines are known within that runtime process.
 Native restarts caused by steer retain the original Armada-prompt baseline and
@@ -35,3 +60,57 @@ invented token counts.
 No dashboard UI, quotas, billing, provider API calls, background telemetry
 worker, or production migration application is included. Apply the versioned
 migration with the normal release process before running this server version.
+
+
+## Coordinator staging check: Codex model attribution (#1163)
+
+After the normal runtime deployment, launch on an existing Modal golden without
+`--model`, then with an explicit model (or configured Codex endpoint model):
+
+```sh
+armada launch <modal-golden> --provider modal --agent codex "Reply OK"
+armada wait <id>
+armada status <id> --json
+armada logs <id>
+```
+
+Compare the normalized `armada/turnUsage` event in logs with `usage.turns` in
+status: expect one final row for the prompt, with the native resolved model
+(not an assumed `gpt-6.1-sol`). Send a second prompt, then stop/resume and send
+again: the native model should still be used; missing resumed token baselines
+remain null (this slice does not reconstruct history). Exercise steer and
+interrupt: terminal observed counters are retained without pre-steer duplicate
+model rows. If the service reports `model/rerouted`, expect null model for the
+whole prompt, preserved counters, and unknown pricing rather than a guessed
+single-model amount. Missing native model metadata likewise stays null. Service
+rerouting is not forced by these commands; the deterministic JSONL test covers
+late reroutes and unrelated-thread notifications offline. No migration or
+provider transport change; storage/price integration remains a following slice.
+
+
+## Coordinator staging check: Claude resumed accounting (#1163)
+
+After normal runtime rollout, run on a Modal golden:
+
+```sh
+armada launch <modal-golden> --provider modal --agent claude "Reply OK"
+armada wait <id>
+armada status <id> --json
+armada send <id> "Reply OK again"
+armada wait <id>
+armada logs <id>
+armada status <id> --json
+```
+
+Expect fresh-session reported model counters to remain available. The resumed
+prompt must not repeat the prior session's cumulative counts: result
+`modelUsage` token fields and SDK cost estimates are null, with
+`usageAccounting.reason: resumed_baseline_unverified`; status shows unknown token
+counts, not zero or historical totals. Repeat after stop/resume. Native session
+reset inside an active prompt is likewise unknown with `session_reset`; the
+JSONL regression exercises the reset/steer boundary offline. No runtime transcript
+is copied to the server, and `/usage` results keep their existing private masking.
+There is no migration. This runtime safety fix does not integrate server pricing
+or promise measured resumed turns; verified baseline recovery remains a following
+slice. Source semantics checked against pinned Agent SDK 0.3.322 result types and
+[official cost tracking](https://code.claude.com/docs/en/agent-sdk/cost-tracking).

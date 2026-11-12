@@ -16,9 +16,11 @@ import type { Sql } from "./golden-store.ts";
 import { type Provider, ProviderError } from "./provider.ts";
 import {
   assertProviderOf,
+  HOST_CAPABILITIES,
   isSandboxProvider,
   type ModalBinding,
   type ProviderTarget,
+  SANDBOX_PROVIDERS,
   type SandboxProviderId,
 } from "./sandbox-provider.ts";
 
@@ -322,10 +324,19 @@ export class GoldenBuildJobs {
   async reconcileOne(): Promise<void> {
     const row = (
       await this.options.sql.query<Job>(
-        "select * from public.golden_build_jobs where state='recovery_required' and (builder_id is not null or (provider='modal' and phase='builder')) order by updated_at limit 1",
+        "select * from public.golden_build_jobs where state='recovery_required' and (builder_id is not null or (provider=any($1::public.sandbox_provider[]) and phase='builder')) order by updated_at limit 1",
+        [
+          // Encode the fixed provider IDs as a PostgreSQL array, not a driver-native JS array.
+          "{" +
+            SANDBOX_PROVIDERS.filter(
+              (id) => HOST_CAPABILITIES[id].goldenBuilderRecovery === "dispose-reservation",
+            ).join(",") +
+            "}",
+        ],
       )
     ).rows[0];
     if (!row) return;
+    const reservationRecovery = HOST_CAPABILITIES[row.provider].goldenBuilderRecovery === "dispose-reservation";
     // Fairness bookkeeping only: retained, unauthorized or temporarily unavailable heads
     // must not starve other abandoned jobs. Never change their fence/state/capacity/proof.
     const attempted = await this.options.sql.query(
@@ -334,7 +345,7 @@ export class GoldenBuildJobs {
     );
     if (!attempted.rows.length || !row.fence) return;
     // Never dispose a source whose snapshot/publication outcome may still depend on it.
-    if (row.provider === "modal" && (row.phase === "snapshot" || row.phase === "persist")) return;
+    if (reservationRecovery && (row.phase === "snapshot" || row.phase === "persist")) return;
     try {
       const actor = await this.transaction((sql) => this.actor(sql, row));
       const input = await this.context(row);
@@ -345,10 +356,10 @@ export class GoldenBuildJobs {
       )
         return;
       const provider = await this.resolve(row, actor, input);
-      if (row.provider === "modal" && (!provider.findGoldenBuilder || !provider.disposeGoldenBuilder)) return;
+      if (reservationRecovery && (!provider.findGoldenBuilder || !provider.disposeGoldenBuilder)) return;
       let builderId = row.builder_id;
       let retained = false;
-      if (row.provider === "modal" && provider.findGoldenBuilder) {
+      if (reservationRecovery && provider.findGoldenBuilder) {
         const found = await provider.findGoldenBuilder({
           requestKey: row.id,
           ownerId: row.owner_id,
@@ -384,14 +395,10 @@ export class GoldenBuildJobs {
         );
         return saved.rows.length === 1;
       });
-      if (
-        !owned ||
-        retained ||
-        (row.provider === "modal" && provider.findGoldenBuilder && !provider.disposeGoldenBuilder)
-      )
+      if (!owned || retained || (reservationRecovery && provider.findGoldenBuilder && !provider.disposeGoldenBuilder))
         return;
-      // Modal disposal already performs exact named ownership reconciliation under its lease.
-      if (row.provider === "modal") {
+      // Reservation disposal performs exact named ownership reconciliation under its lease.
+      if (reservationRecovery) {
         const dispose = provider.disposeGoldenBuilder;
         if (!dispose) return;
         const receipt = await dispose({
