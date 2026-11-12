@@ -8,6 +8,7 @@ import signal
 from pathlib import Path
 import tempfile
 import unittest
+import urllib.parse
 from unittest import mock
 
 SPEC = importlib.util.spec_from_file_location("staging_check", Path(__file__).with_name("staging-check.py"))
@@ -135,6 +136,8 @@ class Safety(unittest.TestCase):
             run.call("sandbox/status", {"id": ID})
         request = run.opener.open.call_args.args[0]
         self.assertEqual(request.get_header("Authorization"), "Bearer owner-secret")
+        self.assertEqual(request.get_header("Accept"), "application/json")
+        self.assertEqual(json.loads(request.data)["org"], ID)
 
         class BrokenOutput(io.StringIO):
             def write(self, _value):
@@ -145,8 +148,7 @@ class Safety(unittest.TestCase):
             response.code = status
             return response
         run.opener = mock.Mock()
-        run.opener.open.side_effect = [answer({"ok": True}), answer({"status": "running"}),
-                                      answer({"id": ID, "status": "stopped"}), answer({"status": "stopped"}),
+        run.opener.open.side_effect = [answer({"ok": True}), answer({"id": ID, "status": "stopped"}),
                                       answer({"sandboxes": [], "hasMore": False})]
         run.parent, run.ids = ID, [ID]
         stderr = io.StringIO()
@@ -200,7 +202,7 @@ class Safety(unittest.TestCase):
             order.append("inventory")
             return [{"id": OTHER, "ownerId": OTHER, "orgId": ID, "provider": "boat", "harness": "codex",
                      "createdAt": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()}] if ID in order else []
-        with mock.patch.object(run, "listing", side_effect=listing), mock.patch.object(run, "stop", side_effect=stop), mock.patch.object(run, "logs", return_value=[{"kind": "prompt", "text": run.child_init}]), mock.patch.object(run, "tool", return_value={"golden": "fixture", "model": "test-model"}):
+        with mock.patch.object(run, "listing", side_effect=listing), mock.patch.object(run, "stop", side_effect=stop), mock.patch.object(run, "logs", return_value=[{"kind": "prompt", "text": run.child_init}]), mock.patch.object(run, "tool", return_value={"id": OTHER, "golden": "fixture", "model": "test-model"}):
             self.assertTrue(run.cleanup())
         self.assertIn(OTHER, order)
         self.assertLess(order.index(ID), order.index("inventory"))
@@ -208,6 +210,77 @@ class Safety(unittest.TestCase):
         run.unknown_allocation = True
         with mock.patch.object(run, "listing", return_value=[]), mock.patch.object(run, "stop"):
             self.assertFalse(run.cleanup())
+
+    def test_owned_initial_status_retry_and_stop_first_cleanup_use_canonical_cli_routes(self):
+        def response(body, status=200):
+            result = io.BytesIO(json.dumps(body).encode())
+            result.code = status
+            return result
+        def fresh_run():
+            return check.Run(check.arguments(ARGS), ENV["STAGING_URL"], ID, ENV["ARMADA_TOKEN"])
+        row = {"id": ID, "ownerId": OTHER, "orgId": ID, "provider": "boat", "harness": "codex",
+               "createdAt": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()}
+        state = {"id": ID, "status": "running", "golden": "fixture", "model": "test-model"}
+        run = fresh_run()
+        run.record(ID)
+        run.opener = mock.Mock()
+        run.opener.open.side_effect = [response({"sandboxes": [row], "hasMore": False}),
+                                      response({"error": {"code": "not_found", "message": "owner-secret"}}, 404), response(state)]
+        with contextlib.redirect_stdout(io.StringIO()), mock.patch.object(check.time, "sleep") as sleep:
+            self.assertEqual(run.verify_resource(ID, OTHER), row)
+        self.assertEqual(sleep.call_count, 1)
+        self.assertIsNone(run.failed_step)
+        wrong = fresh_run()
+        wrong.opener = mock.Mock()
+        wrong.opener.open.return_value = response(dict(state, id=OTHER))
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(check.Failure, "status_identity_unconfirmed"):
+            wrong.status(ID)
+        self.assertNotIn(ID, wrong.status_seen)
+        self.assertEqual([call.args[0].full_url for call in run.opener.open.call_args_list],
+                         [ENV["STAGING_URL"] + "/api/v1/" + path for path in ("sandbox/list", "sandbox/status", "sandbox/status")])
+        for code, inventoried, expected_calls in (("unknown_route", True, 2), ("not_found", False, 1), ("not_found", True, 4)):
+            run = fresh_run()
+            run.record(ID)
+            run.opener = mock.Mock()
+            answers = [response({"sandboxes": [row], "hasMore": False})] if inventoried else []
+            answers += [response({"error": {"code": code}}, 404) for _ in range(3)]
+            run.opener.open.side_effect = answers
+            with contextlib.redirect_stdout(io.StringIO()), mock.patch.object(check.time, "sleep"), self.assertRaises(check.ApiFailure):
+                run.verify_resource(ID, OTHER) if inventoried else run.status(ID)
+            self.assertEqual(run.opener.open.call_count, expected_calls)
+        for acknowledgement in ("stopped", "stopping", "refused"):
+            run = fresh_run()
+            run.parent, run.child, run.ids = ID, OTHER, [ID, OTHER]
+            requests = []
+            def dispatch(request, **_kwargs):
+                path = urllib.parse.urlsplit(request.full_url).path
+                body = json.loads(request.data)
+                requests.append((path, body))
+                self.assertEqual(request.method, "POST")
+                self.assertEqual(request.get_header("Accept"), "application/json")
+                self.assertEqual(body["org"], ID)
+                if path.endswith("/stop"):
+                    self.assertGreater(_kwargs["timeout"], 30)
+                    self.assertLessEqual(_kwargs["timeout"], 660)
+                    if acknowledgement == "refused" and body["id"] == ID:
+                        return response({"error": {"code": "not_found"}}, 404)
+                    return response({"id": body["id"], "status": acknowledgement if body["id"] == ID else "stopped"})
+                if path.endswith("/status"):
+                    return response({"error": {"code": "not_found", "message": "owner-secret"}}, 404)
+                if path.endswith("/list"):
+                    return response({"sandboxes": [dict(row, status="stopped")], "hasMore": False})
+                self.fail("unexpected route")
+            run.opener = mock.Mock()
+            run.opener.open.side_effect = dispatch
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                self.assertEqual(run.cleanup(), acknowledgement != "refused")
+                with self.assertRaisesRegex(check.Failure, "stop_target_not_owned_by_run"):
+                    run.stop(str(__import__("uuid").UUID(int=999)))
+            stops = [body["id"] for path, body in requests if path.endswith("/stop")]
+            self.assertEqual(stops, [ID, OTHER])
+            self.assertEqual(requests[0], ("/api/v1/sandbox/stop", {"id": ID, "org": ID}))
+            self.assertNotIn("owner-secret", output.getvalue())
 
     def test_complete_owner_protocol_and_native_evidence_with_optional_old_grant(self):
         """Exercise scenario/cleanup, not model PASS markers or a mocked scenario."""
@@ -232,6 +305,8 @@ class Safety(unittest.TestCase):
             def _request(self, route, body, token, expected, code, timeout):
                 # Exact owner route/body shapes; status intentionally has no credential fields.
                 self.requests.append((route, dict(body)))
+                if route != "orchestrator-tools/read":
+                    self_test.assertEqual(body.get("org"), ID)
                 if route == "golden/list":
                     return {"goldens": [{"id": ID, "name": "fixture", "provider": "boat", "orgId": ID,
                                          "config": {"repos": [{"dir": "armada", "url": "https://github.com/example/repo.git"}]}}]}
@@ -315,6 +390,25 @@ class Safety(unittest.TestCase):
                 self.assertNotIn("owner-secret", output.getvalue())
                 self.assertNotIn("armada_epoch_", output.getvalue())
                 self.assertNotIn(instances[-1].answer, output.getvalue())
+            class ParentStatusMissing(Fixture):
+                def _request(self, route, body, *args):
+                    if route == "sandbox/status" and body["id"] == parent:
+                        response = io.BytesIO(json.dumps({"error": {"code": "not_found", "message": "private server body"}}).encode())
+                        response.code = 404
+                        self.opener = mock.Mock()
+                        self.opener.open.return_value = response
+                        return Fixture.__bases__[0]._request(self, route, body, *args)
+                    return super()._request(route, body, *args)
+            output = io.StringIO()
+            with mock.patch.object(check, "Run", ParentStatusMissing), mock.patch.object(check.time, "sleep"), contextlib.redirect_stdout(output):
+                self.assertEqual(check.main(ARGS, ENV), 1)
+            summary = json.loads(output.getvalue().splitlines()[-1])
+            self.assertIn(parent, instances[-1].stopped)
+            self.assertIn(("sandbox/stop", {"id": parent, "org": ID}), instances[-1].requests)
+            self.assertFalse(summary["cleanupConfirmed"])  # Unknown child audit is not weakened.
+            self.assertEqual(summary["reason"], "cleanup_not_confirmed")
+            self.assertNotIn("private server body", output.getvalue())
+
             class RefusedParent(Fixture):
                 def _request(self, route, body, *args):
                     if route == "sandbox/launch-access-v1":

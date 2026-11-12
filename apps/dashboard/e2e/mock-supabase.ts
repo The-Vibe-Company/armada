@@ -1164,7 +1164,8 @@ function launchRoute(body: Row, userId: string | null, route = "sandbox/launch")
   );
   row.model = body.model;
   row.reasoning_effort = body.reasoningEffort;
-  if (body.visibility !== undefined) row.visibility = body.visibility;
+  if (body.armadaAccess) row.visibility = "private";
+  else if (body.visibility !== undefined) row.visibility = body.visibility;
   row.connections = ids;
   row.repository_dir = body.repo ?? null;
   // The producer's own resolution, as the server records it; an older server records nothing.
@@ -2455,6 +2456,18 @@ function accounts(route: string, body: Row, request: Request): Response {
 function control(url: URL, body: Row): Response {
   if (url.pathname === "/__test/reset") {
     state = seed();
+    // Keep a visible header but make its current revision unreadable, as a partial control API read can be.
+    if (body.missingTemplateRevision)
+      state.templateRevisions = state.templateRevisions.filter((row) => row.templateId !== id(91));
+    if (body.templateReferenceExtras || body.longTemplateKeys) {
+      const revision = state.templateRevisions.find((row) => row.templateId === id(90) && row.revision === 2);
+      if (revision)
+        Object.assign(revision.definition as Row, {
+          skills: ["notes@1.0.0"],
+          secrets: [{ key: body.longTemplateKeys ? "S".repeat(128) : "STRIPE_API_KEY", secretId: id(81), version: 1 }],
+          ...(body.longTemplateKeys ? { variables: [{ key: "V".repeat(128), variableId: id(80), version: 3 }] } : {}),
+        });
+    }
     pendingOAuth.clear();
     githubCliFlows.clear();
     failSandboxConnections = false;
@@ -2955,6 +2968,21 @@ const server = Bun.serve({
     if (url.pathname === "/mcp") return mcp(body as unknown as RpcMessage, viewer(request));
     if (url.pathname === "/api/v1/sandbox/launch" && request.method === "POST")
       return launchRoute(body, viewer(request));
+    if (url.pathname === "/api/v1/sandbox/launch-access-v1" && request.method === "POST") {
+      if (state.olderServer) return controlFail(404, "not_found", "Unknown route.");
+      if (
+        body.armadaAccessVersion !== 1 ||
+        body.harness !== "codex" ||
+        !body.credentialId ||
+        JSON.stringify(body.armadaAccess) !== JSON.stringify({ maxActiveChildren: 3 })
+      )
+        return controlFail(
+          400,
+          "invalid",
+          "Armada access requires an explicit Codex account and bounded child access.",
+        );
+      return launchRoute(body, viewer(request), "sandbox/launch-access-v1");
+    }
     if (url.pathname === "/api/v1/sandbox/launch-sized-v1" && request.method === "POST") {
       // #653's fail-closed route (ea501bd): an older replica does not know it, a newer one checks the version first.
       // Either refusal comes before anything is allocated.

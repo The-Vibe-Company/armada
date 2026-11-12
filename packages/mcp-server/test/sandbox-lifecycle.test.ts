@@ -426,6 +426,61 @@ test("replicas lease one observation and resume admission fences old writes whil
   }
 });
 
+for (const status of ["running", "starting", "failed", "stopping"] as const) {
+  test(`removed-owner ${status} sandbox reports blocked cleanup without provider authority`, async () => {
+    const { db, people } = await database();
+    try {
+      const id = crypto.randomUUID();
+      const golden = (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0]!;
+      await db.query(
+        `insert into sandboxes(id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status,expires_at)
+        values($1,'boat','bx_23456789',$2,$3,$4,'claude',$5,now()-interval '1 second')`,
+        [id, golden.id, people.org, people.owner, status],
+      );
+      await db.query("delete from members where org_id=$1 and user_id=$2", [people.org, people.owner]);
+      let resolutions = 0;
+      const worker = createSandboxLifecycle(bunLikeSql(db), async () => {
+        resolutions++;
+        throw new Error("Provider authority must not be requested");
+      });
+      expect(await worker.reconcileOne()).toBe(true);
+      const row = (
+        await db.query<{
+          status: string;
+          lifecycle_error: string;
+          stopped_at: Date | null;
+          stop_requested_at: Date | null;
+          last_observed_at: Date | null;
+          reconcile_lease: string | null;
+          reconcile_lease_until: Date | null;
+          retry_seconds: number;
+        }>(
+          `select *,extract(epoch from (reconcile_after-now()))::float8 as retry_seconds
+        from sandboxes where id=$1`,
+          [id],
+        )
+      ).rows[0]!;
+      expect(row.lifecycle_error).toBe(
+        "Cleanup blocked: removed-owner authority is unavailable. Automatic cleanup requires service-owned worker authority.",
+      );
+      expect(row.status).toBe(status);
+      expect(row.stopped_at).toBeNull();
+      expect(row.stop_requested_at).toBeNull();
+      expect(row.last_observed_at).toBeNull();
+      expect(row.reconcile_lease).toBeNull();
+      expect(row.reconcile_lease_until).toBeNull();
+      expect(row.retry_seconds).toBeGreaterThan(0);
+      expect(row.retry_seconds).toBeLessThanOrEqual(60);
+      expect(await worker.reconcileOne()).toBe(false);
+      await db.query("update sandboxes set reconcile_after=now()-interval '1 second' where id=$1", [id]);
+      expect(await worker.reconcileOne()).toBe(true);
+      expect(resolutions).toBe(0);
+    } finally {
+      await db.close();
+    }
+  });
+}
+
 test("timed-out provider observations stay bounded until their raw work settles", async () => {
   const { db, people } = await database();
   const arrived = Array.from({ length: 4 }, () => Promise.withResolvers<void>());

@@ -33,6 +33,8 @@ export type LaunchArgs = {
    * named accounts, which resolves its own.
    */
   credentialId?: string;
+  /** Opt-in owner-scoped child access; never inferred from account availability. */
+  armadaAccess?: true;
   /** An explicit machine size; absent, the server resolves the repository, then golden default (`@armada/core`). */
   size?: MachineSize;
   /** The golden has size defaults the server must resolve: the launch needs the versioned sized route. */
@@ -59,6 +61,7 @@ export function launchArgs(
     prompt: string;
     repo?: string;
     size?: string;
+    armadaAccess?: string;
   } & ModelFields,
 ): Parsed<Omit<LaunchArgs, "connections">> {
   const harness = HARNESSES.find((candidate) => candidate === fields.harness);
@@ -66,6 +69,9 @@ export function launchArgs(
   if (!fields.golden.trim() || !fields.org.trim() || !isSandboxProvider(fields.provider)) {
     return { ok: false, error: "That request is not valid." };
   }
+  if (fields.armadaAccess && fields.armadaAccess !== "on") return { ok: false, error: "That request is not valid." };
+  if (fields.armadaAccess === "on" && harness !== "codex")
+    return { ok: false, error: "Armada access is available for Codex only." };
   const provider = fields.provider;
   const repo = fields.repo?.trim() ?? "";
   if (repo && !REPO.test(repo)) return { ok: false, error: "Choose a repository recorded in the golden." };
@@ -82,6 +88,7 @@ export function launchArgs(
       provider,
       org: fields.org,
       harness,
+      ...(fields.armadaAccess === "on" ? { armadaAccess: true } : {}),
       ...(repo ? { repo } : {}),
       ...(size ? { size: size as MachineSize } : {}),
       model: choice.args.model,

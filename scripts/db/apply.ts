@@ -25,6 +25,11 @@ export async function applyMigrations(db: PGlite): Promise<string[]> {
   for (const file of files) {
     await execFile(db, join(migrationsDir, file), file);
   }
+  await db.exec("create schema if not exists supabase_migrations");
+  await db.exec("create table if not exists supabase_migrations.schema_migrations (version text primary key)");
+  for (const file of files) {
+    await db.query("insert into supabase_migrations.schema_migrations(version) values ($1)", [file.slice(0, 14)]);
+  }
   return files;
 }
 

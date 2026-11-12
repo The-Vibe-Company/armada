@@ -5,6 +5,7 @@
  *   bun scripts/build.ts --target linux-x64  one target, to dist/armada-linux-x64
  *   bun scripts/build.ts --all               every target, to dist/armada-<target>
  */
+import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 
@@ -23,8 +24,24 @@ export function hostTarget(): Target {
 
 /** Compiles one target to `outfile` and returns its path. */
 export function compile(target: Target, outfile: string, entry = ENTRY): string {
+  const requiredMigration = readdirSync(join(ROOT, "supabase/migrations"))
+    .filter((name) => /^\d{14}_.+\.sql$/.test(name))
+    .sort()
+    .at(-1)
+    ?.slice(0, 14);
+  if (!requiredMigration) throw new Error("Cannot compile without a required migration version.");
   const result = Bun.spawnSync(
-    [process.execPath, "build", entry, "--compile", "--minify", `--target=bun-${target}`, `--outfile=${outfile}`],
+    [
+      process.execPath,
+      "build",
+      entry,
+      "--compile",
+      "--minify",
+      "--define",
+      `ARMADA_REQUIRED_MIGRATION=${JSON.stringify(requiredMigration)}`,
+      `--target=bun-${target}`,
+      `--outfile=${outfile}`,
+    ],
     { cwd: ROOT, stdout: "inherit", stderr: "inherit" },
   );
   if (result.exitCode !== 0) throw new Error(`bun build --compile failed for ${target}.`);

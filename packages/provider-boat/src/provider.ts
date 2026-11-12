@@ -32,9 +32,10 @@ import {
   MACHINE_SIZE_CATALOG,
   ProviderError,
   parseMachineSize,
+  redact,
   validateReadableVariables,
 } from "@armada/core";
-import { sshReadableVariables } from "@armada/core/server";
+import { isNonMutatingProviderRefusal, sshReadableVariables } from "@armada/core/server";
 import {
   BoatApi,
   Configuration,
@@ -222,11 +223,53 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
   }
 
   async function start(body: CreateSandboxRequest, idempotencyKey: string | undefined): Promise<SandboxInfo> {
-    const response = await call(() =>
-      api.create({ createSandboxRequest: body, ...(idempotencyKey ? { idempotencyKey } : {}) }),
-    );
-    if (!response.sandbox?.id) throw unexpectedAnswer("sandbox");
-    return sandboxInfo(response.sandbox);
+    try {
+      const response = await call(() =>
+        api.create({ createSandboxRequest: body, ...(idempotencyKey ? { idempotencyKey } : {}) }),
+      );
+      if (!response.sandbox?.id) throw unexpectedAnswer("sandbox");
+      return sandboxInfo(response.sandbox);
+    } catch (error) {
+      const secrets = [options.apiKey, ...Object.values(body.env ?? {})];
+      const original = await toProviderError(error);
+      // Keep typed evidence, not credential-bearing SDK causes/response bodies.
+      const failure = new ProviderError({
+        provider: original.provider,
+        code: original.code,
+        ...(original.status === undefined ? {} : { status: original.status }),
+        message: redact(original.message, secrets),
+        retryable: original.retryable,
+        ...(original.providerCode ? { providerCode: redact(original.providerCode, secrets) } : {}),
+        ...(original.requestId ? { requestId: redact(original.requestId, secrets) } : {}),
+        ...(original.retryAfterSeconds === undefined ? {} : { retryAfterSeconds: original.retryAfterSeconds }),
+        ...(original.details ? { details: original.details } : {}),
+      });
+      const tag = (value: string | undefined) =>
+        value && /^[A-Za-z0-9_.:-]{1,128}$/.test(value) ? redact(value, secrets) : null;
+      try {
+        const known = failure;
+        const window = known.details?.window;
+        console.error(
+          JSON.stringify({
+            event: "boat_allocation_failed",
+            code: known?.code ?? "unknown",
+            status: known?.status ?? null,
+            providerCode: tag(known?.providerCode),
+            requestId: tag(known?.requestId),
+            retryable: known?.retryable ?? false,
+            retryAfterSeconds: known?.retryAfterSeconds ?? null,
+            window:
+              typeof window === "string" && ["minute", "hour", "day", "month", "concurrency"].includes(window)
+                ? window
+                : null,
+            outcome: isNonMutatingProviderRefusal(failure) ? "refused" : "unknown",
+          }),
+        );
+      } catch {
+        /* Diagnostics must not change the allocation outcome. */
+      }
+      throw failure;
+    }
   }
 
   async function archive(sandboxId: string): Promise<void> {

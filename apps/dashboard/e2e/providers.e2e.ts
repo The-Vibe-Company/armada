@@ -43,6 +43,7 @@ test("a new org connects its first provider in Settings; new work waits for it; 
   page,
 }) => {
   await signIn(page, "alice@example.com", "/orgs");
+  await page.getByRole("button", { name: "New org", exact: true }).click();
   await page.getByLabel("Name").fill("Side Project");
   await page.getByRole("button", { name: "Create org" }).click();
   await expect(page).toHaveURL(/\/settings$/);

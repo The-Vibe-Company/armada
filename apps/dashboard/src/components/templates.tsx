@@ -9,6 +9,7 @@ import {
   LayoutTemplateIcon,
   LockIcon,
   LockKeyholeIcon,
+  PackageIcon,
   PencilIcon,
   PlugIcon,
   RocketIcon,
@@ -31,6 +32,7 @@ import { CreateDialog } from "@/components/create-dialog";
 import { LaunchShortcut, RepositoryField, Segmented } from "@/components/launch-dialog";
 import { MachineSizeField } from "@/components/machine-size-field";
 import { type ModelCatalog, ModelFields } from "@/components/model-fields";
+import { SkillPicker } from "@/components/skill-picker";
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -137,7 +139,7 @@ type Editing = { id: string; name: string; scope: TemplateScope; revision: numbe
 /**
  * The create flow (#949), the shared {@link CreateDialog}: one form in two steps so it fits a laptop. The first
  * step holds what defines a template (its name, who can use it, the environment and the agent); the second, the
- * optional tools and variables. Who can use it cannot be changed later, so it is marked.
+ * optional tools, skills and variables. Who can use it cannot be changed later, so it is marked.
  */
 export function CreateTemplateDialog(props: {
   orgId: string;
@@ -200,6 +202,7 @@ function TemplateForm({
   const [golden, setGolden] = useState(editing?.definition.goldenId ?? "");
   const [harness, setHarness] = useState<Harness>(editing?.definition.harness ?? "claude");
   const [keepAccount, setKeepAccount] = useState(true);
+  const [skills, setSkills] = useState<string[]>(() => [...(editing?.definition.skills ?? [])]);
   const [problem, setProblem] = useState<string | null>(null);
   const keepingPinnedAccount = Boolean(
     keepAccount && editing?.definition.modelAccount && harness === editing.definition.harness,
@@ -504,6 +507,7 @@ function TemplateForm({
           initial={editing?.definition.secrets?.map((b) => b.secretId) ?? []}
           hint="Only names and scope are shown. Values are delivered as environment variables to the selected agent."
         />
+        <SkillPicker orgId={orgId} value={skills} onChange={setSkills} />
         {lost && (
           <p role="alert" className="text-sm text-destructive" data-template-lost>
             {lost}
@@ -643,6 +647,16 @@ function Preset({ target }: { target: TemplateLaunchTarget }) {
       text: `${target.goldenName ?? "Unavailable"} on ${PROVIDER_LABELS[target.definition.provider]}`,
     },
     { key: "agent", icon: <CpuIcon />, label: "Agent", text: target.agent },
+    ...(target.definition.skills.length
+      ? [
+          {
+            key: "skills",
+            icon: <PackageIcon />,
+            label: "Skills",
+            text: target.definition.skills.join(", "),
+          },
+        ]
+      : []),
     {
       key: "tools",
       icon: <PlugIcon />,
@@ -671,7 +685,12 @@ function Preset({ target }: { target: TemplateLaunchTarget }) {
             </span>
             {fact.label}
           </dt>
-          <dd className={cn("min-w-0 break-words", fact.key === "variables" && "font-mono text-xs leading-5")}>
+          <dd
+            className={cn(
+              "min-w-0 break-words",
+              (fact.key === "variables" || fact.key === "skills") && "font-mono text-xs leading-5 break-all",
+            )}
+          >
             {fact.text}
           </dd>
         </div>

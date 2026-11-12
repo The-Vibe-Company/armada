@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { createMemoryAuthStore, generateToken, memorySessionStore, sha256Hex } from "@armada/auth";
 import {
   API_FAILURE_HELP,
@@ -19,13 +19,15 @@ import {
   VaultError,
   type VaultStore,
 } from "@armada/core";
-import { type Machine, type Scope, scopeKey } from "@armada/provider-modal";
+import { appendModalEvents, createSqlModalStore, type Machine, type Scope, scopeKey } from "@armada/provider-modal";
 import type { PGlite } from "@electric-sql/pglite";
+import { AppService } from "modal";
 import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import type { AuthIo } from "../../cli/src/auth-commands.ts";
 import { run } from "../../cli/src/run.ts";
 import { createCredentialBindingRecovery } from "../src/credential-binding-recovery.ts";
 import { type ControlOptions, controlOptionsFromEnv, createSqlData, handleControlRequest } from "../src/index.ts";
+import { createModalIntegration } from "../src/modal-integration.ts";
 import { modalLaunchEnvironment } from "../src/modal-launch-environment.ts";
 import { createModelAuthOwnership } from "../src/model-auth.ts";
 import { createProviderMetadata } from "../src/provider-metadata.ts";
@@ -43,6 +45,8 @@ for (const failure of [
   "provider_unavailable",
   "dependency_unavailable",
   "outcome_unknown",
+  "rate_limited",
+  "payment_required",
 ] as const) {
   test(`launch HTTP separates ${failure} without parsing diagnostic text`, async () => {
     await withServer(async ({ db, options }) => {
@@ -70,7 +74,8 @@ for (const failure of [
       boat.provider.fork = async () => {
         throw new ProviderError({
           provider: "boat",
-          code: "unavailable",
+          code: failure === "rate_limited" || failure === "payment_required" ? failure : "unavailable",
+          ...(failure === "rate_limited" ? { status: 429 } : {}),
           message: "credential_refused expired revoked (not a classification input)",
           retryable: true,
           ...(failure === "provider_unavailable" ? { status: 503 } : {}),
@@ -102,7 +107,15 @@ for (const failure of [
         },
       );
       expect(response?.status).toBe(
-        failure === "credential_refused" ? 422 : failure === "provider_unavailable" ? 502 : 503,
+        failure === "credential_refused"
+          ? 422
+          : failure === "provider_unavailable"
+            ? 502
+            : failure === "rate_limited"
+              ? 429
+              : failure === "payment_required"
+                ? 402
+                : 503,
       );
       expect(await response?.json()).toMatchObject({ error: { code: failure } });
       expect((await db.query("select id from sandboxes")).rows).toEqual([]);
@@ -552,6 +565,8 @@ describe("armada org and armada creds against the control API", () => {
       expect(response?.status).toBe(200);
       expect(await response?.json()).toMatchObject({ id, status: "ready" });
       expect(response?.headers.get("server-timing")).toContain("stored_provider;dur=");
+      for (const phase of ["tool_register", "tool_connect", "tool_call", "tool_close"])
+        expect(response?.headers.get("server-timing")).toContain(`${phase};dur=`);
       expect(storedReads).toBe(1);
       expect((await read(ADA))?.status).toBe(404);
       expect(storedReads).toBe(1);
@@ -1929,23 +1944,125 @@ test("access launch grants scoped authority before the first prompt while retain
         return fake.provider.prompt(request);
       },
     };
+    const binding = { workspace: "workspace", environment: "main", appId: "app" };
+    const orgScope: Scope = { orgId: org.id, userId: STAN, visibility: "org", binding };
+    await db.query(
+      "insert into modal_server_apps(org_id,authority,authority_scope,authority_owner_id,app_name,app_id,environment) values($1,$2,'org',$1,'scope-regression','app','main')",
+      [org.id, `org:${org.id}`],
+    );
+    const orgPair = { token_id: "ak-orgmanagement", token_secret: "as-orgmanagement" };
+    await db.query(
+      "insert into credentials(scope,owner_id,kind,value_enc) values('org',$1,'modal',$2),('user',$3,'modal',$4)",
+      [
+        org.id,
+        await encryptSecret(JSON.stringify(orgPair), KEY),
+        STAN,
+        await encryptSecret(
+          JSON.stringify({ token_id: "ak-personalmanagement", token_secret: "as-personalmanagement" }),
+          KEY,
+        ),
+      ],
+    );
+    const orgStore = createSqlModalStore(db, orgScope);
+    await orgStore.reserve("golden-source", {
+      info: { id: "golden-source", name: "source", state: "ready", providerState: "active", labels: {} },
+      phase: "active",
+      generation: 1,
+      golden: true,
+      ttlSeconds: 60,
+      physicalName: "source",
+    });
+    await orgStore.saveImage({
+      sourceId: "golden-source",
+      info: { name: "image", status: "ready" },
+      imageId: "im-source",
+      goldenClean: true,
+      managementAuthority: { credentialScope: "org", credentialOwnerId: org.id },
+    });
+    const modal = await createModalIntegration({
+      sql: db,
+      vault: options.store,
+      encryptionKey: KEY,
+      publicUrl: "https://armada.test",
+    });
     options.providerFor = () => provider;
-    options.providers = { resolve: async () => access.wrap(provider) };
+    options.providers = {
+      resolve: async (target, caller) => {
+        expect(await modal.modalTokensFor(target, caller)).toMatchObject({ tokenId: orgPair.token_id, scope: "org" });
+        const scope: Scope = {
+          orgId: target.orgId,
+          userId: caller.userId,
+          visibility: target.visibility,
+          binding: target.modal!,
+        };
+        const sourceScope: Scope = { ...scope, visibility: target.sourceGoldenVisibility ?? target.visibility };
+        const machines = createSqlModalStore(db, scope);
+        return access.wrap({
+          ...provider,
+          fork: async (request) => {
+            const image = await createSqlModalStore(db, sourceScope).image(request.from);
+            const info = await fake.provider.fork(request);
+            await machines.reserve(info.id, {
+              info,
+              phase: "active",
+              generation: 1,
+              launchUserId: caller.userId,
+              golden: false,
+              ttlSeconds: request.ttlSeconds ?? 900,
+              physicalName: info.id,
+              grantExpiresAt: Date.now() + 900_000,
+              managementAuthority: { credentialScope: "org", credentialOwnerId: org.id },
+              sourceImage: { scopeKey: scopeKey(sourceScope), name: request.from, imageId: image.imageId! },
+            });
+            return info;
+          },
+          get: async (id) => ({ ...(await machines.get(id)).info, physicalGeneration: "1" }),
+          prompt: async (request) => {
+            const receipt = await provider.prompt(request);
+            await machines.lease(request.sandboxId, async (machine, save) => {
+              machine.info.state = "running";
+              await save(machine);
+            });
+            await appendModalEvents(db, scope, request.sandboxId, "1", [
+              {
+                sequence: 1,
+                event: {
+                  id: "scope-prompt",
+                  kind: "prompt",
+                  at: Date.now(),
+                  text: request.text,
+                  status: "running",
+                  promptId: receipt.promptId,
+                  conversationId: receipt.conversationId,
+                },
+              },
+            ]);
+            return receipt;
+          },
+        });
+      },
+    };
+    options.storedProviderFor = modal.storedProviderFor;
+    options.logs = async (caller, id) => {
+      const row = await options.data!(caller).sandboxes.get(id);
+      if (!row) throw new VaultError("not_found", "No such sandbox.");
+      return { provider: await modal.storedProviderFor(row, caller), providerSandboxId: row.providerSandboxId };
+    };
     options.sandboxArmadaAccess = access;
     options.orchestrators = {
       enabledPairs: ["modal:codex"],
     } as unknown as import("../src/orchestrator-runtime.ts").OrchestratorRuntime;
     // The staging checker used an absolute cwd; the public launch contract takes a configured selector.
     const bearer = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`;
-    const stagingLaunch = (repo: string) =>
+    const stagingLaunch = (repo: string, placement: "boat" | "modal" = "modal") =>
       handleControlRequest(
         new Request("https://armada.test/api/v1/sandbox/launch-access-v1", {
           method: "POST",
           headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json" },
           body: JSON.stringify({
             org: org.id,
-            golden: "access",
-            provider: "modal",
+            golden: placement === "boat" ? "access-boat" : "access",
+            provider: placement,
             harness: "codex",
             credentialId: account.id,
             model: "gpt-6.1-sol",
@@ -1995,6 +2112,85 @@ test("access launch grants scoped authority before the first prompt while retain
       )?.visibility,
     ).toBe("private");
     expect(fake.prompts).toHaveLength(1);
+    const sdk = spyOn(AppService.prototype, "fromName").mockImplementation(async () => {
+      throw Error("Stored reads must not call SDK App APIs");
+    });
+    try {
+      const read = (route: string, user = STAN, selectedOrg = org.id) =>
+        handleControlRequest(
+          new Request(`https://armada.test/api/v1/${route}`, {
+            method: "POST",
+            headers: {
+              authorization: `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: user })).replace(/=+$/, "")}.sig`,
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({ id: launched.id, org: selectedOrg }),
+          }),
+          options,
+        );
+      const status = await read("sandbox/status");
+      expect(status?.status).toBe(200);
+      expect(await status?.json()).toMatchObject({ id: launched.id, status: "running", conversationIds: ["conv_1"] });
+      const events = await read("logs/read");
+      expect(events?.status).toBe(200);
+      expect(await events?.json()).toMatchObject({
+        events: [expect.objectContaining({ text: "Remember the child task" })],
+      });
+      expect(
+        (await db.query("select scope,visibility from modal_machines where id=$1", [launched.providerSandboxId])).rows,
+      ).toEqual([{ scope: scopeKey({ ...orgScope, visibility: "private" }), visibility: "private" }]);
+      await db.query("insert into members(org_id,user_id,role) values($1,$2,'member')", [org.id, ADA]);
+      options.authStore.addMembership(ADA, { orgId: org.id, name: org.name, role: "member" });
+      expect((await read("sandbox/status", ADA))?.status).toBe(404);
+      expect((await read("logs/read", ADA))?.status).toBe(404);
+      expect((await read("sandbox/status", STAN, crypto.randomUUID()))?.status).toBe(404);
+      expect(sdk).not.toHaveBeenCalled();
+    } finally {
+      sdk.mockRestore();
+    }
+    const ordinary = await cli(STAN).run([
+      "launch",
+      "access",
+      "--provider",
+      "modal",
+      "--agent",
+      "codex",
+      "--credential-id",
+      account.id,
+      "--json",
+    ]);
+    expect(ordinary.code).toBe(0);
+    const ordinaryId = JSON.parse(ordinary.out).providerSandboxId;
+    expect((await db.query("select scope,visibility from modal_machines where id=$1", [ordinaryId])).rows).toEqual([
+      { scope: scopeKey(orgScope), visibility: "org" },
+    ]);
+
+    await db.query(
+      "insert into goldens(org_id,name,visibility,owner_id,boat_snapshot_id,config) select org_id,'access-boat','org',owner_id,'boat-image',config from goldens where id=$1",
+      [golden.id],
+    );
+    await db.query("update orgs set boat_api_key_enc=$1 where id=$2", [
+      await encryptSecret("org-boat-fixture-key", KEY),
+      org.id,
+    ]);
+    await db.query("insert into credentials(scope,owner_id,kind,value_enc) values('user',$1,'boat',$2)", [
+      STAN,
+      await encryptSecret("personal-boat-fixture-key", KEY),
+    ]);
+    const routed = options.providers;
+    delete options.providers;
+    let selectedBoatKey: string | undefined;
+    options.providerFor = (key) => {
+      selectedBoatKey = key;
+      throw new VaultError("unavailable", "Fixture stops before allocation.");
+    };
+    options.orchestrators = { enabledPairs: ["boat:codex", "modal:codex"] } as unknown as typeof options.orchestrators;
+    const forksBefore = fake.forks.length;
+    expect((await stagingLaunch("web", "boat"))?.status).toBe(503);
+    expect(selectedBoatKey).toBe("org-boat-fixture-key");
+    expect(fake.forks).toHaveLength(forksBefore);
+    options.providers = routed;
+    options.providerFor = () => provider;
     const { OrchestratorAuthority } = await import("@armada/core/server");
     const sql: Sql = {
       query: (q, v) => db.query(q, v),
@@ -2011,12 +2207,13 @@ test("access launch grants scoped authority before the first prompt while retain
       ),
     ).toBe(STAN);
     // The same complete staging payload is accepted with its configured repository selector.
+    const beforeAccepted = fake.forks.length;
     const accepted = await stagingLaunch("web");
     expect(accepted?.status).toBe(200);
     expect(await accepted?.json()).toMatchObject({
       sandbox: { credentialId: account.id, repositoryDir: "web" },
       armadaAccess: { enabled: true, maxActiveChildren: 1 },
     });
-    expect(fake.forks).toHaveLength(2);
+    expect(fake.forks).toHaveLength(beforeAccepted + 1);
   });
 });

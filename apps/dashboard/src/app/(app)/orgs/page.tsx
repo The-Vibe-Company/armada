@@ -4,11 +4,11 @@ import Link from "next/link";
 import { createOrg } from "@/app/actions/orgs";
 import { switchOrganization } from "@/app/actions/selected-org";
 import { ActionForm, SubmitButton } from "@/components/action-form";
+import { CreateDialog } from "@/components/create-dialog";
 import { LinkPendingIcon } from "@/components/link-pending";
 import { Empty, PageHeader } from "@/components/page-header";
 import { ToneBadge } from "@/components/status-badge";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { selectedOrganization } from "@/lib/data/selected-org";
@@ -27,11 +27,26 @@ export default async function OrgsPage() {
 
   return (
     <>
-      <PageHeader title="Organizations" />
+      <PageHeader title="Organizations">
+        <CreateDialog
+          label="New org"
+          title="Create an org"
+          description="You become its first admin."
+          className="sm:max-w-md"
+        >
+          <ActionForm action={createOrg} className="flex flex-col gap-3">
+            <div className="space-y-2">
+              <Label htmlFor="org-name">Name</Label>
+              <Input id="org-name" name="name" maxLength={120} required placeholder="The Vibe Company" />
+            </div>
+            <SubmitButton className="self-start">Create org</SubmitButton>
+          </ActionForm>
+        </CreateDialog>
+      </PageHeader>
 
       {memberships.length === 0 ? (
         <Empty icon={<UsersIcon />} title="You are not in an org yet">
-          Create one below, or ask an admin to add your email.
+          Create an org, or ask an admin to add your email.
         </Empty>
       ) : (
         <ul className="divide-y overflow-hidden rounded-xl border bg-card shadow-xs" aria-label="Your orgs">
@@ -87,22 +102,6 @@ export default async function OrgsPage() {
           })}
         </ul>
       )}
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Create an org</CardTitle>
-          <CardDescription>You become its first admin.</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <ActionForm action={createOrg} className="flex flex-col gap-3 sm:max-w-md">
-            <div className="space-y-2">
-              <Label htmlFor="org-name">Name</Label>
-              <Input id="org-name" name="name" maxLength={120} required placeholder="The Vibe Company" />
-            </div>
-            <SubmitButton className="self-start">Create org</SubmitButton>
-          </ActionForm>
-        </CardContent>
-      </Card>
     </>
   );
 }
