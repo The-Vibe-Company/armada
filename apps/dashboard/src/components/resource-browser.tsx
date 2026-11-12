@@ -148,9 +148,9 @@ export function ResourceBrowser({
       if (next === null) url.searchParams.delete(ITEM_PARAM);
       else url.searchParams.set(ITEM_PARAM, next);
       if (detailPanel && selected === null && next !== null) {
-        window.history.pushState(window.history.state, "", url);
+        window.history.pushState(null, "", url);
       } else {
-        window.history.replaceState(window.history.state, "", url);
+        window.history.replaceState(null, "", url);
       }
       if (next !== null) {
         opener.current = next;
