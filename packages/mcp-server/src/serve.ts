@@ -45,6 +45,7 @@ import { createProviderMetadata } from "./provider-metadata.ts";
 import { pruneServerRetention } from "./retention-maintenance.ts";
 import { startRoutineWorker } from "./routine-worker.ts";
 import { createRuntimeArtifactRoute } from "./runtime-artifacts.ts";
+import { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import { createSandboxArmadaAccess } from "./sandbox-armada-access.ts";
 import { createSandboxLifecycle } from "./sandbox-lifecycle.ts";
@@ -293,6 +294,8 @@ export async function startServer(
         }),
       });
   if (orchestrators) control.orchestrators = orchestrators.runtime;
+  const runtimeEnrolments = createRuntimeEnrolments(sql, config.encryptionKey);
+  const runtimeCommands = createRuntimeCommands(runtimeEnrolments, config.encryptionKey);
   const handler = createHandler({
     ready: createDatabaseReadiness(sql),
     launch,
@@ -326,7 +329,8 @@ export async function startServer(
     goldenTarget: modal.goldenTarget,
     routes: [
       createRuntimeArtifactRoute(env.ARMADA_RUNTIME_ARTIFACT_DIR),
-      createRuntimeEnrolments(sql, config.encryptionKey).route,
+      runtimeEnrolments.route,
+      runtimeCommands.route,
       ...(orchestrators && "scopedToolsRoute" in orchestrators
         ? [
             orchestrators.scopedToolsRoute,
