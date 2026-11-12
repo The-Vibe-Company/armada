@@ -5,7 +5,7 @@ import { configureClaudeEndpoint } from "../../agent-runtime/src/claude-endpoint
 import type { Caller } from "../src/caller.ts";
 import { createCredentialRepoint } from "../src/credential-repoint.ts";
 import { createSqlData } from "../src/data.ts";
-import { launchCredentials } from "../src/launch-credentials.ts";
+import { exposedSecrets, launchCredentials } from "../src/launch-credentials.ts";
 import { modalLaunchEnvironment } from "../src/modal-launch-environment.ts";
 import { createModelAuthOwnership } from "../src/model-auth.ts";
 import { createModelUsageApi } from "../src/model-usage.ts";
@@ -15,6 +15,7 @@ import { database, ENCRYPTION_KEY, fakeBoat, SECRETS } from "./support.ts";
 async function fixture(
   options: {
     native?: boolean;
+    orgVisible?: boolean;
     harness?: "claude" | "codex";
     boat?: boolean;
     active?: boolean;
@@ -32,7 +33,7 @@ async function fixture(
   const scope: Scope = {
     orgId: people.org,
     userId: people.owner,
-    visibility: "private",
+    visibility: options.orgVisible ? "org" : "private",
     binding: { workspace: "ws-repoint", environment: "main", appId: "ap-repoint" },
   };
   await db.query("insert into modal_server_scopes(scope,context) values($1,$2::jsonb)", [
@@ -43,7 +44,7 @@ async function fixture(
     id = crypto.randomUUID(),
     physical = "retained-workspace";
   await db.query(
-    `insert into goldens(id,org_id,owner_id,name,visibility,provider,modal_workspace,modal_environment,modal_app_id,config) values($1,$2,$3,'repoint','private',$8::public.sandbox_provider,$4,$5,$6,$7::jsonb)`,
+    `insert into goldens(id,org_id,owner_id,name,visibility,provider,modal_workspace,modal_environment,modal_app_id,config) values($1,$2,$3,'repoint',$9,$8::public.sandbox_provider,$4,$5,$6,$7::jsonb)`,
     [
       golden,
       people.org,
@@ -53,6 +54,7 @@ async function fixture(
       options.boat ? null : scope.binding.appId,
       JSON.stringify({ repos: [], init: [] }),
       options.boat ? "boat" : "modal",
+      options.orgVisible ? "org" : "private",
     ],
   );
   if (harness === "claude")
@@ -792,3 +794,46 @@ test("expired command calls cannot dispatch after a stopped-workspace repair", a
     await f.db.close();
   }
 });
+
+test("retained account-change secrets redact for every authorized org event reader", async () => {
+  const f = await fixture({ orgVisible: true });
+  try {
+    await f.db.query("update sandboxes set visibility='org' where id=$1", [f.id]);
+    await f.service.repoint(f.caller, { id: f.id, credentialId: f.target.id });
+    // Replacing the vault value removes the first account revision everywhere
+    // except the encrypted history retained by the actual account handoff.
+    await f.db.query("update credentials set value_enc=$2,version=version+1 where id=$1", [
+      f.target.id,
+      await encryptSecret("current-repoint-api-key", ENCRYPTION_KEY),
+    ]);
+    await f.service.repoint(f.caller, { id: f.id, credentialId: f.target.id });
+    expect(
+      await exposedSecrets(createSqlVaultStore(f.db), ENCRYPTION_KEY, {
+        userId: f.people.owner,
+        orgId: f.people.org,
+      }),
+    ).not.toContain(f.secret);
+    const retained = (
+      await f.db.query<{ redaction_enc: Uint8Array }>(
+        "select redaction_enc from sandbox_model_credentials where sandbox_id=$1",
+        [f.id],
+      )
+    ).rows[0]!;
+    expect(JSON.parse(await decryptSecret(new Uint8Array(retained.redaction_enc), ENCRYPTION_KEY))).toContain(f.secret);
+    const events = [{ id: "retained", at: 1, kind: "message" as const, partial: false, tools: [], text: f.secret }];
+    const read = (userId: string, orgId = f.people.org) =>
+      f.auth.redactEvents(f.provider, f.physical, { userId, orgId }, events);
+    for (const viewer of [f.people.owner, f.people.member, f.people.admin])
+      expect(await read(viewer)).toMatchObject([{ text: "***" }]);
+    await f.db.query("update sandboxes set visibility='private' where id=$1", [f.id]);
+    for (const viewer of [f.people.member, f.people.admin])
+      await expect(read(viewer)).rejects.toMatchObject({ code: "not_found" });
+    expect(await read(f.people.owner)).toMatchObject([{ text: "***" }]);
+    await f.db.query("update sandboxes set visibility='org' where id=$1", [f.id]);
+    await f.db.query("delete from members where org_id=$1 and user_id=$2", [f.people.org, f.people.member]);
+    await expect(read(f.people.member)).rejects.toMatchObject({ code: "not_found" });
+    await expect(read(f.people.owner, crypto.randomUUID())).rejects.toMatchObject({ code: "not_found" });
+  } finally {
+    await f.db.close();
+  }
+}, 30000);

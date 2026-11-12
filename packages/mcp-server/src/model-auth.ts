@@ -952,7 +952,8 @@ export function createModelAuthOwnership(
       `select material.redaction_enc from public.sandbox_model_credentials material
       join public.sandboxes s on s.id=material.sandbox_id join public.members m on m.org_id=s.org_id and m.user_id=$4::uuid
       where s.provider=$1::public.sandbox_provider and s.provider_sandbox_id=$2 and s.org_id=$3::uuid
-      and (s.owner_id=$4::uuid or m.role='admin')`,
+      and (s.owner_id=$4::uuid or m.role='admin'
+        or coalesce(s.visibility,(select visibility from public.goldens g where g.id=s.golden_id))='org')`,
       [provider.id, providerId, caller.orgId, caller.userId],
     );
     for (const row of rows.rows) {
