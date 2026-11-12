@@ -772,7 +772,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
                       outputTokens: number | null;
                       cachedTokens?: number | null;
                     }[];
-                    tokenTotals?: { inputTokens: number | null; outputTokens: number | null };
+                    tokenTotals?: { inputTokens: number | null; outputTokens: number | null; incomplete?: boolean };
                   };
                 }>("status", { id: sandboxId }),
               (result) => {
@@ -785,7 +785,10 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
                   item.harness === "codex" &&
                   row?.inputTokens === null &&
                   row.outputTokens === null &&
-                  row.cachedTokens === null
+                  row.cachedTokens === null &&
+                  result.usage?.tokenTotals?.incomplete === true &&
+                  typeof result.usage.tokenTotals.inputTokens === "number" &&
+                  typeof result.usage.tokenTotals.outputTokens === "number"
                 )
                   return true;
                 return (

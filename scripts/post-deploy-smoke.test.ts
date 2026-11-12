@@ -1818,7 +1818,7 @@ test("Modal smoke refuses a finished turn whose status never reports usage and s
 
 // Status is the public boundary: unknown counters must be present for the resumed
 // prompt, not supplied by the fixture's default numeric usage or an old prompt.
-test.each(["unknown", "missing", "old", "partial", "measured"])(
+test.each(["unknown", "missing", "old", "partial", "measured", "null-totals", "complete-marker"])(
   "Modal resumed Codex usage contract: %s",
   async (mode) => {
     let resumed = false;
@@ -1843,7 +1843,11 @@ test.each(["unknown", "missing", "old", "partial", "measured"])(
                     ...(mode === "partial" ? {} : { cachedTokens: mode === "measured" ? 0 : null }),
                   },
                 ],
-          tokenTotals: { inputTokens: 22, outputTokens: 5 },
+          tokenTotals: {
+            inputTokens: mode === "null-totals" ? null : 22,
+            outputTokens: mode === "null-totals" ? null : 5,
+            incomplete: mode !== "measured" && mode !== "complete-marker",
+          },
         },
       });
     });
