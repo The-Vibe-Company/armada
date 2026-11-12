@@ -7,7 +7,7 @@ CI and its budget guard are unchanged.
 
 The candidate uses 24 isolated jobs, one mock/app/browser worker in each. Playwright
 fully-parallel sharding distributes individual tests rather than making the largest
-spec one indivisible shard. A collection check selects **264 tests in 42 files**;
+spec one indivisible shard. A collection check selects **263 tests in 42 files**;
 new tests are discovered automatically. Each shard uses zero retries and unchanged
 test assertions. The pinned Noble container supplies system libraries; Chromium
 comes from the installed lockfile version, not the container's old browser revision.
@@ -26,8 +26,8 @@ artifact upload. Also compare the final verdict to workflow start, including que
 A three-minute diagnostic timeout leaves overruns visible rather than treating
 termination at two minutes as success.
 
-A full local zero-retry baseline was started before this PR; its ignored report
-is under `plans/ship-pr-dev/browser-baseline/`. Real PR and merge-group runs are
+The full local zero-retry baseline completed: **294 passed, zero failures/skips/
+retries**, 599.97 seconds including build/start. Its ignored report is under `plans/ship-pr-dev/browser-baseline/`. Real PR and merge-group runs are
 the deciding evidence. The delivery owner does not poll CI; the coordinator reads
 those timings. Only after every shard fits may the next PR add the required
 **Dashboard e2e** aggregate and include its dependency chain in the budget guard.
@@ -51,5 +51,24 @@ measurement configuration excludes them. No test source is modified.
 | tools-panel.e2e.ts | Known fragile panel history/focus coverage called out in #1269. |
 | variables-panel.e2e.ts | Known fragile panel history/focus coverage called out in #1269. |
 
-The four files account for 28 tests at this revision. Any additional failure gets
-its own documented reason and evidence before it can be kept out of the gate.
+The four files account for 30 tests at this revision.
+
+One further test is excluded by exact title (not by dropping its whole file):
+**build-section.e2e.ts — on a phone the list fits the width and the panel is a
+sheet over it**. In [run 43305820133, shard 2](https://github.com/The-Vibe-Company/armada/actions/runs/43305820133/job/131488753129),
+the exact width assertion at line 160 received `390.00001525878906` rather than
+`390`. The same assertion passed in the full zero-retry local baseline.
+This is a measured fractional-geometry flake, not a reason to round the actual
+value, relax the assertion or retry it. It remains unchanged in the full suite.
+
+## First PR measurements
+
+In run 43305820133, 23/24 jobs passed; shard 2 had the failure above.
+Job wall times (including container/setup/build/browser/artifact work) ranged
+from 82 to 113 seconds. These are **job durations, not workflow-start-to-final-
+verdict timings**. One failing run does not establish readiness for promotion,
+nor does it supply merge-group evidence. After this targeted exclusion, measure
+the updated candidate again before adding a required aggregate.
+
+Any additional failure gets its own documented reason and evidence before it
+can be kept out of the gate.
