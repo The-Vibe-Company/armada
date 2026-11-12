@@ -2015,6 +2015,23 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     const merged = mergeModalResourceReceipts([receipt, ...persisted]);
     expect(merged.find((x) => x.sandboxId === builder.id)?.snapshotImages).toEqual(receipt.snapshotImages);
   });
+  test.each([true, false])("prompt performs one final health probe after preparation (healthy=%s)", async (healthy) => {
+    let prepared = false;
+    const f = fixture(scope, db, async () => {
+      prepared = true;
+    });
+    const row = await runningFork(f);
+    f.log.length = 0;
+    f.onRpc(async (machine, op) =>
+      op === "health" ? { generation: String(machine.generation), ready: healthy || !prepared } : undefined,
+    );
+    const send = f.provider.prompt({ sandboxId: row.id, harness: "codex", text: "prepared work" });
+    if (healthy) await send;
+    else await expect(send).rejects.toMatchObject({ code: "sandbox_not_ready" });
+    expect(prepared).toBe(true);
+    expect(f.log.filter((op) => op === "health")).toHaveLength(1);
+    expect(f.log.filter((op) => op === "prompt")).toHaveLength(healthy ? 1 : 0);
+  });
   test("beforePrompt sees ready first/restored generation outside the lease, configures before native submission, and supports parallel stable turns", async () => {
     const observed: string[] = [];
     const hydrated: { generation: number; variables: unknown }[] = [];

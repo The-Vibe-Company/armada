@@ -118,7 +118,7 @@ import {
 } from "./org-provider.ts";
 import type { ProviderMetadataFor } from "./provider-metadata.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
-import { RequestTiming } from "./request-timing.ts";
+import { RequestTiming, withRequestTiming } from "./request-timing.ts";
 import { type createSandboxArmadaAccess, parseSandboxArmadaAccess } from "./sandbox-armada-access.ts";
 import { bunSql } from "./sql.ts";
 import { callSharedTool, ToolApiError } from "./tool-api.ts";
@@ -299,7 +299,7 @@ export async function handleControlRequest(request: Request, options: ControlOpt
             : await options.invitations.manage(invitationAction, caller, required(body, "org"), body);
     } else
       result = await timing.measure("dispatch", () =>
-        dispatch(deletion ? "sandbox/delete" : route, caller, body, options),
+        withRequestTiming(timing, () => dispatch(deletion ? "sandbox/delete" : route, caller, body, options)),
       );
     if (result === undefined) return fail(404, "unknown_route", "Unknown route.");
     return Response.json(result, {
