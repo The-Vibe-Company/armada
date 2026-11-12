@@ -382,3 +382,48 @@ test("secret references expose stale state and actionable closed refusals withou
   for (const reason of ["secret_unavailable", "secret_version_changed", "secret_delivery_unavailable"])
     expect(templateFailure(409, `Template launch refused: ${reason}.`)).not.toContain("could not be started");
 });
+
+test("a chosen model account pins its current revision and refuses unusable, incompatible or personal org pins", () => {
+  const account = {
+    id: ALICE,
+    scope: "user" as const,
+    kind: "anthropic" as const,
+    name: "Gateway",
+    isDefault: false,
+    status: "active" as const,
+    expiresAt: null,
+    updatedAt: "2026-11-11T00:00:00.000Z",
+    version: 4,
+  };
+  const accounts = {
+    state: "ready" as const,
+    accounts: [account],
+    now: Date.parse(account.updatedAt),
+    orgName: "Acme",
+  };
+  const available = { ...lookups, accounts };
+  const result = templateRequest(form({ credential: account.id }), available);
+  expect(result.ok && result.value.definition.modelAccount).toEqual({ id: account.id, version: 4 });
+  expect(templateRequest(form({ credential: account.id, scope: "org" }), available).ok).toBe(false);
+  expect(
+    templateRequest(form({ credential: account.id }), {
+      ...available,
+      accounts: { ...accounts, accounts: [{ ...account, scope: "org" }] },
+    }).ok,
+  ).toBe(true);
+  for (const changed of [
+    { ...account, status: "revoked" as const },
+    { ...account, kind: "openai" as const },
+    { ...account, expiresAt: "2026-11-10T00:00:00.000Z" },
+  ]) {
+    expect(
+      templateRequest(form({ credential: account.id }), {
+        ...available,
+        accounts: { ...accounts, accounts: [changed] },
+      }).ok,
+    ).toBe(false);
+  }
+  expect(templateRequest(form({ credential: account.id }), lookups).ok).toBe(false);
+  const implicit = templateRequest(form(), lookups);
+  expect(implicit.ok && implicit.value.definition).not.toHaveProperty("modelAccount");
+});
