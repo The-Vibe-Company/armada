@@ -1,4 +1,5 @@
 /** Local/staging native proof only: private loopback TLS fixture, no model/provider/remote server call. */
+import { createHash } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -56,6 +57,27 @@ async function main() {
     if (await build.exited) throw Error("fixture_compile_failed");
     const enrolmentToken = `armada_enrol_${crypto.randomUUID().replaceAll("-", "").repeat(2)}`;
     const runtimeToken = `armada_runtime_${crypto.randomUUID().replaceAll("-", "").repeat(2)}`;
+    // Protocol-only smoke never spawns a harness. Supply the mandatory pinned
+    // selection with a tiny regular file; the real native CLI proof is separate.
+    const contents = "protocol-only unused executable",
+      archive = await new Bun.Archive({ "bin/codex": contents }).bytes();
+    const digest = (value: Uint8Array | string) => createHash("sha256").update(value).digest("hex");
+    const artifactManifest = {
+      protocol: 1,
+      platform: "linux",
+      architecture: process.arch,
+      libc: "glibc",
+      harnesses: {
+        codex: {
+          version: "fixture",
+          executable: "bin/codex",
+          archive: { bytes: archive.length, sha256: digest(archive) },
+          files: [
+            { path: "bin/codex", bytes: Buffer.byteLength(contents), sha256: digest(contents), executable: true },
+          ],
+        },
+      },
+    };
     const finished = Promise.withResolvers<void>();
     const requests = [httpOnly ? "health-http-1" : "health-ws", "health-http-2"];
     let consumed = false,
@@ -70,6 +92,10 @@ async function main() {
         try {
           const path = new URL(request.url).pathname;
           const authorization = request.headers.get("authorization");
+          if (path === `/api/runtime/artifacts/${digest(archive)}`) {
+            if (authorization) throw Error("fixture_credential_on_artifact_request");
+            return new Response(archive);
+          }
           if (path === "/api/runtime/enrol") {
             if (consumed || authorization !== `Bearer ${enrolmentToken}`) return new Response(null, { status: 401 });
             consumed = true;
@@ -86,6 +112,8 @@ async function main() {
                   codexExecutable: "/not-selected",
                   claudeEnv: {},
                   codexEnv: {},
+                  selectedHarness: "codex",
+                  artifactManifest,
                 },
               },
               { headers: { "cache-control": "no-store" } },

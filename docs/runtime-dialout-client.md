@@ -16,6 +16,11 @@ configuration uses the existing native bootstrap shape, with `grant.expiresAt`;
 the client overrides grant token, sandbox identity and generation from the
 exchange. Port/ingest URL are not used for dial-out control or event upload.
 
+The subsequent [enrolled bootstrap](runtime-enrolled-bootstrap.md) requires
+`selectedHarness: "codex"` plus the compiled `artifactManifest` in that server
+configuration and installs/verifies the selected CLI before command readiness.
+Only the selected harness is admitted; image-provided CLI paths are ignored.
+
 The epoch is immutable for the process. No reconnect or fallback re-enrols or
 changes the binary/configuration. Start/resume must obtain a fresh ticket. A
 401/403, stale frame epoch or revoked socket closes control and native drivers;
