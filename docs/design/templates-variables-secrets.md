@@ -523,7 +523,7 @@ Surface order within each stage remains API/MCP → CLI → dashboard → iOS.
 | 5. Secret/tool template grants and child authority | Admin-approved org-secret/template binding and actor/group use grants, server-held remote MCP auth; opt-in raw delivery only after slice 2; fresh child admission | connection/grant-version bindings, template-use/delegation grants; explicit RLS/grants | Sentry allow/deny; unapproved member/personal template rejected; revoked child gateway denied; S2-child-prompt canary blocked on every managed child path; canary template launches repeat slice 2 checks |
 | 6. Template surfaces | CLI publish/use; dashboard Build > Templates and launch warnings; iOS consumption; safe revision mismatch diagnostics | None unless a separately reviewed dashboard mutation function is needed | Real staging CLI/browser/device publish/launch/revoke on both providers; no secret DTO or client persistence; V1-readable-env proves channel/build/init policy |
 | 7. Routine model and manual occurrence | §7 ownership/revisions/delegation; run-now uses same admission/idempotency/outcome path; no scheduler yet | routines/revisions, occurrence claims/results, delegation epoch bindings, private/org RLS and grants | Manual staging occurrence on Boat + Modal; S3-routine-policy rejects any raw application-secret binding and admin-only reapproval, owner approval succeeds; S4-rebuild-admission proves routine stays enabled across eligible rebuild; duplicate request, removed owner and revoked grants fail; outcome links to prompt |
-| 8. Routine scheduler and admission limits | Durable timer worker, occurrence claims/fencing, missed/overlap/pause policies, concurrency/spend reservation, native-account exclusivity | next_due/anchor/interval, worker leases/fences, concurrency and budget reservations/ledger, unique occurrence index | Two staging workers, crash/restart and lost response: no duplicate; missed/overlap recorded, pause fence wins, two routines sharing native account cannot allocate twice; budget race rejects loser |
+| 8. Routine scheduler and admission limits | Durable timer worker, occurrence claims/fencing, missed/overlap/pause policies, concurrency/spend reservation, shared native-account authorization | next_due/anchor/interval, worker leases/fences, concurrency and budget reservations/ledger, unique occurrence index | Two staging workers, crash/restart and lost response: no duplicate; missed/overlap recorded, pause fence wins, two routines sharing a native account may allocate concurrently; budget race rejects loser |
 | 9. Routine outcomes and unattended recovery | Outcome observer, bounded retries, value-free reasons, unknown-outcome reconciliation and cleanup; no replay of side-effecting prompts | outcome cursor/lease, terminal reason/cleanup state and notification outbox if needed | Staging auth expiry, usage limit, provider move, timeout, revoke during allocation and observer restart; over-50-page history, stalled cursor and raw-error canary prove unknown rather than false success/no secret reason; physical cleanup confirmed |
 | 10. Routine surfaces in Run | API/MCP then CLI, dashboard Run > Routines, iOS; safe configure/pause/run-now/history/outcome access | None beyond 7–9 | Real staging UI creates every-X-hours routine, pauses/resumes, displays missed/busy/budget/failure and exact redacted run outcome; cross-org/private access denied |
 
@@ -645,16 +645,12 @@ per UTC day. Owner/admin must explicitly configure org concurrency, daily spend/
 caps and per-run TTL/size before enabling. These caps cannot enlarge existing
 provider/org limits; children consume the same budget, not a bypass.
 
-A native subscription account may own **one sandbox at a time**, including manual
-launches, other routines, orchestrators/children and retained native-account ownership.
-Use the existing native credential ownership/admission path, not a scheduler-local mutex
-or a copied login. Resolve/pin account ID/version explicitly for unattended runs before
-enablement; do not depend on a mutable “current default” at each tick. Do not fall back
-to another account or steal ownership when busy. Record credential_busy, skip this
-occurrence and try only the next scheduled occurrence; no unbounded queue. Expired
-activity/worker lease alone is not evidence that native ownership or compute was
-released: reconcile using the existing ownership and provider-exit rules. Never clear
-native owner state just because a prompt ended.
+Subscription accounts are shared like API keys (#1248): other sandboxes, routines
+and orchestrator children do not reserve an account. Resolve/pin the authorized
+account ID/version explicitly for unattended runs before enablement; do not
+silently switch accounts at each tick. Codex renewal is server-owned through the
+shared broker; routine capacity and spend budgets remain independent admission
+policies, not credential exclusivity.
 
 Reserve a conservative compute allowance from size/TTL plus configured model usage
 allowance against the org and routine daily budget; serialize concurrent reservations.

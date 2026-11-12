@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
-import { CREDENTIAL_BUSY_MESSAGE, MODEL_CATALOG, ProviderError, VaultError } from "@armada/core";
+import { MODEL_CATALOG, ProviderError, VaultError } from "@armada/core";
 import type { Caller } from "../src/caller.ts";
 import { orchestratorHttp } from "../src/orchestrator-api.ts";
 
@@ -221,7 +221,7 @@ test("synchronous orchestrator credential refusal remains a compatible 409 with 
   const { OrchestratorRuntime } = await import("../src/orchestrator-runtime.ts");
   const service = new OrchestratorRuntime({} as ConstructorParameters<typeof OrchestratorRuntime>[0]);
   service.detail = async () => {
-    throw new VaultError("credential_busy", CREDENTIAL_BUSY_MESSAGE);
+    throw new VaultError("credential_busy", "The model account is unavailable. Check its current credentials.");
   };
   const response = await orchestratorHttp(
     new Request("https://armada.invalid/api/v1/orchestrators/parent?orgId=org"),
@@ -230,6 +230,10 @@ test("synchronous orchestrator credential refusal remains a compatible 409 with 
   );
   expect(response.status).toBe(409);
   expect(await response.json()).toEqual({
-    error: { code: "conflict", reason: "credential_busy", message: CREDENTIAL_BUSY_MESSAGE },
+    error: {
+      code: "conflict",
+      reason: "credential_busy",
+      message: "The model account is unavailable. Check its current credentials.",
+    },
   });
 });

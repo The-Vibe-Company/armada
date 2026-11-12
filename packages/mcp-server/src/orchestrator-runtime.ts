@@ -10,7 +10,7 @@ import type {
   SandboxRecord,
 } from "@armada/core";
 import { ProviderError } from "@armada/core";
-import { CREDENTIAL_BUSY_MESSAGE, PrivateSkillError, VaultError } from "@armada/core/server";
+import { PrivateSkillError, VaultError } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import type { OrchestratorPair } from "./orchestrator-activation.ts";
 import { bootstrapOrchestrator } from "./orchestrator-bootstrap.ts";
@@ -722,7 +722,9 @@ export class OrchestratorRuntime {
           ...reservation.operation,
           state: "failed",
           errorCode,
-          ...(errorCode === "credential_busy" ? { errorMessage: CREDENTIAL_BUSY_MESSAGE } : {}),
+          ...(errorCode === "credential_busy"
+            ? { errorMessage: "The model account is unavailable. Check its current credentials." }
+            : {}),
         };
       }
       const unavailable = error instanceof BestEffortConversationUnavailable;
@@ -828,6 +830,9 @@ function wireOrchestrator(identity: RuntimeIdentity): Orchestrator {
     skillRevision: identity.skillRevision,
     skillReceipt: identity.skillReceipt ?? null,
     blockedReason: identity.blockedReason,
-    failureMessage: identity.blockedReason === "credential_busy" ? CREDENTIAL_BUSY_MESSAGE : null,
+    failureMessage:
+      identity.blockedReason === "credential_busy"
+        ? "The model account is unavailable. Check its current credentials."
+        : null,
   };
 }
