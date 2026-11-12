@@ -46,10 +46,11 @@ try {
           ["tools", "Tools", "Add server"],
           ["variables", "Variables", "Add"],
           ["skills", "Skills", "Add key"],
-          ["harness", "Harness", "Add a subscription"],
+          ["harness", "Models", "Add a subscription"],
         ] as const) {
           await page.goto(`/${route}`);
-          await expect(page.getByRole("heading", { name: title, level: 1, exact: true })).toBeVisible();
+          const heading = route === "harness" && phase === "before" ? /^(?:Harness|Models)$/ : title;
+          await expect(page.getByRole("heading", { name: heading, level: 1, exact: true })).toBeVisible();
           const hasDetail = route !== "skills" && route !== "harness";
           if (hasDetail) {
             // The header can stream before its rows. Never substitute a loading frame for detail evidence.

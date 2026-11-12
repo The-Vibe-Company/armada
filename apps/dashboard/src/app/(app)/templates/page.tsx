@@ -225,6 +225,18 @@ function row(item: TemplateItem, context: RowContext): ResourceRow & { bucket: B
                 : "Runs on the launcher's own model account."}
             </p>
           </PanelSection>
+          {definition.skills.length > 0 && (
+            <PanelSection title="Skills">
+              <p className="text-xs text-muted-foreground">Manage Skillpack access on the Skills page.</p>
+              <ul className="flex flex-wrap gap-2">
+                {definition.skills.map((pin) => (
+                  <li key={pin} className="min-w-0 max-w-full">
+                    <IngredientLink href="/skills">{pin}</IngredientLink>
+                  </li>
+                ))}
+              </ul>
+            </PanelSection>
+          )}
           <PanelSection title="Tools">
             {target.tools.length ? (
               <ul className="space-y-1 text-sm">
@@ -287,18 +299,7 @@ function row(item: TemplateItem, context: RowContext): ResourceRow & { bucket: B
               </ul>
             </PanelSection>
           )}
-          {definition.skills.length > 0 && (
-            <PanelSection title="Skills">
-              <p className="text-xs text-muted-foreground">Manage Skillpack access on the Skills page.</p>
-              <ul className="flex flex-wrap gap-2">
-                {definition.skills.map((pin) => (
-                  <li key={pin} className="min-w-0 max-w-full">
-                    <IngredientLink href="/skills">{pin}</IngredientLink>
-                  </li>
-                ))}
-              </ul>
-            </PanelSection>
-          )}
+
           <NoSecretsNote />
         </>
       ) : (

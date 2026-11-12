@@ -1,10 +1,14 @@
 {
   "name": "@armada/core",
-  "version": "2.23.0",
+  "version": "2.24.0",
   "private": true,
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
     "./server": "./src/server.ts"
+  },
+  "dependencies": {
+    "croner": "11.0.0",
+    "cronstrue": "3.39.0"
   }
 }

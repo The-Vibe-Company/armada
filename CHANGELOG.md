@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.24.0](https://github.com/The-Vibe-Company/armada/compare/v2.23.0...v2.24.0) (2026-11-12)
+
+
+### Features
+
+* **dashboard:** organize navigation into Run Library and Account ([#1155](https://github.com/The-Vibe-Company/armada/issues/1155)) ([f817ea1](https://github.com/The-Vibe-Company/armada/commit/f817ea108ac7496fd4bcd37c14ed67a71d93168c))
+* **routines:** schedule calendar cron in IANA time zones ([#1159](https://github.com/The-Vibe-Company/armada/issues/1159)) ([5247edb](https://github.com/The-Vibe-Company/armada/commit/5247edb7c64f7ccacd8de1d328cae1f3e01bf99b))
+
+
+### Bug Fixes
+
+* **boat:** explain plan start limits and supplied reset timing ([#1156](https://github.com/The-Vibe-Company/armada/issues/1156)) ([96ae1c3](https://github.com/The-Vibe-Company/armada/commit/96ae1c32dcc22b7de991912be46764075981a221))
+* **build:** repair build batch fixture on main ([#1158](https://github.com/The-Vibe-Company/armada/issues/1158)) ([309c735](https://github.com/The-Vibe-Company/armada/commit/309c7358cbeea079fde0f32764803b63e9bc67b5))
+
 ## [2.23.0](https://github.com/The-Vibe-Company/armada/compare/v2.22.0...v2.23.0) (2026-11-12)
 
 

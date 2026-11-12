@@ -41,7 +41,10 @@ export function parseRoutine(x: unknown): RoutineItem | null {
     !["enabled", "paused", "deleted"].includes(x.status) ||
     !int(x.templateRevision) ||
     !int(x.version) ||
-    !int(x.intervalHours, 1, 720) ||
+    !(
+      int(x.intervalHours, 1, 720) ||
+      (x.intervalHours === null && text(x.cron) && text(x.timezone) && text(x.scheduleDescription))
+    ) ||
     !int(x.ttlSeconds, 300, 86400) ||
     !int(x.maxRunsPerDay, 1, 24) ||
     !int(x.consecutiveFailures, 0) ||
@@ -61,7 +64,10 @@ export function parseRoutine(x: unknown): RoutineItem | null {
     status: x.status as RoutineItem["status"],
     templateRevision: x.templateRevision,
     version: x.version,
-    intervalHours: x.intervalHours,
+    intervalHours: x.intervalHours as number | null,
+    ...(text(x.timezone) && text(x.scheduleDescription) && (x.cron === null || text(x.cron))
+      ? { cron: x.cron, timezone: x.timezone, scheduleDescription: x.scheduleDescription }
+      : {}),
     ttlSeconds: x.ttlSeconds,
     maxRunsPerDay: x.maxRunsPerDay,
     consecutiveFailures: x.consecutiveFailures,
@@ -105,6 +111,9 @@ export function canManageRoutine(
   return item.scope === "org" ? viewer.admin : item.ownerId === viewer.userId;
 }
 export const intervalLabel = (hours: number) => `Every ${hours} ${hours === 1 ? "hour" : "hours"}`;
+/** Read compatibility while the cron picker ships in the next UI slice. */
+export const scheduleLabel = (item: Pick<RoutineItem, "intervalHours" | "scheduleDescription">) =>
+  item.scheduleDescription ?? (item.intervalHours === null ? "Cron schedule" : intervalLabel(item.intervalHours));
 export function routineFailure(status?: number): string {
   if (status === 400) return "Check the template revision, prompt and schedule limits.";
   if (status === 401) return "Sign in again before managing routines.";

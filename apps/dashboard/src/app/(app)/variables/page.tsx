@@ -4,10 +4,12 @@ import Link from "next/link";
 import { Empty, PageHeader } from "@/components/page-header";
 import { ResourceBrowser, type ResourceRow } from "@/components/resource-browser";
 import { RowTag, StateCell } from "@/components/state-cell";
+import { TemplateUsage } from "@/components/template-usage";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { AddVaultDialog, VaultMark, VaultPanel } from "@/components/variables";
 import { selectedOrganization } from "@/lib/data/selected-org";
+import { listSelectedTemplates, type TemplateList } from "@/lib/data/templates";
 import { listSelectedVault } from "@/lib/data/variables";
 import { type Bucket, ITEM_PARAM, sortResources } from "@/lib/resource-list";
 import { audience, canManage, itemKey, type VaultItem, vaultState } from "@/lib/variables";
@@ -71,12 +73,13 @@ export default async function VariablesPage({ searchParams }: Props) {
     );
   }
 
+  const templates = await listSelectedTemplates();
   const isAdmin = selected.role === "admin";
   const orgName = selected.org.name;
   const viewer = { userId: list.userId, admin: isAdmin };
   const now = Date.now();
   const rows = sortResources<ResourceRow & { bucket: Bucket; tie: string }>(
-    list.items.map((item) => row(item, orgName, canManage(item, viewer), now)),
+    list.items.map((item) => row(item, orgName, canManage(item, viewer), now, templates)),
   );
   const requested = typeof query[ITEM_PARAM] === "string" ? query[ITEM_PARAM] : null;
 
@@ -112,6 +115,7 @@ function row(
   orgName: string,
   manage: boolean,
   now: number,
+  templates: TemplateList,
 ): ResourceRow & { bucket: Bucket; tie: string } {
   const state = vaultState(item);
   const meta = `${item.kind === "secret" ? "Write-only secret" : "Variable"} · version ${item.version}`;
@@ -132,7 +136,19 @@ function row(
     subtitle: meta,
     state: <StateCell tone={state.tone} label={state.label} data-vault-status={item.status} />,
     fact: audience(item, orgName),
-    detail: <VaultPanel item={item} orgName={orgName} canManage={manage} now={now} />,
+    detail: (
+      <div className="space-y-4">
+        <VaultPanel item={item} orgName={orgName} canManage={manage} now={now} />
+        <TemplateUsage
+          list={templates}
+          uses={(definition) =>
+            item.kind === "variable"
+              ? definition.variables.some((binding) => binding.variableId === item.id)
+              : (definition.secrets ?? []).some((binding) => binding.secretId === item.id)
+          }
+        />
+      </div>
+    ),
     attrs: { "data-vault-item": item.name, "data-vault-kind": item.kind },
   };
 }

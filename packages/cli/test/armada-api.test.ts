@@ -232,7 +232,21 @@ for (const path of ["launch", "launch-sized-v1", "launch-access-v1"]) {
     test(`known allocation refusal keeps its code and closed help (${path}, ${code})`, async () => {
       const client = await createArmadaApiClient({
         ...io({ ARMADA_TOKEN: token }),
-        fetch: async () => Response.json({ error: { code, message: token } }, { status }),
+        fetch: async () =>
+          Response.json(
+            {
+              error: {
+                code,
+                message: token,
+                details: {
+                  provider: "boat",
+                  window: "day",
+                  nextStartAt: "2026-11-12T08:08:00.000Z",
+                },
+              },
+            },
+            { status },
+          ),
       });
       try {
         await client.request(`/api/v1/sandbox/${path}`, { method: "POST" });
@@ -242,6 +256,10 @@ for (const path of ["launch", "launch-sized-v1", "launch-access-v1"]) {
         expect((error as ArmadaApiError).serverCode).toBe(code);
         expect((error as Error).message).not.toContain(token);
         expect((error as Error).message).not.toContain("outcome unknown");
+        if (code === "rate_limited") {
+          expect((error as Error).message).toContain("plan start limit per day");
+          expect((error as Error).message).toContain("2026-11-12T08:08:00.000Z");
+        }
       }
     });
   }

@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { createSqlVaultStore, encryptSecret, type Provider, ProviderError } from "@armada/core";
+import { encryptSecret, type Provider, ProviderError } from "@armada/core";
+import { createSqlVaultStore } from "@armada/core/server";
 import type { AuthIo } from "../../cli/src/auth-commands.ts";
 import { run } from "../../cli/src/run.ts";
 import { memorySessionStore } from "../../cli/src/session.ts";

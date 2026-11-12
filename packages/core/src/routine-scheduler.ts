@@ -1,5 +1,7 @@
 import type { ApplicationVaultActor } from "./application-vault.ts";
 import type { Sql } from "./golden-store.ts";
+import { advanceRoutineSchedule, parseRoutineSchedule } from "./routine-schedule.ts";
+import { VaultError } from "./vault-error.ts";
 
 export interface RoutineLaunchAdmission {
   /** Called by the template launch immediately before provider allocation, after the claim is durable. */
@@ -31,7 +33,10 @@ type Routine = {
   template_revision: number;
   prompt: string;
   ttl_seconds: number;
-  interval_hours: number;
+  interval_hours: number | null;
+  cron: string | null;
+  timezone: string;
+  db_now: string | Date;
   max_runs_per_day: number;
   next_due_at: string | Date;
 };
@@ -188,7 +193,7 @@ export function createRoutineScheduler(sql: Sql, runtime: RoutineSchedulerRuntim
     return transaction(async (tx) => {
       const routine = (
         await tx.query<Routine>(
-          "select * from public.routines where status='enabled' and next_due_at<=now() order by next_due_at,id for update skip locked limit 1",
+          "select *,now() as db_now from public.routines where status='enabled' and next_due_at<=now() order by next_due_at,id for update skip locked limit 1",
         )
       ).rows[0];
       if (!routine) return null;
@@ -207,6 +212,30 @@ export function createRoutineScheduler(sql: Sql, runtime: RoutineSchedulerRuntim
           [routine.id],
         )
       ).rows[0];
+      let nextDueAt: Date | null = null,
+        missed = 0,
+        capped = false,
+        scheduleInvalid = false;
+      try {
+        const now = new Date(routine.db_now),
+          due = new Date(routine.next_due_at);
+        if (routine.cron) {
+          const advanced = advanceRoutineSchedule(parseRoutineSchedule(routine.cron, routine.timezone), due, now);
+          nextDueAt = advanced.nextDueAt;
+          missed = advanced.missedOccurrences;
+          capped = advanced.missedCountCapped;
+        } else {
+          const period = routine.interval_hours! * 3600000;
+          const count = Math.floor((now.getTime() - due.getTime()) / period);
+          if (!Number.isFinite(count) || count < 0) throw new VaultError("invalid", "Invalid legacy schedule.");
+          missed = Math.min(count, 1000);
+          capped = count >= 1000;
+          nextDueAt = new Date(due.getTime() + (count + 1) * period);
+        }
+      } catch (error) {
+        if (!(error instanceof VaultError) || error.code !== "invalid") throw error;
+        scheduleInvalid = true;
+      }
       let reason: string | null = null;
       if (previous)
         reason =
@@ -218,13 +247,14 @@ export function createRoutineScheduler(sql: Sql, runtime: RoutineSchedulerRuntim
           "select count(*)::int as count from public.routine_runs where routine_id=$1 and state!='skipped' and created_at>now()-interval '24 hours'",
           [routine.id],
         )
-      ).rows[0]!.count;
-      if (!reason && count >= routine.max_runs_per_day) reason = "daily_limit_reached";
+      ).rows[0]?.count;
+      if (!reason && (count ?? 0) >= routine.max_runs_per_day) reason = "daily_limit_reached";
+      if (scheduleInvalid) reason = "schedule_unavailable";
       const run = (
         await tx.query<Run>(
-          `insert into public.routine_runs(routine_id,org_id,owner_id,scheduled_due_at,configuration_version,state,reason,request_key,missed_intervals,lease_id,lease_until)
+          `insert into public.routine_runs(routine_id,org_id,owner_id,scheduled_due_at,configuration_version,state,reason,request_key,missed_intervals,missed_count_capped,lease_id,lease_until)
          values($1,$2,$3,$4,$5,$6,$7,'routine:'||gen_random_uuid()::text,
-          floor(extract(epoch from (now()-$4::timestamptz))/($8*3600))::int,
+          $8,$9,
           case when $6='admitted' then gen_random_uuid() else null end,
           case when $6='admitted' then now()+interval '5 minutes' else null end) returning *`,
           [
@@ -235,14 +265,18 @@ export function createRoutineScheduler(sql: Sql, runtime: RoutineSchedulerRuntim
             routine.version,
             reason ? "skipped" : "admitted",
             reason,
-            routine.interval_hours,
+            missed,
+            capped,
           ],
         )
       ).rows[0]!;
       await tx.query(
-        `update public.routines set next_due_at=$2::timestamptz+
-        (floor(extract(epoch from (now()-$2::timestamptz))/($3*3600))+1)*($3*interval '1 hour') where id=$1`,
-        [routine.id, routine.next_due_at, routine.interval_hours],
+        `update public.routines set next_due_at=$2,
+        status=case when $3 then 'paused' else status end,
+        pause_reason=case when $3 then 'schedule_unavailable' else pause_reason end,
+        version=version+case when $3 then 1 else 0 end,
+        updated_at=case when $3 then now() else updated_at end where id=$1`,
+        [routine.id, nextDueAt, scheduleInvalid],
       );
       if (reason) return undefined;
       await tx.query(
