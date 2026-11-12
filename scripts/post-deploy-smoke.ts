@@ -766,12 +766,31 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
               () =>
                 sandbox<{
                   usage?: {
-                    turns?: { promptId: string; inputTokens: number | null; outputTokens: number | null }[];
-                    tokenTotals?: { inputTokens: number | null; outputTokens: number | null };
+                    turns?: {
+                      promptId: string;
+                      inputTokens: number | null;
+                      outputTokens: number | null;
+                      cachedTokens?: number | null;
+                    }[];
+                    tokenTotals?: { inputTokens: number | null; outputTokens: number | null; incomplete?: boolean };
                   };
                 }>("status", { id: sandboxId }),
               (result) => {
                 const row = result.usage?.turns?.find((row) => row.promptId === turn.promptId);
+                // A cold Codex resume may have no verified pre-dispatch baseline.
+                // Require an explicit unknown snapshot for THIS prompt, never absent usage
+                // or aggregate totals from an earlier turn. Verified deltas remain valid.
+                if (
+                  phase === "resume" &&
+                  item.harness === "codex" &&
+                  row?.inputTokens === null &&
+                  row.outputTokens === null &&
+                  row.cachedTokens === null &&
+                  result.usage?.tokenTotals?.incomplete === true &&
+                  typeof result.usage.tokenTotals.inputTokens === "number" &&
+                  typeof result.usage.tokenTotals.outputTokens === "number"
+                )
+                  return true;
                 return (
                   typeof row?.inputTokens === "number" &&
                   typeof row.outputTokens === "number" &&

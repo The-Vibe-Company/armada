@@ -1815,3 +1815,48 @@ test("Modal smoke refuses a finished turn whose status never reports usage and s
   expect(fake.receipts()).toContainEqual({ case: 0, step: "usage", pass: false, code: "poll_limit_exceeded" });
   expect(fake.calls.some((call) => call.path === "sandbox/stop")).toBe(true);
 });
+
+// Status is the public boundary: unknown counters must be present for the resumed
+// prompt, not supplied by the fixture's default numeric usage or an old prompt.
+test.each(["unknown", "missing", "old", "partial", "measured", "null-totals", "complete-marker"])(
+  "Modal resumed Codex usage contract: %s",
+  async (mode) => {
+    let resumed = false;
+    const fake = lifecycleFixture("none", (call) => {
+      if (call.path === "sandbox/wait" && call.body.prompt_id === "turn-2") resumed = true;
+      if (call.path === "sandbox/stop" || fake.receipts().some((r) => r.step === "resume_usage" && r.pass))
+        resumed = false;
+      if (call.path !== "sandbox/status" || !resumed) return;
+
+      return json({
+        status: "ready",
+        providerState: "active",
+        usage: {
+          turns:
+            mode === "missing"
+              ? []
+              : [
+                  {
+                    promptId: mode === "old" ? "turn-1" : "turn-2",
+                    inputTokens: mode === "measured" ? 12 : null,
+                    outputTokens: mode === "measured" ? 3 : null,
+                    ...(mode === "partial" ? {} : { cachedTokens: mode === "measured" ? 0 : null }),
+                  },
+                ],
+          tokenTotals: {
+            inputTokens: mode === "null-totals" ? null : 22,
+            outputTokens: mode === "null-totals" ? null : 5,
+            incomplete: mode !== "measured" && mode !== "complete-marker",
+          },
+        },
+      });
+    });
+    const accepted = mode === "unknown" || mode === "measured";
+    expect(await fake.run([{ ...selected, provider: "modal" }])).toBe(accepted);
+    expect(fake.receipts()).toContainEqual(
+      accepted
+        ? { case: 0, step: "resume_usage", pass: true }
+        : { case: 0, step: "resume_usage", pass: false, code: "poll_limit_exceeded" },
+    );
+  },
+);
