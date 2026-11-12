@@ -818,6 +818,11 @@ describe("preservation checks", () => {
     for (const fault of [
       "wrong_handle_owner",
       "none",
+      "default_policy",
+      "default_empty",
+      "default_wrong_receipt",
+      "default_opt_out_ignored",
+      "default_wrong_golden",
       "missing",
       "wrong",
       "corrupt",
@@ -837,6 +842,9 @@ describe("preservation checks", () => {
         provider === "modal" &&
         [
           "wrong_handle_owner",
+          "default_wrong_receipt",
+          "default_opt_out_ignored",
+          "default_wrong_golden",
           "explicit_missing",
           "selector_ignored",
           "recovery_changes",
@@ -846,6 +854,18 @@ describe("preservation checks", () => {
       )
         continue;
       test(`provider=${provider} fault=${fault} validates recovery without leaking material`, async () => {
+        const defaults = fault.startsWith("default_");
+        const defaultOrg = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        const defaultGolden = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+        const pins = fault === "default_empty" ? [] : ["review@2.0.0", "environment@1.0.0", "notes@3.0.0"];
+        const receipts = (values: string[]) =>
+          values.map((reference) => ({
+            reference,
+            version: reference.split("@")[1],
+            skillId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+            checksum: `sha256:${"a".repeat(64)}`,
+            origin: "https://skillpack.app/v1",
+          }));
         let launches = 0;
         let stopping = false;
         let sandboxId = "";
@@ -853,17 +873,61 @@ describe("preservation checks", () => {
         const otherId = crypto.randomUUID();
         let recoveryReads = 0;
         const fake = fixture((call) => {
+          if (call.path === "skills/defaults/get") {
+            expect(call.body.org).toBe(defaultOrg);
+            if (call.body.scope === "golden") expect(call.body.goldenId).toBe(defaultGolden);
+            else expect(call.body).not.toHaveProperty("goldenId");
+            const layers: Record<string, string[]> = {
+              golden: ["catalog/review@1.0.0", "environment@1.0.0"],
+              org: ["review@2.0.0"],
+              personal: ["notes@3.0.0"],
+            };
+            return json({ skills: fault === "default_empty" ? [] : layers[String(call.body.scope)] });
+          }
           if (call.path === "sandbox/launch") {
             launches++;
             stopping = false;
             sandboxId = crypto.randomUUID();
             recoveryReads = 0;
-            return json({ sandbox: { id: sandboxId, provider } });
+            if (defaults) {
+              expect(call.body).not.toHaveProperty("skills");
+              if (launches === 2) expect(call.body.skipSkillDefaults).toBe(true);
+              else expect(call.body).not.toHaveProperty("skipSkillDefaults");
+            }
+            return json({
+              sandbox: {
+                id: sandboxId,
+                provider,
+                ...(defaults
+                  ? {
+                      skills: receipts(
+                        launches === 2 && fault !== "default_opt_out_ignored"
+                          ? []
+                          : fault === "default_wrong_receipt"
+                            ? ["wrong@1.0.0"]
+                            : pins,
+                      ),
+                    }
+                  : {}),
+              },
+              ...(defaults ? { golden: { id: fault === "default_wrong_golden" ? otherId : defaultGolden } } : {}),
+            });
           }
           if (call.path === "sandbox/stop") stopping = true;
           if (call.path === "sandbox/status")
             return json({
               status: stopping ? "stopped" : "ready",
+              ...(defaults
+                ? {
+                    skills: receipts(
+                      launches === 2 && fault !== "default_opt_out_ignored"
+                        ? []
+                        : fault === "default_wrong_receipt"
+                          ? ["wrong@1.0.0"]
+                          : pins,
+                    ),
+                  }
+                : {}),
               providerState: stopping ? (provider === "boat" ? "archived" : "stopped") : "active",
               ...(stopping && launches === 2
                 ? {
@@ -906,19 +970,26 @@ describe("preservation checks", () => {
           {
             ...env,
             ARMADA_URL: staging,
-            ARMADA_SMOKE_CASES: JSON.stringify([{ ...selected, provider }]),
+            ARMADA_SMOKE_CASES: JSON.stringify([
+              {
+                ...selected,
+                provider,
+                ...(defaults ? { org: defaultOrg.toUpperCase(), goldenId: defaultGolden.toUpperCase() } : {}),
+              },
+            ]),
           },
-          ["--work-preservation"],
+          defaults ? ["--work-preservation", "--default-skills"] : ["--work-preservation"],
           {
             ...fake.io,
             fetch: (url, init) => fake.io.fetch(url.replace(staging, env.ARMADA_URL), init),
           },
         );
-        expect(result).toBe(fault === "none");
+        const success = ["none", "default_policy", "default_empty"].includes(fault);
+        expect(result).toBe(success);
         const stops = fake.calls.filter((call) => call.path === "sandbox/stop").length;
         expect(stops).toBeGreaterThanOrEqual(2);
         expect(stops).toBeLessThanOrEqual(4);
-        if (fault === "none") {
+        if (success) {
           expect(stops).toBe(2);
           expect(fake.calls.filter((call) => call.body.recovery_id === recoveryId)).toHaveLength(1);
           expect(fake.calls.filter((call) => call.body.recovery_id !== undefined)).toHaveLength(2);
@@ -939,13 +1010,34 @@ describe("preservation checks", () => {
             fake.receipts().filter((line) => line.step === "preservation_recovery_read_only" && line.pass),
           ).toHaveLength(2);
         }
+        if (defaults) {
+          expect(fake.calls.filter((call) => call.path === "skills/defaults/get")).toHaveLength(3);
+          expect(fake.calls.findIndex((call) => call.path === "sandbox/launch")).toBe(3);
+          if (success)
+            for (const step of ["default_skills_receipts", "default_skills_opt_out_receipts"])
+              expect(fake.receipts()).toContainEqual({ case: 0, step, pass: true });
+          if (fault === "default_empty")
+            expect(fake.receipts()).toContainEqual({
+              case: 0,
+              step: "default_skills_installation",
+              skip: true,
+              reason: "no_default_pins_configured",
+            });
+        }
         expect(fake.lines.join("")).not.toContain(commit);
         expect(fake.lines.join("")).not.toContain("secret");
-        if (fault !== "none")
+        if (!success)
           expect(fake.receipts()).toContainEqual(
             expect.objectContaining({
               pass: false,
-              code: fault === "recovery_wakes" ? "provider_not_stopped" : "preservation_failed",
+              code:
+                fault === "recovery_wakes"
+                  ? "provider_not_stopped"
+                  : fault === "default_wrong_golden"
+                    ? "invalid_response"
+                    : fault.startsWith("default_")
+                      ? "invalid_receipt"
+                      : "preservation_failed",
             }),
           );
       });
@@ -1099,75 +1191,62 @@ test.each(["configured", "no_pins", "refused"])(
   },
 );
 
-test("vault transport catches canary echoes in error envelopes, cleans metadata and never allocates compute", async () => {
-  const org = "11111111-1111-4111-8111-111111111111";
-  let variable: Record<string, unknown> | undefined;
-  let readable = "";
-  let canary = "";
+test("default probes require the shared worker pair and validate every UUID before any traffic", async () => {
+  const org = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const goldenId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  for (const config of [
+    { args: ["--default-skills"], cases: [{ ...selected, org, goldenId }] },
+    {
+      args: ["--default-skills", "--work-preservation"],
+      cases: [
+        { ...selected, org, goldenId },
+        { ...selected, org, goldenId: "invalid" },
+      ],
+    },
+    { args: ["--default-skills", "--work-preservation"], cases: [{ ...selected, org: "invalid", goldenId }] },
+  ]) {
+    const fake = fixture();
+    expect(
+      await postDeploySmoke(
+        {
+          ...env,
+          ARMADA_URL: "https://armada-mcp-staging.up.railway.app",
+          ARMADA_SMOKE_CASES: JSON.stringify(config.cases),
+        },
+        config.args,
+        fake.io,
+      ),
+    ).toBe(false);
+    expect(fake.calls).toHaveLength(0);
+    expect(fake.receipts()).toEqual([{ case: 0, step: "configure", pass: false, code: "invalid_configuration" }]);
+  }
+});
+
+test("a merged default policy overflow has a closed failure line before allocation", async () => {
+  const org = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const goldenId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
   const fake = fixture((call) => {
-    switch (call.path) {
-      case "variables/set":
-        readable = String(call.body.value);
-        variable = {
-          id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          orgId: org,
-          ownerId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-          name: call.body.name,
-          scope: "personal",
-          version: 1,
-          epoch: 1,
-          status: "active",
-          createdAt: "2026-11-11T00:00:00Z",
-          updatedAt: "2026-11-11T00:00:00Z",
-        };
-        return json({ item: variable });
-      case "variables/list":
-        return json({ items: variable ? [variable] : [] });
-      case "variables/read":
-        return json({ item: variable, value: readable });
-      case "secrets/set":
-        canary = String(call.body.value);
-        return json({ error: { code: "conflict", message: canary } }, 409);
-      case "secrets/list":
-        return json({ items: [] });
-      case "variables/delete": {
-        const item = { ...variable, version: 2, epoch: 2, status: "deleted" };
-        variable = undefined;
-        return json({ item });
-      }
-    }
+    if (call.path === "skills/defaults/get")
+      return json({ skills: Array.from({ length: 7 }, (_, i) => `${String(call.body.scope)}-${i}@1.0.0`) });
   });
-  expect(await postDeploySmoke(env, ["--vault"], fake.io)).toBe(false);
-  expect(fake.calls).toHaveLength(0);
   const staging = "https://armada-mcp-staging.up.railway.app";
   expect(
     await postDeploySmoke(
-      { ...env, ARMADA_URL: staging, ARMADA_SMOKE_CASES: JSON.stringify([{ ...selected, org }, selected]) },
-      ["--vault"],
-      fake.io,
-    ),
-  ).toBe(false);
-  expect(fake.calls).toHaveLength(0);
-  expect(
-    await postDeploySmoke(
-      { ...env, ARMADA_URL: staging, ARMADA_SMOKE_CASES: JSON.stringify([{ ...selected, org }]) },
-      ["--vault"],
+      { ...env, ARMADA_URL: staging, ARMADA_SMOKE_CASES: JSON.stringify([{ ...selected, org, goldenId }]) },
+      ["--work-preservation", "--default-skills"],
       {
         ...fake.io,
         fetch: (url, init) => fake.io.fetch(url.replace(staging, env.ARMADA_URL), init),
       },
     ),
   ).toBe(false);
-  expect(fake.receipts()).toContainEqual({ case: 0, step: "vault_secret_set", pass: false, code: "secret_exposed" });
-  expect(fake.calls.some((call) => call.path.startsWith("sandbox/"))).toBe(false);
-  expect(fake.calls.filter((call) => call.path === "variables/delete")).toHaveLength(1);
-  expect(fake.lines.join("")).not.toContain(canary);
+  expect(fake.calls).toHaveLength(3);
+  expect(fake.calls.every((call) => call.path === "skills/defaults/get")).toBe(true);
   expect(fake.receipts()).toContainEqual({
     case: 0,
-    step: "vault_cleanup_summary",
+    step: "default_skills_policy",
     pass: false,
-    leftoverSecrets: [String(fake.calls.find((call) => call.path === "secrets/set")?.body.name)],
-    leftoverVariables: [],
+    code: "invalid_response",
   });
 });
 
@@ -1362,4 +1441,76 @@ test("vault/template failures remain failures without bypassing the combined lif
   ).toBe(false);
   expect(fake.calls.some((call) => call.path === "variables/set")).toBe(true);
   expect(fake.receipts()).toContainEqual({ case: 0, step: "list_stopped_final", pass: true });
+});
+
+test("vault transport catches canary echoes in error envelopes, cleans metadata and never allocates compute", async () => {
+  const org = "11111111-1111-4111-8111-111111111111";
+  let variable: Record<string, unknown> | undefined;
+  let readable = "";
+  let canary = "";
+  const fake = fixture((call) => {
+    switch (call.path) {
+      case "variables/set":
+        readable = String(call.body.value);
+        variable = {
+          id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          orgId: org,
+          ownerId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          name: call.body.name,
+          scope: "personal",
+          version: 1,
+          epoch: 1,
+          status: "active",
+          createdAt: "2026-11-11T00:00:00Z",
+          updatedAt: "2026-11-11T00:00:00Z",
+        };
+        return json({ item: variable });
+      case "variables/list":
+        return json({ items: variable ? [variable] : [] });
+      case "variables/read":
+        return json({ item: variable, value: readable });
+      case "secrets/set":
+        canary = String(call.body.value);
+        return json({ error: { code: "conflict", message: canary } }, 409);
+      case "secrets/list":
+        return json({ items: [] });
+      case "variables/delete": {
+        const item = { ...variable, version: 2, epoch: 2, status: "deleted" };
+        variable = undefined;
+        return json({ item });
+      }
+    }
+  });
+  expect(await postDeploySmoke(env, ["--vault"], fake.io)).toBe(false);
+  expect(fake.calls).toHaveLength(0);
+  const staging = "https://armada-mcp-staging.up.railway.app";
+  expect(
+    await postDeploySmoke(
+      { ...env, ARMADA_URL: staging, ARMADA_SMOKE_CASES: JSON.stringify([{ ...selected, org }, selected]) },
+      ["--vault"],
+      fake.io,
+    ),
+  ).toBe(false);
+  expect(fake.calls).toHaveLength(0);
+  expect(
+    await postDeploySmoke(
+      { ...env, ARMADA_URL: staging, ARMADA_SMOKE_CASES: JSON.stringify([{ ...selected, org }]) },
+      ["--vault"],
+      {
+        ...fake.io,
+        fetch: (url, init) => fake.io.fetch(url.replace(staging, env.ARMADA_URL), init),
+      },
+    ),
+  ).toBe(false);
+  expect(fake.receipts()).toContainEqual({ case: 0, step: "vault_secret_set", pass: false, code: "secret_exposed" });
+  expect(fake.calls.some((call) => call.path.startsWith("sandbox/"))).toBe(false);
+  expect(fake.calls.filter((call) => call.path === "variables/delete")).toHaveLength(1);
+  expect(fake.lines.join("")).not.toContain(canary);
+  expect(fake.receipts()).toContainEqual({
+    case: 0,
+    step: "vault_cleanup_summary",
+    pass: false,
+    leftoverSecrets: [String(fake.calls.find((call) => call.path === "secrets/set")?.body.name)],
+    leftoverVariables: [],
+  });
 });

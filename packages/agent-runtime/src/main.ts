@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
 import { chmod, mkdir, rm, writeFile } from "node:fs/promises";
+import { CODEX_ENDPOINT_ENV, parseCodexEndpoint } from "@armada/core";
+import { runArtifactInstallMode } from "./artifact-cache.ts";
+import { configureCodexEndpoint } from "./codex-endpoint.ts";
 import { execCredentialValues, validateExecEnvironment } from "./exec-env.ts";
 import { GitHubBroker, type GitHubBrokerConfiguration } from "./github-broker.ts";
 import { type installGitHubTools, prepareGitHubTools, runGitHubInstallMode } from "./github-tools.ts";
@@ -30,10 +33,16 @@ async function main() {
   };
   if (config.credentialFreeBuilder !== undefined && typeof config.credentialFreeBuilder !== "boolean")
     throw Error("invalid_exec_environment");
+  const codexEndpoint = config.codexEnv[CODEX_ENDPOINT_ENV]
+    ? parseCodexEndpoint(JSON.parse(config.codexEnv[CODEX_ENDPOINT_ENV]!))
+    : undefined;
+  delete config.codexEnv[CODEX_ENDPOINT_ENV];
+  if (codexEndpoint) config.codexEnv.ARMADA_CUSTOM_CODEX_ENDPOINT = "1";
   const execEnv = validateExecEnvironment(config.execEnv, config.credentialFreeBuilder);
   if (
     config.credentialFreeBuilder &&
-    (config.codexAuthJson ||
+    (codexEndpoint ||
+      config.codexAuthJson ||
       [config.claudeEnv, config.codexEnv].some((env) =>
         ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"].some((key) =>
           Boolean(env[key]),
@@ -180,6 +189,7 @@ async function main() {
     }
     config.claudeEnv.CLAUDE_CONFIG_DIR = `${config.root}/claude`;
     config.codexEnv.CODEX_HOME = `${config.root}/codex`;
+    await configureCodexEndpoint(config.codexEnv.CODEX_HOME, codexEndpoint);
     if (config.codexAuthJson) await writeFile(`${config.root}/codex/auth.json`, config.codexAuthJson, { mode: 0o600 });
   }
   const github = new GitHubBroker((values) => journal.registerSecrets(values));
@@ -268,7 +278,13 @@ async function main() {
     void runner.flushOutbox().catch(() => {});
   }, 1000).unref();
 }
-void (process.argv[2] === "github-install" ? runGitHubInstallMode() : main()).catch(() => {
+void (
+  process.argv[2] === "github-install"
+    ? runGitHubInstallMode()
+    : process.argv[2] === "install-artifact"
+      ? runArtifactInstallMode()
+      : main()
+).catch(() => {
   process.stderr.write("runner_boot_failed\n");
   process.exitCode = 1;
 });

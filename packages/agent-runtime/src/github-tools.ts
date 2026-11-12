@@ -6,7 +6,9 @@ export async function prepareGitHubTools(input: Parameters<typeof installGitHubT
   if (process.getuid?.() === 0) return installGitHubTools(input);
   const artifact = process.argv[1];
   if (!artifact) throw Error("github_tools_denied");
-  const child = Bun.spawn(["sudo", "-n", process.execPath, artifact, "github-install"], {
+  // Compiled entrypoints live in Bun's virtual filesystem, not on the host.
+  const self = artifact.startsWith("/$bunfs/") ? [process.execPath] : [process.execPath, artifact];
+  const child = Bun.spawn(["sudo", "-n", ...self, "github-install"], {
     stdin: "pipe",
     stdout: "pipe",
     stderr: "ignore",
