@@ -4,7 +4,7 @@ import type { GoldenActor, GoldenRecord } from "./golden.ts";
 import { GoldenError } from "./golden-config.ts";
 import { assertSqlGoldenMutation, type GoldenRow, mapGoldenRow, type Sql } from "./golden-store.ts";
 import { isNonMutatingProviderRefusal, type Provider, ProviderError } from "./provider.ts";
-import type { ProviderTarget, SandboxProviderId } from "./sandbox-provider.ts";
+import { HOST_CAPABILITIES, type ProviderTarget, type SandboxProviderId } from "./sandbox-provider.ts";
 
 interface Target extends ProviderTarget {
   ownerId: string;
@@ -116,7 +116,8 @@ export async function captureGoldenPublication(
         !!authority &&
         ((authority.scope === "org" && authority.ownerId === target.orgId) ||
           (target.visibility === "private" && authority.scope === "user" && authority.ownerId === target.ownerId)) &&
-        (provider.id !== "modal" || identityMatches(info.managementAuthority ?? null, authority));
+        (!HOST_CAPABILITIES[target.provider].snapshotManagementAuthority ||
+          identityMatches(info.managementAuthority ?? null, authority));
     }
   } catch {
     /* An unavailable collector prerequisite retains the revision. */
@@ -476,7 +477,8 @@ export class GoldenSnapshotRetirements {
       currentInfo.status !== "ready" ||
       currentInfo.sourceSandboxId !== currentProof.source_id ||
       currentInfo.artifactId !== currentProof.artifact_id ||
-      (c.provider === "modal" && !identityMatches(currentInfo.managementAuthority ?? null, currentProof.authority))
+      (HOST_CAPABILITIES[c.provider].snapshotManagementAuthority &&
+        !identityMatches(currentInfo.managementAuthority ?? null, currentProof.authority))
     )
       return "current_fingerprint_changed";
     try {
@@ -486,7 +488,8 @@ export class GoldenSnapshotRetirements {
         info.status !== "ready" ||
         info.sourceSandboxId !== proof.source_id ||
         info.artifactId !== proof.artifact_id ||
-        (c.provider === "modal" && !identityMatches(info.managementAuthority ?? null, proof.authority))
+        (HOST_CAPABILITIES[c.provider].snapshotManagementAuthority &&
+          !identityMatches(info.managementAuthority ?? null, proof.authority))
       )
         return "fingerprint_changed";
     } catch (e) {

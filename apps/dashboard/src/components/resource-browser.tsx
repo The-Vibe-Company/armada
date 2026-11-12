@@ -1,6 +1,6 @@
 "use client";
 
-import { SearchIcon, TriangleAlertIcon, XIcon } from "lucide-react";
+import { ChevronDownIcon, ChevronUpIcon, SearchIcon, TriangleAlertIcon, XIcon } from "lucide-react";
 import Link from "next/link";
 import { Dialog as DialogPrimitive } from "radix-ui";
 import {
@@ -22,12 +22,19 @@ import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogOverlay, DialogPortal } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import {
+  ownsResourceDetail,
+  pushResourceDetail,
+  replaceResourceUrl,
+  syncResourceHistory,
+} from "@/lib/resource-history";
 import { type Blocker, FILTER_FROM, ITEM_PARAM, matchesQuery } from "@/lib/resource-list";
 import { cn } from "@/lib/utils";
 
 /**
  * The skeleton every Build page shares (#808): the readiness strip on top, one dense list (a row per item, its
- * state and its one expected action), and full-width details above the list for everything rare (a sheet on a phone). A
+ * state and its one expected action). Environments and Templates opt into a modal right-hand detail panel;
+ * other families retain inline desktop details until migrated. A
  * page's create flow is a `CreateDialog` passed as `actions` (#896, #898), never this panel. The page renders
  * each row's cells and panel on the server; this component only chooses which panel shows.
  *
@@ -84,6 +91,7 @@ export function ResourceBrowser({
   footer,
   empty,
   initial,
+  detailPanel = false,
 }: {
   title: string;
   description: string;
@@ -101,6 +109,8 @@ export function ResourceBrowser({
   empty: ReactNode;
   /** The panel open on the first render: the `?item=` of the URL, or what the page follows. */
   initial: string | null;
+  /** Opt in one page family at a time to the shared right-hand modal detail. */
+  detailPanel?: boolean;
 }) {
   const keys = useMemo(() => new Set(rows.map((row) => row.key)), [rows]);
   const valid = useCallback((key: string | null) => key !== null && keys.has(key), [keys]);
@@ -115,7 +125,10 @@ export function ResourceBrowser({
   const titleRef = useRef<HTMLHeadingElement>(null);
   const opener = useRef<string | null>(null);
   const wide = useSyncExternalStore(subscribeWide, readWide, () => true);
-  const sheet = selected !== null && !wide;
+  const sheet = selected !== null && (detailPanel || !wide);
+  useEffect(() => {
+    if (detailPanel && selected !== null) opener.current = selected;
+  }, [detailPanel, selected]);
   // The portal target never changes. Moving this host, rather than changing React
   // parents, retains every detail form and build follower across breakpoints.
   const [host, setHost] = useState<HTMLDivElement | null>(null);
@@ -131,6 +144,18 @@ export function ResourceBrowser({
     opener.current = null;
     requestAnimationFrame(() => {
       const row = back && rootRef.current?.querySelector<HTMLElement>(`[data-select-item="${CSS.escape(back)}"]`);
+      // Deleting a row may intentionally focus a page action (for example Add).
+      // Do not overwrite that valid handoff with our missing-row fallback.
+      const active = document.activeElement;
+      if (
+        back &&
+        !row &&
+        active instanceof HTMLElement &&
+        active !== document.body &&
+        active.getClientRects().length > 0 &&
+        !rootRef.current?.contains(active)
+      )
+        return;
       const fallback = rootRef.current?.querySelector<HTMLElement>("input, [data-select-item]");
       (row && row.getClientRects().length > 0 ? row : (fallback ?? rootRef.current))?.focus();
     });
@@ -139,24 +164,47 @@ export function ResourceBrowser({
   const select = useCallback(
     (key: string | null) => {
       const next = key !== null && valid(key) ? key : null;
+      // Keep only our marker, not Next's private history fields: passing __NA
+      // would bypass its native-history URL synchronization.
+      const owned = ownsResourceDetail();
+      if (detailPanel && next === null && owned) {
+        window.history.back();
+        return; // popstate closes the sheet and Radix restores focus once.
+      }
       setChosen(next);
       const url = new URL(window.location.href);
       if (next === null) url.searchParams.delete(ITEM_PARAM);
       else url.searchParams.set(ITEM_PARAM, next);
-      window.history.replaceState(null, "", url);
+      if (detailPanel && selected === null && next !== null) {
+        pushResourceDetail(url);
+      } else {
+        replaceResourceUrl(url);
+      }
       if (next !== null) {
         opener.current = next;
         requestAnimationFrame(() => titleRef.current?.focus());
-      } else if (wide) {
+      } else if (wide && !detailPanel) {
         restoreFocus();
       }
     },
-    [valid, restoreFocus, wide],
+    [valid, restoreFocus, wide, detailPanel, selected],
   );
+
+  useEffect(() => {
+    if (!detailPanel) return;
+    syncResourceHistory(true);
+    const sync = () => {
+      syncResourceHistory();
+      const key = new URL(window.location.href).searchParams.get(ITEM_PARAM);
+      setChosen(key);
+    };
+    window.addEventListener("popstate", sync);
+    return () => window.removeEventListener("popstate", sync);
+  }, [detailPanel]);
 
   // Escape closes the panel, unless a dialog opened from it is the one being closed.
   useEffect(() => {
-    if (selected === null || !wide) return;
+    if (selected === null || !wide || detailPanel) return;
     function onKey(event: KeyboardEvent) {
       if (event.key !== "Escape" || event.defaultPrevented) return;
       const overlays = document.querySelectorAll<HTMLElement>(
@@ -167,10 +215,15 @@ export function ResourceBrowser({
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [selected, select, wide]);
+  }, [selected, select, wide, detailPanel]);
 
   const shown = query ? rows.filter((row) => matchesQuery(row.search, query)) : rows;
   const current = rows.find((row) => row.key === selected) ?? null;
+  const currentIndex = shown.findIndex((row) => row.key === selected);
+  const move = (delta: number) => {
+    const next = currentIndex >= 0 ? shown[currentIndex + delta] : undefined;
+    if (next) select(next.key);
+  };
   const filterId = useId();
   const context = useMemo(() => ({ select, selected, panelId }), [select, selected, panelId]);
 
@@ -217,6 +270,7 @@ export function ResourceBrowser({
                   panelId={panelId}
                   selected={selected === row.key}
                   onSelect={() => select(row.key)}
+                  linked={detailPanel}
                 />
               ))}
             </ul>
@@ -235,7 +289,11 @@ export function ResourceBrowser({
             <DialogPrimitive.Content
               aria-labelledby={titleId}
               aria-describedby={undefined}
-              className="fixed inset-x-0 top-[8dvh] bottom-0 z-50 outline-none"
+              className={
+                detailPanel
+                  ? "fixed inset-y-0 right-0 z-50 w-full outline-none sm:max-w-xl data-[state=open]:animate-in data-[state=open]:slide-in-from-right motion-reduce:animate-none"
+                  : "fixed inset-x-0 top-[8dvh] bottom-0 z-50 outline-none"
+              }
               ref={(node) => {
                 if (node && host) node.appendChild(host);
               }}
@@ -246,7 +304,7 @@ export function ResourceBrowser({
               onCloseAutoFocus={(event) => {
                 event.preventDefault();
                 // Resizing is not closing the selected resource.
-                if (!readWide()) restoreFocus();
+                if (detailPanel || !readWide()) restoreFocus();
               }}
             />
           </DialogPortal>
@@ -256,9 +314,45 @@ export function ResourceBrowser({
             <aside
               id={panelId}
               data-resource-panel
+              onKeyDown={(event) => {
+                if (
+                  !detailPanel ||
+                  event.defaultPrevented ||
+                  event.altKey ||
+                  event.ctrlKey ||
+                  event.metaKey ||
+                  event.shiftKey
+                )
+                  return;
+                const target = event.target as HTMLElement;
+                if (
+                  target.closest(
+                    "input, textarea, select, [contenteditable]:not([contenteditable=false]), [role=combobox]",
+                  )
+                )
+                  return;
+                const surface = target.closest(
+                  '[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"]',
+                );
+                if (surface !== titleRef.current?.closest('[role="dialog"]')) return;
+                const delta =
+                  event.key === "ArrowDown" || event.key === "j"
+                    ? 1
+                    : event.key === "ArrowUp" || event.key === "k"
+                      ? -1
+                      : 0;
+                if (delta) {
+                  event.preventDefault();
+                  move(delta);
+                }
+              }}
               aria-labelledby={titleId}
               hidden={selected === null}
-              className="fixed inset-x-0 top-[8dvh] bottom-0 z-50 flex flex-col overflow-hidden rounded-t-2xl border bg-background shadow-2xl lg:static lg:order-first lg:z-auto lg:max-h-[65dvh] lg:rounded-xl lg:bg-card lg:shadow-xs"
+              className={
+                detailPanel
+                  ? "flex h-dvh flex-col overflow-hidden border-l bg-background shadow-2xl"
+                  : "fixed inset-x-0 top-[8dvh] bottom-0 z-50 flex flex-col overflow-hidden rounded-t-2xl border bg-background shadow-2xl lg:static lg:order-first lg:z-auto lg:max-h-[65dvh] lg:rounded-xl lg:bg-card lg:shadow-xs"
+              }
             >
               <div className="flex items-start justify-between gap-3 border-b px-4 py-3">
                 <div className="min-w-0 space-y-0.5">
@@ -273,9 +367,35 @@ export function ResourceBrowser({
                   </h2>
                   {current?.subtitle && <div className="text-xs text-muted-foreground">{current.subtitle}</div>}
                 </div>
-                <Button variant="ghost" size="icon-sm" onClick={() => select(null)} aria-label="Close the panel">
-                  <XIcon />
-                </Button>
+                <div className="flex shrink-0 items-center gap-1">
+                  {detailPanel && (
+                    <>
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label="Previous item"
+                        title="Previous item (↑ or K)"
+                        disabled={currentIndex <= 0}
+                        onClick={() => move(-1)}
+                      >
+                        <ChevronUpIcon />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label="Next item"
+                        title="Next item (↓ or J)"
+                        disabled={currentIndex < 0 || currentIndex >= shown.length - 1}
+                        onClick={() => move(1)}
+                      >
+                        <ChevronDownIcon />
+                      </Button>
+                    </>
+                  )}
+                  <Button variant="ghost" size="icon-sm" onClick={() => select(null)} aria-label="Close the panel">
+                    <XIcon />
+                  </Button>
+                </div>
               </div>
               <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-4">
                 {rows.map((row) => (
@@ -297,7 +417,9 @@ function Row({
   selected,
   onSelect,
   panelId,
+  linked,
 }: {
+  linked: boolean;
   row: ResourceRow;
   selected: boolean;
   onSelect: () => void;
@@ -318,14 +440,24 @@ function Row({
           <div className="flex min-w-0 items-center gap-2">
             <Button
               variant="ghost"
-              type="button"
-              onClick={onSelect}
+              asChild={linked}
+              onClick={(event) => {
+                if (linked && (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey)) return;
+                event.preventDefault();
+                onSelect();
+              }}
               aria-expanded={selected}
               aria-controls={panelId}
               data-select-item={row.key}
               className="h-auto min-w-0 shrink justify-start rounded-none p-0 text-left font-medium hover:bg-transparent dark:hover:bg-transparent motion-safe:active:not-disabled:scale-none focus-visible:ring-0 after:absolute after:inset-0 after:content-['']"
             >
-              <span className="truncate">{row.name}</span>
+              {linked ? (
+                <a href={`?item=${encodeURIComponent(row.key)}`}>
+                  <span className="truncate">{row.name}</span>
+                </a>
+              ) : (
+                <span className="truncate">{row.name}</span>
+              )}
             </Button>
             {row.tags}
           </div>
