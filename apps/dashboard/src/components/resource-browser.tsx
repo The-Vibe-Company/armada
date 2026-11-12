@@ -254,9 +254,11 @@ export function ResourceBrowser({
             <DialogPrimitive.Content
               aria-labelledby={titleId}
               aria-describedby={undefined}
-              className={detailPanel
-                ? "fixed inset-y-0 right-0 z-50 w-full outline-none sm:max-w-xl data-[state=open]:animate-in data-[state=open]:slide-in-from-right data-[state=closed]:animate-out data-[state=closed]:slide-out-to-right motion-reduce:animate-none"
-                : "fixed inset-x-0 top-[8dvh] bottom-0 z-50 outline-none"}
+              className={
+                detailPanel
+                  ? "fixed inset-y-0 right-0 z-50 w-full outline-none sm:max-w-xl data-[state=open]:animate-in data-[state=open]:slide-in-from-right data-[state=closed]:animate-out data-[state=closed]:slide-out-to-right motion-reduce:animate-none"
+                  : "fixed inset-x-0 top-[8dvh] bottom-0 z-50 outline-none"
+              }
               ref={(node) => {
                 if (node && host) node.appendChild(host);
               }}
@@ -279,9 +281,11 @@ export function ResourceBrowser({
               data-resource-panel
               aria-labelledby={titleId}
               hidden={selected === null}
-              className={detailPanel
-                ? "flex h-dvh flex-col overflow-hidden border-l bg-background shadow-2xl"
-                : "fixed inset-x-0 top-[8dvh] bottom-0 z-50 flex flex-col overflow-hidden rounded-t-2xl border bg-background shadow-2xl lg:static lg:order-first lg:z-auto lg:max-h-[65dvh] lg:rounded-xl lg:bg-card lg:shadow-xs"}
+              className={
+                detailPanel
+                  ? "flex h-dvh flex-col overflow-hidden border-l bg-background shadow-2xl"
+                  : "fixed inset-x-0 top-[8dvh] bottom-0 z-50 flex flex-col overflow-hidden rounded-t-2xl border bg-background shadow-2xl lg:static lg:order-first lg:z-auto lg:max-h-[65dvh] lg:rounded-xl lg:bg-card lg:shadow-xs"
+              }
             >
               <div className="flex items-start justify-between gap-3 border-b px-4 py-3">
                 <div className="min-w-0 space-y-0.5">
@@ -355,8 +359,12 @@ function Row({
               className="h-auto min-w-0 shrink justify-start rounded-none p-0 text-left font-medium hover:bg-transparent dark:hover:bg-transparent motion-safe:active:not-disabled:scale-none focus-visible:ring-0 after:absolute after:inset-0 after:content-['']"
             >
               {linked ? (
-                <a href={`?item=${encodeURIComponent(row.key)}`}><span className="truncate">{row.name}</span></a>
-              ) : <span className="truncate">{row.name}</span>}
+                <a href={`?item=${encodeURIComponent(row.key)}`}>
+                  <span className="truncate">{row.name}</span>
+                </a>
+              ) : (
+                <span className="truncate">{row.name}</span>
+              )}
             </Button>
             {row.tags}
           </div>
