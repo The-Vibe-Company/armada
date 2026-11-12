@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -763,33 +763,35 @@ test("GitHub failures retain numeric evidence, reject arbitrary receipts, and cl
 });
 
 // Exercises the smoke's verdict, not the product collector (covered in core).
-test("preservation checks both providers and rejects missing, wrong or overwritten recovery without leaking material", async () => {
-  const directory = mkdtempSync(join(tmpdir(), "armada-smoke-fixture-"));
-  function git(...args: string[]) {
-    const result = Bun.spawnSync(["git", "-C", directory, ...args], {
-      env: {
-        ...process.env,
-        GIT_AUTHOR_NAME: "Smoke",
-        GIT_AUTHOR_EMAIL: "smoke@example.invalid",
-        GIT_COMMITTER_NAME: "Smoke",
-        GIT_COMMITTER_EMAIL: "smoke@example.invalid",
-      },
-    });
-    if (result.exitCode !== 0) throw new Error("Fixture Git failed");
-    return result.stdout;
-  }
+describe("preservation checks", () => {
   let commit: string;
   let bundle: Buffer;
-  try {
-    git("init", "--quiet");
-    git("-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "base");
-    const base = git("rev-parse", "HEAD").toString().trim();
-    git("-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "unpushed");
-    commit = git("rev-parse", "HEAD").toString().trim();
-    bundle = git("bundle", "create", "-", "HEAD", `^${base}`);
-  } finally {
-    rmSync(directory, { recursive: true, force: true });
-  }
+  beforeAll(() => {
+    const directory = mkdtempSync(join(tmpdir(), "armada-smoke-fixture-"));
+    function git(...args: string[]) {
+      const result = Bun.spawnSync(["git", "-C", directory, ...args], {
+        env: {
+          ...process.env,
+          GIT_AUTHOR_NAME: "Smoke",
+          GIT_AUTHOR_EMAIL: "smoke@example.invalid",
+          GIT_COMMITTER_NAME: "Smoke",
+          GIT_COMMITTER_EMAIL: "smoke@example.invalid",
+        },
+      });
+      if (result.exitCode !== 0) throw new Error("Fixture Git failed");
+      return result.stdout;
+    }
+    try {
+      git("init", "--quiet");
+      git("-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "base");
+      const base = git("rev-parse", "HEAD").toString().trim();
+      git("-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "unpushed");
+      commit = git("rev-parse", "HEAD").toString().trim();
+      bundle = git("bundle", "create", "-", "HEAD", `^${base}`);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
   function archive(head: string, corruptPack = false) {
     const files = {
       "manifest.json": Buffer.from(
@@ -853,172 +855,195 @@ test("preservation checks both providers and rejects missing, wrong or overwritt
         ].includes(fault)
       )
         continue;
-      const defaults = fault.startsWith("default_");
-      const scopes = fault === "scoped_pair";
-      const scopeFlag = fault.startsWith("scoped_");
-      const scopeAccount = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
-      const childId = crypto.randomUUID();
-      let positiveParent = "";
-      let childExists = false;
-      let childStopped = false;
-      const scopeEvents = new Map<string, object[]>();
-      const defaultOrg = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-      const defaultGolden = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
-      const pins = fault === "default_empty" ? [] : ["review@2.0.0", "environment@1.0.0", "notes@3.0.0"];
-      const receipts = (values: string[]) =>
-        values.map((reference) => ({
-          reference,
-          version: reference.split("@")[1],
-          skillId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
-          checksum: `sha256:${"a".repeat(64)}`,
-          origin: "https://skillpack.app/v1",
-        }));
-      let launches = 0;
-      let stopping = false;
-      let sandboxId = "";
-      const recoveryId = crypto.randomUUID();
-      const otherId = crypto.randomUUID();
-      let recoveryReads = 0;
-      const fake = fixture((call) => {
-        if (call.path === "skills/defaults/get") {
-          expect(call.body.org).toBe(defaultOrg);
-          if (call.body.scope === "golden") expect(call.body.goldenId).toBe(defaultGolden);
-          else expect(call.body).not.toHaveProperty("goldenId");
-          const layers: Record<string, string[]> = {
-            golden: ["catalog/review@1.0.0", "environment@1.0.0"],
-            org: ["review@2.0.0"],
-            personal: ["notes@3.0.0"],
-          };
-          return json({ skills: fault === "default_empty" ? [] : layers[String(call.body.scope)] });
-        }
-        if (scopes && call.path === "sandbox/list") {
-          expect(call.body.owner).toBe("me");
-          expect(call.body.golden).toBe(defaultGolden);
-          return json({
-            sandboxes: [
-              ...(positiveParent ? [{ id: positiveParent }] : []),
-              ...(childExists ? [{ id: childId }] : []),
-              ...(launches === 2 ? [{ id: sandboxId }] : []),
-            ],
-            hasMore: false,
-            nextPage: null,
-            page: 1,
-          });
-        }
-        if (
-          scopes &&
-          call.path === "sandbox/send" &&
-          String(call.body.prompt).startsWith("Use only the configured native MCP")
-        ) {
-          const goal = String(call.body.prompt);
-          if (launches === 1) {
-            const launch = JSON.parse(goal.match(/using exactly (.*?) \(no initial/)?.[1] ?? "null");
-            const message = JSON.parse(
-              goal.match(/message that child's returned sandboxId with exactly (.*?)\. Poll/)?.[1] ?? "null",
-            );
-            const stopKey = goal.match(/Then stop that same child using idempotencyKey ([\w-]+)\./)?.[1];
-            const answer = goal.match(/SCOPED_CHILD_[\w-]+/)?.[0];
-            const op = () => ({ id: crypto.randomUUID(), state: "succeeded", sandboxId: childId });
-            const tool = (name: string, input: object, result: object) => ({
-              id: `call-${name}`,
-              name,
-              input,
-              result: { isError: false, output: { structuredContent: { result } } },
+      test(`provider=${provider} fault=${fault} validates recovery without leaking material`, async () => {
+        const defaults = fault.startsWith("default_");
+        const scopes = fault === "scoped_pair";
+        const scopeFlag = fault.startsWith("scoped_");
+        const scopeAccount = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+        const childId = crypto.randomUUID();
+        let positiveParent = "";
+        let childExists = false;
+        let childStopped = false;
+        const scopeEvents = new Map<string, object[]>();
+        const defaultOrg = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        const defaultGolden = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+        const pins = fault === "default_empty" ? [] : ["review@2.0.0", "environment@1.0.0", "notes@3.0.0"];
+        const receipts = (values: string[]) =>
+          values.map((reference) => ({
+            reference,
+            version: reference.split("@")[1],
+            skillId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+            checksum: `sha256:${"a".repeat(64)}`,
+            origin: "https://skillpack.app/v1",
+          }));
+        let launches = 0;
+        let stopping = false;
+        let sandboxId = "";
+        const recoveryId = crypto.randomUUID();
+        const otherId = crypto.randomUUID();
+        let recoveryReads = 0;
+        const fake = fixture((call) => {
+          if (call.path === "skills/defaults/get") {
+            expect(call.body.org).toBe(defaultOrg);
+            if (call.body.scope === "golden") expect(call.body.goldenId).toBe(defaultGolden);
+            else expect(call.body).not.toHaveProperty("goldenId");
+            const layers: Record<string, string[]> = {
+              golden: ["catalog/review@1.0.0", "environment@1.0.0"],
+              org: ["review@2.0.0"],
+              personal: ["notes@3.0.0"],
+            };
+            return json({ skills: fault === "default_empty" ? [] : layers[String(call.body.scope)] });
+          }
+          if (scopes && call.path === "sandbox/list") {
+            expect(call.body.owner).toBe("me");
+            expect(call.body.golden).toBe(defaultGolden);
+            return json({
+              sandboxes: [
+                ...(positiveParent ? [{ id: positiveParent }] : []),
+                ...(childExists ? [{ id: childId }] : []),
+                ...(launches === 2 ? [{ id: sandboxId }] : []),
+              ],
+              hasMore: false,
+              nextPage: null,
+              page: 1,
             });
-            childExists = true;
-            childStopped = true;
-            scopeEvents.set(sandboxId, [
-              {
-                id: "scoped-tools",
-                kind: "message",
-                text: "",
-                partial: false,
-                promptId: "scope-turn",
-                tools: [
-                  tool("launch", launch, op()),
-                  tool("message", { ...message, sandboxId: childId }, op()),
-                  tool(
-                    "read",
-                    { sandboxId: childId },
-                    {
-                      id: childId,
-                      provider,
-                      harness: "codex",
-                      orgId: defaultOrg,
-                      goldenId: defaultGolden,
-                      credentialId: scopeAccount,
-                      credentialVersion: 7,
-                      events: [
-                        {
-                          id: "child-answer",
-                          kind: "message",
-                          partial: false,
-                          responseKind: "assistant",
-                          tools: [],
-                          text: answer,
-                        },
-                      ],
-                    },
-                  ),
-                  tool("stop", { idempotencyKey: stopKey, sandboxId: childId }, op()),
-                ],
-              },
-            ]);
-          } else
-            scopeEvents.set(sandboxId, [
-              {
-                id: "no-scope",
-                kind: "message",
-                partial: false,
-                promptId: "scope-turn",
-                text: goal.match(/NO_ACCESS_[\w-]+/)?.[0],
-                tools: [],
-              },
-            ]);
-          return json({ promptId: "scope-turn" });
-        }
-        if (scopes && call.path === "sandbox/wait" && call.body.prompt_id === "scope-turn")
-          return json({ prompt: { promptId: "scope-turn", state: "finished" } });
-        if (scopes && call.path === "logs/read")
-          return json({ events: scopeEvents.get(String(call.body.id)) ?? [], cursor: null, hasMore: false });
-        if (scopes && call.path === "sandbox/stop" && call.body.id === childId) {
-          childStopped = true;
-          return json({ status: "stopped" });
-        }
-        if (scopes && call.path === "sandbox/status" && call.body.id === childId)
-          return json({
-            id: childId,
-            status: childStopped ? "stopped" : "ready",
-            providerState: childStopped ? (provider === "boat" ? "archived" : "stopped") : "active",
-          });
-        if (call.path === "sandbox/launch" || call.path === "sandbox/launch-access-v1") {
-          launches++;
-          stopping = false;
-          sandboxId = crypto.randomUUID();
-          recoveryReads = 0;
-          if (scopes) {
+          }
+          if (
+            scopes &&
+            call.path === "sandbox/send" &&
+            String(call.body.prompt).startsWith("Use only the configured native MCP")
+          ) {
+            const goal = String(call.body.prompt);
             if (launches === 1) {
-              positiveParent = sandboxId;
-              expect(call.path).toBe("sandbox/launch-access-v1");
-              expect(call.body.armadaAccessVersion).toBe(1);
-              expect(call.body.armadaAccess).toEqual({ maxActiveChildren: 1 });
-            } else {
-              expect(call.path).toBe("sandbox/launch");
-              expect(call.body).not.toHaveProperty("armadaAccess");
-              expect(call.body).not.toHaveProperty("armadaAccessVersion");
-              expect(call.body.skipSkillDefaults).toBe(true);
+              const launch = JSON.parse(goal.match(/using exactly (.*?) \(no initial/)?.[1] ?? "null");
+              const message = JSON.parse(
+                goal.match(/message that child's returned sandboxId with exactly (.*?)\. Poll/)?.[1] ?? "null",
+              );
+              const stopKey = goal.match(/Then stop that same child using idempotencyKey ([\w-]+)\./)?.[1];
+              const answer = goal.match(/SCOPED_CHILD_[\w-]+/)?.[0];
+              const op = () => ({ id: crypto.randomUUID(), state: "succeeded", sandboxId: childId });
+              const tool = (name: string, input: object, result: object) => ({
+                id: `call-${name}`,
+                name,
+                input,
+                result: { isError: false, output: { structuredContent: { result } } },
+              });
+              childExists = true;
+              childStopped = true;
+              scopeEvents.set(sandboxId, [
+                {
+                  id: "scoped-tools",
+                  kind: "message",
+                  text: "",
+                  partial: false,
+                  promptId: "scope-turn",
+                  tools: [
+                    tool("launch", launch, op()),
+                    tool("message", { ...message, sandboxId: childId }, op()),
+                    tool(
+                      "read",
+                      { sandboxId: childId },
+                      {
+                        id: childId,
+                        provider,
+                        harness: "codex",
+                        orgId: defaultOrg,
+                        goldenId: defaultGolden,
+                        credentialId: scopeAccount,
+                        credentialVersion: 7,
+                        events: [
+                          {
+                            id: "child-answer",
+                            kind: "message",
+                            partial: false,
+                            responseKind: "assistant",
+                            tools: [],
+                            text: answer,
+                          },
+                        ],
+                      },
+                    ),
+                    tool("stop", { idempotencyKey: stopKey, sandboxId: childId }, op()),
+                  ],
+                },
+              ]);
+            } else
+              scopeEvents.set(sandboxId, [
+                {
+                  id: "no-scope",
+                  kind: "message",
+                  partial: false,
+                  promptId: "scope-turn",
+                  text: goal.match(/NO_ACCESS_[\w-]+/)?.[0],
+                  tools: [],
+                },
+              ]);
+            return json({ promptId: "scope-turn" });
+          }
+          if (scopes && call.path === "sandbox/wait" && call.body.prompt_id === "scope-turn")
+            return json({ prompt: { promptId: "scope-turn", state: "finished" } });
+          if (scopes && call.path === "logs/read")
+            return json({ events: scopeEvents.get(String(call.body.id)) ?? [], cursor: null, hasMore: false });
+          if (scopes && call.path === "sandbox/stop" && call.body.id === childId) {
+            childStopped = true;
+            return json({ status: "stopped" });
+          }
+          if (scopes && call.path === "sandbox/status" && call.body.id === childId)
+            return json({
+              id: childId,
+              status: childStopped ? "stopped" : "ready",
+              providerState: childStopped ? (provider === "boat" ? "archived" : "stopped") : "active",
+            });
+          if (call.path === "sandbox/launch" || call.path === "sandbox/launch-access-v1") {
+            launches++;
+            stopping = false;
+            sandboxId = crypto.randomUUID();
+            recoveryReads = 0;
+            if (scopes) {
+              if (launches === 1) {
+                positiveParent = sandboxId;
+                expect(call.path).toBe("sandbox/launch-access-v1");
+                expect(call.body.armadaAccessVersion).toBe(1);
+                expect(call.body.armadaAccess).toEqual({ maxActiveChildren: 1 });
+              } else {
+                expect(call.path).toBe("sandbox/launch");
+                expect(call.body).not.toHaveProperty("armadaAccess");
+                expect(call.body).not.toHaveProperty("armadaAccessVersion");
+                expect(call.body.skipSkillDefaults).toBe(true);
+              }
             }
+            if (defaults) {
+              expect(call.body).not.toHaveProperty("skills");
+              if (launches === 2) expect(call.body.skipSkillDefaults).toBe(true);
+              else expect(call.body).not.toHaveProperty("skipSkillDefaults");
+            }
+            return json({
+              sandbox: {
+                id: sandboxId,
+                provider,
+                ...(scopes ? { credentialId: scopeAccount, credentialVersion: 7, visibility: "private" } : {}),
+                ...(defaults
+                  ? {
+                      skills: receipts(
+                        launches === 2 && fault !== "default_opt_out_ignored"
+                          ? []
+                          : fault === "default_wrong_receipt"
+                            ? ["wrong@1.0.0"]
+                            : pins,
+                      ),
+                    }
+                  : {}),
+              },
+              ...(defaults || scopes
+                ? { golden: { id: fault === "default_wrong_golden" ? otherId : defaultGolden } }
+                : {}),
+              ...(scopes && launches === 1 ? { armadaAccess: { enabled: true, maxActiveChildren: 1 } } : {}),
+            });
           }
-          if (defaults) {
-            expect(call.body).not.toHaveProperty("skills");
-            if (launches === 2) expect(call.body.skipSkillDefaults).toBe(true);
-            else expect(call.body).not.toHaveProperty("skipSkillDefaults");
-          }
-          return json({
-            sandbox: {
-              id: sandboxId,
-              provider,
-              ...(scopes ? { credentialId: scopeAccount, credentialVersion: 7, visibility: "private" } : {}),
+          if (call.path === "sandbox/stop") stopping = true;
+          if (call.path === "sandbox/status")
+            return json({
+              status: stopping ? "stopped" : "ready",
               ...(defaults
                 ? {
                     skills: receipts(
@@ -1030,155 +1055,136 @@ test("preservation checks both providers and rejects missing, wrong or overwritt
                     ),
                   }
                 : {}),
-            },
-            ...(defaults || scopes
-              ? { golden: { id: fault === "default_wrong_golden" ? otherId : defaultGolden } }
-              : {}),
-            ...(scopes && launches === 1 ? { armadaAccess: { enabled: true, maxActiveChildren: 1 } } : {}),
-          });
+              providerState: stopping ? (provider === "boat" ? "archived" : "stopped") : "active",
+              ...(stopping && launches === 2
+                ? {
+                    preservationNote:
+                      fault === "overwritten"
+                        ? "secret-failure"
+                        : `unpushed work preserved at work_recovery:${fault === "wrong_handle_owner" ? otherId : sandboxId}/${fault === "recovery_note_changes" && recoveryReads >= 3 ? otherId : recoveryId}`,
+                  }
+                : {}),
+              ...(stopping && fault === "clean_note" && launches === 1 ? { preservationNote: "secret-failure" } : {}),
+            });
+          if (call.path === "sandbox/exec" && String(call.body.command).includes("commit --allow-empty")) {
+            const command = String(call.body.command);
+            expect(commitCommands.has(command)).toBe(false);
+            commitCommands.add(command);
+            return json({ exitCode: 0, timedOut: false, stdout: `${commit}\n` });
+          }
+          if (call.path === "sandbox/recovery") {
+            expect(call.body.id).toBe(sandboxId);
+            recoveryReads++;
+            if (call.body.recovery_id !== undefined && call.body.recovery_id !== recoveryId)
+              return json({ archive: fault === "selector_ignored" ? archive(commit) : null });
+            if (fault === "recovery_wakes" && launches === 2 && recoveryReads === 2) stopping = false;
+            return json({
+              archive:
+                launches === 1
+                  ? fault === "clean_archive"
+                    ? archive(commit)
+                    : null
+                  : fault === "missing" || (fault === "explicit_missing" && call.body.recovery_id !== undefined)
+                    ? null
+                    : fault === "corrupt" || (fault === "recovery_changes" && recoveryReads >= 3)
+                      ? Buffer.from("secret-invalid").toString("base64")
+                      : archive(fault === "wrong" ? "b".repeat(40) : commit, fault === "corrupt_pack"),
+            });
+          }
+        });
+        const staging = "https://armada-mcp-staging.up.railway.app";
+        const result = await postDeploySmoke(
+          {
+            ...env,
+            ARMADA_URL: staging,
+            ARMADA_SMOKE_CASES: JSON.stringify([
+              {
+                ...selected,
+                provider,
+                ...(defaults || scopes ? { org: defaultOrg.toUpperCase(), goldenId: defaultGolden.toUpperCase() } : {}),
+                ...(scopes ? { modelAccountId: scopeAccount.toUpperCase() } : {}),
+                ...(fault === "scoped_unsupported" ? { harness: "claude" } : {}),
+              },
+            ]),
+          },
+          scopeFlag
+            ? ["--work-preservation", "--scoped-access"]
+            : defaults
+              ? ["--work-preservation", "--default-skills"]
+              : ["--work-preservation"],
+          {
+            ...fake.io,
+            fetch: (url, init) => fake.io.fetch(url.replace(staging, env.ARMADA_URL), init),
+          },
+        );
+        const success = ["none", "default_policy", "default_empty", "scoped_pair", "scoped_unsupported"].includes(
+          fault,
+        );
+        expect(result).toBe(success);
+        const stops = fake.calls.filter((call) => call.path === "sandbox/stop" && call.body.id !== childId).length;
+        expect(stops).toBeGreaterThanOrEqual(2);
+        expect(stops).toBeLessThanOrEqual(4);
+        if (success) {
+          expect(stops).toBe(2);
+          expect(fake.calls.filter((call) => call.body.recovery_id === recoveryId)).toHaveLength(1);
+          expect(fake.calls.filter((call) => call.body.recovery_id !== undefined)).toHaveLength(2);
+          expect(fake.receipts()).toContainEqual({ case: 0, step: "preservation_unknown_handle_refused", pass: true });
+          expect(fake.receipts()).toContainEqual(
+            expect.objectContaining({
+              case: 0,
+              step: "preservation_cleanup_summary",
+              phase: "archive",
+              pass: true,
+              recoveryId,
+              leftoverSandboxIds: [],
+              launchOutcomeUnknown: false,
+            }),
+          );
+          expect(fake.receipts()).toContainEqual({ case: 0, step: "preservation_recovery_handle", pass: true });
+          expect(
+            fake.receipts().filter((line) => line.step === "preservation_recovery_read_only" && line.pass),
+          ).toHaveLength(2);
         }
-        if (call.path === "sandbox/stop") stopping = true;
-        if (call.path === "sandbox/status")
-          return json({
-            status: stopping ? "stopped" : "ready",
-            ...(defaults
-              ? {
-                  skills: receipts(
-                    launches === 2 && fault !== "default_opt_out_ignored"
-                      ? []
-                      : fault === "default_wrong_receipt"
-                        ? ["wrong@1.0.0"]
-                        : pins,
-                  ),
-                }
-              : {}),
-            providerState: stopping ? (provider === "boat" ? "archived" : "stopped") : "active",
-            ...(stopping && launches === 2
-              ? {
-                  preservationNote:
-                    fault === "overwritten"
-                      ? "secret-failure"
-                      : `unpushed work preserved at work_recovery:${fault === "wrong_handle_owner" ? otherId : sandboxId}/${fault === "recovery_note_changes" && recoveryReads >= 3 ? otherId : recoveryId}`,
-                }
-              : {}),
-            ...(stopping && fault === "clean_note" && launches === 1 ? { preservationNote: "secret-failure" } : {}),
-          });
-        if (call.path === "sandbox/exec" && String(call.body.command).includes("commit --allow-empty")) {
-          const command = String(call.body.command);
-          expect(commitCommands.has(command)).toBe(false);
-          commitCommands.add(command);
-          return json({ exitCode: 0, timedOut: false, stdout: `${commit}\n` });
+        if (fault === "scoped_unsupported") {
+          expect(fake.receipts()).toContainEqual({ case: 0, step: "scoped_access", skip: true, reason: "codex_only" });
+          expect(fake.calls.some((call) => call.path === "sandbox/launch-access-v1")).toBe(false);
         }
-        if (call.path === "sandbox/recovery") {
-          expect(call.body.id).toBe(sandboxId);
-          recoveryReads++;
-          if (call.body.recovery_id !== undefined && call.body.recovery_id !== recoveryId)
-            return json({ archive: fault === "selector_ignored" ? archive(commit) : null });
-          if (fault === "recovery_wakes" && launches === 2 && recoveryReads === 2) stopping = false;
-          return json({
-            archive:
-              launches === 1
-                ? fault === "clean_archive"
-                  ? archive(commit)
-                  : null
-                : fault === "missing" || (fault === "explicit_missing" && call.body.recovery_id !== undefined)
-                  ? null
-                  : fault === "corrupt" || (fault === "recovery_changes" && recoveryReads >= 3)
-                    ? Buffer.from("secret-invalid").toString("base64")
-                    : archive(fault === "wrong" ? "b".repeat(40) : commit, fault === "corrupt_pack"),
-          });
+        if (scopes) {
+          expect(fake.calls.filter((call) => call.path === "sandbox/stop" && call.body.id === childId)).toHaveLength(1);
+          expect(fake.receipts().filter((line) => line.step === "scoped_cleanup_summary" && line.pass)).toHaveLength(2);
+          expect(fake.calls.filter((call) => call.path === "sandbox/launch-access-v1")).toHaveLength(1);
         }
+        if (defaults) {
+          expect(fake.calls.filter((call) => call.path === "skills/defaults/get")).toHaveLength(3);
+          expect(fake.calls.findIndex((call) => call.path === "sandbox/launch")).toBe(3);
+          if (success)
+            for (const step of ["default_skills_receipts", "default_skills_opt_out_receipts"])
+              expect(fake.receipts()).toContainEqual({ case: 0, step, pass: true });
+          if (fault === "default_empty")
+            expect(fake.receipts()).toContainEqual({
+              case: 0,
+              step: "default_skills_installation",
+              skip: true,
+              reason: "no_default_pins_configured",
+            });
+        }
+        expect(fake.lines.join("")).not.toContain(commit);
+        expect(fake.lines.join("")).not.toContain("secret");
+        if (!success)
+          expect(fake.receipts()).toContainEqual(
+            expect.objectContaining({
+              pass: false,
+              code:
+                fault === "recovery_wakes"
+                  ? "provider_not_stopped"
+                  : fault === "default_wrong_golden"
+                    ? "invalid_response"
+                    : fault.startsWith("default_")
+                      ? "invalid_receipt"
+                      : "preservation_failed",
+            }),
+          );
       });
-      const staging = "https://armada-mcp-staging.up.railway.app";
-      const result = await postDeploySmoke(
-        {
-          ...env,
-          ARMADA_URL: staging,
-          ARMADA_SMOKE_CASES: JSON.stringify([
-            {
-              ...selected,
-              provider,
-              ...(defaults || scopes ? { org: defaultOrg.toUpperCase(), goldenId: defaultGolden.toUpperCase() } : {}),
-              ...(scopes ? { modelAccountId: scopeAccount.toUpperCase() } : {}),
-              ...(fault === "scoped_unsupported" ? { harness: "claude" } : {}),
-            },
-          ]),
-        },
-        scopeFlag
-          ? ["--work-preservation", "--scoped-access"]
-          : defaults
-            ? ["--work-preservation", "--default-skills"]
-            : ["--work-preservation"],
-        {
-          ...fake.io,
-          fetch: (url, init) => fake.io.fetch(url.replace(staging, env.ARMADA_URL), init),
-        },
-      );
-      const success = ["none", "default_policy", "default_empty", "scoped_pair", "scoped_unsupported"].includes(fault);
-      expect(result).toBe(success);
-      const stops = fake.calls.filter((call) => call.path === "sandbox/stop" && call.body.id !== childId).length;
-      expect(stops).toBeGreaterThanOrEqual(2);
-      expect(stops).toBeLessThanOrEqual(4);
-      if (success) {
-        expect(stops).toBe(2);
-        expect(fake.calls.filter((call) => call.body.recovery_id === recoveryId)).toHaveLength(1);
-        expect(fake.calls.filter((call) => call.body.recovery_id !== undefined)).toHaveLength(2);
-        expect(fake.receipts()).toContainEqual({ case: 0, step: "preservation_unknown_handle_refused", pass: true });
-        expect(fake.receipts()).toContainEqual(
-          expect.objectContaining({
-            case: 0,
-            step: "preservation_cleanup_summary",
-            phase: "archive",
-            pass: true,
-            recoveryId,
-            leftoverSandboxIds: [],
-            launchOutcomeUnknown: false,
-          }),
-        );
-        expect(fake.receipts()).toContainEqual({ case: 0, step: "preservation_recovery_handle", pass: true });
-        expect(
-          fake.receipts().filter((line) => line.step === "preservation_recovery_read_only" && line.pass),
-        ).toHaveLength(2);
-      }
-      if (fault === "scoped_unsupported") {
-        expect(fake.receipts()).toContainEqual({ case: 0, step: "scoped_access", skip: true, reason: "codex_only" });
-        expect(fake.calls.some((call) => call.path === "sandbox/launch-access-v1")).toBe(false);
-      }
-      if (scopes) {
-        expect(fake.calls.filter((call) => call.path === "sandbox/stop" && call.body.id === childId)).toHaveLength(1);
-        expect(fake.receipts().filter((line) => line.step === "scoped_cleanup_summary" && line.pass)).toHaveLength(2);
-        expect(fake.calls.filter((call) => call.path === "sandbox/launch-access-v1")).toHaveLength(1);
-      }
-      if (defaults) {
-        expect(fake.calls.filter((call) => call.path === "skills/defaults/get")).toHaveLength(3);
-        expect(fake.calls.findIndex((call) => call.path === "sandbox/launch")).toBe(3);
-        if (success)
-          for (const step of ["default_skills_receipts", "default_skills_opt_out_receipts"])
-            expect(fake.receipts()).toContainEqual({ case: 0, step, pass: true });
-        if (fault === "default_empty")
-          expect(fake.receipts()).toContainEqual({
-            case: 0,
-            step: "default_skills_installation",
-            skip: true,
-            reason: "no_default_pins_configured",
-          });
-      }
-      expect(fake.lines.join("")).not.toContain(commit);
-      expect(fake.lines.join("")).not.toContain("secret");
-      if (!success)
-        expect(fake.receipts()).toContainEqual(
-          expect.objectContaining({
-            pass: false,
-            code:
-              fault === "recovery_wakes"
-                ? "provider_not_stopped"
-                : fault === "default_wrong_golden"
-                  ? "invalid_response"
-                  : fault.startsWith("default_")
-                    ? "invalid_receipt"
-                    : "preservation_failed",
-          }),
-        );
     }
   }
 });
@@ -1414,4 +1420,269 @@ test("scoped access validates its matched control pair and explicit account IDs 
     expect(fake.calls).toHaveLength(0);
     expect(fake.receipts()).toEqual([{ case: 0, step: "configure", pass: false, code: "invalid_configuration" }]);
   }
+});
+
+test("vault transport catches canary echoes in error envelopes, cleans metadata and never allocates compute", async () => {
+  const org = "11111111-1111-4111-8111-111111111111";
+  let variable: Record<string, unknown> | undefined;
+  let readable = "";
+  let canary = "";
+  const fake = fixture((call) => {
+    switch (call.path) {
+      case "variables/set":
+        readable = String(call.body.value);
+        variable = {
+          id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          orgId: org,
+          ownerId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          name: call.body.name,
+          scope: "personal",
+          version: 1,
+          epoch: 1,
+          status: "active",
+          createdAt: "2026-11-11T00:00:00Z",
+          updatedAt: "2026-11-11T00:00:00Z",
+        };
+        return json({ item: variable });
+      case "variables/list":
+        return json({ items: variable ? [variable] : [] });
+      case "variables/read":
+        return json({ item: variable, value: readable });
+      case "secrets/set":
+        canary = String(call.body.value);
+        return json({ error: { code: "conflict", message: canary } }, 409);
+      case "secrets/list":
+        return json({ items: [] });
+      case "variables/delete": {
+        const item = { ...variable, version: 2, epoch: 2, status: "deleted" };
+        variable = undefined;
+        return json({ item });
+      }
+    }
+  });
+  expect(await postDeploySmoke(env, ["--vault"], fake.io)).toBe(false);
+  expect(fake.calls).toHaveLength(0);
+  const staging = "https://armada-mcp-staging.up.railway.app";
+  expect(
+    await postDeploySmoke(
+      { ...env, ARMADA_URL: staging, ARMADA_SMOKE_CASES: JSON.stringify([{ ...selected, org }, selected]) },
+      ["--vault"],
+      fake.io,
+    ),
+  ).toBe(false);
+  expect(fake.calls).toHaveLength(0);
+  expect(
+    await postDeploySmoke(
+      { ...env, ARMADA_URL: staging, ARMADA_SMOKE_CASES: JSON.stringify([{ ...selected, org }]) },
+      ["--vault"],
+      {
+        ...fake.io,
+        fetch: (url, init) => fake.io.fetch(url.replace(staging, env.ARMADA_URL), init),
+      },
+    ),
+  ).toBe(false);
+  expect(fake.receipts()).toContainEqual({ case: 0, step: "vault_secret_set", pass: false, code: "secret_exposed" });
+  expect(fake.calls.some((call) => call.path.startsWith("sandbox/"))).toBe(false);
+  expect(fake.calls.filter((call) => call.path === "variables/delete")).toHaveLength(1);
+  expect(fake.lines.join("")).not.toContain(canary);
+  expect(fake.receipts()).toContainEqual({
+    case: 0,
+    step: "vault_cleanup_summary",
+    pass: false,
+    leftoverSecrets: [String(fake.calls.find((call) => call.path === "secrets/set")?.body.name)],
+    leftoverVariables: [],
+  });
+});
+
+type LifecycleFault =
+  | "none"
+  | "steer_admitted"
+  | "wrong_steer_status"
+  | "bad_extension"
+  | "list_mismatch"
+  | "lost_resume"
+  | "stop_failed"
+  | "lost_launch";
+function lifecycleFixture(fault: LifecycleFault = "none") {
+  let provider = "boat";
+  let harness = "codex";
+  let id = "";
+  let launches = 0;
+  let sends = 0;
+  let stops = 0;
+  let stopped = false;
+  let readiness = 0;
+  let expiry = "";
+  const fake = fixture((call) => {
+    if (call.path === "sandbox/launch") {
+      launches++;
+      provider = String(call.body.provider);
+      harness = String(call.body.harness);
+      id = `life-${launches}`;
+      sends = 0;
+      stops = 0;
+      stopped = false;
+      readiness = 0;
+      fake.advance(500);
+      expiry = new Date(fake.io.now() + 1800_000).toISOString();
+      if (fault === "lost_launch") throw new Error("secret launch outcome");
+      return json({ sandbox: { id, provider } });
+    }
+    if (call.path.startsWith("sandbox/") && !["sandbox/list", "sandbox/launch"].includes(call.path))
+      expect(call.body.id).toBe(id);
+    if (call.path === "sandbox/status")
+      return json({
+        id,
+        harness,
+        status: stopped ? "stopped" : !sends && ++readiness === 1 ? "starting" : "ready",
+        providerState: stopped ? (provider === "boat" ? "archived" : "stopped") : "active",
+        expiresAt: expiry,
+      });
+    if (call.path === "sandbox/send") {
+      sends++;
+      stopped = false;
+      if (sends === 2 && fault === "lost_resume") throw new Error("secret lost resume receipt");
+      return json({ promptId: `turn-${sends}` });
+    }
+    if (call.path === "sandbox/wait") return json({ prompt: { promptId: call.body.prompt_id, state: "finished" } });
+    if (call.path === "sandbox/steer")
+      return fault === "steer_admitted"
+        ? json({ promptId: "unwanted" })
+        : json(
+            { error: { code: "no_running_turn", message: "secret refusal detail" } },
+            fault === "wrong_steer_status" ? 400 : 409,
+          );
+    if (call.path === "sandbox/extend") {
+      expect(call.body.ttl_seconds).toBe(1860);
+      const next = new Date(Date.parse(expiry) + 60_000).toISOString();
+      if (fault !== "bad_extension") expiry = next;
+      return json({ id, expiresAt: expiry, ttlSeconds: 1860 });
+    }
+    if (call.path === "sandbox/list") {
+      expect(call.body.owner).toBe("me");
+      expect(call.body.harness).toBe(harness);
+      expect(call.body.limit).toBe(200);
+      return call.body.page === 1
+        ? json({ sandboxes: [], page: 1, hasMore: true, nextPage: 2 })
+        : json({
+            sandboxes: [
+              {
+                id,
+                provider,
+                harness,
+                status: fault === "list_mismatch" ? "running" : stopped ? "stopped" : "ready",
+                expiresAt: expiry,
+              },
+            ],
+            page: 2,
+            hasMore: false,
+            nextPage: null,
+          });
+    }
+    if (call.path === "sandbox/stop") {
+      stops++;
+      if (fault === "stop_failed" && stops > 1) throw new Error("secret stop failure");
+      stopped = true;
+      return json({ status: "stopping" });
+    }
+  });
+  const run = (cases: object[] = [selected], extraArgs: string[] = []) =>
+    postDeploySmoke(
+      {
+        ...env,
+        ARMADA_URL: "https://armada-mcp-staging.up.railway.app",
+        ARMADA_SMOKE_CASES: JSON.stringify(cases),
+      },
+      ["--lifecycle", ...extraArgs],
+      {
+        ...fake.io,
+        fetch: (url, init) =>
+          fake.io.fetch(url.replace("https://armada-mcp-staging.up.railway.app", env.ARMADA_URL), init),
+      },
+    );
+  return { ...fake, run };
+}
+
+test("lifecycle records readiness and confirms extend/list, closed idle steer refusal and send-after-stop on every selected pair", async () => {
+  const fake = lifecycleFixture();
+  const cases = ["boat", "modal"].flatMap((provider) =>
+    ["claude", "codex"].map((harness) => ({ ...selected, provider, harness })),
+  );
+  expect(await fake.run(cases)).toBe(true);
+  expect(fake.calls.filter((call) => call.path === "sandbox/launch")).toHaveLength(4);
+  expect(fake.calls.filter((call) => call.path === "sandbox/send")).toHaveLength(8);
+  expect(fake.calls.filter((call) => call.path === "sandbox/stop")).toHaveLength(8);
+  expect(fake.calls.filter((call) => call.path === "sandbox/steer")).toHaveLength(4);
+  for (const [index, item] of cases.entries()) {
+    expect(fake.receipts()).toContainEqual({
+      case: index,
+      step: "time_to_ready",
+      pass: true,
+      provider: item.provider,
+      harness: item.harness,
+      elapsedMs: 1500,
+    });
+    for (const step of [
+      "list_ready",
+      "steer_refused",
+      "extend",
+      "list_stopped",
+      "resume_send",
+      "resume_wait",
+      "list_resumed",
+      "stop_resumed",
+      "list_stopped_final",
+    ])
+      expect(fake.receipts()).toContainEqual({ case: index, step, pass: true });
+  }
+  expect(fake.receipts().filter((line) => line.step === "lifecycle_cleanup_summary")).toHaveLength(4);
+  expect(
+    fake
+      .receipts()
+      .filter((line) => line.step === "lifecycle_cleanup_summary")
+      .every((line) => line.pass && !line.leftoverSandboxIds.length && !line.launchOutcomeUnknown),
+  ).toBe(true);
+  expect(fake.lines.join("")).not.toContain("secret");
+});
+
+test("lifecycle failures reject false receipts and report unknown launches or leftover IDs without replaying resume", async () => {
+  for (const fault of [
+    "steer_admitted",
+    "wrong_steer_status",
+    "bad_extension",
+    "list_mismatch",
+    "lost_resume",
+    "stop_failed",
+    "lost_launch",
+  ] as const) {
+    const fake = lifecycleFixture(fault);
+    expect(await fake.run()).toBe(false);
+    const summary = fake.receipts().find((line) => line.step === "lifecycle_cleanup_summary");
+    expect(summary).toBeDefined();
+    expect(fake.calls.filter((call) => call.path === "sandbox/launch")).toHaveLength(1);
+    if (fault === "lost_resume") {
+      expect(fake.calls.filter((call) => call.path === "sandbox/send")).toHaveLength(2);
+      expect(fake.calls.filter((call) => call.path === "sandbox/stop")).toHaveLength(2);
+      expect(summary.pass).toBe(true);
+    }
+    if (fault === "stop_failed") {
+      expect(summary.pass).toBe(false);
+      expect(summary.leftoverSandboxIds).toEqual(["life-1"]);
+    }
+    if (fault === "lost_launch") {
+      expect(summary.pass).toBe(false);
+      expect(summary.launchOutcomeUnknown).toBe(true);
+    }
+    expect(fake.lines.join("")).not.toContain("secret");
+  }
+});
+
+// The merged staging command combines these independently runnable families.
+test("vault/template failures remain failures without bypassing the combined lifecycle checks", async () => {
+  const fake = lifecycleFixture();
+  expect(
+    await fake.run([{ ...selected, org: "11111111-1111-4111-8111-111111111111" }], ["--vault", "--templates-skills"]),
+  ).toBe(false);
+  expect(fake.calls.some((call) => call.path === "variables/set")).toBe(true);
+  expect(fake.receipts()).toContainEqual({ case: 0, step: "list_stopped_final", pass: true });
 });

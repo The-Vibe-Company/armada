@@ -171,5 +171,4 @@ export interface OrchestratorSkillReceipt {
 }
 
 /** Qualified references select anonymous catalog; bare slugs select the authenticated workspace. */
-export const ORCHESTRATOR_SKILL_PATTERN =
-  /^(?:[a-z0-9][a-z0-9-]*\/)?[a-z0-9][a-z0-9-]*@[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$/;
+export { SKILL_PIN_PATTERN as ORCHESTRATOR_SKILL_PATTERN } from "./skill-pins.ts";

@@ -69,6 +69,19 @@ test("the list shows every sandbox of the organization and filters them", async 
 });
 
 test("a member sees every sandbox's metadata but opens only their own", async ({ page }) => {
+  const receipt = "private-receipt-that-members-cannot-read@1.0.0";
+  expect(
+    (
+      await fetch(MOCK + "/__test/sandbox-lifecycle", {
+        method: "POST",
+        body: JSON.stringify({
+          id: IDS.running,
+          fields: { skills: [{ reference: receipt, version: "1.0.0" }] },
+        }),
+      })
+    ).ok,
+  ).toBe(true);
+
   await signIn(page, "bob@example.com");
   // Bob's own sandbox, launched private before #680, is his to open.
   await expect(page.getByRole("link", { name: LABELS.bobSecret })).toBeVisible();
@@ -95,6 +108,7 @@ test("a member sees every sandbox's metadata but opens only their own", async ({
   await page.goto(`/sandboxes/${IDS.running}`);
   await expect(page.getByRole("heading", { name: LABELS.running })).toBeVisible();
   await expect(page.locator("[data-restricted]")).toContainText("Only its owner and organization admins");
+  expect(await page.content()).not.toContain(receipt);
   await expect(page.locator("dl")).toContainText("alice@example.com");
   await expect(page.getByText("Fix the failing test")).toHaveCount(0);
   await expect(page.getByRole("log", { name: "Messages" })).toHaveCount(0);

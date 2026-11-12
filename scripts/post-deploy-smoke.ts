@@ -20,6 +20,7 @@ import type {
 import { DefaultSkillSmokeFailure, readDefaultPins, verifyDefaultReceipts } from "./default-skill-smoke.ts";
 import { createScopedProbe, ScopedAccessSmokeFailure } from "./scoped-access-smoke.ts";
 import { runTemplateSkillCase, TemplateSkillSmokeFailure } from "./template-skill-smoke.ts";
+import { runVaultCase, VaultSmokeFailure } from "./vault-smoke.ts";
 
 type Code =
   | ApiFailureCode
@@ -44,19 +45,28 @@ type Code =
   | "orchestrator_disabled"
   | "operation_failed"
   | "continuity_failed"
-  | "preservation_failed";
+  | "preservation_failed"
+  | "invalid"
+  | "no_running_turn"
+  | "steer_not_refused"
+  | "list_status_mismatch";
 const API_CODES = new Set<Code>([
   ...(Object.keys(API_FAILURE_STATUS) as ApiFailureCode[]),
   "sandbox_not_ready",
+  "no_running_turn",
   "unauthorized",
   "forbidden",
   "not_found",
   "invalid_request",
+  "invalid",
   "conflict",
   "unavailable",
 ]);
 class SmokeFailure extends Error {
-  constructor(readonly code: Code) {
+  constructor(
+    readonly code: Code,
+    readonly status?: number,
+  ) {
     super(code);
   }
 }
@@ -165,7 +175,8 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
                 error instanceof SmokeFailure ||
                 error instanceof TemplateSkillSmokeFailure ||
                 error instanceof DefaultSkillSmokeFailure ||
-                error instanceof ScopedAccessSmokeFailure
+                error instanceof ScopedAccessSmokeFailure ||
+                error instanceof VaultSmokeFailure
                   ? error.code
                   : "invalid_response",
               ...(error instanceof TemplateSkillSmokeFailure ? error.details : {}),
@@ -181,11 +192,14 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
   const defaultSkills = args.includes("--default-skills");
   const scopedAccess = args.includes("--scoped-access");
   const templatesSkills = args.includes("--templates-skills");
+  const vault = args.includes("--vault");
+  const lifecycle = args.includes("--lifecycle");
   try {
     if (env.ARMADA_SMOKE !== "create_real_compute") fail("compute_opt_in_required");
     if (
       ((defaultSkills || scopedAccess) && !preservation) ||
-      (github && (orchestrator || preservation || templatesSkills || defaultSkills || scopedAccess)) ||
+      (github &&
+        (orchestrator || preservation || templatesSkills || defaultSkills || scopedAccess || lifecycle || vault)) ||
       args.some(
         (arg) =>
           arg !== "--orchestrator" &&
@@ -193,7 +207,9 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
           arg !== "--work-preservation" &&
           arg !== "--templates-skills" &&
           arg !== "--default-skills" &&
-          arg !== "--scoped-access",
+          arg !== "--scoped-access" &&
+          arg !== "--lifecycle" &&
+          arg !== "--vault",
       ) ||
       !env.ARMADA_URL ||
       !env.ARMADA_TOKEN ||
@@ -205,7 +221,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
       fail("invalid_configuration");
     origin = url.origin;
     if (
-      (preservation || templatesSkills || defaultSkills || scopedAccess) &&
+      (preservation || templatesSkills || defaultSkills || scopedAccess || lifecycle || vault) &&
       origin !== "https://armada-mcp-staging.up.railway.app"
     )
       fail("invalid_configuration");
@@ -230,6 +246,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
           (typeof item.goldenId !== "string" ||
             !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(item.goldenId) ||
             !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(item.org))) ||
+        (vault && !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(item.org)) ||
         (item.reasoningEffort !== undefined &&
           (typeof item.reasoningEffort !== "string" || !item.reasoningEffort.trim())) ||
         (orchestrator && (typeof item.goldenId !== "string" || !item.goldenId.trim()))
@@ -289,6 +306,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
   const deadline = io.now() + 35 * 60_000;
   const cleanupDeadline = deadline + 5 * 60_000;
   let cleaning = false;
+  const protectedCanaries = new Set<string>();
   async function request<T>(path: string, body?: unknown, key?: string, timeoutMs = 120_000): Promise<T> {
     const remaining = (cleaning ? cleanupDeadline : deadline) - io.now();
     if (remaining <= 0) fail("poll_limit_exceeded");
@@ -307,8 +325,13 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
       });
       if (!response.ok) {
         const payload = (await response.json().catch(() => null)) as { error?: { code?: unknown } } | null;
+        if ([...protectedCanaries].some((value) => JSON.stringify(payload).includes(value)))
+          throw new VaultSmokeFailure("secret_exposed");
         const code = payload?.error?.code;
-        fail(typeof code === "string" && API_CODES.has(code as Code) ? (code as Code) : "api_failed");
+        throw new SmokeFailure(
+          typeof code === "string" && API_CODES.has(code as Code) ? (code as Code) : "api_failed",
+          response.status,
+        );
       }
       try {
         return (await response.json()) as T;
@@ -316,7 +339,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
         fail("invalid_response");
       }
     } catch (error) {
-      if (error instanceof SmokeFailure) throw error;
+      if (error instanceof SmokeFailure || error instanceof VaultSmokeFailure) throw error;
       fail("request_failed");
     }
   }
@@ -352,6 +375,38 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
         return false;
       }
     }
+  }
+  let vaultPassed = true;
+  if (vault) {
+    for (const [index, item] of cases.entries()) {
+      const ok = await runVaultCase(item.org, {
+        request,
+        protect: (value) => protectedCanaries.add(value),
+        isFailure: (error, status, code) =>
+          error instanceof SmokeFailure && error.status === status && error.code === code,
+        step: async (name, action) => {
+          try {
+            const value = await action();
+            report(index, name);
+            return value;
+          } catch (error) {
+            report(index, name, error);
+            throw error;
+          }
+        },
+        out: (line) => io.out(JSON.stringify({ ...JSON.parse(line), case: index })),
+        withCleanup: async (action) => {
+          cleaning = true;
+          try {
+            return await action();
+          } finally {
+            cleaning = false;
+          }
+        },
+      });
+      if (!ok) vaultPassed = false;
+    }
+    if (args.every((arg) => arg === "--vault")) return vaultPassed;
   }
   let templateSkillsPassed = true;
   if (templatesSkills) {
@@ -402,7 +457,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
     }
     // This mode is independently runnable; combined staging runs keep the existing
     // preservation baseline as well, under the same shared deadline.
-    if (!preservation) return templateSkillsPassed;
+    if (!preservation && !lifecycle) return templateSkillsPassed && vaultPassed;
   }
   // Validate the entire selected matrix before any billable mutation. A later
   // disabled case must not be discovered after earlier cases have allocated.
@@ -432,7 +487,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
       return false;
     }
   }
-  let passed = templateSkillsPassed;
+  let passed = templateSkillsPassed && vaultPassed;
   for (const { index, item, dirty } of cases.flatMap((item, index) =>
     (preservation ? [false, true] : [false]).map((dirty) => ({ index, item, dirty })),
   )) {
@@ -511,8 +566,8 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
           scratchBranch: scratch,
         }),
       );
-    const preservationStartedAt = io.now();
-    let preservationLaunchAttempted = false;
+    const startedAt = io.now();
+    let launchAttempted = false;
     let verifiedRecoveryId: string | undefined;
     let launchSkills: unknown;
     let sandboxId: string | undefined;
@@ -559,7 +614,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
       else if (scopedAccess && !dirty)
         io.out(JSON.stringify({ case: index, step: "scoped_access", skip: true, reason: "codex_only" }));
       await step("launch", async () => {
-        preservationLaunchAttempted = true;
+        launchAttempted = true;
         const result = await sandbox<{
           sandbox: {
             id: string;
@@ -634,14 +689,61 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
             }),
           );
       }
-      async function nativeTurn(second: boolean) {
+      if (lifecycle && !dirty)
+        io.out(
+          JSON.stringify({
+            case: index,
+            step: "time_to_ready",
+            pass: true,
+            provider: item.provider,
+            harness: item.harness,
+            elapsedMs: io.now() - startedAt,
+          }),
+        );
+      async function consistent(expected: string) {
+        const status = await sandbox<{ id: string; harness: string; status: string; expiresAt: string | null }>(
+          "status",
+          { id: sandboxId },
+        );
+        if (status.id !== sandboxId || status.harness !== item.harness || status.status !== expected)
+          fail("list_status_mismatch");
+        let page = 1;
+        for (let attempt = 0; attempt < 20; attempt++) {
+          const result = await sandbox<{
+            sandboxes: { id: string; provider: string; harness: string; status: string; expiresAt: string | null }[];
+            page: number;
+            hasMore: boolean;
+            nextPage: number | null;
+          }>("list", { owner: "me", harness: item.harness, status: [expected], limit: 200, page });
+          if (!Array.isArray(result?.sandboxes) || result.page !== page || typeof result.hasMore !== "boolean")
+            fail("invalid_response");
+          const matches = result.sandboxes.filter((row) => row.id === sandboxId);
+          if (matches.length) {
+            const row = matches[0]!;
+            if (
+              matches.length !== 1 ||
+              row.provider !== item.provider ||
+              row.harness !== status.harness ||
+              row.status !== status.status ||
+              row.expiresAt !== status.expiresAt
+            )
+              fail("list_status_mismatch");
+            return;
+          }
+          if (!result.hasMore) fail("list_status_mismatch");
+          if (result.nextPage !== page + 1) fail("invalid_response");
+          page++;
+        }
+        fail("poll_limit_exceeded");
+      }
+      async function nativeTurn(second: boolean, phase?: string) {
         const commands = `${git} status -sb >/dev/null 2>&1; a=$?; ${git} ls-remote origin HEAD >/dev/null 2>&1; b=$?; ${second ? "c=0" : `${git} push origin HEAD:refs/heads/${scratch} >/dev/null 2>&1; c=$?`}; printf '%s %s %s' "$a" "$b" "$c" > ${quote(receipt)}`;
         if (github) {
           await step("repository_guard", () => checkedExec(remoteGuard));
           await checkedExec(`rm -f ${quote(receipt)}`);
           if (!second) pushAttempted = true;
         }
-        const turn = await step(second ? "send_second" : "send", async () => {
+        const turn = await step(phase ? `${phase}_send` : second ? "send_second" : "send", async () => {
           const result = await poll(
             async () => {
               try {
@@ -662,7 +764,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
           if (!result?.promptId || typeof result.promptId !== "string") fail("invalid_response");
           return result;
         });
-        await step("wait", () =>
+        await step(phase ? `${phase}_wait` : "wait", () =>
           poll(
             () =>
               sandbox<{ prompt: { promptId: string; state: string } | null }>("wait", {
@@ -716,6 +818,37 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
         );
       await nativeTurn(false);
       if (scoped) await scoped.run(sandboxId!, parentCredentialVersion!);
+      if (lifecycle && !dirty) {
+        await step("list_ready", () => consistent("ready"));
+        await step("steer_refused", async () => {
+          try {
+            await sandbox("steer", { id: sandboxId, text: "Smoke: no turn should be running." });
+          } catch (error) {
+            if (error instanceof SmokeFailure && error.code === "no_running_turn" && error.status === 409) return;
+            throw error;
+          }
+          fail("steer_not_refused");
+        });
+        await step("extend", async () => {
+          const before = await sandbox<{ expiresAt: string }>("status", { id: sandboxId });
+          const previous = Date.parse(before.expiresAt);
+          if (!Number.isFinite(previous)) fail("invalid_response");
+          // A modest extension fits Modal's existing launch headroom; no wall-clock wait.
+          const extension = await sandbox<{ id: string; expiresAt: string; ttlSeconds: number }>("extend", {
+            id: sandboxId,
+            ttl_seconds: 1860,
+          });
+          if (
+            extension.id !== sandboxId ||
+            extension.ttlSeconds !== 1860 ||
+            !Number.isFinite(Date.parse(extension.expiresAt)) ||
+            Date.parse(extension.expiresAt) <= previous
+          )
+            fail("invalid_receipt");
+          const after = await sandbox<{ expiresAt: string }>("status", { id: sandboxId });
+          if (after.expiresAt !== extension.expiresAt) fail("list_status_mismatch");
+        });
+      }
       for (const [name, command] of [
         ["git_status", "git status -sb"],
         ["git_remote", "git ls-remote origin HEAD"],
@@ -833,6 +966,18 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
           if (dirty ? after.preservationNote !== note : !!after.preservationNote) fail("preservation_failed");
         });
       }
+      if (lifecycle && !dirty) {
+        await step("list_stopped", () => consistent("stopped"));
+        // send is the existing resume operation. Invalidate the old stop handle
+        // BEFORE dispatch, so a lost response still requires cleanup.
+        stopped = false;
+        stopRequested = false;
+        preservationNote = undefined;
+        await nativeTurn(true, "resume");
+        await step("list_resumed", () => consistent("ready"));
+        await step("stop_resumed", stopSandbox);
+        await step("list_stopped_final", () => consistent("stopped"));
+      }
     } catch {
       passed = false;
     } finally {
@@ -884,11 +1029,28 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
           pass: !!sandboxId && stopped,
           phase: dirty ? "archive" : "clean",
           leftoverSandboxIds: sandboxId && !stopped ? [sandboxId] : [],
-          launchOutcomeUnknown: preservationLaunchAttempted && !sandboxId,
+          launchOutcomeUnknown: launchAttempted && !sandboxId,
           recoveryId: verifiedRecoveryId ?? null,
           org: item.org,
           golden: item.golden,
-          startedAt: new Date(preservationStartedAt).toISOString(),
+          startedAt: new Date(startedAt).toISOString(),
+        }),
+      );
+    if (lifecycle)
+      io.out(
+        JSON.stringify({
+          case: index,
+          phase: dirty ? "preservation" : "lifecycle",
+          step: "lifecycle_cleanup_summary",
+          pass: !!sandboxId && stopped,
+          provider: item.provider,
+          harness: item.harness,
+          elapsedMs: io.now() - startedAt,
+          leftoverSandboxIds: sandboxId && !stopped ? [sandboxId] : [],
+          launchOutcomeUnknown: launchAttempted && !sandboxId,
+          startedAt: new Date(startedAt).toISOString(),
+          org: item.org,
+          golden: item.golden,
         }),
       );
     if (!orchestrator || dirty) continue;

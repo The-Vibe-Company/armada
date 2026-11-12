@@ -59,6 +59,7 @@ export {
 } from "./routine-scheduler.ts";
 export { createRoutineService, type RoutineService } from "./routine-service.ts";
 export { sandboxActivity } from "./sandbox-activity.ts";
+export { createSkillCatalog } from "./skill-catalog.ts";
 export * from "./skill-defaults.ts";
 export { mergeSkillPins } from "./skill-merge.ts";
 export * from "./skillpack.ts";

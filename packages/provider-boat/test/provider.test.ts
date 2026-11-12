@@ -257,6 +257,22 @@ describe("sandboxes", () => {
     ]);
   });
 
+  test("get rejects mismatched or missing sandbox identities before accepting a fresh observation", async () => {
+    const boat = fakeBoat(
+      { body: { ok: true, type: "sandbox.info", sandbox: sandbox({ id: "bx_98765432", state: "archived" }) } },
+      { body: { ok: true, type: "sandbox.info", sandbox: sandbox({ id: "" }) } },
+      { body: { ok: true, type: "sandbox.info", sandbox: sandbox({ state: "running" }) } },
+    );
+    for (let i = 0; i < 2; i++)
+      await expect(boat.provider.get(ID)).rejects.toMatchObject({
+        provider: "boat",
+        code: "unknown",
+        retryable: false,
+      });
+    expect(await boat.provider.get(ID)).toMatchObject({ id: ID, state: "running" });
+    expect(boat.requests.map((request) => request.method)).toEqual(["GET", "GET", "GET"]);
+  });
+
   test("get reports the ssh endpoint when the machine has no public IPv4", async () => {
     const boat = fakeBoat({
       body: {
@@ -266,6 +282,48 @@ describe("sandboxes", () => {
       },
     });
     expect(await boat.provider.get(ID)).toMatchObject({ state: "ready", sshEndpoint: "ssh.example:2222" });
+  });
+
+  for (const acknowledgement of ["wrong_identity", "missing_expiry", "missing_sandbox"] as const) {
+    test(`lifetime extension verifies the requested sandbox after ${acknowledgement}`, async () => {
+      const actual = "2026-11-12T12:00:00Z";
+      const reply =
+        acknowledgement === "missing_sandbox"
+          ? { ok: true }
+          : {
+              ok: true,
+              sandbox: sandbox({
+                id: acknowledgement === "wrong_identity" ? "bx_98765432" : ID,
+                archiveAfter: acknowledgement === "missing_expiry" ? undefined : "2026-12-01T12:00:00Z",
+              }),
+            };
+      const boat = fakeBoat(
+        { body: { ok: true, sandbox: sandbox({ state: "running" }) } },
+        { body: reply },
+        { body: { ok: true, sandbox: sandbox({ state: "running", archiveAfter: actual }) } },
+      );
+      if (!boat.provider.extendLifetime) throw Error("Missing Boat lifetime extension support");
+      expect(await boat.provider.extendLifetime({ sandboxId: ID, ttlSeconds: 3600 })).toEqual(new Date(actual));
+      expect(boat.requests.map(({ method }) => method)).toEqual(["GET", "PATCH", "GET"]);
+    });
+  }
+
+  test("lifetime extension refuses unrelated observations without replaying the update", async () => {
+    const boat = fakeBoat(
+      { body: { ok: true, sandbox: sandbox({ id: "bx_98765432", state: "running" }) } },
+      { body: { ok: true, sandbox: sandbox({ state: "running" }) } },
+      { body: { ok: true } },
+      { body: { ok: true, sandbox: sandbox({ id: "bx_98765432", state: "running" }) } },
+    );
+    if (!boat.provider.extendLifetime) throw Error("Missing Boat lifetime extension support");
+    await expect(boat.provider.extendLifetime({ sandboxId: ID, ttlSeconds: 3600 })).rejects.toMatchObject({
+      code: "unknown",
+    });
+    expect(boat.requests.map(({ method }) => method)).toEqual(["GET"]);
+    await expect(boat.provider.extendLifetime({ sandboxId: ID, ttlSeconds: 3600 })).rejects.toMatchObject({
+      code: "unknown",
+    });
+    expect(boat.requests.map(({ method }) => method)).toEqual(["GET", "GET", "PATCH", "GET"]);
   });
 
   test("list filters by labels and states and pages with boat's cursor", async () => {
@@ -907,6 +965,29 @@ test.each(["idle", "settled", "pending"])("work capture quiescence handles %s Bo
         ]),
   ]);
 });
+
+for (const phase of ["before_interrupt", "after_interrupt"] as const) {
+  for (const malformed of [{ id: "review" }, { running: true }, { id: "review", running: "false" }]) {
+    test(`quiescence refuses unknown conversation activity (${phase}, ${JSON.stringify(malformed)})`, async () => {
+      const active = { body: { ok: true, conversations: [{ id: "review", running: true }] } };
+      const invalid = { body: { ok: true, conversations: [malformed] } };
+      const settled = { body: { ok: true, conversations: [{ id: "review", running: false }] } };
+      const boat =
+        phase === "before_interrupt"
+          ? fakeBoat(invalid, { body: { ok: true } }, settled)
+          : fakeBoat(active, { body: { ok: true } }, invalid);
+      if (!boat.provider.quiesce) throw Error("Missing Boat quiescence support");
+      await expect(boat.provider.quiesce({ sandboxId: ID, conversationId: "review" })).rejects.toMatchObject({
+        provider: "boat",
+        code: "unknown",
+        retryable: false,
+      });
+      expect(boat.requests.map(({ method }) => method)).toEqual(
+        phase === "before_interrupt" ? ["GET"] : ["GET", "POST", "GET"],
+      );
+    });
+  }
+}
 
 // The SDK boundary owns refusal classification/retry safety. Capture must finish
 // before stop, and a 409 refusal is safe to retry unlike an ambiguous 502.

@@ -306,6 +306,38 @@ describe("GitHub access at launch", () => {
     expect(world.rows.get(USER)?.revokedAt).toBeNull();
   });
 
+  test("cached grant validation outages ask for retry, then recover without rotation or reconnect", async () => {
+    const world = await setup({ refresh: REFRESH_1 });
+    world.github.refreshes.push({ access_token: ACCESS_1, refresh_token: REFRESH_2, expires_in: 28_800 });
+    await resolveGitHubAccess(world.deps, USER);
+    const get = world.store.getGitHubConnection.bind(world.store);
+    world.store.getGitHubConnection = async () => {
+      throw Error("private-database-diagnostic");
+    };
+    const unavailable = await resolveGitHubAccess(world.deps, USER);
+    expect(unavailable.status).toBe("unavailable");
+    expect(JSON.stringify(unavailable)).not.toMatch(/reconnect|decrypt|private-database-diagnostic/i);
+    expect(JSON.stringify(unavailable)).toMatch(/retry|try (again|later)/i);
+    world.store.getGitHubConnection = get;
+    expect(await resolveGitHubAccess(world.deps, USER)).toMatchObject({ status: "connected", token: ACCESS_1 });
+    expect(world.github.refreshTokensSent).toEqual([REFRESH_1]);
+    expect(world.rows.get(USER)?.revokedAt).toBeNull();
+  });
+
+  test("a corrupt cached token keeps its explicit repair guidance and never rotates", async () => {
+    const world = await setup({ refresh: REFRESH_1 });
+    world.github.refreshes.push({ access_token: ACCESS_1, refresh_token: REFRESH_2, expires_in: 28_800 });
+    await resolveGitHubAccess(world.deps, USER);
+    const row = world.rows.get(USER);
+    if (!row) throw Error("Expected cached connection");
+    world.rows.set(USER, { ...row, accessTokenEnc: new Uint8Array([1]) });
+    const unavailable = await resolveGitHubAccess(world.deps, USER);
+    expect(unavailable.status).toBe("unavailable");
+    expect(JSON.stringify(unavailable)).toMatch(/decrypt.*reconnect/i);
+    expect(world.github.refreshTokensSent).toEqual([REFRESH_1]);
+    expect(world.rows.get(USER)?.revokedAt).toBeNull();
+  });
+
   test("a GitHub outage skips GitHub without revoking or rotating anything", async () => {
     const world = await setup({ refresh: REFRESH_1 });
     world.github.refreshes.push("down");
@@ -354,6 +386,57 @@ describe("GitHub access at launch", () => {
     expect(reads).toBe(1);
     expect(world.github.refreshTokensSent).toEqual([]);
   });
+
+  for (const state of [
+    "valid",
+    "expired",
+    "revoked",
+    "different_account",
+    "changed_again",
+    "corrupt",
+    "rejected",
+    "outage",
+  ] as const) {
+    test(`runtime refresh contention validates the published successor without another refresh (${state})`, async () => {
+      const world = await setup({ refresh: REFRESH_1 });
+      const original = world.rows.get(USER)!;
+      const successor = {
+        ...original,
+        refreshTokenEnc: await encryptSecret(REFRESH_2, KEY),
+        accessTokenEnc: state === "corrupt" ? new Uint8Array([0]) : await encryptSecret(ACCESS_2, KEY),
+        accessExpiresAt: new Date(NOW.getTime() + (state === "expired" ? 0 : 7_200_000)),
+        revokedAt: state === "revoked" ? NOW : null,
+        githubId: state === "different_account" ? 999 : original.githubId,
+      };
+      world.store.consumeGitHubRefresh = async () => {
+        world.rows.set(USER, successor);
+        return false;
+      };
+      const get = world.store.getGitHubConnection.bind(world.store);
+      let reads = 0;
+      world.store.getGitHubConnection = async (userId) => {
+        reads++;
+        if (state === "changed_again" && reads > 1)
+          world.rows.set(USER, { ...successor, refreshTokenEnc: await encryptSecret(REFRESH_3, KEY) });
+        return get(userId);
+      };
+      if (state === "rejected") world.github.userStatus = 401;
+      if (state === "outage") world.github.userStatus = 503;
+      const access = await resolveGitHubAccess(
+        { ...world.deps, caller: "managed_runtime", minimumLifetimeMs: 300_000 },
+        USER,
+      );
+      if (state === "valid") {
+        expect(access).toMatchObject({ status: "connected", token: ACCESS_2, identity: { id: 583231 } });
+        expect(world.github.userAuthorizations).toEqual([`Bearer ${ACCESS_2}`]);
+      } else {
+        expect(access.status).toBe("unavailable");
+        expect(JSON.stringify(access)).not.toContain(ACCESS_2);
+      }
+      expect(world.github.refreshTokensSent).toEqual([]);
+      expect(world.rows.get(USER)?.revokedAt).toBe(successor.revokedAt);
+    });
+  }
 
   test("an App without expiring tokens, or without server credentials, is reported and not used", async () => {
     const world = await setup({ refresh: REFRESH_1 });

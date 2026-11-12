@@ -1935,6 +1935,37 @@ test("access launch grants scoped authority before the first prompt while retain
     options.orchestrators = {
       enabledPairs: ["modal:codex"],
     } as unknown as import("../src/orchestrator-runtime.ts").OrchestratorRuntime;
+    // The staging checker used an absolute cwd; the public launch contract takes a configured selector.
+    const bearer = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`;
+    const stagingLaunch = (repo: string) =>
+      handleControlRequest(
+        new Request("https://armada.test/api/v1/sandbox/launch-access-v1", {
+          method: "POST",
+          headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json" },
+          body: JSON.stringify({
+            org: org.id,
+            golden: "access",
+            provider: "modal",
+            harness: "codex",
+            credentialId: account.id,
+            model: "gpt-6.1-sol",
+            ttlSeconds: 900,
+            prompt: "Staging contract probe",
+            armadaAccessVersion: 1,
+            armadaAccess: { maxActiveChildren: 1 },
+            skills: [],
+            skipSkillDefaults: true,
+            connections: [],
+            repo,
+          }),
+        }),
+        options,
+      );
+    const refused = await stagingLaunch("/home/user/web");
+    expect(refused?.status).toBe(400);
+    expect(await refused?.json()).toMatchObject({ error: { code: "invalid_config" } });
+    expect(fake.forks).toHaveLength(0);
+    expect((await db.query("select id from sandboxes where org_id=$1", [org.id])).rows).toHaveLength(0);
     const result = await cli(STAN).run([
       "launch",
       "access",
@@ -1944,6 +1975,8 @@ test("access launch grants scoped authority before the first prompt while retain
       "codex",
       "--credential-id",
       account.id,
+      "--repo",
+      "web",
       "--armada-access",
       "Remember the child task",
       "--json",
@@ -1952,6 +1985,7 @@ test("access launch grants scoped authority before the first prompt while retain
     const launched = JSON.parse(result.out);
     expect(statusAtInstall).toBe("starting");
     expect(launched.harness).toBe("codex");
+    expect(launched.repositoryDir).toBe("web");
     expect((await db.query("select id from orchestrators")).rows).toHaveLength(0);
     expect(
       (
@@ -1976,5 +2010,13 @@ test("access launch grants scoped authority before the first prompt while retain
         async (_tx, principal) => principal.ownerId,
       ),
     ).toBe(STAN);
+    // The same complete staging payload is accepted with its configured repository selector.
+    const accepted = await stagingLaunch("web");
+    expect(accepted?.status).toBe(200);
+    expect(await accepted?.json()).toMatchObject({
+      sandbox: { credentialId: account.id, repositoryDir: "web" },
+      armadaAccess: { enabled: true, maxActiveChildren: 1 },
+    });
+    expect(fake.forks).toHaveLength(2);
   });
 });

@@ -359,10 +359,21 @@ export async function resolveGitHubAccess(deps: GitHubResolveDeps, userId: strin
       connection.accessExpiresAt &&
       connection.accessExpiresAt.getTime() > now.getTime() + minimumLifetimeMs
     ) {
+      let accessToken: string;
+      try {
+        accessToken = await decryptSecret(new Uint8Array(connection.accessTokenEnc), deps.encryptionKey);
+      } catch (error) {
+        if (error instanceof EncryptionKeyError) throw error;
+        return {
+          status: "unavailable",
+          message:
+            "The stored GitHub connection could not be decrypted. Reconnect GitHub in the dashboard under Settings.",
+        };
+      }
       try {
         return await connectedFromToken(
           connection,
-          await decryptSecret(new Uint8Array(connection.accessTokenEnc), deps.encryptionKey),
+          accessToken,
           request,
           store,
           userId,
@@ -371,13 +382,12 @@ export async function resolveGitHubAccess(deps: GitHubResolveDeps, userId: strin
         );
       } catch (error) {
         if (error instanceof EncryptionKeyError) throw error;
-        // A cached access token can be invalidated before its advertised expiry. Only an explicit
-        // rejection permits one refresh in this owner scope; outages must not rotate.
+        // Only explicit access rejection permits refresh; a validation dependency
+        // failure is not evidence of ciphertext corruption or a revoked grant.
         if (!(error instanceof GitHubAccessRejected))
           return {
             status: "unavailable",
-            message:
-              "The stored GitHub connection could not be decrypted. Reconnect GitHub in the dashboard under Settings.",
+            message: "GitHub connection validation is temporarily unavailable. Retry shortly.",
           };
         reason = "access_rejected";
       }
@@ -401,6 +411,37 @@ export async function resolveGitHubAccess(deps: GitHubResolveDeps, userId: strin
         current &&
         (current.refreshTokenEnc.length !== connection.refreshTokenEnc.length ||
           !current.refreshTokenEnc.every((byte, index) => byte === connection.refreshTokenEnc[index]));
+      // Another replica can have completed rotation before our fence read. Reuse
+      // only its validated same-account successor; never replay consumed material.
+      if (
+        changed &&
+        current.userId === userId &&
+        current.githubId === connection.githubId &&
+        !current.revokedAt &&
+        current.accessTokenEnc &&
+        current.accessExpiresAt &&
+        current.accessExpiresAt.getTime() > (deps.now ?? (() => new Date()))().getTime() + minimumLifetimeMs
+      ) {
+        try {
+          const recovered = await connectedFromToken(
+            current,
+            await decryptSecret(new Uint8Array(current.accessTokenEnc), deps.encryptionKey),
+            request,
+            store,
+            userId,
+            false,
+            current.accessExpiresAt,
+          );
+          if (
+            recovered.status !== "connected" ||
+            current.accessExpiresAt.getTime() > (deps.now ?? (() => new Date()))().getTime() + minimumLifetimeMs
+          )
+            return recovered;
+        } catch (error) {
+          if (error instanceof EncryptionKeyError) throw error;
+          // Do not expose decryption, database or HTTP diagnostics to the sandbox.
+        }
+      }
       return {
         status: "unavailable",
         message: changed

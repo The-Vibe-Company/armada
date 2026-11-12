@@ -4,10 +4,12 @@ import {
   assertEmail,
   assertEmailCode,
   assertProvider,
+  BodyTooLargeError,
   createServiceToken,
   createSqlAuthStore,
   exchangeSupabaseCode,
   listServiceTokens,
+  readBoundedText,
   refreshSupabaseSession,
   revokeServiceToken,
   type Session,
@@ -32,6 +34,7 @@ import {
   createGoldenAdoption,
   createOrg,
   createRoutineService,
+  createSkillCatalog,
   createSkillDefaultsService,
   createSqlMcpLaunchPort,
   createSqlMcpRegistry,
@@ -78,6 +81,7 @@ import {
   resolveModelChoice,
   resolveOrg,
   resolveRepositoryDir,
+  resolveSkillpackCredential,
   type SkillDefaultsService,
   scanGoldenSandbox,
   setCredential,
@@ -116,7 +120,7 @@ import {
 } from "./org-provider.ts";
 import type { ProviderMetadataFor } from "./provider-metadata.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
-import { RequestTiming } from "./request-timing.ts";
+import { RequestTiming, withRequestTiming } from "./request-timing.ts";
 import { type createSandboxArmadaAccess, parseSandboxArmadaAccess } from "./sandbox-armada-access.ts";
 import { bunSql } from "./sql.ts";
 import { callSharedTool, ToolApiError } from "./tool-api.ts";
@@ -130,6 +134,7 @@ import { orchestratorHttp } from "./orchestrator-api.ts";
 import type { OrchestratorRuntime } from "./orchestrator-runtime.ts";
 
 export interface ControlOptions {
+  skillCatalog?: ReturnType<typeof createSkillCatalog>;
   /** Per-request diagnostics; supplied by the HTTP handler, never request JSON. */
   timing?: RequestTiming;
   storedProviderFor?: (target: ProviderTarget, caller: { userId: string }) => Promise<Provider>;
@@ -253,7 +258,9 @@ export async function handleControlRequest(request: Request, options: ControlOpt
   try {
     const caller = await timing.measure("auth", () => authenticatedCaller(request, options));
     if (
-      (route.startsWith("skills/defaults/") ||
+      (route === "skillpack/catalog" ||
+        route === "skillpack/versions" ||
+        route.startsWith("skills/defaults/") ||
         route.startsWith("templates/") ||
         route.startsWith("routines/") ||
         route.startsWith("variables/") ||
@@ -263,7 +270,9 @@ export async function handleControlRequest(request: Request, options: ControlOpt
       throw new VaultError("invalid", "Parameters must be in the request body.");
     const body = deletion
       ? { id: deletion[1], org: url.searchParams.get("org") ?? undefined }
-      : route.startsWith("skills/defaults/") ||
+      : route === "skillpack/catalog" ||
+          route === "skillpack/versions" ||
+          route.startsWith("skills/defaults/") ||
           route.startsWith("templates/") ||
           route.startsWith("routines/") ||
           route.startsWith("variables/") ||
@@ -297,7 +306,7 @@ export async function handleControlRequest(request: Request, options: ControlOpt
             : await options.invitations.manage(invitationAction, caller, required(body, "org"), body);
     } else
       result = await timing.measure("dispatch", () =>
-        dispatch(deletion ? "sandbox/delete" : route, caller, body, options),
+        withRequestTiming(timing, () => dispatch(deletion ? "sandbox/delete" : route, caller, body, options)),
       );
     if (result === undefined) return fail(404, "unknown_route", "Unknown route.");
     return Response.json(result, {
@@ -311,6 +320,7 @@ export async function handleControlRequest(request: Request, options: ControlOpt
       headers: { "cache-control": "no-store", "server-timing": timing.header() },
     });
   } catch (error) {
+    if (error instanceof BodyTooLargeError) return fail(413, "invalid", error.message);
     const failureCode = apiFailureCode(error);
     if (failureCode)
       return Response.json(
@@ -457,6 +467,7 @@ async function tokenRevokeRoute(request: Request, options: ControlOptions): Prom
     });
     return Response.json({ ok: true }, { headers: { "cache-control": "no-store" } });
   } catch (error) {
+    if (error instanceof BodyTooLargeError) return fail(413, "invalid", error.message);
     return tokenRouteFailure(error, true);
   }
 }
@@ -494,6 +505,7 @@ async function tokenCreateRoute(request: Request, options: ControlOptions): Prom
       { headers: { "cache-control": "no-store" } },
     );
   } catch (error) {
+    if (error instanceof BodyTooLargeError) return fail(413, "invalid", error.message);
     return tokenRouteFailure(error);
   }
 }
@@ -540,7 +552,8 @@ async function emailVerifyRoute(request: Request, options: ControlOptions): Prom
       { accessToken: session.accessToken, refreshToken: session.refreshToken, expiresAt: session.expiresAt },
       { headers: { "cache-control": "no-store" } },
     );
-  } catch {
+  } catch (error) {
+    if (error instanceof BodyTooLargeError) return fail(413, "invalid", error.message);
     return fail(401, "unauthorized", "Email code was refused.");
   }
 }
@@ -576,6 +589,7 @@ async function emailStartRoute(request: Request, options: ControlOptions): Promi
     });
     return Response.json({ ok: true }, { headers: { "cache-control": "no-store" } });
   } catch (error) {
+    if (error instanceof BodyTooLargeError) return fail(413, "invalid", error.message);
     const status = error instanceof Error && error.message.includes("Too many") ? 429 : 400;
     return fail(
       status,
@@ -598,6 +612,7 @@ async function exchangeRoute(request: Request, options: ControlOptions): Promise
       : await nativeExchange(options, code, verifier);
     return Response.json(result, { headers: { "cache-control": "no-store" } });
   } catch (error) {
+    if (error instanceof BodyTooLargeError) return fail(413, "invalid", error.message);
     if (error instanceof ProviderRoutingError) return fail(503, error.code, error.message);
     if (error instanceof LaunchError)
       return fail(
@@ -664,6 +679,7 @@ async function refreshRoute(request: Request, options: ControlOptions): Promise<
     const refreshed = options.refreshNative ? await options.refreshNative(token) : await nativeRefresh(options, token);
     return Response.json(refreshed, { headers: { "cache-control": "no-store" } });
   } catch (error) {
+    if (error instanceof BodyTooLargeError) return fail(413, "invalid", error.message);
     if (error instanceof ProviderRoutingError) return fail(503, error.code, error.message);
     if (error instanceof LaunchError)
       return fail(
@@ -882,6 +898,37 @@ async function dispatch(
     return disconnectOrgProvider(store, caller, optional(body, "org"), required(body, "provider"));
   const org = scopedOrg(caller, optional(body, "org"));
   switch (route) {
+    case "skillpack/catalog":
+    case "skillpack/versions": {
+      const versions = route === "skillpack/versions";
+      const allowed = versions ? ["org", "source", "reference"] : ["org", "source", "offset"];
+      if (Object.keys(body).some((key) => !allowed.includes(key)))
+        throw new VaultError("invalid", "Invalid skill catalog request.");
+      if (body.source !== "public" && body.source !== "private")
+        throw new VaultError("invalid", "Choose the public catalog or private workspace.");
+      if (
+        body.offset !== undefined &&
+        (typeof body.offset !== "number" || !Number.isInteger(body.offset) || body.offset < 0 || body.offset > 10000)
+      )
+        throw new VaultError("invalid", "Invalid catalog offset.");
+      const member = await resolveOrg(store, userId, org);
+      // Resolve exactly the launching user's credential policy; never expose the
+      // PAT or let a caller select an alternate registry or workspace header.
+      const credential =
+        body.source === "private"
+          ? await resolveSkillpackCredential(store, encryptionKey, { userId, orgId: member.id })
+          : null;
+      const catalog = options.skillCatalog ?? createSkillCatalog();
+      const result = versions
+        ? await catalog.versions({ source: body.source, reference: required(body, "reference") }, credential?.key)
+        : await catalog.list(
+            { source: body.source, ...(body.offset === undefined ? {} : { offset: body.offset as number }) },
+            credential?.key,
+          );
+      // Membership may have changed during the bounded upstream request.
+      await resolveOrg(store, userId, member.id);
+      return result;
+    }
     case "skillpack/connection": {
       // Reuse vault visibility, including live membership and token org scoping.
       const credentials = await listCredentials(store, userId, org);
@@ -1640,7 +1687,7 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
       env.NODE_ENV === "development",
     ),
   });
-  const templates = createTemplateService(sql);
+  const templates = createTemplateService(sql, encryptionKey);
   const lifecycle = () =>
     createMcpLifecycle({
       sql,
@@ -1832,9 +1879,9 @@ async function readVaultBody(request: Request): Promise<Record<string, unknown>>
 async function readJsonBody(request: Request, vault: boolean): Promise<Record<string, unknown>> {
   const invalid = (message: string) =>
     new VaultError("invalid", vault ? "Invalid application vault request." : message);
-  const reader = request.body?.getReader();
+  const reader = vault ? request.body?.getReader() : undefined;
   const decoder = new TextDecoder("utf-8", { fatal: vault });
-  let text = "",
+  let text = vault ? "" : await readBoundedText(request, MAX_BODY_BYTES),
     bytes = 0;
   try {
     if (reader) {

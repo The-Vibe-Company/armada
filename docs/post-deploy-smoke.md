@@ -327,6 +327,75 @@ labels (including Skillpack transport/authorization and allocation uncertainty);
 unknown remote text is replaced by `unrecognized_refusal`. This remains a smoke, not a resource janitor.
 No live staging run or deployment is implied by the offline API tests.
 
+### Sandbox lifecycle and timings (#969, night slice)
+
+Both staging entrypoints additionally pass `--lifecycle`. This flag is
+independently runnable against the exact staging origin and needs no new case
+fields. It reuses the ordinary clean-case worker, not the template worker:
+launch → ready → send/wait → idle steer refusal → extend → stop → send/resume →
+wait → final stop. The existing dirty preservation worker is not resumed.
+
+Named verdicts include `list_ready`, `steer_refused`, `extend`, `list_stopped`,
+`resume_send`, `resume_wait`, `list_resumed`, `stop_resumed` and
+`list_stopped_final`. Idle steer must return exactly HTTP 409 /
+`no_running_turn`; other errors and accidental admission fail. Extension must
+advance the persisted expiry and match the status receipt. List/status checks
+compare this worker's ID, harness, provider, status and expiry, with owner/harness/
+status filters and bounded pagination (at most 20 × 200 entries).
+
+A named `time_to_ready` pass records milliseconds from immediately before
+launch through its ready observation, tagged with provider/harness and case.
+Each ordinary worker also emits `lifecycle_cleanup_summary`, with total elapsed
+time, known leftover IDs and an explicit unknown-launch flag. An ambiguous
+launch cannot be retried or declared clean: use the reported org/golden/start
+time to reconcile staging resources before rerunning. No new correlation API is
+introduced. Interrupted runners still require operator reconciliation.
+
+This adds one tiny model turn and one retained stop/resume physical incarnation
+per selected pair, not a new logical sandbox. Expect roughly 1–4 extra minutes
+per pair; provider cold-start/model rates determine cost. Extension requests
+1860 seconds from now (initial logical TTL 1800), within existing Modal physical
+headroom, then cleanup stops compute; no TTL wall-clock wait is added. Shared
+35-minute work / five-minute cleanup deadlines and 120-poll bounds remain.
+Expiry-as-stop is not claimed by this slice. No migrations or deployment actions.
+
+### Personal vault slice (#969, night program)
+
+Both staging entrypoints additionally pass `--vault`. Standalone
+`bun scripts/post-deploy-smoke.ts --vault` performs only vault checks, allocating
+no sandbox/provider compute. Every selected provider × harness case gets fresh
+personal variable/secret names under its staging org UUID. No new case fields,
+provider keys, database access or migrations.
+
+Named verdicts cover variable set/list/read, secret set/list metadata-only,
+secret read refusal (direct control API400/invalid), rotation v1→v2, stale
+rotation409/conflict with unchanged version/epoch, revoke v2→v3, and refused
+rotation after revoke with unchanged revoked metadata. These are management/API
+checks, not runtime secret delivery or multi-user RLS proofs.
+
+Secret values are random disposable canaries protected before any request.
+Success metadata accepts only the shipped metadata columns; responses are checked
+for canary echoes. Error envelopes are checked too, before an expected409 can be
+accepted. Canaries, readable values, response bodies and exception text are never
+printed or written to local files; HTTP bodies are authenticated over HTTPS.
+Only owned identifiers/names appear in cleanup summaries.
+
+Finally, reconcile exact owned names/current metadata versions, delete the secret
+then variable, and continue cleanup if either fails. Unknown mutations are never
+replayed. A known ID is still deleted when a list omits it; an unknown create
+with no discoverable ID stays unconfirmed, with its exact random name reported.
+`vault_cleanup_summary` lists `leftoverSecrets` / `leftoverVariables`; a lost
+delete acknowledgement can be confirmed by read-only absence, without replaying
+the write. Normal runs leave only deleted metadata/audit history under ordinary
+retention; no active secret/value or compute remains.
+
+Approximately16 small API requests per pair, plus bounded reconciliation reads
+on failure; expect seconds per pair, no model/compute charges. The shared
+35-minute work deadline and five-minute cleanup reserve apply, with each request
+bounded by remaining time. Missing staging personal-vault permissions/encryption
+configuration fail closed. The existing smoke token must have personal vault
+management rights. No live staging receipt is implied by offline tests.
+
 ### Durable recovery handles and repeat reads (#969, night slice)
 
 The existing `--work-preservation` checks now also verify the durable recovery

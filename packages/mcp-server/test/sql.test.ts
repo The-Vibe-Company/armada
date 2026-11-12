@@ -34,46 +34,45 @@ describe("transaction wiring", () => {
 });
 
 /**
- * Opt-in: two real Postgres connections, so a cross-connection advisory lock (what golden/create
- * and launch both rely on through `withGitHubConnectionRefresh`, #492) can actually be proven to
- * serialize. PGlite has one connection and cannot prove this. Set ARMADA_TEST_POSTGRES_URL to run.
- * `controlOptionsFromEnv` used to build its own `Sql` by hand, with no `.transaction` at all, which
- * made that lock a no-op (every caller just ran unlocked); it now uses this same `bunSql`.
+ * Opt-in: two real Postgres connections prove advisory locks stay transaction-scoped through
+ * bunSql, including release after commit and rollback. PGlite cannot prove cross-connection
+ * exclusion. Set ARMADA_TEST_POSTGRES_URL to run.
  */
 describe.skipIf(!process.env.ARMADA_TEST_POSTGRES_URL)(
   "bunSql transactions across two connections (PostgreSQL)",
   () => {
-    test("a second transaction's advisory lock waits for the first to commit", async () => {
-      const url = process.env.ARMADA_TEST_POSTGRES_URL;
-      if (!url) throw new Error("ARMADA_TEST_POSTGRES_URL is required");
-      const one = bunSql(url);
-      const two = bunSql(url);
-      const key = crypto.randomUUID();
-      let releaseFirst!: () => void;
-      const held = new Promise<void>((resolve) => {
-        releaseFirst = resolve;
+    for (const outcome of ["commit", "rollback"] as const) {
+      test(`advisory lock excludes another transaction until ${outcome}`, async () => {
+        const url = process.env.ARMADA_TEST_POSTGRES_URL;
+        if (!url) throw new Error("ARMADA_TEST_POSTGRES_URL is required");
+        const one = bunSql(url);
+        const two = bunSql(url);
+        const key = crypto.randomUUID();
+        const rollback = new Error("rollback");
+        try {
+          if (!one.transaction || !two.transaction) throw new Error("bunSql must support transactions");
+          const tryLock = () =>
+            two.transaction!(async (tx) => {
+              const { rows } = await tx.query<{ acquired: boolean }>(
+                "select pg_try_advisory_xact_lock(hashtextextended($1, 0)) as acquired",
+                [key],
+              );
+              return rows[0]?.acquired;
+            });
+          const first = one.transaction(async (tx) => {
+            await tx.query("select pg_advisory_xact_lock(hashtextextended($1, 0))", [key]);
+            // This query has completed on a separate connection while the first still holds its lock.
+            expect(await tryLock()).toBe(false);
+            if (outcome === "rollback") throw rollback;
+          });
+          if (outcome === "rollback") await expect(first).rejects.toBe(rollback);
+          else await first;
+          expect(await tryLock()).toBe(true);
+        } finally {
+          await Promise.all([one.close(), two.close()]);
+        }
       });
-      let enteredFirst!: () => void;
-      const entered = new Promise<void>((resolve) => {
-        enteredFirst = resolve;
-      });
-      const first = one.transaction?.(async (tx) => {
-        await tx.query("select pg_advisory_xact_lock(hashtextextended($1, 0))", [key]);
-        enteredFirst();
-        await held;
-      });
-      await entered;
-      let secondEntered = false;
-      const second = two.transaction?.(async (tx) => {
-        await tx.query("select pg_advisory_xact_lock(hashtextextended($1, 0))", [key]);
-        secondEntered = true;
-      });
-      await Bun.sleep(25);
-      expect(secondEntered).toBe(false);
-      releaseFirst();
-      await Promise.all([first, second]);
-      expect(secondEntered).toBe(true);
-    });
+    }
   },
 );
 

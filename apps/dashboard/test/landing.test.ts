@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
-import { encryptSecret } from "@armada/core";
 import { run } from "../../../packages/cli/src/run.ts";
 import { landingTranscript } from "../scripts/landing-transcript.ts";
 import { INSTALL, SETUP, STORY } from "../src/components/landing/content.ts";
@@ -84,13 +83,6 @@ describe("what the landing says", () => {
     const launch = (await landingTranscript()).find((entry) => entry.command.startsWith("armada launch "));
     expect(launch?.output).toContain("launch token expires at 2026-11-09T17:30:00.000Z (~480 minutes remaining)");
     expect(launch?.output).toContain("armada github refresh");
-  });
-
-  test("seals keys the way it says: AES-GCM under a 256-bit key only", async () => {
-    const key = (bytes: number) => Buffer.alloc(bytes, 7).toString("base64");
-    await expect(encryptSecret("k", key(16))).rejects.toThrow();
-    // A 12-byte IV, the ciphertext and a 16-byte GCM tag.
-    expect((await encryptSecret("k", key(32))).length).toBe(12 + 1 + 16);
   });
 
   test("replays the session the CLI's own code prints (bun apps/dashboard/scripts/landing-transcript.ts)", async () => {

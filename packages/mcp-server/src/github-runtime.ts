@@ -1,4 +1,5 @@
 import { createHash, createHmac } from "node:crypto";
+import { readBoundedText } from "@armada/auth";
 import {
   decryptSecret,
   encryptSecret,
@@ -184,8 +185,7 @@ export function createGitHubRuntime(options: {
         const grant = await read();
         if (grant.binding.githubApp !== options.github.app?.clientId) return denied();
         // No owner, organization, provider, backend or generation is accepted from the guest.
-        const raw = await request.text();
-        if (raw.length > 1024) return denied();
+        const raw = await readBoundedText(request, 1024);
         const body = JSON.parse(raw) as { version: number; repository: string; operation: string };
         if (
           Object.keys(body).some((k) => !["version", "repository", "operation"].includes(k)) ||
