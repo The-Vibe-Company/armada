@@ -63,6 +63,28 @@ Actual endpoint compatibility remains a staging check, not a unit-test claim.
 Deployment prerequisites: rebuild/publish the runtime artifact with the server.
 No schema migration or new environment setting is required.
 
+## CLI endpoint fields
+
+Instead of preparing connection JSON, read **only the key** from stdin or a
+private file and supply the non-secret endpoint separately:
+
+```sh
+armada creds set openai --name foundry --base-url 'https://RESOURCE.services.ai.azure.com/api/projects/PROJECT/openai/v1/responses' --file /path/to/private-key
+```
+
+The optional `--api-version VERSION` is for services that require it; omit it
+for the owner-verified Foundry v1 route. To replace an account, use `--id UUID
+--expected-version N` in place of `--name`. Personal scope is the default;
+`--org NAME` chooses organization scope. `--json` retains the existing
+write-only `{ok:true}` output. Keys are never command-line options.
+
+Coordinator staging addition: run the command above with the owner-held key
+file, list the ID, launch a Modal golden using that `--credential-id` and
+Azure deployment `--model`, and request MODEL_OK. Expect MODEL_OK on initial
+and later turns. Repeat with the base URL without `/responses`, omit
+api-version in both cases, and expect identical success. Inspect output and
+argv: no key. No schema migration or new deployment prerequisite for the CLI.
+
 ## Dashboard creation fields
 
 On Models/Harness, open **Add a subscription**, choose **Use an API key
