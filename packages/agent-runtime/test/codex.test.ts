@@ -485,3 +485,41 @@ nativeTest("Codex process loss cannot publish partial resumed totals or seed the
     await driver.close();
   }
 });
+
+// Captured native ordering, not an inferred pre-turn baseline: the old total
+// arrives only after dispatch, followed by the new cumulative total.
+nativeTest("recorded cold Codex resume publishes one unknown snapshot, never historical totals", async () => {
+  const driver = new CodexDriver({
+    executable: `${import.meta.dir}/fixtures/recorded-resume.ts`,
+    cwd: import.meta.dir,
+    env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+  });
+  const events: DriverEvent[] = [];
+  try {
+    expect(
+      await driver.start({
+        request: { sandboxId: "s", harness: "codex", text: "Reply OK" },
+        sessionId: "recorded-thread",
+        signal: new AbortController().signal,
+        session: () => {},
+        emit: (e) => events.push(e),
+      }).done,
+    ).toBe("finished");
+    expect(events.filter((e) => e.kind === "other" && e.type === "armada/turnUsage")).toEqual([
+      {
+        kind: "other",
+        type: "armada/turnUsage",
+        data: {
+          model: "gpt-6.1-sol",
+          inputTokens: null,
+          outputTokens: null,
+          cachedTokens: null,
+          cacheWriteTokens: null,
+          reasoningTokens: null,
+        },
+      },
+    ]);
+  } finally {
+    await driver.close();
+  }
+});

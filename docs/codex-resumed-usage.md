@@ -47,3 +47,27 @@ real JSONL-driver tests; do not inject malformed data or kill staging compute to
 force these cases. No migration, transport change, provider API call or transcript
 copy. Source contract: pinned native types and the
 [official app-server protocol](https://developers.openai.com/codex/app-server/).
+
+## Resume smoke contract (#1246)
+
+Staging Modal run [43272617061](https://github.com/The-Vibe-Company/armada/actions/runs/43272617061)
+finished the resumed prompt but exhausted polling for numeric counters. The
+smoke incorrectly required measured counts even when the runtime explicitly
+reported an unknown baseline. Increasing the polling budget cannot repair that
+immutable per-turn observation.
+
+A real pinned 0.167.0 native capture (see `test/fixtures/codex-resume-recorded.json`
+in agent-runtime) reproduces the timing cause on the development sandbox:
+`thread/resume` replies without a usage snapshot; only after `turn/start`
+dispatch does the old total arrive, followed by the new cumulative total. The
+old total is too late to adopt safely under the existing contract. We do not
+reinterpret it as a verified baseline or sum `last` counters.
+
+The Modal Codex `resume_usage` smoke now requires either measured counters or
+an explicit all-null input/output/cache row for that exact resumed prompt.
+Absent rows, old prompt rows and incomplete unknowns still fail. Fresh turns
+still require measured counts. Unknown means unknown, not zero or the session's
+cumulative usage. The merge-queue tolerance for this step can be removed once
+this smoke change is in use. No runtime, cost accounting, migration or deployment
+change is required. A Modal-native JSONL capture remains to be collected with
+authorized staging access; the local recording is not presented as that evidence.
