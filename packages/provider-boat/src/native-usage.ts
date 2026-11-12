@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { deflateSync } from "node:zlib";
+import type { Harness } from "@armada/core";
 import {
   type Provider,
   ProviderError,
@@ -59,7 +60,7 @@ export async function collectNativeUsage(
   provider: Provider,
   sandboxId: string,
   promptId: string,
-  harness: "claude" | "codex" = "codex",
+  harness: Harness = "codex",
 ): Promise<TurnTokenUsage[]> {
   const unavailable = (code: UsageUnavailableCode): TurnTokenUsage[] => [
     {

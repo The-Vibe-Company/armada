@@ -5,10 +5,10 @@ on:
     branches: [main]
     paths:
       - 'supabase/migrations/**'
+  # Always report the disposable check for required-check rulesets.
   pull_request:
-    paths:
-      - 'supabase/migrations/**'
-      - '.github/workflows/migrations.yml'
+  merge_group:
+    types: [checks_requested]
   workflow_dispatch:
     inputs:
       mode:
@@ -40,7 +40,7 @@ permissions:
 jobs:
   preview:
     name: Migration dry-run (disposable database)
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     services:
