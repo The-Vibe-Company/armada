@@ -52,7 +52,11 @@ export interface People {
 
 /** A fresh database with the migrations, two orgs, three people, three goldens and encrypted credentials. */
 export async function database(): Promise<{ db: PGlite; people: People }> {
-  const db = await openMigratedDatabase();
+  return seedDatabase(await openMigratedDatabase());
+}
+
+/** Seed the common launch fixtures into an empty database owned by the caller. */
+export async function seedDatabase(db: PGlite): Promise<{ db: PGlite; people: People }> {
   const people: People = {
     org: crypto.randomUUID(),
     otherOrg: crypto.randomUUID(),

@@ -129,6 +129,22 @@ test("a missing agent account warns before publication and choosing a usable age
 });
 
 test("an admin creates an org template from org resources only; it is published as revision 1", async ({ page }) => {
+  await fetch(`${MOCK}/__test/accounts`, {
+    method: "POST",
+    body: JSON.stringify({
+      user: [],
+      org: [
+        {
+          id: "00000000-0000-4000-8000-000000000791",
+          kind: "openai",
+          name: "Foundry",
+          version: 3,
+          status: "active",
+          updatedAt: "2026-11-11T00:00:00.000Z",
+        },
+      ],
+    }),
+  });
   await signIn(page, "alice@example.com", "/templates");
   await page.getByRole("button", { name: "New", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "New template" });
@@ -141,6 +157,10 @@ test("an admin creates an org template from org resources only; it is published 
   await expect(dialog.getByLabel("Environment").locator("option", { hasText: "alice-private" })).toHaveCount(0);
   await dialog.getByLabel("Environment").selectOption({ label: "modal-golden on Modal" });
   await dialog.getByRole("radio", { name: "Codex" }).check();
+  await dialog.getByLabel("Model account", { exact: true }).selectOption({ label: "Foundry (Acme)" });
+  await page.screenshot({ path: "test-results/template-model-account-desktop.png", fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({ path: "test-results/template-model-account-mobile.png", fullPage: true });
   await dialog.getByLabel("Reasoning effort").selectOption("medium");
   await dialog.getByRole("button", { name: "Next: tools and variables" }).click();
   await expect(dialog.getByRole("heading", { name: /Step 2 of 2/ })).toBeFocused();
@@ -173,6 +193,7 @@ test("an admin creates an org template from org resources only; it is published 
       harness: "codex",
       model: "gpt-6.1-sol",
       reasoningEffort: "medium",
+      modelAccount: { id: "00000000-0000-4000-8000-000000000791", version: 3 },
       connections: ["00000000-0000-4000-8000-000000000060"],
       variables: [{ key: "APP_REGION", variableId: "00000000-0000-4000-8000-000000000080", version: 3 }],
       secrets: [{ key: "STRIPE_API_KEY", secretId: "00000000-0000-4000-8000-000000000081", version: 1 }],
@@ -290,7 +311,7 @@ test("launch from a template: only the run is chosen, the revision is pinned and
   await expect(preset).toContainText("Acme Docs");
   await expect(preset).toContainText("APP_REGION");
   // The template's choices are not fields here.
-  await expect(dialog.getByLabel("Model")).toHaveCount(0);
+  await expect(dialog.getByLabel("Model", { exact: true })).toHaveCount(0);
   await page.screenshot({ animations: "disabled", path: "test-results/templates-launch-desktop.png" });
 
   // An outcome the server cannot confirm keeps the key: launching again repeats the same request.
@@ -353,10 +374,10 @@ test("the environment's launch dialog offers its templates; choosing one presele
   await signIn(page, "alice@example.com", "/environments");
   await page.getByRole("button", { name: "Launch from shared-golden on Boat" }).click();
   const dialog = page.getByRole("dialog", { name: "Launch from shared-golden" });
-  await expect(dialog.getByLabel("Model")).toHaveCount(1);
+  await expect(dialog.getByLabel("Model", { exact: true })).toHaveCount(1);
   await dialog.getByLabel("Start from").selectOption({ label: "Backend with docs (revision 2)" });
   await expect(dialog.locator("[data-template-preset]")).toContainText("Acme Docs");
-  await expect(dialog.getByLabel("Model")).toHaveCount(0);
+  await expect(dialog.getByLabel("Model", { exact: true })).toHaveCount(0);
   await page.screenshot({ animations: "disabled", path: "test-results/templates-environment-launch-desktop.png" });
   await dialog.getByRole("button", { name: /Launch/ }).click();
   await expect(page).toHaveURL(/\/sandboxes\/[0-9a-f-]{36}$/);
@@ -372,7 +393,7 @@ test("Enter on the first step goes to the next one; a taken name is refused in w
   const dialog = page.getByRole("dialog", { name: "New template" });
   await dialog.getByLabel("Name").fill("Modal quick fix");
   await dialog.getByLabel("Environment").selectOption({ label: "modal-golden on Modal" });
-  await dialog.getByLabel("Model").selectOption("claude-sonnet-5-5");
+  await dialog.getByLabel("Model", { exact: true }).selectOption("claude-sonnet-5-5");
   await dialog.getByLabel("Name").press("Enter");
   await expect(dialog.getByRole("heading", { name: /Step 2 of 2/ })).toBeFocused();
   expect((await mockState()).templateCalls.filter((call) => call.route === "templates/create")).toHaveLength(0);
@@ -380,7 +401,7 @@ test("Enter on the first step goes to the next one; a taken name is refused in w
   await expect(dialog.getByRole("alert")).toHaveText(/A template with this name already exists/);
   // The refusal kept every choice: back on step 1, the model is still the one chosen.
   await dialog.getByRole("button", { name: "Back" }).click();
-  await expect(dialog.getByLabel("Model")).toHaveValue("claude-sonnet-5-5");
+  await expect(dialog.getByLabel("Model", { exact: true })).toHaveValue("claude-sonnet-5-5");
 });
 
 test("a retry after an unknown outcome sends the same size, and no launch manifest reaches the page", async ({
