@@ -25,6 +25,42 @@ already recorded versions. The automatic path never resets the database, repairs
 includes seeds. Manual repair is a separate guarded operation. The version tables before and after the push and the pending
 plan are in Actions logs. Any failing command fails the job and emits an error.
 
+## Migration author checklist
+
+Before opening a PR, and again against current main before merge:
+
+- Name each new file `<14-digit-version>_<description>.sql`. The version must
+  be unique across `supabase/migrations` and strictly newer than the largest
+  version on current `origin/main`, not just the branch's original base.
+- Fetch current main and compare its migration versions with your additions:
+
+  ```sh
+  git fetch origin main
+  git ls-tree -r --name-only origin/main -- supabase/migrations | sort
+  ```
+
+  Run this duplicate-prefix check from the repository root; no output means no
+  duplicate versions (it does not validate filename format or ordering):
+
+  ```sh
+  find supabase/migrations -maxdepth 1 -name '*.sql' -printf '%f\n' |
+    cut -d_ -f1 | sort | uniq -d
+  ```
+
+- Fresh/disposable SQL tests establish that SQL applies in filename order;
+  they do **not** verify remote migration history or remote deployability.
+  [PR #1039](https://github.com/The-Vibe-Company/armada/pull/1039) proposes a
+  CI check for filename format, duplicate versions and new versions strictly
+  greater than the current base's maximum. Until it lands, do not assume that
+  check is present. Even a passing check is not merge serialization, enforced
+  branch protection or a deployment gate; recheck the current base before merge.
+- Correct a collision by renaming only a **confirmed-unapplied** migration,
+  after checking relevant migration histories with an authorized operator.
+  Never rename or edit an applied version. Uncertain or applied-history
+  discrepancies belong to the existing
+  [operator-only reconciliation runbook](#reconcile-hand-applied-history-operator-only),
+  not an author-side repair or automatic replay.
+
 ## One-time repository administrator setup
 
 Create the GitHub Actions environment named **production**. Restrict deployment
@@ -147,3 +183,37 @@ apply job's concurrency lock. Environment branch restrictions and optional
 reviewer approval remain essential; do not run external repairs concurrently.
 Keep the reconciliation record and Actions run links for audit. A failed repair
 may have partially changed history: inspect fresh history before retrying.
+
+## Running-code schema readiness
+
+The standalone server embeds the highest migration version in its source checkout
+at build time. Source runs derive it from that checkout. It cannot be overridden
+by an environment variable. At boot, before starting background workers or
+listening, the server reads max(version) from
+supabase_migrations.schema_migrations using its existing database pool and
+refuses a missing, empty, unreadable or older history. Connection-admission retry
+still applies; an outdated schema fails immediately rather than retrying writes.
+
+/healthz uses the same version check (single-flight, cached for one second,
+two-second answer deadline). A database behind the running code returns 503, just
+like an unreachable database, so the existing public production probe fails too.
+A database ahead of the binary remains ready: additive schema changes must remain
+compatible with old code during deployment. This is a version check, not a
+catalog/drift audit: it trusts Supabase history and does not prove every object
+exists or that partial SQL was applied correctly.
+
+The server database role needs SELECT on the Supabase history table. Before
+rollout, the coordinator must verify that permission and that recorded versions
+match actual applied schema in staging; never repair history merely to pass health.
+No new migration or database write is required by this check.
+
+Coordinator staging checks (workers have no staging credentials):
+1. Verify a current-history server boots and /healthz returns 200.
+2. In an isolated staging database, boot a newer binary against older history:
+   startup must refuse before listening; the previous deployment must stay active.
+3. Against an already-running test server, make history older/unreadable in that
+   isolated database; health must return 503 after the short cache expires. Restore
+   accurate history/permissions and verify recovery to 200. Never falsify shared
+   staging or production history for this test.
+4. Confirm the public production probe treats that 503 as failure before enabling
+   production rollout. No production changes or probes were performed by the worker.

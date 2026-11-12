@@ -28,6 +28,9 @@ export function createSandboxLifecycle(sql: Sql, providerFor: (id: string) => Pr
     },
     async reconcileOne(signal?: AbortSignal): Promise<boolean> {
       signal?.throwIfAborted();
+      // The production lane is serial, but timed-out SDK calls can outlive a tick.
+      // Keep their raw work bounded; a slot opens only when it actually settles.
+      if (pending.size >= 4) return false;
       const token = crypto.randomUUID();
       const row = (
         await sql.query<{
@@ -36,13 +39,13 @@ export function createSandboxLifecycle(sql: Sql, providerFor: (id: string) => Pr
           lifecycle_generation: number;
           expires_at: Date | string;
           status: string;
+          owner_is_member: boolean;
           preservation_note: string | null;
           stop_requested_at: Date | string | null;
         }>(
           `update public.sandboxes s set reconcile_lease=$1::uuid,
           reconcile_lease_until=now()+interval '2 minutes'
         where s.id=(select candidate.id from public.sandboxes candidate
-          join public.members m on m.org_id=candidate.org_id and m.user_id=candidate.owner_id
           where candidate.status not in ('stopped','deleted')
           and not exists(select 1 from public.orchestrators parent where parent.sandbox_id=candidate.id)
           and not (candidate.status='failed' and candidate.stopped_at is not null)
@@ -50,11 +53,25 @@ export function createSandboxLifecycle(sql: Sql, providerFor: (id: string) => Pr
           and (candidate.activity_until is null or candidate.activity_until<now())
           and (candidate.reconcile_lease_until is null or candidate.reconcile_lease_until<now())
           order by candidate.reconcile_after limit 1 for update of candidate skip locked)
-        returning s.id,s.provider_sandbox_id,s.lifecycle_generation,s.expires_at,s.status::text as status,s.stop_requested_at,s.preservation_note`,
+        returning s.id,s.provider_sandbox_id,s.lifecycle_generation,s.expires_at,s.status::text as status,s.stop_requested_at,s.preservation_note,
+          exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id) as owner_is_member`,
           [token],
         )
       ).rows[0];
       if (!row) return false;
+      if (!row.owner_is_member) {
+        // Missing membership grants no worker management authority. Report the orphan
+        // without resolving credentials, observing the machine or changing its status.
+        await sql.query(
+          `update public.sandboxes set
+            lifecycle_error='Cleanup blocked: removed-owner authority is unavailable. Automatic cleanup requires service-owned worker authority.',
+            reconcile_after=now()+interval '1 minute',reconcile_lease=null,reconcile_lease_until=null
+          where id=$1::uuid and reconcile_lease=$2::uuid and lifecycle_generation=$3
+            and reconcile_lease_until>now() and (activity_until is null or activity_until<now())`,
+          [row.id, token, row.lifecycle_generation],
+        );
+        return true;
+      }
       let terminal = false;
       let physicalExit = false;
       let error: string | null = null;
@@ -135,6 +152,7 @@ export function createSandboxLifecycle(sql: Sql, providerFor: (id: string) => Pr
         reconcile_lease=case when $6 then reconcile_lease else null end,
         reconcile_lease_until=case when $6 then reconcile_lease_until else null end
         where id=$1::uuid and reconcile_lease=$2::uuid and lifecycle_generation=$3
+          and reconcile_lease_until>clock_timestamp()
           and (activity_until is null or activity_until<now())`,
         [
           row.id,

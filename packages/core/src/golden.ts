@@ -103,12 +103,6 @@ export interface GoldenLimits {
   snapshotPolls?: number;
 }
 
-export interface CreatedGolden {
-  golden: GoldenRecord;
-  sandboxId: string;
-  snapshotName: string;
-}
-
 export interface SnapshottedGolden {
   golden: GoldenRecord;
   snapshotName: string;

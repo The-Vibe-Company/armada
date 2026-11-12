@@ -27,6 +27,7 @@ struct ChatComposer: View {
     @State private var intent: ComposerIntent = .steer
     @FocusState private var focused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         VStack(spacing: 8) {
@@ -77,7 +78,7 @@ struct ChatComposer: View {
             TextField(placeholder, text: $draft, axis: .vertical)
                 .font(.body)
                 .foregroundStyle(ArmadaTheme.textPrimary)
-                .lineLimit(1...6)
+                .lineLimit(1...(dynamicTypeSize.isAccessibilitySize ? 3 : 6))
                 .focused($focused)
                 .padding(.leading, 14)
                 .padding(.trailing, 6)

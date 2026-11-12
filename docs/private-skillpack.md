@@ -1,5 +1,16 @@
 # Private Skillpack installation
 
+> **Compatibility-window recovery:** the current CLI no longer implements the
+> orchestrator command. For existing-compute inspection/recovery only, define
+> `armada_legacy` using the exact **2.21.0** npm invocation in the
+> [pinned recovery setup](cli-orchestrators.md#existing-compute-recovery-during-the-compatibility-window)
+> and verify its version before running the commands below. Use the existing
+> owner's session and approved `ARMADA_URL`; never log credentials. The sandbox
+> replacement does not recover existing managed parents. Create/smoke examples
+> below are historical, not current deployment instructions or authorization
+> to allocate compute. Server/database retirement remains gated.
+
+
 Skillpack automation uses a separate workspace-bound personal access token:
 `cmp_pat_` followed by 48 lowercase hexadecimal digits (24 random bytes).
 The native service defaults to a 90-day lifetime and refuses a longer lifetime;
@@ -73,7 +84,7 @@ are outside this first credential/install slice. No live credential or productio
 install is used in verification; fake SSH/CLI tests execute the actual guest
 script and check receipt validation, error sanitization and command-local auth.
 
-## Required post-merge staging check (not run by this PR)
+## Historical orchestrator-based staging check (not a current rollout requirement)
 
 Run **`private-skillpack-staging-boat-modal`** on the deployed **staging** server
 only, once for Boat Codex and once for Modal Codex, after its normal approved
@@ -102,9 +113,9 @@ Set `ARMADA_URL` to the staging origin. For **each** `PLACEMENT=boat` and
 ```bash
 set -euo pipefail
 PATTERN=$(bun -e 'import {SKILLPACK_TOKEN_PATTERN} from "./packages/core/src/skillpack-token.ts"; console.log(SKILLPACK_TOKEN_PATTERN)')
-armada orchestrator capabilities --json  # both requested staging pairs must be enabled
+armada_legacy orchestrator capabilities --json  # both requested staging pairs must be enabled
 armada creds set skillpack --file "$SKILLPACK_READ_FILE"
-armada orchestrator create "private-skillpack-${PLACEMENT}-$(date +%s)" \
+armada_legacy orchestrator create "private-skillpack-${PLACEMENT}-$(date +%s)" \
   --org "$ORG_ID" --golden "$GOLDEN_ID" --provider "$PLACEMENT" --agent codex \
   --model "$MODEL" --model-account "$MODEL_ACCOUNT_ID" \
   --skill "$SKILL_SLUG@$SKILL_VERSION" --idempotency-key "$(uuidgen)" --json > /tmp/skill-create.json
@@ -112,7 +123,7 @@ ID=$(jq -r .orchestratorId /tmp/skill-create.json)
 # Poll (at most 5 minutes); fail on blocked/archived rather than assuming create admission is success.
 deadline=$((SECONDS+300))
 while :; do
-  armada orchestrator detail "$ID" --org "$ORG_ID" --json > /tmp/skill-detail.json
+  armada_legacy orchestrator detail "$ID" --org "$ORG_ID" --json > /tmp/skill-detail.json
   state=$(jq -r .orchestrator.state /tmp/skill-detail.json)
   [ "$state" != blocked ] && [ "$state" != archived ]
   [ "$state" != ready ] || break
@@ -124,9 +135,9 @@ jq -e --arg ref "$SKILL_SLUG@$SKILL_VERSION" --arg ver "$SKILL_VERSION" \
    .workspaceId==$workspace and .checksum==$checksum and
    .origin=="https://skillpack.app/v1" and (.skillId|type)=="string"' /tmp/skill-detail.json
 REV=$(jq -r .orchestrator.revision /tmp/skill-detail.json)
-armada orchestrator send "$ID" "Read the installed $SKILL_SLUG SKILL.md and return its known staging marker only; do not display credentials." \
+armada_legacy orchestrator send "$ID" "Read the installed $SKILL_SLUG SKILL.md and return its known staging marker only; do not display credentials." \
   --org "$ORG_ID" --expected-revision "$REV" --idempotency-key "$(uuidgen)" --json
-armada orchestrator events "$ID" --org "$ORG_ID" --all --json
+armada_legacy orchestrator events "$ID" --org "$ORG_ID" --all --json
 ```
 
 Expected: create reaches `ready`, receipt exactly matches the private pin and
@@ -203,7 +214,7 @@ for cmd in $(boat history "$BOAT_ID" --mode commands --limit 100 --json | jq -r 
 done | python3 -c "$SCAN" "$PATTERN"
 ```
 
-**Broad-key success:** replace the personal key using
+**Historical broad-key success recipe (not a current instruction):** the original validation replaced the personal key using
 `armada creds set skillpack --file "$SKILLPACK_BROAD_FILE"`, repeat create with a
 new name/idempotency key on smoke-modal and smoke-boat using
 `--skill ship-pr-dev@1.6.1`, and poll until ready. Expect a non-null skill receipt
@@ -216,7 +227,7 @@ Also repeat with a known nonexistent private slug: expect
 value, output value, fixture or log.
 
 After recording only sanitized receipt/status/check results, stop each disposable
-parent with `armada orchestrator stop "$ID" --org "$ORG_ID" --expected-revision
+parent with `armada_legacy orchestrator stop "$ID" --org "$ORG_ID" --expected-revision
 "$REV" --idempotency-key "$(uuidgen)" --json` using a fresh detail revision, and
 retire staging resources through the normal operator cleanup. Do not claim this
 check passed until both providers and both key-scope cases actually pass.
@@ -328,10 +339,13 @@ do not use `golden snapshot` on the old master. Files or setup performed by hand
 on an old golden are not part of its persisted config: reapply any required
 non-secret custom setup with `--setup <local-script>` during update.
 
-Then rerun the original `orchestrator create` with a fresh name/idempotency key,
+**Historical orchestrator retry recipe, not current rollout guidance:** the original
+procedure reran `orchestrator create` with a fresh name/idempotency key,
 the same golden ID and `--skill ship-pr-dev@1.6.1`. The personal Skillpack key must
 have access to read the skill; broader keys are also accepted. Confirm the build result has no `skillpack_download_unavailable` warning and the worker can run `command -v skillpack` before retrying. Confirm a non-null skill receipt and a ready parent.
 Send only closed stage/reason if it fails, not raw auth status or a key value.
+Do not allocate a new orchestrator to repeat this historical recipe; new sandbox
+work uses [scoped Armada access](sandbox-armada-access.md).
 
 The public sandbox-launch path now reports the same closed missing-CLI reason
 and `golden update` action, with distinct request/package/registry/receipt/transport
@@ -437,8 +451,10 @@ key expiry. A second authorization is read by the existing daemon at each auth
 attempt, rather than depending on daemon startup having seen that key.
 
 No golden rebuild or migration is required: the server generates this config for
-new worker SSH daemons. Recreate the failed private parent after the server
-upgrade; its failed allocation was already disposed. The staging-specific field
+new worker SSH daemons. **Historical validation:** the original procedure recreated
+the failed private parent after the server upgrade; its failed allocation had
+already been disposed. This is not authorization to recreate an orchestrator
+after step 3 of #984. The staging-specific field
 requested to confirm this exact cause is only
 `stat -c '%n %a %U %G' /run /etc/ssh` on a disposable worker fork. The local
 reproducer establishes this failure mode, not the still-unreported staging mode.

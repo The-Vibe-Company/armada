@@ -107,7 +107,6 @@ export {
 } from "./github.ts";
 export {
   assertGoldenMutation,
-  type CreatedGolden,
   connectGolden,
   type GoldenActor,
   type GoldenLimits,
@@ -315,6 +314,8 @@ export {
   usageUnavailableReason,
   withUsageTotals,
 } from "./sandbox-usage.ts";
+export type { SkillCatalogItem, SkillCatalogPage, SkillCatalogSource } from "./skill-catalog.ts";
+export { SKILL_PIN_PATTERN, validateSkillPins } from "./skill-pins.ts";
 export type { TaskOutcome } from "./task-outcome.ts";
 export {
   type LaunchTemplate,
@@ -323,6 +324,7 @@ export {
   type TemplateRefusalReason,
   templateRefusalHelp,
 } from "./templates.ts";
+export { redactKnownTokens } from "./token-redaction.ts";
 export { type ModelSelectionReason, type TurnModelEvidence, turnModelEvidence } from "./turn-model.ts";
 export {
   type AccountMutation,

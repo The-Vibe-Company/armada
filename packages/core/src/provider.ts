@@ -562,13 +562,14 @@ export function isNonMutatingProviderRefusal(error: unknown): boolean {
     error instanceof ProviderError &&
     !error.details?.resourceReceipt &&
     !error.details?.keepSource &&
-    [
+    ([
       "unauthorized",
       "forbidden",
       "not_found",
       "invalid_request",
       "payment_required",
       "provider_not_configured",
-    ].includes(error.code)
+    ].includes(error.code) ||
+      (error.provider === "boat" && error.code === "rate_limited" && error.status === 429))
   );
 }

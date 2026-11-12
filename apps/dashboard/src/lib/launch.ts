@@ -1,4 +1,5 @@
 import { SIZED_LAUNCH_ROUTE_V1 } from "@armada/core";
+import { isUuid } from "./action.ts";
 import { type ArmadaApiOptions, ControlError, controlPost } from "./control.ts";
 import type { LaunchArgs } from "./model-choice.ts";
 
@@ -17,17 +18,21 @@ export const LAUNCH_PATH = "/api/v1/sandbox/launch";
  * `size` must not start a machine of another size.
  */
 export async function launchSandbox(options: ArmadaApiOptions, args: LaunchArgs): Promise<{ id: string }> {
+  if (args.armadaAccess && (args.harness !== "codex" || !isUuid(args.credentialId)))
+    throw new ControlError("Armada access requires an explicit named Codex account.");
   const sized = args.size !== undefined || args.sizePolicy === true;
   const payload = await controlPost(
     options,
-    sized ? SIZED_LAUNCH_ROUTE_V1 : LAUNCH_PATH,
+    args.armadaAccess ? "/api/v1/sandbox/launch-access-v1" : sized ? SIZED_LAUNCH_ROUTE_V1 : LAUNCH_PATH,
     {
+      ...(args.armadaAccess ? { armadaAccessVersion: 1, armadaAccess: { maxActiveChildren: 3 } } : {}),
       golden: args.golden,
       provider: args.provider,
       org: args.org,
       harness: args.harness,
       model: args.model,
       reasoningEffort: args.reasoning_effort,
+      ...(args.skills?.length ? { skills: args.skills } : {}),
       ...(args.connections === undefined ? {} : { connections: args.connections }),
       ...(args.repo === undefined ? {} : { repo: args.repo }),
       ...(args.credentialId === undefined ? {} : { credentialId: args.credentialId }),
@@ -35,7 +40,11 @@ export async function launchSandbox(options: ArmadaApiOptions, args: LaunchArgs)
       ...(args.prompt === undefined ? {} : { prompt: args.prompt }),
       ...(sized ? { sizePolicyVersion: 1 } : {}),
     },
-    sized ? "launching with machine sizes" : "launching from the dashboard",
+    args.armadaAccess
+      ? "launching with Armada access"
+      : sized
+        ? "launching with machine sizes"
+        : "launching from the dashboard",
   );
   const sandbox = payload.sandbox;
   const id = typeof sandbox === "object" && sandbox !== null && "id" in sandbox ? sandbox.id : undefined;

@@ -34,6 +34,13 @@ export const COMMANDS: readonly Command[] = [
     group: "Actions",
     keywords: ["boat", "modal", "hosting", "key"],
   },
+  {
+    id: "routines",
+    label: "Routines",
+    href: "/routines",
+    group: "Go to",
+    keywords: ["schedule", "interval", "pause", "runs"],
+  },
   { id: "sandboxes", label: "Sandboxes", href: "/sandboxes", group: "Go to", keywords: ["agents", "logs", "running"] },
   {
     id: "environments",
@@ -92,12 +99,6 @@ function rankOf(command: Command, needle: string): number | null {
   if (command.keywords?.some((word) => word.startsWith(needle))) return 2;
   if (label.includes(needle)) return 3;
   return null;
-}
-
-/** The next active index when moving by `step` through `count` results, wrapping at both ends. */
-export function moveActive(current: number, step: number, count: number): number {
-  if (count <= 0) return 0;
-  return (((current + step) % count) + count) % count;
 }
 
 /** The modifier a shortcut is pressed with on this platform: ⌘ on Apple systems, Ctrl elsewhere. */

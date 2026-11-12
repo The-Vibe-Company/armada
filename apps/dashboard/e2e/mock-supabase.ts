@@ -1,4 +1,4 @@
-import { type MachineSizePolicy, resolveMachineSize } from "@armada/core";
+import { type MachineSizePolicy, ROUTINE_REASON_HELP, resolveMachineSize } from "@armada/core";
 
 /**
  * A stand-in for Supabase Auth, PostgREST and the Armada MCP server, for the browser tests.
@@ -51,6 +51,9 @@ type State = {
   launches: Row[];
   /** The route of each of `launches`, in order. */
   launchRoutes: string[];
+  skillCatalogUnavailable?: boolean;
+  skillCatalogMalformed?: boolean;
+  skillCatalogLongDescription?: boolean;
   /** Golden build and capability requests contain metadata only, never tokens. */
   goldenCalls: { route: string; body: Row; authorized: boolean }[];
   goldenGate: {
@@ -126,6 +129,12 @@ type State = {
   templateCalls: { route: string; body: Row; authorized: boolean }[];
   templateRequests: Map<string, Row>;
   templateOutcome: Row | null;
+  routines: Row[];
+  routineHistory: Row[];
+  routineCalls: { route: string; body: Row; authorized: boolean }[];
+  routineFailure: Fail | null;
+  routineHoldCreate: boolean;
+  routineCreateWaiters: (() => void)[];
 };
 
 function seed(): State {
@@ -258,6 +267,65 @@ function seed(): State {
     templateCalls: [],
     templateRequests: new Map(),
     templateOutcome: null,
+    routines: [
+      routineRow(id(2200), "org", ALICE, "Morning review", "enabled", id(90), 2),
+      routineRow(id(2201), "personal", ALICE, "Release notes", "paused", id(91), 1),
+      routineRow(id(2202), "personal", BOB, "Bob private check", "paused", id(90), 2),
+    ],
+    routineHistory: [
+      {
+        id: id(2210),
+        routineId: id(2200),
+        scheduledDueAt: now,
+        configurationVersion: 2,
+        state: "succeeded",
+        reason: null,
+        reasonHelp: null,
+        taskState: "finished",
+        taskHelp: null,
+        sandboxId: id(30),
+        templateRequestId: id(2220),
+        missedIntervals: 0,
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: id(2211),
+        routineId: id(2200),
+        scheduledDueAt: "2026-11-07T10:00:00.000Z",
+        configurationVersion: 2,
+        state: "skipped",
+        reason: "previous_run_alive",
+        reasonHelp: ROUTINE_REASON_HELP.previous_run_alive,
+        taskState: null,
+        taskHelp: null,
+        sandboxId: null,
+        templateRequestId: null,
+        missedIntervals: 0,
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: id(2212),
+        routineId: id(2200),
+        scheduledDueAt: "2026-11-06T10:00:00.000Z",
+        configurationVersion: 1,
+        state: "failed",
+        reason: "launch_failed",
+        reasonHelp: ROUTINE_REASON_HELP.launch_failed,
+        taskState: null,
+        taskHelp: null,
+        sandboxId: null,
+        templateRequestId: id(2221),
+        missedIntervals: 0,
+        createdAt: now,
+        updatedAt: now,
+      },
+    ],
+    routineCalls: [],
+    routineFailure: null,
+    routineHoldCreate: false,
+    routineCreateWaiters: [],
     githubInstallations: [
       {
         id: 4242,
@@ -657,11 +725,6 @@ function orAny(row: Row, expression: string): boolean {
 
 function project(table: string, row: Row, select: string | null): Row | Fail {
   const columns = !select || select === "*" ? null : select.split(",").map((column) => column.trim());
-  if (table === "credentials" && (!columns || columns.includes("value_enc"))) {
-    if (columns?.includes("value_enc")) {
-      return { status: 401, code: "42501", message: "permission denied for table credentials" };
-    }
-  }
   if (table === "github_connections") {
     if (!columns || columns.includes("refresh_token_enc")) {
       return { status: 401, code: "42501", message: "permission denied for table github_connections" };
@@ -670,13 +733,7 @@ function project(table: string, row: Row, select: string | null): Row | Fail {
   if (table === "orgs" && !columns) {
     return { status: 401, code: "42501", message: "permission denied for table orgs" };
   }
-  if (!columns) {
-    if (table === "credentials") {
-      const { value_enc: _hidden, ...rest } = row;
-      return rest;
-    }
-    return row;
-  }
+  if (!columns) return row;
   return Object.fromEntries(columns.map((column) => [column, row[column]]));
 }
 
@@ -695,6 +752,13 @@ async function rest(request: Request, url: URL): Promise<Response> {
   const select = url.searchParams.get("select");
 
   if (request.method === "GET") {
+    // Column grants apply to the query, even when filtering or paging returns no rows.
+    if (table === "credentials") {
+      const columns = select?.split(",").map((column) => column.trim());
+      if (!select || !columns || columns.includes("*") || columns.includes("value_enc")) {
+        return pgError({ status: 401, code: "42501", message: "permission denied for table credentials" });
+      }
+    }
     let rows = visibleRows(table, userId).filter((row) => matches(row, url.searchParams));
     const order = url.searchParams.get("order");
     if (order) {
@@ -1061,6 +1125,53 @@ function bindCredential(body: Row, userId: string | null): Response {
  * exactly one of its `config.repos[].dir`, and every named connection is the caller's to use in the org, personal or
  * org, and connected (#681: the legacy visibility plays no part). The sandbox row records what was launched.
  */
+/** Remote metadata boundary only: installs remain the launch service's contract. */
+function skillCatalogRoute(route: string, body: Row, request: Request): Response {
+  const user = viewer(request);
+  if (!user) return controlFail(401, "unauthorized", "Sign in again.");
+  if (!isMember(body.org, user)) return controlFail(404, "not_found", "No such organization.");
+  if (state.skillCatalogUnavailable) return controlFail(503, "unavailable", "The Skillpack catalog is unavailable.");
+  if (state.skillCatalogMalformed)
+    return json(route === "skillpack/versions" ? { versions: "invalid" } : { items: [{}], nextOffset: null });
+  if (route === "skillpack/versions")
+    return json({
+      versions:
+        body.source === "private" ? (body.reference === "release-notes" ? ["1.0.0"] : ["2.1.0", "2.0.0"]) : ["1.4.0"],
+    });
+  return json({
+    items:
+      body.source === "private"
+        ? [
+            {
+              reference: "review-code",
+              name: "Code review",
+              description: state.skillCatalogLongDescription
+                ? "Additional context. ".repeat(200)
+                : "Review changes for correctness, security and test coverage.",
+              visibility: "private",
+              versions: ["2.1.0"],
+            },
+            {
+              reference: "release-notes",
+              name: "Release notes",
+              description: "Turn shipped changes into concise release notes.",
+              visibility: "private",
+              versions: ["1.0.0"],
+            },
+          ]
+        : [
+            {
+              reference: "example/browser-testing",
+              name: "Browser testing",
+              description: "Check real browser flows and capture readable evidence.",
+              visibility: "public",
+              versions: ["1.4.0"],
+            },
+          ],
+    nextOffset: null,
+  });
+}
+
 function launchRoute(body: Row, userId: string | null, route = "sandbox/launch"): Response {
   if (!userId) return controlFail(401, "unauthorized", "Sign in again.");
   state.launches.push(body);
@@ -1118,7 +1229,8 @@ function launchRoute(body: Row, userId: string | null, route = "sandbox/launch")
   );
   row.model = body.model;
   row.reasoning_effort = body.reasoningEffort;
-  if (body.visibility !== undefined) row.visibility = body.visibility;
+  if (body.armadaAccess) row.visibility = "private";
+  else if (body.visibility !== undefined) row.visibility = body.visibility;
   row.connections = ids;
   row.repository_dir = body.repo ?? null;
   // The producer's own resolution, as the server records it; an older server records nothing.
@@ -1258,6 +1370,138 @@ function vaultRoute(route: string, body: Row, request: Request): Response {
   return json({ item: vaultDto(row) });
 }
 
+function routineRow(
+  routineId: string,
+  scope: "personal" | "org",
+  ownerId: string,
+  name: string,
+  status: "enabled" | "paused",
+  templateId: string,
+  templateRevision: number,
+): Row {
+  return {
+    id: routineId,
+    orgId: ACME,
+    ownerId,
+    scope,
+    name,
+    templateId,
+    templateRevision,
+    prompt: "Review the repository and summarize what changed. Do not edit files.",
+    intervalHours: scope === "org" ? 24 : 6,
+    ttlSeconds: 3600,
+    maxRunsPerDay: 4,
+    status,
+    version: 2,
+    nextDueAt: status === "enabled" ? new Date(Date.now() + 20 * 3600000).toISOString() : null,
+    consecutiveFailures: 0,
+    pauseReason: null,
+    createdAt: "2026-11-09T10:00:00.000Z",
+    updatedAt: "2026-11-11T10:00:00.000Z",
+  };
+}
+
+/** Browser protocol peer for the real routine API, not a scheduler simulation. */
+async function routineRoute(route: string, body: Row, request: Request): Promise<Response> {
+  const userId = viewer(request);
+  state.routineCalls.push({ route, body, authorized: userId !== null });
+  if (!userId) return controlFail(401, "unauthorized", "Sign in.");
+  if (state.routineFailure)
+    return controlFail(state.routineFailure.status, state.routineFailure.code, state.routineFailure.message);
+  const operation = route.slice("routines/".length);
+  const fields: Record<string, string[]> = {
+    list: ["org"],
+    get: ["org", "id"],
+    history: ["org", "id"],
+    create: [
+      "org",
+      "scope",
+      "name",
+      "templateId",
+      "templateRevision",
+      "prompt",
+      "intervalHours",
+      "ttlSeconds",
+      "maxRunsPerDay",
+    ],
+    enable: ["org", "id", "expectedVersion"],
+    pause: ["org", "id", "expectedVersion"],
+  };
+  if (!fields[operation] || Object.keys(body).some((key) => !fields[operation]!.includes(key)))
+    return controlFail(400, "invalid", "Invalid routine request.");
+  if (!isMember(body.org, userId)) return controlFail(403, "forbidden", "Routine access denied.");
+  const visible = (r: Row) => r.orgId === body.org && (r.scope === "org" || r.ownerId === userId);
+  if (operation === "list") return json({ items: state.routines.filter((r) => visible(r) && r.status !== "deleted") });
+  const admin = state.members.some((m) => m.org_id === body.org && m.user_id === userId && m.role === "admin");
+  if (operation === "create") {
+    if (state.routineHoldCreate) await new Promise<void>((resolve) => state.routineCreateWaiters.push(resolve));
+    if (!["personal", "org"].includes(String(body.scope)) || (body.scope === "org" && !admin))
+      return controlFail(403, "forbidden", "Routine administrator permission required.");
+    const template = state.templates.find(
+      (t) =>
+        t.id === body.templateId &&
+        t.orgId === body.org &&
+        t.status === "active" &&
+        (t.scope === "org" || (t.ownerId === userId && body.scope === "personal")),
+    );
+    const revision = state.templateRevisions.find(
+      (r) => r.templateId === body.templateId && r.revision === body.templateRevision,
+    );
+    if (!template || !revision) return controlFail(404, "not_found", "Routine template revision unavailable.");
+    if (
+      typeof body.name !== "string" ||
+      !body.name.trim() ||
+      typeof body.prompt !== "string" ||
+      !body.prompt.trim() ||
+      !Number.isInteger(body.intervalHours) ||
+      Number(body.intervalHours) < 1 ||
+      Number(body.intervalHours) > 720
+    )
+      return controlFail(400, "invalid", "Invalid routine request.");
+    const item = {
+      ...routineRow(
+        id(++sequence),
+        body.scope as "personal" | "org",
+        userId,
+        body.name,
+        "paused",
+        String(body.templateId),
+        Number(body.templateRevision),
+      ),
+      prompt: body.prompt,
+      intervalHours: body.intervalHours,
+      ttlSeconds: body.ttlSeconds ?? 3600,
+      maxRunsPerDay: body.maxRunsPerDay ?? 24,
+      version: 1,
+    };
+    state.routines.push(item);
+    return json({ item });
+  }
+  const item = state.routines.find(
+    (r) => r.id === body.id && visible(r) && (r.status !== "deleted" || operation === "history"),
+  );
+  if (!item) return controlFail(404, "not_found", "Routine unavailable.");
+  if (operation === "get") return json({ item });
+  if (operation === "history")
+    return json({
+      items: state.routineHistory
+        .filter((r) => r.routineId === item.id)
+        .map((r) => ({ ...r, sandboxId: item.ownerId === userId ? r.sandboxId : null }))
+        .slice(0, 100),
+    });
+  if (item.scope === "org" && !admin)
+    return controlFail(403, "forbidden", "Routine administrator permission required.");
+  if (body.expectedVersion !== item.version) return controlFail(409, "conflict", "Routine version changed.");
+  Object.assign(item, {
+    status: operation === "enable" ? "enabled" : "paused",
+    version: Number(item.version) + 1,
+    nextDueAt:
+      operation === "enable" ? new Date(Date.now() + Number(item.intervalHours) * 3600000).toISOString() : null,
+    updatedAt: new Date().toISOString(),
+  });
+  return json({ item, ...(operation === "pause" ? { admittedRunsMayFinish: true } : {}) });
+}
+
 function templateRow(
   templateId: string,
   scope: "personal" | "org",
@@ -1380,6 +1624,7 @@ function templateRoute(route: string, body: Row, request: Request): Response {
       reasoningEffort: d.reasoningEffort ?? "high",
       connections: d.connections ?? [],
       variables: d.variables ?? [],
+      ...(Array.isArray(d.secrets) && d.secrets.length ? { secrets: d.secrets } : {}),
       skills: d.skills ?? [],
     };
   };
@@ -2407,7 +2652,20 @@ function accounts(route: string, body: Row, request: Request): Response {
 
 function control(url: URL, body: Row): Response {
   if (url.pathname === "/__test/reset") {
+    for (const release of state.routineCreateWaiters) release();
     state = seed();
+    // Keep a visible header but make its current revision unreadable, as a partial control API read can be.
+    if (body.missingTemplateRevision)
+      state.templateRevisions = state.templateRevisions.filter((row) => row.templateId !== id(91));
+    if (body.templateReferenceExtras || body.longTemplateKeys) {
+      const revision = state.templateRevisions.find((row) => row.templateId === id(90) && row.revision === 2);
+      if (revision)
+        Object.assign(revision.definition as Row, {
+          skills: ["notes@1.0.0"],
+          secrets: [{ key: body.longTemplateKeys ? "S".repeat(128) : "STRIPE_API_KEY", secretId: id(81), version: 1 }],
+          ...(body.longTemplateKeys ? { variables: [{ key: "V".repeat(128), variableId: id(80), version: 3 }] } : {}),
+        });
+    }
     pendingOAuth.clear();
     githubCliFlows.clear();
     failSandboxConnections = false;
@@ -2737,6 +2995,18 @@ function control(url: URL, body: Row): Response {
     });
     return json({ ok: true });
   }
+  if (url.pathname === "/__test/skill-catalog-long-description") {
+    state.skillCatalogLongDescription = body.enabled === true;
+    return json({ ok: true });
+  }
+  if (url.pathname === "/__test/skill-catalog-malformed") {
+    state.skillCatalogMalformed = body.malformed === true;
+    return json({ ok: true });
+  }
+  if (url.pathname === "/__test/skill-catalog-unavailable") {
+    state.skillCatalogUnavailable = body.unavailable === true;
+    return json({ ok: true });
+  }
   if (url.pathname === "/__test/sandbox-lifecycle") {
     // The additive #565 fields on one sandbox row, as the database would hold them; the status is left alone.
     const row = state.sandboxes.find((item) => item.id === body.id);
@@ -2844,6 +3114,19 @@ function control(url: URL, body: Row): Response {
     return json({ ok: true });
   }
   /** The next template launch answers this state (failed with a reason, or reconciling) instead of starting. */
+  if (url.pathname === "/__test/routines") {
+    if (typeof body.holdCreate === "boolean") {
+      state.routineHoldCreate = body.holdCreate;
+      if (!body.holdCreate) for (const release of state.routineCreateWaiters.splice(0)) release();
+    }
+    if ("failure" in body) state.routineFailure = body.failure as Fail | null;
+    if (body.empty) state.routines = [];
+    if (body.stale) {
+      const item = state.routines.find((r) => r.id === body.stale);
+      if (item) item.version = Number(item.version) + 1;
+    }
+    return json({ ok: true });
+  }
   if (url.pathname === "/__test/template-outcome") {
     state.templateOutcome = body;
     return json({ ok: true });
@@ -2873,6 +3156,8 @@ function control(url: URL, body: Row): Response {
       connections: state.connections.map((row) => ({ ...row })),
       vaultCalls: state.vaultCalls,
       templateCalls: state.templateCalls,
+      routines: state.routines,
+      routineCalls: state.routineCalls,
       templates: state.templates,
       templateRevisions: state.templateRevisions,
       // Whether the mock holds a sealed value for each secret, never the value itself.
@@ -2896,6 +3181,21 @@ const server = Bun.serve({
     if (url.pathname === "/mcp") return mcp(body as unknown as RpcMessage, viewer(request));
     if (url.pathname === "/api/v1/sandbox/launch" && request.method === "POST")
       return launchRoute(body, viewer(request));
+    if (url.pathname === "/api/v1/sandbox/launch-access-v1" && request.method === "POST") {
+      if (state.olderServer) return controlFail(404, "not_found", "Unknown route.");
+      if (
+        body.armadaAccessVersion !== 1 ||
+        body.harness !== "codex" ||
+        !body.credentialId ||
+        JSON.stringify(body.armadaAccess) !== JSON.stringify({ maxActiveChildren: 3 })
+      )
+        return controlFail(
+          400,
+          "invalid",
+          "Armada access requires an explicit Codex account and bounded child access.",
+        );
+      return launchRoute(body, viewer(request), "sandbox/launch-access-v1");
+    }
     if (url.pathname === "/api/v1/sandbox/launch-sized-v1" && request.method === "POST") {
       // #653's fail-closed route (ea501bd): an older replica does not know it, a newer one checks the version first.
       // Either refusal comes before anything is allocated.
@@ -2916,6 +3216,8 @@ const server = Bun.serve({
     if (url.pathname.startsWith("/api/v1/")) {
       const route = url.pathname.slice("/api/v1/".length);
       if (route === "auth/email/start") return json({ ok: true });
+      if (route === "skillpack/catalog" || route === "skillpack/versions")
+        return skillCatalogRoute(route, body, request);
       if (route === "golden/build/status") return goldenJobStatus(body, request);
       if (route === "golden/create" || route === "golden/update") return goldenBuild(route, body, request);
       if (route === "golden/capabilities") return goldenCapabilities(body, request);
@@ -2932,6 +3234,7 @@ const server = Bun.serve({
         return accounts(route, body, request);
       if (route === "sandbox/bind-credential") return bindCredential(body, viewer(request));
       if (route.startsWith("variables/") || route.startsWith("secrets/")) return vaultRoute(route, body, request);
+      if (route.startsWith("routines/")) return routineRoute(route, body, request);
       if (route.startsWith("templates/")) return templateRoute(route, body, request);
       if (route.startsWith("org/invitations/"))
         return invitations(route.slice("org/invitations/".length), body, request);

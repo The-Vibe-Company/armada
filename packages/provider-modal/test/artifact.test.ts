@@ -14,10 +14,18 @@ import {
 // Uses the real Linux-built runtime, native toolchain, setsid and /proc-backed private state.
 // Portable bundle preparation on macOS does not install Linux-native resources. Linux CI builds
 // and validates the full native artifact before running tests; missing native files there still fail.
+// A portable manifest proves only that the JS bundle exists, not that native tools were built.
 const dist = join(import.meta.dir, "../../agent-runtime/dist");
-const present = await Bun.file(join(dist, "manifest.json")).exists();
-(process.platform === "linux" && present ? test : test.skip)(
-  "actual runtime artifact accepts private bootstrap and scoped RPC, checkpoints and reopens journal",
+const manifest = Bun.file(join(dist, "manifest.json"));
+const nativeBuild = (await manifest.exists()) && (await manifest.json()).artifact !== "portable-bundle";
+const skipReason =
+  process.platform !== "linux"
+    ? "requires Linux"
+    : !nativeBuild
+      ? "requires native runtime: bun packages/agent-runtime/build.ts"
+      : undefined;
+(skipReason ? test.skip : test)(
+  `actual runtime artifact accepts private bootstrap and scoped RPC, checkpoints and reopens journal${skipReason ? ` (skipped: ${skipReason})` : ""}`,
   async () => {
     const artifact = await loadRunnerArtifact(dist);
     expect(artifact.bundle.length).toBeGreaterThan(1000);

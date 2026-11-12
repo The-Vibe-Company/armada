@@ -1,8 +1,6 @@
 import { boatSnapshotName } from "./boat-snapshot-name.ts";
-import type { Visibility } from "./contract.ts";
 import {
   assertGoldenMutation,
-  type CreatedGolden,
   connectGolden,
   type GoldenActor,
   type GoldenLimits,
@@ -11,93 +9,10 @@ import {
   goldenForSettings,
   providerIdOf,
   type SnapshottedGolden,
-  waitReady,
   waitSnapshot,
 } from "./golden.ts";
-import {
-  cloneCommand,
-  GOLDEN_BUILD_TTL_SECONDS,
-  type GoldenConfig,
-  GoldenError,
-  initCommand,
-  parseGoldenName,
-} from "./golden-config.ts";
+import { GoldenError } from "./golden-config.ts";
 import { isNonMutatingProviderRefusal, type Provider, ProviderError } from "./provider.ts";
-import type { ModalBinding, SandboxProviderId } from "./sandbox-provider.ts";
-
-/**
- * Builds the master sandbox, clones each repo and runs init. Model credentials are not passed:
- * the provider creates the sandbox with no account environment.
- * A retry after a lost sandbox id uses the golden's id as the idempotency key.
- */
-export async function createGolden(
-  provider: Provider,
-  store: GoldenStore,
-  actor: GoldenActor,
-  input: { name: string; visibility: Visibility; config: GoldenConfig; modal?: ModalBinding },
-  limits: GoldenLimits = {},
-): Promise<CreatedGolden> {
-  const name = parseGoldenName(input.name);
-  const providerId = providerIdOf(provider);
-  const modal = input.modal ?? null;
-  if ((providerId === "modal") !== (modal !== null)) {
-    throw new GoldenError(
-      "invalid_config",
-      providerId === "modal"
-        ? "A Modal golden needs its Modal workspace, environment and App pinned."
-        : "Only a Modal golden is pinned to a Modal App.",
-    );
-  }
-  if (input.visibility === "org" && actor.role !== "admin") {
-    throw new GoldenError(
-      "forbidden",
-      "Only an admin can create an org golden. Pass --private for one only you can see.",
-    );
-  }
-  const existing = (await store.findByName(actor.orgId, name)).filter(
-    (row) => row.visibility === input.visibility && row.provider === providerId,
-  );
-  const golden = await goldenRow(
-    store,
-    actor,
-    { name, visibility: input.visibility, provider: providerId, modal },
-    input.config,
-    existing,
-  );
-  if (golden.providerSandboxId) {
-    throw new GoldenError(
-      "conflict",
-      `Golden '${name}' already exists. Run 'armada golden connect ${name}' or 'armada golden snapshot ${name}'.`,
-    );
-  }
-  const snapshotName = boatSnapshotName({
-    orgId: actor.orgId,
-    ownerId: actor.userId,
-    visibility: input.visibility,
-    name,
-  });
-  const sandbox = await provider.createGolden({
-    name,
-    ttlSeconds: GOLDEN_BUILD_TTL_SECONDS,
-    idempotencyKey: golden.id,
-    labels: {
-      armada: "golden",
-      org: actor.orgId,
-      owner: actor.userId,
-      visibility: input.visibility,
-      golden: name,
-      snapshot: snapshotName,
-    },
-  });
-  await store.setSandbox(golden.id, sandbox.id);
-  const ready = ["ready", "running"].includes(sandbox.state) ? sandbox : await waitReady(provider, sandbox.id, limits);
-  await setup(provider, ready.id, input.config);
-  return {
-    golden: { ...golden, providerSandboxId: sandbox.id },
-    sandboxId: sandbox.id,
-    snapshotName,
-  };
-}
 
 /**
  * Boat keeps its stable replacement name. Modal saves a new immutable version per attempt;
@@ -256,73 +171,6 @@ export async function snapshotGolden(
   }
 }
 
-async function goldenRow(
-  store: GoldenStore,
-  actor: GoldenActor,
-  identity: { name: string; visibility: Visibility; provider: SandboxProviderId; modal: ModalBinding | null },
-  config: GoldenConfig,
-  existing: GoldenRecord[],
-): Promise<GoldenRecord> {
-  const { name, visibility } = identity;
-  if (existing.length > 1) {
-    throw new GoldenError("conflict", `More than one ${visibility} golden is named '${name}'.`);
-  }
-  const row = existing[0];
-  if (!row) return store.insert({ orgId: actor.orgId, ownerId: actor.userId, ...identity, config });
-  assertGoldenMutation(actor, row);
-  if (!sameBinding(row.modal, identity.modal)) {
-    throw new GoldenError("conflict", `Golden '${name}' is pinned to another Modal App. Use another name.`);
-  }
-  if (!row.providerSandboxId) {
-    await store.setConfig(row.id, config);
-    return { ...row, config };
-  }
-  return row;
-}
-
-function sameBinding(a: ModalBinding | null, b: ModalBinding | null): boolean {
-  return a?.workspace === b?.workspace && a?.environment === b?.environment && a?.appId === b?.appId;
-}
-
-async function setup(provider: Provider, sandboxId: string, config: GoldenConfig): Promise<void> {
-  for (const repo of config.repos) {
-    const command = cloneCommand(repo);
-    await runCommand(provider, sandboxId, command.command, command.cwd, command.timeoutSeconds, `clone ${repo.url}`);
-  }
-  for (const [index, command] of config.init.entries()) {
-    const spec = initCommand(command);
-    await runCommand(provider, sandboxId, spec.command, spec.cwd, spec.timeoutSeconds, `init command ${index + 1}`);
-  }
-}
-
-async function runCommand(
-  provider: Provider,
-  sandboxId: string,
-  command: string,
-  cwd: string,
-  timeoutSeconds: number,
-  label: string,
-): Promise<void> {
-  const result = await provider.exec({ sandboxId, command, cwd, timeoutSeconds });
-  if (result.detached) {
-    throw new GoldenError("setup_failed", `${label} started in the background.`);
-  }
-  if (result.timedOut) throw new GoldenError("setup_failed", `${label} timed out.`);
-  if (result.exitCode !== 0) {
-    const detail = clip(result.stderr || result.stdout);
-    throw new GoldenError(
-      "setup_failed",
-      detail ? `${label} failed (exit ${result.exitCode}): ${detail}` : `${label} failed (exit ${result.exitCode}).`,
-    );
-  }
-}
-
 function saveInProgress(error: unknown): boolean {
   return error instanceof ProviderError && error.code === "conflict" && error.providerCode === "save_in_progress";
-}
-
-function clip(value: string): string {
-  const oneLine = value.replaceAll(/\s+/g, " ").trim();
-  if (oneLine === "") return "";
-  return oneLine.length <= 400 ? oneLine : `${oneLine.slice(0, 400)}...`;
 }

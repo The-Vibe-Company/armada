@@ -53,6 +53,9 @@ enum ConversationProjection {
         var technicalCount = 0
         var promptIndex: [String: Int] = [:]
         var messageIndex: [String: Int] = [:]
+        // Keep accumulated text out of items until the fold finishes. Otherwise each delta's
+        // String shares storage with its old enum payload and concatenation repeatedly copies it.
+        var messageTexts: [Int: String] = [:]
         var toolIndex: [String: Int] = [:]
         var legacyChunks: [String: [String]] = [:]
         var superseded = Set<String>()
@@ -63,10 +66,17 @@ enum ConversationProjection {
                 technicalCount: &technicalCount,
                 promptIndex: &promptIndex,
                 messageIndex: &messageIndex,
+                messageTexts: &messageTexts,
                 toolIndex: &toolIndex,
                 legacyChunks: &legacyChunks,
                 superseded: &superseded
             )
+        }
+
+        for (index, text) in messageTexts {
+            if case .assistant(_, let streaming, let model) = items[index].kind {
+                items[index].kind = .assistant(text: text, streaming: streaming, model: model)
+            }
         }
 
         let shown = items.filter { item in
@@ -116,6 +126,7 @@ enum ConversationProjection {
         technicalCount: inout Int,
         promptIndex: inout [String: Int],
         messageIndex: inout [String: Int],
+        messageTexts: inout [Int: String],
         toolIndex: inout [String: Int],
         legacyChunks: inout [String: [String]],
         superseded: inout Set<String>
@@ -157,19 +168,22 @@ enum ConversationProjection {
             if let messageID {
                 let key = "message:\(event.conversationID ?? ""):\(event.promptID ?? ""):\(messageID)"
                 let mode = textMode ?? .snapshot
-                if let index = messageIndex[key], case .assistant(let known, _, let knownModel) = items[index].kind {
+                if let index = messageIndex[key], case .assistant(_, _, let knownModel) = items[index].kind {
+                    if mode == .delta { messageTexts[index, default: ""].append(contentsOf: text) }
+                    else { messageTexts[index] = text }
                     items[index].kind = .assistant(
-                        text: mode == .delta ? known + text : text,
+                        text: "",
                         streaming: partial,
                         model: model ?? knownModel
                     )
                 } else {
                     messageIndex[key] = items.count
+                    messageTexts[items.count] = text
                     items.append(ConversationItem(
                         key: key,
                         at: event.at,
                         promptID: event.promptID,
-                        kind: .assistant(text: text, streaming: partial, model: model)
+                        kind: .assistant(text: "", streaming: partial, model: model)
                     ))
                 }
             } else if !text.isEmpty {

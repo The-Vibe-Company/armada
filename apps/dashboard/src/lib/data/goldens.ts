@@ -37,6 +37,23 @@ export async function listGoldenHistory(supabase: Supabase): Promise<GoldenRow[]
   return data;
 }
 
+/** The selected-org label for a sandbox's golden, including readable tombstones. RLS still owns visibility. */
+export async function findGoldenLabel(
+  supabase: Supabase,
+  id: string,
+): Promise<Pick<GoldenRow, "id" | "name" | "removed_at"> | null> {
+  const selected = await selectedOrganization();
+  if (!selected) return null;
+  const { data, error } = await supabase
+    .from("goldens")
+    .select("id,name,removed_at")
+    .eq("id", id)
+    .eq("org_id", selected.org.id)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return data;
+}
+
 /**
  * A golden of the selected org that the database records as removed, or null: the confirmation after a removal names
  * it from this row, never from the URL, so a crafted link cannot announce a removal that did not happen.

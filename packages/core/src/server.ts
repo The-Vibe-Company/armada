@@ -30,7 +30,7 @@ export {
   withGoldenDirs,
 } from "./golden-create-service.ts";
 export { type GoldenGitHubAdapterOptions, goldenGitHubAdapter } from "./golden-github.ts";
-export { createGolden, snapshotGolden } from "./golden-runtime.ts";
+export { snapshotGolden } from "./golden-runtime.ts";
 export { GITHUB_TOKEN_PATTERN, scanGoldenSandbox } from "./golden-scan.ts";
 export * from "./golden-snapshot-retirement.ts";
 export { assertSqlGoldenMutation } from "./golden-store.ts";
@@ -60,6 +60,7 @@ export {
 } from "./routine-scheduler.ts";
 export { createRoutineService, type RoutineService } from "./routine-service.ts";
 export { sandboxActivity } from "./sandbox-activity.ts";
+export { createSkillCatalog } from "./skill-catalog.ts";
 export * from "./skill-defaults.ts";
 export { mergeSkillPins } from "./skill-merge.ts";
 export * from "./skillpack.ts";

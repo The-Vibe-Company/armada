@@ -1,6 +1,6 @@
 "use server";
 
-import type { Harness } from "@armada/core";
+import { type Harness, validateSkillPins } from "@armada/core";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { type ActionResult, done, fail, formString, isUuid } from "@/lib/action";
@@ -131,6 +131,11 @@ export async function interruptSandbox(_previous: ActionResult | null, data: For
 }
 
 export async function launchFromGolden(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
+  if (
+    data.getAll("armada_access").length > 1 ||
+    (data.get("armada_access") !== null && data.get("armada_access") !== "on")
+  )
+    return fail("That request is not valid.");
   const parsed = launchArgs({
     golden: formString(data, "golden"),
     provider: formString(data, "provider"),
@@ -139,6 +144,7 @@ export async function launchFromGolden(_previous: ActionResult | null, data: For
     prompt: formString(data, "prompt"),
     repo: formString(data, "repo"),
     size: formString(data, "size"),
+    armadaAccess: formString(data, "armada_access"),
     ...modelFields(data),
   });
   if (!parsed.ok) return fail(parsed.error);
@@ -146,6 +152,12 @@ export async function launchFromGolden(_previous: ActionResult | null, data: For
   if (!(await isSelectedOrganization(parsed.args.org))) return fail("Switch to that organization first.");
   const blocker = await newWorkBlocker(parsed.args.org, parsed.args.provider);
   if (blocker) return fail(blocker);
+  const skills = data.getAll("skills");
+  try {
+    validateSkillPins(skills);
+  } catch {
+    return fail("Choose at most 20 distinct skills pinned to exact versions. Armada tools are managed automatically.");
+  }
   const viewer = await requireViewer();
   const serverUrl = mcpUrl();
   if (!serverUrl || !viewer.token) return fail("The Armada server is not configured for this dashboard.");
@@ -182,6 +194,7 @@ export async function launchFromGolden(_previous: ActionResult | null, data: For
   if (!repository.ok) return fail(repository.error);
   const account = await accountChoice(parsed.args.harness, formString(data, "credential"));
   if (!account.ok) return fail(account.error);
+  if (parsed.args.armadaAccess && !account.id) return fail("Armada access requires an explicit named Codex account.");
 
   let id: string;
   try {
@@ -189,6 +202,7 @@ export async function launchFromGolden(_previous: ActionResult | null, data: For
       { serverUrl, token: viewer.token },
       {
         ...parsed.args,
+        ...(skills.length ? { skills } : {}),
         ...(connections === undefined ? {} : { connections }),
         ...(repository.repo === undefined ? {} : { repo: repository.repo }),
         ...(account.id === undefined ? {} : { credentialId: account.id }),

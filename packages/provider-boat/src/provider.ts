@@ -32,9 +32,10 @@ import {
   MACHINE_SIZE_CATALOG,
   ProviderError,
   parseMachineSize,
+  redact,
   validateReadableVariables,
 } from "@armada/core";
-import { sshReadableVariables } from "@armada/core/server";
+import { isNonMutatingProviderRefusal, sshReadableVariables } from "@armada/core/server";
 import {
   BoatApi,
   Configuration,
@@ -132,7 +133,7 @@ function sandboxInfo(sandbox: Sandbox): SandboxInfo {
   };
   if (sandbox.error) info.error = sandbox.error;
   if (sandbox.createdAt) info.createdAt = sandbox.createdAt;
-  if (sandbox.stoppedAt) info.stoppedAt = sandbox.stoppedAt;
+  if (sandbox.stoppedAt && Number.isFinite(sandbox.stoppedAt.getTime())) info.stoppedAt = sandbox.stoppedAt;
   if (sandbox.archiveAfter) info.expiresAt = sandbox.archiveAfter;
   if (sandbox.sshEndpoint) info.sshEndpoint = sandbox.sshEndpoint;
   return info;
@@ -222,11 +223,53 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
   }
 
   async function start(body: CreateSandboxRequest, idempotencyKey: string | undefined): Promise<SandboxInfo> {
-    const response = await call(() =>
-      api.create({ createSandboxRequest: body, ...(idempotencyKey ? { idempotencyKey } : {}) }),
-    );
-    if (!response.sandbox?.id) throw unexpectedAnswer("sandbox");
-    return sandboxInfo(response.sandbox);
+    try {
+      const response = await call(() =>
+        api.create({ createSandboxRequest: body, ...(idempotencyKey ? { idempotencyKey } : {}) }),
+      );
+      if (!response.sandbox?.id) throw unexpectedAnswer("sandbox");
+      return sandboxInfo(response.sandbox);
+    } catch (error) {
+      const secrets = [options.apiKey, ...Object.values(body.env ?? {})];
+      const original = await toProviderError(error);
+      // Keep typed evidence, not credential-bearing SDK causes/response bodies.
+      const failure = new ProviderError({
+        provider: original.provider,
+        code: original.code,
+        ...(original.status === undefined ? {} : { status: original.status }),
+        message: redact(original.message, secrets),
+        retryable: original.retryable,
+        ...(original.providerCode ? { providerCode: redact(original.providerCode, secrets) } : {}),
+        ...(original.requestId ? { requestId: redact(original.requestId, secrets) } : {}),
+        ...(original.retryAfterSeconds === undefined ? {} : { retryAfterSeconds: original.retryAfterSeconds }),
+        ...(original.details ? { details: original.details } : {}),
+      });
+      const tag = (value: string | undefined) =>
+        value && /^[A-Za-z0-9_.:-]{1,128}$/.test(value) ? redact(value, secrets) : null;
+      try {
+        const known = failure;
+        const window = known.details?.window;
+        console.error(
+          JSON.stringify({
+            event: "boat_allocation_failed",
+            code: known?.code ?? "unknown",
+            status: known?.status ?? null,
+            providerCode: tag(known?.providerCode),
+            requestId: tag(known?.requestId),
+            retryable: known?.retryable ?? false,
+            retryAfterSeconds: known?.retryAfterSeconds ?? null,
+            window:
+              typeof window === "string" && ["minute", "hour", "day", "month", "concurrency"].includes(window)
+                ? window
+                : null,
+            outcome: isNonMutatingProviderRefusal(failure) ? "refused" : "unknown",
+          }),
+        );
+      } catch {
+        /* Diagnostics must not change the allocation outcome. */
+      }
+      throw failure;
+    }
   }
 
   async function archive(sandboxId: string): Promise<void> {
@@ -411,7 +454,7 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
           },
         ),
       );
-      if (!response.sandbox?.id) throw unexpectedAnswer("sandbox");
+      if (!response.sandbox?.id || response.sandbox.id !== sandboxId) throw unexpectedAnswer("sandbox");
       return sandboxInfo(response.sandbox);
     },
 
@@ -440,6 +483,14 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
     },
     async conversations(sandboxId: string) {
       const response = await call(() => api.conversations({ sandboxId }, { signal: AbortSignal.timeout(10_000) }));
+      // Unknown activity cannot prove that it is safe to capture work or stop.
+      if (
+        response.conversations.some(
+          (conversation) =>
+            typeof conversation?.id !== "string" || !conversation.id || typeof conversation.running !== "boolean",
+        )
+      )
+        throw unexpectedAnswer("conversation activity");
       return response.conversations.map(({ id, running, lastHarness, lastModel }) => ({
         id,
         running,
@@ -819,6 +870,7 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
 
     async extendLifetime(request) {
       const before = await provider.get(request.sandboxId);
+      if (before.id !== request.sandboxId) throw unexpectedAnswer("sandbox");
       if (!["ready", "running"].includes(before.state)) throw invalidRequest("Only running compute can be extended.");
       const response = await call(() =>
         api.update(
@@ -826,8 +878,11 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
           { signal: AbortSignal.timeout(10_000) },
         ),
       );
-      if (!response.sandbox) throw unexpectedAnswer("sandbox");
-      const info = sandboxInfo(response.sandbox);
+      const acknowledged = response.sandbox?.id === request.sandboxId ? sandboxInfo(response.sandbox) : undefined;
+      // Observe once after an incomplete/misidentified successful reply; never
+      // replay the PATCH or publish another resource's lifetime as this one's.
+      const info = acknowledged?.expiresAt ? acknowledged : await provider.get(request.sandboxId);
+      if (info.id !== request.sandboxId) throw unexpectedAnswer("sandbox");
       if (!info.expiresAt) throw unexpectedAnswer("expiry");
       return info.expiresAt;
     },
