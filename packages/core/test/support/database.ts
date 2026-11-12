@@ -20,7 +20,14 @@ export function migratedDatabase(): () => PGlite {
     reset = `truncate table ${tables.rows.map((row) => row.name).join(", ")} restart identity cascade`;
   });
   beforeEach(async () => {
-    await db!.exec(reset);
+    // This disposable fixture is the database owner, not an application writer.
+    // Temporarily allow its whole-database reset, then restore journal protection
+    // atomically before any test can run. UPDATE/DELETE guards remain enabled.
+    await db!.transaction(async (tx) => {
+      await tx.exec("alter table public.otto_facts disable trigger otto_facts_no_truncate");
+      await tx.exec(reset);
+      await tx.exec("alter table public.otto_facts enable trigger otto_facts_no_truncate");
+    });
   });
   afterAll(async () => {
     await db?.close();
