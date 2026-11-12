@@ -92,13 +92,35 @@ export class CodexDriver implements Driver {
       closed = false,
       stopping = false,
       steering = false;
-    const baseline: Record<string, number> | null = c.sessionId
+    let baseline: Record<string, number> | null = c.sessionId
       ? (this.tokenTotals.get(c.sessionId) ?? null)
       : { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, cacheWriteInputTokens: 0, reasoningOutputTokens: 0 };
+    const resumeUsage: {
+      requested: boolean;
+      verified: boolean;
+      started: boolean;
+      seen: boolean;
+      candidate: Record<string, number> | null;
+      invalid: boolean;
+    } = {
+      requested: false,
+      verified: false,
+      started: false,
+      seen: false,
+      candidate: null,
+      invalid: false,
+    };
+    const adoptResumeUsage = () => {
+      if (!resumeUsage.verified || !resumeUsage.seen) return;
+      baseline = resumeUsage.candidate;
+      if (baseline) this.tokenTotals.set(threadId, { ...baseline });
+      else this.tokenTotals.delete(threadId);
+    };
     let reportedModel: string | null = null;
     let modelRerouted = false;
     const usage: { latest: Record<string, unknown> | null } = { latest: null };
     const earlyTerminals = new Map<string, TurnCompletedNotification>();
+    const terminalTurns = new Set<string>();
     let terminalResolve: ((value: TurnCompletedNotification) => void) | undefined;
     let terminalReject: ((error: Error) => void) | undefined;
     const lines = createInterface({ input: child.stdout });
@@ -171,6 +193,44 @@ export class CodexDriver implements Driver {
           c.emit({ kind: "other", type: m.method, data: m.params });
           return;
         }
+        if (m.method === "thread/tokenUsage/updated" && !resumeUsage.started) {
+          // A resumed history snapshot is only a candidate until the RPC confirms this exact thread.
+          // Never adopt a post-dispatch update: it can already include this prompt's tokens.
+          if (resumeUsage.requested && c.sessionId && m.params?.threadId === c.sessionId) {
+            const total = m.params?.tokenUsage?.total;
+            const count = (value: unknown): value is number =>
+              typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+            const valid =
+              !resumeUsage.invalid &&
+              total &&
+              ["inputTokens", "outputTokens", "cachedInputTokens"].every((key) => count(total[key])) &&
+              total.cachedInputTokens <= total.inputTokens &&
+              (total.cacheWriteInputTokens === undefined ||
+                (count(total.cacheWriteInputTokens) &&
+                  total.cachedInputTokens + total.cacheWriteInputTokens <= total.inputTokens)) &&
+              (total.reasoningOutputTokens === undefined ||
+                (count(total.reasoningOutputTokens) && total.reasoningOutputTokens <= total.outputTokens));
+            const monotone =
+              valid &&
+              (!resumeUsage.candidate ||
+                [
+                  "inputTokens",
+                  "outputTokens",
+                  "cachedInputTokens",
+                  "cacheWriteInputTokens",
+                  "reasoningOutputTokens",
+                ].every(
+                  (key) =>
+                    !count(resumeUsage.candidate?.[key]) ||
+                    (count(total[key]) && total[key] >= resumeUsage.candidate![key]!),
+                ));
+            resumeUsage.seen = true;
+            resumeUsage.invalid = !monotone;
+            resumeUsage.candidate = monotone ? { ...total } : null;
+            adoptResumeUsage();
+          }
+          return;
+        }
         if (m.params?.threadId !== threadId) return;
         if (m.method === "model/rerouted") {
           // Totals cannot allocate tokens between models, including pre-steer native turns.
@@ -239,6 +299,7 @@ export class CodexDriver implements Driver {
             !["completed", "interrupted", "failed"].includes(terminal.turn.status)
           )
             throw new HarnessError("invalid_harness_protocol");
+          terminalTurns.add(terminal.turn.id);
           if (!turnId) {
             if (earlyTerminals.size >= 16) throw new HarnessError("invalid_harness_protocol");
             earlyTerminals.set(terminal.turn.id, terminal);
@@ -318,6 +379,9 @@ export class CodexDriver implements Driver {
         sandboxPolicy: { type: "dangerFullAccess" },
         ...(c.request.fast ? { serviceTier: "fast" } : {}),
       };
+      resumeUsage.started = true;
+      // Once work can run, an earlier snapshot is not a safe baseline for a later prompt.
+      this.tokenTotals.delete(threadId);
       const result = await rpc<TurnStartResponse>("turn/start", params);
       if (typeof result.turn?.id !== "string") throw new HarnessError("invalid_harness_protocol");
       turnId = result.turn.id;
@@ -367,6 +431,7 @@ export class CodexDriver implements Driver {
             }
           : {}),
       };
+      resumeUsage.requested = Boolean(c.sessionId);
       const result = await rpc<ThreadStartResponse>(
         c.sessionId ? "thread/resume" : "thread/start",
         c.sessionId ? { ...config, threadId: c.sessionId } : config,
@@ -377,6 +442,8 @@ export class CodexDriver implements Driver {
       threadId = result.thread.id;
       if (c.sessionId && threadId !== c.sessionId) throw Error("native_session_identity_changed");
       c.session(threadId);
+      resumeUsage.verified = true;
+      adoptResumeUsage();
       if (!this.options.env.OPENAI_API_KEY && this.options.env.CODEX_HOME) {
         // Existing native ChatGPT session only: this documented RPC never starts inference.
         // Optional quota failure cannot turn a normal coding request into a harness failure.
@@ -464,6 +531,8 @@ export class CodexDriver implements Driver {
         }
       } finally {
         closed = true;
+        const terminalObserved = terminalTurns.has(turnId);
+        if (resumeUsage.started && !terminalObserved) this.tokenTotals.delete(threadId);
         lines.close();
         await this.children.release(child);
         this.nativeWriter = false;
@@ -474,7 +543,19 @@ export class CodexDriver implements Driver {
           c.emit({
             kind: "other",
             type: "armada/turnUsage",
-            data: { ...usage.latest, model: modelRerouted ? null : reportedModel },
+            data: {
+              ...usage.latest,
+              ...(!terminalObserved
+                ? {
+                    inputTokens: null,
+                    outputTokens: null,
+                    cachedTokens: null,
+                    cacheWriteTokens: null,
+                    reasoningTokens: null,
+                  }
+                : {}),
+              model: modelRerouted ? null : reportedModel,
+            },
           });
       }
     })();

@@ -10,6 +10,7 @@ import { GitHubBroker, type GitHubBrokerConfiguration } from "./github-broker.ts
 import { type installGitHubTools, prepareGitHubTools, runGitHubInstallMode } from "./github-tools.ts";
 import { checkpointIdentityKey } from "./identity.ts";
 import { ClaudeDriver, CodexDriver, type Grant, Journal, type McpConfiguration, Runner } from "./index.ts";
+import { testModelConnection } from "./model-connection-test.ts";
 import { quiesceNativeCodex, readNativeCodexAuth } from "./native-auth.ts";
 import type { ExecEnvironment } from "./protocol.ts";
 import { createRedactor, HarnessState } from "./state.ts";
@@ -319,6 +320,31 @@ async function main(dialout = false) {
     },
     {
       configureGitHub,
+      testModelConnection: async (harness, model, signal) => {
+        if (harness === "codex" && codexEndpoint && config.codexEnv.OPENAI_API_KEY)
+          return testModelConnection(
+            { harness, endpoint: codexEndpoint, apiKey: config.codexEnv.OPENAI_API_KEY },
+            model,
+            signal,
+          );
+        const env = config.claudeEnv;
+        const key = env.ANTHROPIC_AUTH_TOKEN ?? env.ANTHROPIC_API_KEY;
+        if (harness === "claude" && env.ANTHROPIC_BASE_URL && key)
+          return testModelConnection(
+            {
+              harness,
+              endpoint: {
+                version: 1,
+                baseUrl: env.ANTHROPIC_BASE_URL,
+                auth: env.ANTHROPIC_AUTH_TOKEN ? "bearer" : "api-key",
+              },
+              apiKey: key,
+            },
+            model,
+            signal,
+          );
+        throw Error("model_connection_test_denied");
+      },
       execEnv: fenced ? {} : execEnv,
       refreshNativeSecrets,
       publishNativeAuth,
