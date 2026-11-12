@@ -128,8 +128,8 @@ export class RuntimeDialout implements IngestClient {
   private epoch(value: unknown) {
     if (value !== this.session.epoch) this.revoke();
   }
-  private async post(path: string, body: unknown, signal?: AbortSignal): Promise<unknown> {
-    const signals = [this.fenced.signal, AbortSignal.timeout(25000), ...(signal ? [signal] : [])];
+  private async post(path: string, body: unknown, signal?: AbortSignal, timeout = 25000): Promise<unknown> {
+    const signals = [this.fenced.signal, AbortSignal.timeout(timeout), ...(signal ? [signal] : [])];
     const response = await this.io.fetch(new URL(`/api/runtime/${path}`, this.server), {
       method: "POST",
       redirect: "error",
@@ -323,6 +323,7 @@ export class RuntimeDialout implements IngestClient {
     };
     signal.addEventListener("abort", onAbort, { once: true });
     if (signal.aborted) onAbort();
+    let stopLease = () => {};
     try {
       if (!signal.aborted) {
         try {
@@ -330,6 +331,26 @@ export class RuntimeDialout implements IngestClient {
         } catch {
           /* Switch permanently to HTTPS for this process/epoch. */
         }
+      }
+      if (!signal.aborted) {
+        let checking = false;
+        stopLease = this.io.every(20000, () => {
+          if (checking || signal.aborted) return;
+          checking = true;
+          // Polling pauses while a native RPC is in flight; keep the epoch check
+          // independent so revocation can abort/close that RPC's driver promptly.
+          void this.post("session", {}, signal, 8000)
+            .then((body) => {
+              if (!object(body) || body.sandboxId !== this.session.sandboxId) this.revoke();
+              this.epoch(body.epoch);
+            })
+            .catch(() => {
+              /* Transient connectivity errors retry on the next heartbeat. */
+            })
+            .finally(() => {
+              checking = false;
+            });
+        });
       }
       let backoff = 1000;
       while (!signal.aborted) {
@@ -348,6 +369,7 @@ export class RuntimeDialout implements IngestClient {
       }
       if (this.fenced.signal.aborted) throw new RuntimeChannelRevoked();
     } finally {
+      stopLease();
       signal.removeEventListener("abort", onAbort);
       await closing;
     }

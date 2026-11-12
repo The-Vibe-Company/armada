@@ -13,10 +13,26 @@ export function ownsResourceDetail(): boolean {
   return window.history.state?.armadaResourceDetail === window.location.pathname;
 }
 
+/** Kept on the destination entry so a replacement list tree can restore focus too. */
+export function resourceReturnFocus(): string | null {
+  const target = window.history.state?.armadaResourceReturnFocus;
+  return target?.path === window.location.pathname && typeof target.key === "string" ? target.key : null;
+}
+
+export function clearResourceReturnFocus(): void {
+  if (!resourceReturnFocus()) return;
+  window.history.replaceState(null, "", window.location.href);
+}
+
 export function replaceResourceUrl(url: URL): void {
   const owned = ownsResourceDetail();
   if (owned) baseSearch = window.history.state.armadaResourceBaseSearch ?? "";
-  window.history.replaceState(owned ? detailState() : null, "", url);
+  const key = resourceReturnFocus();
+  window.history.replaceState(
+    owned ? detailState() : key ? { armadaResourceReturnFocus: { path: window.location.pathname, key } } : null,
+    "",
+    url,
+  );
   ownedUrl = owned ? new URL(url) : null;
 }
 
@@ -48,7 +64,8 @@ export function syncResourceHistory(initial = false): void {
       url.searchParams.delete(key);
       for (const value of after) url.searchParams.append(key, value);
     }
-    window.history.replaceState(null, "", url);
+    const key = ownedUrl.searchParams.get(ITEM_PARAM);
+    window.history.replaceState(key ? { armadaResourceReturnFocus: { path: url.pathname, key } } : null, "", url);
   }
   ownedUrl = ownsResourceDetail() ? new URL(window.location.href) : null;
   baseSearch = ownedUrl ? (window.history.state.armadaResourceBaseSearch ?? "") : "";
