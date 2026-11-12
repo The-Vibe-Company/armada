@@ -222,6 +222,24 @@ test("managed REST binds acquisition to one canonical endpoint before executing 
       });
       return { status: await child.exited, output: await new Response(child.stdout).text() };
     };
+    for (const args of [
+      ["--repo", "acme/repo", "pr", "view"],
+      ["-R", "acme/repo", "issue", "view", "1"],
+      ["--repo=acme/repo", "repo", "view"],
+    ]) {
+      acquired.length = 0;
+      const result = await run(args, []);
+      expect(result.status).toBe(0);
+      expect(result.output).toBe(`DOWNSTREAM\n${args.join("\n")}\n`);
+      expect(acquired).toEqual(["acme/repo"]);
+    }
+    for (const args of [["--help"], ["-h"], ["--version"]]) {
+      acquired.length = 0;
+      const result = await run(args, []);
+      expect(result.status).toBe(0);
+      expect(result.output).toBe(`DOWNSTREAM\n${args.join("\n")}\n`);
+      expect(acquired).toEqual(["decoy/repo"]);
+    }
     const allowed = [
       ["repos/acme/repo/pulls"],
       ["--method", "POST", "/repos/acme/repo/issues", "--field", "title=example"],
@@ -268,6 +286,9 @@ test("managed REST binds acquisition to one canonical endpoint before executing 
       expect(acquired).toEqual([]);
     }
     for (const args of [
+      ["--repo", "acme/repo", "api", "user"],
+      ["--repo=acme/repo", "api", "repositories/123/issues"],
+      ["--repo", "acme/repo", "repo", "delete"],
       ["--method", "GET", "api", "user"],
       ["--hostname", "github.com", "api", "repositories/123/issues"],
       ["--method=GET", "api", "graphql"],

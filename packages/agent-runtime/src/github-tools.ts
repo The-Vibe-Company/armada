@@ -341,15 +341,24 @@ try:
         repo=repository(fields.get('path',''))
     elif mode=='gh':
         args=sys.argv[4:]
-        # gh resolves command flags even before the subcommand. Require an
-        # explicit command first so leading options cannot bypass its guards.
-        if args and args[0].startswith('-'): raise ValueError()
+        # Resolve supported leading selectors without mistaking their values for
+        # commands. Unknown leading flags fail closed before any token request.
+        command_index=0
+        while command_index<len(args) and args[command_index].startswith('-'):
+            arg=args[command_index]
+            if arg in ('-R','--repo','--hostname'):
+                if command_index+1>=len(args): raise ValueError()
+                command_index+=2
+            elif arg in ('--help','-h','--version') or arg.startswith(('--repo=','--hostname=')):
+                command_index+=1
+            else: raise ValueError()
+        command_args=args[command_index:]
         for i,arg in enumerate(args):
             if arg=='--hostname' and (i+1>=len(args) or args[i+1].lower()!='github.com'): raise ValueError()
             if arg.startswith('--hostname=') and arg.split('=',1)[1].lower()!='github.com': raise ValueError()
             if arg.startswith(('http://','https://')) and not arg.startswith(('https://github.com/','https://api.github.com/')): raise ValueError()
-        if args and args[0]=='api':
-            repo=api_repository(args[1:])
+        if command_args and command_args[0]=='api':
+            repo=api_repository(args[:command_index]+command_args[1:])
         else:
             repo=os.environ.get('GH_REPO','')
             for i,arg in enumerate(args):
@@ -364,10 +373,10 @@ try:
                 if arg.startswith('https://github.com/'):
                     selected=re.match(r'^https://github.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)(?:/|$)',arg)
                     if not selected or repository(selected.group(1)).lower()!=repo.lower(): raise ValueError()
-            if args and args[0]=='repo':
+            if command_args and command_args[0]=='repo':
                 # Only exact repository view selectors are supported; other repo mutations fail closed.
-                if len(args)<2 or args[1]!='view': raise ValueError()
-                rest=args[2:]
+                if len(command_args)<2 or command_args[1]!='view': raise ValueError()
+                rest=command_args[2:]
                 flags_with_values={'--json','--jq','-q','--template','-t','--branch','-b'}
                 i=0
                 while i<len(rest):
