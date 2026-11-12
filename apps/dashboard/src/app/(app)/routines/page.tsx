@@ -145,6 +145,7 @@ export default async function RoutinesPage({
   });
   return (
     <ResourceBrowser
+      detailPanel
       title="Routines"
       description={DESCRIPTION}
       label="Routines"

@@ -91,6 +91,7 @@ type State = {
   connections: Row[];
   /** Every `creds/list` and `creds/accounts/*` call. A pasted value is recorded as sent, never stored as text. */
   accountCalls: { route: string; body: Row }[];
+  accountHolders: Record<string, Row>;
   /** When set, `creds/list` answers as a server older than named accounts: kinds and dates only. */
   legacyAccounts: boolean;
   /** `creds/accounts/usage` per account id: a report, or a failure. An account with none: the route is unknown. */
@@ -352,6 +353,7 @@ function seed(): State {
     failNextBind: null,
     launches: [],
     accountCalls: [],
+    accountHolders: {},
     legacyAccounts: false,
     usage: {},
     // #604 v1 contract (root-native-auth-contract.json): an additive base map, no --name placeholder.
@@ -1555,7 +1557,7 @@ function templateRoute(route: string, body: Row, request: Request): Response {
     get: ["org", "id", "revision"],
     publish: ["org", "id", "expectedRevision", "definition"],
     delete: ["org", "id", "expectedRevision"],
-    launch: ["org", "id", "revision", "requestKey", "prompt", "ttlSeconds", "size", "repo"],
+    launch: ["org", "id", "revision", "requestKey", "prompt", "ttlSeconds", "size", "repo", "modelAccount"],
   };
   const invalid = () => controlFail(400, "invalid", "Invalid template request.");
   const fields = allowed[operation];
@@ -2591,6 +2593,17 @@ function accounts(route: string, body: Row, request: Request): Response {
   const mine = (row: Row) => row.scope === scope && row.owner_id === owner && model(row) && row.status !== "deleted";
   const target = body.id === undefined ? undefined : state.credentials.find((row) => row.id === body.id && mine(row));
   if (body.id !== undefined && !target) return controlFail(404, "not_found", "No such account.");
+  if (route === "creds/accounts/holder") return json(state.accountHolders[String(body.id)] ?? { sandboxId: null });
+  if (route === "creds/accounts/release") {
+    const holder = state.accountHolders[String(body.id)];
+    if (
+      (!holder?.releasable && !(holder?.unknownVersion && typeof body.value === "string")) ||
+      holder.sandboxId !== body.sandboxId
+    )
+      return controlFail(409, "conflict", "Reconnect this account before releasing the holder.");
+    delete state.accountHolders[String(body.id)];
+    return json({ ok: true });
+  }
   // As #603's store: only a rotation (`set` with an id) is versioned, and it must name the version it replaces.
   if (route === "creds/accounts/set" && target && typeof body.expectedVersion !== "number")
     return controlFail(400, "invalid", "expectedVersion is required to rotate an account.");
@@ -2935,6 +2948,7 @@ function control(url: URL, body: Row): Response {
     return json({ ok: true });
   }
   if (url.pathname === "/__test/accounts") {
+    Object.assign(state.accountHolders, (body.holders as Record<string, Row> | undefined) ?? {});
     if (body.legacy !== undefined) state.legacyAccounts = body.legacy === true;
     Object.assign(state.usage, (body.usage as Record<string, Row> | undefined) ?? {});
     if (body.authCapabilities !== undefined) state.authCapabilities = body.authCapabilities as Row | null;

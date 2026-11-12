@@ -150,3 +150,126 @@ old writer and explicitly replace/version that **same** account row rather than
 importing a second name to bypass its ownership. Independent upstream accounts
 remain parallel. Identity admission is serialized and bounded; an oversized
 registry fails closed for maintenance instead of skipping checks.
+
+### Failed launches (#1176, slice 1)
+
+#### Owner-approved delivery boundary
+
+The owner requested one small PR per slice, starting with immediate unblock and
+then concurrency, with **Refs #1176** rather than closing the whole issue. This
+is the delivery contract, not a claim that slice 1 completes the full ticket.
+
+| Work | Delivery | Acceptance status |
+| --- | --- | --- |
+| Failed-launch cleanup and existing trapped-account product recovery | PR #1180, slice 1 | Implemented; local SQL, launch and browser checks pass; deployed provider checks below remain unperformed here. |
+| Concurrent subscriptions and server-owned refresh | PR #1186, slice 2 | Separate implementation; requires matching runtime and combined deployed acceptance, not established by this PR. |
+| Explicit account re-pointing and missing-pin default fallback | Slice 3 | Outstanding; releasing/deleting a holder is **not** re-pointing an existing sandbox. |
+| Obsolete legacy machinery cleanup | Slice 4 | Separate from the immediate-unblock change. |
+| Vendor plan-limit/reset presentation | Issue-level runtime/provider requirement | Not addressed or claimed delivered by this failed-launch recovery PR. |
+
+The exclusive gate must remain on the legacy native-auth path until the shared
+refresh implementation replaces that path; removing only the gate would allow
+multiple guests to rotate one refresh token. Do not mark full issue acceptance
+complete from this PR's recovery tests. The production Work recovery procedure
+and the required real-provider checks are documented below.
+
+
+Before the first prompt is dispatched, initialization failures mark the managed
+Codex account as never started. Armada deletes that failed physical sandbox and
+releases its account only after deletion is confirmed. A failed deletion retains
+the claim: on the account row, use **Find subscription holder**, then **Release
+subscription** to retry deletion and release. Only the sandbox owner can inspect
+this holder; organization accounts additionally require an admin for release.
+The API equivalents are `POST creds/accounts/holder` (`id`, `version`, `org`) and
+`POST creds/accounts/release` (also `sandboxId`). Neither returns auth material.
+Older ambiguous or unclassified history requires the explicit reconnect/recovery
+flow below; empty conversation history alone is not a safety proof. Concurrent
+subscription refresh is a separate slice; this change does not enable parallel
+rotating-token writers.
+
+
+### Recover an existing trapped account through the product
+
+The investigation on #1176 identified permanent same-version sandbox history,
+failed/deleted holders, and ownership pointing at an unrecorded launch. Stopping
+a failed sandbox alone does not repair the account's ownership.
+
+For an existing account such as **Work**, use **Models → Work → Find subscription
+holder**. The lookup shows the stored holder even if the account has since been
+replaced. An unrecorded launch is identified without linking to a nonexistent
+sandbox page.
+
+1. Stop any recorded running holder through its sandbox page and wait for its
+   current operation to finish. Never release an active native writer.
+2. If requested, use **Reconnect subscription** to replace the account with a
+   fresh auth.json obtained through the official native sign-in. Replace the
+   **same account**, not a second name. Do not paste credentials into chat or a
+   command argument. Replacement invalidates the old account revision.
+3. Find the holder again, then choose **Release subscription**. For recorded
+   failed, stopped or deleted history, Armada confirms physical deletion (an
+   authoritative provider not-found is sufficient) before releasing ownership.
+   Pending or unavailable deletion retains the claim. Unrecorded old allocations
+   require explicit replacement first, fencing their old-version bootstrap.
+4. Launch again. If another historical binding is reported, stop/recover that
+   binding too; live history is never silently discarded.
+
+Newly classified never-started failures retain their automatic cleanup and do
+not require reconnection. Older ambiguous or unrecorded failures are never
+classified as safe merely because their conversation list is empty. Recovery
+requires the account owner, and an organization account additionally requires an
+administrator. No database edits or deployment-time data repair are needed.
+
+For pre-enrollment history with no credential version, **Reconnect and release**
+combines the fresh auth.json import and confirmed holder deletion in one guarded
+request. Armada never invents a historical revision or treats a rename as a
+reconnection; a pending/failed deletion leaves the current credential unchanged.
+
+### Required deployed coordinator checks (not performed by this PR author)
+
+Local evidence is synthetic-provider SQL/transport coverage and Chromium product
+flows, not evidence of real Boat/Modal deletion. No real provider, staging
+subscription, or production recovery was exercised here. The coordinator must
+record the deployed commit, provider, logical/physical sandbox IDs, account
+revision, observations and outcomes below, without credentials or auth payloads.
+Use disposable staging resources and a staging-only account, never production
+keys or the production **Work** account for fault injection.
+
+Run this lifecycle matrix separately on **Boat and Modal**:
+
+1. **Pre-dispatch failure:** arrange a disposable golden's launch initialization
+   to fail after allocation but before any native prompt. Verify the original
+   failure is retained, observe deletion/authoritative absence using that
+   provider's control plane, then launch again with the same account. Successful
+   next admission, not just an empty ownership row, is the pass condition.
+2. **Deletion pending/unavailable:** use a staging-only fault proxy or test
+   deployment to delay/refuse the provider deletion/termination operation while
+   allowing allocation and initialization. Trigger the same failure. Verify
+   ownership remains, the holder is discoverable and another launch is refused.
+   Restore deletion access and retry **Release subscription**. Boat's asynchronous
+   deletion receipt alone must not release ownership; require a confirmed deleted
+   result or authoritative not-found. Modal must confirm termination/deletion,
+   including its retained recovery artifacts. Retry launch only after that proof.
+3. **Existing trapped history:** reproduce a failed/deleted holder and an
+   unrecorded allocation using the pre-fix staging build or a controlled staging
+   fixture, then deploy the candidate. Recover through the product procedure
+   above and verify a subsequent launch works. For unrecorded allocations, do
+   not report physical deletion: no physical ID is known. Explicit fresh account
+   replacement fences the old version; verify a delayed old launch cannot pass
+   bootstrap/prompt admission after replacement. Unversioned recorded history
+   requires the combined import-and-release action and physical deletion proof.
+4. **Admission race:** overlap a later send/resume with initial-failure cleanup.
+   Admitted work must not be deleted or stopped by stale cleanup. A later
+   ambiguous dispatch must permanently invalidate the original never-started
+   proof, even after its activity lease ends. Verify pending/failed recovery
+   leaves the current credential unchanged and never returns auth material.
+
+**Separate slice-2 acceptance (PR #1186):** after deploying the server-owned
+refresh implementation and matching native runtime, run three Codex sandboxes
+on one ChatGPT account concurrently on each provider. While all three remain
+alive, exercise an actual access-token refresh through the server broker and
+verify all three answer follow-up prompts. Record the server auth revision and
+successful prompt IDs, never token values. Also verify three concurrent Claude
+model-only setup-token sandboxes on each provider; those tokens do not carry a
+shared rotating refresh token. These are required deployed checks, not results
+established by this slice-1 PR. Explicit account re-pointing/default fallback is
+slice 3; neither it nor full issue acceptance is claimed complete here.

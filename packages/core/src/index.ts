@@ -6,7 +6,9 @@ export {
   type GitHubHydrationPhase,
   githubHydrationPhase,
 } from "./api-failure.ts";
+export { CLAUDE_ENDPOINT_ENV, type ClaudeEndpoint, parseClaudeEndpoint } from "./claude-endpoint.ts";
 export { CLIENT_CONFIG_PATH, type ClientConfig } from "./client-config.ts";
+export { CODEX_ENDPOINT_ENV, type CodexEndpoint, parseCodexEndpoint } from "./codex-endpoint.ts";
 export * from "./connections.ts";
 export { HARNESSES, type Harness, type Visibility } from "./contract.ts";
 export type { CredentialBinding } from "./credentials.ts";
@@ -147,6 +149,7 @@ export { type HelperNegotiation, type HelperReceipt, type HelperRefusal, negotia
 export * from "./invitations.ts";
 export {
   DEFAULT_LAUNCH_TTL_SECONDS,
+  deleteNeverStartedSandbox,
   type GitHubLaunchInfo,
   type LaunchCredentialResolver,
   type LaunchOptions,
@@ -317,6 +320,7 @@ export {
   withUsageTotals,
 } from "./sandbox-usage.ts";
 export type { SkillCatalogItem, SkillCatalogPage, SkillCatalogSource } from "./skill-catalog.ts";
+export { skillRefusalMessage } from "./skill-diagnostics.ts";
 export { SKILL_PIN_PATTERN, validateSkillPins } from "./skill-pins.ts";
 export type { TaskOutcome } from "./task-outcome.ts";
 export {
