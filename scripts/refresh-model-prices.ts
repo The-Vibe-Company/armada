@@ -9,7 +9,7 @@ const raw = await response.text();
 const data = JSON.parse(raw);
 const models: Record<string, { rates: TokenRates; unsupported: boolean }> = {};
 const rate = (value: unknown): string | null => {
-  if (value === undefined) return null;
+  if (value === undefined || value === null) return null;
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || !validRate(String(value)))
     throw new Error("Invalid models.dev rate");
   return String(value);
@@ -23,9 +23,9 @@ for (const provider of ["anthropic", "openai"]) {
     if (model.id !== id) throw new Error("Mismatched model ID");
     if (!model.cost) continue;
     const cost = model.cost;
+    if (typeof cost !== "object" || Array.isArray(cost)) throw new Error("Invalid models.dev cost");
     const input = rate(cost.input),
       output = rate(cost.output);
-    if (input === null || output === null) throw new Error("Missing base rates");
     models[`${provider}/${id}`] = {
       rates: {
         input,
@@ -34,8 +34,8 @@ for (const provider of ["anthropic", "openai"]) {
         cacheWrite: rate(cost.cache_write),
         reasoning: rate(cost.reasoning),
       },
-      // Aggregate turns cannot select context/service tiers or account for audio/tool charges.
-      // Modes can override prices or provider routing outside model.cost; never assume standard service.
+      // Retain catalogue complexity as provenance. Server token estimates use admitted/default rates,
+      // not a guessed tier invoice; this marker does not veto zero or otherwise rate-backed classes.
       unsupported:
         Object.keys(model.experimental?.modes ?? {}).length > 0 ||
         (model.type !== undefined && model.type !== "text") ||

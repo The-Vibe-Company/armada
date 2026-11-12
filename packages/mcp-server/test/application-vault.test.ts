@@ -4,10 +4,10 @@ import { createSqlAuthStore } from "@armada/auth";
 import { createApplicationVault, createSqlVaultStore, decryptSecret, type Sql } from "@armada/core/server";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { createArmadaServer } from "../src/tools.ts";
+import { migratedDatabase } from "./migrated-database.ts";
 
 const KEY = randomBytes(32).toString("base64");
 // Ephemeral canaries only: neither fixtures nor failure diagnostics contain plaintext.
@@ -26,8 +26,7 @@ function expectNoCanary(output: unknown, canary = CANARY): void {
 }
 
 async function fixture() {
-  const db = await openDatabase();
-  await applyMigrations(db);
+  const db = await migratedDatabase();
   const owner = crypto.randomUUID(),
     peer = crypto.randomUUID(),
     admin = crypto.randomUUID();

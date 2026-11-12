@@ -10,12 +10,43 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: ci-${{ github.event_name }}-${{ github.ref }}-${{ github.event_name == 'merge_group' && github.sha || 'latest' }}
   cancel-in-progress: ${{ github.event_name != 'merge_group' }}
 
 jobs:
+  expensive-inputs:
+    name: Classify expensive checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    outputs:
+      golden: ${{ steps.paths.outputs.golden }}
+      binary: ${{ steps.paths.outputs.binary }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - id: paths
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
+        run: |
+          # Unknown/manual/main events run everything. Diff the entire queue candidate.
+          if [ "$EVENT_NAME" != pull_request ] && [ "$EVENT_NAME" != merge_group ]; then
+            printf 'golden=true\nbinary=true\n' >> "$GITHUB_OUTPUT"
+          else
+            git diff --no-renames --name-only "$BASE_SHA" HEAD > /tmp/changed-paths
+            # Conservative transitive closure: all packages, dependency/runtime/build
+            # tooling, fixtures and migrations. Docs/dashboard-only changes skip.
+            changed=false
+            if grep -Eq '^(packages/|supabase/migrations/|scripts/(build\.ts|npm\.ts|npm-smoke\.sh|prepare-runtime\.ts|golden-os-image\.ts|fixtures/)|LICENSE$|bun.lock$|package.json$|tsconfig[^/]*$|\.github/(actions/|workflows/ci\.yml$))' /tmp/changed-paths; then
+              changed=true
+            fi
+            printf 'golden=%s\nbinary=%s\n' "$changed" "$changed" >> "$GITHUB_OUTPUT"
+          fi
+
   migration-versions:
     name: Migration versions
     runs-on: ubuntu-latest
@@ -56,6 +87,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
+      - run: bun test scripts/ci/check-budget.test.ts
       - run: bun run lint
       - run: bun scripts/generate-ios-harness.ts --check
       - run: bun run typecheck
@@ -165,16 +197,24 @@ jobs:
 
   golden-os:
     name: Golden OS recipe (actual provider image)
+    needs: expensive-inputs
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
-      - run: bun scripts/prepare-runtime.ts
-      - run: bun scripts/golden-os-image.ts
-      - run: docker build -t armada-golden-os dist/golden-os-fixture
-      - run: bun test packages/core/test/golden-os.test.ts packages/mcp-server/test/github-boat-os.test.ts packages/provider-modal/test/ssh-os.test.ts
+      - if: needs.expensive-inputs.outputs.golden == 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - if: needs.expensive-inputs.outputs.golden == 'true'
+        uses: ./.github/actions/setup-bun
+      - if: needs.expensive-inputs.outputs.golden == 'true'
+        run: bun install --frozen-lockfile
+      - if: needs.expensive-inputs.outputs.golden == 'true'
+        run: bun scripts/prepare-runtime.ts
+      - if: needs.expensive-inputs.outputs.golden == 'true'
+        run: bun scripts/golden-os-image.ts
+      - if: needs.expensive-inputs.outputs.golden == 'true'
+        run: docker build -t armada-golden-os dist/golden-os-fixture
+      - if: needs.expensive-inputs.outputs.golden == 'true'
+        run: bun test packages/core/test/golden-os.test.ts packages/mcp-server/test/github-boat-os.test.ts packages/provider-modal/test/ssh-os.test.ts
         env:
           ARMADA_GOLDEN_OS_IMAGE: armada-golden-os
 
@@ -190,10 +230,54 @@ jobs:
             runner: ubuntu-latest
           - target: linux-arm64
             runner: ubuntu-24.04-arm
-          - target: darwin-x64
-            runner: macos-15-intel
           - target: darwin-arm64
             runner: macos-latest
+    needs: expensive-inputs
+    runs-on: ${{ needs.expensive-inputs.outputs.binary == 'true' && matrix.runner || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    steps:
+      - if: needs.expensive-inputs.outputs.binary == 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - if: needs.expensive-inputs.outputs.binary == 'true'
+        uses: ./.github/actions/setup-bun
+      - if: needs.expensive-inputs.outputs.binary == 'true'
+        run: bun install --frozen-lockfile
+      - if: needs.expensive-inputs.outputs.binary == 'true'
+        run: bun run build --target ${{ matrix.target }}
+      - if: needs.expensive-inputs.outputs.binary == 'true'
+        name: armada --version
+        run: |
+          expected=$(jq -r .version packages/core/package.json)
+          actual=$(./dist/armada-${{ matrix.target }} --version)
+          echo "armada --version: $actual"
+          test "$actual" = "$expected"
+      # The npm packages of this binary, packed, installed with npm and Bun, then run.
+      - if: needs.expensive-inputs.outputs.binary == 'true'
+        name: npm pack and install
+        run: |
+          bun scripts/npm.ts --binaries dist --target ${{ matrix.target }}
+          mkdir -p dist/tarballs
+          for dir in dist/npm/*/; do (cd "$dir" && npm pack --pack-destination ../../tarballs); done
+          scripts/npm-smoke.sh dist/tarballs ${{ matrix.target }}
+      - if: needs.expensive-inputs.outputs.binary == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: armada-${{ matrix.target }}
+          path: |
+            dist/armada-${{ matrix.target }}
+            dist/armada-server-${{ matrix.target }}
+          if-no-files-found: error
+
+  binary-intel:
+    name: Binary (darwin-x64)
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-x64
+            runner: macos-15-intel
+    needs: expensive-inputs
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 10
     steps:
@@ -221,3 +305,19 @@ jobs:
             dist/armada-${{ matrix.target }}
             dist/armada-server-${{ matrix.target }}
           if-no-files-found: error
+
+  ci-budget:
+    name: CI budget (120s)
+    if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}
+    needs: [expensive-inputs, migration-versions, static-checks, unit-tests, verify, golden-concurrency, golden-os, binary]
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Enforce elapsed workflow budget (including queue and setup)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > /tmp/run.json
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?filter=latest&per_page=100" --jq '.jobs[]' | jq -s . > /tmp/jobs.json
+          node scripts/ci/check-budget.cjs /tmp/run.json /tmp/jobs.json

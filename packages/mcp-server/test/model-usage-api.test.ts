@@ -2,11 +2,11 @@ import { expect, test } from "bun:test";
 import { createMemoryAuthStore, generateToken, sha256Hex } from "@armada/auth";
 import { encryptSecret } from "@armada/core";
 import { createSqlVaultStore } from "@armada/core/server";
-import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import { productionAuthIo } from "../../cli/src/auth-commands.ts";
 import { credsCommand } from "../../cli/src/vault-commands.ts";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createModelUsageApi } from "../src/model-usage.ts";
+import { migratedDatabase } from "./migrated-database.ts";
 import { fakeBoat } from "./support.ts";
 
 const OWNER = "11111111-1111-4111-8111-111111111111";
@@ -24,9 +24,8 @@ test.each([
 ] as const)(
   "real usage API authorizes %s account independently of %s sandbox visibility",
   async (scope, visibility, peerAllowed) => {
-    const db = await openDatabase();
+    const db = await migratedDatabase();
     try {
-      await applyMigrations(db);
       await db.query("insert into auth.users(id) values($1),($2),($3)", [OWNER, PEER, ADMIN]);
       await db.query("insert into orgs(id,name) values($1,'Usage')", [ORG]);
       await db.query(

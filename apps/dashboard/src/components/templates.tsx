@@ -202,6 +202,7 @@ function TemplateForm({
   const [golden, setGolden] = useState(editing?.definition.goldenId ?? "");
   const [harness, setHarness] = useState<Harness>(editing?.definition.harness ?? "claude");
   const [keepAccount, setKeepAccount] = useState(true);
+  const [credential, setCredential] = useState("");
   const [skills, setSkills] = useState<string[]>(() => [...(editing?.definition.skills ?? [])]);
   const [problem, setProblem] = useState<string | null>(null);
   const keepingPinnedAccount = Boolean(
@@ -315,42 +316,80 @@ function TemplateForm({
             </RadioGroup>
           </fieldset>
         )}
-        <div className="space-y-2">
-          <Label htmlFor={`${id}-golden`}>Environment</Label>
-          <NativeSelect
-            id={`${id}-golden`}
-            name="golden"
-            value={golden}
-            onChange={(event) => setGolden(event.target.value)}
-            aria-describedby={`${id}-golden-hint`}
-            aria-invalid={goldenProblem ? true : undefined}
-          >
-            <option value="">Choose an environment</option>
-            {environments.map((row) => (
-              <option key={row.id} value={row.id} disabled={!row.ready}>
-                {row.name} on {PROVIDER_LABELS[row.provider]}
-                {row.ready ? "" : " (no snapshot yet)"}
-              </option>
-            ))}
-          </NativeSelect>
-          <p
-            id={`${id}-golden-hint`}
-            className={cn("text-xs", goldenProblem ? "text-destructive" : "text-muted-foreground")}
-          >
-            {goldenProblem ??
-              (scope === "org"
-                ? "Shared environments only. Launches use its latest snapshot."
-                : "Launches use its latest snapshot.")}
-          </p>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div className="space-y-2">
+            <Label htmlFor={`${id}-golden`}>Environment</Label>
+            <NativeSelect
+              id={`${id}-golden`}
+              name="golden"
+              value={golden}
+              onChange={(event) => setGolden(event.target.value)}
+              aria-describedby={`${id}-golden-hint`}
+              aria-invalid={goldenProblem ? true : undefined}
+            >
+              <option value="">Choose an environment</option>
+              {environments.map((row) => (
+                <option key={row.id} value={row.id} disabled={!row.ready}>
+                  {row.name} on {PROVIDER_LABELS[row.provider]}
+                  {row.ready ? "" : " (no snapshot yet)"}
+                </option>
+              ))}
+            </NativeSelect>
+            <p
+              id={`${id}-golden-hint`}
+              className={cn("text-xs", goldenProblem ? "text-destructive" : "text-muted-foreground")}
+            >
+              {goldenProblem ??
+                (scope === "org"
+                  ? "Shared environments only. Launches use its latest snapshot."
+                  : "Launches use its latest snapshot.")}
+            </p>
+          </div>
+          {!keepingPinnedAccount && (
+            <div className="space-y-2">
+              <Label htmlFor={`${id}-model-account`}>Model account</Label>
+              <NativeSelect
+                id={`${id}-model-account`}
+                name="credential"
+                value={credential}
+                onChange={(event) => setCredential(event.target.value)}
+                aria-describedby={`${id}-model-account-hint`}
+              >
+                <option value="">Use the launcher's own account</option>
+                {lookups.accounts?.state === "ready" &&
+                  accountsFor(lookups.accounts.accounts, harness).map((account) => (
+                    <option
+                      key={account.id}
+                      value={account.id}
+                      disabled={
+                        accountProblem(account, lookups.accounts?.state === "ready" ? lookups.accounts.now : 0) !==
+                          null ||
+                        (scope === "org" && account.scope !== "org")
+                      }
+                    >
+                      {account.name} ({account.scope === "org" ? orgName : "Yours"})
+                    </option>
+                  ))}
+              </NativeSelect>
+              <p id={`${id}-model-account-hint`} className="text-xs text-muted-foreground">
+                {lookups.accounts?.state === "unavailable"
+                  ? "Model accounts could not be loaded. Refresh to choose one."
+                  : "Pins this version; rotation needs a new revision. Org templates use org accounts."}
+              </p>
+            </div>
+          )}
         </div>
         <Segmented
           legend="Agent"
           name="harness"
           value={harness}
-          onChange={setHarness}
+          onChange={(value) => {
+            setHarness(value);
+            setCredential("");
+          }}
           options={(Object.keys(catalog) as Harness[]).map((value) => ({ value, label: HARNESS_LABELS[value] }))}
         />
-        {!keepingPinnedAccount && accountSelection && accountSelection !== "resolved" && (
+        {!keepingPinnedAccount && !credential && accountSelection && accountSelection !== "resolved" && (
           <p role="status" className="text-sm text-amber-700 dark:text-amber-300">
             {accountSelection === "ambiguous"
               ? `Several ${HARNESS_LABELS[harness]} accounts are available. Set a default in `
@@ -389,7 +428,7 @@ function TemplateForm({
             <span>
               <span className="block font-medium">Keep its pinned model account</span>
               <span className="block text-xs text-muted-foreground">
-                Set over the API. Untick to let each launch use the launcher's own account.
+                Untick to choose another account or let each launch use the launcher's own account.
               </span>
             </span>
           </Label>
