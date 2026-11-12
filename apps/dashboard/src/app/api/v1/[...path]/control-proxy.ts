@@ -71,6 +71,8 @@ const PRIVATE_POST_PATHS = new Set([
   "creds/accounts/default",
   "creds/accounts/remove",
   "creds/accounts/usage",
+  "creds/accounts/holder",
+  "creds/accounts/release",
   "creds/accounts/auth-capabilities",
   "golden/list",
   "golden/capabilities",
