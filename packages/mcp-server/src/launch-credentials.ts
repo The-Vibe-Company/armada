@@ -106,6 +106,23 @@ export function launchCredentials(
       // Modal already hydrates this exact sealed state in its private stdin bootstrap.
       return true;
     },
+    async markNeverStarted(actor, credentials, sandboxId) {
+      const binding = credentials.binding;
+      if (ownership && binding)
+        return ownership.markNeverStarted(actor, binding.credentialId, binding.credentialVersion, sandboxId);
+      return false;
+    },
+    async releaseNeverStarted(actor, credentials, sandboxId, deletePhysical) {
+      const binding = credentials.binding;
+      if (ownership && binding)
+        await ownership.releaseNeverStarted(
+          actor,
+          binding.credentialId,
+          binding.credentialVersion,
+          sandboxId,
+          deletePhysical,
+        );
+    },
     async releaseUnallocated(_actor, credentials, sandboxId) {
       const binding =
         "binding" in credentials

@@ -79,6 +79,45 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       writeFileSync(path, JSON.stringify(prior));
     }
 
+    if (["usage-fresh", "usage-resumed", "usage-after-reset"].includes(m.message.content)) {
+      const result = (sessionId: string, consumed: string[], model = "claude-native") =>
+        send({
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          session_id: sessionId,
+          uuid: crypto.randomUUID(),
+          duration_ms: 1,
+          duration_api_ms: 1,
+          num_turns: 1,
+          result: "OK",
+          stop_reason: "end_turn",
+          total_cost_usd: 1,
+          usage: { input_tokens: 10, output_tokens: 2 },
+          modelUsage: {
+            [model]: {
+              inputTokens: 100,
+              outputTokens: 20,
+              cacheReadInputTokens: 30,
+              cacheCreationInputTokens: 10,
+              thinkingTokens: 4,
+              cacheCreationEphemeral5mInputTokens: 6,
+              cacheCreationEphemeral1hInputTokens: 4,
+              costUSD: 1,
+              webSearchRequests: 2,
+            },
+          },
+          permission_denials: [],
+          user_message_uuid: m.uuid,
+          user_message_uuids: consumed,
+        });
+      if (initial) result("fixture-session", [initial]);
+      if (m.message.content === "usage-after-reset") {
+        send({ type: "system", subtype: "init", session_id: "fixture-session", uuid: crypto.randomUUID() });
+        result("reset-session", [initial, m.uuid].filter(Boolean) as string[], "claude-reset");
+      } else result("fixture-session", [initial, m.uuid].filter(Boolean) as string[]);
+      return;
+    }
     if (m.message.content === "message-semantics") {
       for (const id of ["answer-a", "answer-b"]) {
         const stream = (event: unknown) =>
