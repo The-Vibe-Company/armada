@@ -45,13 +45,17 @@ Authenticated POST /api/v1/creds/accounts/auth-capabilities returns, additively:
       "nativeSubscriptionExec": true
     }
 
+The example above describes legacy native ownership. Configured server-owned
+renewal deployments advertise `nativeSubscriptionParallelSandboxes: true`; see
+the shared-session section below.
+
 The nativeCLI map contains base commands only, without --name placeholders.
 #618 appends its one shell-quoted account name. It offers terminal consent for
 personal accounts only; CLI org import/login explicitly accepts --org under
 fresh admin authorization. There is no Claude terminal-login entry: paste/private
 import is supported, not a fake hosted Connect button.
 
-## Private native state lifecycle
+## Legacy private native state lifecycle
 
 - One refresh-bearing account binding has one durable sandbox owner, claimed
   before provider allocation/hydration. Scheduling expiry never reassigns a live
@@ -273,3 +277,111 @@ model-only setup-token sandboxes on each provider; those tokens do not carry a
 shared rotating refresh token. These are required deployed checks, not results
 established by this slice-1 PR. Explicit account re-pointing/default fallback is
 slice 3; neither it nor full issue acceptance is claimed complete here.
+
+## Shared server-owned Codex sessions (#1176)
+
+New subscription enrollment on the configured server uses external-token Codex
+app-server authentication. One account can serve multiple Boat and Modal
+sandboxes. The refresh token stays encrypted on the server; sandbox bootstrap
+contains a private, sandbox-and-account-pinned access capability, not auth.json
+or `ARMADA_CODEX_AUTH_JSON`. Native app-server receives only an access token and
+account identity, and asks Armada for renewal through its private
+`account/chatgptAuthTokens/refresh` RPC.
+
+The server commits renewal intent before contacting the upstream, then publishes
+sealed replacement tokens with an auth-revision compare-and-swap. Concurrent
+requests reuse the replacement revision, including across server replicas. A
+lost upstream response cannot safely be retried with the old rotating token:
+renewal remains uncertain and the owner must reconnect/import a fresh account
+revision. Failed allocations do not exclusively reserve server-owned accounts.
+
+Legacy refresh-bearing native homes keep their existing fences. To move an
+existing account into shared mode, stop its old sandboxes and import a fresh
+revision of the **same account**. Armada verifies historical physical writers
+are stopped or authoritatively absent before enrollment. Unavailable/uncertain
+observations are not absence proof. An unrecorded/ambiguous old allocation remains
+blocked until the authorized product recovery described below is completed.
+Copying the old auth file under another name is not a
+migration; duplicate sessions and same-owner historical identities are refused.
+Model-only Claude setup-token accounts already allow concurrent sandboxes and do
+not participate in rotating-session ownership.
+
+Both the portable Modal runner and Boat's native stdio bridge must contain the
+external-token integration. Build the runtime with
+`bun scripts/prepare-runtime.ts` (CI builds the native artifact). Boat installs
+the current bridge at shared-auth hydration; it fails the launch if installation
+or private configuration fails. Do not enable a server-only admission change
+with an older runner distribution. Existing API-key launches are unchanged.
+
+The private access endpoint checks the current sandbox pin, logical lifetime,
+credential version/status and owner membership before returning material. Its
+capability is stable for the logical sandbox/account binding, so all such grants
+can be reconstructed for redaction; expiry and revocation are authoritative in
+SQL, not guest claims. Capabilities and current/superseded access tokens are
+redacted before public output. No upstream body or refresh failure detail is
+logged or returned.
+
+Later hardening: physical-incarnation-specific access capabilities, per-grant
+revocation independent of account/sandbox revocation, bounded historical token
+registry compaction, and richer reconnect diagnostics. Staging acceptance still
+requires three live sandboxes to answer concurrently through an actual refresh;
+unit/transport tests use synthetic vendor material only.
+
+
+### Native plan-limit failures
+
+A native subscription limit is a failed prompt, not a failed launch or an
+expired login. Codex terminal usage/rate-limit codes are preserved with a fixed,
+actionable public message. When the vendor supplies a valid reset for an
+applicable exhausted window, the message and structured result retain that reset time; no
+reset is invented from missing, malformed or non-exhausted quota data. If more
+than one exhausted window supplies a reset, report the latest blocking reset.
+
+Both Boat and Modal feed the same safe public outcome contract. Raw vendor
+error text, credit balances, plan/profile details and the rest of the private
+quota payload remain private; only allowlisted failure classification and reset
+metadata are promoted. Authentication failures keep their separate identity.
+
+### Recover legacy ownership before shared enrollment
+
+For existing trapped accounts, this slice-2 server must be deployed together
+with the slice-1 product recovery in [PR #1180](https://github.com/The-Vibe-Company/armada/pull/1180).
+This PR alone does not expose that recovery action. Do not remove the orphan
+ownership guard or delete ownership rows manually to bypass it: no recorded
+sandbox means this broker cannot establish physical quiescence of that holder.
+
+After both slices are deployed:
+
+1. Open **Models → the same account → Find subscription holder**. The slice-1
+   lookup exposes the stored holder even after the credential revision changes;
+   it also distinguishes unrecorded and unversioned history.
+2. Stop any recorded live holder and finish its current operation. Use
+   **Reconnect subscription** with a fresh official native auth.json when
+   requested, then find the holder again and **Release subscription**. Recorded
+   holders require authoritative physical deletion/absence before release.
+   Unversioned recorded history instead uses the atomic **Reconnect and release**
+   action; a pending/failed deletion must leave the credential unchanged.
+3. For an unrecorded allocation, do not claim that a physical sandbox was
+   deleted: its physical ID is unknown. Explicit replacement of the same account
+   is required first. The recovery transaction fences the old credential version
+   before retiring its orphan claim, so a delayed old-version launch cannot pass
+   bootstrap/prompt admission. Old sealed native state is retained; importing the same
+   session under a second name is not the recovery procedure.
+4. Retry launch. Shared enrollment can now initialize the fresh account revision
+   without an exclusive ownership row. If another historical binding is reported,
+   recover it through the same product path; never silently erase live history.
+
+**Required coordinator staging check, not performed here:** on both Boat and
+Modal, reproduce an old unrecorded claim using the baseline build or a controlled
+staging fixture. Deploy both slices, complete the product recovery above without
+SQL repair, verify delayed old-version admission is refused, then launch three
+same-account sandboxes concurrently through an actual server token refresh.
+Record deployed commits, safe account revisions and successful prompt IDs, never
+auth payloads. The [slice-1 deployed lifecycle checklist](https://github.com/The-Vibe-Company/armada/blob/bf81c6783530aeaacada7e6a0daa121851ab5f1a/docs/native-subscription-auth.md#required-deployed-coordinator-checks-not-performed-by-this-pr-author)
+additionally covers deletion pending/unavailable, confirmed absence and account
+reuse. No real provider, staging or production acceptance is claimed by local
+synthetic-provider tests.
+
+Explicit sandbox account re-pointing and missing-pin default fallback remain
+slice 3 of #1176. They are not implemented by this concurrency slice, and the
+removed-API-key acceptance criterion remains open until that slice is delivered.

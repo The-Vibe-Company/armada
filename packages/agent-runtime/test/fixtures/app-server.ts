@@ -10,6 +10,8 @@ const send = (message: unknown) => process.stdout.write(`${JSON.stringify(messag
 let loggedIn = false;
 let turn = 0;
 let thread = "fixture-thread";
+let usageOffset = 0;
+let pendingResumeBaseline: (() => void) | undefined;
 createInterface({ input: process.stdin }).on("line", (line) => {
   const m = JSON.parse(line);
   if (process.env.ARMADA_CWD_PROOF) {
@@ -32,25 +34,62 @@ createInterface({ input: process.stdin }).on("line", (line) => {
 
   const reply = (result: unknown) => send({ id: m.id, result });
   const notify = (method: string, params: unknown) => send({ method, params });
+  if (m.id === "fixture-auth-refresh" && process.env.ARMADA_EXTERNAL_AUTH) {
+    if (
+      m.result?.accessToken !== "synthetic-refreshed-access" ||
+      m.result?.chatgptAccountId !== "synthetic-account" ||
+      "refreshToken" in m.result
+    )
+      throw Error("invalid external renewal");
+    notify("item/completed", {
+      threadId: thread,
+      item: { type: "agentMessage", id: "renewed", text: "renewed turn completed" },
+    });
+    notify("turn/completed", {
+      threadId: thread,
+      turn: { id: `turn-${turn}`, status: "completed", items: [], error: null },
+    });
+    return;
+  }
   if (m.method === "initialize") reply({ userAgent: "fixture" });
   else if (m.method === "account/login/start") {
+    if (process.env.ARMADA_EXTERNAL_AUTH) {
+      if (
+        m.params.type !== "chatgptAuthTokens" ||
+        m.params.accessToken !== "synthetic-initial-access" ||
+        m.params.chatgptAccountId !== "synthetic-account" ||
+        "refreshToken" in m.params
+      )
+        throw Error("invalid external login");
+      loggedIn = true;
+      reply({ type: "chatgptAuthTokens" });
+      return;
+    }
     if (m.params.type !== "apiKey" || m.params.apiKey !== process.env.OPENAI_API_KEY)
       throw Error("invalid API-key login");
     loggedIn = true;
     reply({ type: "apiKey" });
   } else if (m.method === "account/rateLimits/read") {
+    pendingResumeBaseline?.();
+    pendingResumeBaseline = undefined;
     if (process.env.ARMADA_QUOTA_UNAVAILABLE === "1") {
       send({ id: m.id, error: { code: -32000, message: "Synthetic quota unavailable" } });
       return;
     }
+    if (process.env.ARMADA_LIMIT_SOURCE === "raced")
+      notify("account/rateLimits/updated", {
+        rateLimits: { limitId: "codex", primary: { usedPercent: 100, resetsAt: 1794270000 }, secondary: null },
+      });
     reply({
       ordinaryUsageAllowed: true,
-      rateLimits: {
-        limitId: "codex",
-        primary: { usedPercent: 25, resetsAt: 1794268800 },
-        secondary: null,
-        credits: { hasCredits: false, unlimited: false, balance: "0" },
-      },
+      rateLimits: process.env.ARMADA_LIMITS
+        ? JSON.parse(process.env.ARMADA_LIMITS)
+        : {
+            limitId: "codex",
+            primary: { usedPercent: 25, resetsAt: 1794268800 },
+            secondary: null,
+            credits: { hasCredits: false, unlimited: false, balance: "0" },
+          },
       rateLimitsByLimitId: {
         codex: {
           limitId: "codex",
@@ -93,13 +132,40 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       );
     }
 
-    notify("account/rateLimits/updated", {
-      rateLimits: {
-        limitId: "codex",
-        primary: { usedPercent: 25, windowDurationMins: 300, resetsAt: 1794268800 },
-        secondary: null,
-      },
-    });
+    if (process.env.ARMADA_LIMIT_SOURCE !== "read" && process.env.ARMADA_LIMIT_SOURCE !== "raced")
+      notify("account/rateLimits/updated", {
+        rateLimits: process.env.ARMADA_LIMITS
+          ? JSON.parse(process.env.ARMADA_LIMITS)
+          : {
+              limitId: "codex",
+              primary: { usedPercent: 25, windowDurationMins: 300, resetsAt: 1794268800 },
+              secondary: null,
+            },
+      });
+    const baselineMode = m.method === "thread/resume" ? process.env.ARMADA_RESUME_USAGE_BASELINE : undefined;
+    if (baselineMode) usageOffset = 10;
+    const baseline = (scale = 1, omitOptional = baselineMode === "partial") =>
+      notify("thread/tokenUsage/updated", {
+        threadId: baselineMode === "foreign" ? "foreign-thread" : thread,
+        turnId: "old-turn",
+        tokenUsage: {
+          total: {
+            inputTokens: 1000 * scale,
+            outputTokens: 200 * scale,
+            cachedInputTokens: baselineMode === "invalid" ? 1001 : 300 * scale,
+            ...(omitOptional ? {} : { cacheWriteInputTokens: 100 * scale, reasoningOutputTokens: 40 * scale }),
+          },
+        },
+      });
+    if (baselineMode && baselineMode !== "after" && baselineMode !== "late") baseline();
+    if (baselineMode === "regressed") {
+      baseline(0.5);
+      baseline();
+    }
+    if (baselineMode === "lost-optional") {
+      baseline(1, true);
+      baseline();
+    }
     reply({
       thread: { id: process.env.ARMADA_NATIVE_RESUME_MISMATCH === "thread" ? "replacement-native" : thread },
       model:
@@ -109,11 +175,21 @@ createInterface({ input: process.stdin }).on("line", (line) => {
             ? undefined
             : (process.env.ARMADA_USAGE_MODEL ?? m.params.model ?? "gpt-6.1-sol"),
     });
+    if (baselineMode === "after") pendingResumeBaseline = baseline;
   } else if (m.method === "turn/start") {
     const params = m.params as TurnStartParams;
     turn++;
     if (params.threadId !== thread || params.approvalPolicy !== "never") throw Error("incorrect turn parameters");
     reply({ turn: { id: `turn-${turn}`, status: "inProgress" } });
+    if (process.env.ARMADA_EXTERNAL_AUTH) {
+      if (!loggedIn) throw Error("missing external login");
+      send({
+        id: "fixture-auth-refresh",
+        method: "account/chatgptAuthTokens/refresh",
+        params: { reason: "unauthorized", previousAccountId: "synthetic-account" },
+      });
+      return;
+    }
     if (params.input[0]?.type === "text" && params.input[0].text === "message-semantics") {
       for (const id of ["answer-a", "answer-b"]) {
         notify("item/agentMessage/delta", { threadId: thread, turnId: `turn-${turn}`, itemId: id, delta: "Hello" });
@@ -134,15 +210,16 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       turnId: `turn-${turn}`,
       tokenUsage: {
         total: {
-          inputTokens: 100 * turn,
-          outputTokens: 20 * turn,
-          cachedInputTokens: 30 * turn,
-          cacheWriteInputTokens: 10 * turn,
-          reasoningOutputTokens: 4 * turn,
+          inputTokens: 100 * (turn + usageOffset),
+          outputTokens: 20 * (turn + usageOffset),
+          cachedInputTokens: 30 * (turn + usageOffset),
+          cacheWriteInputTokens: 10 * (turn + usageOffset),
+          reasoningOutputTokens: 4 * (turn + usageOffset),
         },
         last: { inputTokens: 40, outputTokens: 5, cachedInputTokens: 10 },
       },
     });
+    if (params.input[0]?.type === "text" && params.input[0].text === "usage-process-lost") process.exit(0);
     if (process.env.ARMADA_USAGE_REROUTE) {
       notify("model/rerouted", {
         threadId: process.env.ARMADA_USAGE_REROUTE === "foreign" ? "another-thread" : thread,
@@ -167,6 +244,9 @@ createInterface({ input: process.stdin }).on("line", (line) => {
             id: `turn-${turn}`,
             error: {
               ...recordedTerminal.params.turn.error,
+              ...(process.env.ARMADA_LIMITS
+                ? { message: "private-vendor-error-body", additionalDetails: "private-vendor-error-body" }
+                : {}),
               codexErrorInfo:
                 params.input[0].text === "recorded-failure"
                   ? recordedTerminal.params.turn.error.codexErrorInfo

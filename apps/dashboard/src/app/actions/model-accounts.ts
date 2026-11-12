@@ -16,7 +16,11 @@ import {
   HARNESS_PATH,
   KIND_INFO,
 } from "@/lib/model-accounts";
-import { customCodexAccountValue, replacementCodexAccountValue } from "@/lib/model-connection-input";
+import {
+  customAccountValue,
+  replacementClaudeAccountValue,
+  replacementCodexAccountValue,
+} from "@/lib/model-connection-input";
 
 type Scoped = { control: AccountControl; scope: AccountScope; org: string };
 
@@ -82,7 +86,7 @@ export async function addAccount(_previous: ActionResult | null, data: FormData)
   if (!name.ok) return fail(name.error);
   const value =
     data.get("customEndpoint") === "on"
-      ? customCodexAccountValue(kind as AccountKind, data)
+      ? customAccountValue(kind as AccountKind, data)
       : secret(kind as AccountKind, data.get("value"));
   if (!value.ok) return fail(value.error);
 
@@ -122,7 +126,12 @@ export async function replaceAccountSecret(_previous: ActionResult | null, data:
     return fail("That request is not valid.");
   const name = checkAccountName(data.get("name"));
   if (!name.ok) return fail(name.error);
-  const value = kind === "openai" ? replacementCodexAccountValue(data) : secret(kind as AccountKind, data.get("value"));
+  const value =
+    kind === "openai"
+      ? replacementCodexAccountValue(data)
+      : kind === "anthropic"
+        ? replacementClaudeAccountValue(data)
+        : secret(kind as AccountKind, data.get("value"));
   if (!value.ok) return fail(value.error);
   try {
     const saved = await context.control.set({

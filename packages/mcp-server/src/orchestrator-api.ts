@@ -1,5 +1,6 @@
 import {
   API_FAILURE_STATUS,
+  HARNESSES,
   MACHINE_SIZES,
   ORCHESTRATOR_DEFAULTS,
   ORCHESTRATOR_SKILL_PATTERN,
@@ -128,7 +129,7 @@ export async function callOrchestrator(
       (args.maxActiveChildren !== undefined &&
         (!Number.isSafeInteger(args.maxActiveChildren) || Number(args.maxActiveChildren) < 1)) ||
       !["boat", "modal"].includes(String(args.provider)) ||
-      !["claude", "codex"].includes(String(args.harness))
+      !(HARNESSES as readonly string[]).includes(String(args.harness))
     )
       throw new OrchestratorRuntimeError("invalid_request");
     return service.create(caller, args as unknown as OrchestratorCreate, key ?? "");

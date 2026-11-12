@@ -45,9 +45,11 @@ import { createProviderMetadata } from "./provider-metadata.ts";
 import { pruneServerRetention } from "./retention-maintenance.ts";
 import { startRoutineWorker } from "./routine-worker.ts";
 import { createRuntimeArtifactRoute } from "./runtime-artifacts.ts";
+import { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import { createRuntimeEvents } from "./runtime-events.ts";
 import { createRuntimeNativeAuth } from "./runtime-native-auth.ts";
+import { createRuntimeSockets, type RuntimeSocketData } from "./runtime-sockets.ts";
 import { createSandboxArmadaAccess } from "./sandbox-armada-access.ts";
 import { createSandboxLifecycle } from "./sandbox-lifecycle.ts";
 import { startServerWorkers } from "./server-workers.ts";
@@ -94,8 +96,13 @@ export async function startServer(
   );
   await catalogAuthentication("slack"); // Reject invalid deployment ciphertext before serving.
   const sql = bunSql(config.databaseUrl, config.databasePoolMax);
-  const modelAuth = createModelAuthOwnership(sql, config.encryptionKey, undefined, undefined, (tx, id) =>
-    createHistoricalSandboxProviderResolver(providers)(tx, id),
+  const modelAuth = createModelAuthOwnership(
+    sql,
+    config.encryptionKey,
+    undefined,
+    undefined,
+    (tx, id) => createHistoricalSandboxProviderResolver(providers)(tx, id),
+    { origin: config.publicUrl },
   );
   const store = createSqlVaultStore(sql);
   const authStore = createSqlAuthStore(sql);
@@ -301,6 +308,8 @@ export async function startServer(
     config.encryptionKey,
     createRuntimeNativeAuth(sql, config.encryptionKey),
   );
+  const runtimeCommands = createRuntimeCommands(runtimeEnrolments, config.encryptionKey);
+  const runtimeSockets = createRuntimeSockets(runtimeEnrolments, runtimeCommands);
   const handler = createHandler({
     ready: createDatabaseReadiness(sql),
     launch,
@@ -336,6 +345,7 @@ export async function startServer(
       createRuntimeArtifactRoute(env.ARMADA_RUNTIME_ARTIFACT_DIR),
       runtimeEnrolments.route,
       runtimeEvents.route,
+      runtimeCommands.route,
       ...(orchestrators && "scopedToolsRoute" in orchestrators
         ? [
             orchestrators.scopedToolsRoute,
@@ -345,6 +355,7 @@ export async function startServer(
             }),
           ]
         : []),
+      ...(modelAuth.broker ? [modelAuth.broker.route] : []),
       modal.route,
       mcp.route,
       (request) => handleControlRequest(request, control),
@@ -398,13 +409,17 @@ export async function startServer(
     return pending;
   };
   const server = Object.assign(
-    Bun.serve({
+    Bun.serve<RuntimeSocketData>({
       port: config.port,
       hostname: "0.0.0.0",
       // Keep Bun's 128 MiB ingress budget explicit: MCP prompts/tool arguments have no
       // smaller aggregate cap. Control JSON (128 KiB) and broker (1 KiB) are bounded per route.
       maxRequestBodySize: 128 * 1024 * 1024,
-      fetch,
+      fetch: (request, instance) =>
+        new URL(request.url).pathname === "/api/runtime/channel"
+          ? runtimeSockets.upgrade(request, (data) => instance.upgrade(request, { data }))
+          : fetch(request),
+      websocket: runtimeSockets.websocket,
     }),
     {
       workerDone: Promise.resolve(),
@@ -511,9 +526,11 @@ export async function startServer(
     // Requests may still use the gateway and SQL while finishing a launch.
     // Drain handlers and POST response streams; idle GET SSE needs
     // MCP close to finish. SQL stays alive until the native HTTP drain completes.
+    const socketsStopped = runtimeSockets.stop();
     const stopped = stop(closeActiveConnections);
     shutdown = Promise.all([
       allWorkersDone,
+      socketsStopped,
       (async () => {
         while (requests.size) await Promise.allSettled([...requests]);
       })(),

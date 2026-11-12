@@ -1,9 +1,11 @@
 import {
   type CredentialInfo,
   credentialName,
+  isModelConnectionTestResult,
   type MemberInfo,
   type OrgCredentials,
   type OrgSummary,
+  parseClaudeEndpoint,
   parseCodexEndpoint,
   parseCredentialKind,
   parseCredentialValue,
@@ -159,11 +161,14 @@ async function members(argv: readonly string[], io: VaultIo): Promise<number> {
 
 export async function credsCommand(argv: readonly string[], io: VaultIo): Promise<number> {
   const [sub, ...rest] = argv;
-  const args = parseArgs(rest, ["--id", "--expected-version", "--base-url", "--api-version"]);
+  const args = parseArgs(rest, ["--id", "--expected-version", "--base-url", "--api-version", "--endpoint-auth"]);
   const org = single(args, "--org");
   const scope = org === undefined ? "user" : "org";
-  if (sub !== "set" && (args.options.has("--base-url") || args.options.has("--api-version")))
-    throw usage("Endpoint options are only supported by creds set openai.");
+  if (
+    sub !== "set" &&
+    (args.options.has("--base-url") || args.options.has("--api-version") || args.options.has("--endpoint-auth"))
+  )
+    throw usage("Endpoint options are only supported by creds set openai or anthropic.");
   switch (sub) {
     case "login":
     case "import": {
@@ -228,22 +233,69 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
       io.auth.out("Imported native credential account, encrypted. Allowance may be unavailable.\n");
       return 0;
     }
+    case "test": {
+      const id = one(
+        args.positionals,
+        "armada creds test <sandbox-id> --model <deployment-model> [--org <name>] [--json]",
+      );
+      if ([...args.options.keys()].some((key) => !["--org", "--model", "--json"].includes(key)))
+        throw usage("Connection tests accept only --model, --org and --json; keys and URLs are never accepted.");
+      const model = single(args, "--model");
+      if (!model) throw usage("Connection tests require --model <deployment-model>.");
+      const response = await control<{ test: unknown } | null>(
+        io.auth,
+        "sandbox/test-model-connection",
+        {
+          id,
+          model,
+          org,
+        },
+        AbortSignal.timeout(45000),
+      );
+      if (!response || !isModelConnectionTestResult(response.test))
+        throw new VaultError("unavailable", "The server returned an invalid connection-test result.");
+      const result = response.test;
+      if (flag(args, "--json")) io.auth.out(JSON.stringify({ id, ...result }) + "\n");
+      else if (result.ok)
+        io.auth.out(
+          "Connection accepted (HTTP " + result.status + "). This is not a full harness compatibility test.\n",
+        );
+      else
+        io.auth.out(
+          "Connection check failed: " +
+            (result.status === null
+              ? "connection failed or timed out"
+              : "HTTP " + result.status + " " + (result.code ?? result.error)) +
+            ".\n",
+        );
+      return result.ok ? 0 : 1;
+    }
     case "set": {
       const [name] = expect(args.positionals, 1, "armada creds set <kind> [--org <name>] [--file <path>]");
       const kind = parseCredentialKind(name ?? "");
       const baseUrl = single(args, "--base-url");
       const apiVersion = single(args, "--api-version");
+      const endpointAuth = single(args, "--endpoint-auth");
       if (apiVersion !== undefined && baseUrl === undefined) throw usage("--api-version requires --base-url.");
-      if (baseUrl !== undefined && kind !== "openai") throw usage("--base-url currently supports openai (Codex) only.");
+      if (endpointAuth !== undefined && (baseUrl === undefined || kind !== "anthropic"))
+        throw usage("--endpoint-auth requires creds set anthropic --base-url.");
+      if (apiVersion !== undefined && kind !== "openai") throw usage("--api-version supports openai (Codex) only.");
+      if (baseUrl !== undefined && kind !== "openai" && kind !== "anthropic")
+        throw usage("--base-url supports openai (Codex) or anthropic (Claude Code) only.");
       if (baseUrl !== undefined && !single(args, "--name") && !single(args, "--id"))
         throw usage("A custom endpoint requires --name to create an account or --id to replace one.");
-      let endpoint: ReturnType<typeof parseCodexEndpoint> | undefined;
+      let endpoint: ReturnType<typeof parseCodexEndpoint> | ReturnType<typeof parseClaudeEndpoint> | undefined;
       if (baseUrl !== undefined) {
         try {
-          endpoint = parseCodexEndpoint({ version: 1, baseUrl, ...(apiVersion !== undefined ? { apiVersion } : {}) });
+          endpoint =
+            kind === "anthropic"
+              ? parseClaudeEndpoint({ version: 1, baseUrl, auth: endpointAuth ?? "bearer" })
+              : parseCodexEndpoint({ version: 1, baseUrl, ...(apiVersion !== undefined ? { apiVersion } : {}) });
         } catch {
           throw usage(
-            "Invalid Codex endpoint. Use an HTTPS Responses base URL without URL credentials, query or fragment.",
+            kind === "anthropic"
+              ? "Invalid Claude gateway. Use an HTTPS base URL without URL credentials, query or fragment, and --endpoint-auth bearer or api-key."
+              : "Invalid Codex endpoint. Use an HTTPS Responses base URL without URL credentials, query or fragment.",
           );
         }
       }
@@ -270,7 +322,11 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
         return 0;
       }
       if (endpoint)
-        io.auth.out("Custom Codex endpoint: Modal only; requires the Responses API (not chat completions).\n");
+        io.auth.out(
+          kind === "anthropic"
+            ? "Custom Claude gateway: Modal only; supports Claude models only and requires Anthropic Messages with streaming/tool use.\n"
+            : "Custom Codex endpoint: Modal only; requires the Responses API (not chat completions).\n",
+        );
       io.auth.out(
         `Stored ${credentialName(kind)} for ${scope === "org" ? `org ${org}` : "you"}, encrypted. It is never shown again.\n`,
       );

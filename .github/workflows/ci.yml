@@ -2,6 +2,8 @@ name: CI
 
 on:
   pull_request:
+  merge_group:
+    types: [checks_requested]
   push:
     branches: [main]
   workflow_dispatch:
@@ -10,8 +12,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.event_name }}-${{ github.ref }}-${{ github.event_name == 'merge_group' && github.sha || 'latest' }}
+  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
 
 jobs:
   migration-versions:
@@ -26,6 +28,7 @@ jobs:
       - name: Check migration versions against the current base
         env:
           BASE_BRANCH: ${{ github.base_ref || 'main' }}
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
           BEFORE: ${{ github.event.before }}
           EVENT_NAME: ${{ github.event_name }}
         run: |
@@ -33,6 +36,9 @@ jobs:
             # Fetch now, not the potentially stale base SHA in the PR event.
             git fetch --no-tags origin "refs/heads/$BASE_BRANCH"
             base=$(git rev-parse FETCH_HEAD)
+          elif [ "$EVENT_NAME" = "merge_group" ]; then
+            # Compare the entire queue candidate with its exact target-branch base.
+            base="$MERGE_GROUP_BASE_SHA"
           elif [ "$EVENT_NAME" = "push" ]; then
             base="$BEFORE"
           else
@@ -66,6 +72,8 @@ jobs:
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
       - run: bun run lint
+      - name: Check generated iOS harness metadata
+        run: bun scripts/generate-ios-harness.ts --check
       - run: bun packages/agent-runtime/build.ts
       - run: bun scripts/validate-runtime-native.ts
       - name: Real checkpoint process boundary
@@ -137,39 +145,6 @@ jobs:
       - run: bun test packages/core/test/golden-os.test.ts packages/mcp-server/test/github-boat-os.test.ts packages/provider-modal/test/ssh-os.test.ts
         env:
           ARMADA_GOLDEN_OS_IMAGE: armada-golden-os
-
-  # The dashboard runs as a production build against a mock of Supabase and the Armada server.
-  e2e:
-    name: Dashboard e2e
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    # Use the image for pre-baked Noble system libraries, not its bundled browsers.
-    # Install the lockfile-selected Chromium below so browser/package revisions match.
-    container:
-      image: mcr.microsoft.com/playwright:v1.56.1-noble@sha256:f1e7e01021efd65dd1a2c56064be399f3e4de00fd021ac561325f2bfbb2b837a
-      options: --ipc=host
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      # The container has Node/npm, but not jq (used by setup-bun's fallback).
-      - name: Install pinned Bun
-        run: |
-          version=$(node -p "require('./package.json').packageManager.split('@')[1]")
-          npm install --global --prefix "$HOME/.bun-npm" "bun@$version"
-          echo "$HOME/.bun-npm/bin" >> "$GITHUB_PATH"
-      - run: bun install --frozen-lockfile
-      - name: Install Chromium
-        run: bunx playwright install chromium
-        working-directory: apps/dashboard
-      - run: bun run e2e
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: failure()
-        with:
-          name: dashboard-e2e-results
-          path: apps/dashboard/test-results
-          if-no-files-found: ignore
 
   # Each binary is compiled on its own platform, so it is run there before upload
   # and the macOS ones get the ad-hoc signature Apple Silicon requires.

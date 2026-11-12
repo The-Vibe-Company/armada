@@ -1,7 +1,7 @@
 # Native Codex publication from a Boat runtime (#1161, slice 8)
 
-Stacked on event ingestion #1232: this adds its previously disabled nativeAuth
-branch. No migration or Modal publication/tunnel change. Boat launch opt-in,
+Originally stacked on event ingestion #1232 (now merged): this adds its previously
+disabled nativeAuth branch. No migration or Modal publication/tunnel change. Boat launch opt-in,
 checkpoint/stop integration and lifecycle/timing proof remain separate slices.
 
 ## Private publication
@@ -37,7 +37,7 @@ Only synchronous DB/crypto work occurs there, not provider/network operations.
 
 ## Coordinator staging check
 
-After #1232's migration and this stacked server are deployed, use a **dedicated
+After #1232's existing migration and this server are deployed, use a **dedicated
 staging subscription account** and its idle disposable Boat Codex holder. It must
 be owned by a current member, have no conversations/task prompt and be ready.
 Never use an actual worker or production account: the diagnostic replaces runtime

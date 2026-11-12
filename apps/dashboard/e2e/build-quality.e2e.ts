@@ -103,3 +103,34 @@ test("a refused org secret keeps kind/scope for retry but clears its one-time va
   await expect(row).toHaveAttribute("data-vault-kind", "secret");
   await expect(row.getByText("Org", { exact: true })).toBeVisible();
 });
+
+test("list rows share their columns, whatever the width of each row's action", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 844 });
+  await signIn(page, "alice@example.com", "/tools");
+  const list = page.getByRole("list", { name: "Tools", exact: true });
+  // Retry, Reconnect, Configure and no action at all: the state and fact columns still start at one x.
+  const columns = await list.evaluate((node) =>
+    [...node.children].map((row) => {
+      const box = (index: number) => {
+        const rect = row.children[index]?.getBoundingClientRect();
+        return { left: Math.round(rect?.left ?? 0), width: rect?.width ?? 0 };
+      };
+      return { state: box(1), fact: box(2) };
+    }),
+  );
+  expect(columns.length).toBeGreaterThan(3);
+  // Both columns render (a hidden fact cell would report 0 and agree with itself), the fact after the state.
+  for (const { state, fact } of columns) {
+    expect(state.width).toBeGreaterThan(0);
+    expect(fact.width).toBeGreaterThan(0);
+    expect(fact.left).toBeGreaterThan(state.left);
+  }
+  expect(new Set(columns.map(({ state }) => state.left)).size).toBe(1);
+  expect(new Set(columns.map(({ fact }) => fact.left)).size).toBe(1);
+
+  // On a phone a row without an action keeps the whole width for its name, not the widest action's column.
+  await page.setViewportSize({ width: 390, height: 844 });
+  const name = list.locator('[data-connection="Alice Linear"] [data-select-item] span');
+  await expect(name).toHaveText("Alice Linear");
+  expect(await name.evaluate((node) => node.scrollWidth <= node.clientWidth)).toBe(true);
+});

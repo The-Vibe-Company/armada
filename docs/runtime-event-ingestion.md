@@ -51,7 +51,7 @@ must use the later dedicated ownership/publication hook, not event payload data.
 ## Coordinator staging check
 
 1. Recheck migration ordering against fresh main and apply
-   `20261112150339_runtime_events.sql` on **staging only** through the normal migration process
+   `20261112185118_runtime_events.sql` on **staging only** through the normal migration process
    before deploying this server. The worker applied no remote migration/deploy.
 2. Select a **fresh, disposable, active Boat sandbox** owned by a current member,
    with no runtime_events archive. Never use a real worker: the diagnostic

@@ -293,3 +293,24 @@ test("logs normalize recoverable Boat failures into closed interruption reasons"
     { kind: "prompt", status: "interrupted", reason: "interrupted_by_harness_exit" },
   ]);
 });
+
+test("canonical plan diagnoses acquire metadata only on a failed prompt event", async () => {
+  const statuses = ["queued", "running", "finished", "failed"];
+  const reason = "Plan limit reached. Resets at 2026-11-10T00:00:00.000Z.";
+  const boat = fakeBoat({
+    body: {
+      ok: true,
+      type: "events.list",
+      id: ID,
+      events: statuses.map((status, i) => ({ ...prompt, id: String(i), data: { status, error: reason } })),
+      pageInfo: { nextCursor: null, hasMore: false, limit: 100 },
+    },
+  });
+  const page = await boat.provider.events({ sandboxId: ID });
+  expect(page.events.map((event) => (event.kind === "prompt" ? event.limit : undefined))).toEqual([
+    undefined,
+    undefined,
+    undefined,
+    { code: "usage_limit_exceeded", resetsAt: "2026-11-10T00:00:00.000Z" },
+  ]);
+});

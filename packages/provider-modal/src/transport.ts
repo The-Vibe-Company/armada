@@ -10,6 +10,7 @@ export interface RunnerAccess {
 }
 const errors: Record<string, ProviderErrorCode> = {
   invalid_request: "invalid_request",
+  model_connection_test_denied: "invalid_request",
   invalid_mcp_configuration: "invalid_request",
   mcp_revision_conflict: "conflict",
   stale_mcp_revision: "conflict",

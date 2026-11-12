@@ -1,4 +1,5 @@
 import { createInterface } from "node:readline";
+import { codexPlanLimit, planLimitFromMessage, planLimitMessage } from "@armada/core";
 import { ChildOwner } from "./children.ts";
 import type { ReasoningEffort } from "./codex-schema/ReasoningEffort.ts";
 import type { LoginAccountParams } from "./codex-schema/v2/LoginAccountParams.ts";
@@ -25,6 +26,10 @@ export class CodexDriver implements Driver {
       env: Record<string, string>;
       refreshSecrets?: () => void;
       exclusiveAuth?: boolean;
+      subscriptionAccess?: (
+        refresh: boolean,
+        previousAccessToken?: string,
+      ) => Promise<{ accessToken: string; chatgptAccountId: string; chatgptPlanType: string | null }>;
     },
   ) {}
   configureReadableVariables(variables: Record<string, string>): void {
@@ -56,6 +61,12 @@ export class CodexDriver implements Driver {
   }
   private open(c: DriverContext, resumeOnly: boolean): Turn {
     const cwd = validateHarnessCwd(c.request.cwd ?? this.options.cwd);
+    let previousAccessToken: string | undefined;
+    const subscriptionAccess = async (refresh: boolean) => {
+      const result = await this.options.subscriptionAccess!(refresh, previousAccessToken);
+      previousAccessToken = result.accessToken;
+      return result;
+    };
     const effort = c.request.reasoningEffort ?? "medium";
     if (!["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(effort))
       throw Error("invalid_effort");
@@ -69,6 +80,8 @@ export class CodexDriver implements Driver {
         env: this.options.env,
       },
     );
+    let rateLimits: unknown;
+    let rateLimitsRevision = 0;
     const pending = new Map<
       number,
       { resolve: (x: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }
@@ -79,13 +92,35 @@ export class CodexDriver implements Driver {
       closed = false,
       stopping = false,
       steering = false;
-    const baseline: Record<string, number> | null = c.sessionId
+    let baseline: Record<string, number> | null = c.sessionId
       ? (this.tokenTotals.get(c.sessionId) ?? null)
       : { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, cacheWriteInputTokens: 0, reasoningOutputTokens: 0 };
+    const resumeUsage: {
+      requested: boolean;
+      verified: boolean;
+      started: boolean;
+      seen: boolean;
+      candidate: Record<string, number> | null;
+      invalid: boolean;
+    } = {
+      requested: false,
+      verified: false,
+      started: false,
+      seen: false,
+      candidate: null,
+      invalid: false,
+    };
+    const adoptResumeUsage = () => {
+      if (!resumeUsage.verified || !resumeUsage.seen) return;
+      baseline = resumeUsage.candidate;
+      if (baseline) this.tokenTotals.set(threadId, { ...baseline });
+      else this.tokenTotals.delete(threadId);
+    };
     let reportedModel: string | null = null;
     let modelRerouted = false;
     const usage: { latest: Record<string, unknown> | null } = { latest: null };
     const earlyTerminals = new Map<string, TurnCompletedNotification>();
+    const terminalTurns = new Set<string>();
     let terminalResolve: ((value: TurnCompletedNotification) => void) | undefined;
     let terminalReject: ((error: Error) => void) | undefined;
     const lines = createInterface({ input: child.stdout });
@@ -126,6 +161,20 @@ export class CodexDriver implements Driver {
           }
           return;
         }
+        if (m.id !== undefined && m.method === "account/chatgptAuthTokens/refresh" && this.options.subscriptionAccess) {
+          void subscriptionAccess(true)
+            .then((result) => {
+              if (m.params?.previousAccountId && m.params.previousAccountId !== result.chatgptAccountId)
+                throw Error("subscription_identity_changed");
+              child.stdin.write(`${JSON.stringify({ id: m.id, result })}\n`);
+            })
+            .catch(() =>
+              child.stdin.write(
+                `${JSON.stringify({ id: m.id, error: { code: -32603, message: "Subscription renewal unavailable." } })}\n`,
+              ),
+            );
+          return;
+        }
         if (m.id !== undefined) {
           child.stdin.write(
             `${JSON.stringify({ id: m.id, error: { code: -32601, message: "Interactive requests are disabled" } })}\n`,
@@ -134,7 +183,52 @@ export class CodexDriver implements Driver {
         }
         // Account limits have no thread ID and must stay outside the public message lane.
         if (m.method === "account/rateLimits/updated") {
+          if (
+            m.params?.rateLimits &&
+            (m.params.rateLimits.limitId == null || m.params.rateLimits.limitId === "codex")
+          ) {
+            rateLimits = m.params.rateLimits;
+            rateLimitsRevision++;
+          }
           c.emit({ kind: "other", type: m.method, data: m.params });
+          return;
+        }
+        if (m.method === "thread/tokenUsage/updated" && !resumeUsage.started) {
+          // A resumed history snapshot is only a candidate until the RPC confirms this exact thread.
+          // Never adopt a post-dispatch update: it can already include this prompt's tokens.
+          if (resumeUsage.requested && c.sessionId && m.params?.threadId === c.sessionId) {
+            const total = m.params?.tokenUsage?.total;
+            const count = (value: unknown): value is number =>
+              typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+            const valid =
+              !resumeUsage.invalid &&
+              total &&
+              ["inputTokens", "outputTokens", "cachedInputTokens"].every((key) => count(total[key])) &&
+              total.cachedInputTokens <= total.inputTokens &&
+              (total.cacheWriteInputTokens === undefined ||
+                (count(total.cacheWriteInputTokens) &&
+                  total.cachedInputTokens + total.cacheWriteInputTokens <= total.inputTokens)) &&
+              (total.reasoningOutputTokens === undefined ||
+                (count(total.reasoningOutputTokens) && total.reasoningOutputTokens <= total.outputTokens));
+            const monotone =
+              valid &&
+              (!resumeUsage.candidate ||
+                [
+                  "inputTokens",
+                  "outputTokens",
+                  "cachedInputTokens",
+                  "cacheWriteInputTokens",
+                  "reasoningOutputTokens",
+                ].every(
+                  (key) =>
+                    !count(resumeUsage.candidate?.[key]) ||
+                    (count(total[key]) && total[key] >= resumeUsage.candidate![key]!),
+                ));
+            resumeUsage.seen = true;
+            resumeUsage.invalid = !monotone;
+            resumeUsage.candidate = monotone ? { ...total } : null;
+            adoptResumeUsage();
+          }
           return;
         }
         if (m.params?.threadId !== threadId) return;
@@ -176,13 +270,36 @@ export class CodexDriver implements Driver {
           return;
         }
         if (m.method === "turn/completed") {
-          c.emit({ kind: "other", type: m.method, data: m.params });
           const terminal = m.params as TurnCompletedNotification;
+          const info = terminal.turn?.error?.codexErrorInfo;
+          const code =
+            typeof info === "string" ? info : info && typeof info === "object" ? Object.keys(info)[0] : undefined;
+          if ((code === "usageLimitExceeded" || code === "rateLimitExceeded") && terminal.turn.error) {
+            const limit = codexPlanLimit(
+              rateLimits,
+              code === "rateLimitExceeded" ? "rate_limited" : "usage_limit_exceeded",
+            );
+            terminal.turn.error = {
+              message: planLimitMessage(limit),
+              codexErrorInfo: code,
+              additionalDetails: null,
+              misalignment: null,
+            };
+            c.emit({
+              kind: "other",
+              type: m.method,
+              data: {
+                threadId: terminal.threadId,
+                turn: { id: terminal.turn.id, status: terminal.turn.status, error: terminal.turn.error },
+              },
+            });
+          } else c.emit({ kind: "other", type: m.method, data: m.params });
           if (
             typeof terminal.turn?.id !== "string" ||
             !["completed", "interrupted", "failed"].includes(terminal.turn.status)
           )
             throw new HarnessError("invalid_harness_protocol");
+          terminalTurns.add(terminal.turn.id);
           if (!turnId) {
             if (earlyTerminals.size >= 16) throw new HarnessError("invalid_harness_protocol");
             earlyTerminals.set(terminal.turn.id, terminal);
@@ -262,6 +379,9 @@ export class CodexDriver implements Driver {
         sandboxPolicy: { type: "dangerFullAccess" },
         ...(c.request.fast ? { serviceTier: "fast" } : {}),
       };
+      resumeUsage.started = true;
+      // Once work can run, an earlier snapshot is not a safe baseline for a later prompt.
+      this.tokenTotals.delete(threadId);
       const result = await rpc<TurnStartResponse>("turn/start", params);
       if (typeof result.turn?.id !== "string") throw new HarnessError("invalid_harness_protocol");
       turnId = result.turn.id;
@@ -277,6 +397,14 @@ export class CodexDriver implements Driver {
         capabilities: { experimentalApi: true },
       });
       child.stdin.write(`${JSON.stringify({ method: "initialized", params: {} })}\n`);
+      if (this.options.subscriptionAccess) {
+        const access = await subscriptionAccess(false);
+        const result = await rpc<LoginAccountResponse>("account/login/start", {
+          type: "chatgptAuthTokens",
+          ...access,
+        } satisfies LoginAccountParams);
+        if (result.type !== "chatgptAuthTokens") throw new HarnessError("authentication_failed");
+      }
       // Official API-key login uses the private JSONL channel, never argv or an auth-file read.
       if (this.options.env.OPENAI_API_KEY && !this.options.env.ARMADA_CUSTOM_CODEX_ENDPOINT) {
         const login: LoginAccountParams = { type: "apiKey", apiKey: this.options.env.OPENAI_API_KEY };
@@ -303,6 +431,7 @@ export class CodexDriver implements Driver {
             }
           : {}),
       };
+      resumeUsage.requested = Boolean(c.sessionId);
       const result = await rpc<ThreadStartResponse>(
         c.sessionId ? "thread/resume" : "thread/start",
         c.sessionId ? { ...config, threadId: c.sessionId } : config,
@@ -313,11 +442,27 @@ export class CodexDriver implements Driver {
       threadId = result.thread.id;
       if (c.sessionId && threadId !== c.sessionId) throw Error("native_session_identity_changed");
       c.session(threadId);
+      resumeUsage.verified = true;
+      adoptResumeUsage();
       if (!this.options.env.OPENAI_API_KEY && this.options.env.CODEX_HOME) {
         // Existing native ChatGPT session only: this documented RPC never starts inference.
         // Optional quota failure cannot turn a normal coding request into a harness failure.
         try {
+          const requestedAtRevision = rateLimitsRevision;
           const limits = await rpc<unknown>("account/rateLimits/read", {}, 5000, false);
+          const snapshot =
+            limits && typeof limits === "object" && !Array.isArray(limits)
+              ? (limits as { rateLimits?: unknown }).rateLimits
+              : undefined;
+          if (
+            requestedAtRevision === rateLimitsRevision &&
+            snapshot &&
+            typeof snapshot === "object" &&
+            !Array.isArray(snapshot) &&
+            ((snapshot as { limitId?: unknown }).limitId == null ||
+              (snapshot as { limitId?: unknown }).limitId === "codex")
+          )
+            rateLimits = snapshot;
           c.emit({ kind: "other", type: "account/rateLimits/read", data: limits });
         } catch {}
       }
@@ -364,6 +509,14 @@ export class CodexDriver implements Driver {
           const info = result.turn.error?.codexErrorInfo;
           const code =
             typeof info === "string" ? info : info && typeof info === "object" ? Object.keys(info)[0] : undefined;
+          if (code === "usageLimitExceeded" || code === "rateLimitExceeded")
+            c.emit({
+              kind: "other",
+              type: "usage_limit",
+              data:
+                planLimitFromMessage(result.turn.error?.message) ??
+                codexPlanLimit(undefined, code === "rateLimitExceeded" ? "rate_limited" : "usage_limit_exceeded"),
+            });
           throw new HarnessError(
             code === "unauthorized"
               ? "authentication_failed"
@@ -378,6 +531,8 @@ export class CodexDriver implements Driver {
         }
       } finally {
         closed = true;
+        const terminalObserved = terminalTurns.has(turnId);
+        if (resumeUsage.started && !terminalObserved) this.tokenTotals.delete(threadId);
         lines.close();
         await this.children.release(child);
         this.nativeWriter = false;
@@ -388,7 +543,19 @@ export class CodexDriver implements Driver {
           c.emit({
             kind: "other",
             type: "armada/turnUsage",
-            data: { ...usage.latest, model: modelRerouted ? null : reportedModel },
+            data: {
+              ...usage.latest,
+              ...(!terminalObserved
+                ? {
+                    inputTokens: null,
+                    outputTokens: null,
+                    cachedTokens: null,
+                    cacheWriteTokens: null,
+                    reasoningTokens: null,
+                  }
+                : {}),
+              model: modelRerouted ? null : reportedModel,
+            },
           });
       }
     })();

@@ -1,4 +1,5 @@
 import type { ModalBinding, Sql } from "@armada/core";
+import { HARNESS_CAPABILITIES } from "@armada/core";
 import { chooseManagementAuthority } from "./authority.ts";
 import { modalConnection } from "./client.ts";
 import { createRunnerDistribution, type DistributionOptions } from "./distribution.ts";
@@ -18,6 +19,7 @@ export interface HarnessEnvironment {
   claudeEnv: Record<string, string>;
   codexEnv: Record<string, string>;
   codexAuthJson?: string;
+  subscription?: { url: string; capability: string };
   nativeAuthRevision?: number;
   nativeAuthSecrets?: string[];
   mcp?: McpConfiguration;
@@ -59,16 +61,6 @@ export interface ComposedModalOptions
   /** Server credential resolver. Called on fork/recovery only, never for a golden builder. */
   resolveHarnessEnvironment(machine: Machine, launchEnv: Readonly<Record<string, string>>): Promise<HarnessEnvironment>;
 }
-const features = {
-  interrupt: true,
-  resume: true,
-  parallelConversations: true,
-  reasoningEffort: true,
-  fast: true,
-  streamsPartials: true,
-  toolEvents: true,
-  approvals: false,
-};
 /** Actual composition: no caller needs to invent runner tokens, bootstrap JSON or SDK transport. */
 export async function createComposedModalProvider(options: ComposedModalOptions) {
   try {
@@ -133,7 +125,7 @@ async function composeModalProvider(options: ComposedModalOptions) {
   }, options.fetcher);
   const distribution = createRunnerDistribution({
     ...options.artifact,
-    capabilities: { claude: { ...features, steer: "native" }, codex: { ...features, steer: "restart" } },
+    capabilities: HARNESS_CAPABILITIES,
     async bootstrap(row, env) {
       const harness = row.golden ? { claudeEnv: {}, codexEnv: {} } : await options.resolveHarnessEnvironment(row, env);
       return {
@@ -145,6 +137,7 @@ async function composeModalProvider(options: ComposedModalOptions) {
         codexExecutable: "/usr/local/bin/codex",
         claudeEnv: withTrustedHarnessPath(harness.claudeEnv),
         codexEnv: withTrustedHarnessPath(harness.codexEnv),
+        ...(harness.subscription ? { subscription: harness.subscription } : {}),
         ...("codexAuthJson" in harness && harness.codexAuthJson !== undefined
           ? { codexAuthJson: harness.codexAuthJson }
           : {}),

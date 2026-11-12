@@ -779,3 +779,212 @@ finally:
     rmSync(home, { recursive: true, force: true });
   }
 });
+
+test("Boat external subscription bridge consumes refresh RPC privately and completes the same native turn", async () => {
+  const home = mkdtempSync(join(tmpdir(), "armada-boat-access-"));
+  let child: ReturnType<typeof Bun.spawn> | undefined;
+  let server: ReturnType<typeof Bun.serve> | undefined;
+  try {
+    const cert = join(home, "cert.pem"),
+      key = join(home, "key.pem");
+    const generated = spawnSync(
+      "openssl",
+      [
+        "req",
+        "-x509",
+        "-newkey",
+        "rsa:2048",
+        "-nodes",
+        "-keyout",
+        key,
+        "-out",
+        cert,
+        "-days",
+        "1",
+        "-subj",
+        "/CN=localhost",
+        "-addext",
+        "subjectAltName=DNS:localhost",
+      ],
+      { stdio: "ignore" },
+    );
+    expect(generated.status).toBe(0);
+    const revisions: unknown[] = [];
+    server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      tls: { key: Bun.file(key), cert: Bun.file(cert) },
+      async fetch(request) {
+        expect(request.headers.get("authorization")).toBe("Bearer private-guest-capability");
+        const body = (await request.json()) as { previousRevision?: number };
+        revisions.push(body.previousRevision ?? null);
+        return Response.json({
+          accessToken: body.previousRevision === 0 ? "private-next-access" : "private-first-access",
+          chatgptAccountId: "shared-account",
+          chatgptPlanType: null,
+          revision: body.previousRevision === 0 ? 1 : 0,
+        });
+      },
+    });
+    mkdirSync(join(home, ".armada"), { mode: 0o700 });
+    writeFileSync(
+      join(home, ".armada/model-access.json"),
+      JSON.stringify({ url: `https://localhost:${server.port}/access`, capability: "private-guest-capability" }),
+      { mode: 0o600 },
+    );
+    const path = join(home, "codex");
+    writeFileSync(
+      `${path}.armada-original`,
+      `#!/usr/bin/python3
+import json,sys
+for line in sys.stdin:
+ m=json.loads(line)
+ if m.get('method')=='account/login/start':
+  assert m['params']['type']=='chatgptAuthTokens' and m['params']['accessToken']=='private-first-access'
+  print(json.dumps({'id':m['id'],'result':{'type':'chatgptAuthTokens'}}),flush=True)
+ elif m.get('method')=='thread/start': print(json.dumps({'id':m['id'],'result':{'thread':{'id':'thread'}}}),flush=True)
+ elif m.get('method')=='turn/start':
+  print(json.dumps({'id':m['id'],'result':{'turn':{'id':'turn'}}}),flush=True)
+  print(json.dumps({'id':'renew','method':'account/chatgptAuthTokens/refresh','params':{'reason':'unauthorized','previousAccountId':'shared-account'}}),flush=True)
+ elif m.get('id')=='renew':
+  assert m['result']['accessToken']=='private-next-access' and 'refreshToken' not in m['result']
+  print(json.dumps({'method':'turn/completed','params':{'text':'renewed private-next-access private-guest-capability'}}),flush=True)
+ else: print(json.dumps({'id':m.get('id'),'result':{}}),flush=True)
+`,
+      { mode: 0o755 },
+    );
+    writeFileSync(path, `#!/bin/sh\n${nativeCwdCommand(path, "codex")}\n`, { mode: 0o755 });
+    child = Bun.spawn([path, "app-server"], {
+      env: { HOME: home, PATH: "/usr/bin:/bin", SSL_CERT_FILE: cert },
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const pipe = child.stdin as import("bun").FileSink;
+    pipe.write(
+      '{"id":1,"method":"initialize","params":{}}\n{"id":2,"method":"thread/start","params":{}}\n{"id":3,"method":"turn/start","params":{"threadId":"thread"}}\n',
+    );
+    const reader = (child.stdout as ReadableStream<Uint8Array>).getReader();
+    let output = "";
+    for (;;) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      output += new TextDecoder().decode(chunk.value);
+      if (output.includes("turn/completed")) pipe.end();
+    }
+    expect(await child.exited).toBe(0);
+    expect(output).toContain('"text": "renewed *** ***"');
+    expect(output).not.toContain("private-");
+    expect(output).not.toContain("account/chatgptAuthTokens/refresh");
+    expect(revisions).toEqual([null, 0]);
+  } finally {
+    child?.kill();
+    server?.stop(true);
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+// Actual VM stdio bridge owns sanitizing native terminal errors before Boat sees them.
+for (const source of ["updated", "read", "raced", "unauthorized", "unknown"])
+  for (const validReset of source === "unauthorized" || source === "unknown" ? [true] : [true, false]) {
+    test(`Boat plan exhaustion reaches a public outcome with only validated reset evidence (${source}, ${validReset})`, async () => {
+      const home = mkdtempSync(join(tmpdir(), "boat-plan-limit-"));
+      const path = join(home, "codex");
+      try {
+        writeFileSync(
+          `${path}.armada-original`,
+          `#!/usr/bin/python3 -I
+import json,sys
+for line in sys.stdin:
+ m=json.loads(line)
+ if m.get('method')=='initialize': print(json.dumps({'id':m['id'],'result':{}}),flush=True)
+ elif m.get('method')=='thread/start': print(json.dumps({'id':m['id'],'result':{'thread':{'id':'thread'}}}),flush=True)
+ elif m.get('method')=='account/rateLimits/read':
+  if '${source}'=='raced': print(json.dumps({'method':'account/rateLimits/updated','params':{'rateLimits':{'limitId':'codex','primary':{'usedPercent':100,'resetsAt':1794270000}}}}),flush=True)
+  print(json.dumps({'id':m['id'],'result':{'rateLimits':{'limitId':'codex','primary':{'usedPercent':100,'resetsAt':${validReset ? "1794268800" : "'private-vendor-body'"}}}}}),flush=True)
+ elif m.get('method')=='turn/start':
+  if '${source}'=='updated': print(json.dumps({'method':'account/rateLimits/updated','params':{'rateLimits':{'limitId':'codex','primary':{'usedPercent':100,'resetsAt':${validReset ? "1794268800" : "'private-vendor-body'"}},'secondary':{'usedPercent':50,'resetsAt':1894268800}}}}),flush=True)
+  print(json.dumps({'method':'turn/completed','params':{'threadId':'thread','turn':{'id':'turn','status':'failed','error':{'message':${source === "unauthorized" || source === "unknown" ? "'Plan limit reached. Resets at 2026-11-10T00:00:00.000Z.'" : "'private-vendor-body'"},'codexErrorInfo':${source === "unauthorized" ? "'unauthorized'" : source === "unknown" ? "'other'" : "'usageLimitExceeded'"},'additionalDetails':'private-vendor-body'}}}}),flush=True)
+`,
+          { mode: 0o700 },
+        );
+        const input =
+          [
+            { id: 1, method: "initialize", params: {} },
+            { id: 2, method: "thread/start", params: {} },
+            ...(source !== "updated" ? [{ id: 4, method: "account/rateLimits/read", params: {} }] : []),
+            { id: 3, method: "turn/start", params: { threadId: "thread", input: [{ type: "text", text: "hello" }] } },
+          ]
+            .map((value) => JSON.stringify(value))
+            .join("\n") + "\n";
+        const result = spawnSync("/bin/bash", ["-c", nativeCwdCommand(path, "codex", home), "fixture", "app-server"], {
+          cwd: home,
+          env: { HOME: home, PATH: process.env.PATH ?? "/usr/bin:/bin" },
+          input,
+          encoding: "utf8",
+          timeout: 5000,
+        });
+        expect(result.status).toBe(0);
+        const rows = result.stdout
+          .toString()
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line));
+        const terminal = rows.find((row) => row.method === "turn/completed");
+        expect(JSON.stringify(terminal)).not.toContain("private-vendor-body");
+        const reason = terminal.params.turn.error.message;
+        if (source === "unauthorized" || source === "unknown") {
+          const expectedReason =
+            source === "unauthorized" ? "Authentication failed. Reconnect this account." : "The agent failed.";
+          expect(reason).toBe(expectedReason);
+          expect(JSON.stringify(terminal)).not.toContain("private-vendor-body");
+          const { normalizeEvent } = await import("../src/events.ts");
+          const { promptOutcome } = await import("@armada/core");
+          const event = normalizeEvent({
+            id: "failed",
+            timestamp: 1,
+            type: "prompt",
+            taskId: "p",
+            data: { status: "failed", error: reason },
+          });
+          expect(
+            await promptOutcome(
+              { id: "boat" } as Provider,
+              { sandboxId: "s", promptId: "p" },
+              { state: { promptId: "p", status: "failed", done: true }, events: [event] },
+            ),
+          ).toEqual({ state: "failed", reason: expectedReason });
+          return;
+        }
+        expect(JSON.stringify(terminal)).not.toContain("private-vendor-body");
+        const resetsAt =
+          source === "raced" ? "2026-11-10T00:20:00.000Z" : validReset ? "2026-11-10T00:00:00.000Z" : undefined;
+        expect(reason).toBe(
+          resetsAt
+            ? `Plan limit reached. Resets at ${resetsAt}.`
+            : "Plan limit reached. Try again after the limit resets.",
+        );
+        const { normalizeEvent } = await import("../src/events.ts");
+        const { promptOutcome } = await import("@armada/core");
+        const event = normalizeEvent({
+          id: "failed",
+          timestamp: 1,
+          type: "prompt",
+          taskId: "p",
+          data: { status: "failed", error: reason },
+        });
+        const outcome = await promptOutcome(
+          { id: "boat" } as Provider,
+          { sandboxId: "s", promptId: "p" },
+          { state: { promptId: "p", status: "failed", done: true }, events: [event] },
+        );
+        expect(outcome).toEqual({
+          state: "failed",
+          reason,
+          limit: { code: "usage_limit_exceeded", ...(resetsAt ? { resetsAt } : {}) },
+        });
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    });
+  }
