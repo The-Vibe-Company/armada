@@ -1,6 +1,6 @@
 "use client";
 
-import { SearchIcon, TriangleAlertIcon, XIcon } from "lucide-react";
+import { ChevronDownIcon, ChevronUpIcon, SearchIcon, TriangleAlertIcon, XIcon } from "lucide-react";
 import Link from "next/link";
 import { Dialog as DialogPrimitive } from "radix-ui";
 import {
@@ -27,7 +27,8 @@ import { cn } from "@/lib/utils";
 
 /**
  * The skeleton every Build page shares (#808): the readiness strip on top, one dense list (a row per item, its
- * state and its one expected action), and full-width details above the list for everything rare (a sheet on a phone). A
+ * state and its one expected action). Environments and Templates opt into a modal right-hand detail panel;
+ * other families retain inline desktop details until migrated. A
  * page's create flow is a `CreateDialog` passed as `actions` (#896, #898), never this panel. The page renders
  * each row's cells and panel on the server; this component only chooses which panel shows.
  *
@@ -189,6 +190,11 @@ export function ResourceBrowser({
 
   const shown = query ? rows.filter((row) => matchesQuery(row.search, query)) : rows;
   const current = rows.find((row) => row.key === selected) ?? null;
+  const currentIndex = shown.findIndex((row) => row.key === selected);
+  const move = (delta: number) => {
+    const next = currentIndex >= 0 ? shown[currentIndex + delta] : undefined;
+    if (next) select(next.key);
+  };
   const filterId = useId();
   const context = useMemo(() => ({ select, selected, panelId }), [select, selected, panelId]);
 
@@ -279,6 +285,38 @@ export function ResourceBrowser({
             <aside
               id={panelId}
               data-resource-panel
+              onKeyDown={(event) => {
+                if (
+                  !detailPanel ||
+                  event.defaultPrevented ||
+                  event.altKey ||
+                  event.ctrlKey ||
+                  event.metaKey ||
+                  event.shiftKey
+                )
+                  return;
+                const target = event.target as HTMLElement;
+                if (
+                  target.closest(
+                    "input, textarea, select, [contenteditable]:not([contenteditable=false]), [role=combobox]",
+                  )
+                )
+                  return;
+                const surface = target.closest(
+                  '[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"]',
+                );
+                if (surface !== titleRef.current?.closest('[role="dialog"]')) return;
+                const delta =
+                  event.key === "ArrowDown" || event.key === "j"
+                    ? 1
+                    : event.key === "ArrowUp" || event.key === "k"
+                      ? -1
+                      : 0;
+                if (delta) {
+                  event.preventDefault();
+                  move(delta);
+                }
+              }}
               aria-labelledby={titleId}
               hidden={selected === null}
               className={
@@ -300,9 +338,35 @@ export function ResourceBrowser({
                   </h2>
                   {current?.subtitle && <div className="text-xs text-muted-foreground">{current.subtitle}</div>}
                 </div>
-                <Button variant="ghost" size="icon-sm" onClick={() => select(null)} aria-label="Close the panel">
-                  <XIcon />
-                </Button>
+                <div className="flex shrink-0 items-center gap-1">
+                  {detailPanel && (
+                    <>
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label="Previous item"
+                        title="Previous item (↑ or K)"
+                        disabled={currentIndex <= 0}
+                        onClick={() => move(-1)}
+                      >
+                        <ChevronUpIcon />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label="Next item"
+                        title="Next item (↓ or J)"
+                        disabled={currentIndex < 0 || currentIndex >= shown.length - 1}
+                        onClick={() => move(1)}
+                      >
+                        <ChevronDownIcon />
+                      </Button>
+                    </>
+                  )}
+                  <Button variant="ghost" size="icon-sm" onClick={() => select(null)} aria-label="Close the panel">
+                    <XIcon />
+                  </Button>
+                </div>
               </div>
               <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-4">
                 {rows.map((row) => (

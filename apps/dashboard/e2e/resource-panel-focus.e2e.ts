@@ -39,7 +39,7 @@ test("one detail tree retains a draft through selections, closure and mobile/des
   await goldenPanel(page, "alice-private");
   await expect(repository).toHaveValue("git@github.com:acme/retained.git");
   await page.setViewportSize({ width: 1280, height: 720 });
-  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(page.getByRole("dialog", { name: "alice-private", exact: true })).toBeVisible();
   await expect(repository).toHaveValue("git@github.com:acme/retained.git");
   await expect(page.locator("[data-resource-panel]")).toHaveCount(1);
 });
@@ -84,4 +84,33 @@ test("a pending rebuild keeps following its job through sheet closure and breakp
   await page.setViewportSize({ width: 1280, height: 720 });
   await expect(form.getByRole("status")).toContainText(/Build .*: (queued|running)/);
   expect(new URL(page.url()).searchParams.get("build.rebuild.00000000-0000-4000-8000-000000000020")).toBe(tracking);
+});
+
+test("desktop details overlay without moving the list; history, keyboard navigation and outside dismissal stay coherent", async ({
+  page,
+}) => {
+  await signIn(page, "alice@example.com", "/environments");
+  const row = goldenRow(page, "shared-golden");
+  const before = await row.boundingBox();
+  const panel = await goldenPanel(page, "shared-golden");
+  const sheet = page.getByRole("dialog", { name: "shared-golden", exact: true });
+  await expect(sheet).toBeVisible();
+  expect(await row.boundingBox()).toEqual(before);
+  await expect(row).toHaveAttribute("data-selected", "true");
+  const selectedUrl = page.url();
+  await page.goBack();
+  await expect(panel).toBeHidden();
+  await expect(row.locator("[data-select-item]")).toBeFocused();
+  await page.goForward();
+  await expect(sheet).toBeVisible();
+  await page.reload();
+  await expect(sheet).toBeVisible();
+  await expect(page.locator("[data-resource-panel-title]")).toBeFocused();
+  await page.keyboard.press("j");
+  await expect(page).not.toHaveURL(selectedUrl);
+  await page.keyboard.press("k");
+  await expect(page).toHaveURL(selectedUrl);
+  await page.mouse.click(10, 300);
+  await expect(sheet).toBeHidden();
+  await expect(row.locator("[data-select-item]")).toBeFocused();
 });

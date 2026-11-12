@@ -61,6 +61,13 @@ export async function goldenPanel(page: Page, name: string, provider?: "boat" | 
   const panel = page.locator(`[data-golden-panel="${name}"]${provider ? `[data-golden-provider="${provider}"]` : ""}`);
   if (!(await panel.isVisible())) {
     await leaveCreate(page);
+    if (
+      await page
+        .getByRole("dialog")
+        .filter({ has: page.locator("[data-resource-panel]") })
+        .isVisible()
+    )
+      await page.keyboard.press("Escape");
     await goldenRow(page, name, provider).locator("[data-select-item]").click();
   }
   await expect(panel).toBeVisible();
