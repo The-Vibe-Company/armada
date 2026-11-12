@@ -65,7 +65,7 @@ export async function setRoutineState(_previous: ActionResult | null, data: Form
     revalidatePath("/routines");
     return done(
       operation === "enable"
-        ? "Routine enabled. The first interval starts now."
+        ? "Routine enabled. It will run at its next scheduled time."
         : "Routine paused. Already admitted runs may still finish.",
     );
   } catch (error) {

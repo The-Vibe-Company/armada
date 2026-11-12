@@ -221,7 +221,7 @@ export function RoutineToggle({ item, orgId }: { item: RoutineItem; orgId: strin
       successToast={
         enabled
           ? "Routine paused. Already admitted runs may still finish."
-          : "Routine enabled. Its first interval starts now."
+          : "Routine enabled. It will run at its next scheduled time."
       }
     >
       <input type="hidden" name="org" value={orgId} />
