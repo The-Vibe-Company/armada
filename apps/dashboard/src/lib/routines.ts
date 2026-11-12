@@ -111,7 +111,7 @@ export function canManageRoutine(
   return item.scope === "org" ? viewer.admin : item.ownerId === viewer.userId;
 }
 export const intervalLabel = (hours: number) => `Every ${hours} ${hours === 1 ? "hour" : "hours"}`;
-/** Read compatibility while the cron picker ships in the next UI slice. */
+/** Legacy interval schedules remain readable; new forms write cron and time zone. */
 export const scheduleLabel = (item: Pick<RoutineItem, "intervalHours" | "scheduleDescription">) =>
   item.scheduleDescription ?? (item.intervalHours === null ? "Cron schedule" : intervalLabel(item.intervalHours));
 export function routineFailure(status?: number): string {
@@ -139,7 +139,8 @@ export type RoutineInput = {
   templateId: string;
   templateRevision: number;
   prompt: string;
-  intervalHours: number;
+  cron: string;
+  timezone: string;
   ttlSeconds: number;
   maxRunsPerDay: number;
 };
@@ -156,14 +157,16 @@ export function routineRequest(
   if (fields.scope !== "personal" && fields.scope !== "org") return bad("Choose personal or organization visibility.");
   const template = templates.find((x) => x.id === fields.template);
   const revision = Number(fields.revision),
-    interval = Number(fields.interval),
     ttl = Number(fields.ttl),
     cap = Number(fields.cap);
   if (!template || !int(revision) || revision !== template.currentRevision)
     return bad("That template revision changed or is unavailable. Refresh the page.");
   if (fields.scope === "org" && template.scope !== "org")
     return bad("Organization routines require an organization template.");
-  if (!int(interval, 1, 720)) return bad("Use a whole-hour interval between 1 and 720 hours.");
+  if (!fields.cron?.trim() || fields.cron.length > 200 || fields.cron.includes("\0"))
+    return bad("Choose a valid cron schedule.");
+  if (!fields.timezone?.trim() || fields.timezone.length > 100 || fields.timezone.includes("\0"))
+    return bad("Choose an IANA time zone.");
   if (!int(ttl, 5, 1440)) return bad("Choose a sandbox lifetime between 5 and 1,440 minutes.");
   if (!int(cap, 1, 24)) return bad("Use a daily cap between 1 and 24 launches.");
   return {
@@ -174,7 +177,8 @@ export function routineRequest(
       templateId: template.id,
       templateRevision: revision,
       prompt,
-      intervalHours: interval,
+      cron: fields.cron,
+      timezone: fields.timezone,
       ttlSeconds: ttl * 60,
       maxRunsPerDay: cap,
     },

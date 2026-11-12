@@ -20,7 +20,9 @@ async function state(): Promise<{
     status: string;
     templateId: string;
     templateRevision: number;
-    intervalHours: number;
+    intervalHours: number | null;
+    cron: string;
+    timezone: string;
   }[];
   routineCalls: { route: string; body: Record<string, unknown>; authorized: boolean }[];
 }> {
@@ -76,6 +78,11 @@ for (const mobile of [false, true]) {
     const dialog = page.getByRole("dialog", { name: "New routine" });
     await expect(dialog).toBeVisible();
     await expect(dialog.getByLabel("Prompt", { exact: true })).toBeVisible();
+    await expect(
+      dialog.getByRole("region", { name: "Schedule preview", exact: true }).getByRole("listitem"),
+    ).toHaveCount(3);
+    if (mobile) await page.screenshot({ path: "test-results/routines-create-phone-top.png", animations: "disabled" });
+    await dialog.getByRole("button", { name: "Create routine", exact: true }).scrollIntoViewIfNeeded();
     await expect(dialog.getByRole("button", { name: "Create routine", exact: true })).toBeInViewport();
     await page.screenshot({
       path: `test-results/routines-create-${mobile ? "phone" : "desktop"}.png`,
@@ -96,7 +103,11 @@ test("create pins a revision and preserves the prompt; enable/pause submit fresh
   await dialog.getByLabel("Template", { exact: true }).selectOption(MODAL_TEMPLATE);
   const prompt = "  Summarize this week's changes.\nDo not edit files.  ";
   await dialog.getByLabel("Prompt", { exact: true }).fill(prompt);
-  await dialog.getByLabel("Interval (hours)", { exact: true }).fill("1");
+  await dialog.getByLabel("Schedule", { exact: true }).selectOption({ label: "Weekdays at" });
+  await dialog.getByLabel("Time", { exact: true }).fill("09:30");
+  await dialog.getByLabel("Time zone", { exact: true }).selectOption("Europe/Paris");
+  await expect(dialog.getByText(/09:30.*Monday through Friday/)).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Create routine", exact: true })).toBeEnabled();
   await dialog.getByRole("button", { name: "Create routine", exact: true }).click();
   await expect(dialog).toBeHidden();
   const created = row(page, "Weekly notes");
@@ -106,7 +117,9 @@ test("create pins a revision and preserves the prompt; enable/pause submit fresh
     prompt,
     templateId: MODAL_TEMPLATE,
     templateRevision: 1,
-    intervalHours: 1,
+    intervalHours: null,
+    cron: "30 9 * * 1-5",
+    timezone: "Europe/Paris",
     status: "paused",
   });
   await page.getByRole("button", { name: "Enable Weekly notes", exact: true }).click();
@@ -184,4 +197,77 @@ test("empty and unavailable states stay actionable without echoing upstream erro
   await expect(page.getByText("No routines yet", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "New", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "New routine" })).toBeVisible();
+});
+
+test("human schedule controls keep weekly choices accessible and block unsafe custom cron", async ({ page }) => {
+  await page.setViewportSize({ width: 1360, height: 1000 });
+  await signIn(page, "alice@example.com", "/routines");
+  await page.getByRole("button", { name: "New", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "New routine" });
+  await dialog.getByLabel("Name", { exact: true }).fill("Scheduled inspection");
+  await dialog.getByLabel("Template", { exact: true }).selectOption(MODAL_TEMPLATE);
+  await dialog.getByLabel("Prompt", { exact: true }).fill("Read only. Summarize changes.");
+  const schedule = dialog.getByLabel("Schedule", { exact: true });
+  await expect(schedule.locator("option").last()).toHaveText("Custom cron");
+  await schedule.selectOption({ label: "Weekly on days at" });
+  await dialog.getByRole("checkbox", { name: "Wednesday", exact: true }).check();
+  await dialog.getByLabel("Time", { exact: true }).fill("14:15");
+  await dialog.getByLabel("Time zone", { exact: true }).selectOption("America/New_York");
+  await expect(dialog.locator('input[name="cron"]')).toHaveValue("15 14 * * 1,3");
+  await expect(dialog.getByText(/14:15.*Monday and Wednesday/)).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Create routine", exact: true })).toBeEnabled();
+  await page.screenshot({ path: "test-results/routines-cron-weekly.png", animations: "disabled" });
+  await schedule.selectOption({ label: "Monthly on day at" });
+  await dialog.getByLabel("Day of month", { exact: true }).fill("31");
+  await expect(dialog.locator('input[name="cron"]')).toHaveValue("15 14 31 * *");
+  await expect(dialog.getByRole("button", { name: "Create routine", exact: true })).toBeEnabled();
+  await page.screenshot({ path: "test-results/routines-cron-monthly.png", animations: "disabled" });
+  await schedule.selectOption({ label: "Custom cron" });
+  // Switching representation without changing the schedule must keep a valid preview usable.
+  await expect(dialog.getByRole("button", { name: "Create routine", exact: true })).toBeEnabled();
+  await dialog.getByLabel("Cron expression", { exact: true }).fill("*/5 * * * *");
+  await expect(dialog.getByRole("button", { name: "Create routine", exact: true })).toBeDisabled();
+  await expect(dialog.getByRole("alert")).toBeVisible();
+  expect((await state()).routineCalls.filter((call) => call.route === "routines/create")).toHaveLength(0);
+  await page.screenshot({ path: "test-results/routines-cron-invalid.png", animations: "disabled" });
+  await dialog.getByLabel("Cron expression", { exact: true }).fill("0 * * * *");
+  await expect(dialog.getByText(/Every hour.*America\/New_York/)).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Create routine", exact: true })).toBeEnabled();
+});
+
+test.describe("browser-local schedule default", () => {
+  test.use({ timezoneId: "Europe/Paris" });
+
+  test("previews and submits the browser zone even when the supported-zone list omits it", async ({ page }) => {
+    // ICU can resolve aliases missing from supportedValuesOf; retain the browser's
+    // resolved zone rather than silently selecting another available option.
+    await page.addInitScript(() => {
+      Object.defineProperty(Intl, "supportedValuesOf", { value: () => ["America/New_York"], configurable: true });
+    });
+    await signIn(page, "alice@example.com", "/routines");
+    await page.getByRole("button", { name: "New", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "New routine" });
+    await expect(dialog.getByLabel("Time zone", { exact: true })).toHaveValue("Europe/Paris");
+    const preview = dialog.getByRole("region", { name: "Schedule preview", exact: true });
+    await expect(preview).toContainText("At 09:00, Europe/Paris");
+    await expect(preview.getByRole("listitem")).toHaveCount(3);
+    await expect(preview.getByRole("listitem").first()).toContainText("09:00 GMT+01:00");
+    await dialog.getByLabel("Name", { exact: true }).fill("Local morning review");
+    await dialog.getByLabel("Template", { exact: true }).selectOption(MODAL_TEMPLATE);
+    await dialog.getByLabel("Prompt", { exact: true }).fill("Summarize changes without editing files.");
+    await dialog.getByRole("button", { name: "Create routine", exact: true }).click();
+    await expect(dialog).toBeHidden();
+    const result = await state();
+    expect(result.routineCalls.filter((call) => call.route === "routines/create")).toEqual([
+      expect.objectContaining({
+        authorized: true,
+        body: expect.objectContaining({ cron: "0 9 * * *", timezone: "Europe/Paris" }),
+      }),
+    ]);
+    expect(result.routines.find((item) => item.name === "Local morning review")).toMatchObject({
+      cron: "0 9 * * *",
+      timezone: "Europe/Paris",
+      status: "paused",
+    });
+  });
 });

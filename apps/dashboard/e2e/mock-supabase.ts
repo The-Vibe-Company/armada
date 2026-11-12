@@ -1370,6 +1370,40 @@ function vaultRoute(route: string, body: Row, request: Request): Response {
   return json({ item: vaultDto(row) });
 }
 
+// Fixed protocol receipts, not a second calendar implementation. Server tests own
+// cron/DST evaluation; browser tests own controls, rendering and serialized requests.
+function routinePreviewFixture(cron: unknown, timezone: unknown) {
+  if (typeof cron !== "string" || typeof timezone !== "string") throw new Error("missing fixture");
+  const words: Record<string, string> = {
+    "0 9 * * *": "At 09:00",
+    "0 9 * * 1-5": "At 09:00, Monday through Friday",
+    "0 9 * * MON-FRI": "At 09:00, Monday through Friday",
+    "30 9 * * 1-5": "At 09:30, Monday through Friday",
+    "0 9 * * 1": "At 09:00, only on Monday",
+    "0 9 * * 1,3": "At 09:00, only on Monday and Wednesday",
+    "15 14 * * 1,3": "At 14:15, only on Monday and Wednesday",
+    "15 14 31 * *": "At 14:15, on day 31 of the month",
+    "0 * * * *": "Every hour",
+  };
+  if (!words[cron] || !["UTC", "Europe/Paris", "America/New_York"].includes(timezone))
+    throw new Error("unknown fixture");
+  const nextRuns =
+    cron === "15 14 31 * *"
+      ? ["2026-12-31T19:15:00Z", "2027-01-31T19:15:00Z", "2027-03-31T18:15:00Z"]
+      : cron === "15 14 * * 1,3"
+        ? ["2026-11-16T19:15:00Z", "2026-11-18T19:15:00Z", "2026-11-23T19:15:00Z"]
+        : cron === "30 9 * * 1-5"
+          ? ["2026-11-13T08:30:00Z", "2026-11-16T08:30:00Z", "2026-11-17T08:30:00Z"]
+          : cron === "0 * * * *"
+            ? ["2026-11-12T08:00:00Z", "2026-11-12T09:00:00Z", "2026-11-12T10:00:00Z"]
+            : cron === "0 9 * * *"
+              ? timezone === "Europe/Paris"
+                ? ["2026-11-13T08:00:00Z", "2026-11-14T08:00:00Z", "2026-11-15T08:00:00Z"]
+                : ["2026-11-13T09:00:00Z", "2026-11-14T09:00:00Z", "2026-11-15T09:00:00Z"]
+              : ["2026-11-13T08:00:00Z", "2026-11-16T08:00:00Z", "2026-11-17T08:00:00Z"];
+  return { cron, timezone, description: `${words[cron]}, ${timezone}`, nextRuns, asOf: "2026-11-12T07:00:00Z" };
+}
+
 function routineRow(
   routineId: string,
   scope: "personal" | "org",
@@ -1388,12 +1422,19 @@ function routineRow(
     templateId,
     templateRevision,
     prompt: "Review the repository and summarize what changed. Do not edit files.",
-    intervalHours: scope === "org" ? 24 : 6,
+    intervalHours: null,
+    cron: scope === "org" ? "0 9 * * MON-FRI" : "0 9 * * *",
+    timezone: "Europe/Paris",
+    scheduleDescription: routinePreviewFixture(scope === "org" ? "0 9 * * MON-FRI" : "0 9 * * *", "Europe/Paris")
+      .description,
     ttlSeconds: 3600,
     maxRunsPerDay: 4,
     status,
     version: 2,
-    nextDueAt: status === "enabled" ? new Date(Date.now() + 20 * 3600000).toISOString() : null,
+    nextDueAt:
+      status === "enabled"
+        ? routinePreviewFixture(scope === "org" ? "0 9 * * MON-FRI" : "0 9 * * *", "Europe/Paris").nextRuns[0]
+        : null,
     consecutiveFailures: 0,
     pauseReason: null,
     createdAt: "2026-11-09T10:00:00.000Z",
@@ -1413,6 +1454,7 @@ async function routineRoute(route: string, body: Row, request: Request): Promise
     list: ["org"],
     get: ["org", "id"],
     history: ["org", "id"],
+    preview: ["org", "cron", "timezone"],
     create: [
       "org",
       "scope",
@@ -1420,7 +1462,8 @@ async function routineRoute(route: string, body: Row, request: Request): Promise
       "templateId",
       "templateRevision",
       "prompt",
-      "intervalHours",
+      "cron",
+      "timezone",
       "ttlSeconds",
       "maxRunsPerDay",
     ],
@@ -1430,6 +1473,13 @@ async function routineRoute(route: string, body: Row, request: Request): Promise
   if (!fields[operation] || Object.keys(body).some((key) => !fields[operation]!.includes(key)))
     return controlFail(400, "invalid", "Invalid routine request.");
   if (!isMember(body.org, userId)) return controlFail(403, "forbidden", "Routine access denied.");
+  if (operation === "preview") {
+    try {
+      return json(routinePreviewFixture(body.cron, body.timezone));
+    } catch {
+      return controlFail(400, "invalid", "Check the cron expression and time zone.");
+    }
+  }
   const visible = (r: Row) => r.orgId === body.org && (r.scope === "org" || r.ownerId === userId);
   if (operation === "list") return json({ items: state.routines.filter((r) => visible(r) && r.status !== "deleted") });
   const admin = state.members.some((m) => m.org_id === body.org && m.user_id === userId && m.role === "admin");
@@ -1453,11 +1503,16 @@ async function routineRoute(route: string, body: Row, request: Request): Promise
       !body.name.trim() ||
       typeof body.prompt !== "string" ||
       !body.prompt.trim() ||
-      !Number.isInteger(body.intervalHours) ||
-      Number(body.intervalHours) < 1 ||
-      Number(body.intervalHours) > 720
+      typeof body.cron !== "string" ||
+      typeof body.timezone !== "string"
     )
       return controlFail(400, "invalid", "Invalid routine request.");
+    let schedule: ReturnType<typeof routinePreviewFixture>;
+    try {
+      schedule = routinePreviewFixture(body.cron, body.timezone);
+    } catch {
+      return controlFail(400, "invalid", "Check the cron expression and time zone.");
+    }
     const item = {
       ...routineRow(
         id(++sequence),
@@ -1469,7 +1524,10 @@ async function routineRoute(route: string, body: Row, request: Request): Promise
         Number(body.templateRevision),
       ),
       prompt: body.prompt,
-      intervalHours: body.intervalHours,
+      intervalHours: null,
+      cron: schedule.cron,
+      timezone: schedule.timezone,
+      scheduleDescription: schedule.description,
       ttlSeconds: body.ttlSeconds ?? 3600,
       maxRunsPerDay: body.maxRunsPerDay ?? 24,
       version: 1,
@@ -1495,8 +1553,7 @@ async function routineRoute(route: string, body: Row, request: Request): Promise
   Object.assign(item, {
     status: operation === "enable" ? "enabled" : "paused",
     version: Number(item.version) + 1,
-    nextDueAt:
-      operation === "enable" ? new Date(Date.now() + Number(item.intervalHours) * 3600000).toISOString() : null,
+    nextDueAt: operation === "enable" ? routinePreviewFixture(item.cron, item.timezone).nextRuns[0] : null,
     updatedAt: new Date().toISOString(),
   });
   return json({ item, ...(operation === "pause" ? { admittedRunsMayFinish: true } : {}) });

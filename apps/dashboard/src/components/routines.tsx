@@ -7,6 +7,7 @@ import { createRoutine, routineHistory, setRoutineState } from "@/app/actions/ro
 import { ActionForm, SubmitButton } from "@/components/action-form";
 import { CreateDialog } from "@/components/create-dialog";
 import { useResourceSelected } from "@/components/resource-browser";
+import { RoutineSchedulePicker } from "@/components/routine-schedule-picker";
 import { StateCell } from "@/components/state-cell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -67,7 +68,8 @@ function RoutineForm({
 }) {
   const [result, action, pending] = useActionState(createRoutine, null),
     [scope, setScope] = useState("personal"),
-    [template, setTemplate] = useState("");
+    [template, setTemplate] = useState(""),
+    [previewKey, setPreviewKey] = useState<string | null>(null);
   const base = useId(),
     selected = templates.find((x) => x.id === template);
   useEffect(() => {
@@ -75,7 +77,16 @@ function RoutineForm({
   }, [result, onDone]);
   const available = templates.filter((x) => scope !== "org" || x.scope === "org");
   return (
-    <form action={action} className="space-y-4" data-routine-form>
+    <form
+      action={action}
+      className="space-y-4"
+      data-routine-form
+      onSubmit={(event) => {
+        const data = new FormData(event.currentTarget);
+        if (!previewKey || previewKey !== JSON.stringify([data.get("cron"), data.get("timezone")]))
+          event.preventDefault();
+      }}
+    >
       <input type="hidden" name="org" value={orgId} />
       <input type="hidden" name="revision" value={selected?.currentRevision ?? ""} />
       <fieldset disabled={pending} className="space-y-4">
@@ -159,23 +170,7 @@ function RoutineForm({
             Readable configuration, not a place for secrets. Whitespace is preserved.
           </p>
         </div>
-        <div className="space-y-1.5">
-          <Label htmlFor={`${base}-interval`}>Interval (hours)</Label>
-          <Input
-            id={`${base}-interval`}
-            className="max-w-32"
-            type="number"
-            name="interval"
-            min={1}
-            max={720}
-            step={1}
-            defaultValue={24}
-            required
-          />
-          <p className="text-xs text-muted-foreground">
-            Minimum one hour. Enabling follows the saved calendar schedule.
-          </p>
-        </div>
+        <RoutineSchedulePicker orgId={orgId} onValidated={setPreviewKey} />
         <details className="rounded-lg border px-3 py-2">
           <summary className="cursor-pointer text-sm font-medium">
             Limits <span className="ml-1 font-normal text-muted-foreground">Lifetime and daily cap</span>
@@ -208,7 +203,7 @@ function RoutineForm({
       )}
       <div className="flex items-center justify-between gap-3 border-t pt-4">
         <p className="text-xs text-muted-foreground">Runs as you, with your current access.</p>
-        <SubmitButton disabled={pending || !available.length}>Create routine</SubmitButton>
+        <SubmitButton disabled={pending || !available.length || !previewKey}>Create routine</SubmitButton>
       </div>
     </form>
   );
@@ -333,7 +328,7 @@ export function RoutineHistory({ id, orgId, version }: { id: string; orgId: stri
               <p className="text-sm text-muted-foreground">{runDescription(run)}</p>
               <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
                 <span>Agent: {run.taskState ?? "not observed"}</span>
-                {run.missedIntervals > 0 && <span>{run.missedIntervals} missed intervals</span>}
+                {run.missedIntervals > 0 && <span>{run.missedIntervals} missed occurrences</span>}
                 {run.sandboxId && (
                   <Link className="text-foreground underline underline-offset-4" href={`/sandboxes/${run.sandboxId}`}>
                     View sandbox
@@ -345,7 +340,7 @@ export function RoutineHistory({ id, orgId, version }: { id: string; orgId: stri
         </ol>
       ) : (
         <p className="rounded-lg border border-dashed px-4 py-5 text-sm text-muted-foreground">
-          No runs yet. The first firing is one interval after enabling.
+          No runs yet. Enable the routine to schedule its next matching time.
         </p>
       )}
     </section>

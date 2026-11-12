@@ -52,10 +52,37 @@ They are not silently approximated, disabled or lost. Existing v1 create/write
 requests remain accepted for every advertised 1–720-hour interval during the
 additive rollout, preserving exact legacy timing where conversion is impossible.
 This avoids breaking the still-shipped clients before their cron controls land;
-canonical clients use cron/timezone instead. The next CLI and dashboard slices
-replace the old creation controls; their existing list/detail readers already
-accept canonical cron DTOs. Owner confirmation of this compatibility choice
+canonical clients use cron/timezone instead. The CLI and dashboard now create cron schedules; their list/detail readers also
+retain explicitly labeled legacy rows. Owner confirmation of this compatibility choice
 is requested; it is not a claim that arbitrary elapsed intervals equal cron.
+
+### Human schedule controls
+
+Run > Routines > New keeps the centered CreateDialog. Choose **Every hour**,
+**Every day at**, **Weekdays at**, **Weekly on days at**, or **Monthly on day at**;
+**Custom cron** is last. The time zone defaults to the browser’s detected IANA zone after hydration
+(UTC only if detection is unavailable), and remains explicitly changeable. Then
+check the server's sentence and next three local calendar times with UTC offsets.
+Monthly dates absent from a month are skipped. The preview is not an immediate
+launch or an admission guarantee; the existing safety rules still apply.
+
+Changes invalidate the previous preview immediately. Pending, invalid or
+unavailable previews cannot submit; obsolete responses cannot restore an old
+schedule. The server independently validates every creation. New routines stay
+paused until enabled. On phones the dialog scrolls inside itself; the list and
+run-history interaction are unchanged.
+
+The API-only CLI uses the same schedule:
+
+```sh
+armada routine create review --template TEMPLATE_UUID --revision 1 --prompt-file prompt.txt --cron '0 9 * * MON-FRI' --timezone Europe/Paris
+armada routine update ROUTINE_UUID --expected-version 2 --cron '30 10 * * *' --timezone UTC
+```
+
+List/show print schedule words and the actual next due time; a paused routine has
+no next admission. Schedule-only updates preserve other mutable configuration and
+the caller's expected version; conflicts are not retried. JSON configurations
+require cron/timezone; legacy interval schedules remain readable.
 
 ### Coordinator staging delta
 

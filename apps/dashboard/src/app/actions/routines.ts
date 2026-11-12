@@ -6,6 +6,7 @@ import { ControlError } from "@/lib/control";
 import { viewerRoutines } from "@/lib/data/routines";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { viewerTemplates } from "@/lib/data/templates";
+import type { RoutineSchedulePreview } from "@/lib/routine-schedule";
 import { type RoutineRun, routineFailure, routineRequest } from "@/lib/routines";
 
 async function scoped(data: FormData) {
@@ -29,7 +30,7 @@ export async function createRoutine(_previous: ActionResult | null, data: FormDa
     if (!templates) return fail("Templates are unavailable.");
     const { item } = await templates.get({ org: context.org, id, revision });
     const fields = Object.fromEntries(
-      ["name", "scope", "template", "revision", "prompt", "interval", "ttl", "cap"].map((key) => [
+      ["name", "scope", "template", "revision", "prompt", "cron", "timezone", "ttl", "cap"].map((key) => [
         key,
         formString(data, key),
       ]),
@@ -86,5 +87,38 @@ export async function routineHistory(
   } catch (error) {
     if (!(error instanceof ControlError)) throw error;
     return { ok: false, error: routineFailure(error.status) };
+  }
+}
+
+export async function previewRoutineSchedule(
+  org: string,
+  cron: string,
+  timezone: string,
+): Promise<{ ok: true; preview: RoutineSchedulePreview } | { ok: false; error: string }> {
+  if (!isUuid(org) || (await selectedOrganization())?.org.id !== org)
+    return { ok: false, error: "Switch to that organization to preview its schedule." };
+  if (
+    typeof cron !== "string" ||
+    !cron.trim() ||
+    cron.length > 200 ||
+    cron.includes("\0") ||
+    typeof timezone !== "string" ||
+    !timezone.trim() ||
+    timezone.length > 100 ||
+    timezone.includes("\0")
+  )
+    return { ok: false, error: "Choose a cron schedule and an IANA time zone." };
+  const control = await viewerRoutines();
+  if (!control) return { ok: false, error: "Schedule preview is unavailable. Try again." };
+  try {
+    return { ok: true, preview: await control.preview({ org, cron, timezone }) };
+  } catch (error) {
+    return {
+      ok: false,
+      error:
+        error instanceof ControlError && error.status === 400
+          ? "Check the five-field cron and IANA time zone. Runs must be at least one hour apart."
+          : "Schedule preview is unavailable. Try again.",
+    };
   }
 }

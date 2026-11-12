@@ -40,7 +40,8 @@ const fields = {
   template: TEMPLATE,
   revision: "2",
   prompt: "  Inspect\nexact bytes\n",
-  interval: "1",
+  cron: "0 9 * * MON-FRI",
+  timezone: "Europe/Paris",
   ttl: "60",
   cap: "2",
 };
@@ -56,15 +57,17 @@ test("routine form preserves exact prompt, pins its selected revision and valida
       templateId: TEMPLATE,
       templateRevision: 2,
       prompt: fields.prompt,
-      intervalHours: 1,
+      cron: fields.cron,
+      timezone: fields.timezone,
       ttlSeconds: 3600,
       maxRunsPerDay: 2,
     },
   });
   for (const changed of [
-    { interval: "0" },
-    { interval: "1.5" },
-    { interval: "721" },
+    { cron: "" },
+    { cron: "x".repeat(201) },
+    { timezone: "" },
+    { timezone: "x".repeat(101) },
     { ttl: "4" },
     { ttl: "1441" },
     { cap: "25" },
@@ -162,4 +165,46 @@ test("routine control authenticates scoped commands, preserves CAS versions and 
     message: routineFailure(409),
   });
   expect(calls).toHaveLength(3);
+});
+
+test("routine schedule preview posts its selected organization and rejects malformed or raw upstream results", async () => {
+  const preview = {
+    cron: "30 1 * * *",
+    timezone: "America/New_York",
+    description: "At 01:30, America/New_York",
+    nextRuns: ["2027-11-07T05:30:00.000Z", "2027-11-08T06:30:00.000Z", "2027-11-09T06:30:00.000Z"],
+    asOf: "2027-11-06T12:00:00.000Z",
+  };
+  let reply: unknown = { ...preview, private: "must-not-cross-the-boundary" },
+    status = 200;
+  const calls: { path: string; body: unknown }[] = [];
+  const control = createRoutineControl({
+    serverUrl: "https://armada.test/mcp",
+    token: "synthetic-preview-token",
+    fetch: Object.assign(
+      async (input: string | URL | Request, init?: RequestInit) => {
+        calls.push({ path: new URL(String(input)).pathname, body: JSON.parse(String(init?.body)) });
+        return Response.json(reply, { status });
+      },
+      { preconnect: fetch.preconnect },
+    ),
+  });
+  const request = { org: ORG, cron: preview.cron, timezone: preview.timezone };
+  expect(await control.preview(request)).toEqual(preview);
+  expect(calls).toEqual([{ path: "/api/v1/routines/preview", body: request }]);
+  for (const broken of [
+    { nextRuns: preview.nextRuns.slice(0, 2) },
+    { nextRuns: [...preview.nextRuns, "2027-11-10T06:30:00.000Z"] },
+    { nextRuns: [...preview.nextRuns].reverse() },
+    { nextRuns: ["not-a-date", ...preview.nextRuns.slice(1)] },
+    { asOf: preview.nextRuns[0] },
+    { timezone: "Invalid/Zone" },
+    { description: null },
+  ]) {
+    reply = { ...preview, ...broken };
+    await expect(control.preview(request)).rejects.toThrow("unexpected schedule");
+  }
+  status = 400;
+  reply = { error: { code: "invalid", message: "raw upstream private prompt must never appear" } };
+  await expect(control.preview(request)).rejects.toMatchObject({ status: 400, message: routineFailure(400) });
 });
