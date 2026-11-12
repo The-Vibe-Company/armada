@@ -3,7 +3,7 @@ import { GitPullRequestIcon, RotateCwIcon, ServerIcon, TriangleAlertIcon } from 
 import type { Metadata } from "next";
 import Link from "next/link";
 import { disconnectGitHub } from "@/app/actions/github";
-import { ActionForm, SubmitButton } from "@/components/action-form";
+import { ConfirmedAction } from "@/components/confirmed-action";
 import { PageHeader } from "@/components/page-header";
 import { PersonalProviderKeys } from "@/components/personal-provider-keys";
 import { ProviderConnection, type ProviderRowState } from "@/components/provider-connection";
@@ -105,11 +105,15 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
                     <a href="/github/connect">Reconnect</a>
                   </Button>
                 )}
-                <ActionForm action={disconnectGitHub}>
-                  <SubmitButton variant="ghost" size="sm">
-                    Disconnect
-                  </SubmitButton>
-                </ActionForm>
+                <ConfirmedAction
+                  action={disconnectGitHub}
+                  trigger="Disconnect"
+                  title="Disconnect GitHub?"
+                  description="Armada will forget your GitHub connection. New sandboxes will have no GitHub identity until you reconnect. Revoke Armada's authorization in GitHub settings to invalidate tokens already issued."
+                  confirm="Disconnect GitHub"
+                  pendingLabel="Disconnecting…"
+                  successFocusId="github-connect"
+                />
               </div>
             </div>
           ) : (
@@ -130,7 +134,9 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
               </div>
               {configured && (
                 <Button asChild size="sm">
-                  <a href="/github/connect">{revoked ? "Reconnect GitHub" : "Connect GitHub"}</a>
+                  <a id="github-connect" href="/github/connect">
+                    {revoked ? "Reconnect GitHub" : "Connect GitHub"}
+                  </a>
                 </Button>
               )}
             </div>
