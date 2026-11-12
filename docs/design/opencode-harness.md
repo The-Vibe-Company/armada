@@ -1,8 +1,9 @@
 # OpenCode as the third harness
 
-Design-only first PR for #1164, under #1160. No harness is enabled by this PR.
-**Owner hold:** draft for discussion; do not start any implementation slice.
-All implementation choices below are recommendations, not approved decisions.
+Design-only first PR for #1164 under #1160. The issue's **Binding design
+decisions (2026-11-12)** override the earlier server/client proposal.
+No harness is enabled here. NOW scope: this realignment, then a separate
+behavior-preserving one-harness-table cleanup. No ACP implementation yet.
 
 ## Current state
 
@@ -15,124 +16,88 @@ All implementation choices below are recommendations, not approved decisions.
 - The database harness enum, dashboard pickers and
   `apps/ios/Armada/Model/AgentValues.swift` also encode the two choices.
 - Modal uses our runtime; Boat still uses its native runner. Neither gains
-  OpenCode here. The acceptance smoke is a later implementation gate, not done.
+  OpenCode through this design or the cleanup slice.
 
-## Interface spike and decision (2026-11-12)
+## Binding target
 
-Recommend a private, long-lived **OpenCode V2 server**, controlled by the released
-`@opencode/client`, rather than ACP or spawning one CLI process per prompt.
-Pin the implementation spike to `@opencode/cli@2.2.7` and
-`@opencode/client@2.2.7`; lock packages and native artifact integrity in its PR.
-[Published CLI metadata](https://registry.npmjs.org/@opencode/cli/2.2.7) and
-[client metadata](https://registry.npmjs.org/@opencode/client/2.2.7) identify these versions.
+Keep native Codex (`app-server`) and Claude Code (Agent SDK) drivers.
+Use **one ACP v1 driver**, launching `opencode acp`, for OpenCode and later
+ACP agents. Delete the alternative OpenCode V2 server/SDK integration plan;
+there is no parallel server driver or ACP migration for the existing harnesses.
 
-Local, credential-free probe: downloaded that Linux CLI outside the repository;
-`opencode --version` returned `opencode v2.2.7`; `opencode serve --help`
-advertised the V2 API server with hostname/port options. This is an interface
-spike, **not** a model execution or restart/usage parity result.
+The host supplies a machine, not agent APIs. All prompt, steer, event, usage,
+model, proxy and MCP behavior belongs to the Armada runtime. A golden remains
+a recipe built per host. The shared host contract requires create, one command
+with stdin, persistent storage, outbound HTTPS, stop/resume and delete;
+snapshot, fork and human SSH are optional capabilities.
 
-The [V2 API reference](https://opencode.ai/docs/api) exposes session creation,
-inbox delivery (`steer` or `queue`), interrupt, messages, token usage and idle
-outcomes; its durable session log is experimental.
-Map one native session ID to an Armada conversation; translate native messages
-into existing runtime events/journal, never expose raw credential-bearing payloads.
-Use native steering only after its delivery semantics pass the driver spike.
-Interrupt must stop active execution without automatically resuming parked work.
-For resume, reopen the persisted native session and verify it without sending text.
-Normalize harness-reported tokens once per native message into each Armada turn;
-missing usage stays unknown, never zero. Keep monetary policy in #1163.
+The runtime is one compiled executable per OS/arch (glibc by default).
+Harness CLIs ship beside it, pinned by version and sha256 in a manifest;
+fetch only the selected harness. Bootstrap checks digests and downloads missing
+artifacts from Armada; warm images are caches. Support binary self-install
+without a shell. Versions change only at start/resume, not mid-life.
 
-Important correction: unversioned server/SDK documentation redirects to V1.
-The [migration guide](https://opencode.ai/docs/migrate-v1/) names
-`@opencode/client` for V2; neither `@opencode-ai/sdk` nor its `/v2`
-export establishes OpenCode V2 compatibility. ACP is not selected: the server
-surface directly exposes the session/control/usage data we need; this is not a
-claim that ACP lacks those features.
+The runtime dials out: WebSocket commands, automatic HTTPS long-poll fallback,
+keep-alive under 30 seconds, acknowledged event batches from the local journal.
+The host passes only a single-use enrolment token. Fetch configuration/model
+credentials from the server at enrolment and every resume; each enrolment opens
+an epoch, and the server rejects older epochs. Return refreshed subscription
+tokens to the server, which remains their owner. Never put secrets in argv,
+logs, repository files, goldens or API responses; keep them sealed at rest.
+A proxy is only a model-connection address, not an Armada-hosted service.
 
-Before driver implementation, a credential-free fake-endpoint spike must prove
-prompt, steering/queue ordering, interrupt, replay deduplication, restart/resume,
-and per-turn token mapping at the pinned version. Save reproducible commands and
-fixtures in that PR. If any operation cannot meet Driver/Turn, revise this decision
-rather than advertise unsupported capabilities. No live DeepSeek call was made.
+Tokens come from the harness per turn; the server prices them (#1163).
+Missing figures are unknown, never estimated. The coordinator reports that its
+local ACP v1 spike passed steering, cancel, resume and per-turn tokens for
+`opencode acp`; steered-turn usage merges into the running turn. This is owner
+spike evidence, not a merged implementation or staging acceptance. Steering is
+a private extension, not a standardized ACP guarantee. OpenCode V2 status,
+nonzero cost and a real DeepSeek call remain unverified. The later driver PR
+must record the tested CLI version/digest, configuration mapping and fixtures;
+this design does not select an unproven V2 artifact or credential-store schema.
 
-## Open questions for the owner
+## NOW: independently mergeable cleanup
 
-1. **Server/client or ACP?** Recommend the pinned V2 server/client approach above,
-   conditional on the executable spike proving lifecycle and usage semantics.
-   Should ACP be evaluated head-to-head before approving that choice?
-2. **Which model access ships first?** Recommend DeepSeek-compatible endpoint plus
-   an OpenCode-plan API key via #1162; defer interactive subscription login until
-   terms and persistence are verified. Is that initial access scope sufficient?
-3. **How far should the single harness table reach?** Recommend browser-safe core
-   descriptors with generated iOS values, keeping server driver factories and SQL
-   migrations separate. Approve that boundary rather than a broader code generator?
+One browser-safe core descriptor table owns harness IDs and shared metadata.
+Derive existing exports/validators instead of introducing a new list. Keep
+server driver factories separate and preserve provider-specific capabilities,
+model defaults, credential precedence, output and persisted values exactly.
+Remove duplicate shared declarations; do not erase genuine provider differences.
+Consumers, including iOS, must not require another hand-maintained harness list;
+prefer a narrow generated artifact where cross-language derivation is needed.
+Do not add OpenCode to the table, SQL enum, pickers or runtime in this slice.
+No schema migration or new runtime/transport behavior belongs in the cleanup.
 
-## Proposed target and runtime-owned configuration
+Each slice uses a fresh `origin/main` branch `codex/1164-<slug>` and `Refs #1164`.
+Staging checks, run only by the coordinator after deploy:
 
-One browser-safe core harness descriptor table owns IDs, labels, model defaults,
-credential-kind references and baseline capabilities. Derive existing exports
-instead of adding another list. Provider restrictions stay explicit overrides;
-driver factories remain server-only. Generate the iOS harness values from this
-table with a checked-in artifact, not a hand-maintained third-case list.
-SQL enums still require additive migrations, not a runtime-generated schema.
+1. **Design (this PR):** read this document against the binding issue decisions;
+   expect ACP v1 only, no enabled OpenCode and no deployment prerequisites.
+2. **Harness-table cleanup:** launch Claude and Codex on Modal with their current
+   model connections; send a follow-up, interrupt, resume and inspect logs/usage.
+   Expect unchanged selection, credential resolution, events and terminal status.
+   Repeat on Boat using its then-current supported path; expect no behavior change.
+   Locally run existing affected tests, typecheck and any generated-artifact check.
 
-The runtime writes non-secret V2 `opencode.json` outside repository checkouts:
-`model`, `providers.<id>.package`, `settings.baseURL`, credential env-name
-references, allowed model IDs, MCP configuration and `update: "disable"`.
-For a custom endpoint use `@opencode/ai/providers/openai-compatible`;
-these are [V2 provider fields](https://opencode.ai/docs/providers/), not V1
-`provider/npm/options`. The model connection supplies endpoint/model selection;
-Armada does not host a proxy. Reject credentials embedded in endpoint URLs.
+## Deferred: coordinator-gated order step 4
 
-#1162 owns connection resolution and secret delivery. Consume its private
-runtime bootstrap, user over org; never invent a parallel credential store.
-Pass keys only to the native child environment/private channel, never argv,
-repository files, goldens, logs or API responses. Verify V2 credential persistence,
-config precedence and MCP secret handling in the spike before enabling launches;
-do not assume V1's auth-store path. Bind the server to loopback, not a hosted port.
-Persist native conversation state with the existing runtime checkpoint; do not
-snapshot credential material. API-key access to an OpenCode plan is in scope;
-interactive subscription logins require vendor-terms verification first.
+Do not start the ACP driver until the coordinator confirms order steps 1–3
+passed the staging lifecycle smoke: Codex opt-in on Boat with compiled bootstrap,
+dial-out/enrolment/epoch; Claude on Boat then default and native-runner removal;
+model connections and session cost on Modal. #1161–#1163 own those steps.
+Only then propose small ACP/launch/UI PRs, each with explicit staging checks.
+Reuse the same driver across hosts; do not create a Boat-native OpenCode path.
+Docker hosts follow at step 5 (#1165); Modal dial-out migration and tunnel removal
+are step 6, not prerequisites to the NOW cleanup or work for this ticket.
 
-## Independently mergeable slices and staging verification
+Final OpenCode acceptance remains future: coordinator uses its owner-supplied
+DeepSeek staging connection, runs launch/follow-up/steer/interrupt/resume/events
+smoke on Modal, and observes an answer and reported per-turn tokens. Workers use
+a fake compatible endpoint and never receive the owner's key. Adding the harness
+must not introduce another hand-maintained harness list.
 
-Every later PR uses a fresh main-based `codex/1164-<slug>` branch, `Refs #1164`,
-and records exact checks/results. Only the coordinator holds staging credentials.
+## Later
 
-1. **Design (this PR):** no deploy prerequisite. Coordinator opens this document,
-   verifies linked V2 evidence and ownership/slice boundaries; no runtime change.
-2. **Harness table:** derive validators, model/credential exports and capability
-   consumers; generate iOS values. Delete duplicate ID/label/default tables.
-   Local checks: existing harness tests, typecheck, generator drift check.
-   Staging: launch Claude and Codex on Modal; send a follow-up, interrupt, resume,
-   inspect logs. Expect unchanged model selection, events and terminal status.
-3. **Pinned executable spike:** fake endpoint and V2 control/usage fixtures only;
-   no public OpenCode launch. Delete throwaway probe code after fixtures replace it.
-   Staging: rerun the pinned probe in a disposable Modal sandbox; all lifecycle
-   assertions pass, no key/config material appears in returned events or snapshot.
-4. **Modal driver + API/CLI:** additive enum migration and runtime install;
-   consume #1162 connections, implement Driver/Turn and capability selection.
-   Delete two-harness dispatch branches replaced by descriptor-driven dispatch.
-   Staging: configure owner-supplied DeepSeek connection; launch OpenCode on Modal,
-   ask for a short answer, send a follow-up, steer while busy, interrupt, resume,
-   send again and read logs/usage. Expect answer, same conversation, cursor replay
-   without duplicates, correct terminal outcomes and nonzero reported tokens.
-   Repeat with an OpenCode-plan API key. Include runnable commands in that PR.
-5. **Dashboard + iOS:** derive picker/model choices and render existing usage DTOs;
-   delete remaining hard-coded picker lists. Staging: select OpenCode, launch with
-   the saved connection, reopen session on web/iOS; model and tokens match API.
-6. **Boat:** only after #1161 runtime parity/removal of native runner; reuse driver,
-   no alternate Boat-native OpenCode path. Staging: repeat slice 4 on Boat with
-   the same connection; lifecycle and tokens match Modal.
-
-## Ownership, acceptance and Later
-
-#1161 owns Boat runtime/removal; #1162 owns model connections; #1163 owns cost
-aggregation/pricing; #1165 owns Docker placement. Request missing contracts in
-the relevant PR rather than implementing a sibling's subsystem.
-Final acceptance: coordinator runs the post-deploy smoke lifecycle plus slice 4
-against its DeepSeek endpoint on Modal, observes answer and per-turn tokens, and
-checks that enabling OpenCode added no new hand-maintained harness list.
-Later: interactive subscription flows pending terms, ACP, additional provider
-quirks, multi-tenant isolation beyond existing Armada rules. No promise of native
-steer, restart continuity or complete usage until the executable spike proves it.
+ACP for all harnesses only when v2 is stable, steering standardized and adapters
+vendor-maintained. Interactive subscription flows require terms verification;
+extra provider quirks and multi-tenant hardening beyond current rules are deferred.
