@@ -191,6 +191,7 @@ Usage:
                                            grants membership immediately and does not send an invitation.
   armada creds login codex --name <name> [--org <name>]\n                                           Native local device login; five-minute expiry, Ctrl-C cancels\n  armada creds import claude|codex --name <name> [--file <path>] [--org <name>]
                                            Import a locally obtained native token/auth.json; never pass secrets as arguments
+  armada creds holders|release <account-UUID> --expected-version N [--sandbox-id UUID] [--org UUID]
   armada creds set <kind> [--org <name>] [--file <path>]
                                            Store a credential, encrypted; the value is read from stdin or a file
                                            Model accounts: --name NAME creates; --id UUID --expected-version N replaces

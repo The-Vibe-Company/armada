@@ -692,6 +692,7 @@ test.each(["orphan", "failed", "stopped", "deleted", "historical"])(
         );
       expect(await ownership.holder(actor, account.id, 1)).toMatchObject({
         sandboxId: old,
+        status: status === "orphan" ? null : status === "historical" ? "failed" : status,
         storedVersion: 1,
         currentVersion: 1,
         requiresReconnect: true,

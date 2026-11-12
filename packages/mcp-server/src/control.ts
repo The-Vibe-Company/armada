@@ -772,6 +772,11 @@ async function dispatch(
     const holder = await options.modelAuth.holder(actor, id, version);
     if (route.endsWith("holder")) return holder ?? { sandboxId: null };
     const sandboxId = required(body, "sandboxId");
+    if (holder?.orphan)
+      throw new VaultError(
+        "conflict",
+        "Unregistered holder has no provider allocation identity. Physical stop or absence cannot be confirmed; ownership retained. Contact an administrator to recover its provider allocation before release.",
+      );
     if (!UUID.test(sandboxId) || !holder || holder.sandboxId !== sandboxId)
       throw new VaultError("conflict", "The subscription holder changed. Reload and try again.");
     if (
