@@ -57,7 +57,8 @@ export function createAccountControl(options: ArmadaApiOptions) {
 
   return {
     holder: (target: AccountTarget & { version: number }) => post("creds/accounts/holder", target),
-    release: (target: AccountTarget & { sandboxId: string; version: number }) => post("creds/accounts/release", target),
+    release: (target: AccountTarget & { sandboxId: string; version: number; value?: string }) =>
+      post("creds/accounts/release", target),
     async list(org: string): Promise<{ accounts: ModelAccount[]; legacy: boolean }> {
       const payload = await post(ACCOUNT_ROUTES.list, { org });
       if (!Array.isArray(payload.user)) throw new ControlError("The Armada server sent no credential list.");

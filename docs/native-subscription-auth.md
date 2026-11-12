@@ -157,10 +157,48 @@ Before the first prompt is dispatched, initialization failures mark the managed
 Codex account as never started. Armada deletes that failed physical sandbox and
 releases its account only after deletion is confirmed. A failed deletion retains
 the claim: on the account row, use **Find subscription holder**, then **Release
-failed launch** to retry deletion and release. Only the sandbox owner can inspect
+subscription** to retry deletion and release. Only the sandbox owner can inspect
 this holder; organization accounts additionally require an admin for release.
 The API equivalents are `POST creds/accounts/holder` (`id`, `version`, `org`) and
 `POST creds/accounts/release` (also `sandboxId`). Neither returns auth material.
-Already-dispatched or ambiguous prompts and older unclassified history are not
-safe to release by this action. Concurrent subscription refresh is a separate
-slice; this change does not enable parallel rotating-token writers.
+Older ambiguous or unclassified history requires the explicit reconnect/recovery
+flow below; empty conversation history alone is not a safety proof. Concurrent
+subscription refresh is a separate slice; this change does not enable parallel
+rotating-token writers.
+
+
+### Recover an existing trapped account through the product
+
+The investigation on #1176 identified permanent same-version sandbox history,
+failed/deleted holders, and ownership pointing at an unrecorded launch. Stopping
+a failed sandbox alone does not repair the account's ownership.
+
+For an existing account such as **Work**, use **Models → Work → Find subscription
+holder**. The lookup shows the stored holder even if the account has since been
+replaced. An unrecorded launch is identified without linking to a nonexistent
+sandbox page.
+
+1. Stop any recorded running holder through its sandbox page and wait for its
+   current operation to finish. Never release an active native writer.
+2. If requested, use **Reconnect subscription** to replace the account with a
+   fresh auth.json obtained through the official native sign-in. Replace the
+   **same account**, not a second name. Do not paste credentials into chat or a
+   command argument. Replacement invalidates the old account revision.
+3. Find the holder again, then choose **Release subscription**. For recorded
+   failed, stopped or deleted history, Armada confirms physical deletion (an
+   authoritative provider not-found is sufficient) before releasing ownership.
+   Pending or unavailable deletion retains the claim. Unrecorded old allocations
+   require explicit replacement first, fencing their old-version bootstrap.
+4. Launch again. If another historical binding is reported, stop/recover that
+   binding too; live history is never silently discarded.
+
+Newly classified never-started failures retain their automatic cleanup and do
+not require reconnection. Older ambiguous or unrecorded failures are never
+classified as safe merely because their conversation list is empty. Recovery
+requires the account owner, and an organization account additionally requires an
+administrator. No database edits or deployment-time data repair are needed.
+
+For pre-enrollment history with no credential version, **Reconnect and release**
+combines the fresh auth.json import and confirmed holder deletion in one guarded
+request. Armada never invents a historical revision or treats a rename as a
+reconnection; a pending/failed deletion leaves the current credential unchanged.

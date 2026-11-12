@@ -101,7 +101,7 @@ describe("launch", () => {
       expect(released).toBe(0);
     },
   );
-  test.each(["deleted", "pending", "absent", "already_deleted", "dispatch", "unmanaged"])(
+  test.each(["deleted", "pending", "absent", "already_deleted", "dispatch", "unmanaged", "leased"])(
     "failed launch releases native admission only after definitive pre-dispatch deletion (%s)",
     async (outcome) => {
       const world = setup({ golden: golden("org") });
@@ -110,7 +110,9 @@ describe("launch", () => {
         events.push("marked");
         return outcome !== "unmanaged";
       };
-      world.stores.credentials.releaseNeverStarted = async () => {
+      world.stores.credentials.releaseNeverStarted = async (_actor, _credentials, _id, deletePhysical) => {
+        if (outcome === "leased") throw Error("Another operation won admission");
+        await deletePhysical();
         events.push("released");
       };
       world.provider.delete = async () => {
@@ -138,12 +140,15 @@ describe("launch", () => {
       await expect(
         launchSandbox(world.provider, world.stores, owner, { golden: "web", harness: "claude", prompt: "go" }),
       ).rejects.toBeInstanceOf(LaunchError);
+      expect(world.stopped).toEqual(
+        outcome === "pending" ? [] : ["dispatch", "unmanaged"].includes(outcome) ? ["bx_1"] : [],
+      );
       expect(events).toEqual(
         ["deleted", "absent", "already_deleted"].includes(outcome)
           ? ["marked", "delete", "released"]
           : outcome === "pending"
             ? ["marked", "delete"]
-            : outcome === "unmanaged"
+            : ["unmanaged", "leased"].includes(outcome)
               ? ["marked"]
               : [],
       );

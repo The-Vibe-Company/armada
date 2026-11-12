@@ -184,9 +184,14 @@ export async function removeAccount(_previous: ActionResult | null, data: FormDa
 }
 
 /** Inspect or release a failed subscription launch; authorization stays on the server. */
-export async function subscriptionHolder(
-  data: FormData,
-): Promise<{ sandboxId: string | null; releasable?: boolean; error?: string }> {
+export async function subscriptionHolder(data: FormData): Promise<{
+  sandboxId: string | null;
+  releasable?: boolean;
+  requiresReconnect?: boolean;
+  orphan?: boolean;
+  unknownVersion?: boolean;
+  error?: string;
+}> {
   const context = await scoped(data);
   if (!isScoped(context)) return { sandboxId: null, error: "Account control unavailable." };
   try {
@@ -198,6 +203,9 @@ export async function subscriptionHolder(
     return {
       sandboxId: typeof result.sandboxId === "string" ? result.sandboxId : null,
       releasable: result.releasable === true,
+      requiresReconnect: result.requiresReconnect === true,
+      orphan: result.orphan === true,
+      unknownVersion: result.unknownVersion === true,
     };
   } catch (error) {
     if (error instanceof ControlError) return { sandboxId: null, error: error.message };
@@ -216,8 +224,34 @@ export async function releaseSubscription(data: FormData): Promise<ActionResult>
       org: context.org,
     });
     refresh();
-    return done("Failed launch released. You can launch again.");
+    return done("Subscription released. You can launch again.");
   } catch (error) {
-    return explain(error);
+    if (error instanceof ControlError) return fail(error.message);
+    throw error;
+  }
+}
+
+/** Atomically reconnect legacy history lacking a version and release its deleted holder. */
+export async function reconnectAndReleaseSubscription(
+  _previous: ActionResult | null,
+  data: FormData,
+): Promise<ActionResult> {
+  const context = await scoped(data);
+  if (!isScoped(context)) return context;
+  const value = secret("codex_auth", data.get("value"));
+  if (!value.ok) return fail(value.error);
+  try {
+    await context.control.release({
+      ...target(context, formString(data, "id")),
+      org: context.org,
+      version: version(data) ?? -1,
+      sandboxId: formString(data, "sandboxId"),
+      value: value.value,
+    });
+    refresh();
+    return done("Subscription released. You can launch again.");
+  } catch (error) {
+    if (error instanceof ControlError) return fail(error.message);
+    throw error;
   }
 }

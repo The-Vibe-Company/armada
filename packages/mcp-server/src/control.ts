@@ -772,6 +772,14 @@ async function dispatch(
     const sandboxId = required(body, "sandboxId");
     if (!UUID.test(sandboxId) || !holder || holder.sandboxId !== sandboxId)
       throw new VaultError("conflict", "The subscription holder changed. Reload and try again.");
+    if (
+      holder.orphan ||
+      holder.unknownVersion ||
+      (holder.storedVersion !== null && holder.currentVersion > holder.storedVersion)
+    ) {
+      await options.modelAuth.releaseFailed(actor, id, version, sandboxId, undefined, optional(body, "value"));
+      return { ok: true };
+    }
     if (!options.logs) throw new VaultError("unavailable", "Sandbox control unavailable.");
     const target = await options.logs(caller, sandboxId);
     await options.modelAuth.releaseFailed(actor, id, version, sandboxId, async () => {

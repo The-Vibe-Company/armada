@@ -111,10 +111,16 @@ export function launchCredentials(
         return ownership.markNeverStarted(actor, binding.credentialId, binding.credentialVersion, sandboxId);
       return false;
     },
-    async releaseNeverStarted(actor, credentials, sandboxId) {
+    async releaseNeverStarted(actor, credentials, sandboxId, deletePhysical) {
       const binding = credentials.binding;
       if (ownership && binding)
-        await ownership.releaseFailed(actor, binding.credentialId, binding.credentialVersion, sandboxId);
+        await ownership.releaseNeverStarted(
+          actor,
+          binding.credentialId,
+          binding.credentialVersion,
+          sandboxId,
+          deletePhysical,
+        );
     },
     async releaseUnallocated(_actor, credentials, sandboxId) {
       const binding =

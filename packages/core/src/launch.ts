@@ -96,10 +96,15 @@ export interface LaunchCredentialResolver {
     provider: Provider,
     providerSandboxId: string,
   ): Promise<boolean>;
-  /** Record definitive pre-dispatch failure before attempting physical cleanup. */
+  /** Record pre-dispatch proof when eligible. True selects owned-native cleanup, NOT deletion eligibility or proof; the locked release rechecks admission. */
   markNeverStarted?(actor: GoldenActor, credentials: HarnessCredentials, sandboxId: string): Promise<boolean>;
-  /** Called only after physical deletion of a definitively never-started child. */
-  releaseNeverStarted?(actor: GoldenActor, credentials: HarnessCredentials, sandboxId: string): Promise<void>;
+  /** Hold native ownership and sandbox admission locks while confirming physical deletion. */
+  releaseNeverStarted?(
+    actor: GoldenActor,
+    credentials: HarnessCredentials,
+    sandboxId: string,
+    deletePhysical: () => Promise<void>,
+  ): Promise<void>;
   releaseUnallocated?(actor: GoldenActor, credentials: HarnessCredentials, sandboxId: string): Promise<void>;
   /** Validate the pinned native owner without rehydrating imported auth state. */
   assertTurn?(actor: GoldenActor, sandboxId: string, resuming: boolean): Promise<void>;
@@ -585,16 +590,18 @@ export async function launchSandbox(
       const failure = withSandbox(error, record.id, secrets);
       if (!activityLeaseId)
         await quietly(() => stores.sandboxes.update(record.id, { status: "failed", statusReason: failure.message }));
-      let deletedNeverStarted = false;
+      let nativeCleanupOwned = false;
       if (!promptDispatched && stores.credentials.releaseNeverStarted) {
         await quietly(async () => {
           if (!(await stores.credentials.markNeverStarted?.(actor, credentials, id))) return;
-          if (!(await deleteNeverStartedSandbox(provider, forked.id))) return;
-          deletedNeverStarted = true;
-          await stores.credentials.releaseNeverStarted?.(actor, credentials, id);
+          nativeCleanupOwned = true;
+          await stores.credentials.releaseNeverStarted?.(actor, credentials, id, async () => {
+            if (!(await deleteNeverStartedSandbox(provider, forked.id)))
+              throw new Error("Physical deletion is not confirmed.");
+          });
         });
       }
-      if (!deletedNeverStarted) await quietly(() => provider.stop({ sandboxId: forked.id }));
+      if (!nativeCleanupOwned) await quietly(() => provider.stop({ sandboxId: forked.id }));
       throw failure;
     }
   } catch (error) {
