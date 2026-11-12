@@ -35,9 +35,11 @@ private final class Deferred<Value: Sendable> {
     lifecycle.readFailed(.offline, retryable: true, message: "Check your connection")
     #expect(visible == [Entry(id: "cached")])
     #expect(lifecycle.connection == .reconnecting("Check your connection"))
-    #expect(lifecycle.refreshSucceeded())
+    let restarted = lifecycle.refreshSucceeded()
+    #expect(restarted)
     #expect(lifecycle.connection == .live)
-    #expect(!lifecycle.refreshSucceeded())
+    let redundantRestart = lifecycle.refreshSucceeded()
+    #expect(!redundantRestart)
 }
 
 @Test func stoppedFollowersStayPausedOnFailedRefreshAndRestartOnlyAfterSuccess() {
@@ -46,12 +48,14 @@ private final class Deferred<Value: Sendable> {
     #expect(lifecycle.connection == .stopped(.unsupported))
     lifecycle.refreshFailed(.offline, message: "Still offline")
     #expect(lifecycle.connection == .stopped(.offline))
-    #expect(lifecycle.refreshSucceeded())
+    let stoppedRestart = lifecycle.refreshSucceeded()
+    #expect(stoppedRestart)
     #expect(lifecycle.connection == .live)
     lifecycle.readFailed(.offline, retryable: true, message: "First failure")
     lifecycle.refreshFailed(.offline, message: "New server reason")
     #expect(lifecycle.connection == .reconnecting("New server reason"))
-    #expect(lifecycle.refreshSucceeded())
+    let reconnectRestart = lifecycle.refreshSucceeded()
+    #expect(reconnectRestart)
     #expect(lifecycle.connection == .live)
 }
 
@@ -107,8 +111,65 @@ private final class Deferred<Value: Sendable> {
         if deny {
             lifecycle.readSucceeded()
             lifecycle.refreshFailed(.offline, message: "Late failure")
-            #expect(!lifecycle.refreshSucceeded())
+            let revived = lifecycle.refreshSucceeded()
+            #expect(!revived)
             #expect(lifecycle.connection == .stopped(.denied))
+        }
+    }
+}
+
+@MainActor
+@Test func retainedFeedReplaysUnchangedHistoryWhenInitialPresentationWasCancelled() async throws {
+    // Cover cache restoration and a first server read, cancelled during projection or Markdown.
+    for cached in [true, false] {
+        for plainTextPublished in [true, false] {
+            let memory = ConversationCache<Entry>()
+            let events = [Entry(id: "history")]
+            if cached {
+                memory.store(ConversationSnapshot(events: events, cursor: "c0"), for: "k")
+            }
+            let loader = ConversationLoader<Entry>(key: "k", cache: memory)
+            var lifecycle = ConversationFeedLifecycle<Failure>()
+            var visible: [Entry] = []
+            var markdown = ""
+            let gate = Deferred<Void>()
+            let interrupted: ConversationLoader<Entry>.Show = { values in
+                if plainTextPublished { lifecycle.publish(values) { visible = $0 } }
+                await gate.value()
+                lifecycle.publish(values) {
+                    visible = $0
+                    markdown = "interrupted"
+                }
+            }
+            let initial = Task {
+                if cached { _ = await loader.showCached(interrupted) }
+                else {
+                    try await loader.catchUp({ _ throws(Failure) in
+                        ConversationPage(events: events, cursor: "c0", hasMore: false)
+                    }, show: interrupted)
+                }
+            }
+            for await _ in gate.started { break }
+            initial.cancel()
+            // Replay before the cancelled worker returns: navigation can restart immediately.
+            let replayed = await loader.showCached { values in
+                lifecycle.publish(values) {
+                    visible = $0
+                    markdown = "complete"
+                }
+            }
+            #expect(replayed)
+            #expect(visible == events)
+            #expect(markdown == "complete")
+            gate.release?.resume(returning: ())
+            try await initial.value
+            #expect(visible == events)
+            #expect(markdown == "complete")
+            #expect(loader.hasShown)
+            var duplicatePublications = 0
+            let repeated = await loader.showCached { _ in duplicatePublications += 1 }
+            #expect(!repeated)
+            #expect(duplicatePublications == 0)
         }
     }
 }

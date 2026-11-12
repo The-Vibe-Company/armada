@@ -124,6 +124,7 @@ public final class ConversationLoader<Event: Identifiable & Equatable & Sendable
     private let cache: ConversationCache<Event>?
     private var revision = 0
     private var newestRevision = 0
+    private var presentationRevision = 0
     private var forgotten = false
 
     public init(key: String, cache: ConversationCache<Event>?) {
@@ -138,9 +139,7 @@ public final class ConversationLoader<Event: Identifiable & Equatable & Sendable
     @discardableResult
     public func showCached(_ show: Show) async -> Bool {
         guard !forgotten, !hasShown, snapshot.hasTail else { return false }
-        hasShown = true
-        await show(snapshot.events)
-        return true
+        return await display(show)
     }
 
     /// Reads to the newest event now (pull to refresh): the latest page when none was read yet,
@@ -206,7 +205,7 @@ public final class ConversationLoader<Event: Identifiable & Equatable & Sendable
         snapshot.olderCursor = page.olderCursor
         snapshot.hasOlder = page.hasMore && page.olderCursor != nil
         cache?.store(snapshot, for: key)
-        if changed { await show(snapshot.events) }
+        if changed { _ = await display(show) }
     }
 
     /// Terminal for this loader (for example after a refused read). A new authorized screen
@@ -267,8 +266,21 @@ public final class ConversationLoader<Event: Identifiable & Equatable & Sendable
     private func publish(store: Bool, render: Bool, show: Show) async {
         if store || !hasShown { cache?.store(snapshot, for: key) }
         guard render || !hasShown else { return }
-        hasShown = true
+        _ = await display(show)
+    }
+
+    /// An in-progress or cancelled presentation is not an acknowledgement. A retained screen
+    /// can replay immediately, even while the old worker finishes. Only the latest completed
+    /// callback may acknowledge the window, so old cancellation cannot invalidate newer work.
+    private func display(_ show: Show) async -> Bool {
+        guard !forgotten else { return false }
+        presentationRevision += 1
+        let current = presentationRevision
+        hasShown = false
         await show(snapshot.events)
+        guard !forgotten, !Task.isCancelled, current == presentationRevision else { return false }
+        hasShown = true
+        return true
     }
 
     /// Only protect bodies actually changed while a read waited. Unchanged overlaps may still
