@@ -17,6 +17,7 @@ import type {
   OrchestratorEventPage,
   OrchestratorOperation,
 } from "../packages/core/src/orchestrator.ts";
+import { DefaultSkillSmokeFailure, readDefaultPins, verifyDefaultReceipts } from "./default-skill-smoke.ts";
 import { runTemplateSkillCase, TemplateSkillSmokeFailure } from "./template-skill-smoke.ts";
 import { runVaultCase, VaultSmokeFailure } from "./vault-smoke.ts";
 
@@ -172,6 +173,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
               code:
                 error instanceof SmokeFailure ||
                 error instanceof TemplateSkillSmokeFailure ||
+                error instanceof DefaultSkillSmokeFailure ||
                 error instanceof VaultSmokeFailure
                   ? error.code
                   : "invalid_response",
@@ -185,19 +187,22 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
   const orchestrator = args.includes("--orchestrator");
   const github = args.includes("--github-runtime");
   const preservation = args.includes("--work-preservation");
+  const defaultSkills = args.includes("--default-skills");
   const templatesSkills = args.includes("--templates-skills");
   const vault = args.includes("--vault");
   const lifecycle = args.includes("--lifecycle");
   try {
     if (env.ARMADA_SMOKE !== "create_real_compute") fail("compute_opt_in_required");
     if (
-      (github && (orchestrator || preservation || templatesSkills || lifecycle || vault)) ||
+      (defaultSkills && !preservation) ||
+      (github && (orchestrator || preservation || templatesSkills || defaultSkills || lifecycle || vault)) ||
       args.some(
         (arg) =>
           arg !== "--orchestrator" &&
           arg !== "--github-runtime" &&
           arg !== "--work-preservation" &&
           arg !== "--templates-skills" &&
+          arg !== "--default-skills" &&
           arg !== "--lifecycle" &&
           arg !== "--vault",
       ) ||
@@ -211,7 +216,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
       fail("invalid_configuration");
     origin = url.origin;
     if (
-      (preservation || templatesSkills || lifecycle || vault) &&
+      (preservation || templatesSkills || defaultSkills || lifecycle || vault) &&
       origin !== "https://armada-mcp-staging.up.railway.app"
     )
       fail("invalid_configuration");
@@ -227,6 +232,10 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
           (key) => typeof item[key] !== "string" || !item[key].trim(),
         ) ||
         !item.repo.startsWith("/") ||
+        (defaultSkills &&
+          (typeof item.goldenId !== "string" ||
+            !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(item.goldenId) ||
+            !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(item.org))) ||
         (vault && !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(item.org)) ||
         (item.reasoningEffort !== undefined &&
           (typeof item.reasoningEffort !== "string" || !item.reasoningEffort.trim())) ||
@@ -267,7 +276,9 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
           fail("invalid_configuration");
       }
     }
-    cases = parsed;
+    cases = parsed.map((item) =>
+      defaultSkills ? { ...item, org: item.org.toLowerCase(), goldenId: item.goldenId.toLowerCase() } : item,
+    );
   } catch (error) {
     report(0, "configure", error instanceof SmokeFailure ? error : new SmokeFailure("invalid_configuration"));
     return false;
@@ -320,6 +331,31 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
       if (i + 1 < POLLS) await io.sleep(1000);
     }
     fail("poll_limit_exceeded");
+  }
+  const defaultPins = new Map<number, string[]>();
+  if (defaultSkills) {
+    for (const [index, item] of cases.entries()) {
+      try {
+        const pins = await readDefaultPins(item.org, item.goldenId!, {
+          request,
+          step: async (name, action) => {
+            try {
+              const value = await action();
+              report(index, name);
+              return value;
+            } catch (error) {
+              report(index, name, error);
+              throw error;
+            }
+          },
+        });
+        defaultPins.set(index, pins);
+        report(index, "default_skills_policy");
+      } catch (error) {
+        report(index, "default_skills_policy", error);
+        return false;
+      }
+    }
   }
   let vaultPassed = true;
   if (vault) {
@@ -480,6 +516,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
     const startedAt = io.now();
     let launchAttempted = false;
     let verifiedRecoveryId: string | undefined;
+    let launchSkills: unknown;
     let sandboxId: string | undefined;
     let commit: string | undefined;
     const preservationMarker = crypto.randomUUID();
@@ -522,7 +559,11 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
     try {
       await step("launch", async () => {
         launchAttempted = true;
-        const result = await sandbox<{ sandbox: { id: string; provider: string }; promptId?: string }>(
+        const result = await sandbox<{
+          sandbox: { id: string; provider: string; skills?: unknown };
+          golden?: { id: string };
+          promptId?: string;
+        }>(
           "launch",
           {
             golden: item.golden,
@@ -532,6 +573,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
             credentialId: item.modelAccountId,
             ...(item.reasoningEffort ? { reasoningEffort: item.reasoningEffort } : {}),
             connections: [],
+            ...(defaultSkills && dirty ? { skipSkillDefaults: true } : {}),
             ttlSeconds: 1800,
           },
           600_000,
@@ -539,6 +581,8 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
         // Retain the cleanup handle even if later response validation fails.
         if (typeof result?.sandbox?.id === "string" && result.sandbox.id) sandboxId = result.sandbox.id;
         if (!sandboxId || result.sandbox.provider !== item.provider || result.promptId) fail("invalid_response");
+        if (defaultSkills && result.golden?.id !== item.goldenId) fail("invalid_response");
+        launchSkills = result.sandbox.skills;
       });
       await step("ready", () =>
         poll(
@@ -549,6 +593,22 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
           },
         ),
       );
+      if (defaultSkills) {
+        const expected = defaultPins.get(index)!;
+        await step(dirty ? "default_skills_opt_out_receipts" : "default_skills_receipts", async () => {
+          const status = await sandbox<{ skills?: unknown }>("status", { id: sandboxId });
+          verifyDefaultReceipts(launchSkills, status.skills, dirty ? [] : expected);
+        });
+        if (!expected.length)
+          io.out(
+            JSON.stringify({
+              case: index,
+              step: dirty ? "default_skills_opt_out_delivery" : "default_skills_installation",
+              skip: true,
+              reason: "no_default_pins_configured",
+            }),
+          );
+      }
       if (lifecycle && !dirty)
         io.out(
           JSON.stringify({

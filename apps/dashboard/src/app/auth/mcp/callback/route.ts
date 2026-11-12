@@ -35,7 +35,7 @@ export async function GET(request: NextRequest) {
       code: input.code,
       ...(input.issuer ? { issuer: input.issuer } : {}),
     });
-    return land(origin, "/tools", { connection: connection.id, oauth: "returned" });
+    return land(origin, "/tools", { connection: connection.id, oauth: "returned", item: connection.id });
   } catch (error) {
     if (!(error instanceof ControlError)) throw error;
     console.error("MCP OAuth callback was refused by the Armada API.", { status: error.status ?? null });

@@ -18,19 +18,32 @@ async function mockState(): Promise<MockState> {
 }
 
 /** A connection's row in the Tools list, and its detail panel (hidden until the row is selected). */
-const card = (page: Page, name: string) => page.locator(`[data-connection="${name}"]`);
-const panelOf = (page: Page, name: string) => page.locator(`[data-connection-panel="${name}"]`);
+const card = (page: Page, name: string) => page.locator(`[data-connection="${name}"]`).filter({ visible: true });
+const panelOf = (page: Page, name: string) =>
+  page.locator(`[data-connection-panel="${name}"]`).filter({ visible: true });
 
 /** Selects a connection's row, unless its panel already shows, and returns the panel. */
 async function panel(page: Page, name: string) {
   const open = panelOf(page, name);
-  if (!(await open.isVisible())) await card(page, name).locator("[data-select-item]").click();
+  if (!(await open.isVisible())) {
+    await leavePanel(page);
+    await card(page, name).locator("[data-select-item]").click();
+  }
   await expect(open).toBeVisible();
   return open;
 }
 
+async function leavePanel(page: Page) {
+  const detail = page.getByRole("dialog").filter({ has: page.locator("[data-resource-panel]") });
+  if (await detail.isVisible()) {
+    await page.keyboard.press("Escape");
+    await expect(detail).toBeHidden();
+  }
+}
+
 /** Opens the Add server dialog and returns its custom server form. */
 async function openAdd(page: Page) {
+  await leavePanel(page);
   await page.getByRole("button", { name: "Add server", exact: true }).click();
   const form = page.getByRole("dialog", { name: "Add a custom server" }).locator("form[data-add-connection]");
   await expect(form).toBeVisible();
@@ -44,6 +57,7 @@ async function menu(page: Page, name: string, item: string) {
 
 /** The Services section under the list: the one place a catalog service is connected. */
 async function openServices(page: Page) {
+  await leavePanel(page);
   const services = page.getByRole("region", { name: "Services" });
   await expect(services).toBeVisible();
   return services;
@@ -129,7 +143,8 @@ test("a member manages personal connections only and cannot add org ones", async
   await expect(card(page, "Bob Notes")).toBeVisible();
   await expect(card(page, "Alice Linear")).toHaveCount(0);
   // Only the row's select target: no action, and the panel holds no control either.
-  await expect(card(page, "Acme Docs").getByRole("button")).toHaveCount(1);
+  await expect(card(page, "Acme Docs").getByRole("link")).toHaveCount(1);
+  await expect(card(page, "Acme Docs").getByRole("button")).toHaveCount(0);
   const docs = await panel(page, "Acme Docs");
   await expect(docs).toContainText("Managed by the org's admins.");
   await expect(docs.getByRole("button")).toHaveCount(0);
@@ -154,7 +169,7 @@ test("a pasted URL auto-detects OAuth, signs in through the server and reports t
     if (request.url().includes("/auth/mcp/callback")) callbacks.push(request.url());
   });
   await page.getByRole("link", { name: "Allow" }).click();
-  await expect(page).toHaveURL(/\/tools\?connection=[0-9a-f-]{36}&oauth=returned$/);
+  await expect(page).toHaveURL(/\/tools\?connection=[0-9a-f-]{36}&oauth=returned&item=[0-9a-f-]{36}$/);
   // Ignore React streaming staging nodes; assert the notice rendered to the user.
   const notice = page.locator('[data-oauth-return="connected"]').filter({ visible: true });
   await expect(notice).toContainText("Acme Tracker is connected");
@@ -163,6 +178,11 @@ test("a pasted URL auto-detects OAuth, signs in through the server and reports t
   await expect(card(page, "Acme Tracker")).toContainText("9 tools");
   // Back from the sign-in, the panel shows the connection it was for.
   await expect(panelOf(page, "Acme Tracker")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(panelOf(page, "Acme Tracker")).toBeHidden();
+  await page.reload();
+  await expect(panelOf(page, "Acme Tracker")).toBeHidden();
+  await expect(page.locator('[data-oauth-return="connected"]').filter({ visible: true })).toBeVisible();
 
   const calls = (await mockState()).controlCalls;
   expect(calls.find((call) => call.operation === "create")?.body).toEqual({
@@ -385,6 +405,7 @@ test("a stdio server is imported, must pin its package and is configured for lau
   });
 
   // A stdio connection saved before the registry configured it offers Configure, which uses the connect route.
+  await leavePanel(page);
   const legacy = card(page, "Repo Files");
   await expect(legacy.locator("[data-connection-status]")).toHaveText("Not configured");
   await legacy.getByRole("button", { name: "Configure Repo Files" }).click();
@@ -623,6 +644,7 @@ test("rename and include-by-default change metadata only, and an unreachable ser
     ["metadata", { org: ACME, id: ACME_DOCS, defaultForLaunch: true }],
   ]);
 
+  await leavePanel(page);
   const search = card(page, "Acme Search");
   await expect(search).toContainText("Unavailable");
   await expect(search).toContainText("The server did not answer.");
