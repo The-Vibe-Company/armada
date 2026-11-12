@@ -8,7 +8,7 @@ import { LaunchError } from "./launch-error.ts";
 import { parseMachineSize } from "./machine-size.ts";
 import { resolveModelChoice } from "./models.ts";
 import { PRIVATE_SKILL_FAILURES } from "./private-skill-error.ts";
-import type { Provider } from "./provider.ts";
+import { isNonMutatingProviderRefusal, type Provider, ProviderError } from "./provider.ts";
 import { validateReadableVariables } from "./readable-variables.ts";
 import { createSkillDefaultsService } from "./skill-defaults.ts";
 import { mergeSkillPins } from "./skill-merge.ts";
@@ -714,8 +714,11 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       // owns release (registered child/confirmed absence) vs retention (unknown fork).
       if (!fenceConsumed) await releaseFence();
       // Once dispatch might have occurred, no timeout/exception proves absence. Never resend.
-      const state = allocating ? "reconciling" : "failed";
-      const safeReason = refusalReason(error) ?? (allocating ? "allocation_or_start_unknown" : "launch_unavailable");
+      const refused = error instanceof ProviderError && isNonMutatingProviderRefusal(error);
+      const state = allocating && !refused ? "reconciling" : "failed";
+      const safeReason = refused
+        ? `provider_${error.code}`
+        : (refusalReason(error) ?? (allocating ? "allocation_or_start_unknown" : "launch_unavailable"));
       // A publication may have committed even if both acknowledgements were lost.
       // Keep its durable success intact; same-key replay reads the saved receipt.
       await sql.query(

@@ -340,13 +340,17 @@ export async function handleControlRequest(request: Request, options: ControlOpt
       return fail(503, "dependency_unavailable", "Authentication is temporarily unavailable.");
     if (error instanceof ProviderError) {
       const status =
-        error.code === "conflict"
-          ? 409
-          : error.code === "forbidden"
-            ? 403
-            : error.code === "invalid_request"
-              ? 400
-              : 503;
+        error.code === "rate_limited"
+          ? 429
+          : error.code === "payment_required"
+            ? 402
+            : error.code === "conflict"
+              ? 409
+              : error.code === "forbidden"
+                ? 403
+                : error.code === "invalid_request"
+                  ? 400
+                  : 503;
       return Response.json(
         {
           error: {
