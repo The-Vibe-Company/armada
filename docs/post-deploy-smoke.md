@@ -496,6 +496,10 @@ refusal for Modal, plus one pre-turn git check per pair. Expect seconds to
 roughly two minutes per pair for SSH/auth latency, no extra model usage or
 worker. Requests and60-second execs stay under the existing35-minute work /
 five-minute cleanup budget. Staging requires the smoke owner's existing GitHub
-connection with origin access. No policy/settings writes, migrations,
+connection with origin access. Use a private GitHub origin in the existing
+checkout to make git access an authentication proof: a public origin only
+proves connectivity and cannot demonstrate that a token is installed correctly.
+The probe does not infer repository visibility from a successful ls-remote.
+No policy/settings writes, migrations,
 deployment or production actions. The coordinator runs both providers after
 merge; offline tests do not prove real GitHub/SSH success.

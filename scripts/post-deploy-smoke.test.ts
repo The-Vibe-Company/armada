@@ -1606,7 +1606,13 @@ test("GitHub refresh refuses modes that bypass its ordinary lifecycle worker bef
     ["--github-refresh", "--lifecycle", "--orchestrator"],
   ]) {
     const fake = fixture();
-    expect(await postDeploySmoke(env, args, fake.io)).toBe(false);
+    const staging = "https://armada-mcp-staging.up.railway.app";
+    expect(
+      await postDeploySmoke({ ...env, ARMADA_URL: staging }, args, {
+        ...fake.io,
+        fetch: (url, init) => fake.io.fetch(url.replace(staging, env.ARMADA_URL), init),
+      }),
+    ).toBe(false);
     expect(fake.calls).toHaveLength(0);
   }
 });
