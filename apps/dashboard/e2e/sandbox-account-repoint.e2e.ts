@@ -119,3 +119,76 @@ test("the persisted default-fallback note becomes visible after sending", async 
   await page.getByRole("button", { name: "Send", exact: true }).click();
   await expect(page.getByText(note, { exact: true })).toBeVisible();
 });
+
+for (const revoked of [false, true]) {
+  test(`a starting pending handoff can ${revoked ? "select another account after revocation" : "retry its eligible account"}`, async ({
+    page,
+  }) => {
+    await post("accounts", {
+      user: [
+        account(NEXT, "openai", "Pending target", revoked ? "revoked" : "active"),
+        { ...account(OTHER, "openai", "Alternative account"), isDefault: false },
+      ],
+    });
+    await post("sandbox-lifecycle", {
+      id: IDS.running,
+      fields: {
+        provider: "modal",
+        harness: "codex",
+        status: "starting",
+        credential_id: NEXT,
+        credential_version: 2,
+        credential_delivery_pending: false,
+        model: null,
+        reasoning_effort: null,
+        conversation_ids: ["conv-retained"],
+      },
+    });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await signIn(page, "alice@example.com", `/sandboxes/${IDS.running}`);
+    const openChoices = async () => {
+      await page.getByRole("button", { name: "Details", exact: true }).click();
+      await page.getByText("Change account", { exact: true }).click();
+    };
+    await openChoices();
+    const choice = page.getByRole("region", { name: "Change this sandbox’s account" });
+    const submit = choice.getByRole("button", { name: /^(Use this account|Retry with this account)$/ });
+    // Starting alone must not bypass the existing ordinary-operation gate.
+    await choice.getByRole("radio", { name: /Alternative account/ }).click();
+    await expect(submit).toHaveCount(0);
+    await post("sandbox-lifecycle", {
+      id: IDS.running,
+      fields: { credential_delivery_pending: true, credential_note: "Account delivery is pending." },
+    });
+    await page.reload();
+    await openChoices();
+    await expect(page.getByText("Account change pending", { exact: true })).toBeVisible();
+    await expect(choice.getByRole("radio", { checked: true })).toHaveCount(0);
+    if (revoked) await expect(choice.getByRole("radio", { name: /Pending target/ })).toHaveCount(0);
+    await choice.getByRole("radio", { name: revoked ? /Alternative account/ : /Pending target/ }).click();
+    await expect(submit).toBeEnabled();
+    await page.screenshot({
+      path: test.info().outputPath("pending-account-choice.png"),
+      fullPage: true,
+      animations: "disabled",
+    });
+    await submit.click();
+    const before = await (await fetch(`${MOCK}/__test/state`)).json();
+    expect(before.repointCalls).toHaveLength(0);
+    await page.getByRole("alertdialog").getByRole("button", { name: "Change account", exact: true }).click();
+    await expect(page.getByText("Sandbox account updated", { exact: true })).toBeVisible();
+    await expect(page.getByText("Account change pending", { exact: true })).toHaveCount(0);
+    const after = await (await fetch(`${MOCK}/__test/state`)).json();
+    expect(after.repointCalls).toEqual([
+      { id: IDS.running, credentialId: revoked ? OTHER : NEXT, org: "00000000-0000-4000-8000-000000000010" },
+    ]);
+    expect(after.launches).toHaveLength(0);
+    await expect(page).toHaveURL(new RegExp(`/sandboxes/${IDS.running}$`));
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.screenshot({
+      path: test.info().outputPath("pending-account-retry.png"),
+      fullPage: true,
+      animations: "disabled",
+    });
+  });
+}

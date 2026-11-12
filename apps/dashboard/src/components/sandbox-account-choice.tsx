@@ -35,21 +35,32 @@ type Props = {
   choices?: AccountChoices;
   harnessLabel: string;
   mode?: "bind" | "repoint";
+  /** An incomplete handoff may be retried; server admission remains authoritative. */
+  deliveryPending?: boolean;
 };
 
 /**
  * A legacy Modal sandbox has no pinned account: its owner chooses one, deliberately and once, before it resumes.
  * Nothing is preselected, and the choice is confirmed before it is sent; a refusal keeps the selection.
  */
-export function SandboxAccountChoice({ sandboxId, status, owner, choices, harnessLabel, mode = "bind" }: Props) {
+export function SandboxAccountChoice({
+  sandboxId,
+  status,
+  owner,
+  choices,
+  harnessLabel,
+  mode = "bind",
+  deliveryPending = false,
+}: Props) {
   const router = useRouter();
   const [selected, setSelected] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [result, setResult] = useState<ActionResult | null>(null);
   const [pending, startTransition] = useTransition();
   const repoint = mode === "repoint";
+  const retryableDelivery = repoint && deliveryPending && status !== "deleted";
   const gate = repoint
-    ? ["ready", "stopped", "failed"].includes(status)
+    ? retryableDelivery || ["ready", "stopped", "failed"].includes(status)
       ? "ready"
       : ["starting", "stopping"].includes(status)
         ? "wait"
@@ -99,9 +110,11 @@ export function SandboxAccountChoice({ sandboxId, status, owner, choices, harnes
           {repoint ? "Change this sandbox’s account" : "Choose this sandbox's account"}
         </h2>
         <p className="text-sm text-muted-foreground">
-          {repoint
-            ? "Choose an eligible account for future turns, or renew the selected account’s version. The server safely stops idle compute when needed and delivers the new account before another prompt. Active work must finish first. Files and conversations are kept."
-            : "It was launched before accounts were pinned. Its turns will run on the account you choose. The workspace and conversations are kept."}
+          {retryableDelivery
+            ? "Account delivery is incomplete. Retry with an eligible account, or choose another. The server still checks active work and account access."
+            : repoint
+              ? "Choose an eligible account for future turns, or renew the selected account’s version. The server safely stops idle compute when needed and delivers the new account before another prompt. Active work must finish first. Files and conversations are kept."
+              : "It was launched before accounts were pinned. Its turns will run on the account you choose. The workspace and conversations are kept."}
         </p>
       </div>
 
@@ -142,7 +155,7 @@ export function SandboxAccountChoice({ sandboxId, status, owner, choices, harnes
             {gate === "ready" ? (
               <Button type="button" disabled={!account || pending} onClick={() => setConfirming(true)}>
                 {pending && <Loader2Icon className="animate-spin" />}
-                Use this account
+                {retryableDelivery ? "Retry with this account" : "Use this account"}
               </Button>
             ) : gate === "wait" ? (
               <p className="text-sm text-muted-foreground">Stopping. The choice opens once it has stopped.</p>

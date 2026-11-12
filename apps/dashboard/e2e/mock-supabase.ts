@@ -1101,6 +1101,7 @@ function repointCredential(body: Row, userId: string | null): Response {
   if (!account) return controlFail(400, "credential_refused", "Choose an eligible account.");
   target.credential_id = account.id;
   target.credential_version = account.version;
+  target.credential_delivery_pending = false;
   target.credential_note = "The sandbox account changed. Its workspace and conversations are retained.";
   target.status = "stopped";
   target.stopped_at = new Date().toISOString();

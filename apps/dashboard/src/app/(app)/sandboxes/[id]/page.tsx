@@ -202,6 +202,7 @@ export default async function SandboxPage({ params }: Props) {
                 status={sandbox.status}
                 owner={owner}
                 mode="repoint"
+                deliveryPending={credentialPending}
                 {...(choices ? { choices } : {})}
                 harnessLabel={HARNESS_LABELS[sandbox.harness] ?? sandbox.harness}
               />
