@@ -234,7 +234,6 @@ test.each(["health", "maximum-frame"] as const)(
           1048576 - Buffer.byteLength(JSON.stringify({ type: "command", epoch: active.epoch, request: empty }));
         command = { ...empty, input: { ...empty.input, text: "x".repeat(budget) } };
       }
-      await f.bridge().enqueue(f.people.owner, command);
       const driver = {
         start() {
           if (kind === "health") throw Error("health must not start a harness");
@@ -264,22 +263,22 @@ test.each(["health", "maximum-frame"] as const)(
           return response;
         },
       });
-      await channel.run(
-        (request) =>
-          runner.handle(
-            new Request("http://runtime/v1", {
-              method: "POST",
-              headers: { "x-armada-runner-grant": active.runtimeToken },
-              body: JSON.stringify(request),
-            }),
-          ),
-        stop.signal,
+      f.onWait(async () =>
+        channel.run(
+          (request) =>
+            runner.handle(
+              new Request("http://runtime/v1", {
+                method: "POST",
+                headers: { "x-armada-runner-grant": active.runtimeToken },
+                body: JSON.stringify(request),
+              }),
+            ),
+          stop.signal,
+        ),
       );
-      const result = await f.bridge().result(f.people.owner, f.id, command.requestId);
-      expect(result.state).toBe("finished");
-      if (result.state !== "finished") throw Error("missing real runner result");
+      const result = await f.bridge().call(f.people.owner, command);
       if (kind === "maximum-frame") {
-        expect(result.reply).toMatchObject({
+        expect(result).toMatchObject({
           epoch: active.epoch,
           requestId: command.requestId,
           status: 200,
@@ -287,7 +286,7 @@ test.each(["health", "maximum-frame"] as const)(
         });
         return;
       }
-      expect(result.reply).toMatchObject({
+      expect(result).toMatchObject({
         epoch: active.epoch,
         requestId: command.requestId,
         status: 200,
@@ -298,6 +297,67 @@ test.each(["health", "maximum-frame"] as const)(
       journal.close();
       await f.db.close();
       await rm(root, { recursive: true, force: true });
+    }
+  },
+);
+
+test.each(["timeout", "abort", "replacement", "stop"] as const)(
+  "waiting caller preserves durable identity without replay on %s",
+  async (scenario) => {
+    const f = await fixture();
+    try {
+      const active = await f.enrol();
+      const command = f.command(`waiting-${scenario}`);
+      const abort = new AbortController();
+      f.onWait(async () => {
+        // A different replica sees the admitted request: waiting holds no locks.
+        expect((await f.bridge().next(active.runtimeToken, active.epoch)).command).toEqual(command);
+        if (scenario === "abort") abort.abort();
+        if (scenario === "replacement") {
+          await f.bridge().complete(active.runtimeToken, active.epoch, {
+            epoch: active.epoch,
+            requestId: command.requestId,
+            status: 200,
+            body: {},
+          });
+          await f.enrol();
+          // Historical readback stays available, but it is not a current call reply.
+          expect((await f.bridge().result(f.people.owner, f.id, command.requestId)).state).toBe("finished");
+        }
+        if (scenario === "stop") await f.db.query("update sandboxes set stop_requested_at=now() where id=$1", [f.id]);
+      });
+      await expect(f.bridge().call(f.people.owner, command, { signal: abort.signal, timeoutMs: 1000 })).rejects.toThrow(
+        scenario === "timeout"
+          ? "runtime_command_pending"
+          : scenario === "replacement"
+            ? "runtime_command_conflict"
+            : scenario === "stop"
+              ? "runtime_enrolment_denied"
+              : "abort",
+      );
+      expect((await f.db.query("select request_id from runtime_commands")).rows).toEqual([
+        { request_id: command.requestId },
+      ]);
+      if (scenario !== "timeout" && scenario !== "abort") return;
+      // A lost/aborted HTTP wait is not proof of non-execution. Finish under the
+      // original identity, then reconcile from another caller without a new turn.
+      const reply = {
+        epoch: active.epoch,
+        requestId: command.requestId,
+        status: 200,
+        body: { result: { ready: true } },
+      };
+      await f.bridge().complete(active.runtimeToken, active.epoch, reply);
+      expect(await f.bridge().call(f.people.owner, command)).toEqual(reply);
+      expect((await f.bridge().next(active.runtimeToken, active.epoch)).command).toBeNull();
+      const cancelled = new AbortController();
+      cancelled.abort();
+      await expect(
+        f.bridge().call(f.people.owner, f.command("never-admitted"), { signal: cancelled.signal }),
+      ).rejects.toThrow();
+      expect((await f.db.query("select request_id from runtime_commands")).rows).toHaveLength(1);
+    } finally {
+      await f.db.close();
     }
   },
 );
