@@ -36,11 +36,13 @@ export const PROVIDER_LIMITS: Readonly<Record<SandboxProviderId, ProviderLimits>
  */
 export interface HostCapabilities {
   readonly goldenRestore: "fresh-fork" | "shared-source";
+  /** Snapshot metadata must attest the immutable management credential authority before retirement. */
+  readonly snapshotManagementAuthority: boolean;
 }
 
 export const HOST_CAPABILITIES: Readonly<Record<SandboxProviderId, HostCapabilities>> = {
-  boat: { goldenRestore: "fresh-fork" },
-  modal: { goldenRestore: "shared-source" },
+  boat: { goldenRestore: "fresh-fork", snapshotManagementAuthority: false },
+  modal: { goldenRestore: "shared-source", snapshotManagementAuthority: true },
 };
 
 /**
