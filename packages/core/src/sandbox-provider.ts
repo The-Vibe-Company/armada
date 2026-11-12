@@ -41,6 +41,11 @@ export interface HostCapabilities {
   /** Dispose a completed disposable builder without creating an unwanted stop checkpoint. */
   readonly goldenBuilderCleanup: "stop" | "delete";
   /**
+   * Stable replacement updates a named snapshot in place. Immutable publication
+   * verifies a fresh source-bound reference, stops the master and publishes by CAS.
+   */
+  readonly goldenSnapshotPublication: "replace-stable" | "publish-immutable";
+  /**
    * Abandoned builds either stop their recorded builder, or reconcile a durable
    * reservation and dispose only through its ownership-checked provider port.
    * Reservation-backed sources must be retained once snapshot/publication starts.
@@ -54,6 +59,7 @@ export const HOST_CAPABILITIES: Readonly<Record<SandboxProviderId, HostCapabilit
   boat: {
     goldenRestore: "fresh-fork",
     reserveExtensionHeadroom: false,
+    goldenSnapshotPublication: "replace-stable",
     goldenBuilderCleanup: "stop",
     goldenBuilderRecovery: "stop-recorded",
     snapshotManagementAuthority: false,
@@ -61,6 +67,7 @@ export const HOST_CAPABILITIES: Readonly<Record<SandboxProviderId, HostCapabilit
   modal: {
     goldenRestore: "shared-source",
     reserveExtensionHeadroom: true,
+    goldenSnapshotPublication: "publish-immutable",
     goldenBuilderCleanup: "delete",
     goldenBuilderRecovery: "dispose-reservation",
     snapshotManagementAuthority: true,
