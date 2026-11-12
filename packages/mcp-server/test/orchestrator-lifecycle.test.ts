@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { createSqlSandboxStore, reserveOrchestratorOperation, type Sql } from "@armada/core/server";
-import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
+import { openMigratedDatabase, resetMigratedDatabaseRows } from "../../../scripts/test-support/migrated-database.ts";
 import { recordOrchestratorActivity } from "../src/orchestrator-activity.ts";
 import { createOrchestratorLifecycle } from "../src/orchestrator-lifecycle.ts";
 import type {
@@ -32,7 +32,7 @@ afterAll(async () => {
 });
 
 async function fixture() {
-  await db.exec(reset);
+  await resetMigratedDatabaseRows(db, reset);
   const { people } = await seedDatabase(db);
   const sql: Sql = {
     query: (q, v) => db.query(q, v),
