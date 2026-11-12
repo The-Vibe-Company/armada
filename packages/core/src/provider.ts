@@ -1,6 +1,7 @@
 import type { Harness } from "./contract.ts";
 import type { MachineSize } from "./machine-size.ts";
 import type { ModelConnectionTestResult } from "./model-connection-test.ts";
+import type { PlanLimit } from "./plan-limit.ts";
 import type { ProviderTarget } from "./sandbox-provider.ts";
 
 /**
@@ -477,7 +478,7 @@ interface EventBase {
 
 /** The common event stream: the same for every harness and provider. */
 export type AgentEvent =
-  | (EventBase & { kind: "prompt"; text: string; status: PromptStatus; reason?: string })
+  | (EventBase & { kind: "prompt"; text: string; status: PromptStatus; reason?: string; limit?: PlanLimit })
   | (EventBase & {
       kind: "message";
       text: string;

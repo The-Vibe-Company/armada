@@ -17,7 +17,7 @@ import {
   KIND_INFO,
 } from "@/lib/model-accounts";
 import {
-  customCodexAccountValue,
+  customAccountValue,
   replacementClaudeAccountValue,
   replacementCodexAccountValue,
 } from "@/lib/model-connection-input";
@@ -86,7 +86,7 @@ export async function addAccount(_previous: ActionResult | null, data: FormData)
   if (!name.ok) return fail(name.error);
   const value =
     data.get("customEndpoint") === "on"
-      ? customCodexAccountValue(kind as AccountKind, data)
+      ? customAccountValue(kind as AccountKind, data)
       : secret(kind as AccountKind, data.get("value"));
   if (!value.ok) return fail(value.error);
 

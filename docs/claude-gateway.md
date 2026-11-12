@@ -103,3 +103,20 @@ No migration or new setting is required; server/runtime must include #1195.
 
 Prerequisite: publish the rebuilt runtime artifact with the server. No schema
 migration or new environment setting. Worker tests make no real endpoint call.
+
+## Dashboard creation fields
+
+Open Models/Harness → Add a model account → Anthropic API key. Name the account and check **Use a custom endpoint (Modal)**. Enter
+the HTTPS gateway base URL, select **Bearer token (Authorization)** or
+**API key (x-api-key)** as required by the gateway, and paste the key in the
+password field. Save with Add API key. The named account uses existing
+launch/template selectors; choose a Modal golden and a Claude model.
+
+Coordinator staging addition: repeat this flow for each supported gateway
+auth mode using the owner-held URL/key. Launch each account with “Reply
+exactly MODEL_OK”, then send a second turn and stop/resume. Expect MODEL_OK
+through the correct gateway path/header; no key in page text, listing or
+logs. Existing Claude subscription/plain-key and Codex custom-endpoint forms
+must remain unchanged. Dedicated replacement fields and the tiny-request
+test action remain subsequent slices; replacement still takes the complete
+connection JSON. This dashboard-only slice has no migration or new settings.

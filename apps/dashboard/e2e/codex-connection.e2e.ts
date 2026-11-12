@@ -172,3 +172,35 @@ test("Claude gateway replacement keeps explicit routing/auth and refuses a stale
   await expect(refused.getByLabel("Gateway authentication")).toHaveValue("api-key");
   await expect(refused.locator('input[name="value"]')).toHaveValue("");
 });
+
+test("Claude gateway creation supports bearer and API-key authentication without keeping the secret", async ({
+  page,
+}, info) => {
+  await signIn(page, "alice@example.com", "/harness");
+  for (const [index, auth] of ["bearer", "api-key"].entries()) {
+    await page.setViewportSize(index === 0 ? { width: 1280, height: 900 } : { width: 390, height: 844 });
+    await page.getByRole("button", { name: "Add a model account", exact: true }).click();
+    const dialog = page.getByRole("dialog");
+    await dialog.getByRole("radio", { name: /Anthropic API key/ }).check();
+    await dialog.getByLabel("Name", { exact: true }).fill(`Gateway ${auth}`);
+    await dialog.getByLabel("Use a custom endpoint (Modal)", { exact: true }).check();
+    await expect(dialog.getByText(/Claude Code supports Claude models only/)).toBeVisible();
+    await expect(dialog.getByLabel("API version (optional)")).toHaveCount(0);
+    await dialog.getByLabel("Base URL", { exact: true }).fill("https://gateway.example.com/anthropic");
+    await dialog.getByLabel("Gateway authentication").selectOption(auth);
+    const input = dialog.locator('input[name="value"]');
+    await expect(input).toHaveAttribute("type", "password");
+    await page.screenshot({
+      path: info.outputPath(`claude-connection-${index}.png`),
+      fullPage: true,
+      animations: "disabled",
+    });
+    const key = randomUUID();
+    await input.fill(key);
+    await dialog.getByRole("button", { name: "Add API key", exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(page.locator(`[data-account="Gateway ${auth}"]`)).toBeVisible();
+    await expect(page.locator("body")).not.toContainText(key);
+    await expect(page.locator('input[name="value"]')).toHaveCount(0);
+  }
+});
