@@ -179,13 +179,13 @@ export {
   type PinnedMcpStdio,
   parsePinnedMcpStdio,
 } from "./mcp-stdio.ts";
-export type { ModelPriceOverrides } from "./model-price-overrides.ts";
 export {
   isModelConnectionTestResult,
   MODEL_CONNECTION_ERROR_CODES,
   type ModelConnectionTestResult,
   modelConnectionErrorCode,
 } from "./model-connection-test.ts";
+export type { ModelPriceOverrides } from "./model-price-overrides.ts";
 export {
   MODEL_PRICE_SOURCES,
   MODEL_PRICES,
