@@ -15,16 +15,52 @@ Follows #1040's relationship-first navigation. The template panel's environment,
 
 Browser coverage follows a template → environment → template → variable on desktop and phone, verifies the tool/account destinations, checks partial-revision usage and secret/skill metadata links. Existing Templates and Build-section checks run alongside it. Dashboard unit tests and full-repo lint/typecheck also run locally. Independent review and CI belong to coordinator automation; no CI polling.
 
-## Rendered mock-data captures
+## Before / after captures (mock data)
 
-### Template ingredients
+Baseline: the template/environment page sources at `368423dcb1d5d1db3fd5bc48982f25e67116639f` (this slice's original base), rebuilt against the same disposable mock. Desktop: 1280×900; phone: 390×844; light theme. After captures use this PR's implementation. Images link to full-resolution captures.
 
-![Desktop template ingredients](template-cross-links/template-links-desktop.png)
+### Template ingredients — desktop
 
-![Phone template ingredients](template-cross-links/template-links-phone.png)
+**Before**
 
-### Environment → templates
+![desktop Template ingredients before](template-cross-links/template-links-before-desktop.png)
 
-![Desktop environment templates](template-cross-links/environment-template-links-desktop.png)
+**After**
 
-![Phone environment templates](template-cross-links/environment-template-links-phone.png)
+![desktop Template ingredients after](template-cross-links/template-links-desktop.png)
+
+### Template ingredients — phone
+
+**Before**
+
+![phone Template ingredients before](template-cross-links/template-links-before-phone.png)
+
+**After**
+
+![phone Template ingredients after](template-cross-links/template-links-phone.png)
+
+### Environment → templates — desktop
+
+**Before**
+
+![desktop Environment → templates before](template-cross-links/environment-template-links-before-desktop.png)
+
+**After**
+
+![desktop Environment → templates after](template-cross-links/environment-template-links-desktop.png)
+
+### Environment → templates — phone
+
+**Before**
+
+![phone Environment → templates before](template-cross-links/environment-template-links-before-phone.png)
+
+**After**
+
+![phone Environment → templates after](template-cross-links/environment-template-links-phone.png)
+
+### Phone: long-key regression
+
+Both keys below are valid 128-character synthetic identifiers. The browser regression checks individual text-fragment bounds, link/row overflow and version-label bounds inside the sheet. It fails on the pre-fix badge (one clipped line) and passes with shrinking and unbroken-text wrapping enabled.
+
+![Phone: complete long variable and secret keys beside their versions](template-cross-links/template-links-long-keys-phone.png)

@@ -248,7 +248,7 @@ function row(item: TemplateItem, context: RowContext): ResourceRow & { bucket: B
             {definition.variables.length ? (
               <ul className="space-y-1 font-mono text-xs">
                 {definition.variables.map((binding) => (
-                  <li key={binding.key} className="flex justify-between gap-3">
+                  <li key={binding.key} className="flex min-w-0 justify-between gap-3">
                     {lookups.variables?.some((variable) => variable.id === binding.variableId) ? (
                       <IngredientLink
                         href={`/variables?item=${encodeURIComponent(itemKey({ kind: "variable", id: binding.variableId }))}`}
@@ -256,7 +256,7 @@ function row(item: TemplateItem, context: RowContext): ResourceRow & { bucket: B
                         {binding.key}
                       </IngredientLink>
                     ) : (
-                      <span className="truncate">{binding.key}</span>
+                      <span className="min-w-0 [overflow-wrap:anywhere]">{binding.key}</span>
                     )}
                     <span className="shrink-0 font-sans text-muted-foreground tabular-nums">v{binding.version}</span>
                   </li>
@@ -270,7 +270,7 @@ function row(item: TemplateItem, context: RowContext): ResourceRow & { bucket: B
             <PanelSection title="Secrets">
               <ul className="space-y-1 text-xs">
                 {definition.secrets?.map((binding) => (
-                  <li key={binding.key} className="flex items-center justify-between gap-3">
+                  <li key={binding.key} className="flex min-w-0 items-center justify-between gap-3">
                     {lookups.secrets?.some((secret) => secret.id === binding.secretId) ? (
                       <IngredientLink
                         href={`/variables?item=${encodeURIComponent(itemKey({ kind: "secret", id: binding.secretId }))}`}
@@ -278,7 +278,7 @@ function row(item: TemplateItem, context: RowContext): ResourceRow & { bucket: B
                         {binding.key}
                       </IngredientLink>
                     ) : (
-                      <span>{binding.key}</span>
+                      <span className="min-w-0 [overflow-wrap:anywhere]">{binding.key}</span>
                     )}
                     <span className="shrink-0 text-muted-foreground tabular-nums">v{binding.version}</span>
                   </li>

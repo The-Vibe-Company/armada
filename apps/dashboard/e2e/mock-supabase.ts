@@ -2408,12 +2408,13 @@ function control(url: URL, body: Row): Response {
     // Keep a visible header but make its current revision unreadable, as a partial control API read can be.
     if (body.missingTemplateRevision)
       state.templateRevisions = state.templateRevisions.filter((row) => row.templateId !== id(91));
-    if (body.templateReferenceExtras) {
+    if (body.templateReferenceExtras || body.longTemplateKeys) {
       const revision = state.templateRevisions.find((row) => row.templateId === id(90) && row.revision === 2);
       if (revision)
         Object.assign(revision.definition as Row, {
           skills: ["notes@1.0.0"],
-          secrets: [{ key: "STRIPE_API_KEY", secretId: id(81), version: 1 }],
+          secrets: [{ key: body.longTemplateKeys ? "S".repeat(128) : "STRIPE_API_KEY", secretId: id(81), version: 1 }],
+          ...(body.longTemplateKeys ? { variables: [{ key: "V".repeat(128), variableId: id(80), version: 3 }] } : {}),
         });
     }
     pendingOAuth.clear();
