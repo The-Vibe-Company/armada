@@ -16,7 +16,7 @@ test("a signed-out visitor is sent to the login page and back after signing in",
   await expect(page.getByText("Sign in to Armada")).toBeVisible();
 
   await signIn(page, "alice@example.com", "/harness");
-  await expect(page.getByRole("heading", { name: "Harness" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Models" })).toBeVisible();
   await expect(page.getByRole("link", { name: "Sandboxes" })).toBeVisible();
 });
 

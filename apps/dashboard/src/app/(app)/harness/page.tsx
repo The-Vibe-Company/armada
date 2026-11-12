@@ -24,7 +24,7 @@ import {
   orderAccounts,
 } from "@/lib/model-accounts";
 
-export const metadata: Metadata = { title: "Harness" };
+export const metadata: Metadata = { title: "Models" };
 export const dynamic = "force-dynamic";
 
 /**
@@ -43,7 +43,7 @@ export default async function HarnessPage() {
   return (
     <>
       <PageHeader
-        title="Harness"
+        title="Models"
         description="The subscriptions Claude Code and Codex run on. Each launch bills the one it names."
       >
         {selected && accounts.state === "ready" && (
