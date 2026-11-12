@@ -206,6 +206,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
     if (env.ARMADA_SMOKE !== "create_real_compute") fail("compute_opt_in_required");
     if (
       ((defaultSkills || scopedAccess) && !preservation) ||
+      (scopedAccess && orchestrator) ||
       (githubRefresh && (!lifecycle || orchestrator)) ||
       (expiry && (orchestrator || (!lifecycle && args.length > 1))) ||
       (goldenRuntime && (orchestrator || (templatesSkills && !preservation && !lifecycle))) ||
@@ -681,6 +682,9 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
             id: string;
             provider: string;
             skills?: unknown;
+            harness?: string;
+            model?: string;
+            reasoningEffort?: string;
             credentialId?: string;
             credentialVersion?: number;
             visibility?: string;
@@ -711,6 +715,9 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
         if (scopedPair)
           await step("scoped_parent_configuration", async () => {
             if (
+              result.sandbox.harness !== item.harness ||
+              result.sandbox.model !== item.model ||
+              (item.reasoningEffort && result.sandbox.reasoningEffort !== item.reasoningEffort) ||
               result.sandbox.credentialId !== item.modelAccountId ||
               !Number.isSafeInteger(result.sandbox.credentialVersion) ||
               Number(result.sandbox.credentialVersion) < 1 ||
@@ -1146,7 +1153,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
         }
       }
     }
-    if (scoped && !(await scoped.cleanup(sandboxId, stopped))) passed = false;
+    if (scoped && !(await scoped.cleanup(sandboxId, stopped, launchAttempted))) passed = false;
     if (preservation)
       io.out(
         JSON.stringify({

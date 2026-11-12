@@ -979,6 +979,7 @@ describe("preservation checks", () => {
                         goldenId: defaultGolden,
                         credentialId: scopeAccount,
                         credentialVersion: 7,
+                        model: selected.model,
                         events: [
                           {
                             id: "child-answer",
@@ -1049,7 +1050,15 @@ describe("preservation checks", () => {
               sandbox: {
                 id: sandboxId,
                 provider,
-                ...(scopes ? { credentialId: scopeAccount, credentialVersion: 7, visibility: "private" } : {}),
+                ...(scopes
+                  ? {
+                      harness: "codex",
+                      model: selected.model,
+                      credentialId: scopeAccount,
+                      credentialVersion: 7,
+                      visibility: "private",
+                    }
+                  : {}),
                 ...(defaults
                   ? {
                       skills: receipts(
@@ -1427,10 +1436,10 @@ test("scoped access validates its matched control pair and explicit account IDs 
     ...selected,
     org: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
     goldenId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-              modelAccountId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
     modelAccountId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
   };
   for (const config of [
+    { args: ["--orchestrator", "--work-preservation", "--scoped-access"], cases: [valid] },
     { args: ["--scoped-access"], cases: [valid] },
     { args: ["--work-preservation", "--scoped-access"], cases: [valid, { ...valid, modelAccountId: "invalid" }] },
   ]) {

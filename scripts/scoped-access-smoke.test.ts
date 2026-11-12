@@ -121,6 +121,8 @@ function fixture(enabled = true) {
                   goldenId: item.goldenId,
                   credentialId: item.modelAccountId,
                   credentialVersion: 7,
+                  model: item.model,
+                  reasoningEffort: item.reasoningEffort,
                   events: [
                     {
                       id: "child-answer",
@@ -285,6 +287,10 @@ describe("ordinary scoped Armada smoke", () => {
     "reordered",
     "exec-fallback",
     "wrong-binding",
+    "wrong-model",
+    "wrong-effort",
+    "rebound-call",
+    "orphan-result",
     "retracted-tools",
   ])("positive requires correlated native evidence: %s", async (mode) => {
     const f = fixture();
@@ -310,9 +316,47 @@ describe("ordinary scoped Armada smoke", () => {
       if (mode === "wrong-binding")
         (at(tools, 2).result.output as { structuredContent: { result: Obj } }).structuredContent.result.credentialId =
           other;
+      if (mode === "wrong-model" || mode === "wrong-effort")
+        (at(tools, 2).result.output as { structuredContent: { result: Obj } }).structuredContent.result[
+          mode === "wrong-model" ? "model" : "reasoningEffort"
+        ] = "wrong";
+      if (mode === "rebound-call")
+        tools.unshift({ ...at(tools), name: "commandExecution", input: { command: "unsafe" } });
+      if (mode === "orphan-result") tools.push(f.wire("tool_result", {}, {}));
       if (mode === "retracted-tools") f.state.retracted = true;
     };
     await expect(run(f)).rejects.toThrow("scoped_");
+  });
+
+  test.each([true, false])("rejects non-MCP native actions in either control (enabled=%s)", async (enabled) => {
+    const f = fixture(enabled);
+    if (!enabled) f.state.noTools = true;
+    const request = f.probe.run.bind(f.probe);
+    await f.probe.prepare();
+    const running = request(parent, 7);
+    // Events are returned by reference in this wire fixture; inject the normalized
+    // provider action before the awaited send receipt continues.
+    f.state.events.push({
+      id: "side-effect",
+      promptId: "turn",
+      kind: "other",
+      type: "item/completed",
+      data: { item: { type: "fileChange" } },
+    });
+    await expect(running).rejects.toThrow("scoped_unapproved_native_action");
+  });
+
+  test("unknown parent allocation cannot report a clean scoped inventory", async () => {
+    const f = fixture();
+    f.state.after = [];
+    await f.probe.prepare();
+    expect(await f.probe.cleanup(undefined, false, true)).toBe(false);
+    expect(f.output.at(-1)).toMatchObject({
+      step: "scoped_cleanup_summary",
+      pass: false,
+      unknownParent: true,
+      unknownFutureChildren: true,
+    });
   });
 
   test.each([true, false])(

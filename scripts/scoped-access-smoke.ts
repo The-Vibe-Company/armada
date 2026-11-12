@@ -153,6 +153,31 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
   function calls(turnOnly: boolean): Call[] {
     const found = new Map<string, Call>();
     for (const event of events.values()) {
+      if (turnOnly && event.promptId === promptId && event.kind === "other") {
+        const type = row(row(event.data).item).type;
+        const metadata = [
+          "reasoning",
+          "plan",
+          "userMessage",
+          "agentMessage",
+          "contextCompaction",
+          "enteredReviewMode",
+          "exitedReviewMode",
+          "usage",
+          "metadata",
+        ];
+        const eventType = typeof event.type === "string" ? event.type : "";
+        if (
+          type !== undefined
+            ? !metadata.includes(String(type))
+            : ["item/started", "item/completed"].includes(eventType) ||
+              (eventType.startsWith("item/") && !/^item\/(reasoning|agentMessage|plan)\//.test(eventType)) ||
+              /^(tool|command|exec|file|write|read|search|websearch|dynamictool|collabagent|subagent|image|functioncall|hookprompt)/.test(
+                eventType.toLowerCase().replace(/[_-]/g, ""),
+              )
+        )
+          fail("scoped_unapproved_native_action");
+      }
       if (
         event.kind !== "message" ||
         (turnOnly &&
@@ -169,10 +194,12 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
         const name = tool.name.replace(/^mcp__armada_orchestrator__/, "");
         const input =
           tool.input === undefined && found.has(tool.id) ? found.get(tool.id)!.input : row(decoded(tool.input));
-        if (referenceRead(name, input)) continue;
+        const previous = found.get(tool.id);
+        if (previous && (previous.name !== name || JSON.stringify(previous.input) !== JSON.stringify(input)))
+          fail("scoped_rebound_call");
+        if (name === "tool_result") fail("scoped_uncorrelated_result");
         const result = row(tool.result);
         const output = unpack(result.output);
-        const previous = found.get(tool.id);
         if (!previous || tool.result !== undefined)
           found.set(tool.id, {
             id: tool.id,
@@ -183,7 +210,7 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
           });
       }
     }
-    return [...found.values()];
+    return [...found.values()].filter((call) => !referenceRead(call.name, call.input));
   }
   function selected(input: Row): boolean {
     const chosen = row(input.selection);
@@ -336,7 +363,9 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
           call.result.harness === "codex" &&
           call.result.goldenId === item.goldenId &&
           call.result.credentialId === item.modelAccountId &&
-          call.result.credentialVersion === credentialVersion;
+          call.result.credentialVersion === credentialVersion &&
+          call.result.model === item.model &&
+          (!item.reasoningEffort || call.result.reasoningEffort === item.reasoningEffort);
         const answered = (call: Call) =>
           !call.error &&
           boundRead(call) &&
@@ -381,10 +410,10 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
         });
       });
     },
-    async cleanup(id: string | undefined, parentQuiesced: boolean): Promise<boolean> {
+    async cleanup(id: string | undefined, parentQuiesced: boolean, parentLaunchAttempted = false): Promise<boolean> {
       return io.withCleanup(async () => {
         const parent = parentId ?? id;
-        const unknownParent = !!parent && !parentQuiesced;
+        const unknownParent = (!!parent || parentLaunchAttempted) && !parentQuiesced;
         let ok = !unknownParent;
         if (parent) {
           try {
@@ -405,7 +434,12 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
           } catch {
             ok = false;
           }
-          adopt();
+          try {
+            adopt();
+          } catch {
+            evidenceUnknown = true;
+            ok = false;
+          }
         }
         let after: Set<string> | undefined;
         try {
