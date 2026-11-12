@@ -1564,7 +1564,10 @@ test("golden runtime integrity probes are staging-only, fail closed, and retain 
   ]) {
     const invalid = fixture();
     expect(
-      await postDeploySmoke({ ...env, ...(flags.length > 1 ? { ARMADA_URL: staging } : {}) }, flags, invalid.io),
+      await postDeploySmoke({ ...env, ...(flags.length > 1 ? { ARMADA_URL: staging } : {}) }, flags, {
+        ...invalid.io,
+        fetch: (url, init) => invalid.io.fetch(url.replace(staging, env.ARMADA_URL), init),
+      }),
     ).toBe(false);
     expect(invalid.calls).toHaveLength(0);
   }
