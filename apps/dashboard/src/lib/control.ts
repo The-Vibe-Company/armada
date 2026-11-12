@@ -18,6 +18,7 @@ import {
   parsePreview,
   type RecipientPreview,
 } from "./invitations.ts";
+import type { RoutineSchedulePreview } from "./routine-schedule.ts";
 import { parseRoutine, parseRoutineRun, type RoutineInput, routineFailure } from "./routines.ts";
 import {
   type LaunchOutcome,
@@ -555,6 +556,43 @@ export function createRoutineControl(options: ArmadaApiOptions) {
       const items = payload.items.map(parseRoutine);
       if (items.some((x) => !x)) throw new ControlError("The Armada server sent an unexpected routine.");
       return items.filter((x): x is NonNullable<typeof x> => !!x && x.orgId === org && x.status !== "deleted");
+    },
+    async preview(request: { org: string; cron: string; timezone: string }): Promise<RoutineSchedulePreview> {
+      const payload = await post("preview", request);
+      if (
+        typeof payload.cron !== "string" ||
+        !payload.cron.trim() ||
+        payload.cron.length > 200 ||
+        typeof payload.timezone !== "string" ||
+        !payload.timezone.trim() ||
+        payload.timezone.length > 100 ||
+        typeof payload.description !== "string" ||
+        !payload.description.trim() ||
+        payload.description.length > 1000 ||
+        typeof payload.asOf !== "string" ||
+        !Number.isFinite(Date.parse(payload.asOf)) ||
+        !Array.isArray(payload.nextRuns) ||
+        payload.nextRuns.length !== 3 ||
+        payload.nextRuns.some((date) => typeof date !== "string" || !Number.isFinite(Date.parse(date)))
+      )
+        throw new ControlError("The Armada server sent an unexpected schedule preview.");
+      try {
+        new Intl.DateTimeFormat("en", { timeZone: payload.timezone });
+      } catch {
+        throw new ControlError("The Armada server sent an unexpected schedule time zone.");
+      }
+      let previous = Date.parse(payload.asOf);
+      for (const date of payload.nextRuns) {
+        if (Date.parse(date) <= previous) throw new ControlError("The Armada server sent unexpected schedule times.");
+        previous = Date.parse(date);
+      }
+      return {
+        cron: payload.cron,
+        timezone: payload.timezone,
+        description: payload.description,
+        nextRuns: payload.nextRuns,
+        asOf: payload.asOf,
+      };
     },
     create: (request: RoutineInput & { org: string }) => saved("create", request),
     enable: (request: { org: string; id: string; expectedVersion: number }) => saved("enable", request),
