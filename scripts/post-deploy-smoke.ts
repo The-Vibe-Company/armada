@@ -18,6 +18,7 @@ import type {
   OrchestratorOperation,
 } from "../packages/core/src/orchestrator.ts";
 import { DefaultSkillSmokeFailure, readDefaultPins, verifyDefaultReceipts } from "./default-skill-smoke.ts";
+import { ExpirySmokeFailure, runExpiryCase } from "./expiry-smoke.ts";
 import { runTemplateSkillCase, TemplateSkillSmokeFailure } from "./template-skill-smoke.ts";
 import { runVaultCase, VaultSmokeFailure } from "./vault-smoke.ts";
 
@@ -174,6 +175,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
                 error instanceof SmokeFailure ||
                 error instanceof TemplateSkillSmokeFailure ||
                 error instanceof DefaultSkillSmokeFailure ||
+                error instanceof ExpirySmokeFailure ||
                 error instanceof VaultSmokeFailure
                   ? error.code
                   : "invalid_response",
@@ -191,11 +193,13 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
   const templatesSkills = args.includes("--templates-skills");
   const vault = args.includes("--vault");
   const lifecycle = args.includes("--lifecycle");
+  const expiry = args.includes("--expiry");
   try {
     if (env.ARMADA_SMOKE !== "create_real_compute") fail("compute_opt_in_required");
     if (
       (defaultSkills && !preservation) ||
-      (github && (orchestrator || preservation || templatesSkills || defaultSkills || lifecycle || vault)) ||
+      (expiry && (orchestrator || (!lifecycle && args.length > 1))) ||
+      (github && (orchestrator || preservation || templatesSkills || defaultSkills || expiry || lifecycle || vault)) ||
       args.some(
         (arg) =>
           arg !== "--orchestrator" &&
@@ -204,6 +208,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
           arg !== "--templates-skills" &&
           arg !== "--default-skills" &&
           arg !== "--lifecycle" &&
+          arg !== "--expiry" &&
           arg !== "--vault",
       ) ||
       !env.ARMADA_URL ||
@@ -216,7 +221,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
       fail("invalid_configuration");
     origin = url.origin;
     if (
-      (preservation || templatesSkills || defaultSkills || lifecycle || vault) &&
+      (preservation || templatesSkills || defaultSkills || expiry || lifecycle || vault) &&
       origin !== "https://armada-mcp-staging.up.railway.app"
     )
       fail("invalid_configuration");
@@ -440,6 +445,37 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
     // preservation baseline as well, under the same shared deadline.
     if (!preservation && !lifecycle) return templateSkillsPassed && vaultPassed;
   }
+  let expiryPassed = true;
+  if (expiry) {
+    for (const [index, item] of cases.entries()) {
+      const result = await runExpiryCase(item, {
+        request,
+        now: io.now,
+        sleep: io.sleep,
+        out: (line) => io.out(JSON.stringify({ ...JSON.parse(line), case: index })),
+        step: async (name, action) => {
+          try {
+            const value = await action();
+            report(index, name);
+            return value;
+          } catch (error) {
+            report(index, name, error);
+            throw error;
+          }
+        },
+        withCleanup: async (action) => {
+          cleaning = true;
+          try {
+            return await action();
+          } finally {
+            cleaning = false;
+          }
+        },
+      });
+      expiryPassed &&= result;
+    }
+    if (args.length === 1) return expiryPassed;
+  }
   // Validate the entire selected matrix before any billable mutation. A later
   // disabled case must not be discovered after earlier cases have allocated.
   if (orchestrator) {
@@ -468,7 +504,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
       return false;
     }
   }
-  let passed = templateSkillsPassed && vaultPassed;
+  let passed = templateSkillsPassed && vaultPassed && expiryPassed;
   for (const { index, item, dirty } of cases.flatMap((item, index) =>
     (preservation ? [false, true] : [false]).map((dirty) => ({ index, item, dirty })),
   )) {

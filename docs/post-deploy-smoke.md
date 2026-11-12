@@ -459,3 +459,41 @@ Cost: three read-only policy calls per pair and two status reads, plus only the
 installs already implied by normal defaults. No policy rows, writes, new secrets,
 migrations or extra workers. Model/registry latency stays inside the shared
 35-minute work +5-minute cleanup deadline; slow or changing policies fail closed.
+
+### Ordinary expiry-as-stop (#969)
+
+Both staging entrypoints add `--expiry`. Standalone
+`bun scripts/post-deploy-smoke.ts --expiry` runs only this family.
+It is admitted only on the exact staging origin. Combined mode requires
+`--lifecycle`, so template-only early returns cannot silently skip the probe;
+orchestrator combinations are refused.
+
+For every selected pair, launch one additional prompt-free ordinary worker
+with a 180-second logical TTL, no connections and default skills opted out.
+Named `expiry_launch`, `expiry_ready` and `expiry_deadline` steps check its
+identity, readiness, persisted effective TTL and bounded expiry receipt.
+`expiry_time_to_ready` records readiness immediately, before waiting for TTL.
+
+`expiry_as_stop` polls status without sending, extending or explicitly stopping
+the worker. Success requires logical stopped, the matching physical stopped
+state (Boat archived / Modal stopped), unchanged expiry, reason exactly
+`expired`, and a stopped timestamp at or after that expiry. Failed workers,
+early/manual-looking stops, changed deadlines and provider hard exits without
+the expiry reason cannot count as proof.
+
+A failing known worker gets one explicit cleanup-stop attempt plus read-only
+reconciliation (never mutation replay). That cleanup cannot convert the expiry
+verdict to success. `expiry_cleanup_summary` reports leftover IDs or ambiguous
+launches with org/golden/start time. Lost create responses are never retried.
+This is not a resource janitor: an interrupted runner or unknown create still
+requires operator reconciliation.
+
+Expected added duration: about 3–5 minutes per pair, sequentially; no model
+turns, one extra short-lived worker per pair plus normal retained-disk cost.
+Each request remains bounded by the existing shared 35-minute work deadline
+and five-minute cleanup reserve. Ready polling allows 120 observations,
+natural expiry 360, cleanup 120, each separated by one second; slow matrices
+can exhaust the shared deadline and fail closed. Staging operators must budget
+this extra compute time. No production, new capabilities or migrations.
+The coordinator executes both providers after merge; fake transport tests
+prove verdicts and cleanup, not real-provider expiry success.
