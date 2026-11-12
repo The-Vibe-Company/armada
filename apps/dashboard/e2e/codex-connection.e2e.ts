@@ -10,9 +10,8 @@ test("Codex custom endpoint creation accepts both Foundry URL forms without retu
   await signIn(page, "alice@example.com", "/harness");
   for (const [index, suffix] of ["", "/responses"].entries()) {
     await page.setViewportSize(index === 0 ? { width: 1280, height: 900 } : { width: 390, height: 844 });
-    await page.getByRole("button", { name: "Add a subscription", exact: true }).click();
+    await page.getByRole("button", { name: "Add a model account", exact: true }).click();
     const dialog = page.getByRole("dialog");
-    await dialog.getByRole("button", { name: "Use an API key instead" }).click();
     await dialog.getByRole("radio", { name: /OpenAI API key/ }).check();
     await dialog.getByLabel("Name", { exact: true }).fill(`Foundry ${index}`);
     await dialog.getByLabel("Use a custom endpoint (Modal)", { exact: true }).check();
