@@ -48,3 +48,30 @@ export function replacementCodexAccountValue(
     return { ok: false, error: "Paste a valid OpenAI API key." };
   }
 }
+
+/** A sealed Claude gateway cannot be inferred on rotation; the destination is explicit. */
+export function replacementClaudeAccountValue(
+  data: FormData,
+): { ok: true; value: string } | { ok: false; error: string } {
+  const mode = data.get("connectionMode");
+  if (mode !== "anthropic" && mode !== "custom") return { ok: false, error: "Choose the replacement connection type." };
+  const raw = data.get("value");
+  if (typeof raw !== "string" || raw.trim().startsWith("{"))
+    return { ok: false, error: "Paste only the new key, not connection JSON." };
+  try {
+    if (mode === "anthropic") return { ok: true, value: parseCredentialValue("anthropic", raw) };
+    const baseUrl = data.get("baseUrl");
+    if (typeof baseUrl !== "string" || (data.get("apiVersion") !== null && data.get("apiVersion") !== ""))
+      throw Error();
+    const endpoint = parseClaudeEndpoint({ version: 1, baseUrl: baseUrl.trim(), auth: data.get("endpointAuth") });
+    return { ok: true, value: parseCredentialValue("anthropic", JSON.stringify({ endpoint, apiKey: raw.trim() })) };
+  } catch {
+    return {
+      ok: false,
+      error:
+        mode === "anthropic"
+          ? "Paste a valid Anthropic API key."
+          : "Enter an HTTPS Claude gateway base URL, bearer or API-key authentication, and a valid key. URL credentials, query strings and fragments are not supported.",
+    };
+  }
+}
