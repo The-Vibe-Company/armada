@@ -150,14 +150,14 @@ test("native collection persists retry-safe rows and preserves measurements when
     const delayed = await readStatus(provider, store, (await store.get(id))!, { now: new Date("2026-01-01") });
     expect(delayed.status).toBe("ready");
     expect(delayed.usage?.tokenTotals?.inputTokens).toBe(42);
-    expect((await store.get(id))?.usage?.turns).toEqual([row]);
+    expect((await store.get(id))?.usage?.turns).toEqual([{ ...row, pricing: null }]);
     for (const retry of [false, true]) {
       await collectSandboxUsage(provider, store, (await store.get(id))!);
       expect((await store.get(id))?.usage).toMatchObject({ turnCount: 1, turns: [row] });
       if (retry) available = false;
     }
     await collectSandboxUsage(provider, store, (await store.get(id))!);
-    expect((await store.get(id))?.usage?.turns).toEqual([row]);
+    expect((await store.get(id))?.usage?.turns).toEqual([{ ...row, pricing: null }]);
     // Stop still knows its target when provider history and native files are unavailable.
     provider.events = async () => {
       throw new Error("history unavailable");
@@ -173,11 +173,14 @@ test("native collection persists retry-safe rows and preserves measurements when
     await store.recordUsage!(id, { turnCount: 1, turns: [{ ...later, inputTokens: 50 }, row] });
     const measured = (await store.get(id))?.usage;
     expect(measured?.turnCount).toBe(2);
-    expect(measured?.turns).toEqual([row, later]);
+    expect(measured?.turns).toEqual([
+      { ...row, pricing: null },
+      { ...later, pricing: null },
+    ]);
     expect(measured?.tokenTotals?.inputTokens).toBe(142);
     const unknownModel = { ...row, model: null, inputTokens: 7 };
     await store.recordUsage!(id, { turnCount: 2, turns: [unknownModel] });
-    expect((await store.get(id))?.usage?.turns).toContainEqual(unknownModel);
+    expect((await store.get(id))?.usage?.turns).toContainEqual({ ...unknownModel, pricing: null });
     // A stale diagnostic writer must not attach an unavailable reason to
     // concurrently retained numeric observations, including unknown-model rows.
     await store.recordUsage!(id, {
@@ -192,7 +195,7 @@ test("native collection persists retry-safe rows and preserves measurements when
         },
       ],
     });
-    expect((await store.get(id))?.usage?.turns).toContainEqual(unknownModel);
+    expect((await store.get(id))?.usage?.turns).toContainEqual({ ...unknownModel, pricing: null });
     const diagnostic = {
       promptId: "diagnostic",
       model: null,

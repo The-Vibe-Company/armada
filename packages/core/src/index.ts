@@ -331,6 +331,7 @@ export {
 } from "./templates.ts";
 export { redactKnownTokens } from "./token-redaction.ts";
 export { type ModelSelectionReason, type TurnModelEvidence, turnModelEvidence } from "./turn-model.ts";
+export type { PricingInputs, StoredTurnPricing, TurnPriceContext } from "./turn-pricing.ts";
 export {
   type AccountMutation,
   addMember,

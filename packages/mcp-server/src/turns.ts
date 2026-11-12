@@ -412,6 +412,7 @@ export async function collectSandboxUsage(
     const history = await allEvents(provider, sandbox.providerSandboxId, true, EVENT_PAGES).catch(() => null);
     const events = history ?? [];
     const collected = reportedTurnUsage(events);
+    const observations = [...collected.turns];
     const retained = (await store.get(sandbox.id))?.usage ?? sandbox.usage;
     const rows = new Map((retained?.turns ?? []).map((row) => [JSON.stringify([row.promptId, row.model]), row]));
     for (const row of collected.turns) rows.set(JSON.stringify([row.promptId, row.model]), row);
@@ -432,6 +433,7 @@ export async function collectSandboxUsage(
           });
           for (const row of native) {
             if (row.promptId !== promptId) continue;
+            observations.push(row);
             const prior = [...rows.values()].filter((known) => known.promptId === promptId);
             if (row.unavailableReason && prior.some(hasReportedCounters)) continue;
             if (row.unavailableReason?.code === "compute_inactive" && prior.some((known) => known.unavailableReason))
@@ -472,10 +474,14 @@ export async function collectSandboxUsage(
       targetPromptId ? 1 : 0,
       new Set([...rows.values()].map((r) => r.promptId)).size,
     );
-    await store.recordUsage(sandbox.id, {
-      turnCount: history === null && knownTurns === 0 ? null : knownTurns,
-      turns: [...rows.values()],
-    });
+    await store.recordUsage(
+      sandbox.id,
+      {
+        turnCount: history === null && knownTurns === 0 ? null : knownTurns,
+        turns: [...rows.values()],
+      },
+      { observations },
+    );
   } catch {
     /* Optional telemetry never changes lifecycle success. */
   }
