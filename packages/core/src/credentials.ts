@@ -5,6 +5,7 @@ import { decryptSecret, EncryptionKeyError } from "./crypto.ts";
 import type { CredentialKind, CredentialScope } from "./database.types.ts";
 import type { GitHubAccess } from "./github.ts";
 import type { GoldenActor } from "./golden.ts";
+import { mapHarnesses } from "./harnesses.ts";
 import { LaunchError } from "./launch-error.ts";
 import { type ModelPriceOverrides, parseModelPriceOverrides } from "./model-price-overrides.ts";
 import { SKILLPACK_TOKEN_PATTERN } from "./skillpack-token.ts";
@@ -179,10 +180,9 @@ export const CREDENTIAL_KINDS: Readonly<Record<CredentialKind, KindInfo>> = {
  * The credential kinds each harness runs on. Within one scope, the first kind a harness finds wins. The two Claude
  * kinds never reach the sandbox together. Published by `launch/options` so a client never keeps its own copy.
  */
-export const HARNESS_KINDS: Readonly<Record<Harness, readonly CredentialKind[]>> = {
-  claude: ["claude_oauth", "anthropic"],
-  codex: ["openai", "codex_auth"],
-};
+export const HARNESS_KINDS: Readonly<Record<Harness, readonly CredentialKind[]>> = mapHarnesses(
+  (descriptor) => descriptor.credentialKinds,
+);
 
 export function parseCredentialKind(name: string): CredentialKind {
   const wanted = name.trim().toLowerCase().replaceAll("_", "-");
