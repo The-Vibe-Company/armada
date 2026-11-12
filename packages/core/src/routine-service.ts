@@ -283,13 +283,10 @@ export function createRoutineService(sql: Sql) {
             timezone = current.timezone;
           } else {
             const schedule = cronForLegacyInterval(interval, new Date(now!.getTime() + interval * 3600000));
-            if (!schedule)
-              throw new VaultError(
-                "invalid",
-                "This elapsed interval cannot be expressed exactly as cron. Supply cron and timezone.",
-              );
-            cron = schedule.cron;
-            timezone = schedule.timezone;
+            // Additive rollout: the still-shipped v1 clients support arbitrary elapsed
+            // hours. Preserve that contract until their cron controls are available.
+            cron = schedule?.cron ?? null;
+            timezone = schedule?.timezone ?? "UTC";
           }
         }
         const next =

@@ -272,6 +272,13 @@ test("cron API validates schedules, previews three instants from the database cl
       nextDueAt: null,
     });
     expect(item.scheduleDescription).toContain("09:00");
+    const legacy = (await f.command("create", { ...config, scope: "personal", intervalHours: 7 })).item as Routine;
+    expect(legacy).toMatchObject({ cron: null, timezone: "UTC", intervalHours: 7, status: "paused" });
+    expect(legacy.scheduleDescription).toContain("legacy UTC timing");
+    const legacyUpdated = (
+      await f.command("update", { ...config, intervalHours: 25, id: legacy.id, expectedVersion: 1 })
+    ).item as Routine;
+    expect(legacyUpdated).toMatchObject({ cron: null, intervalHours: 25, version: 2 });
     const preview = await f.command("preview", { cron: item.cron, timezone: item.timezone });
     const dates = preview.nextRuns as string[];
     expect(dates).toHaveLength(3);

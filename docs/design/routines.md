@@ -49,8 +49,10 @@ arbitrary elapsed intervals such as 7, 25 or 48 hours across month boundaries.
 Those existing routines retain their exact UTC interval timing, `cron: null`
 and an explicitly labeled legacy description until the owner edits to cron.
 They are not silently approximated, disabled or lost. Existing v1 create/write
-requests remain accepted only for representable intervals; metadata updates to
-an unchanged legacy interval preserve it. The next CLI and dashboard slices
+requests remain accepted for every advertised 1–720-hour interval during the
+additive rollout, preserving exact legacy timing where conversion is impossible.
+This avoids breaking the still-shipped clients before their cron controls land;
+canonical clients use cron/timezone instead. The next CLI and dashboard slices
 replace the old creation controls; their existing list/detail readers already
 accept canonical cron DTOs. Owner confirmation of this compatibility choice
 is requested; it is not a claim that arbitrary elapsed intervals equal cron.
