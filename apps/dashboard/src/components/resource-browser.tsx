@@ -222,16 +222,26 @@ export function ResourceBrowser({
 
   useEffect(() => {
     if (!detailPanel) return;
+    const reconcile = () => setChosen(new URL(window.location.href).searchParams.get(ITEM_PARAM));
     const sync = () => {
       syncResourceHistory();
-      const key = new URL(window.location.href).searchParams.get(ITEM_PARAM);
-      setChosen(key);
+      reconcile();
     };
     window.addEventListener("popstate", sync);
     // Back may precede hydration/subscription, or resume a retained route tree.
     // Initial props are not authoritative once native history has moved.
-    sync();
-    return () => window.removeEventListener("popstate", sync);
+    reconcile();
+    // Child effects run before the router's on a first mount. Write history only
+    // after the router has patched it and replayed a missed Back, so the entry
+    // keeps the router's own state and the next dismissal stays in this document.
+    let live = true;
+    queueMicrotask(() => {
+      if (live) syncResourceHistory();
+    });
+    return () => {
+      live = false;
+      window.removeEventListener("popstate", sync);
+    };
   }, [detailPanel]);
 
   // Escape closes the panel, unless a dialog opened from it is the one being closed.

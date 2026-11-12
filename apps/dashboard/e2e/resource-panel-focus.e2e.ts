@@ -201,6 +201,17 @@ test("Back before a reloaded detail hydrates still restores the row and carries 
   await expect(row.locator("[data-select-item]")).toBeFocused();
   await expect(panel).toBeHidden();
   expect(new URL(page.url()).searchParams.get(buildKey)).toBe(tracking);
+  // The handoff must leave the router's own history state intact: the next
+  // dismissal stays in this document instead of forcing a full reload.
+  await page.evaluate(() => {
+    (window as unknown as { sameDocument: boolean }).sameDocument = true;
+  });
+  await goldenPanel(page, "shared-golden");
+  await page.keyboard.press("Escape");
+  await expect(panel).toBeHidden();
+  await expect(row.locator("[data-select-item]")).toBeFocused();
+  expect(await page.evaluate(() => (window as unknown as { sameDocument?: boolean }).sameDocument)).toBe(true);
+  expect(new URL(page.url()).searchParams.get(buildKey)).toBe(tracking);
 });
 
 test("Forward through an older detail does not erase a newer list-side build", async ({ page }) => {
