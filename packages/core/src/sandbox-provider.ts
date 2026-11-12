@@ -28,6 +28,20 @@ export const PROVIDER_LIMITS: Readonly<Record<SandboxProviderId, ProviderLimits>
 };
 
 /**
+ * Host lifecycle semantics, independent of harness features and credential routing.
+ * A shared-source restore is idempotent: a losing publisher does not own the source
+ * and must never dispose of it. A fresh fork belongs to that restore attempt.
+ */
+export interface HostCapabilities {
+  readonly goldenRestore: "fresh-fork" | "shared-source";
+}
+
+export const HOST_CAPABILITIES: Readonly<Record<SandboxProviderId, HostCapabilities>> = {
+  boat: { goldenRestore: "fresh-fork" },
+  modal: { goldenRestore: "shared-source" },
+};
+
+/**
  * Where a Modal golden's images live, pinned when it is created: the workspace, the environment and the
  * App by its id (a name can be reused for another App). None of them is a secret, and none changes: a
  * different local profile or a token of another workspace does not move an existing golden.
