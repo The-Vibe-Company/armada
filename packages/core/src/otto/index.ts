@@ -20,3 +20,24 @@ export interface OttoPage<T> {
   completeness: OttoCompleteness;
   nextCursor: string | null;
 }
+export interface OttoResource {
+  kind: "pr" | "sandbox";
+  externalId: string;
+  taskIssue: number | null;
+  owner: { state: "owned" | "orphan" | "unknown"; userId: string | null };
+  reason: string;
+  observedAt: string | null;
+  evidence: Record<string, unknown>;
+}
+export interface OttoTask {
+  issueNumber: number;
+  title: string;
+  state: "open" | "unknown";
+  factId: string;
+}
+export interface OttoOrphan {
+  resource: OttoResource;
+  state: "orphan" | "unknown";
+  reason: string;
+  day: string;
+}
