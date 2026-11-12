@@ -375,3 +375,35 @@ test("HTTPS fallback keeps its epoch alive while a native command is blocked and
     await outcome;
   }
 });
+
+test.each(["epoch", "revision", "shape"] as const)(
+  "model access refuses %s corruption without a retry",
+  async (kind) => {
+    let calls = 0;
+    const channel = new RuntimeDialout("https://armada.example", session, {
+      ...clock(),
+      socket() {
+        throw Error("unused");
+      },
+      async fetch() {
+        calls++;
+        return Response.json({
+          epoch: kind === "epoch" ? "2" : "1",
+          access:
+            kind === "shape"
+              ? null
+              : {
+                  accessToken: "offline-access",
+                  chatgptAccountId: "account",
+                  chatgptPlanType: null,
+                  revision: kind === "revision" ? -1 : 1,
+                },
+        });
+      },
+    });
+    await expect(channel.modelAccess()).rejects.toThrow(
+      kind === "epoch" ? "runtime_channel_revoked" : "invalid_runtime_model_access",
+    );
+    expect(calls).toBe(1);
+  },
+);

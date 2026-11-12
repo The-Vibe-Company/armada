@@ -23,10 +23,11 @@ placeholder before any driver can start. Claude receives no credentials/path.
 
 - API keys reach only Codex's environment. Custom Responses endpoints are
   normalized with the shared parser, never converted to a hosted proxy.
-- Server-enrolled subscriptions and server-only markers are deliberately refused.
-  Their existing stable capability is not runtime-epoch scoped; a subsequent
-  fenced subscription-access slice must precede their Boat runtime opt-in. The
-  projector never downgrades a server-owned account to a raw refresh-token file.
+- Server-owned subscriptions with an enabled broker select only
+  `runtimeSubscription:true`; access-only material is fetched through the
+  epoch-fenced runtime route, never a stable capability or raw refresh-token
+  file. An absent broker or unowned server marker remains refused. See
+  `docs/runtime-subscription-access.md`.
 - Legacy native auth uses the ownership service's current sealed state/revision
   (initial auth only when no state exists), preserving current-epoch publication
   and retired-secret redaction. Unmanaged auth or an unenrolled server marker is
@@ -58,6 +59,6 @@ empty/repository cwd cases are covered without claiming native execution.
 
 Still needed for ONE real Boat prompt: wire configuration/startup/agent ports
 into a per-launch default-off switch with durable routing and existing lifecycle
-cleanup, and add epoch-fenced access for server-enrolled subscriptions. The exact one-launch coordinator check will be posted on #1161 when
+cleanup. The exact one-launch coordinator check will be posted on #1161 when
 main supports it. No new deployment prerequisite until that integration enables
 server-selected, published pinned artifacts.
