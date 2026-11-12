@@ -26,6 +26,25 @@ are preserved, including an Anthropic gateway prefix. Supply the base URL,
 not the final `/v1/messages` URL. Unlike Codex's Responses paste contract,
 Claude gateway URLs are not stripped of API-specific suffixes.
 
+## Dashboard replacement
+
+On Models, use the saved Anthropic account menu → Replace key. Connection
+type is initially unselected because sealed gateway details are never returned.
+Choose Custom gateway (Modal) and re-enter its URL, bearer/API-key auth and
+new key. Choose Anthropic default endpoint only when deliberately using the
+vendor-default API. JSON is not accepted as the key in either mode. Switching
+destination or auth clears the password; refused writes keep the selected
+mode/auth while clearing the key. No secret or endpoint is prefilled.
+
+Coordinator staging addition: rotate an existing gateway account using each
+supported auth mode and owner-held credentials. Expect unchanged account
+ID/name/default, increased revision, and a new Modal launch returning MODEL_OK
+on initial and subsequent turns. Old version-bound sandboxes and stale browser
+tabs must refuse, not overwrite the new revision. Subscription and Codex
+replacement remain unchanged. No migration/new setting; dashboard rollout only.
+
+## Runtime delivery
+
 The runtime alone expands the versioned non-secret endpoint object carried in
 today's private Modal bootstrap. It selects ANTHROPIC_BASE_URL and exactly one
 credential variable (ANTHROPIC_AUTH_TOKEN or ANTHROPIC_API_KEY), clearing OAuth
@@ -40,6 +59,30 @@ Gateways must support Anthropic Messages, streaming and tool use. No Armada
 proxy is hosted. Bedrock/Vertex/Foundry-native switches remain Later, as do
 additional header maps. See the [official gateway configuration](https://code.claude.com/docs/en/llm-gateway-connect)
 for the API-key and bearer header mapping and [supported-model limitations](https://code.claude.com/docs/en/llm-gateway).
+
+## CLI gateway fields
+
+Read only the key from stdin or a private file, and give the non-secret URL
+and authentication mechanism as separate options:
+
+```sh
+armada creds set anthropic --name gateway --base-url 'https://gateway.example.com/anthropic' --endpoint-auth bearer --file /path/to/private-key
+```
+
+Use `--endpoint-auth api-key` for an x-api-key gateway. Bearer is the default
+when the option is omitted. `--api-version` is Codex-only and is refused for
+Claude. Keys are never arguments; delete private input files afterwards.
+Personal scope is the default, `--org NAME` selects organization scope, and
+`--id UUID --expected-version N` replaces a named account. `--json` keeps the
+existing write-only success shape. Claude gateways are Modal-only and support
+Claude models, not arbitrary non-Claude models.
+
+Coordinator staging addition: create the account with these fields using the
+owner-held endpoint/key, find its ID with `armada creds list --json`, select a
+Modal golden and Claude model at launch, and ask for MODEL_OK initially and on
+the next turn. Expect MODEL_OK through the selected gateway path/header.
+Repeat for each auth mode the gateway supports. Inspect output/argv: no key.
+No migration or new setting is required; server/runtime must include #1195.
 
 ## Coordinator staging check
 

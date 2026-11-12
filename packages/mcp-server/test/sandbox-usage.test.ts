@@ -336,3 +336,58 @@ test("native collection persists retry-safe rows and preserves measurements when
     await db.close();
   }
 });
+
+test.each(["codex", "claude"] as const)(
+  "stored Modal status projects %s journal usage into SQL and totals without native calls",
+  async (harness) => {
+    const { db, people: p } = await database();
+    try {
+      const golden = (await db.query<{ id: string }>("select id from goldens where name='mine'")).rows[0]!.id;
+      const boat = fakeBoat();
+      const provider = boat.providerFor("test");
+      const native = await provider.fork({ from: "snapshot" });
+      const receipt = await provider.prompt({ sandboxId: native.id, harness, text: "test" });
+      boat.finish(native.id, receipt.promptId, "finished");
+      const journal = await provider.events({ sandboxId: native.id });
+      const usageEvent: AgentEvent = {
+        id: "usage",
+        at: 2,
+        kind: "other",
+        promptId: receipt.promptId,
+        type: harness === "codex" ? "armada/turnUsage" : "result",
+        data:
+          harness === "codex"
+            ? { model: "gpt", inputTokens: 42, outputTokens: 7, cachedTokens: 0 }
+            : { modelUsage: { sonnet: { inputTokens: 42, outputTokens: 7, cacheReadInputTokens: 0 } } },
+      };
+      provider.events = async () => ({ events: [...journal.events, usageEvent], hasMore: false, cursor: "end" });
+      let nativeCalls = 0;
+      provider.collectTurnUsage = async () => {
+        nativeCalls++;
+        return [];
+      };
+      const id = crypto.randomUUID();
+      await db.query(
+        `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status)
+      values($1,$2,$3,$4,'boat',$5,$6,'ready')`,
+        [id, golden, p.org, p.owner, native.id, harness],
+      );
+      const store = createSqlData(db)({
+        userId: p.owner,
+        via: "service",
+        orgs: [{ orgId: p.org, role: "member" }],
+      }).sandboxes;
+      // The server-selected stored Modal adapter exposes the same Provider event contract.
+      const found = { ...(await store.get(id))!, provider: "modal" as const };
+      const report = await readStatus(provider, store, found, { stored: true, now: new Date("2026-01-01") });
+      expect(nativeCalls).toBe(0);
+      expect(report.usage?.tokenTotals).toMatchObject({ inputTokens: 42, outputTokens: 7, cachedTokens: 0 });
+      expect((await store.get(id))?.usage).toMatchObject({
+        turnCount: 1,
+        turns: [{ promptId: receipt.promptId, inputTokens: 42 }],
+      });
+    } finally {
+      await db.close();
+    }
+  },
+);

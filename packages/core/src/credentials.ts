@@ -9,6 +9,7 @@ import { mapHarnesses } from "./harnesses.ts";
 import { LaunchError } from "./launch-error.ts";
 import { SKILLPACK_TOKEN_PATTERN } from "./skillpack-token.ts";
 import { redactKnownTokens } from "./token-redaction.ts";
+import type { UsagePricingContext } from "./usage-pricing.ts";
 import { VaultError } from "./vault-error.ts";
 
 /** The credential kinds a launch injects. Claude Code takes a subscription token, Codex an OpenAI key or `auth.json`. */
@@ -32,6 +33,8 @@ export interface CredentialBinding {
 }
 
 export interface HarnessCredentials {
+  /** Server-generated, secret-free price catalog pinned for a new session, not sandbox environment. */
+  usagePricing?: UsagePricingContext;
   binding?: CredentialBinding;
   env: Record<string, string>;
   secrets: string[];

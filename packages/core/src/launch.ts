@@ -420,6 +420,8 @@ export async function launchSandbox(
           { safeReason: "visibility_not_persisted" },
         );
       }
+      if (golden.provider === "modal" && credentials.usagePricing)
+        await stores.sandboxes.recordUsagePricingContext?.(record.id, credentials.usagePricing);
       progress("initialization_bind");
       await stores.connections?.bind(record.id, connectionIds);
       progress("initialization_ready");

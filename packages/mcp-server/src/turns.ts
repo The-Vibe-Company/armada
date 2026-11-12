@@ -201,8 +201,9 @@ export async function readStatus(
     };
   }
 
-  if (!options.stored && store.recordUsage && (prompt ? prompt.state !== "running" : sandbox.status !== "running")) {
-    await collectSandboxUsage(provider, store, sandbox, prompt?.promptId);
+  // Stored Modal history already contains native counters; project it without waking compute.
+  if (store.recordUsage && (prompt ? prompt.state !== "running" : sandbox.status !== "running")) {
+    await collectSandboxUsage(provider, store, sandbox, prompt?.promptId, { eventsOnly: options.stored === true });
     const refreshed = await store.get(sandbox.id);
     if (refreshed?.usage) sandbox = { ...sandbox, usage: refreshed.usage };
   }
@@ -409,6 +410,7 @@ export async function collectSandboxUsage(
   store: ServerSandboxStore,
   sandbox: SandboxView,
   targetPromptId?: string,
+  options: { eventsOnly?: boolean } = {},
 ): Promise<void> {
   if (!store.recordUsage) return;
   targetPromptId ??= sandbox.taskPromptId ?? undefined;
@@ -419,7 +421,7 @@ export async function collectSandboxUsage(
     const retained = (await store.get(sandbox.id))?.usage ?? sandbox.usage;
     const rows = new Map((retained?.turns ?? []).map((row) => [JSON.stringify([row.promptId, row.model]), row]));
     for (const row of collected.turns) rows.set(JSON.stringify([row.promptId, row.model]), row);
-    if (provider.collectTurnUsage) {
+    if (!options.eventsOnly && provider.collectTurnUsage) {
       const prompts = new Map<string, string | undefined>();
       for (const event of events) {
         if (event.kind === "prompt" && event.promptId) prompts.set(event.promptId, event.conversationId ?? undefined);

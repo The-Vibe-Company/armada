@@ -36,6 +36,11 @@ export const PROVIDER_LIMITS: Readonly<Record<SandboxProviderId, ProviderLimits>
  */
 export interface HostCapabilities {
   readonly goldenRestore: "fresh-fork" | "shared-source";
+  /**
+   * Retain the source until a snapshot attempt settles, including explicit save
+   * refusals. Otherwise only a non-mutating save-call refusal clears the attempt.
+   */
+  readonly retainSourceOnSnapshotUncertainty: boolean;
   /** A stopping observation is an in-flight stop; wait rather than reissuing stop. */
   readonly waitForPendingStop: boolean;
   /** Physical lifetime must reserve future logical extension time at worker launch. */
@@ -60,6 +65,7 @@ export interface HostCapabilities {
 export const HOST_CAPABILITIES: Readonly<Record<SandboxProviderId, HostCapabilities>> = {
   boat: {
     goldenRestore: "fresh-fork",
+    retainSourceOnSnapshotUncertainty: false,
     waitForPendingStop: true,
     reserveExtensionHeadroom: false,
     goldenSnapshotPublication: "replace-stable",
@@ -69,6 +75,7 @@ export const HOST_CAPABILITIES: Readonly<Record<SandboxProviderId, HostCapabilit
   },
   modal: {
     goldenRestore: "shared-source",
+    retainSourceOnSnapshotUncertainty: true,
     waitForPendingStop: false,
     reserveExtensionHeadroom: true,
     goldenSnapshotPublication: "publish-immutable",

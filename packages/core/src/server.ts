@@ -67,6 +67,7 @@ export {
 export { createRoutineService, type RoutineService } from "./routine-service.ts";
 export { sandboxActivity } from "./sandbox-activity.ts";
 export {
+  createUsagePricingContext,
   type PriceContext,
   type PricedTurn,
   type PriceSnapshot,
