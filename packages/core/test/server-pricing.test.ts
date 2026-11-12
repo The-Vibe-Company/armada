@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { TurnTokenUsage } from "../src/sandbox-usage.ts";
-import { priceTurn, resolvePrice, type TokenRates } from "../src/server-pricing.ts";
+import { createUsagePricingContext, priceTurn, resolvePrice, type TokenRates } from "../src/server-pricing.ts";
 
 const rates: TokenRates = { input: "2", output: "10", cacheRead: "0.1", cacheWrite: "2.5", reasoning: null };
 const turn: TurnTokenUsage = {
@@ -91,4 +91,35 @@ test.each([
   );
   expect(result.usd).toBeNull();
   expect(result.unknown).toBe("pricing_dimensions");
+});
+
+test("admission books freeze exact provider rates and basis without guessing custom endpoint prices", () => {
+  const input = {
+    harness: "claude" as const,
+    credentialKind: "claude_oauth" as const,
+    customEndpoint: false,
+    credentialId: "account",
+    credentialVersion: 3,
+  };
+  const context = createUsagePricingContext(input);
+  expect(context).toMatchObject({
+    schemaVersion: 1,
+    provider: "anthropic",
+    basis: "api_equivalent",
+    credentialId: "account",
+    credentialVersion: 3,
+    prices: { "claude-sonnet-5-5": { rates: { input: "2", output: "10" } } },
+  });
+  const rate = context.prices["claude-sonnet-5-5"];
+  if (!rate) throw Error("Missing public price fixture");
+  rate.rates.input = "999";
+  expect(createUsagePricingContext(input).prices["claude-sonnet-5-5"]?.rates.input).toBe("2");
+  const custom = createUsagePricingContext({
+    harness: "codex",
+    credentialKind: "openai",
+    customEndpoint: true,
+    credentialId: "endpoint",
+    credentialVersion: 2,
+  });
+  expect(custom).toMatchObject({ provider: "openai", basis: "estimated", customEndpoint: true, prices: {} });
 });

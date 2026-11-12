@@ -10,6 +10,7 @@ import { LaunchError } from "./launch-error.ts";
 import { type ModelPriceOverrides, parseModelPriceOverrides } from "./model-price-overrides.ts";
 import { SKILLPACK_TOKEN_PATTERN } from "./skillpack-token.ts";
 import { redactKnownTokens } from "./token-redaction.ts";
+import type { UsagePricingContext } from "./usage-pricing.ts";
 import { VaultError } from "./vault-error.ts";
 
 /** The credential kinds a launch injects. Claude Code takes a subscription token, Codex an OpenAI key or `auth.json`. */
@@ -35,6 +36,8 @@ export interface CredentialBinding {
 export interface HarnessCredentials {
   /** Server-only pricing metadata from the same sealed/bound account; never harness configuration. */
   modelPrices?: ModelPriceOverrides;
+  /** Server-generated, secret-free price catalog pinned for a new session, not sandbox environment. */
+  usagePricing?: UsagePricingContext;
   binding?: CredentialBinding;
   env: Record<string, string>;
   secrets: string[];
