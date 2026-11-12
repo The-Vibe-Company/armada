@@ -390,3 +390,49 @@ Cost: three read-only policy calls per pair and two status reads, plus only the
 installs already implied by normal defaults. No policy rows, writes, new secrets,
 migrations or extra workers. Model/registry latency stays inside the shared
 35-minute work +5-minute cleanup deadline; slow or changing policies fail closed.
+
+### Scoped Armada access (#969, native sandbox slice)
+
+`--scoped-access` requires `--work-preservation` and reuses its two workers:
+the clean Codex parent uses `sandbox/launch-access-v1` with version1 and
+maxActiveChildren1; the dirty no-option control omits access entirely and opts
+out of skill defaults. Both staging entrypoints enable it. Current ordinary
+access supports Codex only: Claude emits explicit `codex_only` SKIP, not a false
+authorization-denial proof. Supported Codex pairs must be enabled on staging
+using the existing access configuration; unavailable/misconfigured access fails.
+
+The native parent uses only configured scoped MCP launch/message/read/stop.
+No owner CLI token, copied bearer, direct owner HTTP fallback, config/grant read
+or new orchestration method. The reserved MCP server's legacy internal name is
+unchanged; no public orchestrator is created. The nonsecret armada-tools reference
+may be read with the supplied exact read-only cat command.
+
+Named proofs: parent configuration, native turn, actual correlated child launch,
+message, nonpartial child assistant answer (not prompt/tool echo), stop and
+operation ordering. Launch is idle; message supplies a fresh answer challenge.
+Input selection must match the parent's golden/account/version/model. Read
+evidence must match the child identity/binding. A no-option control must show no
+successful delegated effect and either no tools with a fresh no-access reply,
+or the exact authority denial for the valid launch request—not generic failure.
+This is a live native control, not a claim that separately supplied user tokens
+are banned; backend scope/epoch denial remains covered by its owning tests.
+
+Before parent allocation, snapshot a complete ordinary owner-me/golden inventory.
+After the parent is quiesced/stopped, cleanup re-reads bounded logs and inventory.
+Only receipt-claimed IDs corroborated as new owned rows can be stopped with the
+owner API. Preexisting, parent, unverified and unclaimed IDs are never blindly
+stopped. `scoped_cleanup_summary` retains parent/local request key, operation
+UUIDs and leftover/unverified/unattributed IDs/uncertainty without raw tool text.
+Unknown mutations are never replayed; reconcile reported handles before rerun.
+
+Budget: one additional native parent task per worker and one idle child plus one
+tiny child message per supported pair; no extra parent allocations. Parent
+polling is capped at300 observations (~5minutes plus bounded request latency),
+native child reads at20, logs/inventory at20pages; shared35+5-minute deadline still
+wins. Normal cleanup stops all known compute. The shipped delegated launch has
+no TTL field: child defaults to4hours (plus existing provider headroom), so a
+rare unconfirmed allocation can require immediate operator reconciliation.
+Never invent a TTL parameter or repeat launch to discover its outcome.
+Use dedicated/exclusive staging smoke actors/cases, clean secretless goldens,
+named account UUIDs, and a staging public MCP URL; no production origins/sessions.
+No migrations/new credentials/case fields. Offline tests are not live receipts.
