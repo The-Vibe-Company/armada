@@ -1,4 +1,13 @@
-import type { Harness, PricingInputs, StoredTurnPricing, TurnPriceContext, TurnTokenUsage } from "@armada/core";
+import type {
+  CostBasis,
+  Harness,
+  PricingInputs,
+  SandboxUsage,
+  SessionCost,
+  StoredTurnPricing,
+  TurnPriceContext,
+  TurnTokenUsage,
+} from "@armada/core";
 import { type PriceSnapshot, priceTurn, type TokenRates } from "@armada/core/server";
 import { validRates } from "../../core/src/pricing/rates.ts";
 
@@ -191,4 +200,106 @@ export function stampTurnPricing(
     const pricing: StoredTurnPricing = { ...frozen, ...priced, inputs: observed ? current : null };
     return { ...row, pricing };
   });
+}
+
+/** Select only exact actual-model snapshots from the session's pre-work, immutable admission book. */
+export function admittedTurnContexts(
+  book: unknown,
+  rows: readonly TurnTokenUsage[],
+  harness: Harness,
+): TurnPriceContext[] {
+  const v = object(book),
+    prices = object(v?.prices);
+  if (
+    !v ||
+    !prices ||
+    v.schemaVersion !== 1 ||
+    typeof v.customEndpoint !== "boolean" ||
+    v.provider !== (harness === "claude" ? "anthropic" : "openai") ||
+    !text(v.catalogRevision)
+  )
+    return [];
+  const selected = new Map<string, TurnPriceContext>();
+  for (const row of rows) {
+    const price = row.model !== null && Object.hasOwn(prices, row.model) ? prices[row.model] : null;
+    const candidate = object(price);
+    // Custom endpoints never inherit public rates. A catalog quote must match the admitted revision.
+    if (
+      candidate &&
+      ((v.customEndpoint && candidate.source !== "connection") ||
+        (candidate.source === "models.dev" && candidate.revision !== v.catalogRevision))
+    )
+      continue;
+    const input = {
+      schemaVersion: 1 as const,
+      promptId: row.promptId,
+      model: row.model,
+      basis: v.basis,
+      credentialId: v.credentialId,
+      credentialVersion: v.credentialVersion,
+      capturedAt: v.capturedAt,
+      snapshot: price,
+    };
+    const valid = context(input, row, harness, false);
+    if (valid) selected.set(key(row), { ...valid, promptId: row.promptId, model: row.model });
+  }
+  return [...selected.values()];
+}
+
+/** Server projection of stored quotes only: no catalog, credential lookup or floating-point arithmetic. */
+export function withServerCost(usage: SandboxUsage | null, harness: Harness): SandboxUsage | null {
+  if (!usage) return null;
+  const prompts = new Set(usage.turns.map((row) => row.promptId));
+  const coverage =
+    count(usage.turnCount) &&
+    usage.turnCount === prompts.size &&
+    new Set(usage.turns.map(key)).size === usage.turns.length;
+  const missing = count(usage.turnCount) && usage.turnCount >= prompts.size ? usage.turnCount - prompts.size : null;
+  const unpriced = new Set<string>();
+  const bases = new Set<CostBasis>();
+  let total = 0n,
+    unknown: SessionCost["unknown"] = null;
+  for (const row of usage.turns) {
+    const valid = context(row.pricing, row, harness, true);
+    if (valid) bases.add(valid.basis);
+    const saved = object(row.pricing),
+      witness = storedInputs(saved?.inputs);
+    const usd = saved?.usd;
+    if (
+      !valid ||
+      !witness ||
+      !equal(witness, inputs(row, harness)) ||
+      !valid.snapshot ||
+      valid.snapshot.unsupported ||
+      !complete(witness, valid.snapshot, harness) ||
+      saved?.unknown !== null ||
+      typeof usd !== "string" ||
+      !/^(0|[1-9]\d{0,31})(\.\d{1,18})?$/.test(usd)
+    ) {
+      unpriced.add(row.promptId);
+      unknown ??= !valid
+        ? "admission"
+        : saved?.unknown === "price" || saved?.unknown === "pricing_dimensions"
+          ? saved.unknown
+          : "tokens";
+      continue;
+    }
+    const [whole, fraction = ""] = usd.split(".");
+    total += BigInt(whole!) * 10n ** 18n + BigInt(fraction.padEnd(18, "0"));
+  }
+  const fraction = (total % 10n ** 18n).toString().padStart(18, "0").replace(/0+$/, "");
+  const usd = `${total / 10n ** 18n}${fraction ? `.${fraction}` : ""}`;
+  return {
+    ...usage,
+    cost: {
+      currency: "USD",
+      usd: coverage && unknown === null ? usd : null,
+      basis:
+        usage.turns.every((row) => context(row.pricing, row, harness, true)) && bases.size === 1
+          ? [...bases][0]!
+          : null,
+      unknown: coverage ? unknown : "coverage",
+      unpricedTurns: missing === null ? null : unpriced.size + missing,
+    },
+  };
 }
