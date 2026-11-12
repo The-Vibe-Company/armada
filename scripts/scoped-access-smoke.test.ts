@@ -89,8 +89,12 @@ function fixture(enabled = true) {
         const goal = body.prompt as string;
         const launch = JSON.parse(goal.match(/using exactly (.*?) \(no initial/)?.[1] ?? "null") as Obj;
         const message = JSON.parse(
-          goal.match(/message that child's returned sandboxId with exactly (.*?)\. Poll/)?.[1] ?? "null",
+          goal.match(/message that child's returned sandboxId with exactly (.*?), replacing CHILD_SANDBOX_ID/)?.[1] ??
+            "null",
         ) as Obj;
+        // The instructions must supply the required target, not rely on the model
+        // repairing a payload the smoke calls exact. Substitute only the returned ID.
+        expect(message.sandboxId).toBe("CHILD_SANDBOX_ID");
         const stopKey = goal.match(/Then stop that same child using idempotencyKey ([\w-]+)\./)?.[1];
         const answer = goal.match(/SCOPED_CHILD_[\w-]+/)?.[0];
         const marker = goal.match(/NO_ACCESS_[\w-]+/)?.[0];

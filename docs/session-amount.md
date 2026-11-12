@@ -27,8 +27,8 @@ when coverage itself cannot be counted. Known empty sessions can total `"0"`;
 missing figures are never converted to zero.
 
 Unknown reasons: `admission` (no valid pre-work source), `price` (no exact rate),
-`tokens` (missing/incoherent counters), `pricing_dimensions` (unsupported tier,
-context or cache-write lifetime), and `coverage` (not all admitted prompts are
+`tokens` (missing/incoherent counters), `pricing_dimensions` (an explicitly
+unsupported cache-write lifetime), and `coverage` (not all admitted prompts are
 represented). Metadata-only readers still get `usage:null`.
 
 Per-share dollars are stored; the session sum is projected from those stored
@@ -60,14 +60,17 @@ native totals as though their buckets were disjoint.
 
 Offline arithmetic protected at the real admission/collector/SQL/HTTP/CLI boundary:
 Claude 10 input + 20 output, no cache buckets, frozen $2/$10 per million gives
-`"0.00022"`; adding a 30/40 turn gives `"0.00068"`. A supported OpenAI snapshot at
-$0.5/$1.5 gives `"0.000035"` and `"0.00011"` respectively. These are synthetic
-native-provider fixtures, **not a claim of real-provider acceptance**.
+`"0.00022"`; adding a 30/40 turn gives `"0.00068"`. The production-shaped OpenAI
+fixture now pins `gpt-6.1-sol`: input 13137, output 6, reads 0, writes 13134,
+reasoning 0, default cache TTL, at $2/$10/$0.1/$2.5 gives `"0.032901"`.
+See [default token rates](default-token-rates.md) for source verification and
+precise default-policy semantics. These are synthetic native-provider fixtures,
+**not a claim of real-provider acceptance**.
 
-If a real model has an unverified service tier, a cache-write TTL is missing, or
-native counters are incomplete, expect a null amount with an explicit reason,
-not the example amount. In particular the older production sandbox noted on
-#1163 must not be assigned today's rates or an assumed Codex cache lifetime.
+Missing prices/counters or explicit non-default cache lifetimes without applicable
+rates remain unknown. Omitted TTL uses the provider’s default rate, and catalogue
+complexity does not veto otherwise rated token classes. Legacy sessions without
+pre-work snapshots must not be assigned today's rates.
 Stop and re-read a priced session: amount/source must remain stable. A member
 without interior access must receive null usage. Unknown models and custom
 endpoints without admitted prices must show null USD while retaining tokens.

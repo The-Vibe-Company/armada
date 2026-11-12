@@ -945,8 +945,11 @@ describe("preservation checks", () => {
             if (launches === 1) {
               const launch = JSON.parse(goal.match(/using exactly (.*?) \(no initial/)?.[1] ?? "null");
               const message = JSON.parse(
-                goal.match(/message that child's returned sandboxId with exactly (.*?)\. Poll/)?.[1] ?? "null",
+                goal.match(
+                  /message that child's returned sandboxId with exactly (.*?), replacing CHILD_SANDBOX_ID/,
+                )?.[1] ?? "null",
               );
+              expect(message.sandboxId).toBe("CHILD_SANDBOX_ID");
               const stopKey = goal.match(/Then stop that same child using idempotencyKey ([\w-]+)\./)?.[1];
               const answer = goal.match(/SCOPED_CHILD_[\w-]+/)?.[0];
               const op = () => ({ id: crypto.randomUUID(), state: "succeeded", sandboxId: childId });
