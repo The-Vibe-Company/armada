@@ -132,7 +132,7 @@ function sandboxInfo(sandbox: Sandbox): SandboxInfo {
   };
   if (sandbox.error) info.error = sandbox.error;
   if (sandbox.createdAt) info.createdAt = sandbox.createdAt;
-  if (sandbox.stoppedAt) info.stoppedAt = sandbox.stoppedAt;
+  if (sandbox.stoppedAt && Number.isFinite(sandbox.stoppedAt.getTime())) info.stoppedAt = sandbox.stoppedAt;
   if (sandbox.archiveAfter) info.expiresAt = sandbox.archiveAfter;
   if (sandbox.sshEndpoint) info.sshEndpoint = sandbox.sshEndpoint;
   return info;
