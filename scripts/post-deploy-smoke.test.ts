@@ -1557,7 +1557,15 @@ test("golden runtime integrity probes are staging-only, fail closed, and retain 
       expect(fake.lines.join("\n")).not.toContain("private-error");
     }
   }
-  const invalid = fixture();
-  expect(await postDeploySmoke(env, ["--golden-runtime"], invalid.io)).toBe(false);
-  expect(invalid.calls).toHaveLength(0);
+  for (const flags of [
+    ["--golden-runtime"],
+    ["--golden-runtime", "--templates-skills"],
+    ["--golden-runtime", "--orchestrator"],
+  ]) {
+    const invalid = fixture();
+    expect(
+      await postDeploySmoke({ ...env, ...(flags.length > 1 ? { ARMADA_URL: staging } : {}) }, flags, invalid.io),
+    ).toBe(false);
+    expect(invalid.calls).toHaveLength(0);
+  }
 });

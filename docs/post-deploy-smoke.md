@@ -466,7 +466,9 @@ Both staging entrypoints enable `--golden-runtime`. On the existing ordinary
 worker (only the clean worker when preservation is enabled), named
 `golden_helper_integrity` and `golden_skillpack_integrity` steps verify installed
 bytes, executable resolution and version/protocol. No extra allocation or model
-turn is added. The flag refuses non-staging origins.
+turn is added. The flag refuses non-staging origins, orchestrator mode and template-only
+combinations without preservation or lifecycle (which would otherwise return
+before the ordinary worker checks).
 
 The helper must match the bundled architecture-specific digest and closed
 0.1.0/protocol-1 report. Skillpack and skillpack-runtime must match the contents
@@ -474,7 +476,8 @@ of the SHA-256-pinned runtime-v0.3.5 release archive used by the golden bootstra
 The probe downloads that archive to a private temporary directory, verifies its
 pin before extraction, compares both installed executables, and removes its
 temporary files. It never installs, repairs, or executes downloaded binaries.
-Installed commands must resolve to the verified bytes; missing, stale, altered,
+The helper bootstrap symlink and the Skillpack command must resolve to the verified bytes;
+the helper is not required on PATH (Modal exec intentionally omits user-local bin). missing, stale, altered,
 unsupported-architecture or unavailable-download cases fail closed and the
 existing worker cleanup still runs. Guest output is not printed.
 

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import manifest from "../packages/core/helper/manifest.json";
@@ -14,9 +14,11 @@ test("helper probe accepts the pinned executable and rejects changed bytes witho
     const file = join(dir, "armada-helper");
     writeFileSync(file, Buffer.from(manifest[platform].base64, "base64"));
     chmodSync(file, 0o755);
+    mkdirSync(join(root, ".local/bin"), { recursive: true });
+    symlinkSync(file, join(root, ".local/bin/armada-helper"));
     const command = helperProbe.replaceAll("/home/user", root);
     const run = () =>
-      Bun.spawnSync(["bash", "-c", command], { env: { ...process.env, PATH: `${dir}:${process.env.PATH}` } });
+      Bun.spawnSync(["bash", "-c", command], { env: { ...process.env, PATH: "/usr/local/bin:/usr/bin:/bin" } });
     expect(run().exitCode).toBe(0);
     writeFileSync(file, "#!/bin/sh\necho untrusted-output\n");
     const rejected = run();

@@ -10,7 +10,7 @@ export const helperProbe = String.raw`(
   esac
   p=/home/user/.local/share/armada/helper/0.1.0/armada-helper
   printf '%s  %s\n' "$hash" "$p" | sha256sum --check --status
-  cmp -s "$p" "$(command -v armada-helper)"
+  cmp -s "$p" /home/user/.local/bin/armada-helper
   test "$("$p")" = '{"version":"0.1.0","protocol":1,"capabilities":["diagnose"]}'
 ) >/dev/null 2>&1`;
 

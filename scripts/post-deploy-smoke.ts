@@ -197,6 +197,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
     if (env.ARMADA_SMOKE !== "create_real_compute") fail("compute_opt_in_required");
     if (
       (defaultSkills && !preservation) ||
+      (goldenRuntime && (orchestrator || (templatesSkills && !preservation && !lifecycle))) ||
       (github &&
         (orchestrator || preservation || templatesSkills || defaultSkills || goldenRuntime || lifecycle || vault)) ||
       args.some(
