@@ -170,6 +170,7 @@ describe("MCP control client", () => {
   test.each([
     [401, { error: { code: "unauthorized", message: "token expired" } }, "Sign in again."],
     [403, { error: { code: "forbidden", message: "Only an org admin changes org connections." } }, "Only an org admin"],
+    [405, { error: { message: "Unknown route." } }, "does not offer MCP connections yet"],
     [404, { error: { code: "not_found", message: "Unknown route." } }, "does not offer MCP connections yet"],
     [409, { error: { code: "conflict", message: "A connection with that name exists." } }, "name exists"],
     [500, "<html>", "could not complete the request"],
@@ -191,5 +192,33 @@ describe("MCP control client", () => {
       }) as unknown as typeof fetch,
     });
     await expect(control.status({ org: ORG, id: ID })).rejects.toThrow("The Armada server is unreachable.");
+  });
+});
+
+test("controlPost retains object validation and structured domain failure details", async () => {
+  const { controlPost } = await import("../src/lib/control.ts");
+  let reply: Response;
+  const options = {
+    serverUrl: "https://armada.test",
+    token: "user-jwt",
+    fetch: (async () => reply) as typeof fetch,
+  };
+  for (const value of [null, [], 42, "text"]) {
+    reply = Response.json(value);
+    await expect(controlPost(options, "/api/v1/test", {})).rejects.toThrow("unreadable");
+  }
+  reply = new Response("not JSON");
+  await expect(controlPost(options, "/api/v1/test", {})).rejects.toThrow("unreadable");
+  reply = Response.json(
+    { error: { code: "not_found", message: "Unknown route.", reason: "expired", retryAfterSeconds: 30 } },
+    { status: 404 },
+  );
+  const error = await controlPost(options, "/api/v1/test", {}, "invitations").catch((error: unknown) => error);
+  expect(error).toMatchObject({
+    status: 404,
+    code: "not_found",
+    message: "Unknown route.",
+    reason: "expired",
+    retryAfterSeconds: 30,
   });
 });

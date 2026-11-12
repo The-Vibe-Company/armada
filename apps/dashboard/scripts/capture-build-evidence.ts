@@ -24,9 +24,9 @@ try {
         const page = await context.newPage();
         await signIn(page, "alice@example.com", unconfigured ? "/harness" : "/sandboxes");
         if (unconfigured) {
+          // The base may already include the non-blocking status treatment.
+          // Candidate evidence still requires that treatment; baseline evidence supports either revision.
           const currentNotice = page.getByRole("status").filter({ hasText: "The Armada server is not configured" });
-          // A comparison label is not a feature flag: the baseline may already use
-          // the current accessible role. Candidate evidence still requires status.
           const notice =
             phase === "before"
               ? currentNotice.or(page.getByRole("alert").filter({ hasText: "The Armada server is not configured" }))

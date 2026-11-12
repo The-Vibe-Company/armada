@@ -5,7 +5,7 @@ import { control } from "./control.ts";
 import { parseTtl } from "./operations.ts";
 import type { VaultIo } from "./vault-commands.ts";
 
-const HELP = `Launch templates (readable configuration only; no secret bindings):
+const HELP = `Launch templates (readable variables and secret references):
   armada template create NAME --file definition.json [--scope personal|org] [--org NAME|UUID] [--json]
   armada template create NAME --golden UUID --provider boat|modal --agent claude|codex [definition flags]
   armada template list [--org NAME|UUID] [--json]
@@ -17,7 +17,7 @@ const HELP = `Launch templates (readable configuration only; no secret bindings)
 Create/publish accept either a JSON definition file (the definition object, not an API envelope)
 or --golden UUID --provider boat|modal --agent claude|codex, optionally --model ID,
 --reasoning-effort LEVEL, --connection UUID (repeatable), --variable KEY:UUID:VERSION
-(repeatable, readable references only), --skill PIN (repeatable),
+(repeatable), --secret KEY:UUID:VERSION (repeatable, references only), --skill PIN (repeatable),
 --model-account UUID --model-account-version N. Publish creates a new immutable revision.
 With --org, create requires explicit --scope personal|org; otherwise scope defaults to personal
 in the organization selected by armada org use. Other actions use the target's existing scope.
@@ -26,7 +26,7 @@ Launch uses a required request key: retry the SAME key and body after an unknown
 For name-based launches, the resolved template ID is printed before submission; use that ID
 for retries so a later rename or deletion cannot prevent recovery.
 Never invent a new key while the original outcome is unknown. Only prompt, TTL, size and
-repository can be overridden. No local environment expansion or secret delivery is supported.
+repository can be overridden. No local environment expansion is supported. Secret references deliver environment values to the selected native harness.
 Readable values may appear in launch manifests; they are not secrets.
 `;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -38,6 +38,7 @@ const DEFINITION_FLAGS = [
   "--reasoning-effort",
   "--connection",
   "--variable",
+  "--secret",
   "--skill",
   "--model-account",
   "--model-account-version",
@@ -72,7 +73,7 @@ export async function templateCommand(argv: readonly string[], io: VaultIo): Pro
   ]);
   for (const key of args.options.keys()) {
     if (!allowed.has(key)) throw usage();
-    if (!["--connection", "--variable", "--skill"].includes(key)) single(args, key);
+    if (!["--connection", "--variable", "--secret", "--skill"].includes(key)) single(args, key);
   }
   if (args.positionals.length !== (action === "list" ? 0 : 1)) throw usage();
   const orgFlag = single(args, "--org");
@@ -102,6 +103,7 @@ export async function templateCommand(argv: readonly string[], io: VaultIo): Pro
           "modelAccount",
           "connections",
           "variables",
+          "secrets",
           "skills",
         ];
         if (Object.keys(definition).some((key) => !allowed.includes(key))) throw new Error();
@@ -126,10 +128,22 @@ export async function templateCommand(argv: readonly string[], io: VaultIo): Pro
             Object.keys(d.modelAccount).some((key) => !["id", "version"].includes(key)))
         )
           throw new Error();
+        if (
+          d.secrets !== undefined &&
+          (!Array.isArray(d.secrets) ||
+            d.secrets.some(
+              (b) =>
+                !b ||
+                typeof b !== "object" ||
+                Array.isArray(b) ||
+                Object.keys(b).some((key) => !["key", "secretId", "version"].includes(key)),
+            ))
+        )
+          throw new Error();
         body.definition = definition;
       } catch {
         throw usage(
-          "Could not read a supported JSON template definition from --file. Unknown fields and secret bindings are not supported.",
+          "Could not read a supported JSON template definition from --file. Unknown fields and inline secret values are not supported.",
         );
       }
     } else {
@@ -156,6 +170,13 @@ export async function templateCommand(argv: readonly string[], io: VaultIo): Pro
           throw usage("Use --variable KEY:UUID:VERSION for a readable variable reference.");
         return { key, variableId, version: positive(version) };
       });
+      const secrets = values(args, "--secret").map((binding) => {
+        const [key, secretId, version, extra] = binding.split(":");
+        if (!key || !secretId || !UUID.test(secretId) || extra !== undefined)
+          throw usage("Use --secret KEY:UUID:VERSION for a secret reference, never a value.");
+        return { key, secretId, version: positive(version) };
+      });
+      if (secrets.length) definition.secrets = secrets;
       const account = single(args, "--model-account"),
         accountVersion = single(args, "--model-account-version");
       if (account !== undefined || accountVersion !== undefined) {

@@ -2,6 +2,7 @@
 
 import { SearchIcon, TriangleAlertIcon, XIcon } from "lucide-react";
 import Link from "next/link";
+import { Dialog as DialogPrimitive } from "radix-ui";
 import {
   type ComponentProps,
   createContext,
@@ -10,13 +11,16 @@ import {
   useContext,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   useSyncExternalStore,
 } from "react";
+import { createPortal } from "react-dom";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogOverlay, DialogPortal } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { type Blocker, FILTER_FROM, ITEM_PARAM, matchesQuery } from "@/lib/resource-list";
 import { cn } from "@/lib/utils";
@@ -107,9 +111,30 @@ export function ResourceBrowser({
   const browserId = useId();
   const panelId = `${browserId}-panel`;
   const titleId = `${browserId}-panel-title`;
-  const rootRef = useRef<HTMLDivElement>(null);
+  const rootRef = useRef<HTMLElement>(null);
   const titleRef = useRef<HTMLHeadingElement>(null);
   const opener = useRef<string | null>(null);
+  const wide = useSyncExternalStore(subscribeWide, readWide, () => true);
+  const sheet = selected !== null && !wide;
+  // The portal target never changes. Moving this host, rather than changing React
+  // parents, retains every detail form and build follower across breakpoints.
+  const [host, setHost] = useState<HTMLDivElement | null>(null);
+  const desktopHost = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    setHost(document.createElement("div"));
+  }, []);
+  useLayoutEffect(() => {
+    if (host && !sheet) desktopHost.current?.appendChild(host);
+  }, [host, sheet]);
+  const restoreFocus = useCallback(() => {
+    const back = opener.current ?? selected;
+    opener.current = null;
+    requestAnimationFrame(() => {
+      const row = back && rootRef.current?.querySelector<HTMLElement>(`[data-select-item="${CSS.escape(back)}"]`);
+      const fallback = rootRef.current?.querySelector<HTMLElement>("input, [data-select-item]");
+      (row && row.getClientRects().length > 0 ? row : (fallback ?? rootRef.current))?.focus();
+    });
+  }, [selected]);
 
   const select = useCallback(
     (key: string | null) => {
@@ -122,20 +147,16 @@ export function ResourceBrowser({
       if (next !== null) {
         opener.current = next;
         requestAnimationFrame(() => titleRef.current?.focus());
-      } else if (opener.current) {
-        const back = opener.current;
-        opener.current = null;
-        requestAnimationFrame(() =>
-          rootRef.current?.querySelector<HTMLElement>(`[data-select-item="${CSS.escape(back)}"]`)?.focus(),
-        );
+      } else if (wide) {
+        restoreFocus();
       }
     },
-    [valid],
+    [valid, restoreFocus, wide],
   );
 
   // Escape closes the panel, unless a dialog opened from it is the one being closed.
   useEffect(() => {
-    if (selected === null) return;
+    if (selected === null || !wide) return;
     function onKey(event: KeyboardEvent) {
       if (event.key !== "Escape" || event.defaultPrevented) return;
       const overlays = document.querySelectorAll<HTMLElement>(
@@ -146,29 +167,12 @@ export function ResourceBrowser({
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [selected, select]);
+  }, [selected, select, wide]);
 
   const shown = query ? rows.filter((row) => matchesQuery(row.search, query)) : rows;
   const current = rows.find((row) => row.key === selected) ?? null;
   const filterId = useId();
   const context = useMemo(() => ({ select, selected, panelId }), [select, selected, panelId]);
-  // Below the lg breakpoint the panel is a sheet over the list: a modal dialog, the list behind it inert.
-  const wide = useSyncExternalStore(subscribeWide, readWide, () => true);
-  const sheet = selected !== null && !wide;
-  const panelRef = useRef<HTMLElement>(null);
-  // As a sheet, the panel is a modal dialog that keeps Tab inside; beside the list, a plain landmark.
-  useEffect(() => {
-    const panel = panelRef.current;
-    if (!panel || !sheet) return;
-    panel.setAttribute("role", "dialog");
-    panel.setAttribute("aria-modal", "true");
-    panel.addEventListener("keydown", trapFocus);
-    return () => {
-      panel.removeAttribute("role");
-      panel.removeAttribute("aria-modal");
-      panel.removeEventListener("keydown", trapFocus);
-    };
-  }, [sheet]);
 
   return (
     <Context.Provider value={context}>
@@ -177,8 +181,8 @@ export function ResourceBrowser({
       </PageHeader>
       {blockers.length > 0 && <ReadinessStrip blockers={blockers} />}
       {notices}
-      <div ref={rootRef} className="grid items-start gap-4">
-        <div className="@container min-w-0 space-y-3" inert={sheet}>
+      <section ref={rootRef} aria-label={label} tabIndex={-1} className="grid items-start gap-4">
+        <div className="@container min-w-0 space-y-3">
           {rows.length >= FILTER_FROM && (
             <div className="relative max-w-sm">
               <SearchIcon
@@ -219,50 +223,71 @@ export function ResourceBrowser({
           )}
           {footer}
         </div>
-        <aside
-          id={panelId}
-          data-resource-panel
-          ref={panelRef}
-          aria-labelledby={titleId}
-          hidden={selected === null}
-          className="fixed inset-x-0 top-[8dvh] bottom-0 z-50 flex flex-col overflow-hidden rounded-t-2xl border bg-background shadow-2xl lg:static lg:order-first lg:z-auto lg:max-h-[65dvh] lg:rounded-xl lg:bg-card lg:shadow-xs"
+        <div ref={desktopHost} className="lg:order-first" />
+        <Dialog
+          open={sheet}
+          onOpenChange={(open) => {
+            if (!open) select(null);
+          }}
         >
-          <div className="flex items-start justify-between gap-3 border-b px-4 py-3">
-            <div className="min-w-0 space-y-0.5">
-              <h2
-                id={titleId}
-                data-resource-panel-title
-                ref={titleRef}
-                tabIndex={-1}
-                className="truncate text-base font-semibold tracking-tight outline-none"
-              >
-                {current?.name}
-              </h2>
-              {current?.subtitle && <div className="text-xs text-muted-foreground">{current.subtitle}</div>}
-            </div>
-            <Button variant="ghost" size="icon-sm" onClick={() => select(null)} aria-label="Close the panel">
-              <XIcon />
-            </Button>
-          </div>
-          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-4">
-            {rows.map((row) => (
-              <div key={row.key} hidden={selected !== row.key} data-panel={row.key} {...row.panelAttrs}>
-                {row.detail}
+          <DialogPortal>
+            <DialogOverlay />
+            <DialogPrimitive.Content
+              aria-labelledby={titleId}
+              aria-describedby={undefined}
+              className="fixed inset-x-0 top-[8dvh] bottom-0 z-50 outline-none"
+              ref={(node) => {
+                if (node && host) node.appendChild(host);
+              }}
+              onOpenAutoFocus={(event) => {
+                event.preventDefault();
+                titleRef.current?.focus();
+              }}
+              onCloseAutoFocus={(event) => {
+                event.preventDefault();
+                // Resizing is not closing the selected resource.
+                if (!readWide()) restoreFocus();
+              }}
+            />
+          </DialogPortal>
+        </Dialog>
+        {host &&
+          createPortal(
+            <aside
+              id={panelId}
+              data-resource-panel
+              aria-labelledby={titleId}
+              hidden={selected === null}
+              className="fixed inset-x-0 top-[8dvh] bottom-0 z-50 flex flex-col overflow-hidden rounded-t-2xl border bg-background shadow-2xl lg:static lg:order-first lg:z-auto lg:max-h-[65dvh] lg:rounded-xl lg:bg-card lg:shadow-xs"
+            >
+              <div className="flex items-start justify-between gap-3 border-b px-4 py-3">
+                <div className="min-w-0 space-y-0.5">
+                  <h2
+                    id={titleId}
+                    data-resource-panel-title
+                    ref={titleRef}
+                    tabIndex={-1}
+                    className="truncate text-base font-semibold tracking-tight outline-none"
+                  >
+                    {current?.name}
+                  </h2>
+                  {current?.subtitle && <div className="text-xs text-muted-foreground">{current.subtitle}</div>}
+                </div>
+                <Button variant="ghost" size="icon-sm" onClick={() => select(null)} aria-label="Close the panel">
+                  <XIcon />
+                </Button>
               </div>
-            ))}
-          </div>
-        </aside>
-        {selected !== null && (
-          <Button
-            variant="ghost"
-            type="button"
-            tabIndex={-1}
-            aria-hidden
-            className="fixed inset-0 z-40 h-auto w-auto cursor-default rounded-none bg-black/40 p-0 transition-none hover:bg-black/40 dark:hover:bg-black/40 motion-safe:active:not-disabled:scale-none lg:hidden"
-            onClick={() => select(null)}
-          />
-        )}
-      </div>
+              <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-4">
+                {rows.map((row) => (
+                  <div key={row.key} hidden={selected !== row.key} data-panel={row.key} {...row.panelAttrs}>
+                    {row.detail}
+                  </div>
+                ))}
+              </div>
+            </aside>,
+            host,
+          )}
+      </section>
     </Context.Provider>
   );
 }
@@ -378,28 +403,6 @@ function subscribeWide(change: () => void): () => void {
   return () => query.removeEventListener("change", change);
 }
 const readWide = () => window.matchMedia(WIDE).matches;
-
-const FOCUSABLE =
-  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])';
-
-/** Keeps Tab inside the phone sheet: past its last control back to its first, and the other way round. */
-function trapFocus(event: KeyboardEvent) {
-  if (event.key !== "Tab" || !(event.currentTarget instanceof HTMLElement)) return;
-  const items = [...event.currentTarget.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(
-    (item) => item.tabIndex >= 0 && item.getClientRects().length > 0 && !item.closest('[aria-hidden="true"], [hidden]'),
-  );
-  const first = items[0];
-  const last = items.at(-1);
-  if (!first || !last) return;
-  const active = document.activeElement;
-  if (event.shiftKey && (active === first || !items.includes(active as HTMLElement))) {
-    event.preventDefault();
-    last.focus();
-  } else if (!event.shiftKey && active === last) {
-    event.preventDefault();
-    first.focus();
-  }
-}
 
 /** Focus handoffs from nested dialogs must target the current visible frame, never a retained route's ID. */
 export function visibleResourcePanelTitle(): HTMLElement | undefined {

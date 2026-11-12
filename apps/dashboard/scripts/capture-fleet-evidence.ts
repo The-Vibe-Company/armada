@@ -36,11 +36,9 @@ try {
         ] as const) {
           await page.goto(route);
           await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
-          if (name === "fleet") {
-            // Baseline revisions can already include retirement; never infer route
-            // behavior from the before/after filename. Keep candidate retirement strict.
+          // Later PR bases already redirect the retired Fleet route, too.
+          if (name === "fleet")
             await expect(page).toHaveURL(phase === "after" ? /\/sandboxes$/ : /\/(?:fleet\?view=all|sandboxes)$/);
-          }
           if (name === "attention") {
             // Capture settled conversation content, not whichever loading frame the browser reached first.
             await expect(page.getByRole("log", { name: "Messages" })).toContainText(

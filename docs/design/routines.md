@@ -9,8 +9,8 @@ It is not an orchestrator, workflow engine, or privileged service identity.
    read isolation and authorization. No timer, launch, or enabling endpoint is
    shipped. The API is a foundation, not completion of #1006.
 2. **Slice 2 (#1014):** server scheduler, durable run history/claims, pause/resume and cost guards.
-3. **Slice 3 (#1027):** API-only `armada routine …` commands and a bounded coordinator staging check.
-4. **This slice:** dashboard Run > Routines using CreateDialog; optional read-only iPhone last.
+3. **CLI + coordinator checks (#1027):** API-only `armada routine …` commands and a bounded coordinator staging check.
+4. **Dashboard (also #1027):** Run > Routines using CreateDialog; optional read-only iPhone last.
 
 ## Configuration and identity
 

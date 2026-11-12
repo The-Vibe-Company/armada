@@ -722,11 +722,6 @@ function orAny(row: Row, expression: string): boolean {
 
 function project(table: string, row: Row, select: string | null): Row | Fail {
   const columns = !select || select === "*" ? null : select.split(",").map((column) => column.trim());
-  if (table === "credentials" && (!columns || columns.includes("value_enc"))) {
-    if (columns?.includes("value_enc")) {
-      return { status: 401, code: "42501", message: "permission denied for table credentials" };
-    }
-  }
   if (table === "github_connections") {
     if (!columns || columns.includes("refresh_token_enc")) {
       return { status: 401, code: "42501", message: "permission denied for table github_connections" };
@@ -735,13 +730,7 @@ function project(table: string, row: Row, select: string | null): Row | Fail {
   if (table === "orgs" && !columns) {
     return { status: 401, code: "42501", message: "permission denied for table orgs" };
   }
-  if (!columns) {
-    if (table === "credentials") {
-      const { value_enc: _hidden, ...rest } = row;
-      return rest;
-    }
-    return row;
-  }
+  if (!columns) return row;
   return Object.fromEntries(columns.map((column) => [column, row[column]]));
 }
 
@@ -760,6 +749,13 @@ async function rest(request: Request, url: URL): Promise<Response> {
   const select = url.searchParams.get("select");
 
   if (request.method === "GET") {
+    // Column grants apply to the query, even when filtering or paging returns no rows.
+    if (table === "credentials") {
+      const columns = select?.split(",").map((column) => column.trim());
+      if (!select || !columns || columns.includes("*") || columns.includes("value_enc")) {
+        return pgError({ status: 401, code: "42501", message: "permission denied for table credentials" });
+      }
+    }
     let rows = visibleRows(table, userId).filter((row) => matches(row, url.searchParams));
     const order = url.searchParams.get("order");
     if (order) {
@@ -1577,6 +1573,7 @@ function templateRoute(route: string, body: Row, request: Request): Response {
       reasoningEffort: d.reasoningEffort ?? "high",
       connections: d.connections ?? [],
       variables: d.variables ?? [],
+      ...(Array.isArray(d.secrets) && d.secrets.length ? { secrets: d.secrets } : {}),
       skills: d.skills ?? [],
     };
   };

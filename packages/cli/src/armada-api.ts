@@ -244,7 +244,7 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
             "Request key already used with a different request. Retry only the original key and body until its outcome is known.",
         };
         const fallback: Record<number, string> = {
-          400: "Invalid template request. Check the definition, IDs, versions and supported overrides. Secret bindings are not supported.",
+          400: "Invalid template request. Check the definition, IDs, versions and supported overrides. Secret bindings require IDs and versions; inline secret values are not accepted.",
           401: "Run armada login or update ARMADA_TOKEN.",
           403: "Template access denied. Current membership is required; only admins can mutate organization templates.",
           404: "Template or revision not found or not visible.",
