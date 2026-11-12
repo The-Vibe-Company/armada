@@ -147,6 +147,7 @@ export { type HelperNegotiation, type HelperReceipt, type HelperRefusal, negotia
 export * from "./invitations.ts";
 export {
   DEFAULT_LAUNCH_TTL_SECONDS,
+  deleteNeverStartedSandbox,
   type GitHubLaunchInfo,
   type LaunchCredentialResolver,
   type LaunchOptions,
