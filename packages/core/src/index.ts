@@ -6,6 +6,7 @@ export {
   type GitHubHydrationPhase,
   githubHydrationPhase,
 } from "./api-failure.ts";
+export { CLAUDE_ENDPOINT_ENV, type ClaudeEndpoint, parseClaudeEndpoint } from "./claude-endpoint.ts";
 export { CLIENT_CONFIG_PATH, type ClientConfig } from "./client-config.ts";
 export { CODEX_ENDPOINT_ENV, type CodexEndpoint, parseCodexEndpoint } from "./codex-endpoint.ts";
 export * from "./connections.ts";
@@ -147,6 +148,7 @@ export { type HelperNegotiation, type HelperReceipt, type HelperRefusal, negotia
 export * from "./invitations.ts";
 export {
   DEFAULT_LAUNCH_TTL_SECONDS,
+  deleteNeverStartedSandbox,
   type GitHubLaunchInfo,
   type LaunchCredentialResolver,
   type LaunchOptions,

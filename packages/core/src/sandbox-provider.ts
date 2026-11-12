@@ -41,6 +41,12 @@ export interface HostCapabilities {
    * verifies a fresh source-bound reference, stops the master and publishes by CAS.
    */
   readonly goldenSnapshotPublication: "replace-stable" | "publish-immutable";
+  /**
+   * Abandoned builds either stop their recorded builder, or reconcile a durable
+   * reservation and dispose only through its ownership-checked provider port.
+   * Reservation-backed sources must be retained once snapshot/publication starts.
+   */
+  readonly goldenBuilderRecovery: "stop-recorded" | "dispose-reservation";
   /** Snapshot metadata must attest the immutable management credential authority before retirement. */
   readonly snapshotManagementAuthority: boolean;
 }
@@ -49,11 +55,13 @@ export const HOST_CAPABILITIES: Readonly<Record<SandboxProviderId, HostCapabilit
   boat: {
     goldenRestore: "fresh-fork",
     goldenSnapshotPublication: "replace-stable",
+    goldenBuilderRecovery: "stop-recorded",
     snapshotManagementAuthority: false,
   },
   modal: {
     goldenRestore: "shared-source",
     goldenSnapshotPublication: "publish-immutable",
+    goldenBuilderRecovery: "dispose-reservation",
     snapshotManagementAuthority: true,
   },
 };
