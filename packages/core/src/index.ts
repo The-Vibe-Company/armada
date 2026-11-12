@@ -237,6 +237,7 @@ export {
   type SteerRequest,
   type ToolCall,
 } from "./provider.ts";
+export { providerRateLimitDetails, providerRateLimitMessage } from "./provider-limit.ts";
 export { validateReadableVariables } from "./readable-variables.ts";
 export { resolveRepositoryDir } from "./repository-context.ts";
 export {

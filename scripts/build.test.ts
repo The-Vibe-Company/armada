@@ -16,10 +16,10 @@ for (const scenario of [
   test(`build batch ${JSON.stringify(scenario)}`, async () => {
     const root = await mkdtemp(join(tmpdir(), "armada-build-"));
     try {
-      // The build embeds the latest migration; reproduce its repository layout.
-      await mkdir(join(root, "scripts"), { recursive: true });
+      // Keep the repository layout: compile reads the migration version before spawning Bun.
+      await mkdir(join(root, "scripts"));
       await Bun.write(join(root, "scripts/build.ts"), Bun.file(join(import.meta.dir, "build.ts")));
-      await Bun.write(join(root, "supabase/migrations/20261112000000_fixture.sql"), "-- fixture only\n");
+      await Bun.write(join(root, "supabase/migrations/20260101000000_fixture.sql"), "-- fixture");
       const log = join(root, "calls.jsonl");
       await Bun.write(
         join(root, "preload.ts"),
