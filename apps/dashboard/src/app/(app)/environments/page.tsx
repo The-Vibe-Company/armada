@@ -203,8 +203,9 @@ export default async function GoldensPage({ searchParams }: Props) {
         )
       : [];
   const requested = typeof query[ITEM_PARAM] === "string" ? query[ITEM_PARAM] : null;
-  const initial =
-    requested ?? (createTracked ? null : (goldens.find((golden) => rebuildsTracked.has(golden.id))?.id ?? null));
+  // Build recovery belongs to the page; only an explicit item opens a detail.
+  // Otherwise a Back/reload of the list would reopen a dismissed rebuild.
+  const initial = requested;
 
   const notices = (
     <>
@@ -250,6 +251,7 @@ export default async function GoldensPage({ searchParams }: Props) {
 
   return (
     <ResourceBrowser
+      detailPanel
       title="Environments"
       description="Goldens: what a sandbox contains when it starts."
       meta={goldens.length > 0 ? goldens.length : undefined}
