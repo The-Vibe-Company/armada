@@ -255,3 +255,24 @@ A default CLI origin/session could differ from the checker's. Do not infer a
 server/proxy route bug merely because a later/default CLI command sees a parent.
 Use the existing explicit-org/golden rerun commands above, omitting `--repo`; this
 change performs no live staging rerun and does not assert the source of the 404.
+
+### Modal working scope versus source golden scope
+
+New access-enabled launches now resolve a **private working target** before
+forking, while retaining the golden's original `sourceGoldenVisibility` for
+snapshot and management-credential authority. Ordinary non-access org launches
+remain org-scoped. A regression using the actual SQL Modal store and stored
+status/events reader reproduced a launch-200 → status-404 namespace mismatch
+before this fix; private stored reads now succeed without SDK App lookups, even
+when a conflicting personal Modal credential exists. This establishes a local
+failure mode, not independent proof about every historical staging resource.
+
+There is no cross-scope read fallback, immutable-row rewrite or automatic repair
+of older allocations. Historical parents may have a private Armada row but an
+org-scoped Modal machine. An operator must correlate the exact provider machine,
+App/environment and management authority and **confirm physical termination**
+through the approved provider procedure. For those mismatched resources, API
+status-not-found or a stop acknowledgement that treated provider-not-found as
+terminal is **not proof the original VM terminated**. Never remap a row or delete
+resources by name to conceal this mismatch. This change performs no historical
+cleanup, deployment or live staging verification.
