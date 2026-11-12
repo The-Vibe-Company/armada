@@ -36,13 +36,26 @@ export const PROVIDER_LIMITS: Readonly<Record<SandboxProviderId, ProviderLimits>
  */
 export interface HostCapabilities {
   readonly goldenRestore: "fresh-fork" | "shared-source";
+  /**
+   * Stable replacement updates a named snapshot in place. Immutable publication
+   * verifies a fresh source-bound reference, stops the master and publishes by CAS.
+   */
+  readonly goldenSnapshotPublication: "replace-stable" | "publish-immutable";
   /** Snapshot metadata must attest the immutable management credential authority before retirement. */
   readonly snapshotManagementAuthority: boolean;
 }
 
 export const HOST_CAPABILITIES: Readonly<Record<SandboxProviderId, HostCapabilities>> = {
-  boat: { goldenRestore: "fresh-fork", snapshotManagementAuthority: false },
-  modal: { goldenRestore: "shared-source", snapshotManagementAuthority: true },
+  boat: {
+    goldenRestore: "fresh-fork",
+    goldenSnapshotPublication: "replace-stable",
+    snapshotManagementAuthority: false,
+  },
+  modal: {
+    goldenRestore: "shared-source",
+    goldenSnapshotPublication: "publish-immutable",
+    snapshotManagementAuthority: true,
+  },
 };
 
 /**
