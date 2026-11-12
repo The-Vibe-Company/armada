@@ -104,16 +104,22 @@ function claudeCacheWriteTtl(usage: Record<string, unknown>): Pick<TurnTokenUsag
     hourKey = "cacheCreationEphemeral1hInputTokens";
   if (!Object.hasOwn(usage, fiveKey) && !Object.hasOwn(usage, hourKey)) return {};
   const total = count(usage.cacheCreationInputTokens),
-    five = count(usage[fiveKey]),
-    hour = count(usage[hourKey]);
+    rawFive = usage[fiveKey],
+    rawHour = usage[hourKey],
+    five = count(rawFive),
+    hour = count(rawHour);
   const invalid =
-    total === null ||
-    (Object.hasOwn(usage, fiveKey) && five === null) ||
-    (Object.hasOwn(usage, hourKey) && hour === null) ||
-    (five !== null && five > total) ||
-    (hour !== null && hour > total) ||
-    (five !== null && hour !== null && (!Number.isSafeInteger(five + hour) || five + hour > total));
-  return { cacheWriteTokensByTtl: invalid ? { fiveMinute: null, oneHour: null } : { fiveMinute: five, oneHour: hour } };
+    (rawFive !== null && rawFive !== undefined && five === null) ||
+    (rawHour !== null && rawHour !== undefined && hour === null) ||
+    (total !== null && five !== null && five > total) ||
+    (total !== null && hour !== null && hour > total) ||
+    (five !== null && hour !== null && (!Number.isSafeInteger(five + hour) || (total !== null && five + hour > total)));
+  // Contradictory/invalid detail is not absence: default-rate fallback must not erase it.
+  return {
+    cacheWriteTokensByTtl: invalid
+      ? { fiveMinute: null, oneHour: null, conflicted: true }
+      : { fiveMinute: five, oneHour: hour },
+  };
 }
 
 /** Native final snapshots only, never deltas or account quota reports. */

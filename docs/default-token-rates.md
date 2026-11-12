@@ -20,7 +20,10 @@ blanket fail-closed policy for complex catalogue entries and absent native TTL.
   [OpenAI GPT-5.6+ uses 30 minutes, 1.25× input](https://developers.openai.com/api/docs/guides/prompt-caching);
   [Anthropic uses five minutes by default](https://platform.claude.com/docs/en/build-with-claude/prompt-caching).
   Null TTL selects this default rate; an explicit unsupported/conflicting lifetime
-  remains unknown if writes are positive. Zero writes cannot be blocked by TTL.
+  remains unknown if writes are positive. Contradictory native lifetime subsets
+  retain a sticky conflict marker, rather than being erased into default/absent
+  TTL; valid reported lifetime counts survive a missing aggregate count. Truly
+  null/omitted detail is not itself a conflict. Zero writes cannot be blocked by TTL.
   Connection-configured rates remain explicitly flat across lifetimes.
 - The legacy snapshot `unsupported` flag records catalogue complexity, **not a
   veto on rated token classes**. Alternate modes/context/audio/image/tool prices

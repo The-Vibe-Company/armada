@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import type { StoredTurnPricing } from "@armada/core";
 import { createSqlGoldenStore, createSqlVaultStore, launchSandbox, type Provider } from "@armada/core/server";
 import { run } from "../../cli/src/run.ts";
 import { memorySessionStore } from "../../cli/src/session.ts";
@@ -113,12 +114,14 @@ test.each([
       });
       await collectSandboxUsage(provider, store, (await store.get(launched.sandbox.id))!, promptId);
       const persisted = (
-        await db.query<{ usage_turns: { turns: { pricing: unknown }[] } }>(
+        await db.query<{ usage_turns: { turns: { pricing: StoredTurnPricing | null }[] } }>(
           "select usage_turns from sandboxes where id=$1",
           [launched.sandbox.id],
         )
       ).rows[0]!.usage_turns;
       expect(persisted.turns[0]?.pricing).toMatchObject({ usd, basis, snapshot: { model } });
+      const originalQuote = persisted.turns[0]?.pricing;
+      if (!originalQuote?.snapshot) throw Error("Missing stored snapshot");
       if (agent === "codex") {
         expect(persisted.turns[0]?.pricing).toMatchObject({
           snapshot: { unsupported: true },
@@ -134,7 +137,7 @@ test.each([
         await store.recordUsage!(launched.sandbox.id, { turnCount: 1, turns: [] }, { observations: [] });
         expect((await store.get(launched.sandbox.id))?.usage?.turns[0]?.pricing).toMatchObject({
           usd,
-          snapshot: { revision: (persisted.turns[0]?.pricing as { snapshot: { revision: string } }).snapshot.revision },
+          snapshot: { revision: originalQuote.snapshot.revision },
         });
       }
       const cost = { currency: "USD", usd, basis, unknown: null, unpricedTurns: 0 } as const;

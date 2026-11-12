@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { Sql, TurnPriceContext, TurnTokenUsage } from "@armada/core";
-import { type Provider, priceTurn, resolvePrice } from "@armada/core/server";
+import { createUsagePricingContext, type Provider, priceTurn, resolvePrice } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
 import { collectSandboxUsage } from "../src/turns.ts";
 import { database, fakeBoat } from "./support.ts";
@@ -247,6 +247,70 @@ test("unrecognized stored quote metadata cannot lend an amount or observation wi
     );
     await store.recordUsage!(saved.id, { turnCount: 1, turns: [native] }, { observations: [], contexts: [context] });
     expect((await read())?.pricing).toMatchObject({ schemaVersion: 1, usd: null, unknown: "tokens", inputs: null });
+  } finally {
+    await data.db.close();
+  }
+});
+
+test("native TTL contradictions remain unpriced through collection and stale replay, not the omitted default", async () => {
+  const data = await database();
+  try {
+    const { store, saved, native, context } = await state(data);
+    await store.recordUsagePricingContext!(
+      saved.id,
+      createUsagePricingContext({
+        harness: "claude",
+        credentialKind: "claude_oauth",
+        customEndpoint: false,
+        credentialId: context.credentialId!,
+        credentialVersion: 1,
+      }),
+    );
+    let detail: Record<string, number> = {
+      cacheCreationEphemeral5mInputTokens: 8,
+      cacheCreationEphemeral1hInputTokens: 3,
+    };
+    const provider: Provider = {
+      ...fakeBoat().provider,
+      id: "modal",
+      async events() {
+        return {
+          events: [
+            {
+              id: "lifetime-result",
+              at: 2,
+              kind: "other",
+              type: "result",
+              promptId: native.promptId,
+              data: {
+                modelUsage: {
+                  [native.model!]: {
+                    inputTokens: 10,
+                    outputTokens: 20,
+                    cacheReadInputTokens: 0,
+                    cacheCreationInputTokens: 10,
+                    ...detail,
+                  },
+                },
+              },
+            },
+          ],
+          hasMore: false,
+        };
+      },
+    };
+    await collectSandboxUsage(provider, store, (await store.get(saved.id))!, native.promptId);
+    const read = async () => (await store.get(saved.id))?.usage;
+    expect((await read())?.turns[0]?.pricing?.usd).toBeNull();
+    expect((await read())?.cost).toMatchObject({ usd: null, unknown: "pricing_dimensions" });
+    expect((await read())?.turns[0]?.cacheWriteTokensByTtl).toMatchObject({ conflicted: true });
+    // Older valid/absent-detail observations cannot erase the contradictory evidence.
+    for (const replay of [{ cacheCreationEphemeral5mInputTokens: 10, cacheCreationEphemeral1hInputTokens: 0 }, {}]) {
+      detail = replay;
+      await collectSandboxUsage(provider, store, (await store.get(saved.id))!, native.promptId);
+      expect((await read())?.turns[0]?.pricing?.usd).toBeNull();
+      expect((await read())?.turns[0]?.cacheWriteTokensByTtl).toMatchObject({ conflicted: true });
+    }
   } finally {
     await data.db.close();
   }
