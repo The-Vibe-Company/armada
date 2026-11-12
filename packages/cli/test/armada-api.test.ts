@@ -224,6 +224,29 @@ for (const failure of ["502", "network", "timeout"] as const) {
   });
 }
 
+for (const path of ["launch", "launch-sized-v1", "launch-access-v1"]) {
+  for (const [status, code] of [
+    [429, "rate_limited"],
+    [402, "payment_required"],
+  ] as const) {
+    test(`known allocation refusal keeps its code and closed help (${path}, ${code})`, async () => {
+      const client = await createArmadaApiClient({
+        ...io({ ARMADA_TOKEN: token }),
+        fetch: async () => Response.json({ error: { code, message: token } }, { status }),
+      });
+      try {
+        await client.request(`/api/v1/sandbox/${path}`, { method: "POST" });
+        throw Error("Expected refusal");
+      } catch (error) {
+        expect(error).toBeInstanceOf(ArmadaApiError);
+        expect((error as ArmadaApiError).serverCode).toBe(code);
+        expect((error as Error).message).not.toContain(token);
+        expect((error as Error).message).not.toContain("outcome unknown");
+      }
+    });
+  }
+}
+
 test("closed server failures give actionable CLI help without parsing free text", async () => {
   for (const [code, status, help] of [
     ["github_hydration_failed", 503, "Check the failing phase"],

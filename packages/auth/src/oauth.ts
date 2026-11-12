@@ -1,3 +1,4 @@
+import { BodyTooLargeError, readBoundedText } from "./bounded-body.ts";
 import { bearerKind, generateClientId, generateCode, generateToken, randomHex, sha256Hex } from "./codec.ts";
 import { clearCookie, openSeal, type PendingLogin, readCookie, seal, writeCookie } from "./cookie.ts";
 import { AuthError } from "./errors.ts";
@@ -95,6 +96,7 @@ export async function handleOAuthRequest(request: Request, options: OAuthServerO
     const response = await route(request, url, options);
     return CORS_PATHS.has(url.pathname) ? withCors(response) : response;
   } catch (error) {
+    if (error instanceof BodyTooLargeError) return oauthError(413, "invalid_request", "The request is too large.");
     if (error instanceof AuthError && error.code === "unavailable") {
       return oauthError(503, "server_error", "Armada could not complete the request.");
     }
@@ -300,10 +302,12 @@ async function callback(url: URL, request: Request, options: OAuthServerOptions)
   if (memberships.length === 0) {
     return finish(page("No organization", "<p>You are not a member of an organization yet.</p>", 400), options);
   }
-  const only = memberships[0];
-  if (memberships.length === 1 && only) return sendCode(next, only.orgId, options);
+  const client = await options.store.findClient(next.clientId);
+  if (!client?.redirectUris.includes(next.redirectUri)) {
+    return finish(page("Authorization failed", "<p>The client is no longer registered.</p>", 400), options);
+  }
   const cookie = writeCookie(await seal(next, options.authSecret), options.publicUrl, LOGIN_TTL_MS / 1000);
-  return withSetCookie(orgPage(memberships, next.csrf), cookie);
+  return withSetCookie(orgPage(memberships, next.csrf, client.name, next.redirectUri), cookie);
 }
 
 async function chooseOrg(request: Request, options: OAuthServerOptions): Promise<Response> {
@@ -312,6 +316,18 @@ async function chooseOrg(request: Request, options: OAuthServerOptions): Promise
   if (!pending?.userId || form.get("csrf") !== pending.csrf) {
     return page("Authorization failed", "<p>Start again from your client.</p>", 400);
   }
+  const decision = form.get("decision");
+  if (decision === "cancel") {
+    const client = await options.store.findClient(pending.clientId);
+    if (!client?.redirectUris.includes(pending.redirectUri)) {
+      return finish(page("Authorization failed", "<p>The client is no longer registered.</p>", 400), options);
+    }
+    return finish(
+      failRedirect(pending.redirectUri, "access_denied", "Authorization was declined.", pending.state),
+      options,
+    );
+  }
+  if (decision !== "allow") return page("Authorization failed", "<p>Choose Allow or Cancel.</p>", 400);
   const orgId = form.get("org") ?? "";
   return sendCode(pending, orgId, options);
 }
@@ -522,14 +538,12 @@ function withCors(response: Response): Response {
 }
 
 async function readForm(request: Request): Promise<URLSearchParams> {
-  const text = await request.text();
-  if (text.length > 8192) throw new AuthError("The request is too large.", "usage");
+  const text = await readBoundedText(request, 8192);
   return new URLSearchParams(text);
 }
 
 async function readJson(request: Request): Promise<unknown> {
-  const text = await request.text();
-  if (text.length > 8192) throw new AuthError("The request is too large.", "usage");
+  const text = await readBoundedText(request, 8192);
   try {
     return JSON.parse(text);
   } catch {

@@ -6,6 +6,10 @@ export type TimingPhase =
   | ModalPromptPhase
   | "auth"
   | "dispatch"
+  | "tool_register"
+  | "tool_connect"
+  | "tool_call"
+  | "tool_close"
   | "provider"
   | "stored_provider"
   | "sandbox_read"

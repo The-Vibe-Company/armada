@@ -7,8 +7,21 @@ test("an org is created, and inviting someone does not make them a member", asyn
   await signIn(page, "alice@example.com", "/orgs");
   await expect(page.getByRole("link", { name: /Acme/ })).toBeVisible();
 
-  await page.getByLabel("Name").fill("Side Project");
-  await page.getByRole("button", { name: "Create org" }).click();
+  const create = page.getByRole("button", { name: "New org", exact: true });
+  await expect(page.getByLabel("Name", { exact: true })).toHaveCount(0);
+  await create.click();
+  const dialog = page.getByRole("dialog", { name: "Create an org" });
+  await expect(dialog.getByLabel("Name", { exact: true })).toBeFocused();
+  await dialog.getByLabel("Name", { exact: true }).fill("Cancelled org");
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  await expect(create).toBeFocused();
+  await page.reload();
+  await expect(page.getByText("Cancelled org", { exact: true })).toHaveCount(0);
+  await create.click();
+  await expect(dialog.getByLabel("Name", { exact: true })).toHaveValue("");
+  await dialog.getByLabel("Name", { exact: true }).fill("Side Project");
+  await dialog.getByRole("button", { name: "Create org" }).click();
   // A new org starts by connecting a sandbox provider in Settings; its members page stays reachable.
   await expect(page).toHaveURL(/\/settings$/);
   await expect(page.locator('[data-settings="providers"]')).toContainText("Side Project");

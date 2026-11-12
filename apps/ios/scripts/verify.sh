@@ -14,6 +14,8 @@ xcodebuild -version
 swift --version
 xcodegen --version
 swift test --package-path ArmadaKit
+# Exercise the actual Foundation-only app projection under shipping optimization too.
+swift test --package-path ArmadaKit --configuration release
 xcodegen generate --spec project.yml
 for configuration in Debug Release; do
   xcodebuild -project Armada.xcodeproj -scheme Armada \

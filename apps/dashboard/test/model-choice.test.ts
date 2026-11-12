@@ -84,3 +84,22 @@ describe("the launch machine size", () => {
     });
   });
 });
+
+test("crafted launch forms cannot carry Armada access to Claude or use an ambiguous flag", () => {
+  const fields = {
+    golden: "web",
+    provider: "boat",
+    org: "org",
+    model: "",
+    otherModel: "",
+    reasoningEffort: "",
+    prompt: "",
+  };
+  expect(launchArgs({ ...fields, harness: "claude", armadaAccess: "on" })).toMatchObject({ ok: false });
+  expect(launchArgs({ ...fields, harness: "codex", armadaAccess: "true" })).toMatchObject({ ok: false });
+  expect(launchArgs({ ...fields, harness: "codex", armadaAccess: "on" })).toMatchObject({
+    ok: true,
+    args: { armadaAccess: true },
+  });
+  expect(launchArgs({ ...fields, harness: "codex" })).toMatchObject({ ok: true });
+});

@@ -77,21 +77,92 @@ class Safety(unittest.TestCase):
 
     def test_redirects_are_refused_and_response_limits_never_echo_server_body(self):
         self.assertIsNone(check.NoRedirect().redirect_request(None, None, 302, "", {}, "https://other.example"))
-        run = check.Run(check.arguments(ARGS), ENV["STAGING_URL"], ID, ENV["ARMADA_TOKEN"])
-        response = mock.Mock(code=200)
-        response.read.return_value = b"sensitive-response" * check.LIMIT
-        run.opener = mock.Mock()
+        cases = [(200, {"ok": True}, None, None),
+                 (400, {"error": {"code": "invalid_config", "reason": "helper_missing", "message": "private body"}}, "invalid_config", "helper_missing"),
+                 (503, {"error": {"code": "dependency_unavailable", "details": {"reason": "helper_missing"}}}, "dependency_unavailable", "helper_missing"),
+                 (403, {"error": {"code": "owner-secret", "reason": "grant-secret", "message": "private body"}}, "unknown_code", "unknown_reason"),
+                 (302, {"message": "private body"}, None, None),
+                 (500, b"private malformed response", None, None)]
+        for status, body, code, reason in cases:
+            run = check.Run(check.arguments(ARGS), ENV["STAGING_URL"], ID, ENV["ARMADA_TOKEN"])
+            response = io.BytesIO(body if isinstance(body, bytes) else json.dumps(body).encode())
+            response.code = status
+            run.opener = mock.Mock()
+            run.opener.open.return_value = response
+            output = io.StringIO()
+            with self.subTest(status=status), contextlib.redirect_stdout(output):
+                if status == 200:
+                    run.call("sandbox/launch-access-v1", {})
+                else:
+                    with self.assertRaises(check.Failure):
+                        run.call("sandbox/launch-access-v1", {})
+            trace = json.loads(output.getvalue())
+            self.assertEqual(set(trace), {"step", "route", "status", "code", "reason"})
+            self.assertEqual(trace, {"step": "parent_launch", "route": "sandbox/launch-access-v1", "status": status, "code": code, "reason": reason})
+            self.assertTrue(response.closed)
+            for private in ("private body", "owner-secret", "grant-secret", ENV["STAGING_URL"]):
+                self.assertNotIn(private, output.getvalue())
+            if status != 200:
+                self.assertEqual(run.failed_step, "parent_launch")
+        for token, active_grant in (("invalid_config", None), ("owner-secret", "helper_missing")):
+            run = check.Run(check.arguments(ARGS), ENV["STAGING_URL"], ID, token)
+            response = io.BytesIO(json.dumps({"error": {"code": "invalid_config", "reason": "helper_missing"}}).encode())
+            response.code = 400
+            run.opener = mock.Mock()
+            run.opener.open.return_value = response
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output), self.assertRaises(check.Failure):
+                run.call("sandbox/launch", {}, token=active_grant)
+            trace = json.loads(output.getvalue())
+            self.assertEqual(trace["step"], "control_launch")
+            self.assertIsNone(trace["code"] if token == "invalid_config" else trace["reason"])
+        for problem, reason in ((OSError("private body owner-secret"), "request_outcome_unknown"),
+                                (TimeoutError("private body owner-secret"), "request_timeout"),
+                                (check.Failure("request_deadline_exceeded"), "request_deadline_exceeded")):
+            run = check.Run(check.arguments(ARGS), ENV["STAGING_URL"], ID, ENV["ARMADA_TOKEN"])
+            run.opener = mock.Mock()
+            run.opener.open.side_effect = problem
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output), self.assertRaises(check.Failure):
+                run.call("sandbox/status", {"id": ID})
+            self.assertEqual(json.loads(output.getvalue())["reason"], reason)
+            self.assertNotIn("private body", output.getvalue())
+        response = io.BytesIO(b"x" * (check.LIMIT + 1))
+        response.code = 200
+        run.opener.open.side_effect = None
         run.opener.open.return_value = response
-        with self.assertRaisesRegex(check.Failure, "response_too_large"):
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(check.Failure, "response_too_large"):
             run.call("sandbox/status", {"id": ID})
-        response.close.assert_called_once()
         request = run.opener.open.call_args.args[0]
         self.assertEqual(request.get_header("Authorization"), "Bearer owner-secret")
-        self.assertTrue(request.full_url.startswith(ENV["STAGING_URL"] + "/api/v1/"))
+
+        class BrokenOutput(io.StringIO):
+            def write(self, _value):
+                raise BrokenPipeError("must not escape")
+        run = check.Run(check.arguments(ARGS), ENV["STAGING_URL"], ID, ENV["ARMADA_TOKEN"])
+        def answer(body, status=200):
+            response = io.BytesIO(json.dumps(body).encode())
+            response.code = status
+            return response
+        run.opener = mock.Mock()
+        run.opener.open.side_effect = [answer({"ok": True}), answer({"status": "running"}),
+                                      answer({"id": ID, "status": "stopped"}), answer({"status": "stopped"}),
+                                      answer({"sandboxes": [], "hasMore": False})]
+        run.parent, run.ids = ID, [ID]
+        stderr = io.StringIO()
+        with contextlib.redirect_stdout(BrokenOutput()), contextlib.redirect_stderr(stderr):
+            self.assertEqual(run.call("sandbox/status", {"id": ID}), {"ok": True})
+            self.assertTrue(run.cleanup())
+        self.assertEqual(stderr.getvalue(), "")
+        self.assertIn("/api/v1/sandbox/stop", [call.args[0].full_url.replace(ENV["STAGING_URL"], "") for call in run.opener.open.call_args_list])
+        run.opener.open.side_effect = None
+        run.opener.open.return_value = answer({"error": {"code": "invalid_config"}}, 400)
+        with contextlib.redirect_stdout(BrokenOutput()), self.assertRaisesRegex(check.Failure, "api_refused_or_unexpected"):
+            run.call("sandbox/launch-access-v1", {})
 
     def test_interrupt_cleanup_and_unverified_reports_never_claim_pass(self):
         for problem in (KeyboardInterrupt(), check.Failure("request_outcome_unknown"), SystemExit("never-echo-this"), None):
-            fake = mock.Mock(ids=[ID], phase="preflight", checks=["verified"], unverified=["old_grant_replay_no_operator_file"])
+            fake = mock.Mock(ids=[ID], phase="preflight", failed_step=None, api_step="preflight", checks=["verified"], unverified=["old_grant_replay_no_operator_file"])
             fake.scenario.side_effect = problem
             fake.cleanup.return_value = True
             output = io.StringIO()
@@ -105,7 +176,7 @@ class Safety(unittest.TestCase):
 
     def test_sigterm_runs_bounded_cleanup_and_restores_the_original_handler(self):
         previous = signal.getsignal(signal.SIGTERM)
-        fake = mock.Mock(ids=[ID], phase="preflight", checks=[], unverified=[])
+        fake = mock.Mock(ids=[ID], phase="preflight", failed_step=None, api_step="preflight", checks=[], unverified=[])
         fake.scenario.side_effect = lambda: os.kill(os.getpid(), signal.SIGTERM)
         def cleanup():
             self.assertEqual(signal.getsignal(signal.SIGTERM), signal.SIG_IGN)
@@ -147,6 +218,7 @@ class Safety(unittest.TestCase):
             def __init__(self, *args):
                 super().__init__(*args)
                 self.rows, self.stopped, self.resumed = {}, set(), False
+                self.requests = []
                 instances.append(self)
 
             def row(self, resource):
@@ -159,8 +231,10 @@ class Safety(unittest.TestCase):
 
             def _request(self, route, body, token, expected, code, timeout):
                 # Exact owner route/body shapes; status intentionally has no credential fields.
+                self.requests.append((route, dict(body)))
                 if route == "golden/list":
-                    return {"goldens": [{"id": ID, "name": "fixture", "provider": "boat", "orgId": ID}]}
+                    return {"goldens": [{"id": ID, "name": "fixture", "provider": "boat", "orgId": ID,
+                                         "config": {"repos": [{"dir": "armada", "url": "https://github.com/example/repo.git"}]}}]}
                 if route == "sandbox/list":
                     self_test.assertEqual((body["owner"], body["golden"], body["page"]), ("me", ID, 1))
                     return {"sandboxes": list(self.rows.values()), "hasMore": False}
@@ -211,6 +285,8 @@ class Safety(unittest.TestCase):
                         return {"events": [dict(event, text="PASS", promptId="control", tools=[denied])], "hasMore": False}
                     selection = {"goldenId": ID, "harness": "codex", "credentialId": OTHER, "credentialVersion": 1,
                                  "model": "test-model", "prompt": self.marker + " child-init: Reply exactly CHILD_READY without tools, then finish."}
+                    if self.args.repo:
+                        selection["repo"] = self.args.repo
                     receipt = {"sandboxId": child, "state": "succeeded"}
                     tools = [self.native("launch", {"idempotencyKey": self.run_id + "-launch", "selection": selection}, receipt),
                              dict(self.native("read", {"sandboxId": child}, {"id": child, "events": [{"id": "initial", "kind": "prompt", "text": self.child_init, "status": "finished"}]}), id="read-init"),
@@ -239,6 +315,48 @@ class Safety(unittest.TestCase):
                 self.assertNotIn("owner-secret", output.getvalue())
                 self.assertNotIn("armada_epoch_", output.getvalue())
                 self.assertNotIn(instances[-1].answer, output.getvalue())
+            class RefusedParent(Fixture):
+                def _request(self, route, body, *args):
+                    if route == "sandbox/launch-access-v1":
+                        response = io.BytesIO(json.dumps({"error": {"code": "dependency_unavailable", "message": "private server body"}}).encode())
+                        response.code = 503
+                        self.opener = mock.Mock()
+                        self.opener.open.return_value = response
+                        return Fixture.__bases__[0]._request(self, route, body, *args)
+                    return super()._request(route, body, *args)
+            output = io.StringIO()
+            with mock.patch.object(check, "Run", RefusedParent), contextlib.redirect_stdout(output):
+                self.assertEqual(check.main(ARGS, ENV), 1)
+            lines = [json.loads(line) for line in output.getvalue().splitlines()]
+            summary = lines[-1]
+            self.assertEqual(summary["step"], "parent_launch")
+            self.assertEqual(summary["resources"], [])
+            self.assertEqual(summary["checks"], [])
+            self.assertEqual(summary["cause"], "api_refused_or_unexpected")
+            self.assertIn({"step": "parent_launch", "route": "sandbox/launch-access-v1", "status": 503,
+                           "code": "dependency_unavailable", "reason": None}, lines)
+            self.assertNotIn("private server body", output.getvalue())
+
+            for selector, expected in (("/home/user/armada", "armada"), ("armada", "armada"), ("example/repo", "example/repo")):
+                output = io.StringIO()
+                with mock.patch.object(check, "Run", Fixture), contextlib.redirect_stdout(output):
+                    self.assertEqual(check.main(ARGS + ["--repo", selector], ENV), 1)
+                summary = json.loads(output.getvalue().splitlines()[-1])
+                self.assertEqual(summary["status"], "UNVERIFIED")
+                bodies = [body for route, body in instances[-1].requests if route in ("sandbox/launch-access-v1", "sandbox/launch")]
+                self.assertEqual([body["repo"] for body in bodies], [expected, expected])
+                child_selection, _ = json.JSONDecoder().raw_decode(bodies[0]["prompt"].split("selection ", 1)[1])
+                self.assertEqual(child_selection["repo"], expected)
+            for selector in ("/home/user/not-configured", "/tmp/armada", "/home/user/armada/", "/home/user/../armada"):
+                output = io.StringIO()
+                with mock.patch.object(check, "Run", Fixture), contextlib.redirect_stdout(output):
+                    self.assertEqual(check.main(ARGS + ["--repo", selector], ENV), 1)
+                summary = json.loads(output.getvalue().splitlines()[-1])
+                self.assertEqual(summary["reason"], "repository_path_not_configured")
+                self.assertFalse(any(route in ("sandbox/launch-access-v1", "sandbox/launch") for route, _ in instances[-1].requests))
+                self.assertFalse(instances[-1].unknown_allocation)
+                self.assertFalse(instances[-1].delegated_uncertain)
+
             for phase, action, raw in (("first", "commandExecution", False), ("resumed", "fileWrite", False),
                                        ("resumed", "fileChange", True), ("control", "webSearch", True),
                                        ("first", "dynamicToolCall", True), ("control", "unknownTool", False),

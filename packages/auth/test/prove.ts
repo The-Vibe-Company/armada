@@ -247,7 +247,13 @@ export async function proveAuth(options: {
     if (!location) throw new Error("missing supabase redirect");
     expectedChallenge = new URL(location).searchParams.get("code_challenge") ?? "";
     expect(new URL(location).searchParams.get("provider")).toBe("github");
-    return talk("GET", `/oauth/callback?code=${authCode}`);
+    const consent = await talk("GET", `/oauth/callback?code=${authCode}`);
+    if (authCode === "stranger-code") return consent;
+    expect(consent.status).toBe(200);
+    expect(consent.headers.get("location")).toBeNull();
+    const csrf = /name="csrf" value="([^"]+)"/.exec(await consent.text())?.[1];
+    if (!csrf) throw new Error("missing consent CSRF");
+    return talk("POST", "/oauth/org", { form: new URLSearchParams({ csrf, org: ORG_ID, decision: "allow" }) });
   }
 }
 

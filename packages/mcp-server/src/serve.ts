@@ -22,6 +22,7 @@ import { createCredentialBindingRecovery } from "./credential-binding-recovery.t
 import { createSqlData } from "./data.ts";
 import { retryDatabaseBoot } from "./database-boot.ts";
 import { createDatabaseReadiness } from "./database-readiness.ts";
+import { requireDatabaseSchema } from "./database-schema.ts";
 import { createGitHubAccountApi } from "./github-account.ts";
 import { configureBoatGitHub } from "./github-boat.ts";
 import { createHandler, providerRegistry, type Route } from "./http.ts";
@@ -119,7 +120,10 @@ export async function startServer(
     supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
   });
   try {
-    await retryDatabaseBoot(() => mcp.drainInvalidations(), options.logError ?? console.error);
+    await retryDatabaseBoot(async () => {
+      await requireDatabaseSchema(sql);
+      await mcp.drainInvalidations();
+    }, options.logError ?? console.error);
   } catch (error) {
     await mcp.close();
     await sql.close();

@@ -18,6 +18,14 @@ import uuid
 
 LIMIT = 1024 * 1024
 PRODUCTION = {"armada.thevibecompany.co", "armada.thevibecompany.com"}
+API_STEPS = {"golden/list": "golden_list", "sandbox/list": "sandbox_list", "sandbox/status": "sandbox_status",
+             "logs/read": "logs_read", "sandbox/launch-access-v1": "parent_launch", "sandbox/launch": "control_launch",
+             "sandbox/send": "parent_resume", "sandbox/stop": "sandbox_stop", "sandbox/exec": "control_probe",
+             "orchestrator-tools/read": "old_grant_read"}
+API_CODES = set("invalid invalid_config invalid_request unauthorized forbidden not_found conflict unsupported unavailable no_credentials start_failed init_failed prompt_failed payment_required provider_not_configured sandbox_not_ready no_running_turn credential_busy credential_binding_required credential_binding_unsafe credential_refused github_hydration_failed provider_unavailable dependency_unavailable outcome_unknown scoped_authority_denied invalid_epoch_authority".split())
+API_REASONS = API_CODES | set("helper_missing helper_receipt_invalid helper_capability_unsupported skillpack_credential_missing skillpack_credential_refused skillpack_credential_unreadable skillpack_skill_unavailable skillpack_cli_unavailable skillpack_download_unavailable skillpack_transport_failed visibility_not_persisted native_auth_write_failed repository_ownership_mismatch".split())
+LOCAL_REASONS = set("api_refused_or_unexpected response_invalid response_too_large request_outcome_unknown request_deadline_exceeded request_timeout redirect_refused deadline_exceeded interrupted terminated unsupported_api_route".split())
+
 
 
 class Failure(Exception):
@@ -65,6 +73,34 @@ def origin(value):
             or not re.search(r"(^|[.-])(stage|staging)([.-]|$)", parsed.hostname.lower())):
         raise Failure("explicit_staging_https_origin_required")
     return value.rstrip("/")
+
+
+def emit(record):
+    # Diagnostics must never mask a request outcome or prevent resource cleanup.
+    try:
+        print(json.dumps(record, sort_keys=True), flush=True)
+    except (OSError, ValueError):
+        pass
+
+
+def safe_values(value, protected):
+    if isinstance(value, dict):
+        return {key: safe_values(item, protected) for key, item in value.items()}
+    if isinstance(value, list):
+        return [safe_values(item, protected) for item in value]
+    return None if isinstance(value, str) and any(secret and secret in value for secret in protected) else value
+
+
+def repository_selector(selector, config):
+    if selector is None or not selector.startswith("/"):
+        return selector  # Existing directory and owner/repo API selectors are unchanged.
+    prefix = "/home/user/"
+    directory = selector[len(prefix):] if selector.startswith(prefix) else ""
+    repos = config.get("repos", []) if isinstance(config, dict) else []
+    if (re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,80}", directory)
+            and isinstance(repos, list) and sum(isinstance(repo, dict) and repo.get("dir") == directory for repo in repos) == 1):
+        return directory
+    raise Failure("repository_path_not_configured")
 
 
 def grant_file(path):
@@ -209,6 +245,9 @@ class Run:
         self.unknown_allocation = False
         self.delegated_uncertain = False
         self.phase = "preflight"
+        self.api_step = "preflight"
+        self.failed_step = None
+        self._api_trace = None
 
     def remaining(self):
         remaining = self.deadline - time.monotonic()
@@ -217,8 +256,27 @@ class Run:
         return remaining
 
     def call(self, route, body, token=None, expected=200, code=None, timeout=30):
-        with request_deadline(min(timeout, self.remaining())):
-            return self._request(route, body, token, expected, code, timeout)
+        self.api_step = API_STEPS.get(route, "unknown_step")
+        trace = {"step": self.api_step, "route": route if route in API_STEPS else "unknown_route",
+                 "status": None, "code": None, "reason": None}
+        self._api_trace = trace
+        try:
+            if route not in API_STEPS:
+                raise Failure("unsupported_api_route")
+            with request_deadline(min(timeout, self.remaining())):
+                return self._request(route, body, token, expected, code, timeout)
+        except BaseException as error:
+            if self.failed_step is None:
+                self.failed_step = self.api_step
+            if trace["reason"] is None and trace["status"] is None:
+                label = str(error) if isinstance(error, Failure) else "interrupted" if isinstance(error, KeyboardInterrupt) else "terminated" if isinstance(error, SystemExit) else "local_failure"
+                trace["reason"] = label if label in LOCAL_REASONS else "local_failure"
+            raise
+        finally:
+            # A credential equal to an otherwise safe enum word must still be hidden.
+            protected = [value for value in (self.token, token) if isinstance(value, str) and value]
+            safe = safe_values(trace, protected)
+            emit(safe)
 
     def _request(self, route, body, token, expected, code, timeout):
         request = urllib.request.Request(self.address + "/api/v1/" + route,
@@ -229,13 +287,31 @@ class Run:
             response = self.opener.open(request, timeout=min(timeout, self.remaining()))
         except urllib.error.HTTPError as error:
             response = error
+        except TimeoutError:
+            raise Failure("request_timeout") from None
         except (OSError, urllib.error.URLError):
             raise Failure("request_outcome_unknown") from None
         try:
+            self._api_trace["status"] = response.code if isinstance(response.code, int) and 100 <= response.code <= 599 else None
+            if isinstance(response.code, int) and 300 <= response.code <= 399:
+                raise Failure("redirect_refused")
             raw = response.read(LIMIT + 1)
             if len(raw) > LIMIT:
                 raise Failure("response_too_large")
             value = json.loads(raw)
+            error = value.get("error") if isinstance(value, dict) else None
+            if error is not None:
+                if isinstance(error, dict):
+                    raw_code = error.get("code")
+                    details = error.get("details")
+                    raw_reason = error.get("reason")
+                    if raw_reason is None and isinstance(details, dict):
+                        raw_reason = details.get("reason")
+                    self._api_trace["code"] = raw_code if isinstance(raw_code, str) and raw_code in API_CODES else "unknown_code"
+                    self._api_trace["reason"] = None if raw_reason is None else raw_reason if isinstance(raw_reason, str) and raw_reason in API_REASONS else "unknown_reason"
+                else:
+                    self._api_trace.update(code="unknown_code", reason="unknown_reason")
+
             if response.code != expected or (code and value.get("error", {}).get("code") != code):
                 raise Failure("api_refused_or_unexpected")
             if not isinstance(value, dict) or (expected == 200 and "error" in value):
@@ -243,6 +319,8 @@ class Run:
             return value
         except (ValueError, TypeError, AttributeError):
             raise Failure("response_invalid") from None
+        except TimeoutError:
+            raise Failure("request_timeout") from None
         except (OSError, urllib.error.URLError):
             raise Failure("request_outcome_unknown") from None
         finally:
@@ -356,6 +434,8 @@ class Run:
                     and row.get("provider") == self.args.provider and row.get("orgId") == self.org]
         if len(selected) != 1:
             raise Failure("golden_selection_unconfirmed")
+        self.api_step = "repository_preflight"
+        self.args.repo = repository_selector(self.args.repo, selected[0].get("config"))
         self.baseline = {identifier(row["id"]) for row in self.listing()}
         selection = {"goldenId": self.args.golden_id, "harness": self.args.harness,
                      "credentialId": self.args.account_id, "credentialVersion": self.args.account_version,
@@ -372,7 +452,7 @@ class Run:
                 "Poll delegated read until the CHILD assistant answers; then stop it with idempotencyKey "
                 + self.run_id + "-stop. Retain its ID and the memory nonce; finish without extra workers or tools.")
         self.parent, first = self.launch(True, task)
-        print(json.dumps({"event": "parent_created", "id": self.parent}), flush=True)
+        emit({"event": "parent_created", "id": self.parent})
         owner = identifier(self.verify_resource(self.parent)["ownerId"])
         self.owner = owner
         prompt_id, conversation = first["promptId"], first["conversationId"]
@@ -391,7 +471,7 @@ class Run:
         if not prompts or prompts[0].get("text") != selection["prompt"]:
             raise Failure("child_prompt_marker_unconfirmed")
         self.child = self.record(candidate)
-        print(json.dumps({"event": "child_discovered", "id": self.child}), flush=True)
+        emit({"event": "child_discovered", "id": self.child})
         for call in tools:
             method = call["method"]
             if method == "launch":
@@ -558,6 +638,7 @@ def arguments(argv):
 def main(argv=None, env=None):
     env = os.environ if env is None else env
     run, failure, cleaned = None, None, True
+    proof_step = "validation"
     def terminate(_signal, _frame):
         raise SystemExit(1)
     previous_term = signal.signal(signal.SIGTERM, terminate)
@@ -579,6 +660,7 @@ def main(argv=None, env=None):
         failure = "unsupported_response_or_local_failure"
     finally:
         if run:
+            proof_step = run.failed_step or run.api_step
             previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
             signal.signal(signal.SIGTERM, signal.SIG_IGN)
             try:
@@ -593,9 +675,9 @@ def main(argv=None, env=None):
         failure = "cleanup_not_confirmed"
     unverified = run.unverified if run else []
     status = "FAILED" if failure else "UNVERIFIED" if unverified else "PASS"
-    print(json.dumps({"status": status, "reason": failure, "cause": cause, "phase": run.phase if run else "validation", "checks": run.checks if run else [],
+    emit(safe_values({"status": status, "reason": failure, "cause": cause, "phase": run.phase if run else "validation", "step": proof_step, "checks": run.checks if run else [],
                       "unverified": unverified, "cleanupConfirmed": cleaned,
-                      "resources": run.ids if run else []}, sort_keys=True))
+                      "resources": run.ids if run else []}, [env.get("ARMADA_TOKEN", "")]))
     return 0 if status == "PASS" else 1
 
 

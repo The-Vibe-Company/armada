@@ -75,6 +75,7 @@ const form = (fields: Partial<TemplateFormFields> = {}): TemplateFormFields => (
   reasoningEffort: "high",
   connections: [],
   variables: [],
+  skills: [],
   ...fields,
 });
 
@@ -180,6 +181,34 @@ describe("template form", () => {
         },
       },
     });
+  });
+
+  test("publishes explicit exact skills, preserving an edited revision until the person changes or clears them", () => {
+    const skills = ["team/testing@1.2.3", "review-code@2.1.0"];
+    const previous = { connections: [], variables: [], skills };
+    for (const selected of [skills, ["review-code@2.0.0"], []]) {
+      const parsed = templateRequest(form({ skills: selected, reasoningEffort: "medium" }), lookups, previous);
+      expect(parsed.ok).toBe(true);
+      expect(parsed.ok && (parsed.value.definition.skills ?? [])).toEqual(selected);
+    }
+    expect(previous.skills).toEqual(["team/testing@1.2.3", "review-code@2.1.0"]);
+  });
+
+  test("invalid template skills are refused before immutable publication", () => {
+    for (const skills of [
+      ["review-code@latest"],
+      ["review-code@^2.0.0"],
+      ["team/armada-tools@1.0.0"],
+      ["armada-tools@1.0.0"],
+      ["review-code@2.1.0", "team/review-code@2.0.0"],
+      ["review-code@2.1.0", "review-code@2.1.0"],
+      Array.from({ length: 21 }, (_, index) => `skill-${index}@1.0.0`),
+    ]) {
+      expect(templateRequest(form({ skills }), lookups)).toEqual({
+        ok: false,
+        error: "Choose at most 20 distinct skills pinned to exact versions. Armada tools are managed automatically.",
+      });
+    }
   });
 
   test("refuses in words what the server would refuse", () => {

@@ -14,6 +14,7 @@ import {
   type LaunchTemplate,
   launchSandbox,
   PrivateSkillError,
+  ProviderError,
   type Sql,
   type TemplateRuntime,
 } from "@armada/core/server";
@@ -301,6 +302,39 @@ for (const mode of ["before_commit", "after_commit", "both_before_commit", "both
       expect(f.boat.prompts).toHaveLength(1);
     } finally {
       injected.mockRestore();
+      await f.db.close();
+    }
+  });
+}
+
+for (const retained of [false, true]) {
+  test(`template allocation quota refusal is terminal only without retained evidence (${retained})`, async () => {
+    const f = await fixture();
+    try {
+      const t = (await f.create()).item as LaunchTemplate;
+      let calls = 0;
+      f.provider.fork = async () => {
+        calls++;
+        throw new ProviderError({
+          provider: "boat",
+          code: "rate_limited",
+          status: 429,
+          retryable: false,
+          message: "Daily starts exhausted",
+          ...(retained ? { details: { keepSource: true } } : {}),
+        });
+      };
+      const result = await f.launch(t.id);
+      expect(result).toMatchObject(
+        retained
+          ? { state: "reconciling", reason: "allocation_or_start_unknown" }
+          : { state: "failed", reason: "provider_rate_limited" },
+      );
+      expect(await f.launch(t.id)).toEqual(result);
+      expect(calls).toBe(1);
+      expect((await f.db.query("select id from sandboxes")).rows).toHaveLength(0);
+      expect((await f.db.query("select id from golden_operation_fences")).rows).toHaveLength(retained ? 1 : 0);
+    } finally {
       await f.db.close();
     }
   });

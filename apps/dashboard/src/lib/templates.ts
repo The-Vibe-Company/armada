@@ -1,4 +1,4 @@
-import { type Harness, MODEL_CATALOG, PROVIDER_LIMITS, type SandboxProviderId } from "@armada/core";
+import { type Harness, MODEL_CATALOG, PROVIDER_LIMITS, type SandboxProviderId, validateSkillPins } from "@armada/core";
 import { EFFORT_LABEL, HARNESS_LABELS } from "./labels.ts";
 import type { LaunchAccounts } from "./model-accounts";
 import { type ModelFields, modelChoice } from "./model-choice.ts";
@@ -256,6 +256,7 @@ export type TemplateFormFields = {
   harness: string;
   connections: readonly string[];
   variables: readonly string[];
+  skills?: readonly string[];
   secrets?: readonly string[];
 } & ModelFields;
 
@@ -272,7 +273,7 @@ export function templateRequest(
   fields: TemplateFormFields,
   lookups: TemplateLookups,
   /** The revision a new one starts from: its unreadable selections block, its variable keys are kept. */
-  previous?: Pick<TemplateDefinition, "connections" | "variables" | "secrets">,
+  previous?: Pick<TemplateDefinition, "connections" | "variables" | "secrets" | "skills">,
 ): Parsed<TemplateRequest> {
   const lost = previous ? unreadableSelections(previous, lookups) : null;
   if (lost) return { ok: false, error: lost };
@@ -289,6 +290,15 @@ export function templateRequest(
     return { ok: false, error: `${golden.name} is private: an organization template needs a shared environment.` };
   const model = modelChoice(fields.harness, fields);
   if (!model.ok) return model;
+  const skills = fields.skills ?? previous?.skills ?? [];
+  try {
+    validateSkillPins(skills);
+  } catch {
+    return {
+      ok: false,
+      error: "Choose at most 20 distinct skills pinned to exact versions. Armada tools are managed automatically.",
+    };
+  }
 
   const connections = [...new Set(fields.connections)];
   if (connections.length > 0 && !lookups.connections)
@@ -356,6 +366,7 @@ export function templateRequest(
         reasoningEffort: model.args.reasoningEffort,
         ...(connections.length ? { connections } : {}),
         ...(variables.length ? { variables } : {}),
+        ...(skills.length ? { skills: [...skills] } : {}),
         ...(secrets.length ? { secrets } : {}),
       },
     },

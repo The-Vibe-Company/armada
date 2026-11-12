@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { alert, reset, signIn } from "./helpers";
+import { reset, signIn } from "./helpers";
 
 test.beforeEach(reset);
 
@@ -30,9 +30,19 @@ test("a wrong code is refused with a clear message", async ({ page }) => {
   await page.goto("/login");
   await page.getByLabel("Email").fill("alice@example.com");
   await page.getByRole("button", { name: "Email me a sign-in link" }).click();
-  await page.getByLabel("Code").fill("000000");
-  await page.getByRole("button", { name: "Sign in", exact: true }).click();
-  await expect(alert(page)).toHaveText("That code is wrong or has expired.");
+  const code = page.getByLabel("Code");
+  await expect(code).toBeFocused();
+  for (const attempt of ["000000", "000001"]) {
+    await code.fill(attempt);
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    await expect(page.getByRole("alert").filter({ hasText: "That code is wrong or has expired." })).toHaveText(
+      "That code is wrong or has expired.",
+    );
+    await expect(code).toHaveAttribute("aria-invalid", "true");
+    await expect(code).toHaveAccessibleDescription(/That code is wrong or has expired\./);
+    await expect(code).toBeFocused();
+    await expect(code).toHaveValue("");
+  }
   await expect(page).toHaveURL(/\/login/);
 });
 
