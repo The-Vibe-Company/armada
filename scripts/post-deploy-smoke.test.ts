@@ -1028,3 +1028,186 @@ test.each(["configured", "no_pins", "refused"])(
     expect(fake.lines.join("")).not.toContain(value);
   },
 );
+
+type LifecycleFault =
+  | "none"
+  | "steer_admitted"
+  | "wrong_steer_status"
+  | "bad_extension"
+  | "list_mismatch"
+  | "lost_resume"
+  | "stop_failed"
+  | "lost_launch";
+function lifecycleFixture(fault: LifecycleFault = "none") {
+  let provider = "boat";
+  let harness = "codex";
+  let id = "";
+  let launches = 0;
+  let sends = 0;
+  let stops = 0;
+  let stopped = false;
+  let readiness = 0;
+  let expiry = "";
+  const fake = fixture((call) => {
+    if (call.path === "sandbox/launch") {
+      launches++;
+      provider = String(call.body.provider);
+      harness = String(call.body.harness);
+      id = `life-${launches}`;
+      sends = 0;
+      stops = 0;
+      stopped = false;
+      readiness = 0;
+      fake.advance(500);
+      expiry = new Date(fake.io.now() + 1800_000).toISOString();
+      if (fault === "lost_launch") throw new Error("secret launch outcome");
+      return json({ sandbox: { id, provider } });
+    }
+    if (call.path.startsWith("sandbox/") && !["sandbox/list", "sandbox/launch"].includes(call.path))
+      expect(call.body.id).toBe(id);
+    if (call.path === "sandbox/status")
+      return json({
+        id,
+        harness,
+        status: stopped ? "stopped" : !sends && ++readiness === 1 ? "starting" : "ready",
+        providerState: stopped ? (provider === "boat" ? "archived" : "stopped") : "active",
+        expiresAt: expiry,
+      });
+    if (call.path === "sandbox/send") {
+      sends++;
+      stopped = false;
+      if (sends === 2 && fault === "lost_resume") throw new Error("secret lost resume receipt");
+      return json({ promptId: `turn-${sends}` });
+    }
+    if (call.path === "sandbox/wait") return json({ prompt: { promptId: call.body.prompt_id, state: "finished" } });
+    if (call.path === "sandbox/steer")
+      return fault === "steer_admitted"
+        ? json({ promptId: "unwanted" })
+        : json(
+            { error: { code: "no_running_turn", message: "secret refusal detail" } },
+            fault === "wrong_steer_status" ? 400 : 409,
+          );
+    if (call.path === "sandbox/extend") {
+      expect(call.body.ttl_seconds).toBe(1860);
+      const next = new Date(Date.parse(expiry) + 60_000).toISOString();
+      if (fault !== "bad_extension") expiry = next;
+      return json({ id, expiresAt: expiry, ttlSeconds: 1860 });
+    }
+    if (call.path === "sandbox/list") {
+      expect(call.body.owner).toBe("me");
+      expect(call.body.harness).toBe(harness);
+      expect(call.body.limit).toBe(200);
+      return call.body.page === 1
+        ? json({ sandboxes: [], page: 1, hasMore: true, nextPage: 2 })
+        : json({
+            sandboxes: [
+              {
+                id,
+                provider,
+                harness,
+                status: fault === "list_mismatch" ? "running" : stopped ? "stopped" : "ready",
+                expiresAt: expiry,
+              },
+            ],
+            page: 2,
+            hasMore: false,
+            nextPage: null,
+          });
+    }
+    if (call.path === "sandbox/stop") {
+      stops++;
+      if (fault === "stop_failed" && stops > 1) throw new Error("secret stop failure");
+      stopped = true;
+      return json({ status: "stopping" });
+    }
+  });
+  const run = (cases: object[] = [selected]) =>
+    postDeploySmoke(
+      {
+        ...env,
+        ARMADA_URL: "https://armada-mcp-staging.up.railway.app",
+        ARMADA_SMOKE_CASES: JSON.stringify(cases),
+      },
+      ["--lifecycle"],
+      {
+        ...fake.io,
+        fetch: (url, init) =>
+          fake.io.fetch(url.replace("https://armada-mcp-staging.up.railway.app", env.ARMADA_URL), init),
+      },
+    );
+  return { ...fake, run };
+}
+
+test("lifecycle records readiness and confirms extend/list, closed idle steer refusal and send-after-stop on every selected pair", async () => {
+  const fake = lifecycleFixture();
+  const cases = ["boat", "modal"].flatMap((provider) =>
+    ["claude", "codex"].map((harness) => ({ ...selected, provider, harness })),
+  );
+  expect(await fake.run(cases)).toBe(true);
+  expect(fake.calls.filter((call) => call.path === "sandbox/launch")).toHaveLength(4);
+  expect(fake.calls.filter((call) => call.path === "sandbox/send")).toHaveLength(8);
+  expect(fake.calls.filter((call) => call.path === "sandbox/stop")).toHaveLength(8);
+  expect(fake.calls.filter((call) => call.path === "sandbox/steer")).toHaveLength(4);
+  for (const [index, item] of cases.entries()) {
+    expect(fake.receipts()).toContainEqual({
+      case: index,
+      step: "time_to_ready",
+      pass: true,
+      provider: item.provider,
+      harness: item.harness,
+      elapsedMs: 1500,
+    });
+    for (const step of [
+      "list_ready",
+      "steer_refused",
+      "extend",
+      "list_stopped",
+      "resume_send",
+      "resume_wait",
+      "list_resumed",
+      "stop_resumed",
+      "list_stopped_final",
+    ])
+      expect(fake.receipts()).toContainEqual({ case: index, step, pass: true });
+  }
+  expect(fake.receipts().filter((line) => line.step === "lifecycle_cleanup_summary")).toHaveLength(4);
+  expect(
+    fake
+      .receipts()
+      .filter((line) => line.step === "lifecycle_cleanup_summary")
+      .every((line) => line.pass && !line.leftoverSandboxIds.length && !line.launchOutcomeUnknown),
+  ).toBe(true);
+  expect(fake.lines.join("")).not.toContain("secret");
+});
+
+test("lifecycle failures reject false receipts and report unknown launches or leftover IDs without replaying resume", async () => {
+  for (const fault of [
+    "steer_admitted",
+    "wrong_steer_status",
+    "bad_extension",
+    "list_mismatch",
+    "lost_resume",
+    "stop_failed",
+    "lost_launch",
+  ] as const) {
+    const fake = lifecycleFixture(fault);
+    expect(await fake.run()).toBe(false);
+    const summary = fake.receipts().find((line) => line.step === "lifecycle_cleanup_summary");
+    expect(summary).toBeDefined();
+    expect(fake.calls.filter((call) => call.path === "sandbox/launch")).toHaveLength(1);
+    if (fault === "lost_resume") {
+      expect(fake.calls.filter((call) => call.path === "sandbox/send")).toHaveLength(2);
+      expect(fake.calls.filter((call) => call.path === "sandbox/stop")).toHaveLength(2);
+      expect(summary.pass).toBe(true);
+    }
+    if (fault === "stop_failed") {
+      expect(summary.pass).toBe(false);
+      expect(summary.leftoverSandboxIds).toEqual(["life-1"]);
+    }
+    if (fault === "lost_launch") {
+      expect(summary.pass).toBe(false);
+      expect(summary.launchOutcomeUnknown).toBe(true);
+    }
+    expect(fake.lines.join("")).not.toContain("secret");
+  }
+});
