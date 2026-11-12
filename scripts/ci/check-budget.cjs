@@ -2,7 +2,12 @@
 const fs = require("node:fs");
 const run = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
 const jobs = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
-const required = jobs.filter((job) => job.name !== "CI budget (120s)" && job.name !== "Binary (darwin-x64)");
+const required = jobs.filter(
+  (job) =>
+    job.name !== "CI budget (120s)" &&
+    job.name !== "Binary (darwin-x64)" &&
+    job.name !== "Informational Golden OS recipe (actual provider image)",
+);
 const failures = [];
 for (const job of required) {
   if (job.conclusion !== "success") failures.push(`${job.name}: ${job.conclusion || job.status}`);

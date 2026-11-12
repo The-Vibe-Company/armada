@@ -16,6 +16,24 @@ test("budget guard rejects late, failed, missing and queued verdicts", () => {
     };
     for (const [jobs, expected] of [
       [[success], 0],
+      [
+        [
+          success,
+          { name: "Informational Golden OS recipe (actual provider image)", conclusion: null, status: "in_progress" },
+        ],
+        0,
+      ],
+      [
+        [
+          success,
+          {
+            name: "Informational Golden OS recipe (actual provider image)",
+            conclusion: "failure",
+            completed_at: new Date(start + 190_000).toISOString(),
+          },
+        ],
+        0,
+      ],
       [[{ ...success, completed_at: new Date(start + 121_000).toISOString() }], 1],
       [[{ ...success, conclusion: "failure" }], 1],
       [[{ ...success, conclusion: null, status: "queued" }], 1],
