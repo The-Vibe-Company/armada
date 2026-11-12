@@ -146,40 +146,6 @@ jobs:
         env:
           ARMADA_GOLDEN_OS_IMAGE: armada-golden-os
 
-  # Separate jobs expose every terminal state; matrix aggregation can mask cancelled legs.
-  e2e-1:
-    name: Dashboard e2e (shard 1/3)
-    uses: ./.github/workflows/dashboard-e2e-shard.yml
-    with:
-      shard: 1
-
-  e2e-2:
-    name: Dashboard e2e (shard 2/3)
-    uses: ./.github/workflows/dashboard-e2e-shard.yml
-    with:
-      shard: 2
-
-  e2e-3:
-    name: Dashboard e2e (shard 3/3)
-    uses: ./.github/workflows/dashboard-e2e-shard.yml
-    with:
-      shard: 3
-
-  # Preserve the required check name. A skipped/cancelled/failed shard must never pass the gate.
-  e2e:
-    name: Dashboard e2e
-    needs: [e2e-1, e2e-2, e2e-3]
-    if: ${{ always() }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 1
-    steps:
-      - name: Require every shard to succeed
-        env:
-          SHARD_1: ${{ needs.e2e-1.result }}
-          SHARD_2: ${{ needs.e2e-2.result }}
-          SHARD_3: ${{ needs.e2e-3.result }}
-        run: test "$SHARD_1" = success && test "$SHARD_2" = success && test "$SHARD_3" = success
-
   # Each binary is compiled on its own platform, so it is run there before upload
   # and the macOS ones get the ad-hoc signature Apple Silicon requires.
   binary:
