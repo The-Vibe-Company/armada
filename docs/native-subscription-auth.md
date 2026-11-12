@@ -176,7 +176,8 @@ Legacy refresh-bearing native homes keep their existing fences. To move an
 existing account into shared mode, stop its old sandboxes and import a fresh
 revision of the **same account**. Armada verifies historical physical writers
 are stopped before enrollment. An unrecorded/ambiguous old allocation remains
-blocked until reconciled. Copying the old auth file under another name is not a
+blocked until the authorized product recovery described below is completed.
+Copying the old auth file under another name is not a
 migration; duplicate sessions and same-owner historical identities are refused.
 Model-only Claude setup-token accounts already allow concurrent sandboxes and do
 not participate in rotating-session ownership.
@@ -201,3 +202,48 @@ revocation independent of account/sandbox revocation, bounded historical token
 registry compaction, and richer reconnect diagnostics. Staging acceptance still
 requires three live sandboxes to answer concurrently through an actual refresh;
 unit/transport tests use synthetic vendor material only.
+
+
+### Recover legacy ownership before shared enrollment
+
+For existing trapped accounts, this slice-2 server must be deployed together
+with the slice-1 product recovery in [PR #1180](https://github.com/The-Vibe-Company/armada/pull/1180).
+This PR alone does not expose that recovery action. Do not remove the orphan
+ownership guard or delete ownership rows manually to bypass it: no recorded
+sandbox means this broker cannot establish physical quiescence of that holder.
+
+After both slices are deployed:
+
+1. Open **Models → the same account → Find subscription holder**. The slice-1
+   lookup exposes the stored holder even after the credential revision changes;
+   it also distinguishes unrecorded and unversioned history.
+2. Stop any recorded live holder and finish its current operation. Use
+   **Reconnect subscription** with a fresh official native auth.json when
+   requested, then find the holder again and **Release subscription**. Recorded
+   holders require authoritative physical deletion/absence before release.
+   Unversioned recorded history instead uses the atomic **Reconnect and release**
+   action; a pending/failed deletion must leave the credential unchanged.
+3. For an unrecorded allocation, do not claim that a physical sandbox was
+   deleted: its physical ID is unknown. Explicit replacement of the same account
+   is required first. The recovery transaction fences the old credential version
+   before retiring its orphan claim, so a delayed old-version launch cannot pass
+   bootstrap/prompt admission. Old sealed native state is retained; importing the same
+   session under a second name is not the recovery procedure.
+4. Retry launch. Shared enrollment can now initialize the fresh account revision
+   without an exclusive ownership row. If another historical binding is reported,
+   recover it through the same product path; never silently erase live history.
+
+**Required coordinator staging check, not performed here:** on both Boat and
+Modal, reproduce an old unrecorded claim using the baseline build or a controlled
+staging fixture. Deploy both slices, complete the product recovery above without
+SQL repair, verify delayed old-version admission is refused, then launch three
+same-account sandboxes concurrently through an actual server token refresh.
+Record deployed commits, safe account revisions and successful prompt IDs, never
+auth payloads. The [slice-1 deployed lifecycle checklist](https://github.com/The-Vibe-Company/armada/blob/bf81c6783530aeaacada7e6a0daa121851ab5f1a/docs/native-subscription-auth.md#required-deployed-coordinator-checks-not-performed-by-this-pr-author)
+additionally covers deletion pending/unavailable, confirmed absence and account
+reuse. No real provider, staging or production acceptance is claimed by local
+synthetic-provider tests.
+
+Explicit sandbox account re-pointing and missing-pin default fallback remain
+slice 3 of #1176. They are not implemented by this concurrency slice, and the
+removed-API-key acceptance criterion remains open until that slice is delivered.
