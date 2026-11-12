@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { customCodexAccountValue } from "../src/lib/model-connection-input";
+import { customCodexAccountValue, replacementCodexAccountValue } from "../src/lib/model-connection-input";
 
 function data(baseUrl: string, key: string, apiVersion = "") {
   const form = new FormData();
@@ -39,4 +39,20 @@ test("dashboard accepts an optional API version and refuses invalid input withou
     expect(JSON.stringify(result)).not.toContain("password");
   }
   expect(customCodexAccountValue("anthropic", data("https://example.com", key)).ok).toBe(false);
+});
+
+test("Codex replacement requires a destination and refuses JSON pretending to be a default key", () => {
+  const key = randomUUID();
+  const form = data("https://example.com/v1/responses", key);
+  expect(replacementCodexAccountValue(form).ok).toBe(false);
+  form.set("connectionMode", "openai");
+  expect(replacementCodexAccountValue(form)).toEqual({ ok: true, value: key });
+  form.set("value", JSON.stringify({ apiKey: key }));
+  expect(replacementCodexAccountValue(form).ok).toBe(false);
+  form.set("value", key);
+  form.set("connectionMode", "custom");
+  expect(replacementCodexAccountValue(form)).toEqual({
+    ok: true,
+    value: JSON.stringify({ endpoint: { version: 1, baseUrl: "https://example.com/v1" }, apiKey: key }),
+  });
 });
