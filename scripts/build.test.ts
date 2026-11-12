@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -16,7 +16,11 @@ for (const scenario of [
   test(`build batch ${JSON.stringify(scenario)}`, async () => {
     const root = await mkdtemp(join(tmpdir(), "armada-build-"));
     try {
-      await Bun.write(join(root, "build.ts"), Bun.file(join(import.meta.dir, "build.ts")));
+      // Preserve the script's repository-relative paths; compilation reads migration identity before spawning Bun.
+      await mkdir(join(root, "scripts"), { recursive: true });
+      await mkdir(join(root, "supabase/migrations"), { recursive: true });
+      await Bun.write(join(root, "supabase/migrations/20260101000000_fixture.sql"), "");
+      await Bun.write(join(root, "scripts/build.ts"), Bun.file(join(import.meta.dir, "build.ts")));
       const log = join(root, "calls.jsonl");
       await Bun.write(
         join(root, "preload.ts"),
@@ -28,7 +32,7 @@ Bun.spawnSync = ((argv) => {
 });`,
       );
       const child = Bun.spawn(
-        [process.execPath, "--preload", join(root, "preload.ts"), join(root, "build.ts"), ...scenario.args],
+        [process.execPath, "--preload", join(root, "preload.ts"), join(root, "scripts/build.ts"), ...scenario.args],
         { stdout: "pipe", stderr: "pipe" },
       );
       const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
