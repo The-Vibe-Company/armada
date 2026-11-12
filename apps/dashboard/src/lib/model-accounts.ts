@@ -245,17 +245,6 @@ export function kindFor(harness: Harness, billing: Billing = "subscription"): Ac
   return kind;
 }
 
-/** The kinds the add dialog offers for one billing, one per harness in `HARNESS_ORDER`. */
-export function addChoices(billing: Billing): AccountKind[] {
-  return HARNESS_ORDER.map((harness) => kindFor(harness, billing));
-}
-
-/** The same harness's other way in: "use an API key instead" and back to its subscription. */
-export function otherBilling(kind: AccountKind): AccountKind {
-  const info = KIND_INFO[kind];
-  return kindFor(info.harness, info.billing === "subscription" ? "api" : "subscription");
-}
-
 export function accountsFor(accounts: readonly ModelAccount[], harness: Harness): ModelAccount[] {
   return accounts.filter((account) => KIND_INFO[account.kind].harness === harness);
 }

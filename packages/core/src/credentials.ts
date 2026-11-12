@@ -1,3 +1,4 @@
+import { CLAUDE_ENDPOINT_ENV, parseClaudeEndpoint } from "./claude-endpoint.ts";
 import { CODEX_ENDPOINT_ENV, parseCodexEndpoint } from "./codex-endpoint.ts";
 import type { Harness, Visibility } from "./contract.ts";
 import { decryptSecret, EncryptionKeyError } from "./crypto.ts";
@@ -207,6 +208,25 @@ export function parseCredentialValue(kind: CredentialKind, raw: string): string 
       "invalid",
       "A Skillpack token starts with cmp_pat_ followed by 48 lowercase hexadecimal characters.",
     );
+  }
+  if (kind === "anthropic" && value.startsWith("{")) {
+    try {
+      const { endpoint, apiKey, ...extra } = JSON.parse(value);
+      if (
+        Object.keys(extra).length ||
+        typeof apiKey !== "string" ||
+        !apiKey ||
+        apiKey.length > MAX_SECRET_LENGTH ||
+        /\s/.test(apiKey)
+      )
+        throw Error();
+      return JSON.stringify({ endpoint: parseClaudeEndpoint(endpoint), apiKey });
+    } catch {
+      throw new VaultError(
+        "invalid",
+        "A Claude gateway connection needs endpoint {version:1,baseUrl,auth:api-key|bearer} and apiKey.",
+      );
+    }
   }
   if (kind === "openai" && value.startsWith("{")) {
     try {
@@ -477,6 +497,14 @@ function open(sealed: Uint8Array, encryptionKey: string | undefined): Promise<st
 
 function deliver(kind: CredentialKind, scope: CredentialScope, value: string): ResolvedCredentials {
   const source = { kind, scope };
+  if (kind === "anthropic" && value.startsWith("{")) {
+    const parsed = JSON.parse(parseCredentialValue(kind, value));
+    return {
+      env: { ANTHROPIC_API_KEY: parsed.apiKey, [CLAUDE_ENDPOINT_ENV]: JSON.stringify(parsed.endpoint) },
+      files: [],
+      sources: [source],
+    };
+  }
   if (kind === "openai" && value.startsWith("{")) {
     const parsed = JSON.parse(parseCredentialValue(kind, value));
     return {
