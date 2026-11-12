@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { postDeploySmoke } from "./post-deploy-smoke.ts";
@@ -1259,7 +1259,7 @@ type LifecycleFault =
   | "lost_resume"
   | "stop_failed"
   | "lost_launch";
-function lifecycleFixture(fault: LifecycleFault = "none") {
+function lifecycleFixture(fault: LifecycleFault = "none", handler?: (call: Call) => Response | undefined) {
   let provider = "boat";
   let harness = "codex";
   let id = "";
@@ -1270,6 +1270,8 @@ function lifecycleFixture(fault: LifecycleFault = "none") {
   let readiness = 0;
   let expiry = "";
   const fake = fixture((call) => {
+    const override = handler?.(call);
+    if (override) return override;
     if (call.path === "sandbox/launch") {
       launches++;
       provider = String(call.body.provider);
@@ -1513,4 +1515,157 @@ test("vault transport catches canary echoes in error envelopes, cleans metadata 
     leftoverSecrets: [String(fake.calls.find((call) => call.path === "secrets/set")?.body.name)],
     leftoverVariables: [],
   });
+});
+
+test("GitHub refresh reuses the lifecycle worker, proves launch/access continuity and reports Modal's shipped refusal", async () => {
+  for (const provider of ["boat", "modal"]) {
+    for (const harness of ["claude", "codex"]) {
+      const fake = lifecycleFixture("none", (call) => {
+        if (call.path === "github/refresh")
+          return provider === "boat"
+            ? json({ id: call.body.id, status: "connected", login: "owner" })
+            : json({ error: { code: "unavailable" } }, 503);
+      });
+      expect(await fake.run([{ ...selected, provider, harness }], ["--github-refresh"])).toBe(true);
+      expect(fake.calls.filter((call) => call.path === "sandbox/launch")).toHaveLength(1);
+      expect(fake.calls.filter((call) => call.path === "sandbox/send")).toHaveLength(2);
+      expect(fake.calls.filter((call) => call.path === "github/refresh")).toHaveLength(provider === "boat" ? 2 : 1);
+      const reports = fake.receipts();
+      expect(reports).toContainEqual({ case: 0, step: "github_launch_access", pass: true });
+      expect(reports.findIndex((line) => line.step === "time_to_ready")).toBeLessThan(
+        reports.findIndex((line) => line.step === "github_launch_access"),
+      );
+      if (provider === "boat") {
+        for (const phase of ["first", "second"]) {
+          expect(reports).toContainEqual({ case: 0, step: `github_refresh_${phase}`, pass: true });
+          expect(reports).toContainEqual({ case: 0, step: `github_refresh_access_${phase}`, pass: true });
+        }
+      } else {
+        expect(reports).toContainEqual({ case: 0, step: "github_refresh_unsupported", pass: true });
+        expect(reports).toContainEqual({
+          case: 0,
+          step: "github_refresh_idempotency",
+          skip: true,
+          reason: "legacy_boat_only",
+        });
+      }
+      expect(JSON.stringify(reports)).not.toContain("owner");
+    }
+  }
+});
+
+test("GitHub refresh rejects false receipts, identity changes and broken access without replay or losing cleanup", async () => {
+  for (const fault of [
+    "wrong_id",
+    "wrong_status",
+    "changed_login",
+    "second_refusal",
+    "lost_second",
+    "launch_access",
+    "after_refresh_access",
+    "modal_admitted",
+    "modal_wrong_refusal",
+  ]) {
+    let refreshes = 0;
+    let accesses = 0;
+    const provider = fault.startsWith("modal") ? "modal" : "boat";
+    const fake = lifecycleFixture("none", (call) => {
+      if (call.path === "sandbox/exec" && String(call.body.command).includes("ls-remote")) {
+        accesses++;
+        if ((fault === "launch_access" && accesses === 1) || (fault === "after_refresh_access" && refreshes > 0))
+          return json({ exitCode: 1, timedOut: false });
+      }
+      if (call.path === "github/refresh") {
+        refreshes++;
+        if (fault === "lost_second" && refreshes === 2) throw new Error("secret ambiguous repair");
+        if ((fault === "second_refusal" && refreshes === 2) || fault === "modal_wrong_refusal")
+          return json({ error: { code: "forbidden" } }, 403);
+        return json({
+          id: fault === "wrong_id" ? "wrong" : call.body.id,
+          status: fault === "wrong_status" ? "disconnected" : "connected",
+          login: fault === "changed_login" && refreshes === 2 ? "other" : "owner",
+        });
+      }
+    });
+    expect(await fake.run([{ ...selected, provider }], ["--github-refresh"])).toBe(false);
+    expect(refreshes).toBeLessThanOrEqual(provider === "boat" ? 2 : 1);
+    expect(fake.calls.filter((call) => call.path === "sandbox/stop")).toHaveLength(1);
+    expect(fake.receipts().at(-1)).toMatchObject({
+      step: "lifecycle_cleanup_summary",
+      pass: true,
+      leftoverSandboxIds: [],
+    });
+    expect(JSON.stringify(fake.receipts())).not.toContain("secret");
+  }
+});
+
+test("GitHub refresh refuses modes that bypass its ordinary lifecycle worker before traffic", async () => {
+  for (const args of [
+    ["--github-refresh"],
+    ["--github-refresh", "--templates-skills"],
+    ["--github-refresh", "--lifecycle", "--orchestrator"],
+  ]) {
+    const fake = fixture();
+    expect(await postDeploySmoke(env, args, fake.io)).toBe(false);
+    expect(fake.calls).toHaveLength(0);
+  }
+});
+
+test("the advertised smoke workflow invocation admits ordinary staging checks without an orchestrator option", async () => {
+  const workflow = Bun.YAML.parse(
+    readFileSync(new URL("../.github/workflows/post-deploy-smoke.yml", import.meta.url), "utf8"),
+  ) as {
+    on: { workflow_dispatch: { inputs?: Record<string, unknown> } | null };
+    jobs: { smoke: { steps: { name?: string; env?: Record<string, string>; run?: string }[] } };
+  };
+  expect(workflow.on.workflow_dispatch?.inputs?.orchestrator).toBeUndefined();
+  const exercise = workflow.jobs.smoke.steps.find((step) => step.name === "Exercise deployed staging API")!;
+  expect(exercise.env?.ORCHESTRATOR).toBeUndefined();
+  const directory = mkdtempSync(join(tmpdir(), "smoke-workflow-admission-"));
+  try {
+    const bun = join(directory, "bun");
+    writeFileSync(bun, '#!/bin/bash\nprintf "%s\\0" "$@"\n');
+    chmodSync(bun, 0o755);
+    const command = Bun.spawnSync(["bash", "-eu", "-c", exercise.run!], {
+      env: { ...process.env, PATH: `${directory}:${process.env.PATH}`, ORCHESTRATOR: "true" },
+    });
+    expect(command.exitCode).toBe(0);
+    const argv = command.stdout.toString().split("\0").slice(0, -1);
+    expect(argv[0]).toBe("scripts/post-deploy-smoke.ts");
+    const fake = fixture((call) => {
+      if (call.path === "skills/defaults/get") return json({ error: { code: "unauthorized" } }, 401);
+    });
+    const staging = "https://armada-mcp-staging.up.railway.app";
+    expect(
+      await postDeploySmoke(
+        {
+          ...env,
+          ARMADA_URL: staging,
+          ARMADA_SMOKE_CASES: JSON.stringify([
+            {
+              ...selected,
+              org: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+              goldenId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            },
+          ]),
+        },
+        argv.slice(1),
+        {
+          ...fake.io,
+          fetch: (url, init) => fake.io.fetch(url.replace(staging, env.ARMADA_URL), init),
+        },
+      ),
+    ).toBe(false);
+    // A deliberate auth refusal after admission, not a configuration failure or compute allocation.
+    expect(fake.calls.map((call) => call.path)).toEqual(["skills/defaults/get"]);
+    expect(fake.receipts()).toContainEqual({
+      case: 0,
+      step: "default_skills_golden",
+      pass: false,
+      code: "unauthorized",
+    });
+    expect(fake.receipts().some((line) => line.step === "configure")).toBe(false);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
