@@ -170,12 +170,29 @@ export async function launchFromTemplate(
     if (!repository.ok) return fail(repository.error);
     const ttl = ttlChoice(formString(data, "ttl"), provider);
     if (!ttl.ok) return fail(ttl.error);
+    const requestedAccount = formString(data, "model_account");
+    let modelAccount: { id: string; version: number } | undefined;
+    if (requestedAccount) {
+      const [accountId, accountVersion, extra] = requestedAccount.split(":");
+      const version = Number(accountVersion);
+      if (
+        saved.definition.modelAccount ||
+        !accountId ||
+        !isUuid(accountId) ||
+        extra !== undefined ||
+        !Number.isSafeInteger(version) ||
+        version < 1
+      )
+        return fail("Choose an available model account.");
+      modelAccount = { id: accountId, version };
+    }
     const prompt = formString(data, "prompt").trim();
     outcome = await templates.launch({
       org,
       id,
       revision,
       requestKey,
+      ...(modelAccount ? { modelAccount } : {}),
       ...(prompt ? { prompt } : {}),
       ...(ttl.value === undefined ? {} : { ttlSeconds: ttl.value }),
       ...(size ? { size } : {}),
@@ -192,6 +209,9 @@ export async function launchFromTemplate(
       error.message.startsWith("Request key")
     )
       return { ...fail(error.code ? templateFailure(error.status, error.message) : error.message), pending: true };
+    // A missing model credential is not a missing template (both can use HTTP 404).
+    if (["missing_credential", "credential_refused", "credential_busy"].includes(error.code ?? ""))
+      return fail(error.message);
     return fail(error.code ? templateFailure(error.status, error.message) : error.message);
   }
   revalidatePath("/sandboxes");
@@ -199,7 +219,7 @@ export async function launchFromTemplate(
   if (outcome.state === "reconciling")
     return {
       ...fail(
-        "Armada could not confirm whether the sandbox started. Check Sandboxes before launching again: launching again from this dialog repeats the same request and starts nothing new.",
+        `${outcome.message ?? (outcome.reason?.startsWith("skillpack_") ? launchReason(outcome.reason) : "")} Armada could not confirm whether the sandbox started. Check Sandboxes before launching again: launching again from this dialog repeats the same request and starts nothing new.`,
       ),
       pending: true,
     };
@@ -207,5 +227,5 @@ export async function launchFromTemplate(
     return fail(
       `${launchReason(outcome.reason)} If ${PROVIDER_LABELS[provider]} refused ${MACHINE_SIZE_LABELS[size as MachineSize]}, choose another size or the default.`,
     );
-  return fail(launchReason(outcome.reason));
+  return fail(outcome.message ?? launchReason(outcome.reason));
 }

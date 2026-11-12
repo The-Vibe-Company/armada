@@ -17,6 +17,7 @@ import {
   ProviderError,
   type Sql,
   type TemplateRuntime,
+  VaultError,
 } from "@armada/core/server";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -467,13 +468,19 @@ test("HTTP and MCP share strict template operations; secure routes require authe
           );
         warning.mockClear();
         const refused = await api("launch", { org: f.people.org, id: claude.id, requestKey: reason });
-        expect(refused?.status).toBe(409);
-        expect(await refused!.json()).toEqual({
-          error: { code: "conflict", message: `Template launch refused: ${reason}.` },
-        });
-        expect(warning.mock.calls).toEqual([
-          ["armada: template launch refused", { reason, templateId: claude.id, orgId: f.people.org }],
-        ]);
+        if (reason === "model_account_ambiguous") {
+          expect(refused?.status).toBe(409);
+          expect(await refused!.json()).toEqual({
+            error: { code: "conflict", message: `Template launch refused: ${reason}.` },
+          });
+          expect(warning.mock.calls).toHaveLength(1);
+        } else {
+          expect(refused?.status).toBe(accounts === 0 ? 404 : 422);
+          const body = (await refused!.json()) as { error: { code: string; message: string } };
+          expect(body.error.code).toBe(accounts === 0 ? "missing_credential" : "credential_refused");
+          expect(body.error.message).not.toContain("Template launch refused");
+          expect(warning.mock.calls).toHaveLength(0);
+        }
         expect(f.boat.forks).toHaveLength(0);
         expect((await f.db.query("select id from template_launch_requests")).rows).toHaveLength(0);
         expect((await api("get", { org: f.people.org, id: claude.id }))?.status).toBe(200);
@@ -484,6 +491,30 @@ test("HTTP and MCP share strict template operations; secure routes require authe
     } finally {
       warning.mockRestore();
     }
+    // An unpinned revision can bill an explicitly selected eligible account, not its default.
+    const alternate = (
+      await f.db.query<{ id: string; version: number }>(
+        "insert into credentials(scope,owner_id,kind,name,value_enc) select 'user',$1,'openai','Alternate API',value_enc from credentials where kind='openai' limit 1 returning id,version",
+        [f.people.owner],
+      )
+    ).rows[0]!;
+    const chosen = await api("launch", {
+      org: f.people.org,
+      id: saved.item.id,
+      requestKey: "alternate-account",
+      modelAccount: alternate,
+    });
+    expect(chosen?.status).toBe(200);
+    expect(await chosen!.json()).toMatchObject({ state: "succeeded", manifest: { account: alternate } });
+    const pinned = (await f.create(f.people.owner, "personal", { ...f.definition, modelAccount: alternate }))
+      .item as LaunchTemplate;
+    const refusedOverride = await api("launch", {
+      org: f.people.org,
+      id: pinned.id,
+      requestKey: "pinned-override",
+      modelAccount: alternate,
+    });
+    expect(refusedOverride?.status).toBe(400);
     const context = {
       templates: f.service,
       caller: f.actor(),
@@ -1219,6 +1250,41 @@ test("template admission validates decrypted combined byte budget before any for
     expect(accepted.state).toBe("succeeded");
     expect(f.boat.forks).toHaveLength(1);
     expect(JSON.stringify(accepted).includes(canary)).toBe(false);
+  } finally {
+    await f.db.close();
+  }
+});
+
+test("template launch preserves public account and provider refusals and their replay", async () => {
+  const f = await fixture();
+  try {
+    const t = (await f.create()).item as LaunchTemplate;
+    for (const [key, error, reason] of [
+      [
+        "busy",
+        new VaultError("credential_busy", "This subscription account is busy. Choose another account."),
+        "credential_busy",
+      ],
+      ["refused", new VaultError("credential_refused", "Reconnect the selected credential."), "credential_refused"],
+      [
+        "provider",
+        new ProviderError({
+          provider: "boat",
+          code: "payment_required",
+          retryable: false,
+          message: "Your provider plan does not allow this machine. Choose another size.",
+        }),
+        "provider_payment_required",
+      ],
+    ] as const) {
+      f.runtime.provider = async () => {
+        throw error;
+      };
+      const result = await f.launch(t.id, key);
+      expect(result).toMatchObject({ state: "failed", reason, message: error.message });
+      expect(await f.launch(t.id, key)).toEqual(result);
+    }
+    expect(f.boat.forks).toHaveLength(0);
   } finally {
     await f.db.close();
   }

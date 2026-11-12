@@ -418,6 +418,8 @@ const LAUNCH_REASONS: Record<string, string> = {
 };
 
 export function launchReason(reason: string | null | undefined): string {
+  if (reason?.startsWith("skillpack_"))
+    return `Skill installation failed (${reason}). Check the pinned skill and Skillpack access before launching again.`;
   return (reason && LAUNCH_REASONS[reason]) ?? "The sandbox could not be started.";
 }
 
@@ -453,16 +455,26 @@ export function templateFailure(status: number | undefined, message: string): st
 /** What a `templates/launch` answered: the sandbox it started, a definite refusal, or an outcome not known yet. */
 export type LaunchOutcome =
   | { state: "succeeded"; id: string }
-  | { state: "failed"; reason: string }
-  | { state: "reconciling"; id: string | null };
+  | { state: "failed"; reason: string; message?: string }
+  | { state: "reconciling"; id: string | null; reason?: string; message?: string };
 
 export function parseLaunchOutcome(value: unknown): LaunchOutcome | null {
   if (!isRecord(value)) return null;
   if (value.state === "succeeded" && isId(value.id)) return { state: "succeeded", id: value.id };
   if (value.state === "failed")
-    return { state: "failed", reason: typeof value.reason === "string" ? value.reason : "" };
+    return {
+      state: "failed",
+      reason: typeof value.reason === "string" ? value.reason : "",
+      ...(typeof value.message === "string" ? { message: value.message } : {}),
+    };
   // Claimed, allocating or reconciling: a sandbox may exist. Never reported as a failure that invites a new launch.
-  if (typeof value.state === "string") return { state: "reconciling", id: isId(value.id) ? value.id : null };
+  if (typeof value.state === "string")
+    return {
+      state: "reconciling",
+      id: isId(value.id) ? value.id : null,
+      ...(typeof value.reason === "string" ? { reason: value.reason } : {}),
+      ...(typeof value.message === "string" ? { message: value.message } : {}),
+    };
   return null;
 }
 

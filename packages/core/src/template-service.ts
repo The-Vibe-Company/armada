@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { ApplicationVaultActor } from "./application-vault.ts";
 import { decryptSecret } from "./crypto.ts";
 import type { GoldenActor, GoldenOperation, GoldenRecord } from "./golden.ts";
+import { GoldenError } from "./golden-config.ts";
 import { GOLDEN_SELECT, type GoldenRow, mapGoldenRow, type Sql } from "./golden-store.ts";
 import { type LaunchOptions, type LaunchStores, launchSandbox } from "./launch.ts";
 import { LaunchError } from "./launch-error.ts";
@@ -10,6 +11,7 @@ import { resolveModelChoice } from "./models.ts";
 import { PRIVATE_SKILL_FAILURES } from "./private-skill-error.ts";
 import { isNonMutatingProviderRefusal, type Provider, ProviderError } from "./provider.ts";
 import { validateReadableVariables } from "./readable-variables.ts";
+import { ProviderRoutingError } from "./sandbox-provider.ts";
 import { createSkillDefaultsService } from "./skill-defaults.ts";
 import { mergeSkillPins } from "./skill-merge.ts";
 import { validateSkillPins } from "./skillpack.ts";
@@ -111,6 +113,9 @@ function refusalReason(error: unknown): string | undefined {
     }
   }
   return undefined;
+}
+function skillRefusalMessage(reason: string): string {
+  return `Skill installation failed (${reason}). Check the pinned skill and Skillpack access before launching again.`;
 }
 const digest = (input: unknown) => createHash("sha256").update(canonical(input)).digest("hex");
 function dto(h: Header): LaunchTemplate {
@@ -392,6 +397,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
         "repo",
         "skills",
         "skipSkillDefaults",
+        "modelAccount",
       ],
     };
     if (!allowed[operation]) invalid();
@@ -493,23 +499,26 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       return { a, h, r: await revision(tx, h, input.revision) };
     });
     const def = selection.r.definition;
+    let account = def.modelAccount;
+    if (input.modelAccount !== undefined) {
+      if (account) invalid(); // A launch never overrides a revision's pinned billing account.
+      const requested = object(input.modelAccount);
+      fields(requested, ["id", "version"]);
+      account = { id: id(requested.id), version: integer(requested.version) };
+    }
 
     const credentials = await runtime.stores.credentials
-      .resolve(selection.a, def.harness, def.modelAccount?.id, def.modelAccount?.version)
+      .resolve(selection.a, def.harness, account?.id, account?.version)
       .catch((error: unknown) => {
         // These are model-resolution failures, not a missing template/revision. Keep unrelated
         // infrastructure and authorization failures intact rather than hiding them as account problems.
-        if (error instanceof VaultError && error.code === "missing_credential")
-          unavailable("model_account_unavailable");
         if (error instanceof VaultError && error.code === "conflict") unavailable("model_account_ambiguous");
-        if (error instanceof VaultError && error.code === "credential_refused") unavailable("model_account_refused");
         throw error;
       });
     if (!credentials.binding) unavailable("model_account_unavailable");
     if (
-      def.modelAccount &&
-      (def.modelAccount.id !== credentials.binding.credentialId ||
-        def.modelAccount.version !== credentials.binding.credentialVersion)
+      account &&
+      (account.id !== credentials.binding.credentialId || account.version !== credentials.binding.credentialVersion)
     )
       unavailable("model_account_version_changed");
     let claimed = false;
@@ -718,14 +727,41 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       const state = allocating && !refused ? "reconciling" : "failed";
       const safeReason = refused
         ? `provider_${error.code}`
-        : (refusalReason(error) ?? (allocating ? "allocation_or_start_unknown" : "launch_unavailable"));
+        : (refusalReason(error) ??
+          (error instanceof VaultError || error instanceof GoldenError || error instanceof ProviderRoutingError
+            ? error.code
+            : undefined) ??
+          (!allocating && error instanceof LaunchError ? error.code : undefined) ??
+          (allocating ? "allocation_or_start_unknown" : "launch_unavailable"));
       // A publication may have committed even if both acknowledgements were lost.
       // Keep its durable success intact; same-key replay reads the saved receipt.
+      // Only public typed errors carry a display message. Never publish arbitrary
+      // exceptions or guest initialization output. Preserve the exact refusal on replay.
+      const message =
+        error instanceof VaultError ||
+        error instanceof ProviderError ||
+        error instanceof GoldenError ||
+        error instanceof ProviderRoutingError
+          ? error.message
+          : error instanceof LaunchError &&
+              ["no_credentials", "credential_refused", "unsupported", "invalid_request"].includes(error.code)
+            ? error.message
+            : safeReason.startsWith("skillpack_")
+              ? skillRefusalMessage(safeReason)
+              : undefined;
+      const output = {
+        requestId: request.id,
+        state,
+        id: request.sandbox_id,
+        reason: safeReason,
+        ...(message ? { message } : {}),
+        manifest: m,
+      };
       await sql.query(
-        "update public.template_launch_requests set state=$2,reason=$3,updated_at=now() where id=$1 and result is null",
-        [request.id, state, safeReason],
+        "update public.template_launch_requests set state=$2,reason=$3,result=$4::text::jsonb,updated_at=now() where id=$1 and result is null",
+        [request.id, state, safeReason, state === "failed" ? JSON.stringify(output) : null],
       );
-      return { requestId: request.id, state, id: request.sandbox_id, reason: safeReason, manifest: m };
+      return output;
     }
   }
   function replay(row: RequestRow, bodyDigest: string): Record<string, unknown> {
@@ -737,6 +773,11 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
         state: row.state,
         id: row.sandbox_id,
         reason: row.reason,
+        ...(row.reason?.startsWith("skillpack_")
+          ? {
+              message: skillRefusalMessage(row.reason),
+            }
+          : {}),
         manifest: row.manifest,
       }
     );
