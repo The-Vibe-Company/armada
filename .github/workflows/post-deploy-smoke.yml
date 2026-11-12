@@ -2,11 +2,6 @@ name: Post-deploy smoke
 
 on:
   workflow_dispatch:
-    inputs:
-      orchestrator:
-        description: Also exercise the orchestrator lifecycle
-        type: boolean
-        default: false
   deployment_status:
 
 permissions:
@@ -56,8 +51,6 @@ jobs:
           ARMADA_TOKEN: ${{ secrets.ARMADA_SMOKE_TOKEN }}
           ARMADA_SMOKE_CASES: ${{ secrets.ARMADA_SMOKE_CASES }}
           ARMADA_SMOKE: create_real_compute
-          ORCHESTRATOR: ${{ inputs.orchestrator }}
         run: |
           args=(--work-preservation --templates-skills --lifecycle --vault --default-skills --expiry)
-          if [[ "$ORCHESTRATOR" == true ]]; then args+=(--orchestrator); fi
           bun scripts/post-deploy-smoke.ts "${args[@]}"

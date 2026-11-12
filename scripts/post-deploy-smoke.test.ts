@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { postDeploySmoke } from "./post-deploy-smoke.ts";
@@ -1513,4 +1513,63 @@ test("vault transport catches canary echoes in error envelopes, cleans metadata 
     leftoverSecrets: [String(fake.calls.find((call) => call.path === "secrets/set")?.body.name)],
     leftoverVariables: [],
   });
+});
+
+test("the advertised smoke workflow invocation admits ordinary staging checks without an orchestrator option", async () => {
+  const workflow = Bun.YAML.parse(
+    readFileSync(new URL("../.github/workflows/post-deploy-smoke.yml", import.meta.url), "utf8"),
+  ) as {
+    on: { workflow_dispatch: { inputs?: Record<string, unknown> } | null };
+    jobs: { smoke: { steps: { name?: string; env?: Record<string, string>; run?: string }[] } };
+  };
+  expect(workflow.on.workflow_dispatch?.inputs?.orchestrator).toBeUndefined();
+  const exercise = workflow.jobs.smoke.steps.find((step) => step.name === "Exercise deployed staging API")!;
+  expect(exercise.env?.ORCHESTRATOR).toBeUndefined();
+  const directory = mkdtempSync(join(tmpdir(), "smoke-workflow-admission-"));
+  try {
+    const bun = join(directory, "bun");
+    writeFileSync(bun, '#!/bin/bash\nprintf "%s\\0" "$@"\n');
+    chmodSync(bun, 0o755);
+    const command = Bun.spawnSync(["bash", "-eu", "-c", exercise.run!], {
+      env: { ...process.env, PATH: `${directory}:${process.env.PATH}`, ORCHESTRATOR: "true" },
+    });
+    expect(command.exitCode).toBe(0);
+    const argv = command.stdout.toString().split("\0").slice(0, -1);
+    expect(argv[0]).toBe("scripts/post-deploy-smoke.ts");
+    const fake = fixture((call) => {
+      if (call.path === "skills/defaults/get") return json({ error: { code: "unauthorized" } }, 401);
+    });
+    const staging = "https://armada-mcp-staging.up.railway.app";
+    expect(
+      await postDeploySmoke(
+        {
+          ...env,
+          ARMADA_URL: staging,
+          ARMADA_SMOKE_CASES: JSON.stringify([
+            {
+              ...selected,
+              org: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+              goldenId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            },
+          ]),
+        },
+        argv.slice(1),
+        {
+          ...fake.io,
+          fetch: (url, init) => fake.io.fetch(url.replace(staging, env.ARMADA_URL), init),
+        },
+      ),
+    ).toBe(false);
+    // A deliberate auth refusal after admission, not a configuration failure or compute allocation.
+    expect(fake.calls.map((call) => call.path)).toEqual(["skills/defaults/get"]);
+    expect(fake.receipts()).toContainEqual({
+      case: 0,
+      step: "default_skills_golden",
+      pass: false,
+      code: "unauthorized",
+    });
+    expect(fake.receipts().some((line) => line.step === "configure")).toBe(false);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
