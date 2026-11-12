@@ -12,6 +12,7 @@ import {
   createTemplateService,
   encryptSecret,
   goldenForLaunch,
+  installSkill,
   type LaunchTemplate,
   launchSandbox,
   PrivateSkillError,
@@ -974,6 +975,42 @@ test("template skills retain verified receipts and closed refusals without repla
     expect(unavailable.reason).toBe("skillpack_skill_unavailable");
     expect(JSON.stringify(unavailable)).not.toContain("untrusted guest output");
     expect(f.boat.prompts).toHaveLength(1);
+    f.provider.exec = async (r) =>
+      r.command.includes("skillpack install")
+        ? {
+            detached: false,
+            exitCode: 127,
+            stdout: "secret guest detail",
+            stderr: "secret guest detail",
+            timedOut: false,
+            truncated: false,
+          }
+        : exec(r);
+    for (const [reason, warnings, action] of [
+      ["skillpack_cli_unavailable", [], "armada golden update"],
+      ["skillpack_download_unavailable", ["skillpack_download_unavailable"], "allow GitHub release egress"],
+    ] as const) {
+      await f.db.query("update goldens set build_warnings=$2::text[] where id=$1", [
+        f.goldenId,
+        `{${warnings.join(",")}}`,
+      ]);
+      let directMessage = "";
+      try {
+        await installSkill(f.provider, "direct", "/home/user/repo", "codex", skills[0]!, warnings);
+      } catch (error) {
+        directMessage = (error as Error).message;
+      }
+      const refusal = await f.launch(t.id, reason);
+      expect(refusal).toMatchObject({ reason, message: directMessage });
+      expect(refusal.message).toContain(action);
+      expect(JSON.stringify(refusal)).not.toContain("secret guest detail");
+      expect(await f.launch(t.id, reason)).toEqual(refusal);
+      const stored = await f.db.query<{ result: { message: string } }>(
+        "select result from template_launch_requests where client_key=$1",
+        [reason],
+      );
+      expect(stored.rows[0]?.result.message).toBe(directMessage);
+    }
   } finally {
     await f.db.close();
   }

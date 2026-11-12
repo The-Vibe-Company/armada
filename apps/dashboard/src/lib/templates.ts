@@ -1,4 +1,11 @@
-import { type Harness, MODEL_CATALOG, PROVIDER_LIMITS, type SandboxProviderId, validateSkillPins } from "@armada/core";
+import {
+  type Harness,
+  MODEL_CATALOG,
+  PROVIDER_LIMITS,
+  type SandboxProviderId,
+  skillRefusalMessage,
+  validateSkillPins,
+} from "@armada/core";
 import { EFFORT_LABEL, HARNESS_LABELS } from "./labels.ts";
 import type { LaunchAccounts } from "./model-accounts";
 import { type ModelFields, modelChoice } from "./model-choice.ts";
@@ -418,8 +425,7 @@ const LAUNCH_REASONS: Record<string, string> = {
 };
 
 export function launchReason(reason: string | null | undefined): string {
-  if (reason?.startsWith("skillpack_"))
-    return `Skill installation failed (${reason}). Check the pinned skill and Skillpack access before launching again.`;
+  if (reason?.startsWith("skillpack_")) return skillRefusalMessage(reason);
   return (reason && LAUNCH_REASONS[reason]) ?? "The sandbox could not be started.";
 }
 

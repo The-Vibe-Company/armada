@@ -13,6 +13,7 @@ import { isNonMutatingProviderRefusal, type Provider, ProviderError } from "./pr
 import { validateReadableVariables } from "./readable-variables.ts";
 import { ProviderRoutingError } from "./sandbox-provider.ts";
 import { createSkillDefaultsService } from "./skill-defaults.ts";
+import { skillRefusalMessage } from "./skill-diagnostics.ts";
 import { mergeSkillPins } from "./skill-merge.ts";
 import { validateSkillPins } from "./skillpack.ts";
 import type { LaunchTemplate, TemplateDefinition } from "./templates.ts";
@@ -113,9 +114,6 @@ function refusalReason(error: unknown): string | undefined {
     }
   }
   return undefined;
-}
-function skillRefusalMessage(reason: string): string {
-  return `Skill installation failed (${reason}). Check the pinned skill and Skillpack access before launching again.`;
 }
 const digest = (input: unknown) => createHash("sha256").update(canonical(input)).digest("hex");
 function dto(h: Header): LaunchTemplate {
@@ -775,7 +773,12 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       };
       await sql.query(
         "update public.template_launch_requests set state=$2,reason=$3,result=$4::text::jsonb,updated_at=now() where id=$1 and result is null",
-        [request.id, state, safeReason, state === "failed" ? JSON.stringify(output) : null],
+        [
+          request.id,
+          state,
+          safeReason,
+          state === "failed" || safeReason.startsWith("skillpack_") ? JSON.stringify(output) : null,
+        ],
       );
       return withBusyDetails(output, actor, org, m.account.id);
     }
