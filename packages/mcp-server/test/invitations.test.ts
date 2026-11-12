@@ -1,17 +1,16 @@
 import { expect, test } from "bun:test";
 import { createSqlAuthStore } from "@armada/auth";
 import { createSqlVaultStore, type Sql } from "@armada/core/server";
-import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import type { Caller } from "../src/caller.ts";
 import { handleControlRequest } from "../src/control.ts";
 import { Invitations, supabaseInvitationMail } from "../src/invitations.ts";
+import { migratedDatabase } from "./migrated-database.ts";
 
 // Authoring gate: real schema owns authorization, CAS, expiry and membership preservation.
 // Injectable mail owns only delivery evidence; no mocked database implements these rules.
 test("invitation lifecycle persists honest delivery and explicit verified single-use acceptance", async () => {
-  const db = await openDatabase();
+  const db = await migratedDatabase();
   try {
-    await applyMigrations(db);
     const admin = "11111111-1111-4111-8111-111111111111",
       recipient = "22222222-2222-4222-8222-222222222222";
     await db.query(

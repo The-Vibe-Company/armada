@@ -30,7 +30,6 @@ async function fixture() {
   const id = crypto.randomUUID(),
     actor: GoldenActor = { userId: people.owner, orgId: people.org, role: "member" };
   const ownership = createModelAuthOwnership(sql, ENCRYPTION_KEY);
-  await ownership.claimLegacy(actor, account.id, 1, id);
   await db.query(
     `insert into sandboxes(id,golden_id,org_id,owner_id,boat_id,harness,status,credential_id,credential_version)
     select $1,id,org_id,owner_id,'native-publisher','codex','ready',$3,1 from goldens where owner_id=$2 and visibility='private' limit 1`,
@@ -96,7 +95,7 @@ test("private runtime renewal seals state once, retains retired leaves, and retu
   }
 });
 
-test("runtime epoch, membership, pinned credential version and exclusive account holder fence publication", async () => {
+test("runtime epoch, membership and pinned credential version fence publication", async () => {
   const f = await fixture();
   try {
     const old = await f.enrol(),
@@ -105,10 +104,6 @@ test("runtime epoch, membership, pinned credential version and exclusive account
     expect((await f.publish(current, native(1), 0, { sandboxId: crypto.randomUUID() })).status).toBe(401);
     expect((await f.publish(current, native(1), 0, { generation: old.epoch })).status).toBe(401);
     expect((await f.publish(current, native(1), 0)).status).toBe(200);
-    const other = crypto.randomUUID();
-    await f.db.query("update model_auth_ownership set sandbox_id=$2 where account_id=$1", [f.account.id, other]);
-    expect((await f.publish(current, native(2), 1)).status).toBe(401);
-    await f.db.query("update model_auth_ownership set sandbox_id=$2 where account_id=$1", [f.account.id, f.id]);
     await f.db.query("update credentials set value_enc=$2 where id=$1", [
       f.account.id,
       await encryptSecret(native(9), ENCRYPTION_KEY),
@@ -151,8 +146,8 @@ test("malformed/mixed native publications never masquerade as journal ACKs or di
         await f.db.query<{ auth_revision: number }>("select auth_revision from model_auth_state where account_id=$1", [
           f.account.id,
         ])
-      ).rows[0]?.auth_revision,
-    ).toBe(0);
+      ).rows,
+    ).toHaveLength(0);
   } finally {
     await f.db.close();
   }

@@ -6,11 +6,11 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import { createMcpHttpIntegration } from "../src/mcp-http-integration.ts";
+import { migratedDatabase } from "./migrated-database.ts";
 
 test("production gateway mount canonicalizes exact configured TLS-proxy authority over real HTTP, not forwarded spoofing", async () => {
-  const db = await openDatabase();
+  const db = await migratedDatabase();
   let integration: ReturnType<typeof createMcpHttpIntegration> | undefined;
   let ingress: ReturnType<typeof Bun.serve> | undefined;
   let client: Client | undefined;
@@ -44,7 +44,6 @@ test("production gateway mount canonicalizes exact configured TLS-proxy authorit
     return response;
   };
   try {
-    await applyMigrations(db);
     const user = crypto.randomUUID(),
       org = crypto.randomUUID(),
       golden = crypto.randomUUID(),

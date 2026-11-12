@@ -1,12 +1,11 @@
 import { expect, test } from "bun:test";
 import { createSqlMcpRegistry } from "@armada/core/server";
-import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import { createMcpOAuthStore, createMcpSecretBox } from "../src/mcp-integration.ts";
+import { migratedDatabase } from "./migrated-database.ts";
 
 test("SQL OAuth store fences callback replay, concurrent initial grants, consumed refresh and revocation", async () => {
-  const db = await openDatabase();
+  const db = await migratedDatabase();
   try {
-    await applyMigrations(db);
     const actor = crypto.randomUUID(),
       other = crypto.randomUUID(),
       org = crypto.randomUUID(),
