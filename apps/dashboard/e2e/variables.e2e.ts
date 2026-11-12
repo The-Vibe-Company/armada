@@ -6,17 +6,29 @@ test.beforeEach(reset);
 /** A disposable value that must never come back from the server or stay in the page. */
 const CANARY = "e2e-canary-9f2c41d7";
 
-const row = (page: Page, name: string) => page.locator(`[data-vault-item="${name}"]`);
-const panelOf = (page: Page, name: string) => page.locator(`[data-vault-panel="${name}"]`);
+const row = (page: Page, name: string) => page.locator(`[data-vault-item="${name}"]`).filter({ visible: true });
+const panelOf = (page: Page, name: string) => page.locator(`[data-vault-panel="${name}"]`).filter({ visible: true });
 
 async function panel(page: Page, name: string) {
   const shown = panelOf(page, name);
-  if (!(await shown.isVisible())) await row(page, name).locator("[data-select-item]").click();
+  if (!(await shown.isVisible())) {
+    await leavePanel(page);
+    await row(page, name).locator("[data-select-item]").click();
+  }
   await expect(shown).toBeVisible();
   return shown;
 }
 
+async function leavePanel(page: Page) {
+  const detail = page.getByRole("dialog").filter({ has: page.locator("[data-resource-panel]") });
+  if (await detail.isVisible()) {
+    await page.keyboard.press("Escape");
+    await expect(detail).toBeHidden();
+  }
+}
+
 async function openAdd(page: Page) {
+  await leavePanel(page);
   await page.getByRole("button", { name: "Add", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Add a variable or secret" });
   await expect(dialog).toBeVisible();

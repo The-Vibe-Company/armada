@@ -144,6 +144,18 @@ export function ResourceBrowser({
     opener.current = null;
     requestAnimationFrame(() => {
       const row = back && rootRef.current?.querySelector<HTMLElement>(`[data-select-item="${CSS.escape(back)}"]`);
+      // Deleting a row may intentionally focus a page action (for example Add).
+      // Do not overwrite that valid handoff with our missing-row fallback.
+      const active = document.activeElement;
+      if (
+        back &&
+        !row &&
+        active instanceof HTMLElement &&
+        active !== document.body &&
+        active.getClientRects().length > 0 &&
+        !rootRef.current?.contains(active)
+      )
+        return;
       const fallback = rootRef.current?.querySelector<HTMLElement>("input, [data-select-item]");
       (row && row.getClientRects().length > 0 ? row : (fallback ?? rootRef.current))?.focus();
     });
