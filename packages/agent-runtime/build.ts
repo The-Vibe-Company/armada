@@ -1,6 +1,8 @@
+import { createHash } from "node:crypto";
 import { chmod, copyFile, cp, mkdir, rm, symlink } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
+import { OPENCODE_ARTIFACT } from "./src/opencode-artifact.ts";
 
 if (process.platform !== "linux" || !["x64", "arm64"].includes(process.arch))
   throw Error("Build runner artifact on target Linux architecture");
@@ -28,6 +30,15 @@ await copyFile(
 );
 await chmod(join(out, "codex"), 0o755);
 await chmod(join(out, "claude"), 0o755);
+const opencodeRequire = createRequire(require.resolve("opencode-ai/package.json"));
+const opencode = join(dirname(opencodeRequire.resolve(`opencode-linux-${process.arch}/package.json`)), "bin/opencode");
+const opencodeDigest = createHash("sha256")
+  .update(await Bun.file(opencode).bytes())
+  .digest("hex");
+if (opencodeDigest !== OPENCODE_ARTIFACT.sha256[process.arch as "x64" | "arm64"])
+  throw Error("OpenCode artifact digest mismatch");
+await copyFile(opencode, join(out, "opencode"));
+await chmod(join(out, "opencode"), 0o755);
 await Bun.write(
   join(out, "manifest.json"),
   JSON.stringify({
@@ -36,6 +47,7 @@ await Bun.write(
     claudeSdk: "0.3.322",
     claude: "2.1.322",
     codex: "0.167.0",
+    opencode: { version: OPENCODE_ARTIFACT.version, sha256: opencodeDigest },
     architecture: process.arch,
   }),
 );
