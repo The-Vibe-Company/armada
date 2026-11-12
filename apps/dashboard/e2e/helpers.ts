@@ -61,6 +61,13 @@ export async function goldenPanel(page: Page, name: string, provider?: "boat" | 
   const panel = page.locator(`[data-golden-panel="${name}"]${provider ? `[data-golden-provider="${provider}"]` : ""}`);
   if (!(await panel.isVisible())) {
     await leaveCreate(page);
+    if (
+      await page
+        .getByRole("dialog")
+        .filter({ has: page.locator("[data-resource-panel]") })
+        .isVisible()
+    )
+      await page.keyboard.press("Escape");
     await goldenRow(page, name, provider).locator("[data-select-item]").click();
   }
   await expect(panel).toBeVisible();
@@ -83,7 +90,11 @@ export async function leaveCreate(page: Page): Promise<void> {
 /** Opens the create dialog, and its form when Boat is full and it starts folded; returns the create form. */
 export async function openCreate(page: Page): Promise<Locator> {
   const form = page.locator('form[data-golden-form="create"]');
-  if (!(await createDialog(page).isVisible())) await page.getByRole("button", { name: "New", exact: true }).click();
+  if (!(await createDialog(page).isVisible())) {
+    const detail = page.getByRole("dialog").filter({ has: page.locator("[data-resource-panel]") });
+    if (await detail.isVisible()) await page.keyboard.press("Escape");
+    await page.getByRole("button", { name: "New", exact: true }).click();
+  }
   await expect(createDialog(page)).toBeVisible();
   if (!(await form.isVisible())) await page.getByText("Show the create form").click();
   await expect(form).toBeVisible();
