@@ -38,7 +38,7 @@ function account(id: number, name: string, extra: Row = {}): Row {
 }
 
 async function addAccount(page: Page, name: string, token: string, makeDefault: boolean) {
-  await page.getByRole("button", { name: "Add a subscription", exact: true }).click();
+  await page.getByRole("button", { name: "Add a model account", exact: true }).click();
   const dialog = page.getByRole("dialog");
   await dialog.getByRole("radio", { name: /Claude subscription/ }).check();
   await dialog.getByLabel("Name").fill(name);
@@ -173,7 +173,7 @@ test("a member sees the org's accounts but only manages their own", async ({ pag
   const org = page.locator('[data-account="Anthropic API key"]');
   await expect(org).toContainText("Acme");
   await expect(org.getByRole("button")).toHaveCount(0);
-  await page.getByRole("button", { name: "Add a subscription", exact: true }).click();
+  await page.getByRole("button", { name: "Add a model account", exact: true }).click();
   // Only an admin adds an org account: a member has no scope choice.
   await expect(page.getByRole("dialog").getByRole("radio", { name: /Acme/ })).toHaveCount(0);
 });
@@ -306,7 +306,7 @@ test("a server older than named accounts is said plainly, and launches send no a
   await mock("/__test/accounts", { legacy: true });
   await signIn(page, "alice@example.com", "/harness");
   await expect(page.locator('[data-accounts="legacy"]')).toContainText("This Armada server predates named accounts");
-  await expect(page.getByRole("button", { name: "Add a subscription", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Add a model account", exact: true })).toHaveCount(0);
 
   const dialog = await openLaunch(page);
   await expect(dialog.getByLabel("Account")).toHaveCount(0);
@@ -462,7 +462,7 @@ test("a ChatGPT subscription signs in from the terminal; pasting auth.json stays
   page,
 }) => {
   await signIn(page, "alice@example.com", "/harness");
-  await page.getByRole("button", { name: "Add a subscription", exact: true }).click();
+  await page.getByRole("button", { name: "Add a model account", exact: true }).click();
   const dialog = page.getByRole("dialog");
   await dialog.getByRole("radio", { name: /ChatGPT subscription/ }).check();
   await dialog.getByLabel("Name").fill("Bob's $HOME");
@@ -479,7 +479,7 @@ test("a ChatGPT subscription signs in from the terminal; pasting auth.json stays
   // A server that does not report a terminal sign-in offers paste only, never a command it did not name.
   await mock("/__test/accounts", { authCapabilities: null });
   await page.reload();
-  await page.getByRole("button", { name: "Add a subscription", exact: true }).click();
+  await page.getByRole("button", { name: "Add a model account", exact: true }).click();
   await page
     .getByRole("dialog")
     .getByRole("radio", { name: /ChatGPT subscription/ })
@@ -491,7 +491,7 @@ test("a ChatGPT subscription signs in from the terminal; pasting auth.json stays
 test("on a phone the terminal sign-in stays inside the add dialog, even for a long name", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await signIn(page, "alice@example.com", "/harness");
-  await page.getByRole("button", { name: "Add a subscription", exact: true }).click();
+  await page.getByRole("button", { name: "Add a model account", exact: true }).click();
   const dialog = page.getByRole("dialog");
   await dialog.getByRole("radio", { name: /ChatGPT subscription/ }).check();
   await dialog.getByLabel("Name").fill("A very long account name for the team that shares one ChatGPT plan");

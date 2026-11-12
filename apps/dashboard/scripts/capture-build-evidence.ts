@@ -46,7 +46,7 @@ try {
           ["tools", "Tools", "Add server"],
           ["variables", "Variables", "Add"],
           ["skills", "Skills", "Add key"],
-          ["harness", "Models", "Add a subscription"],
+          ["harness", "Models", "Add a model account"],
         ] as const) {
           await page.goto(`/${route}`);
           const heading = route === "harness" && phase === "before" ? /^(?:Harness|Models)$/ : title;
