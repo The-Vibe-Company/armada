@@ -38,6 +38,8 @@ export interface HostCapabilities {
   readonly goldenRestore: "fresh-fork" | "shared-source";
   /** A stopping observation is an in-flight stop; wait rather than reissuing stop. */
   readonly waitForPendingStop: boolean;
+  /** Physical lifetime must reserve future logical extension time at worker launch. */
+  readonly reserveExtensionHeadroom: boolean;
   /** Dispose a completed disposable builder without creating an unwanted stop checkpoint. */
   readonly goldenBuilderCleanup: "stop" | "delete";
   /**
@@ -59,6 +61,7 @@ export const HOST_CAPABILITIES: Readonly<Record<SandboxProviderId, HostCapabilit
   boat: {
     goldenRestore: "fresh-fork",
     waitForPendingStop: true,
+    reserveExtensionHeadroom: false,
     goldenSnapshotPublication: "replace-stable",
     goldenBuilderCleanup: "stop",
     goldenBuilderRecovery: "stop-recorded",
@@ -67,6 +70,7 @@ export const HOST_CAPABILITIES: Readonly<Record<SandboxProviderId, HostCapabilit
   modal: {
     goldenRestore: "shared-source",
     waitForPendingStop: false,
+    reserveExtensionHeadroom: true,
     goldenSnapshotPublication: "publish-immutable",
     goldenBuilderCleanup: "delete",
     goldenBuilderRecovery: "dispose-reservation",

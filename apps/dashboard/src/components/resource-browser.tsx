@@ -295,7 +295,10 @@ export function ResourceBrowser({
               Nothing matches “{query}”.
             </p>
           ) : (
-            <ul aria-label={label} className="divide-y overflow-hidden rounded-xl border bg-card shadow-xs">
+            <ul
+              aria-label={label}
+              className="grid grid-cols-1 gap-x-4 divide-y overflow-hidden rounded-xl border bg-card shadow-xs @xl:grid-cols-[minmax(0,1fr)_10rem_auto] @3xl:grid-cols-[minmax(0,1.4fr)_10rem_minmax(0,1fr)_auto]"
+            >
               {shown.map((row) => (
                 <Row
                   key={row.key}
@@ -463,7 +466,10 @@ function Row({
       {...row.attrs}
       data-selected={selected || undefined}
       className={cn(
-        "relative grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-2 px-4 py-3 transition-colors hover:bg-accent/50 has-[[data-select-item]:focus-visible]:bg-accent/60 has-[[data-select-item]:focus-visible]:ring-[3px] has-[[data-select-item]:focus-visible]:ring-ring/50 has-[[data-select-item]:focus-visible]:ring-inset @xl:grid-cols-[minmax(0,1fr)_10rem_auto] @3xl:grid-cols-[minmax(0,1.4fr)_10rem_minmax(0,1fr)_auto]",
+        // From @xl the list owns the column tracks and every row shares them (subgrid), so a wider action in one
+        // row does not shift the state and fact columns of the others (a row without one keeps that column empty).
+        // Narrower, each row keeps its own two columns: a row without an action keeps the whole width for its name.
+        "relative col-span-full grid grid-cols-[minmax(0,1fr)_auto] items-center @xl:grid-cols-subgrid gap-x-4 gap-y-2 px-4 py-3 transition-colors hover:bg-accent/50 has-[[data-select-item]:focus-visible]:bg-accent/60 has-[[data-select-item]:focus-visible]:ring-[3px] has-[[data-select-item]:focus-visible]:ring-ring/50 has-[[data-select-item]:focus-visible]:ring-inset",
         selected && "bg-accent/70 shadow-[inset_3px_0_0_var(--color-primary)] hover:bg-accent/70",
       )}
     >

@@ -195,11 +195,13 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
   const templatesSkills = args.includes("--templates-skills");
   const vault = args.includes("--vault");
   const lifecycle = args.includes("--lifecycle");
+  const githubRefresh = args.includes("--github-refresh");
   const expiry = args.includes("--expiry");
   try {
     if (env.ARMADA_SMOKE !== "create_real_compute") fail("compute_opt_in_required");
     if (
       (defaultSkills && !preservation) ||
+      (githubRefresh && (!lifecycle || orchestrator)) ||
       (expiry && (orchestrator || (!lifecycle && args.length > 1))) ||
       (goldenRuntime && (orchestrator || (templatesSkills && !preservation && !lifecycle))) ||
       (github &&
@@ -207,6 +209,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
           preservation ||
           templatesSkills ||
           defaultSkills ||
+          githubRefresh ||
           goldenRuntime ||
           expiry ||
           lifecycle ||
@@ -220,6 +223,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
           arg !== "--default-skills" &&
           arg !== "--golden-runtime" &&
           arg !== "--lifecycle" &&
+          arg !== "--github-refresh" &&
           arg !== "--expiry" &&
           arg !== "--vault",
       ) ||
@@ -656,6 +660,8 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
         await step("golden_helper_integrity", () => checkedExec(helperProbe));
         await step("golden_skillpack_integrity", () => checkedExec(skillpackProbe));
       }
+      if (githubRefresh && !dirty)
+        await step("github_launch_access", () => checkedExec(`${git} ls-remote origin HEAD >/dev/null 2>&1`));
       if (defaultSkills) {
         const expected = defaultPins.get(index)!;
         await step(dirty ? "default_skills_opt_out_receipts" : "default_skills_receipts", async () => {
@@ -847,6 +853,44 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
           }
           if (result?.exitCode !== 0 || result.timedOut !== false) fail("exec_failed");
         });
+      }
+      if (githubRefresh && !dirty) {
+        if (item.provider === "modal") {
+          await step("github_refresh_unsupported", async () => {
+            try {
+              await request("github/refresh", { org: item.org, id: sandboxId });
+            } catch (error) {
+              if (error instanceof SmokeFailure && error.code === "unavailable" && error.status === 503) return;
+              throw error;
+            }
+            fail("invalid_receipt");
+          });
+          io.out(
+            JSON.stringify({ case: index, step: "github_refresh_idempotency", skip: true, reason: "legacy_boat_only" }),
+          );
+        } else {
+          let login: string | undefined;
+          for (const phase of ["first", "second"]) {
+            await step(`github_refresh_${phase}`, async () => {
+              const result = await request<{ id: string; status: string; login: string }>("github/refresh", {
+                org: item.org,
+                id: sandboxId,
+              });
+              if (
+                result?.id !== sandboxId ||
+                result.status !== "connected" ||
+                typeof result.login !== "string" ||
+                !/^[A-Za-z0-9-]{1,39}$/.test(result.login) ||
+                (login !== undefined && result.login !== login)
+              )
+                fail("invalid_receipt");
+              login = result.login;
+            });
+            await step(`github_refresh_access_${phase}`, () =>
+              checkedExec(`${git} ls-remote origin HEAD >/dev/null 2>&1`),
+            );
+          }
+        }
       }
       if (github) {
         await nativeTurn(true);
