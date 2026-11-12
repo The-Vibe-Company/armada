@@ -216,6 +216,7 @@ const sandboxUsage = z
       .optional(),
     tokenTotals: z
       .object({
+        incomplete: z.boolean().optional(),
         inputTokens: z.number().nullable(),
         outputTokens: z.number().nullable(),
         cachedTokens: z.number().nullable(),

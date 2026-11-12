@@ -524,8 +524,8 @@ test("a claim committed before a lost admission ACK remains recoverable through 
   const f = await fixture({ native: true });
   try {
     await f.db.query("update sandboxes set task_prompt_id='retained-turn' where id=$1", [f.id]);
-    const original = f.auth.claim.bind(f.auth);
-    const interrupted = spyOn(f.auth, "claim").mockImplementationOnce(async (...args) => {
+    const original = f.auth.claimLegacy.bind(f.auth);
+    const interrupted = spyOn(f.auth, "claimLegacy").mockImplementationOnce(async (...args) => {
       await original(...args);
       throw new Error("Synthetic admission response lost after commit");
     });
@@ -587,7 +587,7 @@ test("a claim committed before a lost admission ACK remains recoverable through 
     await f.auth.releaseFailed(actor, f.target.id, 2, f.id);
     expect((await createSqlData(f.db)(f.caller).sandboxes.get(f.id))?.credentialDeliveryPending).toBe(false);
     const next = crypto.randomUUID();
-    await f.auth.claim(actor, f.target.id, 2, next);
+    await f.auth.claimLegacy(actor, f.target.id, 2, next);
     expect(await f.auth.managed(next)).toBe(true);
   } finally {
     await f.db.close();
