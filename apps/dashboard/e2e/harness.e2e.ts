@@ -11,9 +11,9 @@ test("the old Credentials address lands on Harness, and the navigation names it"
     await page.goto(old);
     await expect(page).toHaveURL(/\/harness$/);
   }
-  await expect(page.getByRole("heading", { name: "Harness", level: 1 })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Models", level: 1 })).toBeVisible();
   const nav = page.getByRole("navigation", { name: "Main" });
-  await expect(nav.getByRole("link", { name: "Harness" })).toHaveAttribute("aria-current", "page");
+  await expect(nav.getByRole("link", { name: "Models" })).toHaveAttribute("aria-current", "page");
   await expect(nav.getByRole("link", { name: "Credentials" })).toHaveCount(0);
 });
 

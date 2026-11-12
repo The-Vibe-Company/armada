@@ -15,7 +15,9 @@ test("a label that starts with the query ranks before a word, a keyword and a su
   // A keyword only: "mcp" finds Tools.
   expect(labels("mcp")).toEqual(["Tools"]);
   // A substring anywhere, last.
-  expect(labels("ness")).toEqual(["Harness"]);
+  expect(labels("odel")).toEqual(["Models"]);
+  // The old page name remains searchable without keeping it in the menu.
+  expect(labels("harness")).toEqual(["Models"]);
 });
 
 test("nothing matches an unknown word", () => {
