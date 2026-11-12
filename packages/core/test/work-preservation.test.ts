@@ -1,10 +1,28 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type ExecRequest, type ExecResult, ProviderError } from "../src/provider.ts";
 import { preserveWork } from "../src/work-preservation.ts";
+
+// Share only the immutable initial history; every case mutates its own copied files.
+let templateHome: string | undefined;
+beforeAll(async () => {
+  templateHome = await mkdtemp(join(tmpdir(), "armada-work-template-"));
+  const repo = join(templateHome, "project");
+  await mkdir(repo);
+  await run(["git", "init", "-q"], repo);
+  await run(["git", "config", "user.name", "Recovery Test"], repo);
+  await run(["git", "config", "user.email", "recovery@example.invalid"], repo);
+  await writeFile(join(repo, "tracked"), "base\n");
+  await run(["git", "add", "tracked"], repo);
+  await run(["git", "commit", "-qm", "base"], repo);
+  await run(["git", "update-ref", "refs/remotes/origin/main", "HEAD"], repo);
+});
+afterAll(async () => {
+  if (templateHome) await rm(templateHome, { recursive: true, force: true });
+});
 
 const homes: string[] = [];
 afterEach(async () => {
@@ -20,14 +38,8 @@ async function fixture() {
   const home = await mkdtemp(join(tmpdir(), "armada-work-test-"));
   homes.push(home);
   const repo = join(home, "project");
-  await mkdir(repo);
-  await run(["git", "init", "-q"], repo);
-  await run(["git", "config", "user.name", "Recovery Test"], repo);
-  await run(["git", "config", "user.email", "recovery@example.invalid"], repo);
-  await writeFile(join(repo, "tracked"), "base\n");
-  await run(["git", "add", "tracked"], repo);
-  await run(["git", "commit", "-qm", "base"], repo);
-  await run(["git", "update-ref", "refs/remotes/origin/main", "HEAD"], repo);
+  if (!templateHome) throw new Error("Repository template is not ready");
+  await cp(join(templateHome, "project"), repo, { recursive: true });
   // Exercise the real collector on Linux with neither Python nor OpenSSL in PATH.
   const bin = join(home, ".collector-bin");
   await mkdir(bin);
