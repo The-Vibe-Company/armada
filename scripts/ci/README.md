@@ -9,10 +9,13 @@ The required aggregate remains exactly `Lint, typecheck and test`.
 
 ## Worker isolation
 
-Native, driver, global-mock and other suites keep one Bun process per file with
-`--no-orphans`. Database-only core/MCP suites can share bounded workers of at most
+Each runner executes at most **two** Bun workers concurrently (no configurable
+fanout). Native, driver, global-mock and other suites keep one process per file
+with `--no-orphans`. Database-only core/MCP suites can share bounded workers of at most
 12 files. This reuses the existing immutable migrated schema Blob, never a live
-connection between suites. Fixture APIs and row/schema/role isolation are unchanged.
+connection between suites. The measured largest bounded SQL worker used 1.57 GB
+RSS locally; two fit the hosted runner's memory envelope without unbounded
+parallel test discovery. Fixture APIs and row/schema/role isolation are unchanged.
 Files using explicit process/server/driver/global-mock/environment manipulation
 are conservatively left isolated, as are callers of the audit helper that installs
 global console spies. Imported helpers must obey the same isolation rule; this
