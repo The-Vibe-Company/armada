@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { chosenConversation, modelChange } from "../src/lib/composer.ts";
+import { chosenConversation, dockerSend, modelChange, PINNED_MODEL, plainSendFailure } from "../src/lib/composer.ts";
 
 const fields = (model = "", otherModel = "", reasoningEffort = "") => ({ model, otherModel, reasoningEffort });
 
@@ -16,5 +16,22 @@ describe("composer guards", () => {
     expect(modelChange(fields("gpt-6-luna"))).toBe("changed");
     expect(modelChange(fields("other", "my-model"))).toBe("changed");
     expect(modelChange(fields("other", "  "))).toBe("incomplete");
+  });
+
+  test("a Docker send carries its request key and no model; field names never reach the person", () => {
+    const key = "0b9f3c1e-7d2a-4c5b-9e8f-1a2b3c4d5e6f";
+    expect(dockerSend(fields(), key)).toEqual({ ok: true, requestId: key });
+    expect(dockerSend(fields("", "", "high"), key)).toEqual({ ok: false, error: PINNED_MODEL });
+    expect(dockerSend(fields(), "")).toMatchObject({ ok: false });
+    expect(dockerSend(fields(), key.toUpperCase())).toMatchObject({ ok: false });
+    expect(plainSendFailure("Docker send requires request_id and prompt; model and effort remain pinned.")).toBe(
+      "The message could not be delivered. Send it again.",
+    );
+    expect(plainSendFailure("Docker prompt admission pending. Retry identical input with the same request_id.")).toBe(
+      "The host has not confirmed the message yet. Send it again unchanged to check, without editing it.",
+    );
+    expect(plainSendFailure("Docker sandbox must be running before send.")).toBe(
+      "Docker sandbox must be running before send.",
+    );
   });
 });
