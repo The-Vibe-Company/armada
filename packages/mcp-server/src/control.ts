@@ -143,6 +143,8 @@ import { orchestratorHttp } from "./orchestrator-api.ts";
 import type { OrchestratorRuntime } from "./orchestrator-runtime.ts";
 
 export interface ControlOptions {
+  boatRuntimeLaunch?: NonNullable<LaunchOptions["boatRuntime"]>;
+  runtimeHostFor?: (apiKey: string) => Provider;
   skillCatalog?: ReturnType<typeof createSkillCatalog>;
   /** Per-request diagnostics; supplied by the HTTP handler, never request JSON. */
   timing?: RequestTiming;
@@ -763,7 +765,11 @@ async function dispatch(
   }
   if (route === "creds/accounts/auth-capabilities")
     return { ...modelAuthCapabilities, nativeSubscriptionParallelSandboxes: Boolean(options.modelAuth?.broker) };
-  if (route === "launch/options") return launchOptions;
+  if (route === "launch/options")
+    return {
+      ...launchOptions,
+      boatRuntime: { version: 1, enabled: Boolean(options.boatRuntimeLaunch && options.runtimeHostFor) },
+    };
   if (route === "creds/accounts/usage") {
     if (!options.modelUsage || !options.logs) throw new VaultError("unavailable", "Model usage is not configured.");
     const id = required(body, "id"),
@@ -1117,6 +1123,24 @@ async function dispatch(
         policy: golden.sizePolicy ?? null,
       };
     }
+    case "sandbox/launch-runtime-v1":
+      if (
+        body.runtimeVersion !== 1 ||
+        body.boatRuntime !== true ||
+        body.harness !== "codex" ||
+        (body.provider !== undefined && body.provider !== "boat") ||
+        body.armadaAccess ||
+        (body.connections !== undefined && (!Array.isArray(body.connections) || body.connections.length)) ||
+        (body.skills !== undefined && (!Array.isArray(body.skills) || body.skills.length)) ||
+        (body.helperCapabilities !== undefined &&
+          (!Array.isArray(body.helperCapabilities) || body.helperCapabilities.length)) ||
+        (body.skipSkillDefaults !== undefined && body.skipSkillDefaults !== true)
+      )
+        throw new VaultError("invalid", "Runtime v1 requires explicit Boat/Codex model-only snapshot launch.");
+      if (!options.boatRuntimeLaunch || !options.runtimeHostFor)
+        throw new VaultError("unavailable", "Experimental Boat runtime launch is not configured.");
+      required(body, "prompt");
+      return launchRoute(options, caller, { ...body, connections: [], skipSkillDefaults: true }, true);
     case "sandbox/launch-access-v1":
       if (body.armadaAccessVersion !== 1 || !parseSandboxArmadaAccess(body.armadaAccess))
         throw new VaultError("invalid", "The access launch route requires armadaAccessVersion 1 and armadaAccess.");
@@ -1467,7 +1491,18 @@ function dedupe<T extends { id: string }>(events: readonly T[]): T[] {
   return [...byId.values()];
 }
 
-async function launchRoute(options: ControlOptions, caller: Caller, body: Record<string, unknown>): Promise<unknown> {
+async function launchRoute(
+  options: ControlOptions,
+  caller: Caller,
+  body: Record<string, unknown>,
+  runtime = false,
+): Promise<unknown> {
+  const runtimePolicy = runtime ? options.boatRuntimeLaunch : undefined;
+  const runtimeHost = runtime ? options.runtimeHostFor : undefined;
+  if (runtime && (!runtimePolicy || !runtimeHost))
+    throw new VaultError("unavailable", "Experimental Boat runtime launch is not configured.");
+  if (!runtime && body.boatRuntime !== undefined)
+    throw new VaultError("invalid", "Use sandbox/launch-runtime-v1 for experimental runtime selection.");
   if (!options.data || !options.providerFor)
     throw new VaultError("unavailable", "Launching is not configured on this server.");
   if (body.visibility !== undefined && body.visibility !== "private" && body.visibility !== "org")
@@ -1502,11 +1537,22 @@ async function launchRoute(options: ControlOptions, caller: Caller, body: Record
     (harness !== "codex" || !options.orchestrators?.enabledPairs.includes(`${golden.provider}:${harness}`))
   )
     throw new VaultError("unavailable", "Sandbox Armada access is unavailable for this provider/harness.");
-  const provider = await providerForGolden(
-    options,
-    caller,
-    armadaAccess ? { ...golden, visibility: "private", sourceGoldenVisibility: golden.visibility } : golden,
-  );
+  if (runtime && golden.provider !== "boat") throw new VaultError("invalid", "Runtime v1 requires a Boat golden.");
+  const provider = runtimeHost
+    ? runtimeHost(
+        (
+          await resolveBoatKey(options.store, options.encryptionKey, {
+            userId: caller.userId,
+            orgId: actor.orgId,
+            visibility: golden.visibility,
+          })
+        ).key,
+      )
+    : await providerForGolden(
+        options,
+        caller,
+        armadaAccess ? { ...golden, visibility: "private", sourceGoldenVisibility: golden.visibility } : golden,
+      );
   const result = await launchSandbox(
     provider,
     {
@@ -1517,12 +1563,14 @@ async function launchRoute(options: ControlOptions, caller: Caller, body: Record
       credentials: launchCredentials(
         options.store,
         options.encryptionKey,
-        {
-          store: options.store,
-          app: options.github?.app ?? null,
-          ...(options.github?.fetch ? { fetch: options.github.fetch } : {}),
-          ...(options.github?.now ? { now: options.github.now } : {}),
-        },
+        runtime
+          ? undefined
+          : {
+              store: options.store,
+              app: options.github?.app ?? null,
+              ...(options.github?.fetch ? { fetch: options.github.fetch } : {}),
+              ...(options.github?.now ? { now: options.github.now } : {}),
+            },
         options.modelAuth,
       ),
     },
@@ -1545,6 +1593,7 @@ async function launchRoute(options: ControlOptions, caller: Caller, body: Record
     },
     {
       ...options.launch,
+      ...(runtimePolicy ? { boatRuntime: runtimePolicy } : {}),
       ...(armadaAccess
         ? {
             privateVisibility: true as const,
@@ -1627,6 +1676,7 @@ async function providerForGolden(
 
 function launchJson(result: LaunchResult) {
   return {
+    ...(result.runtime ? { runtime: result.runtime } : {}),
     helper: result.helper,
     sandbox: {
       ...result.sandbox,

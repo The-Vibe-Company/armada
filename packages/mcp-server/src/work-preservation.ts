@@ -141,8 +141,13 @@ async function captureAndStore(
   };
   try {
     const stop = (
-      await sql.query<{ stop_token: string | null; complete: boolean; application_secret_tainted: boolean }>(
-        `select application_secret_tainted, case when stop_requested_at is null then null else stop_generation::text end as stop_token,
+      await sql.query<{
+        stop_token: string | null;
+        complete: boolean;
+        application_secret_tainted: boolean;
+        boat_runtime: boolean;
+      }>(
+        `select boat_runtime,application_secret_tainted, case when stop_requested_at is null then null else stop_generation::text end as stop_token,
         (stop_requested_at is not null and preservation_stop_generation is not distinct from stop_generation) as complete
        from public.sandboxes where id=$1::uuid`,
         [id],
@@ -160,6 +165,15 @@ async function captureAndStore(
         sql,
         id,
         "Unpushed work was not preserved: application-secret exposure forbids archives and disk reuse; resume and recovery are unavailable.",
+        stop.stop_token,
+      );
+      return;
+    }
+    if (stop.boat_runtime) {
+      await writeNote(
+        sql,
+        id,
+        "Experimental runtime stop: work preservation and resumable checkpoint are unavailable.",
         stop.stop_token,
       );
       return;

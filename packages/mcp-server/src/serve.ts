@@ -16,6 +16,7 @@ import {
   VaultError,
 } from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
+import { boatRuntimeLaunch } from "./boat-runtime-launch.ts";
 import { authenticateCaller } from "./caller.ts";
 import { configFromEnv } from "./config.ts";
 import { type ConfiguredControlOptions, handleControlRequest, templateRuntime } from "./control.ts";
@@ -53,6 +54,7 @@ import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import { createRuntimeEvents } from "./runtime-events.ts";
 import { createRuntimeModelAccess } from "./runtime-model-access.ts";
 import { createRuntimeNativeAuth } from "./runtime-native-auth.ts";
+import { createRuntimeServing } from "./runtime-serving.ts";
 import { createRuntimeSockets, type RuntimeSocketData } from "./runtime-sockets.ts";
 import { createSandboxArmadaAccess } from "./sandbox-armada-access.ts";
 import { createSandboxLifecycle } from "./sandbox-lifecycle.ts";
@@ -200,7 +202,9 @@ export async function startServer(
   });
   const modalProviderFor: typeof modal.modalProviderFor = async (...args) =>
     sandboxArmadaAccess.wrap(await modal.modalProviderFor(...args));
+  const runtimeProviderFor = createRuntimeServing(sql, config.encryptionKey);
   const providers = providerRegistry({
+    runtimeProviderFor,
     vault: store,
     encryptionKey: config.encryptionKey,
     providerFor,
@@ -229,7 +233,49 @@ export async function startServer(
     encryptionKey: config.encryptionKey,
     provider: (actor, target) => providers.resolve(target, { userId: actor.userId }),
   });
+  let manifest: unknown;
+  if (env.ARMADA_BOAT_RUNTIME_MANIFEST) {
+    try {
+      manifest = JSON.parse(await Bun.file(env.ARMADA_BOAT_RUNTIME_MANIFEST).text());
+    } catch {
+      throw Error("Invalid Boat runtime deployment manifest.");
+    }
+  }
+  let runtimeLaunch: ReturnType<typeof boatRuntimeLaunch> | undefined;
+  if (manifest !== undefined) {
+    const row = manifest as {
+      protocol?: unknown;
+      platform?: unknown;
+      libc?: unknown;
+      architecture?: unknown;
+      runtime?: { sha256?: unknown; bytes?: unknown };
+    };
+    if (
+      !row ||
+      row.protocol !== 1 ||
+      row.platform !== "linux" ||
+      row.libc !== "glibc" ||
+      (row.architecture !== "x64" && row.architecture !== "arm64") ||
+      typeof row.runtime?.sha256 !== "string" ||
+      !/^[a-f0-9]{64}$/.test(row.runtime.sha256) ||
+      !Number.isSafeInteger(row.runtime.bytes) ||
+      Number(row.runtime.bytes) < 1 ||
+      Number(row.runtime.bytes) > 512 * 1024 * 1024
+    )
+      throw Error("Invalid Boat runtime deployment manifest.");
+    runtimeLaunch = boatRuntimeLaunch({
+      sql,
+      encryptionKey: config.encryptionKey,
+      serverUrl: config.publicUrl,
+      manifest,
+      architecture: row.architecture,
+      modelAuth,
+    });
+  }
   const control: ConfiguredControlOptions = {
+    ...(runtimeLaunch
+      ? { boatRuntimeLaunch: runtimeLaunch, runtimeHostFor: (apiKey: string) => createBoatProvider({ apiKey }) }
+      : {}),
     launch,
     orchestratorPairs: config.orchestratorPairs,
     publicUrl: config.publicUrl,
@@ -322,6 +368,7 @@ export async function startServer(
   const runtimeSockets = createRuntimeSockets(runtimeEnrolments, runtimeCommands);
   const handler = createHandler({
     ready: createDatabaseReadiness(sql),
+    runtimeProviderFor,
     launch,
     orchestratorPairs: config.orchestratorPairs,
     ...(orchestrators ? { orchestrators: orchestrators.runtime } : {}),
