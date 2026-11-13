@@ -268,6 +268,7 @@ export async function startServer(
         sql,
         encryptionKey: config.encryptionKey,
         serverUrl: config.publicUrl,
+        ...(runtimeGitHub ? { github: runtimeGitHub } : {}),
         manifest: deployed.manifest,
         architecture: deployed.architecture,
         modelAuth,
