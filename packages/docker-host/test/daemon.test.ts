@@ -173,6 +173,14 @@ test("a failed image fetch is reported with its reason, and an older server stil
   await tick(generic.store, generic.api, generic.executor);
   expect(generic.state().receipts[0]?.reason).toBeUndefined();
 
+  // A transient failure is not an older server: the reason is kept for the next tick, never dropped.
+  const sent: Record<string, unknown>[] = [];
+  const transient = httpApi((async (_url: string | URL | Request, init?: RequestInit) => {
+    sent.push(JSON.parse(String(init?.body)));
+    return new Response(null, { status: 503 });
+  }) as typeof fetch);
+  await expect(transient.result(f.state(), f.state().receipts[0] ?? fail())).rejects.toThrow("Host request denied");
+  expect(sent).toEqual([expect.objectContaining({ reason: "image_unavailable" })]);
   for (const server of ["current", "older"] as const) {
     const bodies: Record<string, unknown>[] = [];
     const api = httpApi((async (_url: string | URL | Request, init?: RequestInit) => {

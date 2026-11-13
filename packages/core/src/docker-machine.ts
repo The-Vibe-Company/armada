@@ -8,8 +8,11 @@ export interface DockerMachineCli {
   ): Promise<{ exitCode: number; stdout: string }>;
 }
 
-/** How long a host may take to fetch an image it does not have yet; the launch's own deadline is 10 minutes. */
-export const DOCKER_IMAGE_PULL_TIMEOUT_MS = 8 * 60_000;
+/**
+ * How long a host may take to fetch an image it does not have yet: half the launch's 10-minute deadline, leaving the
+ * rest for the container and the runtime. The daemon is serial, so it does nothing else while it pulls.
+ */
+export const DOCKER_IMAGE_PULL_TIMEOUT_MS = 5 * 60_000;
 
 export interface DockerMachineRequest {
   sandboxId: string;

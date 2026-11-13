@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   DOCKER_IMAGE_UNAVAILABLE_MESSAGE,
+  DOCKER_JOB_FAILURE_REASONS,
   type DockerHostSummary,
   type DockerJobFailureReason,
   type Sql,
@@ -641,7 +642,10 @@ export function createDockerHostStore(sql: Sql, key: string) {
     ) {
       return transaction(async (tx) => {
         exact(result, "reason" in result ? ["requestId", "outcome", "reason"] : ["requestId", "outcome"]);
-        if (result.reason !== undefined && (result.outcome !== "failed" || result.reason !== "image_unavailable"))
+        if (
+          result.reason !== undefined &&
+          (result.outcome !== "failed" || !DOCKER_JOB_FAILURE_REASONS.includes(result.reason))
+        )
           deny();
         id(result.requestId);
         if (result.outcome !== "completed" && result.outcome !== "failed") deny();

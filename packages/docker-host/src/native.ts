@@ -141,6 +141,13 @@ export async function fileStore(
   };
 }
 
+/** A host request the server answered with an error status. */
+class HostRequestDenied extends Error {
+  constructor(readonly status: number) {
+    super("Host request denied");
+  }
+}
+
 /** Outbound HTTPS only. Redirects cannot forward host credentials to another origin. */
 export function httpApi(request: typeof fetch = fetch): Api & { unregister(state: State): Promise<boolean> } {
   async function post(server: string, endpoint: string, token: string, body: unknown): Promise<unknown> {
@@ -153,7 +160,7 @@ export function httpApi(request: typeof fetch = fetch): Api & { unregister(state
     });
     if (!response.ok) {
       await response.body?.cancel();
-      throw new Error("Host request denied");
+      throw new HostRequestDenied(response.status);
     }
     if (endpoint === "results") {
       await response.body?.cancel();
@@ -211,8 +218,10 @@ export function httpApi(request: typeof fetch = fetch): Api & { unregister(state
       if (expired || !receipt.reason) return void (await post(state.server, "results", state.hostToken, body));
       try {
         await post(state.server, "results", state.hostToken, { ...body, reason: receipt.reason });
-      } catch {
-        // A server older than failure reasons refuses the field: the plain outcome is still the machine fact.
+      } catch (error) {
+        // Only a server older than failure reasons refuses the field (400): the plain outcome is still the machine
+        // fact. Any other failure is retried with the reason on the next tick.
+        if (!(error instanceof HostRequestDenied) || error.status !== 400) throw error;
         await post(state.server, "results", state.hostToken, body);
       }
     },

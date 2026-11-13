@@ -428,8 +428,8 @@ Older servers reject the new packet safely and it remains pending until upgrade.
 ### Fetching the image (#1507)
 
 Before it creates a container, the host checks whether it has the image. If it does
-not, it runs `docker image pull` with its own 8-minute bound, longer than the
-30-second bound on other Docker commands. If the fetch fails or times out, the
+not, it runs `docker image pull` with its own 5-minute bound (half the launch
+deadline), longer than the 30-second bound on other Docker commands. If the fetch fails or times out, the
 failed create result carries `reason: "image_unavailable"`:
 `{installationId,requestId,outcome:"failed",reason:"image_unavailable"}`.
 
@@ -438,8 +438,12 @@ failed create result carries `reason: "image_unavailable"`:
   answers with the same words instead of "did not become ready".
 - **Where the reason counts:** only for a create, the only operation that fetches
   an image. Any other failure keeps the generic reason.
-- **Older servers:** they refuse the extra field. The host then sends the plain
-  failed outcome again, so the result is never left pending.
+- **Older servers:** they refuse the extra field with a 400. The host then sends
+  the plain failed outcome again, so the result is never left pending. Any other
+  error keeps the reason for the next attempt.
+- **Known limit:** the daemon is serial. While it pulls, it does not sweep expired
+  sandboxes or take other jobs, and the host can show as offline (no poll for
+  more than 60 seconds) until the pull ends.
 
 The server validates the current host/installation and the original frozen machine
 identity, then records a terminal stop and revokes runtime authority. Server time
