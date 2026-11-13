@@ -54,8 +54,8 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
     throw new GoldenError("invalid_config", "--host requires a UUID or exact host name.");
   // Without --image the launch uses Armada's default plain image (#1507), sent explicitly so the request is the same
   // whichever server version answers it.
-  const flag = single(args, "--image");
-  const image = flag === undefined ? DOCKER_DEFAULT_IMAGE : flag.trim();
+  const imageFlag = single(args, "--image");
+  const image = imageFlag === undefined ? DOCKER_DEFAULT_IMAGE : imageFlag.trim();
   if (!image)
     throw new GoldenError(
       "invalid_config",
