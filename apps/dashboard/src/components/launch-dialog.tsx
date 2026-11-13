@@ -48,6 +48,7 @@ import {
 } from "@/lib/connections";
 import { PROVIDER_LABELS } from "@/lib/golden-form";
 import { HARNESS_LABELS } from "@/lib/labels";
+import { LAUNCH_KEY_FIELD, type LaunchKey, launchKeyFor } from "@/lib/launch-key";
 import { MACHINE_SIZE_LABELS } from "@/lib/machine-size";
 import {
   accountProblem,
@@ -178,6 +179,7 @@ function LaunchForm({ golden, provider, orgId, catalog, connections, accounts, r
   const access = useLaunchAccess(connections);
   const root = useRef<HTMLDivElement>(null);
   const advanced = useRef<HTMLDivElement>(null);
+  const launchKey = useRef<LaunchKey | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [skills, setSkills] = useState<string[]>([]);
   useVisibleViewport(root);
@@ -204,11 +206,20 @@ function LaunchForm({ golden, provider, orgId, catalog, connections, accounts, r
       const button = node.querySelector<HTMLButtonElement>('button[type="submit"]');
       if (button && !button.disabled) button.form?.requestSubmit(button);
     };
+    // Every submission carries a request key, kept while the choices stay the same: a retry after an unanswered
+    // launch is followed to the sandbox it started instead of launching a second one.
+    const keyed = (event: Event) => {
+      if (!(event instanceof FormDataEvent)) return;
+      launchKey.current = launchKeyFor(launchKey.current, event.formData.entries());
+      event.formData.set(LAUNCH_KEY_FIELD, launchKey.current.key);
+    };
     node.addEventListener("reset", keep, true);
+    node.addEventListener("formdata", keyed, true);
     node.addEventListener("keydown", shortcut);
     details.addEventListener("invalid", reveal, true);
     return () => {
       node.removeEventListener("reset", keep, true);
+      node.removeEventListener("formdata", keyed, true);
       node.removeEventListener("keydown", shortcut);
       details.removeEventListener("invalid", reveal, true);
     };

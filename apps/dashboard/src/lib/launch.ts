@@ -3,6 +3,14 @@ import { isUuid } from "./action.ts";
 import { type ArmadaApiOptions, ControlError, controlPost } from "./control.ts";
 import type { LaunchArgs } from "./model-choice.ts";
 
+/**
+ * How long the dashboard waits for a launch: the CLI's own launch deadline. The server forks the golden's snapshot,
+ * starts the agent and sends the first prompt inside the request, which takes about 15 seconds on Modal today, so the
+ * short control default (`CONTROL_TIMEOUT_MS`) would report a launch that succeeds as a failure. The routes that run
+ * the launch action keep `maxDuration` above it.
+ */
+export const LAUNCH_TIMEOUT_MS = 10 * 60_000;
+
 /** The legacy launch route of the Armada API: no sizing semantics are promised on it. */
 export const LAUNCH_PATH = "/api/v1/sandbox/launch";
 
@@ -22,7 +30,7 @@ export async function launchSandbox(options: ArmadaApiOptions, args: LaunchArgs)
     throw new ControlError("Armada access requires an explicit named Codex account.");
   const sized = args.size !== undefined || args.sizePolicy === true;
   const payload = await controlPost(
-    options,
+    { ...options, timeoutMs: options.timeoutMs ?? LAUNCH_TIMEOUT_MS },
     args.armadaAccess ? "/api/v1/sandbox/launch-access-v1" : sized ? SIZED_LAUNCH_ROUTE_V1 : LAUNCH_PATH,
     {
       ...(args.armadaAccess ? { armadaAccessVersion: 1, armadaAccess: { maxActiveChildren: 3 } } : {}),
@@ -50,4 +58,81 @@ export async function launchSandbox(options: ArmadaApiOptions, args: LaunchArgs)
   const id = typeof sandbox === "object" && sandbox !== null && "id" in sandbox ? sandbox.id : undefined;
   if (typeof id !== "string" || !id) throw new ControlError("The Armada server sent no sandbox id.");
   return { id };
+}
+
+/** One launch submission the dashboard already sent: its request key and when the server action first sent it. */
+export type LaunchAttempt = { key: string; since: number };
+
+export type FollowedLaunch = { state: "started"; id: string } | { state: "unknown"; since: number };
+
+/**
+ * Launches once per request key and follows the launch when its outcome is unknown. The server's launch route has
+ * no idempotency key, so the identity is the viewer's own live sandboxes created from the chosen golden and agent
+ * since the key's first attempt (`created`, read under row level security):
+ *
+ * - a repeated submission of the same key goes to the sandbox its earlier attempt created instead of launching again;
+ * - a launch that got no answer (deadline, connection lost) is looked up the same way, so the person lands on the
+ *   sandbox it started; only when none exists yet is the outcome reported as unknown.
+ *
+ * `remember` keeps the attempt before anything is sent; `forget` drops it once the server answered with a refusal,
+ * so the next submission of the same choices is a new launch, not a visit to what the refused one left behind. A key
+ * that is not a UUID is not followed: the launch is sent once, as before.
+ */
+export async function followLaunch(deps: {
+  key: string;
+  previous: LaunchAttempt | null;
+  now: () => number;
+  remember: (attempt: LaunchAttempt) => Promise<void> | void;
+  forget: () => Promise<void> | void;
+  created: (since: number) => Promise<string | null>;
+  launch: () => Promise<{ id: string }>;
+}): Promise<FollowedLaunch> {
+  const keyed = isUuid(deps.key);
+  let since = deps.now();
+  if (keyed && deps.previous?.key === deps.key) {
+    since = deps.previous.since;
+    const id = await deps.created(since);
+    if (id) return { state: "started", id };
+  } else if (keyed) await deps.remember({ key: deps.key, since });
+  try {
+    return { state: "started", id: (await deps.launch()).id };
+  } catch (error) {
+    if (!keyed) throw error;
+    if (!unknownOutcome(error)) {
+      await deps.forget();
+      throw error;
+    }
+    const id = await deps.created(since);
+    return id ? { state: "started", id } : { state: "unknown", since };
+  }
+}
+
+/**
+ * A launch whose result nobody knows: no answer came back, the server said so (`outcome_unknown`, a provider fork
+ * that may have allocated), or a gateway in front of it answered instead of it.
+ */
+function unknownOutcome(error: unknown): boolean {
+  return (
+    error instanceof ControlError &&
+    (error.outcomeUnknown ||
+      error.code === "outcome_unknown" ||
+      // A gateway's answer carries no Armada error code; the server's own 503 refusals (routing) do.
+      (error.code === undefined && (error.status === 502 || error.status === 503 || error.status === 504)))
+  );
+}
+
+/** The cookie holding one request key's attempt: one per key, so launches from two tabs do not overwrite each other. */
+export function launchAttemptCookie(key: string): string {
+  return `armada_launch_${key}`;
+}
+
+/** The cookie value of a {@link LaunchAttempt}, and back; anything else reads as no attempt. */
+export function encodeLaunchAttempt(attempt: LaunchAttempt): string {
+  return `${attempt.key}.${attempt.since}`;
+}
+
+export function decodeLaunchAttempt(value: string | undefined): LaunchAttempt | null {
+  const [key, since, ...rest] = (value ?? "").split(".");
+  const at = Number(since);
+  return rest.length === 0 && isUuid(key) && Number.isSafeInteger(at) && at > 0 ? { key, since: at } : null;
 }

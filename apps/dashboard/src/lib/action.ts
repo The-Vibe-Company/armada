@@ -1,9 +1,15 @@
 import type { GoldenBuildStatus } from "@armada/core";
 
-export type ActionResult = { ok: true; message: string; build?: GoldenBuildStatus } | { ok: false; error: string };
+/** Where a failure can be followed up: a same-origin dashboard path and its link text. */
+export type ActionLink = { href: string; label: string };
+
+export type ActionResult =
+  | { ok: true; message: string; build?: GoldenBuildStatus }
+  | { ok: false; error: string; link?: ActionLink };
 
 export const done = (message: string): ActionResult => ({ ok: true, message });
-export const fail = (error: string): ActionResult => ({ ok: false, error });
+export const fail = (error: string, link?: ActionLink): ActionResult =>
+  link ? { ok: false, error, link } : { ok: false, error };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 

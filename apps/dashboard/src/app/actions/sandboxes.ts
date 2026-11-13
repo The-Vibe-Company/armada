@@ -2,6 +2,7 @@
 
 import { type Harness, validateSkillPins } from "@armada/core";
 import { revalidatePath } from "next/cache";
+import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { type ActionResult, done, fail, formString, isUuid } from "@/lib/action";
 import { chosenConversation, INCOMPLETE_MODEL, modelChange, STEER_KEEPS_MODEL } from "@/lib/composer";
@@ -18,11 +19,20 @@ import { requireViewer } from "@/lib/data/viewer";
 import { mcpUrl } from "@/lib/env";
 import { GatewayError } from "@/lib/gateway";
 import { PROVIDER_LABELS } from "@/lib/golden-form";
-import { launchSandbox } from "@/lib/launch";
+import {
+  decodeLaunchAttempt,
+  encodeLaunchAttempt,
+  type FollowedLaunch,
+  followLaunch,
+  launchAttemptCookie,
+  launchSandbox,
+} from "@/lib/launch";
+import { LAUNCH_KEY_FIELD } from "@/lib/launch-key";
 import { MACHINE_SIZE_LABELS, PROVIDER_REFUSALS, policyHasDefaults } from "@/lib/machine-size";
 import { checkAccountChoice } from "@/lib/model-accounts";
 import { launchArgs, type ModelFields, sendOverride } from "@/lib/model-choice";
 import { goldenRepositoryDirs, repositoryChoice } from "@/lib/repository-context";
+import { filtersToSearch } from "@/lib/sandbox-filters";
 import { createClient } from "@/lib/supabase/server";
 
 async function gatewayFor(id: string) {
@@ -160,9 +170,11 @@ export async function launchFromGolden(_previous: ActionResult | null, data: For
   }
   const viewer = await requireViewer();
   const serverUrl = mcpUrl();
-  if (!serverUrl || !viewer.token) return fail("The Armada server is not configured for this dashboard.");
+  const token = viewer.token;
+  if (!serverUrl || !token) return fail("The Armada server is not configured for this dashboard.");
 
-  const matches = (await listGoldens(await createClient())).filter(
+  const supabase = await createClient();
+  const matches = (await listGoldens(supabase)).filter(
     (golden) =>
       golden.name === parsed.args.golden &&
       golden.provider === parsed.args.provider &&
@@ -196,20 +208,62 @@ export async function launchFromGolden(_previous: ActionResult | null, data: For
   if (!account.ok) return fail(account.error);
   if (parsed.args.armadaAccess && !account.id) return fail("Armada access requires an explicit named Codex account.");
 
-  let id: string;
+  const jar = await cookies();
+  const key = formString(data, LAUNCH_KEY_FIELD);
+  const cookie = isUuid(key) ? launchAttemptCookie(key) : "";
+  let launched: FollowedLaunch;
   try {
-    ({ id } = await launchSandbox(
-      { serverUrl, token: viewer.token },
-      {
-        ...parsed.args,
-        ...(skills.length ? { skills } : {}),
-        ...(connections === undefined ? {} : { connections }),
-        ...(repository.repo === undefined ? {} : { repo: repository.repo }),
-        ...(account.id === undefined ? {} : { credentialId: account.id }),
-        // Stored defaults are a promise only the versioned sized route keeps; without any, legacy is the same launch.
-        ...(matches.some((golden) => policyHasDefaults(golden.size_policy)) ? { sizePolicy: true } : {}),
+    launched = await followLaunch({
+      key,
+      previous: cookie ? decodeLaunchAttempt(jar.get(cookie)?.value) : null,
+      now: Date.now,
+      remember: (attempt) => {
+        jar.set(cookie, encodeLaunchAttempt(attempt), {
+          httpOnly: true,
+          sameSite: "lax",
+          secure: process.env.NODE_ENV === "production",
+          path: "/",
+          maxAge: 3_600,
+        });
       },
-    ));
+      forget: () => {
+        jar.delete(cookie);
+      },
+      // The viewer's own live sandboxes from the chosen golden and agent since the first attempt: what this
+      // submission created. A failed or removed one is not followed: launching again is then the right retry.
+      created: async (since) => {
+        const { data: rows, error } = await supabase
+          .from("sandboxes")
+          .select("id")
+          .eq("owner_id", viewer.id)
+          .eq("org_id", parsed.args.org)
+          .eq("harness", parsed.args.harness)
+          .in(
+            "golden_id",
+            matches.map((golden) => golden.id),
+          )
+          .not("status", "in", "(failed,deleted)")
+          // A few seconds of slack for the dashboard and database clocks.
+          .gte("created_at", new Date(since - 5_000).toISOString())
+          .order("created_at", { ascending: false })
+          .limit(1);
+        if (error) throw new ControlError("Your sandboxes could not be checked. Open them before launching again.");
+        return rows?.[0]?.id ?? null;
+      },
+      launch: () =>
+        launchSandbox(
+          { serverUrl, token },
+          {
+            ...parsed.args,
+            ...(skills.length ? { skills } : {}),
+            ...(connections === undefined ? {} : { connections }),
+            ...(repository.repo === undefined ? {} : { repo: repository.repo }),
+            ...(account.id === undefined ? {} : { credentialId: account.id }),
+            // Stored defaults are a promise only the versioned sized route keeps; without any, legacy is the same launch.
+            ...(matches.some((golden) => policyHasDefaults(golden.size_policy)) ? { sizePolicy: true } : {}),
+          },
+        ),
+    });
   } catch (error) {
     if (!(error instanceof ControlError)) throw error;
     // A provider refusing an explicit size (plan, disk) is never retried with another: say what can be changed.
@@ -219,8 +273,22 @@ export async function launchFromGolden(_previous: ActionResult | null, data: For
       );
     return fail(error.message);
   }
+  if (launched.state === "unknown") {
+    const search = filtersToSearch({
+      owner: ["me"],
+      provider: [parsed.args.provider],
+      harness: [parsed.args.harness],
+      sort: "newest",
+    });
+    return fail(
+      "The Armada server did not confirm the launch and no sandbox from it is listed yet. It may still be starting: check your sandboxes before launching again.",
+      { href: `/sandboxes${search}`, label: "Your newest sandboxes" },
+    );
+  }
+  // The launch is known: its attempt is not followed again, and the cookie stops travelling with every request.
+  if (cookie) jar.delete(cookie);
   revalidatePath("/sandboxes");
-  redirect(`/sandboxes/${id}`);
+  redirect(`/sandboxes/${launched.id}`);
 }
 
 function modelFields(data: FormData): ModelFields {

@@ -1,7 +1,14 @@
-import { expect, test } from "bun:test";
+import { expect, jest, test } from "bun:test";
 import { SIZED_LAUNCH_ROUTE_V1 } from "@armada/core";
-import { ControlError } from "../src/lib/control.ts";
-import { launchSandbox } from "../src/lib/launch.ts";
+import { CONTROL_TIMEOUT_MS, ControlError } from "../src/lib/control.ts";
+import {
+  decodeLaunchAttempt,
+  encodeLaunchAttempt,
+  followLaunch,
+  LAUNCH_TIMEOUT_MS,
+  launchSandbox,
+} from "../src/lib/launch.ts";
+import { LAUNCH_KEY_FIELD, launchKeyFor } from "../src/lib/launch-key.ts";
 
 const args = {
   golden: "web",
@@ -144,4 +151,136 @@ test("crafted Armada access without an explicit Codex account is refused before 
       "explicit named Codex account",
     );
   expect(routes).toHaveLength(0);
+});
+
+test("a launch answered after 12 seconds is started, not an unanswered request", async () => {
+  jest.useFakeTimers();
+  try {
+    const slow = {
+      serverUrl: "https://armada.test/mcp",
+      token: "t",
+      fetch: ((_input: RequestInfo | URL, init?: RequestInit) =>
+        new Promise<Response>((resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+          setTimeout(() => resolve(Response.json({ sandbox: { id: "s1" } })), 12_000);
+        })) as typeof fetch,
+    };
+    const launched = launchSandbox(slow, args);
+    jest.advanceTimersByTime(12_000);
+    expect(await launched).toEqual({ id: "s1" });
+    expect(LAUNCH_TIMEOUT_MS).toBeGreaterThan(CONTROL_TIMEOUT_MS);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+const KEY = "22222222-2222-4222-8222-222222222222";
+const unanswered = () =>
+  new ControlError("The Armada server did not answer in time.", undefined, undefined, { outcomeUnknown: true });
+
+test("a repeated submit of the same choices reuses the request key; a changed choice gets a new one", () => {
+  let n = 0;
+  const fresh = () => `key-${++n}`;
+  const form = (prompt: string): [string, string][] => [
+    ["golden", "web"],
+    ["prompt", prompt],
+  ];
+  const first = launchKeyFor(null, form("Say Hello"), fresh);
+  const retry = launchKeyFor(first, [...form("Say Hello"), [LAUNCH_KEY_FIELD, first.key]], fresh);
+  expect(retry.key).toBe(first.key);
+  expect(launchKeyFor(retry, form("Say Goodbye"), fresh).key).not.toBe(first.key);
+});
+
+test("a retry of the same request key goes to the sandbox its first attempt created, without launching again", async () => {
+  let launches = 0;
+  const followed = await followLaunch({
+    key: KEY,
+    previous: { key: KEY, since: 1_000 },
+    now: () => 5_000,
+    remember: () => {},
+    forget: () => {},
+    created: async (since) => (since === 1_000 ? "s1" : null),
+    launch: async () => ({ id: `s${++launches + 1}` }),
+  });
+  expect(followed).toEqual({ state: "started", id: "s1" });
+  expect(launches).toBe(0);
+});
+
+test("an unanswered launch is followed to the sandbox it started, else reported unknown", async () => {
+  const remembered: unknown[] = [];
+  const base = {
+    key: KEY,
+    previous: { key: "33333333-3333-4333-8333-333333333333", since: 1 },
+    now: () => 2_000,
+    remember: (attempt: unknown) => {
+      remembered.push(attempt);
+    },
+    forget: () => {
+      remembered.push("forgotten");
+    },
+    launch: async () => {
+      throw unanswered();
+    },
+  };
+  expect(await followLaunch({ ...base, created: async (since) => (since === 2_000 ? "s1" : null) })).toEqual({
+    state: "started",
+    id: "s1",
+  });
+  expect(remembered).toEqual([{ key: KEY, since: 2_000 }]);
+  expect(await followLaunch({ ...base, created: async () => null })).toEqual({ state: "unknown", since: 2_000 });
+  // The server saying the fork outcome is unknown, or a gateway answering for it, is followed the same way.
+  for (const unsure of [new ControlError("Unknown.", 500, "outcome_unknown"), new ControlError("Bad gateway.", 502)])
+    expect(
+      await followLaunch({
+        ...base,
+        created: async () => "s1",
+        launch: async () => {
+          throw unsure;
+        },
+      }),
+    ).toEqual({ state: "started", id: "s1" });
+  // A refusal the server answered is not followed: the launch failed and the person fixes its cause.
+  const refused = new ControlError("No.", 400);
+  const error = await followLaunch({
+    ...base,
+    created: async () => "s1",
+    launch: async () => {
+      throw refused;
+    },
+  }).catch((e) => e);
+  expect(error).toBe(refused);
+  // The refused attempt is forgotten: the next submission of the same choices launches again.
+  expect(remembered.at(-1)).toBe("forgotten");
+});
+
+test("a retry after a refusal the server answered launches again under the same key", async () => {
+  let previous: { key: string; since: number } | null = null;
+  let launches = 0;
+  const deps = {
+    key: KEY,
+    now: () => 1_000 + launches,
+    remember: (attempt: { key: string; since: number }) => {
+      previous = attempt;
+    },
+    forget: () => {
+      previous = null;
+    },
+    // The refused attempt left only a failed row, which the live lookup does not return.
+    created: async () => null,
+    launch: async () => {
+      launches += 1;
+      if (launches === 1) throw new ControlError("The provider refused.", 409);
+      return { id: "s2" };
+    },
+  };
+  await followLaunch({ ...deps, previous }).catch(() => {});
+  expect(previous).toBeNull();
+  expect(await followLaunch({ ...deps, previous })).toEqual({ state: "started", id: "s2" });
+  expect(launches).toBe(2);
+});
+
+test("the launch attempt cookie round-trips and refuses anything else", () => {
+  expect(decodeLaunchAttempt(encodeLaunchAttempt({ key: KEY, since: 42 }))).toEqual({ key: KEY, since: 42 });
+  for (const bad of [undefined, "", "x.42", `${KEY}.0`, `${KEY}.42.1`, `${KEY}.nope`])
+    expect(decodeLaunchAttempt(bad)).toBeNull();
 });
