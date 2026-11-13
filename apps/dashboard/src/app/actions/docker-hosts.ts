@@ -14,6 +14,7 @@ import {
   launchedDockerSandbox,
   UNKNOWN_DOCKER_LAUNCH,
 } from "@/lib/docker-launch";
+import type { DockerSnapshotsResult } from "@/lib/docker-snapshots";
 import { mcpUrl } from "@/lib/env";
 import { LAUNCH_PATH, LAUNCH_TIMEOUT_MS } from "@/lib/launch";
 import { LAUNCH_KEY_FIELD } from "@/lib/launch-key";
@@ -163,4 +164,19 @@ export async function launchOnDockerHost(
   revalidatePath("/sandboxes");
   // The dialog navigates once it has forgotten this launch's request key, so a later launch is a new request.
   return { ok: true, message: "Launched. Opening the sandbox…", sandboxId: id };
+}
+
+/** Private metadata, read on selection only. The API enforces membership and owner scope as the viewer. */
+export async function listDockerSnapshots(org: string, hostId: string): Promise<DockerSnapshotsResult> {
+  if (!isUuid(org) || !isUuid(hostId)) return { state: "unavailable" };
+  const selected = await selectedOrganization();
+  if (!selected || selected.org.id !== org) return { state: "unavailable" };
+  const control = await viewerDockerHosts();
+  if (!control) return { state: "unavailable" };
+  try {
+    return { state: "ready", snapshots: await control.snapshots(org, hostId) };
+  } catch (error) {
+    if (error instanceof ControlError) return { state: "unavailable" };
+    throw error;
+  }
 }

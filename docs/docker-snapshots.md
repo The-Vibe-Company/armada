@@ -37,7 +37,7 @@ selector, capture command, automatic rebuild or new provider/golden alias.
 ## Remaining slices / deployment
 
 The capture/storage job and local-byte ownership/retention protocol, snapshot
-selection at launch, dashboard snapshot list and explicit update/rebuild flow
+selection at launch and explicit update/rebuild flow
 remain to implement. They must preserve old snapshots and avoid recording secrets
 or foreign provider artifacts. Do not expose catalog-write APIs as a shortcut.
 
@@ -45,3 +45,15 @@ Migration `20261113180000_docker_snapshot_provenance.sql` must precede the match
 server rollout through normal reviewed deployment. This work only generated types
 and exercised disposable local SQL tests; no remote migration or deployment was
 performed. Recheck its version against current main before merging.
+
+## Dashboard list (slice 3b)
+
+Open **Hosts**, then select a host. **Your snapshots** shows each private entry's
+name and **Built on Armada <version>**, using the signed-in viewer's API scope.
+Only the selected host panel reads snapshot data; hidden panels do not fan out
+requests. Refresh is manual. A failed/malformed read says it could not load;
+it is not shown as an empty catalog. Closing/changing the selected host drops
+late results. Names and versions wrap on narrow screens; there is no image input,
+launch/rebuild button or assertion that listed files are still on the host.
+An older server without the list route leaves host controls usable and shows
+snapshot loading as unavailable. No browser request receives a service key.

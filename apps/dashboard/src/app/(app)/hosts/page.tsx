@@ -6,6 +6,7 @@ import { CopyButton } from "@/components/copy-button";
 import { CreatedAt } from "@/components/created-at";
 import { AddHostDialog, HostMark, RevokeHost } from "@/components/docker-hosts";
 import { DockerLaunchDialog } from "@/components/docker-launch";
+import { DockerSnapshots } from "@/components/docker-snapshots";
 import { Empty, PageHeader } from "@/components/page-header";
 import { ResourceBrowser, type ResourceRow } from "@/components/resource-browser";
 import { PanelSection, StateCell } from "@/components/state-cell";
@@ -160,6 +161,7 @@ function row(
             />
           )}
         </PanelSection>
+        <DockerSnapshots key={`${orgId}:${host.id}`} orgId={orgId} hostId={host.id} />
         <PanelSection title="Facts">
           <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
             <dt className="text-muted-foreground">Host ID</dt>

@@ -9,6 +9,7 @@ import {
   parseHostRegistration,
 } from "@/lib/docker-hosts";
 import { type DockerLaunchOption, dockerLaunchOption, LAUNCH_OPTIONS_ROUTE } from "@/lib/docker-launch";
+import { parseDockerSnapshots } from "@/lib/docker-snapshots";
 import { mcpUrl } from "@/lib/env";
 import { selectedOrganization } from "./selected-org";
 import { requireViewer } from "./viewer";
@@ -32,6 +33,11 @@ export async function viewerDockerHosts() {
       if (!list) throw new ControlError("The Armada server sent an unexpected host list.");
       if (list.skipped > 0) console.error(`Docker host list: ${list.skipped} host(s) left out, off the contract.`);
       return list;
+    },
+    async snapshots(org: string, hostId: string) {
+      const snapshots = parseDockerSnapshots(await post("docker/snapshots/list", { org, hostId }), hostId);
+      if (!snapshots) throw new ControlError("The Armada server sent an unexpected snapshot list.");
+      return snapshots;
     },
     /** The name is sent only when given, so a server without host naming still answers an unnamed request. */
     async register(org: string, name: string | null): Promise<HostRegistration> {
