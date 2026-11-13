@@ -7,6 +7,7 @@ import {
   GitHubHydrationError,
   HARNESS_KINDS,
   HARNESSES,
+  type LaunchOptionsResponse,
   MACHINE_SIZES,
   MODEL_CATALOG,
   PROVIDER_LIMITS,
@@ -857,11 +858,34 @@ describe("control API", () => {
       };
       const response = await call({ method: "POST", headers, body: "{}" });
       expect(response?.status).toBe(200);
-      const body = (await response?.json()) as {
-        harnesses: { id: string; defaultModel: string; models: unknown; credentialKinds: unknown }[];
-        machineSizes: unknown;
-        ttl: unknown;
-      };
+      const body = (await response?.json()) as LaunchOptionsResponse;
+      expect(body.providers.find((provider) => provider.id === "boat")).toMatchObject({
+        enabled: true,
+        launchSources: ["golden"],
+        harnesses: ["claude", "codex"],
+        capabilities: { launch: true },
+      });
+      const hiddenDocker = body.providers.find((provider) => provider.id === "docker");
+      expect(hiddenDocker).toMatchObject({
+        enabled: false,
+        capabilities: { launch: false, resume: false, goldens: false },
+      });
+      // Feature flags alone cannot advertise a normal route before its handler is installed.
+      options.docker = { hosts: true, placement: true, normalApi: false };
+      const discovery = await call({ method: "POST", headers, body: JSON.stringify({ docker: { normalApi: true } }) });
+      const publicOptions = (await discovery?.json()) as LaunchOptionsResponse;
+      const docker = publicOptions.providers.find((provider) => provider.id === "docker");
+      expect(docker).toMatchObject({ enabled: true, launchSources: ["image"], harnesses: ["codex"] });
+      expect(docker?.capabilities).toMatchObject({
+        launch: false,
+        stop: false,
+        delete: false,
+        followupPrompts: false,
+        resume: false,
+      });
+      for (const [capability, supported] of Object.entries(docker?.capabilities ?? {})) {
+        if (!supported) expect(docker?.unsupportedReasons[capability as keyof typeof docker.capabilities]).toBeTruthy();
+      }
       expect(body.harnesses.map((harness: { id: string }) => harness.id)).toEqual([...HARNESSES]);
       for (const harness of body.harnesses) {
         const catalog = MODEL_CATALOG[harness.id as keyof typeof MODEL_CATALOG];
@@ -2094,9 +2118,6 @@ test("access launch grants scoped authority before the first prompt while retain
       return { provider: await modal.storedProviderFor(row, caller), providerSandboxId: row.providerSandboxId };
     };
     options.sandboxArmadaAccess = access;
-    options.orchestrators = {
-      enabledPairs: ["modal:codex"],
-    } as unknown as import("../src/orchestrator-runtime.ts").OrchestratorRuntime;
     // The staging checker used an absolute cwd; the public launch contract takes a configured selector.
     const bearer = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`;
     const stagingLaunch = (repo: string, placement: "boat" | "modal" = "modal") =>
@@ -2229,19 +2250,18 @@ test("access launch grants scoped authority before the first prompt while retain
       selectedBoatKey = key;
       throw new VaultError("unavailable", "Fixture stops before allocation.");
     };
-    options.orchestrators = { enabledPairs: ["boat:codex", "modal:codex"] } as unknown as typeof options.orchestrators;
     const forksBefore = fake.forks.length;
     expect((await stagingLaunch("web", "boat"))?.status).toBe(503);
     expect(selectedBoatKey).toBe("org-boat-fixture-key");
     expect(fake.forks).toHaveLength(forksBefore);
     options.providers = routed;
     options.providerFor = () => provider;
-    const { OrchestratorAuthority } = await import("@armada/core/server");
+    const { DelegatedAuthority } = await import("@armada/core/server");
     const sql: Sql = {
       query: (q, v) => db.query(q, v),
       transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
     };
-    const authority = new OrchestratorAuthority(sql, async (tx, input) => {
+    const authority = new DelegatedAuthority(sql, async (tx, input) => {
       await resolveCredentials(createSqlVaultStore(tx), KEY, input);
     });
     expect(
@@ -2437,6 +2457,49 @@ test("versioned runtime launch is explicit/default-off and never selects native 
     };
     expect((await request("sandbox/launch-runtime-v1", body))?.status).toBe(503);
     expect(host.forks).toHaveLength(0);
+    const connection = "44444444-4444-4444-8444-444444444444";
+    let mcpPrepared = false,
+      expectedForks = 0;
+    options.connections = {
+      async defaults() {
+        throw Error("No native MCP defaults");
+      },
+      async validate() {
+        throw Error("No native MCP validation");
+      },
+      async bind() {
+        throw Error("No native MCP binding");
+      },
+      async prepare() {
+        throw Error("No native MCP setup");
+      },
+    };
+    options.runtimeMcp = {
+      async prepare() {
+        throw Error("Lifecycle port must own MCP preparation");
+      },
+      async preflight() {
+        throw Error("No staging probe during product launch");
+      },
+      connections: {
+        async defaults() {
+          return [connection];
+        },
+        async validate(_actor, ids) {
+          expect(ids).toEqual([connection]);
+          expect(host.forks).toHaveLength(expectedForks);
+        },
+        async bind(_id, ids) {
+          expect(ids).toEqual([connection]);
+        },
+        async prepare(_provider, sandbox, _actor, signal) {
+          expect(starts).toBe(1);
+          expect(sandbox.id).toBeDefined();
+          expect(signal?.aborted).toBe(false);
+          mcpPrepared = true;
+        },
+      },
+    };
     options.runtimeHostFor = () => host.provider;
     options.boatRuntimeLaunch = {
       async start(input) {
@@ -2449,6 +2512,7 @@ test("versioned runtime launch is explicit/default-off and never selects native 
         return {
           epoch: "1",
           async prompt() {
+            expect(mcpPrepared).toBe(true);
             return { promptId: "runtime-initial", conversationId: "runtime-conversation", status: "queued" };
           },
         };
@@ -2513,6 +2577,7 @@ test("versioned runtime launch is explicit/default-off and never selects native 
     expect(host.prompts).toHaveLength(0);
     expect(host.execs).toHaveLength(0);
     // Actual startup timeout -> launch failure persistence -> public logs response.
+    expectedForks = 1;
     options.boatRuntimeLaunch = {
       async start(input) {
         let now = 0;

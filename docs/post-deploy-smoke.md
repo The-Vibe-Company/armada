@@ -84,27 +84,12 @@ read -rs ARMADA_TOKEN; export ARMADA_TOKEN; echo
 export ARMADA_SMOKE_CASES="$(cat /path/to/staging-cases.json)"
 export ARMADA_SMOKE=create_real_compute
 bun scripts/post-deploy-smoke.ts
-# Optional; use only pairs supported by orchestrator capabilities:
-bun scripts/post-deploy-smoke.ts --orchestrator
 unset ARMADA_TOKEN
 ```
 
 The normal path launches each case, sends one trivial prompt, waits for success,
 checks `git status -sb` and `git ls-remote origin HEAD` in the checkout, stops
-the sandbox and checks provider state. The optional path also exercises
-orchestrator create → send → stop → resume → stop. It requires `goldenId`;
-orchestrator capabilities must enable the selected pair (Modal/Codex native or
-Boat/Claude and Boat/Codex best-effort). Within that supported set,
-the smoke reads `orchestrators/capabilities` once and validates every selected
-pair before **any** sandbox or orchestrator allocation. A disabled or absent
-pair fails the run; it is never silently skipped. Use a separate cases file
-containing only enabled pairs for that run. Ordinary-only runs do not use this
-orchestrator capability gate. Ordinary-pair preflight is tracked in
-[#859](https://github.com/The-Vibe-Company/armada/issues/859): add an authenticated
-`sandbox/capabilities` route using launch's provider/harness availability policy
-and caller-visible model-account validation, then gate ordinary cases before
-allocation. Orchestrator enablement is a separate policy and cannot substitute
-for that route.
+the sandbox and checks provider state.
 
 ### Pair prerequisites
 
@@ -116,12 +101,6 @@ provider's. Optional effort and exact skill pins retain their documented semanti
 Use a separate staging Boat account/key shared by its Claude/Codex cases; Boat's
 one-golden account limit does not justify pair-specific extra goldens. Provider/model
 keys remain in Armada's vault, never cases or workflow arguments.
-
-Compatibility `--orchestrator` additionally preflights every selected pair before
-any allocation and needs `goldenId`; absent/disabled capability fails rather than
-skips. This policy cannot substitute for ordinary sandbox capability validation.
-It is existing-resource compatibility, not a new orchestration workflow; consult
-[retirement and recovery guidance](orchestrator-troubleshooting.md).
 
 The **Post-deploy smoke** workflow can be dispatched on main. It also runs after
 a successful GitHub `deployment_status` for environment exactly `armada / staging`
@@ -140,11 +119,11 @@ and not cancelled by a newer deploy, allowing cleanup to finish.
 Each step emits a fixed diagnostic line; failures exit nonzero. API bodies,
 command output, tokens and provider error messages are never printed. Requests
 and polling are bounded, and cleanup runs even after a failed step. This is
-a smoke test, not a resource janitor: a killed runner or an ambiguous create
+a receipt-scoped smoke, not a fleet-wide resource janitor: a killed runner or an ambiguous create
 response can still require operator reconciliation in the staging dashboard.
-Do not blindly rerun a timed-out create. Stopped resources retain provider disks
-according to the normal retention policy; this smoke does not delete goldens or
-unrelated resources.
+Do not blindly rerun a timed-out create. Without a deletion journal, stopped resources retain provider disks
+according to the normal retention policy; this smoke does not delete goldens or unrelated resources. With a durable journal,
+known sandbox rows are deleted only after their stop/recovery assertions (below).
 
 ## Offline validation
 
@@ -204,7 +183,7 @@ the existing post-deploy workflows, not by a PR or offline test run.
 The template mode exercises personal readable-variable templates and pinned
 public/private skills on the explicitly selected provider × harness cases when
 the corresponding exact pins are configured.
-Orchestrators are excluded. A random disposable value must be read by the native
+A random disposable value must be read by the native
 agent (not included in the prompt), while a plain exec must not inherit its
 environment binding. Installation receipts must match the requested exact pins.
 Private installation is skipped only when Skillpack connection metadata confirms
@@ -415,7 +394,7 @@ using the existing access configuration; unavailable/misconfigured access fails.
 The native parent uses only configured scoped MCP launch/message/read/stop.
 No owner CLI token, copied bearer, direct owner HTTP fallback, config/grant read
 or new orchestration method. The reserved MCP server's legacy internal name is
-unchanged; no public orchestrator is created. The nonsecret armada-tools reference
+unchanged; no separate managed parent is created. The nonsecret armada-tools reference
 may be read with the supplied exact read-only cat command.
 
 Named proofs: parent configuration, native turn, actual correlated child launch,
@@ -454,7 +433,7 @@ No migrations/new credentials/case fields. Offline tests are not live receipts.
 ### Legacy GitHub repair
 
 Both staging entrypoints add `--github-refresh`, requiring `--lifecycle`
-and excluding orchestrator and managed-runtime test modes. It reuses the
+and excluding managed-runtime test modes. It reuses the
 ordinary clean worker; no additional allocations or model turns. Readiness is
 recorded immediately before the new `github_launch_access` read-only git
 probe. This proves origin access before the first model turn or explicit
@@ -501,7 +480,7 @@ Both staging entrypoints add `--expiry`. Standalone
 `bun scripts/post-deploy-smoke.ts --expiry` runs only this family.
 It is admitted only on the exact staging origin. Combined mode requires
 `--lifecycle`, so template-only early returns cannot silently skip the probe;
-orchestrator combinations are refused.
+unsupported combinations are refused.
 
 For every selected pair, launch one additional prompt-free ordinary worker
 with a 180-second logical TTL, no connections and default skills opted out.
@@ -546,7 +525,7 @@ Both staging entrypoints enable `--golden-runtime`. On the existing ordinary
 worker (only the clean worker when preservation is enabled), named
 `golden_helper_integrity` and `golden_skillpack_integrity` steps verify installed
 bytes, executable resolution and version/protocol. No extra allocation or model
-turn is added. The flag refuses non-staging origins, orchestrator mode and template-only
+turn is added. The flag refuses non-staging origins, template-only
 combinations without preservation or lifecycle (which would otherwise return
 before the ordinary worker checks).
 
@@ -715,8 +694,8 @@ must still clean compute with value-free preservation warning. Do not set this
 marker on real workloads or infer that template delivery uses it.
 
 This is **not** concurrency-safe hydration or provider-internal recovery fencing.
-Modal filesystem recovery and managed Boat recovery need their separate future
-gates; a first-gate check cannot authorize proposed hardening. Keep permanent
+Provider-internal recovery (including Modal filesystem recovery images) is not
+covered by this first gate; it cannot authorize proposed hardening. Keep permanent
 exposure history/tombstones in rollback/restore; dropping the marker is unsafe.
 Database deletion does not erase backups, provider disks/events or delivered
 copies. The broader [hardening design](design/templates-variables-secrets.md)
@@ -759,3 +738,53 @@ Use [runtime validation](runtime-startup.md#validation),
 [Docker hosts](docker-host-daemon.md), [OpenCode](runtime/opencode-modal.md) and
 [Otto](otto-staging.md) for their implemented feature gates and real-provider checks.
 Synthetic protocol/build proofs are not inference or production acceptance.
+
+## Sandbox deletion receipts
+
+Both staging workflows upload `.smoke/sandboxes.json` as an artifact even when probes fail, restore the latest named artifact across branches/tags, and set
+`ARMADA_SMOKE_JOURNAL` for the compute smoke. Launch receipts are persisted before
+probe validation; cleanup deletes known IDs after all stop/recovery assertions.
+The bounded startup sweep retries at most 32 older receipted IDs in parallel;
+current-run deletion has an independent 64-ID bound. It never lists all stopped
+sandboxes for deletion. The target `smoke_cleanup_summary.remainingRows` is zero;
+deleted audit rows remain but do not grow active dashboard lists.
+
+For a manual staging run set `ARMADA_SMOKE_JOURNAL` to a durable receipt path.
+Without it, the legacy operator smoke retains its stop-only behavior. The removed
+`--orchestrator` mode is refused before compute; no compatibility mode is available.
+Lost launch responses or forced termination before persistence require coordinator
+reconciliation: direct launches have no idempotency lookup. Unknown outcomes
+fail the run instead of claiming zero growth. Artifact expiry can lose retry
+receipts; preserve `smoke_sandbox_receipt` output as independent audit evidence.
+
+Coordinator checks: compare org counts before/after a normal run; deliberately
+fail a probe after launch; restore one known smoke receipt on the next run and
+verify its deletion while an unrelated stopped sandbox remains unchanged.
+
+## Historical cleanup plan
+
+1. Recover an explicit ID manifest from trusted smoke execution receipts. Each
+   entry is `{ "requestKey": "post-deploy-smoke:<UUID>", "org": "<staging org>",
+   "id": "<sandbox UUID>" }`. The key labels the original smoke request in the
+   audit manifest; it is **not** a server-side sandbox label. Keep its source run
+   URL alongside the manifest. Never manufacture attribution from stopped status,
+   age, owner or golden. Old direct launches did not persist labels: without
+   trustworthy receipts, stop and request coordinator attribution.
+2. Set `ARMADA_URL=https://armada-mcp-staging.up.railway.app`,
+   `ARMADA_SMOKE_ORG=<exact staging org from receipts>` and
+   `ARMADA_SMOKE_JOURNAL=<manifest path>`. No token is needed for dry-run.
+3. Run `bun scripts/cleanup-staging-smoke.ts`. Inspect candidate counts and source
+   receipts. Wrong origins (including production) and mixed-org manifests are
+   refused before requests.
+4. Set `ARMADA_TOKEN` through the staging secret store, then run
+   `bun scripts/cleanup-staging-smoke.ts --delete`. At most 32 explicit IDs are
+   attempted per invocation. Counts are printed; failures return nonzero. Preserve
+   the source manifest and partition into batches of 32. Already-deleted IDs can
+   safely be repeated. Never paste tokens into argv or logs.
+5. Compare the staging org's visible sandbox count before/after. Run an ordinary
+   staging smoke, check all deletion steps and final count zero, then confirm the
+   visible count did not grow. No deployment or migration is part of this script.
+
+Offline checks: `bun test scripts/smoke-sandbox-cleanup.test.ts scripts/cleanup-staging-smoke.test.ts`.
+Coordinator checks: deliberately fail a probe after launch; restore a journal with
+one known leftover on the next run; verify unrelated stopped sandboxes survive.

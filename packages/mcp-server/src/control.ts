@@ -112,7 +112,7 @@ import type { GitHubAccountApi } from "./github-account.ts";
 import { providerRegistry } from "./http.ts";
 import { InvitationError, type Invitations, invitationsFromEnv } from "./invitations.ts";
 import { exposedSecrets, launchCredentials } from "./launch-credentials.ts";
-import { launchOptions } from "./launch-options.ts";
+import { launchOptions, launchProviderOptions } from "./launch-options.ts";
 import { catalogAuthenticationFromEnv } from "./mcp-catalog-client.ts";
 import { createMcpLifecycle } from "./mcp-lifecycle.ts";
 import { createHistoricalSandboxProviderResolver } from "./mcp-sandbox-provider.ts";
@@ -143,11 +143,9 @@ export const CONTROL_PREFIX = "/api/v1/";
 const MAX_BODY_BYTES = 128 * 1024;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-import type { OrchestratorPair } from "./orchestrator-activation.ts";
-import { orchestratorHttp } from "./orchestrator-api.ts";
-import type { OrchestratorRuntime } from "./orchestrator-runtime.ts";
-
 export interface ControlOptions {
+  /** Trusted installed-route discovery, never taken from request JSON. */
+  docker?: { hosts?: boolean; placement?: boolean; normalApi?: boolean };
   runtimeMcp?: RuntimeMcp;
   runtimeGitHub?: RuntimeGitHub;
   runtimeResume?: RuntimeResume;
@@ -164,10 +162,8 @@ export interface ControlOptions {
   skillDefaults?: SkillDefaultsService;
   routines?: RoutineService;
   applicationVault?: ApplicationVault;
-  orchestratorPairs?: readonly OrchestratorPair[];
   /** Trusted dashboard origin, from ARMADA_PUBLIC_URL; never request Host headers. */
   publicUrl?: string;
-  orchestrators?: OrchestratorRuntime;
   modelAuth?: ModelAuthOwnership;
   credentialBindingRecovery?: CredentialBindingRecovery;
   modelUsage?: ModelUsageApi;
@@ -261,16 +257,6 @@ export async function handleControlRequest(request: Request, options: ControlOpt
   if (route === "token/create") return tokenCreateRoute(request, options);
   if (route === "token/revoke") return tokenRevokeRoute(request, options);
   if (route === "auth/refresh") return refreshRoute(request, options);
-  if (route === "orchestrators" || route.startsWith("orchestrators/")) {
-    try {
-      const caller = await authenticatedCaller(request, options);
-      return orchestratorHttp(request, caller, options.orchestrators, options.orchestratorPairs);
-    } catch (error) {
-      return error instanceof AuthUnavailable
-        ? fail(503, "dependency_unavailable", "Authentication unavailable.")
-        : fail(401, "unauthorized", "Run armada login.");
-    }
-  }
   const deletion = /^sandboxes\/([0-9a-f-]+)$/i.exec(route);
   if (deletion ? request.method !== "DELETE" : request.method !== "POST")
     return fail(405, "invalid", deletion ? "Use DELETE." : "Use POST.");
@@ -778,6 +764,7 @@ async function dispatch(
   if (route === "launch/options")
     return {
       ...launchOptions,
+      providers: launchProviderOptions(options.docker),
       boatRuntime: {
         version: 1,
         diagnosticsVersion: 1,
@@ -785,10 +772,10 @@ async function dispatch(
         checkpointVersion: options.runtimeCheckpoint ? 1 : 0,
         resumeVersion: options.runtimeResume ? 1 : 0,
         githubVersion: options.runtimeGitHub ? 1 : 0,
-        mcpVersion: options.runtimeMcp ? 1 : 0,
+        mcpVersion: options.runtimeMcp ? 2 : 0,
         enabled: Boolean(options.boatRuntimeLaunch && options.runtimeHostFor),
       },
-    };
+    } satisfies import("@armada/core").LaunchOptionsResponse;
   if (route === "creds/accounts/usage") {
     if (!options.modelUsage || !options.logs) throw new VaultError("unavailable", "Model usage is not configured.");
     const id = required(body, "id"),
@@ -901,7 +888,6 @@ async function dispatch(
       "sandbox/advice": "resource_advice",
       "sandbox/send": "send",
       "sandbox/checkpoint-runtime-v1": "runtime_checkpoint",
-      "sandbox/configure-mcp-runtime-v1": "runtime_mcp_refresh",
       "sandbox/resume-runtime-v1": "runtime_resume",
       "sandbox/report": "report",
       "sandbox/stop": "stop",
@@ -952,7 +938,6 @@ async function dispatch(
         ...(options.runtimeCheckpoint ? { runtimeCheckpoint: options.runtimeCheckpoint } : {}),
         ...(options.runtimeResume ? { runtimeResume: options.runtimeResume } : {}),
         ...(options.runtimeGitHub ? { runtimeGitHub: options.runtimeGitHub } : {}),
-        ...(options.runtimeMcp ? { runtimeMcp: options.runtimeMcp } : {}),
         ...(options.connections ? { connections: options.connections } : {}),
         data: options.data(scopedCaller),
         measure: (phase, work) => measured(options, phase, work),
@@ -1173,17 +1158,16 @@ async function dispatch(
         body.harness !== "codex" ||
         (body.provider !== undefined && body.provider !== "boat") ||
         body.armadaAccess ||
-        (body.connections !== undefined && (!Array.isArray(body.connections) || body.connections.length)) ||
         (body.skills !== undefined && (!Array.isArray(body.skills) || body.skills.length)) ||
         (body.helperCapabilities !== undefined &&
           (!Array.isArray(body.helperCapabilities) || body.helperCapabilities.length)) ||
         (body.skipSkillDefaults !== undefined && body.skipSkillDefaults !== true)
       )
-        throw new VaultError("invalid", "Runtime v1 requires explicit Boat/Codex model-only snapshot launch.");
+        throw new VaultError("invalid", "Runtime v1 requires explicit Boat/Codex snapshot launch.");
       if (!options.boatRuntimeLaunch || !options.runtimeHostFor)
         throw new VaultError("unavailable", "Experimental Boat runtime launch is not configured.");
       required(body, "prompt");
-      return launchRoute(options, caller, { ...body, connections: [], skipSkillDefaults: true }, true);
+      return launchRoute(options, caller, { ...body, skipSkillDefaults: true }, true);
     case "sandbox/launch-access-v1":
       if (body.armadaAccessVersion !== 1 || !parseSandboxArmadaAccess(body.armadaAccess))
         throw new VaultError("invalid", "The access launch route requires armadaAccessVersion 1 and armadaAccess.");
@@ -1566,7 +1550,7 @@ async function launchRoute(
   )
     throw new VaultError("invalid", "connections must contain at most 100 connection UUIDs.");
   const armadaAccess = parseSandboxArmadaAccess(body.armadaAccess);
-  if (armadaAccess && (!options.sandboxArmadaAccess || !options.orchestrators))
+  if (armadaAccess && !options.sandboxArmadaAccess)
     throw new VaultError("unavailable", "Sandbox Armada access is not enabled on this server.");
   if (armadaAccess && (typeof body.credentialId !== "string" || !UUID.test(body.credentialId)))
     throw new VaultError("invalid", "Sandbox Armada access requires an explicit credentialId.");
@@ -1583,10 +1567,7 @@ async function launchRoute(
     optional(body, "provider") as "boat" | "modal" | undefined,
   );
   resolveRepositoryDir(golden, optional(body, "repo"));
-  if (
-    armadaAccess &&
-    (harness !== "codex" || !options.orchestrators?.enabledPairs.includes(`${golden.provider}:${harness}`))
-  )
+  if (armadaAccess && harness !== "codex")
     throw new VaultError("unavailable", "Sandbox Armada access is unavailable for this provider/harness.");
   if (runtime && golden.provider !== "boat") throw new VaultError("invalid", "Runtime v1 requires a Boat golden.");
   const provider = runtimeHost
@@ -1604,13 +1585,14 @@ async function launchRoute(
         caller,
         armadaAccess ? { ...golden, visibility: "private", sourceGoldenVisibility: golden.visibility } : golden,
       );
+  const connectionLifecycle = runtime ? options.runtimeMcp?.connections : options.connections;
   const result = await launchSandbox(
     provider,
     {
       ...(options.skillDefaults ? { skillDefaults: options.skillDefaults } : {}),
       goldens: data.goldens,
       sandboxes: data.sandboxes,
-      ...(options.connections ? { connections: options.connections } : {}),
+      ...(connectionLifecycle ? { connections: connectionLifecycle } : {}),
       credentials: launchCredentials(
         options.store,
         options.encryptionKey,
@@ -1650,7 +1632,7 @@ async function launchRoute(
             privateVisibility: true as const,
             beforeStart: async (provider: Provider, sandbox: import("@armada/core").SandboxRecord) => {
               await options.launch?.beforeStart?.(provider, sandbox);
-              await options.sandboxArmadaAccess!.prepare(provider, sandbox, actor, armadaAccess);
+              await options.sandboxArmadaAccess?.prepare(provider, sandbox, actor, armadaAccess);
             },
           }
         : {}),

@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import type { Sql } from "@armada/core";
+import type { DockerHostSummary, Sql } from "@armada/core";
 import { decryptSecret, encryptSecret } from "@armada/core/server";
 import {
   type BootstrapDescriptor,
@@ -258,7 +258,65 @@ export function createDockerHostStore(sql: Sql, key: string) {
     if (operation === "bootstrap" && original.outcome !== "completed") deny();
     return saved.request;
   }
+  async function boundMachine(tx: Sql, job: StoredJob, host: Host, installationId: string) {
+    const logical = await sandbox(tx, job.bound_sandbox_id ?? deny(), host, installationId);
+    const delivered = await readJob(job);
+    const frozen = await machine(tx, logical, "stop");
+    if (input(delivered) !== input({ ...delivered, request: frozen })) deny();
+    return logical;
+  }
+  async function startupFailed(tx: Sql, row: Sandbox, operation: string | null) {
+    if (operation !== "create" && operation !== "bootstrap") return;
+    await tx.query(
+      `update public.sandboxes set status='failed',status_reason='Docker sandbox startup failed.',
+       lifecycle_generation=lifecycle_generation+1 where id=$1 and status in ('starting','ready','running','stopping')`,
+      [row.id],
+    );
+  }
   return {
+    list(actor: Actor): Promise<DockerHostSummary[]> {
+      return transaction(async (tx) => {
+        exact(actor, ["userId", "orgId"]);
+        id(actor.userId);
+        id(actor.orgId);
+        const member = await tx.query(`select 1 from public.members where org_id=$1 and user_id=$2 for share`, [
+          actor.orgId,
+          actor.userId,
+        ]);
+        if (!member.rows.length) deny();
+        const hosts = await tx.query<{
+          id: string;
+          state: DockerHostSummary["state"];
+          created_at: Date | string;
+          last_seen_at: Date | string | null;
+          revoked_at: Date | string | null;
+          sandboxes: number;
+        }>(
+          `select h.id,
+            case when h.revoked_at is not null then 'revoked'
+              when h.installation_id is null then 'pending'
+              when h.hash is not null and h.registration_hash is null
+                and exists(select 1 from public.members m where m.org_id=h.org_id and m.user_id=h.owner_id)
+                and h.last_seen_at>=now()-interval '60 seconds' then 'online'
+              else 'offline' end as state,
+            h.created_at,h.last_seen_at,h.revoked_at,
+            (select count(*)::integer from public.sandboxes s
+              where s.org_id=h.org_id and s.docker_host_id=h.id
+                and s.provider='docker' and s.status<>'deleted') as sandboxes
+          from public.docker_hosts h where h.org_id=$1 order by h.created_at,h.id`,
+          [actor.orgId],
+        );
+        return hosts.rows.map((host) => ({
+          id: host.id,
+          name: null,
+          state: host.state,
+          createdAt: new Date(host.created_at).toISOString(),
+          lastSeenAt: host.last_seen_at === null ? null : new Date(host.last_seen_at).toISOString(),
+          revokedAt: host.revoked_at === null ? null : new Date(host.revoked_at).toISOString(),
+          sandboxes: host.sandboxes,
+        }));
+      });
+    },
     issueRegistration(actor: Actor) {
       return transaction(async (tx) => {
         await admin(tx, actor);
@@ -418,6 +476,30 @@ export function createDockerHostStore(sql: Sql, key: string) {
         ).rows[0];
         const host = await authenticate(tx, hostToken, installationId, hint?.bound_actor_id ?? undefined);
         await tx.query(`update public.docker_hosts set last_seen_at=now() where id=$1`, [host.id]);
+        // Older servers acknowledged failed startup without terminalizing the
+        // logical row. Reconcile that saved fact without replaying the machine.
+        const histories = (
+          await tx.query<StoredJob>(
+            `select j.* from public.docker_host_jobs j join public.sandboxes s on s.id=j.bound_sandbox_id
+             where j.host_id=$1 and j.outcome='failed' and j.bound_operation in ('create','bootstrap')
+             and s.provider='docker' and s.docker_host_id=$1 and s.docker_installation_id=$2
+             and s.status in ('starting','ready','running','stopping') order by j.position`,
+            [host.id, installationId],
+          )
+        ).rows;
+        for (const historical of histories) {
+          let verified: Sandbox | undefined;
+          try {
+            verified = await boundMachine(tx, historical, host, installationId);
+          } catch {
+            // Corrupt history is not authority and must not starve later
+            // valid facts or ordinary pending work.
+          }
+          if (verified) {
+            await startupFailed(tx, verified, historical.bound_operation);
+            break;
+          }
+        }
         const row = (
           await tx.query<StoredJob>(
             `select * from public.docker_host_jobs where host_id=$1 and outcome is null order by position limit 1`,
@@ -426,8 +508,10 @@ export function createDockerHostStore(sql: Sql, key: string) {
         ).rows[0];
         if (!row || row.request_id !== hint?.request_id) return null;
         if (row.bound_sandbox_id) {
+          let verified: Sandbox | undefined;
           try {
-            const logical = await sandbox(tx, row.bound_sandbox_id, host, installationId);
+            const logical = await boundMachine(tx, row, host, installationId);
+            verified = logical;
             await permission(
               tx,
               { userId: row.bound_actor_id ?? deny(), orgId: host.org_id },
@@ -439,6 +523,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
             await machine(tx, logical, row.bound_operation ?? deny());
           } catch (error) {
             if (!(error instanceof DockerHostDenied)) throw error;
+            if (verified) await startupFailed(tx, verified, row.bound_operation);
             await tx.query(
               `update public.docker_host_jobs set outcome='failed',completed_at=now() where request_id=$1 and outcome is null`,
               [row.request_id],
@@ -447,6 +532,33 @@ export function createDockerHostStore(sql: Sql, key: string) {
           }
         }
         return readJob(row);
+      });
+    },
+    expired(hostToken: string, installationId: string, result: { requestId: string }) {
+      return transaction(async (tx) => {
+        exact(result, ["requestId"]);
+        id(result.requestId);
+        const host = await authenticate(tx, hostToken, installationId);
+        const job =
+          (
+            await tx.query<StoredJob>(`select * from public.docker_host_jobs where host_id=$1 and request_id=$2`, [
+              host.id,
+              result.requestId,
+            ])
+          ).rows[0] ?? deny();
+        if (job.bound_operation !== "create" && job.bound_operation !== "bootstrap") deny();
+        const logical = await boundMachine(tx, job, host, installationId);
+        // Only the authenticated host's observed physical stop is evidence. SQL's
+        // clock may differ from the frozen host deadline and cannot prove exit.
+        await tx.query(
+          `update public.sandboxes set
+           status=case when status='failed' then status else 'stopped' end,
+           status_reason=case when status='failed' then status_reason else 'expired' end,
+           stopped_at=coalesce(stopped_at,now()),stop_requested_at=coalesce(stop_requested_at,now()),
+           lifecycle_generation=lifecycle_generation+case when status in ('starting','ready','running','stopping') then 1 else 0 end
+           where id=$1 and status in ('starting','ready','running','stopping','stopped','failed')`,
+          [logical.id],
+        );
       });
     },
     complete(
@@ -466,7 +578,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
               result.requestId,
             ])
           ).rows[0] ?? deny();
-        if (hint.bound_sandbox_id) await sandbox(tx, hint.bound_sandbox_id, host, installationId);
+        const logical = hint.bound_sandbox_id ? await boundMachine(tx, hint, host, installationId) : undefined;
         const jobs = await tx.query<StoredJob>(
           `select * from public.docker_host_jobs where host_id=$1 and request_id=$2 for update`,
           [host.id, result.requestId],
@@ -475,15 +587,17 @@ export function createDockerHostStore(sql: Sql, key: string) {
         if (job.outcome !== null && job.outcome !== result.outcome) deny();
         // A repeated same-outcome machine fact also repairs a logical transition
         // missed by an earlier server; conflicting facts still fail above.
+        if (result.outcome === "failed" && logical) await startupFailed(tx, logical, job.bound_operation);
         if (result.outcome === "completed" && job.bound_sandbox_id) {
           if (job.bound_operation === "stop")
             await tx.query(
-              `update public.sandboxes set status='stopped',stopped_at=now() where id=$1 and status='stopping'`,
+              `update public.sandboxes set status=case when status='failed' then status else 'stopped' end,
+               stopped_at=coalesce(stopped_at,now()) where id=$1 and status in ('stopping','failed','stopped')`,
               [job.bound_sandbox_id],
             );
           if (job.bound_operation === "delete")
             await tx.query(
-              `update public.sandboxes set status='deleted',deleted_at=coalesce(deleted_at,now())
+              `update public.sandboxes set status='deleted',status_reason=null,deleted_at=coalesce(deleted_at,now())
                where id=$1 and status in ('stopped','failed','deleted')`,
               [job.bound_sandbox_id],
             );

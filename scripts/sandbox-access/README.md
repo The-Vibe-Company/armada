@@ -57,8 +57,8 @@ assistant statements such as “PASS” are never execution evidence.
 
 The controller stops the parent, resumes the same conversation with `send`, and
 requires recall of a nonce/child ID **not supplied again** plus a new successful
-native read of that child. This proves retained conversation behavior, not the
-orchestrator's stronger no-text/native-session checkpoint proof. Boat remains
+native read of that child. This proves retained conversation behavior, not a
+no-text/native-session checkpoint proof. Boat remains
 best effort. Both parent proof turns and the control are audited for native actions:
 only the expected scoped methods and child-targeted inputs are accepted. Shell,
 file/write/read/search, dynamic/unknown tools and native action items such as

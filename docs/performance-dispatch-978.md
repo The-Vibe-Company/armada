@@ -59,4 +59,4 @@ Post deployed SHA/full JSON on #978; confirm cleanup.deleted=true. One disposabl
 Modal × Codex launch, as before. This diagnostic PR deliberately does not rewrite
 millisecond scaffolding in pursuit of a misattributed200ms. Use staging phases
 to choose any further real overhead reduction; launch-to-ready phases are next.
-No migrations, orchestrator-specific work or production operations.
+No migrations or production operations.

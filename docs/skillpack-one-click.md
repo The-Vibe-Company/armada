@@ -71,7 +71,7 @@ This slice intentionally does not implement a speculative callback or token exch
 1. Coordinator: agree and deliver the generic Skillpack contract below in its own repo.
 2. Armada API: durable, expiring, one-use connection attempts; PKCE exchange;
    encrypted credential persistence; revocation/rotation and recovery; enable the
-   capability only when configured. No orchestrator dependency.
+   capability only when configured.
 3. Armada dashboard: Connect/Cancel/Reconnect states in Build > Skills, callback
    result UX, optional admin-only org sharing, and end-to-end coverage.
 

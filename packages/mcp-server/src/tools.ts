@@ -46,7 +46,7 @@ import {
   type Visibility,
 } from "@armada/core/server";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { CallToolRequestSchema, type CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import * as z from "zod";
 import { validateProviderResourceObservation } from "../../core/src/resource-validation.ts";
 import { apiFailureCode } from "./api-failure.ts";
@@ -56,14 +56,11 @@ import { CREDENTIAL_BINDING_GUIDANCE } from "./credential-binding.ts";
 import { DataError, type SandboxView, type ScopedData } from "./data.ts";
 import { redactForLog } from "./log.ts";
 import { isPrivateModelEvent } from "./model-usage.ts";
-import type { OrchestratorPair } from "./orchestrator-activation.ts";
-import type { OrchestratorRuntime } from "./orchestrator-runtime.ts";
 import type { GoldenProviderMetadata } from "./provider-metadata.ts";
 import { summarizeResourceHistory } from "./resource-advice.ts";
 import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
-import type { RuntimeMcp } from "./runtime-mcp.ts";
 import type { RuntimeResume } from "./runtime-resume.ts";
 import { sandboxActivity } from "./sandbox-activity.ts";
 import { extendSandbox } from "./sandbox-extend.ts";
@@ -79,7 +76,6 @@ import { recordStopDispatch } from "./work-preservation.ts";
 
 /** Everything a tool call may use, for one authenticated request. */
 export interface ToolContext {
-  runtimeMcp?: RuntimeMcp;
   runtimeGitHub?: RuntimeGitHub;
   runtimeResume?: RuntimeResume;
   runtimeCheckpoint?: RuntimeCheckpoint;
@@ -89,8 +85,6 @@ export interface ToolContext {
   templates?: TemplateService;
   skillDefaults?: SkillDefaultsService;
   applicationVault?: ApplicationVault;
-  orchestratorPairs?: readonly OrchestratorPair[];
-  orchestrators?: OrchestratorRuntime;
   caller: Caller;
   data: ScopedData;
   /** The launch's credentials: the caller's own for the harness, else the golden's org's. Decrypted in this process. */
@@ -342,45 +336,6 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         "what the agent did, send for the next instruction, and stop when done. Ids are Armada sandbox ids.",
     },
   );
-  // Intercept only the retired public names while installing the SDK's own dispatch
-  // handler. They are not registered/discoverable tools; all other calls keep SDK
-  // validation and dispatch. The private delegated sandbox gateway is separate.
-  const retiredTools = new Set(
-    [
-      "capabilities",
-      "create",
-      "list",
-      "detail",
-      "events",
-      "message",
-      "steer",
-      "stop",
-      "resume",
-      "recover",
-      "reconcile",
-      "connections_list",
-      "connections_add",
-      "connections_remove",
-    ].map((action) => `orchestrator_${action}`),
-  );
-  const setRequestHandler = server.server.setRequestHandler.bind(server.server);
-  server.server.setRequestHandler = (schema, handler) => {
-    setRequestHandler(schema, (request, extra) => {
-      const call = CallToolRequestSchema.safeParse(request);
-      if (call.success && retiredTools.has(call.data.params.name)) {
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text" as const,
-              text: "Orchestrator tools have been removed. Launch an ordinary sandbox with --armada-access instead; see docs/sandbox-armada-access.md (#1002).",
-            },
-          ],
-        };
-      }
-      return handler(request, extra);
-    });
-  };
   const { caller, data } = context;
   const orgIds = caller.orgs.map((org) => org.orgId);
 
@@ -1351,32 +1306,11 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       if (!target || target !== args.prompt_id)
         throw new ToolError("conflict", "Report only the latest finished turn, using its prompt id.");
       const report = await readStatus(provider, data.sandboxes, found, { promptId: target, now: context.now() });
-      if (!report.prompt || report.prompt.state !== "finished")
+      if (report.prompt?.state !== "finished")
         throw new ToolError("conflict", "Report only the latest finished turn, using its prompt id.");
       if (!data.sandboxes.reportTaskOutcome) throw new ToolError("conflict", "Task reporting is unavailable.");
       await data.sandboxes.reportTaskOutcome(args.id, found.taskPromptId!, args.outcome, found.lifecycleGeneration);
       return { id: args.id, taskOutcome: args.outcome };
-    },
-  );
-
-  tool(
-    "runtime_mcp_refresh",
-    {
-      title: "Configure enrolled runtime MCP connections",
-      description:
-        "Owner-only explicit remote MCP setup through the current enrolled Boat Codex runtime. No native provider hooks. Selection is fixed per sandbox; reauthorize after each resume. Configuration changes within an epoch require checkpoint/stop/resume.",
-      input: { id, connections: z.array(z.string().uuid()).min(1).max(32) },
-      output: {
-        id: z.string(),
-        runtime: z.object({ kind: z.literal("armada"), epoch: z.string() }),
-        revision: z.string(),
-        connections: z.array(z.string()),
-        servers: z.array(z.string()),
-      },
-    },
-    async (args) => {
-      if (!context.runtimeMcp) throw new ToolError("unsupported", "Runtime MCP is unavailable.");
-      return context.runtimeMcp.refresh(caller, args);
     },
   );
 

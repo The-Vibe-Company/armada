@@ -175,6 +175,9 @@ jobs:
           overwrite: true
 
   staging-smoke:
+    permissions:
+      contents: read
+      actions: read
     name: Smoke exact release commit on staging
     needs: [check, binary]
     if: ${{ !cancelled() && vars.RELEASE_SYNCED_DEPLOYS == 'true' && vars.STAGING_GATED_DEPLOYS == 'true' && needs.check.outputs.publish == 'true' && needs.check.result == 'success' && needs.binary.result == 'success' }}

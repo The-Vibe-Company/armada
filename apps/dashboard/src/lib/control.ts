@@ -562,8 +562,8 @@ export function createRoutineControl(options: ArmadaApiOptions) {
     async list(org: string) {
       const payload = await post("list", { org });
       if (!Array.isArray(payload.items)) throw new ControlError("The Armada server sent no routine list.");
+      // A routine off the contract is left out, never the whole list (#1398).
       const items = payload.items.map(parseRoutine);
-      if (items.some((x) => !x)) throw new ControlError("The Armada server sent an unexpected routine.");
       return items.filter((x): x is NonNullable<typeof x> => !!x && x.orgId === org && x.status !== "deleted");
     },
     create: (request: RoutineInput & { org: string }) => saved("create", request),
@@ -573,7 +573,6 @@ export function createRoutineControl(options: ArmadaApiOptions) {
       const payload = await post("history", { org, id });
       if (!Array.isArray(payload.items)) throw new ControlError("The Armada server sent no run history.");
       const items = payload.items.map(parseRoutineRun);
-      if (items.some((x) => !x)) throw new ControlError("The Armada server sent unexpected run history.");
       return items.filter((x): x is NonNullable<typeof x> => !!x);
     },
   };

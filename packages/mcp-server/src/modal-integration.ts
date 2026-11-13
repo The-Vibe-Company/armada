@@ -173,7 +173,6 @@ export async function createModalIntegration(options: {
       userId: context.caller.userId,
       visibility: context.target.visibility,
       binding,
-      ...(context.caller.orchestratorCleanup ? { cleanup: context.caller.orchestratorCleanup } : {}),
     };
     if (!storedReads)
       await options.sql.query(

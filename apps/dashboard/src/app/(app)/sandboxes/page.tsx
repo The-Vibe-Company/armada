@@ -30,6 +30,7 @@ import {
   type ListedSandbox,
   machineSizeLabel,
   sandboxName,
+  skippedRowsNote,
 } from "@/lib/sandbox-access";
 import { costFigure } from "@/lib/sandbox-cost";
 import {
@@ -62,7 +63,7 @@ async function SandboxesContent({ searchParams }: Props) {
   const filters = parseSandboxFilters(await searchParams);
   const supabase = await createClient();
   const selected = await selectedOrganization();
-  const [{ rows, total, inventoryTotal, facets }, directory, setup] = await Promise.all([
+  const [{ rows, total, inventoryTotal, skipped, facets }, directory, setup] = await Promise.all([
     listSandboxes(supabase, filters, viewer.id),
     listMemberships(supabase, viewer.id)
       .then((items) => items.filter((item) => item.org.id === selected?.org.id))
@@ -80,7 +81,7 @@ async function SandboxesContent({ searchParams }: Props) {
   const filtered = hasSandboxFilters(filters);
   // An organization without a sandbox provider goes to Settings to connect one; one with sandboxes to manage stays here.
   const setupPending = selected !== null && setup?.state === "pending";
-  if (setupPending && !filtered && inventoryTotal === 0) redirect(PROVIDER_SETTINGS_PATH);
+  if (setupPending && !filtered && inventoryTotal === 0 && skipped === 0) redirect(PROVIDER_SETTINGS_PATH);
 
   const launchAction = setupPending ? (
     <Button asChild>
@@ -148,6 +149,12 @@ async function SandboxesContent({ searchParams }: Props) {
           ) as Record<Facet, FacetOption[]>
         }
       />
+
+      {skipped > 0 && (
+        <p role="status" className="text-sm text-muted-foreground">
+          {skippedRowsNote(skipped)}
+        </p>
+      )}
 
       {rows.length === 0 ? (
         total > 0 ? (

@@ -5,6 +5,7 @@ import { createSqlData, type SandboxView } from "./data.ts";
 import { createRuntimeAgent } from "./runtime-agent.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
+import type { RuntimeMcp } from "./runtime-mcp.ts";
 
 export interface RuntimeResumeInput {
   id: string;
@@ -54,6 +55,7 @@ export function createRuntimeResume(
   key: string,
   commands: ReturnType<typeof createRuntimeCommands>,
   prepare?: RuntimeResumePrepare,
+  prepareMcp?: RuntimeMcp["prepare"],
 ) {
   const authority = createRuntimeEnrolments(sql, key);
   const read = async (tx: Sql, id: string, request: string) =>
@@ -267,6 +269,13 @@ export function createRuntimeResume(
               [found.id, requestId],
             );
           });
+          const existing = await commands.result(
+            caller.userId,
+            found.id,
+            `resume_${requestId}`,
+            admitted.op.target_epoch,
+          );
+          if (existing.state === "missing") await prepareMcp?.(caller, found.id, signal);
           const accepted = await agent.prompt(
             {
               sandboxId: found.providerSandboxId,
@@ -276,6 +285,7 @@ export function createRuntimeResume(
               signal,
             },
             `resume_${requestId}`,
+            admitted.op.target_epoch,
           );
           if (accepted.conversationId !== conversation || !accepted.promptId)
             throw new VaultError("conflict", "Runtime did not continue the restored conversation.");

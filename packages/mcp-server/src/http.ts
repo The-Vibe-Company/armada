@@ -33,7 +33,6 @@ import type { ProviderMetadataFor } from "./provider-metadata.ts";
 import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
-import type { RuntimeMcp } from "./runtime-mcp.ts";
 import type { RuntimeResume } from "./runtime-resume.ts";
 import { createArmadaServer } from "./tools.ts";
 
@@ -43,11 +42,7 @@ export const HEALTH_PATH = "/healthz";
 /** A handler for some paths: null for every other one. */
 export type Route = (request: Request) => Promise<Response | null>;
 
-import type { OrchestratorPair } from "./orchestrator-activation.ts";
-import type { OrchestratorRuntime } from "./orchestrator-runtime.ts";
-
 export interface HandlerOptions {
-  runtimeMcp?: RuntimeMcp;
   runtimeGitHub?: RuntimeGitHub;
   runtimeResume?: RuntimeResume;
   runtimeCheckpoint?: RuntimeCheckpoint;
@@ -56,8 +51,6 @@ export interface HandlerOptions {
   storedProviderFor?: (target: ProviderTarget, caller: { userId: string }) => Promise<Provider>;
   /** Runtime readiness of the serving database pool; no credentials in the result. */
   ready?: () => Promise<boolean>;
-  orchestratorPairs?: readonly OrchestratorPair[];
-  orchestrators?: OrchestratorRuntime;
   modelAuth?: ModelAuthOwnership;
   publicUrl: string;
   /** Enabled social login providers. Empty by default: email login always works. */
@@ -90,7 +83,7 @@ export interface HandlerOptions {
     binding: ModalBinding,
     context: {
       target: ProviderTarget;
-      caller: { userId: string; orchestratorCleanup?: import("@armada/core").OrchestratorCleanupScope };
+      caller: { userId: string };
       credentialScope: "user" | "org";
     },
   ) => Provider | Promise<Provider>;
@@ -178,7 +171,6 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
         ...(options.runtimeCheckpoint ? { runtimeCheckpoint: options.runtimeCheckpoint } : {}),
         ...(options.runtimeResume ? { runtimeResume: options.runtimeResume } : {}),
         ...(options.runtimeGitHub ? { runtimeGitHub: options.runtimeGitHub } : {}),
-        ...(options.runtimeMcp ? { runtimeMcp: options.runtimeMcp } : {}),
         ...(options.skillDefaults ? { skillDefaults: options.skillDefaults } : {}),
         ...(options.templates ? { templates: options.templates } : {}),
         ...(options.applicationVault ? { applicationVault: options.applicationVault } : {}),
@@ -206,8 +198,6 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
         ...(options.launch ? { launch: options.launch } : {}),
         ...(options.goldenAdoption ? { goldenAdoption: options.goldenAdoption } : {}),
         ...(options.goldenBuilds ? { goldenBuilds: options.goldenBuilds } : {}),
-        ...(options.orchestrators ? { orchestrators: options.orchestrators } : {}),
-        ...(options.orchestratorPairs ? { orchestratorPairs: options.orchestratorPairs } : {}),
       },
       VERSION,
     );

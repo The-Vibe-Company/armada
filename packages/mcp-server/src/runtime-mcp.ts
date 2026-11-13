@@ -1,4 +1,4 @@
-import { createHash, createHmac } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import {
   createSqlMcpLaunchPort,
   createSqlMcpLeasePort,
@@ -8,8 +8,7 @@ import {
 } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import { createSqlData } from "./data.ts";
-import { createRuntimeAgent } from "./runtime-agent.ts";
-import type { createRuntimeCommands } from "./runtime-commands.ts";
+import { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -38,7 +37,7 @@ export function createRuntimeMcp(options: {
       throw new VaultError("invalid", "Select 1–32 MCP connection UUIDs.");
     return [...new Set(values.map((v) => v.toLowerCase()))].sort();
   };
-  async function connections(db: Sql, caller: Caller, org: string, selected: string[]) {
+  async function connections(db: Sql, caller: Pick<Caller, "userId">, org: string, selected: string[]) {
     const registry = createSqlMcpRegistry(db, key),
       result = [];
     for (const id of selected) {
@@ -66,7 +65,7 @@ export function createRuntimeMcp(options: {
     const row = (
       await db.query<{ mcp_generation: number; expires_at: string | Date }>(
         `select mcp_generation,expires_at from public.sandboxes s
-      where s.id=$1 and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id) and s.status in ('ready','running') and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>now()
+      where s.id=$1 and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id) and (s.status in ('ready','running') or (s.status='starting' and s.activity_lease_id is not null and s.activity_until>now())) and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>now()
       and not exists(select 1 from public.runtime_checkpoints p where p.sandbox_id=s.id and p.epoch=$2)`,
         [id, epoch],
       )
@@ -114,34 +113,71 @@ export function createRuntimeMcp(options: {
     const configuration = { revision: hash(JSON.stringify([epoch, current.mcp_generation, servers])), servers };
     return { configuration, grants, expiresAt: new Date(current.expires_at) };
   }
-  async function refresh(caller: Caller, input: { id: string; connections: string[] }) {
-    const s = await owner(caller, input.id),
-      selected = ids(input.connections);
-    const prepared = await authority.withOwner(s.id, s.ownerId, async (tx, live) => {
+  const selected = async (db: Sql, id: string) =>
+    (
+      await db.query<{ connection_id: string }>(
+        "select connection_id from public.mcp_bindings where sandbox_id=$1 order by connection_id",
+        [id],
+      )
+    ).rows.map((r) => r.connection_id);
+  const receipt = (
+    s: Awaited<ReturnType<typeof owner>>,
+    epoch: string,
+    p: Awaited<ReturnType<typeof plan>>,
+    selection: string[],
+  ) => ({
+    id: s.id,
+    runtime: { kind: "armada" as const, epoch },
+    revision: p.configuration.revision,
+    connections: selection,
+    servers: Object.keys(p.configuration.servers),
+  });
+  async function prepare(caller: Caller, id: string, signal?: AbortSignal) {
+    signal?.throwIfAborted();
+    const s = await owner(caller, id);
+    const initial = await authority.withOwner(s.id, s.ownerId, async (tx, live) => {
       await scope(tx, s.id, live.epoch);
-      await connections(tx, caller, s.orgId, selected);
-      const bound = (
-        await tx.query<{ connection_id: string }>(
-          "select connection_id from public.mcp_bindings where sandbox_id=$1 order by connection_id",
-          [s.id],
-        )
-      ).rows.map((r) => r.connection_id);
-      if (bound.length && JSON.stringify(bound) !== JSON.stringify(selected))
-        throw new VaultError("conflict", "Runtime MCP selection is fixed; use the same connections in this sandbox.");
-      if (!bound.length) await createSqlMcpLaunchPort(tx, createSqlMcpRegistry(tx, key)).bind(s.id, selected);
-      const p = await plan(tx, caller, s, live.epoch, selected),
-        leases = createSqlMcpLeasePort(tx);
-      const receipt = (
-        await tx.query<{ physical_generation: string; revision: string }>(
-          "select physical_generation,revision from public.mcp_bootstraps where sandbox_id=$1",
+      const selection = await selected(tx, s.id);
+      const previous = (
+        await tx.query<{ physical_generation: string; revision: string; configured: boolean }>(
+          "select physical_generation,revision,configured from public.mcp_bootstraps where sandbox_id=$1",
           [s.id],
         )
       ).rows[0];
-      if (receipt?.physical_generation === `runtime:${live.epoch}` && receipt.revision !== p.configuration.revision)
-        throw new VaultError(
-          "conflict",
-          "MCP configuration changed; checkpoint, stop and resume before reconfiguring this runtime.",
-        );
+      // Untouched model-only workers do not need a new guest capability or RPC.
+      if (!selection.length && !previous) return undefined;
+      const p = await plan(tx, caller, s, live.epoch, selection);
+      let cached =
+        previous?.configured === true &&
+        previous.physical_generation === `runtime:${live.epoch}` &&
+        previous.revision === p.configuration.revision;
+      for (const server of Object.values(p.configuration.servers))
+        if (!(await createSqlMcpLeasePort(tx).validate(hash(server.headers.Authorization.slice(7)), "tools")))
+          cached = false;
+      return { epoch: live.epoch, selection, cached: cached ? receipt(s, live.epoch, p, selection) : undefined };
+    });
+    if (!initial || initial.cached) return initial?.cached;
+    // Feature evidence is bound to this epoch before any private configuration.
+    const healthCommand = { version: 1 as const, sandboxId: s.id, requestId: randomUUID(), op: "health" as const };
+    const health = await options.commands.call(s.ownerId, healthCommand, {
+      expectedEpoch: initial.epoch,
+      ...(signal ? { signal } : {}),
+    });
+    const evidence = health.body.result as { ready?: unknown; generation?: unknown; mcpVersion?: unknown } | undefined;
+    if (
+      health.status !== 200 ||
+      health.body.version !== 1 ||
+      health.body.requestId !== healthCommand.requestId ||
+      health.epoch !== initial.epoch ||
+      evidence?.ready !== true ||
+      evidence.generation !== initial.epoch ||
+      evidence.mcpVersion !== 1
+    )
+      throw new VaultError("unavailable", "Runtime MCP v1 requires an updated runtime artifact.");
+    const prepared = await authority.withOwner(s.id, s.ownerId, async (tx, live) => {
+      if (live.epoch !== initial.epoch) return deny();
+      const p = await plan(tx, caller, s, live.epoch, initial.selection),
+        leases = createSqlMcpLeasePort(tx);
       for (const [name, server] of Object.entries(p.configuration.servers)) {
         const tokenHash = hash(server.headers.Authorization.slice(7)),
           connectionId = name.slice(7).replaceAll("_", "-");
@@ -163,51 +199,76 @@ export function createRuntimeMcp(options: {
         if (
           !stored ||
           stored.runtime_epoch !== live.epoch ||
-          stored.generation !== p.grants.find((g) => g.id === connectionId)?.generation
+          stored.generation !== p.grants.find((g) => g.id === connectionId)?.generation ||
+          !(await leases.validate(tokenHash, "tools"))
         )
           return deny();
-        if (!(await leases.validate(tokenHash, "tools"))) return deny();
       }
       await tx.query(
         `insert into public.mcp_bootstraps(sandbox_id,physical_generation,revision,configured) values($1,$2,$3,false)
         on conflict(sandbox_id) do update set physical_generation=excluded.physical_generation,revision=excluded.revision,configured=false`,
         [s.id, `runtime:${live.epoch}`, p.configuration.revision],
       );
-      return { ...p, epoch: live.epoch };
+      const wire = {
+        version: 1 as const,
+        sandboxId: s.id,
+        requestId: `mcp_${live.epoch}_${p.configuration.revision}`,
+        op: "configureMcp" as const,
+        configuration: p.configuration,
+      };
+      // Serialize preparation AND enqueue, not network waits. Concurrent updated
+      // grants can never queue an older snapshot behind a newer configuration.
+      const local: Sql = { query: tx.query.bind(tx), transaction: async (work) => work(local) };
+      signal?.throwIfAborted();
+      await createRuntimeCommands(createRuntimeEnrolments(local, key), key).enqueue(s.ownerId, wire, live.epoch);
+      return { ...p, epoch: live.epoch, wire };
     });
-    if (!s.model || !s.reasoningEffort) return deny();
-    const agent = createRuntimeAgent(options.commands, {
-      ownerId: s.ownerId,
-      sandboxId: s.id,
-      providerSandboxId: s.providerSandboxId,
-      cwd: s.repositoryDir ? `/home/user/${s.repositoryDir}` : "/home/user",
-      defaults: { model: s.model, reasoningEffort: s.reasoningEffort },
+    const acknowledged = await options.commands.call(s.ownerId, prepared.wire, {
+      expectedEpoch: prepared.epoch,
+      ...(signal ? { signal } : {}),
     });
-    await agent.configureMcp(
-      prepared.configuration,
-      `mcp_${prepared.epoch}_${prepared.configuration.revision}`,
-      prepared.epoch,
-    );
+    if (
+      acknowledged.status !== 200 ||
+      acknowledged.body.version !== 1 ||
+      acknowledged.body.requestId !== prepared.wire.requestId ||
+      (acknowledged.body.result as { revision?: unknown } | undefined)?.revision !== prepared.configuration.revision
+    )
+      throw new VaultError("unavailable", "Runtime MCP configuration was not acknowledged.");
     await authority.withOwner(s.id, s.ownerId, async (tx, live) => {
-      const p = await plan(tx, caller, s, live.epoch, selected);
+      const p = await plan(tx, caller, s, live.epoch, initial.selection);
       if (live.epoch !== prepared.epoch || JSON.stringify(p.configuration) !== JSON.stringify(prepared.configuration))
         return deny();
       for (const server of Object.values(p.configuration.servers))
         if (!(await createSqlMcpLeasePort(tx).validate(hash(server.headers.Authorization.slice(7)), "tools")))
           return deny();
-      const receipt = await tx.query(
+      const written = await tx.query(
         "update public.mcp_bootstraps set configured=true where sandbox_id=$1 and physical_generation=$2 and revision=$3 returning sandbox_id",
         [s.id, `runtime:${live.epoch}`, p.configuration.revision],
       );
-      if (!receipt.rows.length) return deny();
+      if (!written.rows.length) return deny();
     });
-    return {
-      id: s.id,
-      runtime: { kind: "armada" as const, epoch: prepared.epoch },
-      revision: prepared.configuration.revision,
-      connections: selected,
-      servers: Object.keys(prepared.configuration.servers),
-    };
+    return receipt(s, prepared.epoch, prepared, initial.selection);
   }
-  return { refresh, preflight };
+  const launch = createSqlMcpLaunchPort(sql, createSqlMcpRegistry(sql, key));
+  const connectionLifecycle = {
+    ...launch,
+    async validate(actor: Parameters<typeof launch.validate>[0], selection: string[], visibility: "private" | "org") {
+      if (selection.length > 32) throw new VaultError("invalid", "Select at most 32 remote MCP connections.");
+      await launch.validate(actor, selection, visibility);
+      await connections(sql, actor, actor.orgId, selection);
+    },
+    async prepare(
+      _provider: unknown,
+      sandbox: { id: string },
+      actor: { userId: string; orgId: string; role: "admin" | "member" },
+      signal?: AbortSignal,
+    ) {
+      await prepare(
+        { userId: actor.userId, via: "service", orgs: [{ orgId: actor.orgId, role: actor.role }] },
+        sandbox.id,
+        signal,
+      );
+    },
+  };
+  return { prepare, preflight, connections: connectionLifecycle };
 }

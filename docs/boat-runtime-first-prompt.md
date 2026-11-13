@@ -23,8 +23,10 @@ new launches does not remove existing runtime read/cleanup routing.
 
 Launch through `POST /api/v1/sandbox/launch-runtime-v1` with
 `runtimeVersion:1`, `boatRuntime:true`, `provider:"boat"`, `harness:"codex"`,
-authorized org/golden/account and initial prompt. Select empty connections and
-skip skill defaults. Ordinary `sandbox/launch` does not accept this selection;
+authorized org/golden/account and initial prompt. Skip skill defaults; remote
+HTTP/SSE MCP uses the standard `connections` selection or registry
+`defaultForLaunch` defaults as described below. Ordinary `sandbox/launch` does not
+accept runtime selection;
 there is no CLI launch flag. The versioned route fails closed on old servers.
 
 The immutable `sandboxes.boat_runtime` decision is recorded at insert. Persisted
@@ -36,11 +38,13 @@ only ticket/public artifact metadata reaches private SSH stdin. Model configurat
 goes through encrypted enrolment, not fork environment or host arguments.
 
 Use the golden checkout as-is: no pull/init replay or native cwd/CLI probe.
-Launch-time MCP/skills/helpers, managed-parent/toolbox access and unsupported
-extras refuse before allocation. Steer, interrupt, exec, new conversations and
+Launch-time skills/helpers, scoped toolbox access and unsupported extras refuse
+before allocation; remote HTTP/SSE MCP uses the normal launch/turn lifecycle.
+Steer, interrupt, exec, new conversations and
 model/effort overrides are not supported on this lane. Follow-ups use the existing
-conversation and launch model/effort. GitHub and remote MCP require explicit
-runtime setup below, not native setup or launch defaults. Claude, readable-variable/
+conversation and launch model/effort. GitHub requires explicit runtime refresh
+below; remote MCP prepares automatically
+from launch bindings/defaults, never native setup. Claude, readable-variable/
 secret parity, usage/cost and subscription lifecycle acceptance are not established
 by the model-only milestone.
 
@@ -108,7 +112,7 @@ Unknown activation/bootstrap before a live epoch is **not retried**; inspect/sto
 Failed owned dispatch requests cleanup; live uncertainty retains its bounded lease.
 No general repair/rebind service or native fallback is implied.
 
-## Explicit GitHub and remote MCP
+## GitHub refresh and automatic remote MCP
 
 After runtime readiness, the owner calls `github_refresh` /
 `POST /api/v1/github/refresh` with `{"id":"SANDBOX_UUID"}`. The private
@@ -123,26 +127,36 @@ Checkpoint, stop, disconnect and new enrolment invalidate authority. **Refresh
 again after resume**; old wrappers are redaction-only before restore. A positive
 credential count alone does not prove a successful GitHub command.
 
-For existing remote HTTP/SSE registry connections, call `runtime_mcp_refresh` or:
+Remote HTTP/SSE MCP uses the existing `connections` launch field or registry
+`defaultForLaunch` defaults. Omit the field to use defaults, or provide the exact
+connected IDs (at most 32); explicit empty selection disables MCP. Selected bindings
+freeze at launch; preparation runs automatically before the first, later and first
+resumed prompt. There is **no** separate user setup/repair option or public
+`runtime_mcp_refresh` tool/endpoint. Local pinned stdio launchers are unsupported;
+unsupported defaults/selections refuse before forking, not after allocation or by
+falling back to native setup. Arbitrary URLs/headers are not launch inputs.
 
-```text
-POST /api/v1/sandbox/configure-mcp-runtime-v1
-{"id":"SANDBOX_UUID","connections":["CONNECTED_MCP_UUID"]}
-```
+Only sealed gateway capabilities reach the runtime, never upstream grants.
+Current registry/gateway membership, personal/org visibility, connection state and
+expiry still govern access. Lease authority binds the current runtime epoch/
+lifecycle; checkpoint/session replacement durably revokes it, including on older
+gateway replicas. Resume boots with empty MCP defaults, then automatic preparation
+reauthorizes its fixed bindings before inference. MCP-v1 guest health is required;
+old artifacts refuse before configuration.
 
-Select 1–32 connected IDs under current owner/member/org/personal authorization.
-Existing bindings must match; this is not an editor for an established binding
-set or arbitrary URLs/headers. Local pinned stdio MCP is not supported here.
-Only sealed gateway capabilities reach Codex, never upstream grants. The safe
-receipt identifies epoch/revision/connections/generated server names. Identical
-input can reconcile delivery across server restart.
+Preparation and command enqueue commit together under the sandbox/epoch fence;
+network waits happen afterwards. Concurrent grant updates cannot enqueue an older
+snapshot behind a newer one or hide stale guest state behind a cached ACK.
+Unchanged configuration reuses a verified receipt without RPC. OAuth access refresh
+remains gateway-owned; reconnect/definition-generation changes refresh next turn
+automatically, and deleted bindings clear the guest snapshot. Completed turn replay
+does not reconfigure or start another turn.
 
-MCP configuration is fixed within an epoch. Definition/grant-generation changes
-need checkpoint/stop/resume and explicit refresh; ordinary server-owned OAuth
-access-token refresh does not. Disconnect/disable/membership revocation acts
-immediately. Checkpoint intent and replacement revoke old leases, including on
-older rolling-deploy replicas. Resume starts with empty MCP defaults; refresh in
-the new epoch rather than trusting restored thread configuration.
+`launch/options.boatRuntime.mcpVersion:2` identifies this automatic lifecycle;
+the guest RPC capability remains v1. `POST /api/v1/sandbox/mcp-preflight-v1` with
+`{runtimeVersion:1,org,connections:[...]}` checks connected HTTP/SSE selection
+before allocation and returns `mcpReady:true`; it is not a configuration endpoint.
+Older check/server combinations fail before allocation, not a compatibility mode.
 
 ## Diagnostics and recovery
 
@@ -189,32 +203,59 @@ Require exact non-partial assistant answers, terminal finished events,
 Final `resume:"verified"` is required; metadata/health alone is not a pass.
 `--followup`, `--checkpoint` or no flag run narrower checks, not resume parity.
 
-Prefer a combined check when also accepting GitHub/MCP, rather than allocating
-separate test sandboxes. Set `ARMADA_RUNTIME_GITHUB_REPOSITORY` to an owner-accessible
-golden repository (Git and gh required). For MCP additionally set connection UUID
-`ARMADA_RUNTIME_MCP_CONNECTION_ID`, exact `ARMADA_RUNTIME_MCP_TOOL`, non-secret
-`ARMADA_RUNTIME_MCP_ARGS_JSON` (default `{}`), and stable result substring
-`ARMADA_RUNTIME_MCP_EXPECT` (not sent to the model). Choose read-only operations.
+Prefer a combined check when accepting GitHub/MCP, rather than allocating separate
+test sandboxes. Set `ARMADA_RUNTIME_GITHUB_REPOSITORY` to an owner-accessible golden
+repository (Git and gh required). For MCP choose an existing connected HTTP/SSE
+connection **already marked `defaultForLaunch` on staging**. Set its UUID in
+`ARMADA_RUNTIME_MCP_CONNECTION_ID`, exact read-only `ARMADA_RUNTIME_MCP_TOOL`,
+non-secret `ARMADA_RUNTIME_MCP_ARGS_JSON` (default `{}`, prefer a no-argument tool),
+and stable result substring `ARMADA_RUNTIME_MCP_EXPECT` (not sent to the model).
 
 ```sh
 ARMADA_RUNTIME_SMOKE=one_real_boat_launch \
 bun scripts/check-boat-runtime.ts --mcp --github --resume
 ```
 
-This uses **one allocation, one resume activation, four prompts, two stops**.
-Preflight all capabilities, registry health and GitHub access before allocation.
-Epoch 1 teaches memory then explicitly configures GitHub/MCP and exercises both.
-After checkpoint/stop/resume, the third prompt proves retained memory; current
-GitHub status must initially be unconfigured. Refresh both under different new
-epoch revisions; the fourth prompt must independently succeed at both operations.
-Finally checkpoint/stop and read all four archived histories.
+The check deliberately omits explicit connection selection to prove normal defaults,
+not a setup endpoint. Budget **one allocation, one same-VM activation (two host
+starts), four prompts and two stops**, with no activation/allocation retry. Require
+current merged schema including runtime MCP epochs, matching artifact-bearing
+server/runtime image and existing opt-in/resume/GitHub settings. No manual artifact
+publication or deployment in flight. Preflight all capability versions, connection
+health/default metadata and GitHub access before allocation.
 
-Require `resume:"verified"`, `githubAfterResume:"verified"`,
-`mcpAfterResume:"verified"`; GitHub proof needs that fourth prompt's successful
-read-only `gh api` command plus current revision and positive credentialRequests.
-MCP proof needs that prompt's selected server/exact tool/exact JSON arguments,
-successful result and expected substring. An earlier tool result or assistant
-assertion is insufficient. `--github`/`--mcp` alone check only a running epoch.
-Retain printed UUIDs on failure, stop known compute and reconcile, never create
-or activate again to guess. These are acceptance procedures, not a statement that
-all current deployed features or launch timing have passed.
+1. First prompt calls MCP, teaches a random token and gives a separate exact ACK,
+   proving preparation preceded first inference.
+2. Follow-up calls MCP again, performs the explicit GitHub check and recalls memory
+   without receiving it again. No MCP setup action is sent by the client.
+3. Checkpoint/stop; re-read its receipt and both histories while stopped.
+4. Resume the same VM/conversation into the next epoch. The first resumed prompt
+   calls MCP and recalls memory, proving automatic new-epoch preparation.
+5. Explicit GitHub refresh/check in prompt4; MCP works without a setup call.
+   Checkpoint/stop and read all four histories and the same receipt.
+
+Require exact answers/finished events from `logs/read.source:"armada-runtime"`,
+complete checkpoint watermark=acknowledgedSequence, final `resume:"verified"`,
+`githubAfterResume:"verified"` and `mcpAfterResume:"verified"`. GitHub proof needs
+the current prompt's successful read-only gh command, new epoch/revision and
+positive credentialRequests; old GitHub authority must initially be unconfigured.
+Each MCP proof needs that prompt's `tools[].server`, exact tool/JSON arguments,
+`isError:false` and expected result substring, rechecked while stopped. Another
+server, prior prompt or assistant assertion cannot pass. Safe `mcpProof` names
+new epoch/prompt/connection/server/tool. Retain printed UUIDs on uncertainty;
+inspect/stop known compute, never allocate/activate again to guess.
+
+`--mcp --resume` without GitHub is a three-prompt lifecycle; `--mcp` alone is one
+activation/two prompts, not resume parity. Flags select acceptance checks, not
+product behavior switches. Offline SDK/native evidence is not real staging
+model/MCP acceptance. Current deployed parity remains coordinator-owned.
+
+## Cutover boundary
+
+The [owner parity table](https://github.com/The-Vibe-Company/armada/issues/1161#issuecomment-6848248708)
+is the live gate: converge production-used MCP/tools, skills, usage/cost,
+subscriptions and Claude parity first. The owner flips staging, then production
+only after accepted staging proof. Native Boat deletion is a separate PR after
+one production day, not part of documentation consolidation. Do not add product
+modes/compatibility layers or automatically port unused native-only features;
+ask the owner which features are actually used. Modal keeps its existing tunnel.

@@ -8,6 +8,15 @@
 export { type ApplicationVault, type ApplicationVaultActor, createApplicationVault } from "./application-vault.ts";
 export { boatSnapshotName } from "./boat-snapshot-name.ts";
 export {
+  type AuthorizeDelegatedAccount,
+  DelegatedAuthority,
+  DelegatedAuthorityDenied,
+  type DelegatedAuthorityTransport,
+  type DelegatedPrincipal,
+  type DelegatedRequest,
+  newDelegatedEpochSecret,
+} from "./delegated-authority.ts";
+export {
   githubAppJwt,
   type InstallationToken,
   mintInstallationToken,
@@ -35,16 +44,6 @@ export { GITHUB_TOKEN_PATTERN, scanGoldenSandbox } from "./golden-scan.ts";
 export * from "./golden-snapshot-retirement.ts";
 export { assertSqlGoldenMutation } from "./golden-store.ts";
 export * from "./index.ts";
-export {
-  type AuthorizeOrchestratorAccount,
-  type DelegatedOrchestrator,
-  type DelegatedRequest,
-  newOrchestratorEpochSecret,
-  OrchestratorAuthority,
-  OrchestratorAuthorityDenied,
-  type OrchestratorAuthorityTransport,
-} from "./orchestrator-authority.ts";
-export { reserveOrchestratorOperation } from "./orchestrator-operations.ts";
 export {
   installPrivateSkill,
   PRIVATE_SKILL_FAILURES,
@@ -79,6 +78,7 @@ export { createSkillCatalog } from "./skill-catalog.ts";
 export * from "./skill-defaults.ts";
 export { mergeSkillPins } from "./skill-merge.ts";
 export * from "./skillpack.ts";
+export { type PrivateDelegatedSshReceipt, sshDelegatedReceipt } from "./ssh-delegated-access.ts";
 export {
   type SshExecDeps,
   shellQuote,
@@ -88,7 +88,6 @@ export {
   sshStdinCheckout,
 } from "./ssh-executor.ts";
 export { sshHydrateGitHubToken } from "./ssh-github-token.ts";
-export { type PrivateOrchestratorSshReceipt, sshOrchestratorReceipt } from "./ssh-orchestrator.ts";
 export { sshReadableVariables } from "./ssh-readable-variables.ts";
 export { createTemplateService, type TemplateRuntime, type TemplateService } from "./template-service.ts";
 export { createSqlVaultStore } from "./vault-store.ts";

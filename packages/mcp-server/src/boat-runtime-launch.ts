@@ -59,7 +59,7 @@ export function boatRuntimeLaunch(options: {
         ...plan,
         signal,
       });
-      return { epoch: ready.epoch, prompt: (request) => agent.prompt(request, `launch_${sandbox.id}`) };
+      return { epoch: ready.epoch, prompt: (request) => agent.prompt(request, `launch_${sandbox.id}`, ready.epoch) };
     },
   };
 }

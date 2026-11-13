@@ -20,7 +20,7 @@ Choose a starting point below; these are selected guides, not an inventory of ev
 ## Runtime and hosts
 
 - [Runtime](runtime-startup.md): artifacts, verified caches, private enrolment/epochs, dial-out commands and journal reconciliation.
-- [Boat runtime](boat-runtime-first-prompt.md): default-off Codex lifecycle, checkpoint/resume, explicit GitHub/MCP and staged acceptance.
+- [Boat runtime](boat-runtime-first-prompt.md): default-off Codex lifecycle, checkpoint/resume, explicit GitHub, automatic MCP and staged acceptance.
 - [Docker hosts](docker-host-daemon.md): daemon installation, registration, ownership/TTL, API preview and cleanup limits.
 - [OpenCode](runtime/opencode-modal.md): Modal-only ACP harness, accounts, portable state and lifecycle checks.
 - [Otto](otto-staging.md): read-only observations, dashboard, repository scope and unknown/partial evidence.
@@ -31,7 +31,6 @@ Choose a starting point below; these are selected guides, not an inventory of ev
 - [Database migrations](database-migrations.md) and [releasing](releasing.md): operator-controlled schema history and package releases.
 - [Post-deploy smoke](post-deploy-smoke.md): deployment validation, not proof that a deployment has already passed.
 - [Work preservation](work-preservation.md), [Modal stop recovery](modal-stop-recovery.md) and [Modal builder recovery](modal-builder-recovery.md): preservation limits and authorized recovery.
-- [Orchestrator troubleshooting](orchestrator-troubleshooting.md): retained compatibility/recovery guidance for existing orchestrator resources, not a new launcher workflow.
 
 ## Designs and historical evidence
 

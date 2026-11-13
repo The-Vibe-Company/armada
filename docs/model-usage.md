@@ -155,14 +155,6 @@ reported cache-read and cache-creation tokens. Reasoning tokens, when reported,
 are a subset of output. Do not add all columns to calculate unique tokens or
 apply one cross-harness pricing formula. Missing fields/totals stay null.
 
-Orchestrator own usage is authoritative from the durably ingested journal,
-updated atomically with its cursor. Status polling cannot overwrite a managed
-parent's usage snapshot. The first accounting page bootstraps old snapshots
-from retained accounting events once; later pages merge only newly accepted
-prompt/usage events into compact per-turn state. The JSON snapshot still costs
-O(reported turns) to rewrite, but does not reread all retained message/tool events
-on every page. Child sums use each child's latest persisted usage observation.
-
 Compute seconds are Armada-observed elapsed running intervals, not provider
 billed seconds or CPU time. Boat copies `stoppedAt` only when its API supplies
 it; Modal's managed stop records a stop timestamp locally. If either provider

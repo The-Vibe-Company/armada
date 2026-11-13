@@ -49,12 +49,30 @@ registration tickets are shown once, never stored/logged. Launch keeps a stable
 request key for identical choices after an unanswered request, rather than
 allocating again blindly.
 
-These controls require the server's host-list and Docker launch-options contracts.
-When the list route is absent the page/navigation stays hidden; missing placement,
-account or capability shows a blocker, not a fallback golden launch. The current
-machine route implementation supplies register-token/revoke and daemon polling;
-UI source alone is not evidence that its full list/launch contract is mounted or
-deployed. The explicit API commands below are the implemented acceptance path.
+With `ARMADA_DOCKER_HOSTS=1`, the server now supplies bearer-only
+`POST /api/v1/docker/hosts/list` with `{org}` for current members. The dashboard
+uses that same signed-in user's bearer from server actions, without forwarding
+browser Origin or using a Supabase service key. Without the opt-in the routes/page
+remain absent. Admin register/revoke stay admin-only and registration tickets
+are shown once, never stored/logged.
+
+The list returns `placement` and safe `hosts` metadata: id, name (currently null),
+state, createdAt, lastSeenAt, revokedAt and retained non-deleted sandbox count.
+Pending means unregistered; online requires current registration/issuer membership
+and a heartbeat within 60 seconds; otherwise offline, with revoked taking priority.
+Online is not scheduling eligibility, capacity or runtime readiness. SQL current
+membership scopes every list; no credentials, token hashes or installation secrets
+are returned and no direct user-JWT host-table grant is added.
+
+`POST /api/v1/launch/options` adds typed `providers` entries with id, enabled,
+launchSources, harnesses, capabilities and English unsupportedReasons. These are
+installed-feature discovery, not authorization or account health. Docker's normal
+launch/status/logs/CLI handler remains unavailable: normal launch/stop/delete
+capabilities and list `placement` are **false**, even with the private preview
+on. The UI may show Hosts but must not enable normal launch until the server
+advertises `capabilities.launch:true`. A request field cannot enable it. Docker
+is an image/Codex source with null goldenId/golden and no fabricated Boat alias;
+golden providers remain Boat/Modal. The explicit preview API below is unchanged.
 
 ## Host authority, ownership and failure recovery
 
@@ -313,3 +331,80 @@ uncertain data, preserve unrelated workloads and report offline remote revocatio
 pending. Current manual cleanup above is narrower; it does not delete shared
 images or perform broad prune. Host credential rotation/expiry policy, disk quotas,
 offline retention and stronger resource admission remain owner decisions.
+
+## Terminal reconciliation
+
+Upgrade the server and the retained host binary for expiry reporting; no migration
+or re-registration is needed. A positive ownership-checked `stopIfExpired` result
+is persisted before it is sent, then retried after reconnect/restart or lost ACK.
+All physical sweeps run before network reporting. At most one confirmation is sent
+per tick, with a durable fair cursor so an unacknowledged fact cannot starve others.
+The existing machine results endpoint accepts either the original job outcome or
+`{installationId,requestId,expired:true}` referring to a bound create/bootstrap.
+The two packets are separate facts; expiry never rewrites the original job outcome.
+Older servers reject the new packet safely and it remains pending until upgrade.
+
+The server validates the current host/installation and the original frozen machine
+identity, then records a terminal stop and revokes runtime authority. Server time
+alone never proves compute stopped. Duplicate/delayed facts cannot revive deleted
+rows or advance the generation twice. An already failed sandbox retains its failure
+while recording the physical stop. Failed bound create/bootstrap ACKs (and rejected
+startup admissions) become logical failed state without fabricating stopped_at;
+confirmed cleanup remains available. Authenticated polling also repairs historical
+failed startup jobs left active by older servers, without replaying those jobs.
+Delete ACK clears the old status reason, preserving the database lifecycle invariant.
+Offline/unreachable/revoked hosts still cannot claim a remote successful stop until
+a trusted confirmation arrives. Local TTL enforcement continues even while offline.
+
+## Host-list/discovery acceptance on a retained host
+
+After deploying this server revision on staging with the existing opt-ins, start
+the stopped daemon on the same host. No new registration or sandbox is needed.
+Use Bash and the same SSH configuration and staging org from the passed check.
+A live or stale daemon lock must be inspected, never deleted automatically.
+
+```sh
+set -euo pipefail
+export DOCKER_SSH='YOUR_EXISTING_SSH_CONFIG_NAME'
+export ARMADA_STAGING='https://armada-mcp-staging.up.railway.app'
+export ARMADA_ORG='YOUR_STAGING_ORG_UUID'
+export DOCKER_HOST_ID='YOUR_EXISTING_REGISTERED_HOST_UUID'
+env -u ARMADA_TOKEN ssh -- "$DOCKER_SSH" 'set -eu; umask 077; state="$HOME/.local/state/armada-docker-smoke"; test -f "$state/state.json"; test ! -e "$state/daemon.lock"; test ! -L "$state/daemon.lock"; nohup setsid "$HOME/.local/bin/armada-docker-host" run --state-dir "$state" >"$state/daemon.log" 2>&1 </dev/null & echo $! >"$state/smoke.pid"'
+read -r -s -p 'Staging signed-in user bearer: ' ARMADA_TOKEN; printf '\n'
+export ARMADA_TOKEN
+python3 - <<'PY'
+import json, os, time, urllib.request
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args): return None
+opener = urllib.request.build_opener(NoRedirect)
+def post(path, body):
+    req = urllib.request.Request(os.environ['ARMADA_STAGING']+'/api/v1/'+path,
+        data=json.dumps(body).encode(), method='POST', headers={
+          'authorization':'Bearer '+os.environ['ARMADA_TOKEN'], 'content-type':'application/json'})
+    with opener.open(req, timeout=30) as response:
+        assert response.headers['cache-control'] == 'no-store'
+        return json.load(response)
+options = post('launch/options', {})
+docker = next(p for p in options['providers'] if p['id'] == 'docker')
+assert docker['enabled'] and not docker['capabilities']['launch']
+assert docker['unsupportedReasons']['resume']
+for attempt in range(31):
+    listing = post('docker/hosts/list', {'org':os.environ['ARMADA_ORG']})
+    host = next(h for h in listing['hosts'] if h['id']==os.environ['DOCKER_HOST_ID'])
+    assert set(host)=={'id','name','state','createdAt','lastSeenAt','revokedAt','sandboxes'}
+    assert not listing['placement']  # until normal API/CLI integration lands
+    if host['state']=='online': break
+    if attempt==30: raise SystemExit('Host heartbeat not online within 60 seconds; inspect private daemon log')
+    time.sleep(2)
+print(json.dumps({'host':host,'docker':docker}))
+PY
+unset ARMADA_TOKEN
+```
+
+Expect the retained HOST_ID online with the existing inventory/count and no
+credential fields. Admin register/revoke behavior is unchanged; members can list
+but cannot mutate hosts. The daemon may be stopped by the coordinator afterward.
+At this stage, placement=false and capabilities.launch=false are intentional.
+Normal-launch acceptance requires its separately implemented backend; this
+read/discovery check does not enable it.
+No worker staging access, SSH, deployment, inference or remote migration was used.

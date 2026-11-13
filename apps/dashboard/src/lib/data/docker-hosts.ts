@@ -31,6 +31,7 @@ export async function viewerDockerHosts() {
     async list(org: string): Promise<DockerHostList> {
       const list = parseDockerHostList(await post(DOCKER_HOST_ROUTES.list, { org }));
       if (!list) throw new ControlError("The Armada server sent an unexpected host list.");
+      if (list.skipped > 0) console.error(`Docker host list: ${list.skipped} host(s) left out, off the contract.`);
       return list;
     },
     async register(org: string): Promise<HostRegistration> {

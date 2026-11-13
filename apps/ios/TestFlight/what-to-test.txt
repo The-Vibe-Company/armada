@@ -1,13 +1,9 @@
 Armada private beta — candidate checklist (publish only after coordinator validates the build)
 
-This build opens directly on Sandboxes; there is no Orchestrators tab, create form,
-conversation or details screen. Check this after both a clean install and upgrading
-an earlier signed-in build. Existing server orchestrators are not stopped or deleted.
-
-Check email sign-in, session restore/refresh, organization selection/switching and
-sign-out. Upgrading preserves the existing session and selected organization; any
-old saved orchestrator commands must not be replayed. The older published app must
-still work against the unchanged server until this build is published.
+This build opens directly on Sandboxes. Check email sign-in, session restore/refresh,
+organization selection/switching and sign-out after a clean install and an upgrade.
+Upgrading preserves the session and selected organization; unknown saved commands
+must not be replayed.
 
 Check New Sandbox (+): choose a golden, agent, model, effort and model account;
 repository, machine size and lifetime remain under More Options. Launch with a

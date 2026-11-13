@@ -141,7 +141,8 @@ test("routine control authenticates scoped commands, preserves CAS versions and 
             { error: { code: "conflict", message: "raw private prompt/token must never appear" } },
             { status: 409 },
           );
-        return Response.json(String(input).endsWith("/list") ? { items: [item] } : { item });
+        // A routine off the contract is left out of the list, never the whole list (#1398).
+        return Response.json(String(input).endsWith("/list") ? { items: [item, { id: "off-contract" }] } : { item });
       },
       { preconnect: fetch.preconnect },
     ),

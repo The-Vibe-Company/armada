@@ -23,57 +23,7 @@ export interface GitHubRuntimeConfiguration {
   identity?: { name: string; email: string };
 }
 
-/** Trusted owner recovery identity, assembled from the original SQL create receipt.
- * Never accepted as provider IDs from HTTP or an agent. */
-export interface OrchestratorCreateRecoveryRequest {
-  version: 1;
-  createOperationId: string;
-  /** Explicit destructive recovery of an uncertain stop, never native continuity. */
-  stopOperationId?: string;
-  recoveryOperationId: string;
-  orchestratorId: string;
-  ownerId: string;
-  orgId: string;
-  providerSnapshotId: string;
-  intendedSandboxId?: string;
-  originalSandbox?: {
-    sandboxId: string;
-    providerSandboxId: string;
-    sqlGeneration: string;
-    nativeGeneration: string | null;
-  };
-  target: ProviderTarget;
-}
-export interface OrchestratorCreateRecoveryProof {
-  version: 1;
-  provider: "modal";
-  createOperationId: string;
-  recoveryOperationId: string;
-  orchestratorId: string;
-  ownerId: string;
-  orgId: string;
-  sandboxId: string;
-  providerSandboxId: string;
-  physicalId: string;
-  physicalName: string;
-  generation: 1;
-  originalSandbox?: OrchestratorCreateRecoveryRequest["originalSandbox"];
-  state: "terminated";
-}
-
 export interface Provider {
-  /** Nonallocating, idempotent exact-incarnation cleanup of a never-admitted create.
-   * Missing/404 is never termination proof. Native record must durably bind the
-   * recovery before termination and retain positively confirmed proof. */
-  recoverOrchestratorCreate?(
-    request: OrchestratorCreateRecoveryRequest,
-  ): Promise<OrchestratorCreateRecoveryProof | null>;
-  /** Cloud reads only; may persist exact positive observation under native lease.
-   * Never repeats termination, boot, restore, prompt or allocation. */
-  readOrchestratorCreateRecovery?(
-    request: OrchestratorCreateRecoveryRequest,
-  ): Promise<OrchestratorCreateRecoveryProof | null>;
-
   /** Private GitHub-only configuration, never exec argv or a public command receipt. */
   configureGitHub?(request: {
     sandboxId: string;

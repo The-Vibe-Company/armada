@@ -3,8 +3,8 @@ import { createHash } from "node:crypto";
 import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { boatOrchestratorBridgeScript } from "../src/boat-orchestrator-bridge.ts";
-import { boatOrchestratorControlScript } from "../src/boat-orchestrator-script.ts";
+import { boatOrchestratorBridgeScript } from "../src/boat-delegated-access-bridge.ts";
+import { boatOrchestratorControlScript } from "../src/boat-delegated-access-script.ts";
 
 test("Boat private epoch script rejects older writes/boot mismatch and exact hash cleanup preserves newer authority without disk secrets", async () => {
   const home = await mkdtemp(join(tmpdir(), "armada-boat-epoch-"));

@@ -174,7 +174,14 @@ export default async function GoldensPage({ searchParams }: Props) {
   };
 
   const now = Date.now();
-  const rows = sortResources(goldens.map((golden) => environmentRow(golden, context, now)));
+  // A golden on a provider this page does not know is left out and counted, never a failed page (#1398).
+  const shown = goldens.filter((golden) => {
+    if (isSandboxProvider(golden.provider)) return true;
+    console.error(`Environment row left out: provider does not match the contract (id ${golden.id}).`);
+    return false;
+  });
+  const skipped = goldens.length - shown.length;
+  const rows = sortResources(shown.map((golden) => environmentRow(golden, context, now)));
   const providerPending = setupPending && selected !== null;
   const blockers = environmentBlockers({ providerPending, rows: rows.map((row) => ({ ...row, state: row.status })) });
   // Without a confirmed provider the create form is shown only to follow a build this page already tracks.
@@ -209,6 +216,11 @@ export default async function GoldensPage({ searchParams }: Props) {
 
   const notices = (
     <>
+      {skipped > 0 && (
+        <p role="status" className="text-sm text-muted-foreground">
+          {skipped} {skipped === 1 ? "environment" : "environments"} could not be shown.
+        </p>
+      )}
       {setup?.state === "unavailable" && (
         <Alert variant="destructive" data-setup-state="unavailable">
           <TriangleAlertIcon />
@@ -253,7 +265,7 @@ export default async function GoldensPage({ searchParams }: Props) {
     <ResourceBrowser
       title="Environments"
       description="Goldens: what a sandbox contains when it starts."
-      meta={goldens.length > 0 ? goldens.length : undefined}
+      meta={shown.length > 0 ? shown.length : undefined}
       label="Environments"
       rows={rows}
       blockers={blockers}

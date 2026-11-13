@@ -1,5 +1,37 @@
 # Changelog
 
+## [2.27.0](https://github.com/The-Vibe-Company/armada/compare/v2.26.0...v2.27.0) (2026-11-13)
+
+
+### Features
+
+* **dashboard:** Docker hosts page with add and revoke ([#1384](https://github.com/The-Vibe-Company/armada/issues/1384)) ([b6d8839](https://github.com/The-Vibe-Company/armada/commit/b6d88397e2e30bae9ba5d9db2ed2af5e18b0ce78))
+* **dashboard:** launch Codex on a Docker host ([#1392](https://github.com/The-Vibe-Company/armada/issues/1392)) ([b3cd2e3](https://github.com/The-Vibe-Company/armada/commit/b3cd2e35b4435ecb7cf08ca4d027a858aef4091a))
+* **dashboard:** sort sandboxes newest first by default ([#1375](https://github.com/The-Vibe-Company/armada/issues/1375)) ([c528a47](https://github.com/The-Vibe-Company/armada/commit/c528a474bd08cf106f5f7d034782ad1bf871d0ad))
+* **hosts:** continue Docker Codex conversations ([#1386](https://github.com/The-Vibe-Company/armada/issues/1386)) ([9d23df8](https://github.com/The-Vibe-Company/armada/commit/9d23df8b96a4c65f74ae9b8a195b224bbcb0a48f))
+* **hosts:** expose opt-in Docker one-prompt lifecycle ([#1376](https://github.com/The-Vibe-Company/armada/issues/1376)) ([70a3ccd](https://github.com/The-Vibe-Company/armada/commit/70a3ccdb1089fb6b140c2cdc95fa9c9b971c87cb))
+* **runtime:** configure remote MCP through enrolled Boat runtimes ([#1377](https://github.com/The-Vibe-Company/armada/issues/1377)) ([33a0e22](https://github.com/The-Vibe-Company/armada/commit/33a0e22e36e698272a672e3a9838f6c9e2e45b20))
+
+
+### Bug Fixes
+
+* **dashboard:** leave out a sandbox list row that does not match its contract ([#1401](https://github.com/The-Vibe-Company/armada/issues/1401)) ([8bfba25](https://github.com/The-Vibe-Company/armada/commit/8bfba2522f9580883b2f6f797615155f1d668c4e))
+* **dashboard:** list sandboxes on Docker hosts ([#1397](https://github.com/The-Vibe-Company/armada/issues/1397)) ([f4aeb22](https://github.com/The-Vibe-Company/armada/commit/f4aeb22553793da96695b4ff887ec7cf896e6acf))
+* **dashboard:** wait for a launch and follow an unanswered one ([#1370](https://github.com/The-Vibe-Company/armada/issues/1370)) ([6a8801d](https://github.com/The-Vibe-Company/armada/commit/6a8801dd088afb7630962cc6ea6be092f59eadd7))
+* **otto:** bound snapshots to the live fleet ([#1373](https://github.com/The-Vibe-Company/armada/issues/1373)) ([2165789](https://github.com/The-Vibe-Company/armada/commit/216578955a009a0674f986ba348ea0538f8e5fb1))
+* **otto:** prevent read views from hanging on projection writes ([#1368](https://github.com/The-Vibe-Company/armada/issues/1368)) ([4b678de](https://github.com/The-Vibe-Company/armada/commit/4b678de81335282d9f5ef05c15e704c762fa917a))
+* **pricing:** admit custom connection model prices ([#1395](https://github.com/The-Vibe-Company/armada/issues/1395)) ([17efd40](https://github.com/The-Vibe-Company/armada/commit/17efd40d9b761c8f40d892e01a6876afe244518a))
+* **smoke:** delete receipted sandboxes and sweep known leftovers ([#1403](https://github.com/The-Vibe-Company/armada/issues/1403)) ([941c98b](https://github.com/The-Vibe-Company/armada/commit/941c98bede6ed7c269569cd61bfcc6f53eaeeac2))
+
+
+### Performance Improvements
+
+* **test:** reuse connection pricing and model state fixtures ([#1389](https://github.com/The-Vibe-Company/armada/issues/1389)) ([8597b46](https://github.com/The-Vibe-Company/armada/commit/8597b46c1948683ec91238c8a6e303678ea7ac1b))
+* **test:** reuse Modal and golden restore SQL fixtures ([#1379](https://github.com/The-Vibe-Company/armada/issues/1379)) ([f0b15c8](https://github.com/The-Vibe-Company/armada/commit/f0b15c84614a54efbf84c919e0950c13bdc8021e))
+* **test:** reuse retained runtime and preservation fixtures ([#1399](https://github.com/The-Vibe-Company/armada/issues/1399)) ([53ba87d](https://github.com/The-Vibe-Company/armada/commit/53ba87d7fbd53c7224c674632d1de3a23ad54ea7))
+* **test:** reuse row-only application vault fixtures ([#1371](https://github.com/The-Vibe-Company/armada/issues/1371)) ([bb53067](https://github.com/The-Vibe-Company/armada/commit/bb53067a74c95a0ea307d489d758d13ba52801d5))
+* **test:** reuse scheduler and runtime event fixtures ([#1378](https://github.com/The-Vibe-Company/armada/issues/1378)) ([24666ed](https://github.com/The-Vibe-Company/armada/commit/24666ed8d0363ee5e819af2567754a4d286428c8))
+
 ## [2.26.0](https://github.com/The-Vibe-Company/armada/compare/v2.25.0...v2.26.0) (2026-11-13)
 
 
