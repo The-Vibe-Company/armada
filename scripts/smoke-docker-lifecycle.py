@@ -174,7 +174,7 @@ def main():
                 raise
     print("PASS: same-conversation follow-up recalled marker; both turns reported tokens; stop/delete ACKed."
           if args.follow_up else "PASS: one runtime-journal answer with reported tokens; stop/delete ACKed.")
-    print("Host remains registered/running for inspection. See docs/docker-staging.md for uninstall.")
+    print("Host remains registered/running for inspection. See docs/docker-host-daemon.md for uninstall.")
 
 
 if __name__ == "__main__":

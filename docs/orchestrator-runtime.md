@@ -350,4 +350,4 @@ rollback retains identity/history/native state.
 
 Managed parents now receive only a minimal Armada tool reference by default.
 Select a public Skillpack method with create `--skill org/slug@version`; see
-[CLI orchestrators](cli-orchestrators.md#optional-skillpack-method).
+[CLI orchestrators](cli-orchestrators.md).
