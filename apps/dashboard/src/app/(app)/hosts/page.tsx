@@ -1,3 +1,4 @@
+import type { Harness } from "@armada/core";
 import { CircleAlertIcon, ServerIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
@@ -15,7 +16,13 @@ import { readDockerLaunchOption, readRecentHostImages, readSelectedDockerHosts }
 import { launchAccounts, listSelectedAccounts } from "@/lib/data/model-accounts";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { type DockerHost, HOSTS_PATH, hostFact, hostName, hostState, sandboxCount } from "@/lib/docker-hosts";
-import { type DockerLaunchOption, dockerLaunchBlocker, dockerUnavailable, type HostImage } from "@/lib/docker-launch";
+import {
+  type DockerLaunchOption,
+  dockerHarnesses,
+  dockerLaunchBlocker,
+  dockerUnavailable,
+  type HostImage,
+} from "@/lib/docker-launch";
 import type { LaunchAccounts } from "@/lib/model-accounts";
 import { relativeAge } from "@/lib/relative-time";
 import { type Bucket, ITEM_PARAM, sortResources } from "@/lib/resource-list";
@@ -71,6 +78,7 @@ export default async function HostsPage({ searchParams }: Props) {
     accounts: accountList ? launchAccounts(accountList, now) : { state: "unavailable", reason: "Not read." },
     unavailable: option ? dockerUnavailable(option) : [],
     images,
+    harnesses: dockerHarnesses(option),
   };
   const rows = sortResources(hosts.list.hosts.map((host) => row(host, orgId, isAdmin, now, launch)));
   const requested = typeof query[ITEM_PARAM] === "string" ? query[ITEM_PARAM] : null;
@@ -114,6 +122,8 @@ type Launch = {
   unavailable: { name: string; reason: string }[];
   /** Images already used on each host, by host id. */
   images: Map<string, HostImage[]>;
+  /** The agents the server launches on Docker. */
+  harnesses: { offered: Harness[]; initial: Harness | null };
 };
 
 function row(
@@ -163,6 +173,8 @@ function row(
               accounts={launch.accounts}
               unavailable={launch.unavailable}
               images={launch.images.get(host.id) ?? []}
+              harnesses={launch.harnesses.offered}
+              initialHarness={launch.harnesses.initial ?? "codex"}
             />
           )}
         </PanelSection>

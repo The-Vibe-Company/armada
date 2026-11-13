@@ -1,13 +1,13 @@
 "use client";
 
-import { MODEL_CATALOG } from "@armada/core";
+import { type Harness, MODEL_CATALOG } from "@armada/core";
 import { RocketIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { useFormStatus } from "react-dom";
 import { launchOnDockerHost } from "@/app/actions/docker-hosts";
 import { ActionForm, SubmitButton } from "@/components/action-form";
-import { AccountField } from "@/components/launch-dialog";
+import { AccountField, Segmented } from "@/components/launch-dialog";
 import { ModelFields } from "@/components/model-fields";
 import { Button } from "@/components/ui/button";
 import {
@@ -24,11 +24,12 @@ import { NativeSelect } from "@/components/ui/native-select";
 import { Textarea } from "@/components/ui/textarea";
 import type { ActionResult } from "@/lib/action";
 import { dockerLaunchKeyStorage, type HostImage, UNKNOWN_DOCKER_LAUNCH } from "@/lib/docker-launch";
+import { HARNESS_LABELS } from "@/lib/labels";
 import { LAUNCH_KEY_FIELD, type LaunchKey, launchKeyFor } from "@/lib/launch-key";
 import { accountProblem, accountsFor, type LaunchAccounts } from "@/lib/model-accounts";
 
 /**
- * Launch a sandbox on one Docker host (#1380): Codex from Armada's default plain image (or a custom digest-pinned one
+ * Launch a sandbox on one Docker host (#1380): an agent the server runs on Docker (#1507) from Armada's default plain image (or a custom digest-pinned one
  * behind "Custom image…", #1507), with a model account and an optional task. A Docker host has no environment (golden) yet, so this launch starts from the host, not from an
  * environment. What Docker cannot do yet is listed with the server's own reasons. A successful launch navigates to
  * the new sandbox.
@@ -40,6 +41,8 @@ export function DockerLaunchDialog({
   accounts,
   unavailable,
   images,
+  harnesses,
+  initialHarness,
 }: {
   orgId: string;
   hostId: string;
@@ -48,6 +51,9 @@ export function DockerLaunchDialog({
   unavailable: { name: string; reason: string }[];
   /** Images already used for sandboxes on this host, newest first, proposed after Armada's default. */
   images: HostImage[];
+  /** The agents the server launches on Docker; at least one (the launch is blocked otherwise). */
+  harnesses: Harness[];
+  initialHarness: Harness;
 }) {
   return (
     <Dialog>
@@ -59,9 +65,17 @@ export function DockerLaunchDialog({
       <DialogContent className="max-h-[calc(100dvh-2rem)] gap-5 overflow-y-auto sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>Launch on {hostName}</DialogTitle>
-          <DialogDescription>Codex in a private sandbox, started from a plain image on this host.</DialogDescription>
+          <DialogDescription>An agent in a private sandbox, started from a plain image on this host.</DialogDescription>
         </DialogHeader>
-        <DockerLaunchForm orgId={orgId} hostId={hostId} accounts={accounts} unavailable={unavailable} images={images} />
+        <DockerLaunchForm
+          orgId={orgId}
+          hostId={hostId}
+          accounts={accounts}
+          unavailable={unavailable}
+          images={images}
+          harnesses={harnesses}
+          initialHarness={initialHarness}
+        />
       </DialogContent>
     </Dialog>
   );
@@ -73,14 +87,19 @@ function DockerLaunchForm({
   accounts,
   unavailable,
   images,
+  harnesses,
+  initialHarness,
 }: {
   orgId: string;
   hostId: string;
   accounts: LaunchAccounts;
   unavailable: { name: string; reason: string }[];
   images: HostImage[];
+  harnesses: Harness[];
+  initialHarness: Harness;
 }) {
   const id = useId();
+  const [harness, setHarness] = useState<Harness>(initialHarness);
   const [selectedImage, setImageChoice] = useState("default");
   // A refresh can drop the chosen image from the list: the select then shows, and launches, the default.
   const imageChoice =
@@ -90,7 +109,7 @@ function DockerLaunchForm({
   const router = useRouter();
   const usable =
     accounts.state === "ready" &&
-    accountsFor(accounts.accounts, "codex").some((account) => accountProblem(account, accounts.now) === null);
+    accountsFor(accounts.accounts, harness).some((account) => accountProblem(account, accounts.now) === null);
 
   useEffect(() => {
     const node = root.current;
@@ -148,7 +167,7 @@ function DockerLaunchForm({
             ) : (
               <>
                 <p id={`${id}-no-account`} className="mr-auto text-xs text-warning">
-                  A usable Codex account is needed to launch.
+                  A usable {HARNESS_LABELS[harness]} account is needed to launch.
                 </p>
                 <Button type="button" disabled aria-describedby={`${id}-no-account`}>
                   <RocketIcon /> Launch
@@ -209,12 +228,22 @@ function DockerLaunchForm({
               : "Armada installs its runtime and the agent in it. The host fetches the image if it does not have it yet."}
           </p>
         </div>
-        <p className="text-sm">
-          <span className="text-muted-foreground">Agent:</span> Codex{" "}
-          <span className="text-muted-foreground">(the only agent on Docker hosts for now)</span>
-        </p>
-        <AccountField idPrefix={id} harness="codex" accounts={accounts} onChange={() => {}} />
-        <ModelFields idPrefix={id} harness="codex" catalog={MODEL_CATALOG} />
+        {harnesses.length > 1 ? (
+          <Segmented
+            legend="Agent"
+            name="harness"
+            value={harness}
+            onChange={setHarness}
+            options={harnesses.map((value) => ({ value, label: HARNESS_LABELS[value] }))}
+          />
+        ) : (
+          <p className="text-sm">
+            <input type="hidden" name="harness" value={harness} />
+            <span className="text-muted-foreground">Agent:</span> {HARNESS_LABELS[harness]}
+          </p>
+        )}
+        <AccountField key={harness} idPrefix={id} harness={harness} accounts={accounts} onChange={() => {}} />
+        <ModelFields key={`${harness}-model`} idPrefix={id} harness={harness} catalog={MODEL_CATALOG} />
         {unavailable.length > 0 && (
           <details className="rounded-md border p-3 text-sm" data-docker-unavailable>
             <summary className="cursor-pointer text-muted-foreground">Not available on Docker hosts yet</summary>

@@ -88,7 +88,7 @@ export function dockerLaunchOption(payload: unknown): DockerLaunchOption | null 
 
 /**
  * Whether this host takes a launch now, or why not. The launch needs the server to say it launches on Docker
- * (`capabilities.launch`, from a plain image, with Codex) and the host list's `placement`; the host itself must be
+ * (`capabilities.launch`, from a plain image, with at least one agent) and the host list's `placement`; the host itself must be
  * online. The server checks all of it again.
  */
 export function dockerLaunchBlocker(
@@ -101,8 +101,8 @@ export function dockerLaunchBlocker(
   if (!option.capabilities.launch)
     return option.unsupportedReasons.launch ?? "This Armada server does not launch on Docker hosts yet.";
   if (!placement) return "This Armada server does not launch on Docker hosts yet.";
-  if (!option.launchSources.includes("image") || !option.harnesses.includes("codex"))
-    return "This Armada server does not launch Codex from an image on Docker hosts.";
+  if (!option.launchSources.includes("image") || option.harnesses.length === 0)
+    return "This Armada server does not launch an agent from an image on Docker hosts.";
   if (host.state !== "online") return "The host must be online to launch on it.";
   return null;
 }
@@ -188,10 +188,20 @@ export function chosenImage(choice: string, custom: string): ReturnType<typeof c
   return { ok: false, error: "Choose an image." };
 }
 
+/**
+ * The agents the dialog offers on Docker (#1507): those the server launches there, in Armada's usual order, Codex
+ * first chosen when offered (the first agent Docker hosts ran).
+ */
+export function dockerHarnesses(option: DockerLaunchOption | null): { offered: Harness[]; initial: Harness | null } {
+  const offered = HARNESSES.filter((harness) => option?.harnesses.includes(harness));
+  return { offered, initial: offered.includes("codex") ? "codex" : (offered[0] ?? null) };
+}
+
 export type DockerLaunchArgs = {
   org: string;
   hostId: string;
   image: string;
+  harness: Harness;
   credentialId: string;
   requestId: string;
   model: string;
@@ -199,7 +209,7 @@ export type DockerLaunchArgs = {
   prompt?: string;
 };
 
-/** The `sandbox/launch` body for a Docker host: Codex from a plain image, private, nothing a golden would carry. */
+/** The `sandbox/launch` body for a Docker host: an agent from a plain image, private, nothing a golden would carry. */
 export function dockerLaunchBody(args: DockerLaunchArgs): DockerLaunchRequest {
   if (![args.org, args.hostId, args.credentialId, args.requestId].every(isUuid))
     throw new Error("Docker launch identifiers must be UUIDs.");
@@ -208,7 +218,7 @@ export function dockerLaunchBody(args: DockerLaunchArgs): DockerLaunchRequest {
     provider: "docker",
     hostId: args.hostId,
     image: args.image,
-    harness: "codex",
+    harness: args.harness,
     credentialId: args.credentialId,
     requestId: args.requestId,
     model: args.model,

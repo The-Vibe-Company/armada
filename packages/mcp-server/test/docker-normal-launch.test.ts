@@ -497,6 +497,7 @@ test("the normal HTTP route accepts the dashboard body and returns a launched sa
     org: f.actor.orgId,
     hostId: f.hostId,
     image: f.body.image,
+    harness: "codex",
     credentialId: f.body.credentialId,
     requestId: f.body.requestId,
     model: "normal-http-model",

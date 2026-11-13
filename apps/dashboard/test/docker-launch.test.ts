@@ -5,6 +5,7 @@ import {
   checkImage,
   chosenImage,
   DOCKER_CAPABILITIES,
+  dockerHarnesses,
   dockerLaunchBlocker,
   dockerLaunchBody,
   dockerLaunchOption,
@@ -56,7 +57,7 @@ test("the Docker launch option is read strictly from launch/options; anything un
   });
 });
 
-test("a host takes a launch only when the server launches Codex from an image on Docker and the host is online", () => {
+test("a host takes a launch only when the server launches an agent from an image on Docker and the host is online", () => {
   const ready = dockerLaunchOption(options());
   expect(dockerLaunchBlocker(ready, true, { state: "online" })).toBeNull();
   expect(dockerLaunchBlocker(null, true, { state: "online" })).toContain("does not launch on Docker");
@@ -69,7 +70,10 @@ test("a host takes a launch only when the server launches Codex from an image on
   expect(dockerLaunchBlocker(off, false, { state: "online" })).toBe("Wired in the next increment.");
   expect(
     dockerLaunchBlocker(dockerLaunchOption(options({ harnesses: ["claude"] })), true, { state: "online" }),
-  ).toContain("Codex from an image");
+  ).toBeNull();
+  expect(dockerLaunchBlocker(dockerLaunchOption(options({ harnesses: [] })), true, { state: "online" })).toContain(
+    "an agent from an image",
+  );
   expect(dockerLaunchBlocker(ready, true, { state: "offline" })).toBe("The host must be online to launch on it.");
   expect(dockerLaunchBlocker(ready, true, { state: "revoked" })).toBe("This host is revoked.");
   expect(dockerLaunchBlocker(null, false, { state: "revoked" })).toBe("This host is revoked.");
@@ -129,12 +133,25 @@ test("the dialog proposes each image already used on the host once, newest first
   expect(chosenImage("evil@sha256:short", "").ok).toBe(false);
 });
 
+test("the dialog offers the agents the server launches on Docker, Codex chosen first when offered", () => {
+  expect(dockerHarnesses(dockerLaunchOption(options({ harnesses: ["opencode", "codex", "claude"] })))).toEqual({
+    offered: ["claude", "codex", "opencode"],
+    initial: "codex",
+  });
+  expect(dockerHarnesses(dockerLaunchOption(options({ harnesses: ["opencode", "claude"] })))).toEqual({
+    offered: ["claude", "opencode"],
+    initial: "claude",
+  });
+  expect(dockerHarnesses(null)).toEqual({ offered: [], initial: null });
+});
+
 test("the launch body is the normal route's Docker shape: Codex, private, the form key as requestId", () => {
   expect(
     dockerLaunchBody({
       org: ORG,
       hostId: HOST,
       image: DIGEST,
+      harness: "codex",
       credentialId: ACCOUNT,
       requestId: REQUEST,
       model: "gpt-5",
@@ -159,6 +176,7 @@ test("the launch body is the normal route's Docker shape: Codex, private, the fo
       org: ORG,
       hostId: HOST,
       image: DIGEST,
+      harness: "codex",
       credentialId: ACCOUNT,
       requestId: "x",
       model: "m",
