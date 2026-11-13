@@ -76,6 +76,8 @@ const CLOSED_COMPOSER: Record<Exclude<SandboxStatus, (typeof CAN_SEND)[number]>,
 type Props = {
   sandboxId: string;
   initialStatus: SandboxStatus;
+  initialIdlePaused?: boolean;
+  expiresAt?: string | null;
   initialUsageRevision: string;
   live: boolean;
   harness: Harness;
@@ -166,6 +168,7 @@ export function SandboxChat(props: Props) {
   const router = useRouter();
   const [events, setEvents] = useState<ChatEvent[]>([]);
   const [status, setStatus] = useState(initialStatus);
+  const [idlePaused, setIdlePaused] = useState(props.initialIdlePaused === true);
   const [poll, setPoll] = useState<Poll>({
     error: null,
     configured: true,
@@ -201,6 +204,7 @@ export function SandboxChat(props: Props) {
     (session: PollSession, body: Record<string, unknown>) => {
       if (!isCurrent(session)) return null;
       if (isRecord(body.prompt)) setTurnModel(body.prompt);
+      setIdlePaused(body.statusMessage === "Paused — wakes on your next message");
       const next = isSandboxStatus(body.status) ? body.status : known.current;
       const statusChanged = next !== known.current;
       const usageChanged = typeof body.usageRevision === "string" && body.usageRevision !== rendered.current.usage;
@@ -364,11 +368,12 @@ export function SandboxChat(props: Props) {
   // A server action such as Stop re-renders the page with the new status: show it in the same paint as the header,
   // not at the next poll, and read again when it says the sandbox is active (polling stops on an inactive status).
   useLayoutEffect(() => {
+    setIdlePaused(props.initialIdlePaused === true);
     if (initialStatus === known.current) return;
     known.current = initialStatus;
     setStatus(initialStatus);
     if (isActiveStatus(initialStatus)) void tick();
-  }, [initialStatus, tick]);
+  }, [initialStatus, tick, props.initialIdlePaused]);
 
   useEffect(() => {
     const session: PollSession = {
@@ -419,7 +424,7 @@ export function SandboxChat(props: Props) {
                 <StatusDot tone="success" pulse /> Live
               </span>
             )}
-            <StatusBadge status={status} />
+            <StatusBadge status={status} idlePaused={idlePaused} expiresAt={props.expiresAt ?? null} />
           </div>
         </div>
 

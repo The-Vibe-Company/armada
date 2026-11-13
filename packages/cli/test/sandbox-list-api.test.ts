@@ -29,6 +29,9 @@ test("safe sandbox list renders metadata-only access without interior lookups an
   const boat = {
     ...row,
     id: "22222222-2222-4222-8222-222222222222",
+    status: "stopped",
+    idlePaused: true,
+    expiresAt: "2026-11-09T15:00:00.000Z",
     provider: "boat",
     providerSandboxId: "bx_display",
     boatId: "bx_display",
@@ -87,7 +90,9 @@ test("safe sandbox list renders metadata-only access without interior lookups an
       expect(out).toContain("Modal  —  running  —  2h  —  teammate  metadata only");
       expect(out).toContain(row.id);
       expect(out).toContain("UNKNOWN (server reauthorizes)");
-      expect(out).toContain("Boat  bx_display  running  ready  2h  —  teammate  open/manage");
+      expect(out).toContain(
+        "Boat  bx_display  Paused — wakes on your next message  ready  2h  —  teammate  open/manage",
+      );
     }
   }
 });

@@ -164,7 +164,11 @@ export default async function SandboxPage({ params }: Props) {
             <h1 className="min-w-0 font-mono text-xl font-semibold tracking-tight break-all">
               {sandbox.provider_sandbox_id}
             </h1>
-            <StatusBadge status={sandbox.status} />
+            <StatusBadge
+              status={sandbox.status}
+              idlePaused={sandbox.status_reason === "idle_paused"}
+              expiresAt={sandbox.expires_at}
+            />
             <CopyButton value={sandbox.provider_sandbox_id} label="Copy sandbox ID" className="-ml-1.5" />
             {outcome && <OutcomeBadge outcome={outcome} />}
           </div>
@@ -196,6 +200,8 @@ export default async function SandboxPage({ params }: Props) {
           <SandboxChat
             sandboxId={sandbox.id}
             initialStatus={sandbox.status}
+            initialIdlePaused={sandbox.status_reason === "idle_paused"}
+            expiresAt={sandbox.expires_at}
             initialUsageRevision={usageRevision(sandbox.usage_turns)}
             live={isActiveStatus(sandbox.status)}
             harness={sandbox.harness}
@@ -294,7 +300,11 @@ function DockerSandbox({
             <h1 className="min-w-0 font-mono text-xl font-semibold tracking-tight break-all" title={sandbox.id}>
               {dockerSandboxName(sandbox.id)}
             </h1>
-            <StatusBadge status={sandbox.status} />
+            <StatusBadge
+              status={sandbox.status}
+              idlePaused={sandbox.status_reason === "idle_paused"}
+              expiresAt={sandbox.expires_at}
+            />
             <CopyButton value={sandbox.id} label="Copy sandbox ID" className="-ml-1.5" />
           </div>
           {configured && (
@@ -329,6 +339,8 @@ function DockerSandbox({
             <SandboxChat
               sandboxId={sandbox.id}
               initialStatus={sandbox.status}
+              initialIdlePaused={sandbox.status_reason === "idle_paused"}
+              expiresAt={sandbox.expires_at}
               initialUsageRevision={usageRevision(sandbox.usage_turns)}
               live={isActiveStatus(sandbox.status)}
               harness={sandbox.harness}
@@ -415,7 +427,7 @@ function RestrictedSandbox({ sandbox, owner }: { sandbox: SandboxListMetadata; o
         </Button>
         <div className="flex min-w-0 flex-wrap items-center gap-3">
           <h1 className="min-w-0 font-mono text-xl font-semibold tracking-tight break-all">{sandboxName(sandbox)}</h1>
-          <StatusBadge status={sandbox.status} />
+          <StatusBadge status={sandbox.status} idlePaused={sandbox.idlePaused === true} expiresAt={sandbox.expiresAt} />
         </div>
       </div>
       <Alert data-restricted role="status">

@@ -341,7 +341,7 @@ export {
   type SandboxStore,
   statusReasonOf,
 } from "./sandbox.ts";
-export { canAccessSandboxInterior, type SandboxListMetadata } from "./sandbox-access.ts";
+export { canAccessSandboxInterior, idlePauseMessage, type SandboxListMetadata } from "./sandbox-access.ts";
 export {
   COST_BASIS_LABELS,
   type CostBasis,
