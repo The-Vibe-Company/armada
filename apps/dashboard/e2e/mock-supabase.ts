@@ -526,6 +526,7 @@ function sandbox(
 
 let state = seed();
 let dockerHosts: Row[] | null = null;
+let vaultListFailure: { unsupported: boolean; message: string } | null = null;
 let accountListFailure: string | null = null;
 let sequence = 100;
 const sessions = new Map<string, string>();
@@ -1323,6 +1324,10 @@ function vaultRoute(route: string, body: Row, request: Request): Response {
   const denied = () => refuse(403, "forbidden", "Application vault access denied.");
   if (kind === "secret" && operation === "read") return invalid();
   if (!isMember(body.org, userId)) return denied();
+  if (operation === "list" && vaultListFailure)
+    return vaultListFailure.unsupported
+      ? json({ error: vaultListFailure.message }, 404)
+      : refuse(503, "unavailable", vaultListFailure.message);
   const visible = (row: Row) =>
     row.kind === kind && row.org_id === body.org && (row.scope === "org" || row.owner_id === userId);
   const nameOk = (value: unknown) =>
@@ -2675,6 +2680,7 @@ function control(url: URL, body: Row): Response {
   if (url.pathname === "/__test/reset") {
     for (const release of state.routineCreateWaiters) release();
     state = seed();
+    vaultListFailure = null;
     accountListFailure = null;
     dockerHosts = Array.isArray(body.dockerHosts) ? body.dockerHosts : null;
     // Keep a visible header but make its current revision unreadable, as a partial control API read can be.
@@ -3141,6 +3147,11 @@ function control(url: URL, body: Row): Response {
     return json({ ok: true });
   }
   /** Another tab or the CLI revokes a vault item: the page still holds the version it loaded. */
+  if (url.pathname === "/__test/vault-list-failure") {
+    vaultListFailure =
+      typeof body.message === "string" ? { unsupported: body.unsupported === true, message: body.message } : null;
+    return json({ ok: true });
+  }
   if (url.pathname === "/__test/vault-revoke") {
     const row = state.vault.find((item) => item.id === body.id);
     if (!row) return json({ error: "unknown item" }, 404);
