@@ -50,11 +50,13 @@ export async function orphanDays(
       day,
       firstSeenAt: row.first_seen_at,
       lastSeenAt: row.last_seen_at,
-      current: stillOrphan
-        ? true
-        : knownResolved || (!current && complete && row.resource.kind === "pr")
-          ? false
-          : null,
+      current: row.retired
+        ? false
+        : stillOrphan
+          ? true
+          : knownResolved || (!current && complete && row.resource.kind === "pr")
+            ? false
+            : null,
     } satisfies OttoOrphan;
   });
 }

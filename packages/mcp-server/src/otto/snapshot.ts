@@ -11,6 +11,7 @@ export interface FleetRow extends FleetSandbox {
   runtime_events: (string | null)[];
 }
 export interface OrphanDayRow {
+  retired?: boolean;
   resource: OttoResource;
   reason: string;
   first_seen_at: string;
@@ -51,7 +52,10 @@ with candidates as materialized (
  from public.otto_facts where org_id=$1 and repository=$2 order by subject,kind,coalesce(evidence->'head'->>'sha',''),observed_at desc,id desc) f) ranked where rank<=2
  order by subject,kind,observed_at desc,id desc limit 2001
 ), history as materialized (
- select d.resource,d.reason,d.first_seen_at,d.last_seen_at from public.otto_orphan_days d
+ select d.resource,d.reason,d.first_seen_at,d.last_seen_at,
+ exists(select 1 from public.sandboxes s where s.id=case when d.kind='sandbox' then d.external_id::uuid end
+ and s.org_id=d.org_id and (s.deleted_at is not null or s.status in ('stopped','deleted','failed'))) as retired
+ from public.otto_orphan_days d
  where d.org_id=$1 and d.repository=$2 and d.observer_id=$3 and d.day=$5
  and (d.resource#>>'{owner,sandboxId}' is null or exists(select 1 from public.sandboxes s where s.id=(d.resource#>>'{owner,sandboxId}')::uuid and s.org_id=d.org_id and (s.visibility='org' or s.access_owner_id=$3)))
  and (d.kind='pr' or exists(select 1 from public.sandboxes s where s.id=d.external_id::uuid and s.org_id=d.org_id and (s.visibility='org' or s.access_owner_id=$3)))
