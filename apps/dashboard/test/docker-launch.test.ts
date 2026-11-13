@@ -117,6 +117,7 @@ test("the dialog proposes each image already used on the host once, newest first
     { image: other, label: `ghcr.io/acme/worker:2 (${"b".repeat(12)})` },
   ]);
   expect(imageLabel(`docker.io/library/debian@sha256:${"d".repeat(64)}`)).toBe(`debian (${"d".repeat(12)})`);
+  expect(imageLabel(`docker.io/acme/x@sha256:${"d".repeat(64)}`)).toBe(`acme/x (${"d".repeat(12)})`);
   const many = Array.from({ length: 8 }, (_, i) => ({
     docker_host_id: HOST,
     docker_image: `img${i}@sha256:${"a".repeat(64)}`,

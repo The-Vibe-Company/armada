@@ -81,7 +81,10 @@ function DockerLaunchForm({
   images: HostImage[];
 }) {
   const id = useId();
-  const [imageChoice, setImageChoice] = useState("default");
+  const [selectedImage, setImageChoice] = useState("default");
+  // A refresh can drop the chosen image from the list: the select then shows, and launches, the default.
+  const imageChoice =
+    selectedImage === "custom" || images.some((item) => item.image === selectedImage) ? selectedImage : "default";
   const root = useRef<HTMLDivElement>(null);
   const storage = dockerLaunchKeyStorage(hostId);
   const router = useRouter();
@@ -236,11 +239,14 @@ function DockerLaunchForm({
  */
 function LaunchProgress() {
   const { pending } = useFormStatus();
-  return pending ? (
+  // Always rendered, so a screen reader announces the text when it appears.
+  return (
     <p role="status" className="mr-auto text-xs text-muted-foreground" data-docker-launch-progress>
-      Preparing the image on your host and starting the sandbox… The first launch with an image can take a few minutes.
+      {pending
+        ? "Preparing the image on your host and starting the sandbox… The first launch with an image can take a few minutes."
+        : null}
     </p>
-  ) : null;
+  );
 }
 
 /** Longer than a launch's own deadline; after it, the same choices start a new sandbox. */

@@ -1,3 +1,4 @@
+import { DOCKER_DEFAULT_IMAGE } from "@armada/core";
 import { cache } from "react";
 import { ControlError, controlPost } from "@/lib/control";
 import {
@@ -121,30 +122,36 @@ export const readDockerLaunchOption = cache(async (): Promise<DockerLaunchOption
   }
 });
 
-/** How many of the newest Docker sandboxes are read to find the images each host has already used. */
-const RECENT_SANDBOXES = 200;
+/** How many of a host's newest non-default Docker sandboxes are read to find the images it has already used. */
+const RECENT_SANDBOXES = 50;
 
 /**
  * The images already used for sandboxes on each of `hostIds` (#1507), newest first, for the launch dialog to propose.
- * Read as the viewer: row level security returns only the sandboxes they may see. A failed read proposes none.
+ * One read per host, so a busy host never hides another's images. Read as the viewer: row level security returns
+ * only the sandboxes they may see. A failed read proposes none for that host.
  */
 export async function readRecentHostImages(
   orgId: string,
   hostIds: readonly string[],
 ): Promise<Map<string, HostImage[]>> {
-  if (hostIds.length === 0) return new Map();
   const supabase = await createClient();
-  const { data, error } = await supabase
-    .from("sandboxes")
-    .select("docker_host_id,docker_image,created_at")
-    .eq("org_id", orgId)
-    .in("docker_host_id", [...hostIds])
-    .not("docker_image", "is", null)
-    .order("created_at", { ascending: false })
-    .limit(RECENT_SANDBOXES);
-  if (error) {
-    console.error(`Recent host images could not be read: ${error.message}`);
-    return new Map();
-  }
-  return new Map(hostIds.map((hostId) => [hostId, recentHostImages(data ?? [], hostId)]));
+  const entries = await Promise.all(
+    hostIds.map(async (hostId): Promise<[string, HostImage[]]> => {
+      const { data, error } = await supabase
+        .from("sandboxes")
+        .select("docker_host_id,docker_image")
+        .eq("org_id", orgId)
+        .eq("docker_host_id", hostId)
+        .not("docker_image", "is", null)
+        .neq("docker_image", DOCKER_DEFAULT_IMAGE)
+        .order("created_at", { ascending: false })
+        .limit(RECENT_SANDBOXES);
+      if (error) {
+        console.error(`Recent images of host ${hostId} could not be read: ${error.message}`);
+        return [hostId, []];
+      }
+      return [hostId, recentHostImages(data ?? [], hostId)];
+    }),
+  );
+  return new Map(entries);
 }

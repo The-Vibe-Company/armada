@@ -147,12 +147,12 @@ export type HostImage = { image: string; label: string };
 const RECENT_IMAGES = 5;
 
 /**
- * A readable name for a pinned image: the repository and tag without the registry's `docker.io/library/` prefix,
+ * A readable name for a pinned image: the repository and tag without Docker Hub's `docker.io/` and `library/` prefixes,
  * followed by the digest's first 12 characters, so two versions of one image stay distinguishable.
  */
 export function imageLabel(image: string): string {
   const at = image.lastIndexOf("@sha256:");
-  const name = (at < 0 ? image : image.slice(0, at)).replace(/^(docker\.io\/)?library\//, "");
+  const name = (at < 0 ? image : image.slice(0, at)).replace(/^docker\.io\//, "").replace(/^library\//, "");
   return at < 0 ? name : `${name} (${image.slice(at + 8, at + 20)})`;
 }
 
