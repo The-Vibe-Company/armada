@@ -46,7 +46,33 @@ case "$(uname -m)" in
 esac
 server=$(printf '%s' '${origin}' | base64 -d)
 binary="$HOME/.local/bin/armada-docker-host"
-[ ! -e "$binary" ] && [ ! -L "$binary" ] || { echo 'Existing binary: uninstall or inspect it first.' >&2; exit 1; }
+[ ! -L "$binary" ] || { echo 'Refusing a symbolic link at the host binary path.' >&2; exit 1; }
+if [ -e "$binary" ]; then
+  [ -f "$binary" ] && [ -x "$binary" ] || { echo 'The host binary path must be an executable file.' >&2; exit 1; }
+  status=$("$binary" status) || {
+    echo 'Could not read the existing registration. State and the new token have been preserved. Run armada-docker-host status to diagnose it.' >&2; exit 1;
+  }
+  printf 'Existing Docker host: %s\\n' "$status"
+  case "$status" in
+    *'"registered":true'*)
+      unset token
+      echo 'Keeping the existing registration; the new one-use token has not been consumed.'
+      case "$status" in *'"connected":true'*) echo 'connected'; exit 0 ;; esac
+      echo 'Restarting the existing user service and waiting for it to reconnect.'
+      systemctl --user restart armada-docker-host.service
+      attempt=0
+      while [ "$attempt" -lt 60 ]; do
+        if "$binary" status | grep -q '"connected":true'; then echo 'connected'; exit 0; fi
+        attempt=$((attempt + 1))
+        sleep 1
+      done
+      echo 'Existing host is still offline. Registration preserved. Check journalctl --user -u armada-docker-host.service; to replace it safely, run armada-docker-host uninstall, then paste a fresh command.' >&2
+      exit 1
+      ;;
+    *'"registered":false'*) echo 'Replacing the unregistered host binary.' ;;
+    *) echo 'Unrecognized host status; registration and token preserved.' >&2; exit 1 ;;
+  esac
+fi
 mkdir -p "$HOME/.local/bin"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT

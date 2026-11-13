@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   DEFAULT_LAUNCH_TTL_SECONDS,
+  DOCKER_DEFAULT_IMAGE,
   type DockerLaunchResult,
   type DockerSandboxRecord,
   type GoldenActor,
@@ -11,6 +12,7 @@ import {
   resolveModelChoice,
   type SkillReceipt,
   type Sql,
+  VaultError,
   validateSkillPins,
 } from "@armada/core";
 import {
@@ -150,9 +152,10 @@ function normalize(body: Record<string, unknown>): Request {
     body.provider !== "docker" ||
     !HARNESSES.includes(body.harness as Harness) ||
     (body.visibility !== undefined && body.visibility !== "private") ||
-    typeof body.image !== "string" ||
-    body.image.length > 512 ||
-    !/^[a-z0-9][a-z0-9./:_-]*@sha256:[0-9a-f]{64}$/.test(body.image) ||
+    (body.image !== undefined &&
+      (typeof body.image !== "string" ||
+        body.image.length > 512 ||
+        !/^[a-z0-9][a-z0-9./:_-]*@sha256:[0-9a-f]{64}$/.test(body.image))) ||
     (body.credentialVersion !== undefined &&
       (!Number.isSafeInteger(body.credentialVersion) || (body.credentialVersion as number) < 1)) ||
     (body.model !== undefined && typeof body.model !== "string") ||
@@ -195,7 +198,7 @@ function normalize(body: Record<string, unknown>): Request {
     harness: body.harness as Harness,
     visibility: "private",
     hostId: identifier(body.hostId),
-    image: body.image,
+    image: (body.image as string | undefined) ?? DOCKER_DEFAULT_IMAGE,
     credentialId: identifier(body.credentialId),
     credentialVersion: (body.credentialVersion as number | undefined) ?? null,
     requestId: identifier(body.requestId),
@@ -345,7 +348,14 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
     };
   }
   return {
-    async launch(caller: Caller, body: Record<string, unknown>): Promise<DockerLaunchResult> {
+    async launch(
+      caller: Caller,
+      body: Record<string, unknown>,
+      admission?: {
+        beforeReserve(tx: Sql): Promise<void>;
+        beforeStart(): Promise<void>;
+      },
+    ): Promise<DockerLaunchResult> {
       try {
         const request = normalize(body);
         const actor = { userId: identifier(caller.userId), orgId: request.org };
@@ -406,17 +416,21 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
             const exists =
               (await tx.query(`select id from public.sandboxes where id=$1`, [request.requestId])).rows.length > 0;
             if (exists) return load(tx, actor, request, hash);
-            await createDockerSandboxService(scoped(tx), key, { enabled: true }).reserve(actor, {
-              requestId: request.requestId,
-              hostId: request.hostId,
-              image: request.image,
-              harness: request.harness,
-              credentialId: request.credentialId,
-              credentialVersion: manifest.credentialVersion,
-              model: request.model,
-              reasoningEffort: request.reasoningEffort,
-              ...(body.ttlSeconds === undefined ? {} : { ttlSeconds: request.ttlSeconds }),
-            });
+            await createDockerSandboxService(scoped(tx), key, { enabled: true }).reserve(
+              actor,
+              {
+                requestId: request.requestId,
+                hostId: request.hostId,
+                image: request.image,
+                harness: request.harness,
+                credentialId: request.credentialId,
+                credentialVersion: manifest.credentialVersion,
+                model: request.model,
+                reasoningEffort: request.reasoningEffort,
+                ...(body.ttlSeconds === undefined ? {} : { ttlSeconds: request.ttlSeconds }),
+              },
+              admission?.beforeReserve,
+            );
             if (resolved.usagePricing)
               await createSqlSandboxStore(scoped(tx), { turnModels: true }).recordUsagePricingContext?.(
                 request.requestId,
@@ -459,6 +473,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
         }
         await acknowledged(request.requestId);
         await live();
+        await admission?.beforeStart();
         await options.bootstrap.bootstrap(actor, request.requestId, manifest.bootstrapId);
         await acknowledged(manifest.bootstrapId);
         let receipt: Receipt;
@@ -503,6 +518,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
         if (manifest.request.prompt !== null) {
           for (;;) {
             await live();
+            await admission?.beforeStart();
             const result = await runtime.prompt(actor, request.requestId, {
               requestId: manifest.promptId,
               text: manifest.request.prompt,
@@ -541,7 +557,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
           return envelope(saved.row, saved.receipt);
         });
       } catch (error) {
-        if (error instanceof ProviderError) throw error;
+        if (error instanceof ProviderError || error instanceof VaultError) throw error;
         throw failure("unavailable");
       }
     },

@@ -276,7 +276,7 @@ describe("auth commands", () => {
     };
 
     const result = await capture(["login", "--email", "ada@example.com"], auth);
-    expect(result).toMatchObject({ code: 0, out: "Logged in.\n", err: expect.stringContaining("Type the code") });
+    expect(result).toMatchObject({ code: 0, out: "Logged in.\n", err: expect.stringContaining("type the code") });
     expect(calls.map(({ url }) => url)).toEqual([
       `${ORIGIN}/api/v1/auth/email/start`,
       `${ORIGIN}/api/v1/auth/email/verify`,

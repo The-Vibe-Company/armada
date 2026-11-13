@@ -1,9 +1,10 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import { AuthError, type AuthFetch, assertEmail, createPkce, type Provider } from "@armada/auth";
+import { AuthError, type AuthFetch, assertEmail, type Provider } from "@armada/auth";
 import { createArmadaApiClient, DEFAULT_ARMADA_API_URL } from "./armada-api.ts";
 import { browserLogin } from "./browser-login.ts";
+import { emailLogin } from "./email-login.ts";
 import { filePreferences, type Preferences } from "./preferences.ts";
 import { fileSessionStore, type SessionStore } from "./session.ts";
 
@@ -81,7 +82,7 @@ function promptCode(signal: AbortSignal): Promise<string> {
       reject(new Error("Stopped reading the code."));
     };
     signal.addEventListener("abort", stop, { once: true });
-    lines.question("Code from the email (do not open its link first): ", (answer) => {
+    lines.question("Code from the email (or open its link on this machine): ", (answer) => {
       signal.removeEventListener("abort", stop);
       lines.close();
       resolve(answer);
@@ -138,58 +139,11 @@ export async function loginCommand(
   }
   if (how.email !== undefined) {
     const email = assertEmail(how.email);
-    const pkce = await createPkce();
-    const state = crypto.randomUUID().replaceAll("-", "");
-    const server = Bun.serve({
-      hostname: "127.0.0.1",
-      port: 0,
-      fetch: () => new Response("Not found", { status: 404 }),
-    });
-    const callback = `http://127.0.0.1:${server.port}/callback`;
-    const start = await io.fetch(new URL("/api/v1/auth/email/start", origin), {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ email, redirect_uri: callback, code_challenge: pkce.challenge, state }),
-    });
-    try {
-      if (!start.ok) throw new AuthError("Armada could not start email login.", "unauthorized");
-      io.err(`Sent a sign-in email to ${email}. Type the code it contains.\n`);
-      if (!io.readCode) throw new AuthError("Email code input is unavailable.", "usage");
-      const code = await io.readCode(new AbortController().signal);
-      const response = await io.fetch(new URL("/api/v1/auth/email/verify", origin), {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ email, code }),
-      });
-      const value = (await response.json().catch(() => null)) as {
-        accessToken?: unknown;
-        refreshToken?: unknown;
-        expiresAt?: unknown;
-      } | null;
-      if (
-        !response.ok ||
-        !value ||
-        typeof value.accessToken !== "string" ||
-        typeof value.refreshToken !== "string" ||
-        typeof value.expiresAt !== "string"
-      )
-        throw new AuthError(
-          "Could not verify this code. It may be incorrect, expired, or already used. Opening the email link uses up the code. Request a new code and enter it without opening the link.",
-          "unauthorized",
-        );
-      await io.session.write({
-        loginId: crypto.randomUUID(),
-        armadaUrl: origin,
-        accessToken: value.accessToken,
-        refreshToken: value.refreshToken,
-        expiresAt: value.expiresAt,
-      });
-      await io.emailPreferences?.write(origin, email);
-      io.out("Logged in.\n");
-      return;
-    } finally {
-      await server.stop(false);
-    }
+    const result = await emailLogin(io, email, origin);
+    await io.session.write({ loginId: crypto.randomUUID(), armadaUrl: origin, ...result });
+    await io.emailPreferences?.write(origin, email);
+    io.out("Logged in.\n");
+    return;
   }
   // Browser login is Armada-hosted: the CLI never contacts a native provider.
   if (how.email === undefined) {

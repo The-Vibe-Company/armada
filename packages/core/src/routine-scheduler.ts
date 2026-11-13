@@ -5,7 +5,7 @@ import { VaultError } from "./vault-error.ts";
 
 export interface RoutineLaunchAdmission {
   /** Called by the template launch immediately before provider allocation, after the claim is durable. */
-  beforeFork(): Promise<void>;
+  beforeFork(tx?: Sql): Promise<void>;
 }
 
 export type RoutineTaskState = "running" | "finished" | "failed" | "interrupted" | "unknown";
@@ -150,10 +150,10 @@ export function createRoutineScheduler(sql: Sql, runtime: RoutineSchedulerRuntim
           requestKey: run.request_key,
         },
         {
-          beforeFork: async () => {
+          beforeFork: async (tx = sql) => {
             // A preflight can outlive its lease while another replica concludes that no claim
             // exists. Fence that stale caller at the provider boundary, not just history publication.
-            const current = await sql.query(
+            const current = await tx.query(
               "select id from public.routine_runs where id=$1 and state='admitted' and lease_id=$2",
               [run.id, run.lease_id],
             );
