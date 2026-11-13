@@ -10,12 +10,25 @@ money, native Boat collector, Modal change or migration is introduced.
 
 Quotes use the existing pre-work admission book. Replayed event sequences do not
 reprice or count twice; a new runtime epoch retains the session admission. Missing
-counters/models/prices remain unknown. In particular, Codex can omit
-`cacheWriteInputTokens`: its counter remains null and the current shared pricing
-policy then reports `cost.unknown: tokens`, not an invented zero or complete
-priced subtotal. This is **not** a declaration that positive real Codex cost
-parity is finished. The next usage slice must resolve any actual harness/price
-dimension gap before subscriptions; do not hide it by guessing counters.
+counters/models/prices remain unknown. The pinned Codex **0.167.0** recording
+already reports cache writes, so no pricing-policy relaxation, zero inference or
+harness upgrade is needed to produce positive cost for complete observations.
+
+The positive-cost contract is now exercised across the real Codex JSONL driver,
+encrypted runtime upload, shared SQL pricing writer and the same sandbox store
+used by status. The recorded first turn reports 13,143 input / 5 output / 0
+cache-read / 13,140 cache-write tokens and prices at USD `0.032906`. A **new
+driver process and runtime epoch**, restoring the closed native rollout, reports
+only the next turn's 13,163 input / 5 output / 13,140 cache-read / 20 cache-write
+tokens: USD `0.00142`, session USD `0.034326`. Replaying either epoch's archive
+cannot duplicate those turns. These are exact frozen public catalog estimates,
+not guest money or live provider invoices. This offline contract does not claim
+real staging inference or that an incomplete observation may be priced.
+
+Missing `cacheWriteInputTokens` still means null / `unknown:tokens`; the test
+never fills absent dimensions with zero. Missing model/prices, ambiguous cold
+resume history and custom endpoints without explicit rates retain their existing
+unknown rules.
 
 ## ONE staging lifecycle, batched with the pending skills / MCP check
 
@@ -47,9 +60,12 @@ The verifier independently checks exact decimal aggregation of stored quotes.
 When all shares are priced it prints `usageProof.cost.status: priced` and USD /
 basis; otherwise USD must be null with a closed unknown reason and the correct
 unpriced-turn count. Final `usageAfterResume: verified` proves **delivery,
-attribution and admission preservation**, while `costAfterResume` is explicitly
-`priced` or `unknown`. **Unknown cost is not a positive cost-parity pass**; retain
-that orange table row and report the reason. Existing MCP, GitHub, skills,
+attribution and admission preservation**, and positive cost acceptance additionally requires **every** turn's non-null,
+positive `pricing.usd`, positive `usage.cost.usd` immediately after the initial
+prompt and after the first resumed prompt, and final `costAfterResume: priced`.
+The existing verifier can also print `unknown` for diagnostic runs; its exit code
+alone is **not** positive-cost acceptance. Reject unknown/zero cost and retain the
+orange parity row until the coordinator records that positive proof. Existing MCP, GitHub, skills,
 memory, epoch+1 and stopped-history gates remain mandatory in the same run.
 
 Offline proof: the real encrypted upload/SQL path prices known observed tuples
