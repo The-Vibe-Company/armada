@@ -19,8 +19,12 @@ interface Reply {
     checkpointVersion?: number;
     resumeVersion?: number;
     githubVersion?: number;
+    mcpVersion?: number;
   };
   githubReady?: boolean;
+  mcpReady?: boolean;
+  connections?: string[];
+  servers?: string[];
   status?: string;
   revision?: string;
   configured?: boolean;
@@ -55,13 +59,39 @@ if (options.boatRuntime?.enabled !== true || options.boatRuntime.diagnosticsVers
   throw Error(
     "Use the armada-server origin with experimental Boat runtime diagnostics v1 enabled; no launch attempted.",
   );
+const mcpMode = process.argv.includes("--mcp");
+const mcpConnection = (process.env.ARMADA_RUNTIME_MCP_CONNECTION_ID ?? "").toLowerCase();
+const mcpTool = process.env.ARMADA_RUNTIME_MCP_TOOL ?? "";
+const mcpExpected = process.env.ARMADA_RUNTIME_MCP_EXPECT ?? "";
+const mcpArgumentsJson = process.env.ARMADA_RUNTIME_MCP_ARGS_JSON ?? "{}";
+let mcpArguments: Record<string, unknown> = {};
+const mcpServer = `armada_${mcpConnection.replaceAll("-", "_")}`;
+if (mcpMode) {
+  if (
+    options.boatRuntime.mcpVersion !== 1 ||
+    !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(mcpConnection) ||
+    !/^[A-Za-z0-9_.-]{1,64}$/.test(mcpTool) ||
+    !mcpExpected ||
+    mcpExpected.length > 1024 ||
+    Buffer.byteLength(mcpArgumentsJson) > 4096
+  )
+    throw Error(
+      "MCP check requires v1, connection UUID, read-only tool, non-secret JSON args and expected substring; no launch attempted.",
+    );
+  const parsed: unknown = JSON.parse(mcpArgumentsJson);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+    throw Error("MCP args must be a non-secret JSON object; no launch attempted.");
+  mcpArguments = parsed as Record<string, unknown>;
+  const preflight = await api("sandbox/mcp-preflight-v1", { runtimeVersion: 1, org, connections: [mcpConnection] });
+  if (preflight.mcpReady !== true) throw Error("MCP preflight refused; no launch attempted.");
+}
 const githubMode = process.argv.includes("--github");
 const repository = process.env.ARMADA_RUNTIME_GITHUB_REPOSITORY ?? "";
 const resumeMode = process.argv.includes("--resume");
 const checkpointMode = process.argv.includes("--checkpoint") || resumeMode;
 if (resumeMode && options.boatRuntime.resumeVersion !== 1)
   throw Error("Server has no verified runtime resume v1; no launch attempted.");
-const followup = process.argv.includes("--followup") || checkpointMode || githubMode;
+const followup = process.argv.includes("--followup") || checkpointMode || githubMode || mcpMode;
 if (githubMode) {
   if (options.boatRuntime.githubVersion !== 1 || !repository || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository))
     throw Error("GitHub check requires broker v1, ARMADA_RUNTIME_GITHUB_REPOSITORY=owner/repo; no launch attempted.");
@@ -91,7 +121,49 @@ interface GitHubProof {
 }
 let githubProof: GitHubProof | undefined;
 const githubToolPrompts = new Set<string>();
-const githubPrompt = `Run this read-only shell command using your command tool: \`gh api repos/${repository} --jq .full_name\`. After it succeeds, reply exactly with the token I originally asked you to remember. Do not change files.`;
+const checks = [
+  ...(githubMode
+    ? [`Run this read-only shell command using your command tool: \`gh api repos/${repository} --jq .full_name\`.`]
+    : []),
+  ...(mcpMode
+    ? [
+        `Call the read-only MCP tool ${mcpTool} on server ${mcpServer} with exactly these non-secret JSON arguments: ${JSON.stringify(mcpArguments)}. Do not substitute a shell or another tool.`,
+      ]
+    : []),
+];
+const toolsPrompt = `${checks.join(" ")} After all tools succeed, reply exactly with the token I originally asked you to remember. Do not change files.`;
+const mcpToolPrompts = new Set<string>();
+let mcpProof:
+  | { epoch: string; revision: string; promptId: string; connectionId: string; server: string; tool: string }
+  | undefined;
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  if (value && typeof value === "object")
+    return `{${Object.entries(value)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([k, v]) => `${JSON.stringify(k)}:${canonical(v)}`)
+      .join(",")}}`;
+  return JSON.stringify(value) ?? "undefined";
+}
+async function configureMcp(epoch: string) {
+  const result = await api("sandbox/configure-mcp-runtime-v1", { id, connections: [mcpConnection] });
+  if (
+    result.runtime?.kind !== "armada" ||
+    result.runtime.epoch !== epoch ||
+    !result.revision ||
+    result.connections?.length !== 1 ||
+    result.connections[0] !== mcpConnection ||
+    result.servers?.length !== 1 ||
+    result.servers[0] !== mcpServer
+  )
+    throw Error("Missing current-epoch runtime MCP configuration acknowledgement.");
+  return result.revision;
+}
+function verifyMcp(promptId: string, epoch: string, revision: string) {
+  if (!mcpToolPrompts.has(promptId))
+    throw Error("Missing this prompt's successful MCP result from the selected runtime server and exact arguments.");
+  return { epoch, revision, promptId, connectionId: mcpConnection, server: mcpServer, tool: mcpTool };
+}
 async function configureGitHub(epoch: string) {
   const result = await api("github/refresh", { id });
   if (
@@ -173,6 +245,17 @@ try {
       if (page.source !== "armada-runtime") throw Error("History did not come from the Armada journal archive.");
       for (const event of page.events ?? []) {
         if (event.promptId !== promptId) continue;
+        if (mcpMode && event.kind === "message") {
+          for (const tool of event.tools)
+            if (
+              tool.server === mcpServer &&
+              tool.name === mcpTool &&
+              canonical(tool.input) === canonical(mcpArguments) &&
+              tool.result?.isError === false &&
+              JSON.stringify(tool.result.output)?.includes(mcpExpected)
+            )
+              mcpToolPrompts.add(promptId);
+        }
         if (githubMode && event.kind === "message") {
           for (const tool of event.tools) {
             const command = (tool.input as { command?: unknown } | undefined)?.command;
@@ -211,6 +294,7 @@ try {
   let nextPromptId: string | undefined;
   if (followup) {
     if (!launched.conversationId) throw Error("Launch did not return a conversation ID.");
+    const mcpRevision = mcpMode ? await configureMcp(launched.runtime.epoch ?? "") : undefined;
     const revision = githubMode ? await configureGitHub(launched.runtime.epoch ?? "") : undefined;
     const requestId = crypto.randomUUID();
     console.log(
@@ -225,9 +309,10 @@ try {
       id,
       request_id: requestId,
       conversation_id: launched.conversationId,
-      prompt: githubMode
-        ? githubPrompt
-        : "Reply exactly with the token I asked you to remember in my previous message. Do not use tools or change files.",
+      prompt:
+        githubMode || mcpMode
+          ? toolsPrompt
+          : "Reply exactly with the token I asked you to remember in my previous message. Do not use tools or change files.",
     });
     if (
       !sent.promptId ||
@@ -241,6 +326,7 @@ try {
         "Missing same-conversation/epoch runtime follow-up acknowledgement. Reconcile with the original request_id; do not launch again.",
       );
     await verify(sent.promptId, memory);
+    if (mcpRevision) mcpProof = verifyMcp(sent.promptId, launched.runtime.epoch ?? "", mcpRevision);
     if (revision) githubProof = await verifyGitHub(sent.promptId, launched.runtime.epoch ?? "", revision);
     nextPromptId = sent.promptId;
     followupPrompt = sent.promptId;
@@ -268,6 +354,7 @@ try {
       promptId: launched.promptId,
       answer: "verified",
       ...(githubProof ? { github: "verified", githubProof } : {}),
+      ...(mcpProof ? { mcp: "verified", mcpProof } : {}),
       ...(checkpointReceipt ? { checkpoint: "verified", watermark: checkpointReceipt.checkpoint?.watermark } : {}),
       ...(nextPromptId
         ? { followup: "verified", followupPromptId: nextPromptId, conversationId: launched.conversationId }
@@ -367,17 +454,22 @@ if (resumeMode && !failure && id && checkpointReceipt && initialConversation && 
     await priorHistory?.();
     const third = resumed.promptId;
     let fourth: string | undefined;
-    if (githubMode) {
+    if (githubMode || mcpMode) {
       const epoch = resumed.runtime.epoch ?? "";
-      const unconfigured = await api("github/runtime-status", { id });
-      if (
-        unconfigured.configured !== false ||
-        unconfigured.runtime?.kind !== "armada" ||
-        unconfigured.runtime.epoch !== epoch
-      )
-        throw Error("Old GitHub configuration survived resume or current-epoch status is unavailable.");
-      const revision = await configureGitHub(epoch);
-      if (revision === githubProof?.revision) throw Error("Resume reused the previous GitHub revision.");
+      const mcpRevision = mcpMode ? await configureMcp(epoch) : undefined;
+      if (mcpRevision && mcpRevision === mcpProof?.revision) throw Error("Resume reused the previous MCP revision.");
+      let revision: string | undefined;
+      if (githubMode) {
+        const unconfigured = await api("github/runtime-status", { id });
+        if (
+          unconfigured.configured !== false ||
+          unconfigured.runtime?.kind !== "armada" ||
+          unconfigured.runtime.epoch !== epoch
+        )
+          throw Error("Old GitHub configuration survived resume or current-epoch status is unavailable.");
+        revision = await configureGitHub(epoch);
+        if (revision === githubProof?.revision) throw Error("Resume reused the previous GitHub revision.");
+      }
       const requestId = crypto.randomUUID();
       console.log(
         JSON.stringify({
@@ -391,7 +483,7 @@ if (resumeMode && !failure && id && checkpointReceipt && initialConversation && 
         id,
         request_id: requestId,
         conversation_id: initialConversation,
-        prompt: githubPrompt,
+        prompt: toolsPrompt,
       });
       if (
         !sent.promptId ||
@@ -405,7 +497,8 @@ if (resumeMode && !failure && id && checkpointReceipt && initialConversation && 
           "Missing new-epoch GitHub follow-up acknowledgement. Reconcile the original request_id; do not activate again.",
         );
       await check(sent.promptId, memory);
-      githubProof = await verifyGitHub(sent.promptId, epoch, revision);
+      if (revision) githubProof = await verifyGitHub(sent.promptId, epoch, revision);
+      if (mcpRevision) mcpProof = verifyMcp(sent.promptId, epoch, mcpRevision);
       fourth = sent.promptId;
     }
     verifyStoppedHistory = async () => {
@@ -435,6 +528,7 @@ if (resumeMode && !failure && id && checkpointReceipt && initialConversation && 
         conversationId: initialConversation,
         resume: "verified",
         ...(githubMode ? { githubAfterResume: "verified", githubProof } : {}),
+        ...(mcpMode ? { mcpAfterResume: "verified", mcpProof } : {}),
         source: "armada-runtime",
         previousEpoch,
         epoch: resumed.runtime?.epoch,

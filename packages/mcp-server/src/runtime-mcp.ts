@@ -24,6 +24,7 @@ export function createRuntimeMcp(options: {
   key: string;
   origin: string;
   commands: ReturnType<typeof createRuntimeCommands>;
+  probe?: (userId: string, orgId: string, connectionId: string) => Promise<{ status: string }>;
 }) {
   const { sql, key } = options,
     authority = createRuntimeEnrolments(sql, key);
@@ -51,6 +52,8 @@ export function createRuntimeMcp(options: {
     if (!caller.orgs.some((m) => m.orgId === input.org)) return deny();
     const selected = ids(input.connections);
     await connections(sql, caller, input.org, selected);
+    for (const id of selected)
+      if (options.probe && (await options.probe(caller.userId, input.org, id)).status !== "connected") return deny();
     return { mcpReady: true, connections: selected };
   }
   async function owner(caller: Caller, id: string) {
@@ -63,7 +66,7 @@ export function createRuntimeMcp(options: {
     const row = (
       await db.query<{ mcp_generation: number; expires_at: string | Date }>(
         `select mcp_generation,expires_at from public.sandboxes s
-      where s.id=$1 and s.status in ('ready','running') and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>now()
+      where s.id=$1 and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id) and s.status in ('ready','running') and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>now()
       and not exists(select 1 from public.runtime_checkpoints p where p.sandbox_id=s.id and p.epoch=$2)`,
         [id, epoch],
       )

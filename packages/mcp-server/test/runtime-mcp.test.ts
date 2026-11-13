@@ -161,7 +161,14 @@ describe("enrolled runtime remote MCP", () => {
         content: [{ type: "text", text: "remote result 1" }],
       });
       expect(calls).toBe(1);
-      expect(await x.service.refresh(f.caller, x.input)).toEqual(result);
+      expect(
+        await createRuntimeMcp({
+          sql: f.sql,
+          key: ENCRYPTION_KEY,
+          origin: "https://armada.test",
+          commands: f.bridge,
+        }).refresh(f.caller, x.input),
+      ).toEqual(result);
       await f.db.query("update mcp_grants set generation=generation+1 where connection_id=$1", [x.c.id]);
       await expect(x.service.refresh(f.caller, x.input)).rejects.toMatchObject({ code: "conflict" });
       expect(await createSqlMcpLeasePort(f.sql).validate(hash, "tools")).toBeNull();

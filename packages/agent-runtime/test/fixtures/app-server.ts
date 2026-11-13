@@ -258,6 +258,20 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       return;
     }
     if (params.input[0]?.type === "text" && params.input[0].text === "redirect") {
+      if (process.env.ARMADA_MCP_INSPECTION)
+        notify("item/completed", {
+          threadId: thread,
+          item: {
+            type: "mcpToolCall",
+            id: "mcp-fixture",
+            server: "remote",
+            tool: "read_fixture",
+            arguments: {},
+            result: { content: [{ type: "text", text: "remote fixture result" }] },
+            error: null,
+          },
+        });
+
       notify("item/completed", {
         threadId: thread,
         item: { type: "agentMessage", id: "final", text: "redirect delivered once" },

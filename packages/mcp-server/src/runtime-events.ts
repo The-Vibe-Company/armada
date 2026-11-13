@@ -36,6 +36,7 @@ function event(value: unknown): value is AgentEvent {
         record(tool) &&
         id(tool.id) &&
         id(tool.name) &&
+        (tool.server === undefined || id(tool.server)) &&
         (tool.result === undefined || (record(tool.result) && typeof tool.result.isError === "boolean")),
     )
   );

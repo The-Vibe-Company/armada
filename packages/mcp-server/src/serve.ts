@@ -114,12 +114,6 @@ export async function startServer(
   const sql = bunSql(config.databaseUrl, config.databasePoolMax);
   const runtimeEnrolments = createRuntimeEnrolments(sql, config.encryptionKey);
   const runtimeCommands = createRuntimeCommands(runtimeEnrolments, config.encryptionKey);
-  const runtimeMcp = createRuntimeMcp({
-    sql,
-    key: config.encryptionKey,
-    origin: config.publicUrl,
-    commands: runtimeCommands,
-  });
   const runtimeSend = createRuntimeFollowup(sql, config.encryptionKey, runtimeCommands);
   const runtimeCheckpoint = createRuntimeCheckpoint(sql, config.encryptionKey, runtimeCommands);
   let subscriptionMigration: ReturnType<typeof createSubscriptionMigration>;
@@ -165,6 +159,13 @@ export async function startServer(
     providerForSandbox: (id) => createMcpSandboxProviderResolver(sql, providers)(id),
     authStore,
     supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
+  });
+  const runtimeMcp = createRuntimeMcp({
+    sql,
+    key: config.encryptionKey,
+    origin: config.publicUrl,
+    commands: runtimeCommands,
+    probe: (userId, orgId, connectionId) => mcp.controlBroker.status({ userId, orgId, connectionId }),
   });
   try {
     await retryDatabaseBoot(async () => {
