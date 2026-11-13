@@ -145,8 +145,9 @@ const MAX_BODY_BYTES = 128 * 1024;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface ControlOptions {
+  dockerControls?: import("./docker-sandbox-controls.ts").DockerSandboxControls;
   /** Trusted installed-route discovery, never taken from request JSON. */
-  docker?: { hosts?: boolean; placement?: boolean; normalApi?: boolean };
+  docker?: { hosts?: boolean; placement?: boolean; normalApi?: boolean; normalLaunch?: boolean };
   runtimeMcp?: RuntimeMcp;
   runtimeGitHub?: RuntimeGitHub;
   runtimeResume?: RuntimeResume;
@@ -935,6 +936,7 @@ async function dispatch(
       {
         ...(options.goldenAdoption ? { goldenAdoption: options.goldenAdoption } : {}),
         caller: scopedCaller,
+        ...(options.dockerControls ? { dockerControls: options.dockerControls } : {}),
         ...(options.runtimeSend ? { runtimeSend: options.runtimeSend } : {}),
         ...(options.runtimeCheckpoint ? { runtimeCheckpoint: options.runtimeCheckpoint } : {}),
         ...(options.runtimeResume ? { runtimeResume: options.runtimeResume } : {}),
@@ -1438,6 +1440,19 @@ async function readLogs(
   runtimeFailure?: { status: "failed"; reason: string };
   olderCursor?: string;
 }> {
+  if (options.dockerControls) {
+    const routed = await options.dockerControls.invoke(caller, "logs", {
+      id,
+      ...(body.cursor === undefined ? {} : { since_cursor: body.cursor }),
+      ...(body.conversationId === undefined ? {} : { conversation_id: body.conversationId }),
+      ...Object.fromEntries(
+        ["limit", "all", "direction", "maxBytes", "coalesce", "follow"]
+          .filter((key) => body[key] !== undefined)
+          .map((key) => [key, body[key]]),
+      ),
+    });
+    if (routed.handled) return routed.result as Awaited<ReturnType<typeof readLogs>>;
+  }
   if (!options.logs) throw new VaultError("unavailable", "Sandbox logs are not configured on the server.");
   const target = await measured(options, "logs_target", () => options.logs!(caller, id));
   if (body.direction !== undefined && body.direction !== "forward" && body.direction !== "backward")

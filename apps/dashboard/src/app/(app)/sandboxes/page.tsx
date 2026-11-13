@@ -1,4 +1,4 @@
-import { HARNESSES, MACHINE_SIZES, SANDBOX_PROVIDERS, type SandboxCost } from "@armada/core";
+import { HARNESSES, MACHINE_SIZES, SANDBOX_PLACEMENT_PROVIDERS, type SandboxCost } from "@armada/core";
 import { BoxesIcon, LockIcon, RocketIcon, SearchXIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
@@ -113,7 +113,7 @@ async function SandboxesContent({ searchParams }: Props) {
                 key === "status"
                   ? SANDBOX_STATUSES
                   : key === "provider"
-                    ? SANDBOX_PROVIDERS
+                    ? SANDBOX_PLACEMENT_PROVIDERS
                     : key === "harness"
                       ? HARNESSES
                       : key === "size"

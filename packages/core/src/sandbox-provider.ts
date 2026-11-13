@@ -1,4 +1,5 @@
 import type { Visibility } from "./contract.ts";
+import type { Database } from "./database.types.ts";
 import type { Provider } from "./provider.ts";
 
 /**
@@ -7,6 +8,21 @@ import type { Provider } from "./provider.ts";
  */
 export const SANDBOX_PROVIDERS = ["boat", "modal"] as const;
 export type SandboxProviderId = (typeof SANDBOX_PROVIDERS)[number];
+
+/** Exhaustive over the database row enum: producer values require shared client vocabulary. */
+export const SANDBOX_PLACEMENT_LABELS = {
+  boat: "Boat",
+  modal: "Modal",
+  docker: "Docker",
+} as const satisfies Record<Database["public"]["Enums"]["sandbox_provider"], string>;
+export type SandboxPlacementProviderId = keyof typeof SANDBOX_PLACEMENT_LABELS;
+/** Every provider a sandbox row can name; golden identity stays narrower. */
+export const SANDBOX_PLACEMENT_PROVIDERS = Object.freeze(
+  Object.keys(SANDBOX_PLACEMENT_LABELS) as [SandboxPlacementProviderId, ...SandboxPlacementProviderId[]],
+);
+export function isSandboxPlacementProvider(value: unknown): value is SandboxPlacementProviderId {
+  return typeof value === "string" && (SANDBOX_PLACEMENT_PROVIDERS as readonly string[]).includes(value);
+}
 
 export function isSandboxProvider(value: unknown): value is SandboxProviderId {
   return typeof value === "string" && (SANDBOX_PROVIDERS as readonly string[]).includes(value);
