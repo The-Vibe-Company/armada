@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { VERSION } from "@armada/core";
 import { createDockerHostInstallRoute } from "../src/docker-host-install.ts";
 
 // The public route is the trust boundary: installer must pin the artifact served by this build.
@@ -12,6 +13,9 @@ test("installer publishes both build digests without credentials and refuses mis
     const request = new Request("http://internal:8080/install-host.sh");
     expect((await route(request))?.status).toBe(503);
     await Bun.write(join(dir, "docker-host.json"), JSON.stringify({ x64: "a".repeat(64), arm64: "b".repeat(64) }));
+    const manifest = await route(new Request("https://armada.example/api/docker-host/install.json"));
+    expect(await manifest?.json()).toEqual({ version: VERSION, x64: "a".repeat(64), arm64: "b".repeat(64) });
+    expect(manifest?.headers.get("cache-control")).toBe("no-store");
     const response = await route(request);
     expect(response?.status).toBe(200);
     const script = await response?.text();
