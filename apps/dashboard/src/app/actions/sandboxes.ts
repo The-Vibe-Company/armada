@@ -285,6 +285,8 @@ export async function launchFromGolden(_previous: ActionResult | null, data: For
       { href: `/sandboxes${search}`, label: "Your newest sandboxes" },
     );
   }
+  // The launch is known: its attempt is not followed again, and the cookie stops travelling with every request.
+  if (cookie) jar.delete(cookie);
   revalidatePath("/sandboxes");
   redirect(`/sandboxes/${launched.id}`);
 }

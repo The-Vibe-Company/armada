@@ -98,13 +98,27 @@ export async function followLaunch(deps: {
     return { state: "started", id: (await deps.launch()).id };
   } catch (error) {
     if (!keyed) throw error;
-    if (!(error instanceof ControlError) || !error.outcomeUnknown) {
+    if (!unknownOutcome(error)) {
       await deps.forget();
       throw error;
     }
     const id = await deps.created(since);
     return id ? { state: "started", id } : { state: "unknown", since };
   }
+}
+
+/**
+ * A launch whose result nobody knows: no answer came back, the server said so (`outcome_unknown`, a provider fork
+ * that may have allocated), or a gateway in front of it answered instead of it.
+ */
+function unknownOutcome(error: unknown): boolean {
+  return (
+    error instanceof ControlError &&
+    (error.outcomeUnknown ||
+      error.code === "outcome_unknown" ||
+      // A gateway's answer carries no Armada error code; the server's own 503 refusals (routing) do.
+      (error.code === undefined && (error.status === 502 || error.status === 503 || error.status === 504)))
+  );
 }
 
 /** The cookie holding one request key's attempt: one per key, so launches from two tabs do not overwrite each other. */

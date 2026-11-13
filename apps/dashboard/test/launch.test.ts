@@ -228,6 +228,17 @@ test("an unanswered launch is followed to the sandbox it started, else reported 
   });
   expect(remembered).toEqual([{ key: KEY, since: 2_000 }]);
   expect(await followLaunch({ ...base, created: async () => null })).toEqual({ state: "unknown", since: 2_000 });
+  // The server saying the fork outcome is unknown, or a gateway answering for it, is followed the same way.
+  for (const unsure of [new ControlError("Unknown.", 500, "outcome_unknown"), new ControlError("Bad gateway.", 502)])
+    expect(
+      await followLaunch({
+        ...base,
+        created: async () => "s1",
+        launch: async () => {
+          throw unsure;
+        },
+      }),
+    ).toEqual({ state: "started", id: "s1" });
   // A refusal the server answered is not followed: the launch failed and the person fixes its cause.
   const refused = new ControlError("No.", 400);
   const error = await followLaunch({
