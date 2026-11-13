@@ -627,3 +627,74 @@ Expected added duration: seconds to about one minute per pair; two existing
 pinned release download per pair plus trivial hashing/exec, with no model usage
 or extra worker. Offline transport tests do not prove deployed provider bytes;
 the coordinator runs both enabled providers after merge.
+
+## Signed-in dashboard reads (#1383)
+
+Both staging smoke workflows also run `bun scripts/dashboard-read-smoke.ts`,
+concurrently with the compute smoke. It creates no resources. After one bounded
+10-second login, all page requests start in parallel with a **15-second bound per
+page**, including the full streamed HTML body. Thus this family adds at most
+25 seconds and overlaps the existing smoke; it adds no required PR check.
+
+The dashboard uses Supabase session cookies, **not** an Armada bearer token.
+Configure these additional environment-scoped staging values before enabling the
+gate. Missing/invalid values fail `dashboard_session` (never silently skip reads):
+
+| Kind | Name | Value |
+| --- | --- | --- |
+| Variable | `ARMADA_SMOKE_DASHBOARD_URL` | Explicit staging dashboard HTTPS origin, not the Railway API origin; no path/query/userinfo |
+| Variable | `ARMADA_SMOKE_SUPABASE_URL` | That dashboard's staging Supabase HTTPS origin |
+| Variable | `ARMADA_SMOKE_SUPABASE_ANON_KEY` | That project's public publishable key or legacy **anon** key; service-role/secret keys refused |
+| Variable | `ARMADA_SMOKE_DASHBOARD_USER_ID` | Dedicated smoke user's Supabase UUID; login must return this identity |
+| Variable | `ARMADA_SMOKE_DASHBOARD_ORG_ID` | Staging smoke org UUID; each rendered active-org selector must confirm it |
+| Variable | `ARMADA_SMOKE_DASHBOARD_OTTO` | Explicit `true` when Otto observes the smoke org, otherwise `false` |
+| Secret | `ARMADA_SMOKE_DASHBOARD_EMAIL` | Dedicated smoke user's confirmed email |
+| Secret | `ARMADA_SMOKE_DASHBOARD_PASSWORD` | Strong, unique staging-only password for that same smoke user |
+
+Coordinator prerequisites: enable password sign-in for the dedicated user on the
+**staging** Supabase project (the regular dashboard can continue using email OTP),
+ensure it is the same user who owns the smoke token, and grant membership in the
+smoke org. Configure its connected provider, named models and GitHub setup as the
+existing smoke requires. The supplied org preference is membership-validated by
+the dashboard; a stale or unauthorized preference cannot pass by falling back to
+another org. The password grant is sent only to the explicit Supabase origin.
+Session/refresh tokens and cookies stay in memory, never files or output, and
+page requests never carry the Armada bearer. Each run signs in afresh, so no
+expiring session secret needs rotation. Do not use production credentials or
+origins. Protect the staging environment; never pass these secrets to PR code.
+
+JSON steps (case `0`) are independently nameable by coordinator failure tooling:
+`dashboard_session`, `dashboard_sandboxes`, `dashboard_routines`,
+`dashboard_templates`, `dashboard_otto` (only when enabled),
+`dashboard_environments`, `dashboard_skills`, `dashboard_tools`,
+`dashboard_variables`, `dashboard_models` (`/harness`),
+`dashboard_organizations` (`/orgs`), `dashboard_settings`.
+Each reports `pass`, `bound_ms`, `elapsed_ms`, and a sanitized failure `code`.
+No response bodies or upstream error messages are logged.
+
+These are normal HTML GETs, not RSC prefetches or a browser: SSR executes the
+page's selected-org, user-JWT Supabase/RLS and Armada control reads, including
+Otto's view reads, before the complete body passes. Redirects (including expired
+sessions), wrong orgs, non-HTML, missing page headings, destructive error panels,
+unavailable/not-configured panels, partial template reads and model-usage read
+errors fail even at HTTP 200. Script/hydration text is excluded from panel checks.
+Ordinary healthy empty lists and informational panels are permitted. This checks
+the reads that SSR exposes, not client-only interactions, and cannot identify a
+read that production code silently swallows without rendering any failure state.
+
+Coordinator checks after merge (workers make **no staging/production calls**):
+
+1. Set the values above in the staging environment; verify dashboard and Supabase
+   origins belong to the same staging deployment and the configured user matches
+   the bearer smoke user. Set Otto explicitly according to its staging config.
+2. Run a staging deployment smoke. Confirm each enabled `dashboard_*` step passes
+   within its stated bound, and a wrong password/expired login fails
+   `dashboard_session` without printing credentials. Restore the valid secret.
+3. Confirm no extra compute is created by the read family; use the separate
+   cleanup changes/checks for the compute smoke's row-growth requirement.
+
+Offline proof: `bun test scripts/dashboard-read-smoke.test.ts` uses fake fetch,
+starts every page before releasing any response, verifies chunked cookies decode
+with the dashboard's pinned Supabase SSR SDK, and deliberately returns broken
+HTTP-200 panels to fail only the named page while siblings finish. No network or
+wall-clock waits are used by these tests.

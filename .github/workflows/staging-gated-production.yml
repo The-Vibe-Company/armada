@@ -69,6 +69,14 @@ jobs:
       ARMADA_URL: ${{ vars.ARMADA_ORIGIN }}
       ARMADA_TOKEN: ${{ secrets.ARMADA_SMOKE_TOKEN }}
       ARMADA_SMOKE_CASES: ${{ secrets.ARMADA_SMOKE_CASES }}
+      ARMADA_SMOKE_DASHBOARD_URL: ${{ vars.ARMADA_SMOKE_DASHBOARD_URL }}
+      ARMADA_SMOKE_SUPABASE_URL: ${{ vars.ARMADA_SMOKE_SUPABASE_URL }}
+      ARMADA_SMOKE_SUPABASE_ANON_KEY: ${{ vars.ARMADA_SMOKE_SUPABASE_ANON_KEY }}
+      ARMADA_SMOKE_DASHBOARD_USER_ID: ${{ vars.ARMADA_SMOKE_DASHBOARD_USER_ID }}
+      ARMADA_SMOKE_DASHBOARD_ORG_ID: ${{ vars.ARMADA_SMOKE_DASHBOARD_ORG_ID }}
+      ARMADA_SMOKE_DASHBOARD_OTTO: ${{ vars.ARMADA_SMOKE_DASHBOARD_OTTO }}
+      ARMADA_SMOKE_DASHBOARD_EMAIL: ${{ secrets.ARMADA_SMOKE_DASHBOARD_EMAIL }}
+      ARMADA_SMOKE_DASHBOARD_PASSWORD: ${{ secrets.ARMADA_SMOKE_DASHBOARD_PASSWORD }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -76,7 +84,7 @@ jobs:
           persist-credentials: false
       - name: Validate configuration before any mutation
         run: |
-          for key in SUPABASE_ACCESS_TOKEN SUPABASE_DB_PASSWORD SUPABASE_PROJECT_ID RAILWAY_TOKEN RAILWAY_PROJECT_ID RAILWAY_ENVIRONMENT_ID RAILWAY_SERVICE_ID VERCEL_TOKEN VERCEL_ORG_ID VERCEL_PROJECT_ID ARMADA_SERVER_URL ARMADA_URL ARMADA_TOKEN ARMADA_SMOKE_CASES; do
+          for key in SUPABASE_ACCESS_TOKEN SUPABASE_DB_PASSWORD SUPABASE_PROJECT_ID RAILWAY_TOKEN RAILWAY_PROJECT_ID RAILWAY_ENVIRONMENT_ID RAILWAY_SERVICE_ID VERCEL_TOKEN VERCEL_ORG_ID VERCEL_PROJECT_ID ARMADA_SERVER_URL ARMADA_URL ARMADA_TOKEN ARMADA_SMOKE_CASES ARMADA_SMOKE_DASHBOARD_URL ARMADA_SMOKE_SUPABASE_URL ARMADA_SMOKE_SUPABASE_ANON_KEY ARMADA_SMOKE_DASHBOARD_USER_ID ARMADA_SMOKE_DASHBOARD_ORG_ID ARMADA_SMOKE_DASHBOARD_OTTO ARMADA_SMOKE_DASHBOARD_EMAIL ARMADA_SMOKE_DASHBOARD_PASSWORD; do
             [[ -n "${!key:-}" ]] || { echo "::error::Missing staging configuration: $key; production blocked."; exit 1; }
           done
           [[ "${ARMADA_URL%/}" == "${ARMADA_SERVER_URL%/}" ]] || {
@@ -108,9 +116,24 @@ jobs:
         env:
           ARMADA_SMOKE: create_real_compute
         run: |
+          # Dashboard receives only its own user credentials, never deployment secrets.
+          env -i PATH="$PATH" HOME="$HOME" \
+            ARMADA_SMOKE_DASHBOARD_URL="$ARMADA_SMOKE_DASHBOARD_URL" \
+            ARMADA_SMOKE_SUPABASE_URL="$ARMADA_SMOKE_SUPABASE_URL" \
+            ARMADA_SMOKE_SUPABASE_ANON_KEY="$ARMADA_SMOKE_SUPABASE_ANON_KEY" \
+            ARMADA_SMOKE_DASHBOARD_USER_ID="$ARMADA_SMOKE_DASHBOARD_USER_ID" \
+            ARMADA_SMOKE_DASHBOARD_ORG_ID="$ARMADA_SMOKE_DASHBOARD_ORG_ID" \
+            ARMADA_SMOKE_DASHBOARD_OTTO="$ARMADA_SMOKE_DASHBOARD_OTTO" \
+            ARMADA_SMOKE_DASHBOARD_EMAIL="$ARMADA_SMOKE_DASHBOARD_EMAIL" \
+            ARMADA_SMOKE_DASHBOARD_PASSWORD="$ARMADA_SMOKE_DASHBOARD_PASSWORD" \
+            bun scripts/dashboard-read-smoke.ts &
+          dashboard_pid=$!
+          status=0
           env -i PATH="$PATH" HOME="$HOME" ARMADA_URL="$ARMADA_URL" ARMADA_TOKEN="$ARMADA_TOKEN" \
             ARMADA_SMOKE_CASES="$ARMADA_SMOKE_CASES" ARMADA_SMOKE="$ARMADA_SMOKE" \
-            bun scripts/post-deploy-smoke.ts --work-preservation --templates-skills --lifecycle --vault --default-skills --scoped-access --github-refresh --golden-runtime --expiry
+            bun scripts/post-deploy-smoke.ts --work-preservation --templates-skills --lifecycle --vault --default-skills --scoped-access --github-refresh --golden-runtime --expiry || status=$?
+          wait "$dashboard_pid" || status=1
+          exit "$status"
       - name: Report blocked production
         if: failure()
         run: echo "::error::Staging deployment or smoke failed; production migrations and deployments are blocked."
