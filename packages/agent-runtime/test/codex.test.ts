@@ -656,3 +656,68 @@ nativeTest("recorded cold Codex resume publishes one unknown snapshot, never his
     await driver.close();
   }
 });
+
+// One driver-boundary regression: actual native notification ordering plus
+// persisted token_count fields; no provider/server duplicate of this contract.
+nativeTest("cold Codex resume subtracts persisted native history before replayed totals", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "codex-resume-"));
+  const path = join(dir, "rollout.jsonl");
+  const recording = await import("./fixtures/codex-resume-recorded.json");
+  const total = recording.default.find((e) => e.phase === "fresh" && e.method === "thread/tokenUsage/updated")!.params!
+    .tokenUsage.total;
+  await writeFile(
+    path,
+    [
+      JSON.stringify({ type: "session_meta", payload: { id: "recorded-thread" } }),
+      JSON.stringify({
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            total_token_usage: {
+              input_tokens: total.inputTokens,
+              output_tokens: total.outputTokens,
+              cached_input_tokens: total.cachedInputTokens,
+              cache_write_input_tokens: total.cacheWriteInputTokens,
+              reasoning_output_tokens: total.reasoningOutputTokens,
+            },
+          },
+        },
+      }),
+    ].join("\n") + "\n",
+  );
+  const driver = new CodexDriver({
+    executable: `${import.meta.dir}/fixtures/recorded-resume.ts`,
+    cwd: import.meta.dir,
+    env: { PATH: process.env.PATH ?? "/usr/bin:/bin", ARMADA_TEST_ROLLOUT: path },
+  });
+  const events: DriverEvent[] = [];
+  try {
+    expect(
+      await driver.start({
+        request: { sandboxId: "s", harness: "codex", text: "Reply OK" },
+        sessionId: "recorded-thread",
+        signal: new AbortController().signal,
+        session: () => {},
+        emit: (e) => events.push(e),
+      }).done,
+    ).toBe("finished");
+    expect(events.filter((e) => e.kind === "other" && e.type === "armada/turnUsage")).toEqual([
+      {
+        kind: "other",
+        type: "armada/turnUsage",
+        data: {
+          model: "gpt-6.1-sol",
+          inputTokens: 13163,
+          outputTokens: 5,
+          cachedTokens: 13140,
+          cacheWriteTokens: 20,
+          reasoningTokens: 0,
+        },
+      },
+    ]);
+  } finally {
+    await driver.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

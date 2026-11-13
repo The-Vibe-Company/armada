@@ -27,17 +27,18 @@ export async function codexResumeUsage(path: string | null | undefined, sessionI
         ["cached_input_tokens", "cachedInputTokens"],
         ["cache_write_input_tokens", "cacheWriteInputTokens"],
         ["reasoning_output_tokens", "reasoningOutputTokens"],
-      ]) {
-        const value = total[native!];
+      ] as const) {
+        const value = total[native];
         if (value === undefined && (native === "cache_write_input_tokens" || native === "reasoning_output_tokens"))
           continue;
         if (!Number.isSafeInteger(value) || value < 0) return null;
-        mapped[key!] = value;
+        mapped[key] = value;
       }
       if (
         mapped.cachedInputTokens! + (mapped.cacheWriteInputTokens ?? 0) > mapped.inputTokens! ||
         (mapped.reasoningOutputTokens ?? 0) > mapped.outputTokens!
-      ) return null;
+      )
+        return null;
       latest = mapped;
     }
     return identity ? latest : null;
