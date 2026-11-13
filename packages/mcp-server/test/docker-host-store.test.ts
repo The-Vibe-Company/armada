@@ -719,3 +719,71 @@ test("uninstall drains bound machines through stop/delete ACKs before idempotent
   await denied(store.poll(a.hostToken, a.installationId));
   await denied(store.unregister(a.hostToken, randomUUID()));
 });
+
+// The migrated boundary owns snapshot visibility/provenance; no provider or snapshot bytes are fabricated as proof.
+test("snapshot lists preserve private owner scope for server SQL and user JWTs, including against org admins", async () => {
+  const a = await fixture();
+  const snapshotId = randomUUID();
+  await db.query(
+    `insert into docker_snapshots(id,org_id,owner_id,host_id,installation_id,name,official_image_version,official_image)
+    values($1,$2,$3,$4,$5,'tools','2.27.0',$6)`,
+    [
+      snapshotId,
+      a.actor.orgId,
+      a.memberId,
+      a.hostId,
+      a.installationId,
+      `ghcr.io/the-vibe-company/armada-sandbox@sha256:${"a".repeat(64)}`,
+    ],
+  );
+  const owner = { userId: a.memberId, orgId: a.actor.orgId };
+  expect(await store.listSnapshots(a.actor, a.hostId)).toEqual([]);
+  expect(await store.listSnapshots(owner, a.hostId)).toEqual([
+    expect.objectContaining({ id: snapshotId, name: "tools", officialImageVersion: "2.27.0" }),
+  ]);
+  for (const userId of [a.actor.userId, a.memberId]) {
+    await db.transaction(async (tx) => {
+      await tx.query("select set_config('request.jwt.claim.sub',$1,true)", [userId]);
+      await tx.exec("set local role authenticated");
+      expect((await tx.query("select id from docker_snapshots")).rows).toEqual(
+        userId === a.memberId ? [{ id: snapshotId }] : [],
+      );
+      const grants = await tx.query<{ allowed: boolean }>(
+        "select has_table_privilege(current_user,'docker_snapshots','INSERT,UPDATE,DELETE') as allowed",
+      );
+      expect(grants.rows[0]?.allowed).toBe(false);
+    });
+  }
+  await db.query("delete from members where org_id=$1 and user_id=$2", [a.actor.orgId, a.memberId]);
+  await denied(store.listSnapshots(owner, a.hostId));
+});
+
+test("snapshot official provenance cannot be replaced and capture metadata must bind the current host installation", async () => {
+  const a = await fixture(),
+    snapshotId = randomUUID();
+  const image = `ghcr.io/the-vibe-company/armada-sandbox@sha256:${"b".repeat(64)}`;
+  const insert = (installation: string) =>
+    db.query(
+      `insert into docker_snapshots(id,org_id,owner_id,host_id,installation_id,name,official_image_version,official_image)
+    values($1,$2,$3,$4,$5,'tools','2.27.0',$6)`,
+      [snapshotId, a.actor.orgId, a.actor.userId, a.hostId, installation, image],
+    );
+  await expect(insert(randomUUID())).rejects.toThrow("snapshot host binding");
+  await insert(a.installationId);
+  for (const [column, value] of [
+    ["official_image_version", "2.28.0"],
+    ["official_image", `ghcr.io/the-vibe-company/armada-sandbox@sha256:${"c".repeat(64)}`],
+    ["installation_id", randomUUID()],
+    ["owner_id", a.memberId],
+  ]) {
+    await expect(db.query(`update docker_snapshots set ${column}=$2 where id=$1`, [snapshotId, value])).rejects.toThrow(
+      "provenance is immutable",
+    );
+  }
+  await db.query("update docker_snapshots set name=$2 where id=$1", [snapshotId, "renamed"]);
+  expect((await store.listSnapshots(a.actor, a.hostId))[0]).toMatchObject({
+    name: "renamed",
+    officialImageVersion: "2.27.0",
+    officialImage: image,
+  });
+});

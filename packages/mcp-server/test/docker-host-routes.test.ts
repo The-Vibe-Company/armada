@@ -84,6 +84,25 @@ test("opt-in host HTTP routes separate user and host capabilities and never cach
     expect(registered.status).toBe(200);
     const host = (await registered.json()) as { hostId: string; hostToken: string };
     expect(host.hostId).toBe(ticket.hostId);
+    const snapshots = await post("/api/v1/docker/snapshots/list", "fixture-member-token", {
+      org: orgId,
+      hostId: host.hostId,
+    });
+    expect(snapshots.status).toBe(200);
+    expect(await snapshots.json()).toEqual({ snapshots: [] });
+    expect(
+      (await post("/api/v1/docker/snapshots/list", host.hostToken, { org: orgId, hostId: host.hostId })).status,
+    ).toBe(401);
+    expect(
+      (
+        await post("/api/v1/docker/snapshots/list", "fixture-member-token", {
+          org: orgId,
+          hostId: host.hostId,
+          image: "custom",
+        })
+      ).status,
+    ).toBe(400);
+
     expect((await post("/api/docker-host/poll", host.hostToken, { installationId })).status).toBe(200);
     expect((await post("/api/v1/docker/hosts/register-token", host.hostToken, { org: orgId })).status).toBe(401);
     expect((await post("/api/docker-host/poll", "fixture-user-token", { installationId })).status).toBe(401);

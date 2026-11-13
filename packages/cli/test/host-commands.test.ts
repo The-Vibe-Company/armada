@@ -145,3 +145,35 @@ test("host add network loss after issue retains host identity without issuing an
   expect(result.err).toContain(hostId);
   expect(result.err).toContain("do not issue another registration blindly");
 });
+
+test("host snapshots lists the saved official image version without offering an image override", async () => {
+  const snapshot = {
+    id: other,
+    hostId,
+    name: "workspace",
+    officialImageVersion: "2.27.0",
+    officialImage: `ghcr.io/the-vibe-company/armada-sandbox@sha256:${"a".repeat(64)}`,
+    createdAt: new Date(start).toISOString(),
+  };
+  for (const json of [false, true]) {
+    const result = await capture(
+      ["host", "snapshots", hostId, "--org", org, ...(json ? ["--json"] : [])],
+      async (request) => {
+        expect(new URL(request.url).pathname).toBe("/api/v1/docker/snapshots/list");
+        expect(await request.json()).toEqual({ org, hostId });
+        return Response.json({ snapshots: [snapshot] });
+      },
+    );
+    expect(result.code).toBe(0);
+    if (json) expect(JSON.parse(result.out)).toEqual({ snapshots: [snapshot] });
+    else {
+      expect(result.out).toContain("BUILT ON ARMADA");
+      expect(result.out).toContain(`${other}\tworkspace\t2.27.0`);
+    }
+  }
+  const malformed = await capture(["host", "snapshots", hostId, "--org", org], async () =>
+    Response.json({ snapshots: [{ ...snapshot, name: "unsafe\nname" }] }),
+  );
+  expect(malformed.code).not.toBe(0);
+  expect(malformed.out).toBe("");
+});

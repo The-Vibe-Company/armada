@@ -95,6 +95,8 @@ export type {
   DockerLaunchResult,
   DockerSandboxRecord,
   DockerSandboxStatus,
+  DockerSnapshotListResponse,
+  DockerSnapshotSummary,
   LaunchCapabilityName,
   LaunchOptionsResponse,
   LaunchProviderCapabilities,

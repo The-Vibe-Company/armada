@@ -458,6 +458,64 @@ export type Database = {
           },
         ];
       };
+      docker_snapshots: {
+        Row: {
+          id: string;
+          org_id: string;
+          owner_id: string;
+          host_id: string;
+          installation_id: string;
+          name: string;
+          official_image_version: string;
+          official_image: string;
+          created_at: string;
+        };
+        Insert: {
+          id: string;
+          org_id: string;
+          owner_id: string;
+          host_id: string;
+          installation_id: string;
+          name: string;
+          official_image_version: string;
+          official_image: string;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          org_id?: string;
+          owner_id?: string;
+          host_id?: string;
+          installation_id?: string;
+          name?: string;
+          official_image_version?: string;
+          official_image?: string;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "docker_snapshots_host_id_fkey";
+            columns: ["host_id"];
+            isOneToOne: false;
+            referencedRelation: "docker_hosts";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "docker_snapshots_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "docker_snapshots_owner_id_fkey";
+            columns: ["owner_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       github_authorizations: {
         Row: {
           id: string;
@@ -4186,6 +4244,7 @@ export type Credential = Database["public"]["Tables"]["credentials"]["Row"];
 export type DockerHostJobRow = Database["public"]["Tables"]["docker_host_jobs"]["Row"];
 export type DockerHostRow = Database["public"]["Tables"]["docker_hosts"]["Row"];
 export type DockerLaunchRequestRow = Database["public"]["Tables"]["docker_launch_requests"]["Row"];
+export type DockerSnapshotRow = Database["public"]["Tables"]["docker_snapshots"]["Row"];
 export type GitHubAuthorization = Database["public"]["Tables"]["github_authorizations"]["Row"];
 export type GitHubConnection = Database["public"]["Tables"]["github_connections"]["Row"];
 export type GitHubRefreshFence = Database["public"]["Tables"]["github_refresh_fences"]["Row"];

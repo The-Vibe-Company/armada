@@ -9,7 +9,12 @@ const machinePaths = [
   "/api/docker-host/results",
   "/api/docker-host/unregister",
 ];
-const ownerPaths = ["/api/v1/docker/hosts/list", "/api/v1/docker/hosts/register-token", "/api/v1/docker/hosts/revoke"];
+const ownerPaths = [
+  "/api/v1/docker/snapshots/list",
+  "/api/v1/docker/hosts/list",
+  "/api/v1/docker/hosts/register-token",
+  "/api/v1/docker/hosts/revoke",
+];
 const object = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === "object" && !Array.isArray(value);
 const uuid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/;
@@ -45,11 +50,13 @@ export function createDockerHostRoutes(
         if (!object(body)) throw new InvalidInput();
         fields(
           body,
-          path.endsWith("/revoke")
+          path === "/api/v1/docker/snapshots/list"
             ? ["org", "hostId"]
-            : path.endsWith("/register-token") && "name" in body
-              ? ["org", "name"]
-              : ["org"],
+            : path.endsWith("/revoke")
+              ? ["org", "hostId"]
+              : path.endsWith("/register-token") && "name" in body
+                ? ["org", "name"]
+                : ["org"],
         );
         const orgId = string(body.org);
         const listing = path.endsWith("/list");
@@ -59,6 +66,8 @@ export function createDockerHostRoutes(
         )
           throw new DockerHostDenied();
         actor = { userId: result.caller.userId, orgId };
+        if (path === "/api/v1/docker/snapshots/list")
+          return Response.json({ snapshots: await store.listSnapshots(actor, string(body.hostId)) }, { headers });
         if (listing)
           return Response.json({ placement: options.placement === true, hosts: await store.list(actor) }, { headers });
         if (path.endsWith("/register-token")) {

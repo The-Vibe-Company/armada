@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import type { DockerHostSummary, Sql } from "@armada/core";
+import type { DockerHostSummary, DockerSnapshotSummary, Sql } from "@armada/core";
 import { decryptSecret, encryptSecret } from "@armada/core/server";
 import {
   type BootstrapDescriptor,
@@ -274,6 +274,42 @@ export function createDockerHostStore(sql: Sql, key: string) {
     );
   }
   return {
+    listSnapshots(actor: Actor, hostId: string): Promise<DockerSnapshotSummary[]> {
+      return transaction(async (tx) => {
+        exact(actor, ["userId", "orgId"]);
+        id(actor.userId);
+        id(actor.orgId);
+        id(hostId);
+        const authorized = await tx.query(
+          `select 1 from public.members m join public.docker_hosts h on h.org_id=m.org_id
+           where m.org_id=$1 and m.user_id=$2 and h.id=$3 for share of m`,
+          [actor.orgId, actor.userId, hostId],
+        );
+        if (!authorized.rows.length) deny();
+        // SQL bypasses RLS: private owner scope is explicit, including for org admins.
+        const rows = await tx.query<{
+          id: string;
+          host_id: string;
+          name: string;
+          official_image_version: string;
+          official_image: string;
+          created_at: Date | string;
+        }>(
+          `select id,host_id,name,official_image_version,official_image,created_at
+           from public.docker_snapshots where org_id=$1 and owner_id=$2 and host_id=$3
+           order by created_at,id`,
+          [actor.orgId, actor.userId, hostId],
+        );
+        return rows.rows.map((row) => ({
+          id: row.id,
+          hostId: row.host_id,
+          name: row.name,
+          officialImageVersion: row.official_image_version,
+          officialImage: row.official_image,
+          createdAt: new Date(row.created_at).toISOString(),
+        }));
+      });
+    },
     list(actor: Actor): Promise<DockerHostSummary[]> {
       return transaction(async (tx) => {
         exact(actor, ["userId", "orgId"]);

@@ -32,6 +32,19 @@ export interface DockerHostListResponse {
   placement: boolean;
   hosts: DockerHostSummary[];
 }
+/** Completed snapshot metadata only; listing does not prove local bytes are still available. */
+export interface DockerSnapshotSummary {
+  id: string;
+  hostId: string;
+  name: string;
+  officialImageVersion: string;
+  officialImage: string;
+  createdAt: string;
+}
+export interface DockerSnapshotListResponse {
+  snapshots: DockerSnapshotSummary[];
+}
+
 export interface DockerHostRegistrationRequest {
   org: string;
   name?: string;

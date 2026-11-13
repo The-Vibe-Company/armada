@@ -84,6 +84,7 @@ const HELP = `armada ${VERSION}: launch coding agents in provider-scoped sandbox
 Usage:
   armada host add [--name NAME] [--org UUID]
   armada host list [--json] [--org UUID]
+  armada host snapshots UUID|NAME [--json] [--org UUID]
   armada host revoke UUID [--org UUID]
   armada launch [prompt] --provider docker --host UUID|NAME --agent claude|codex|opencode --credential-id UUID --org UUID [--request-id UUID] [--json]
                                            Docker launch through the normal Armada API using the official Armada environment.

@@ -1,11 +1,16 @@
-import { type DockerHostListResponse, type DockerHostRegistrationResponse, GoldenError } from "@armada/core";
+import {
+  type DockerHostListResponse,
+  type DockerHostRegistrationResponse,
+  type DockerSnapshotListResponse,
+  GoldenError,
+} from "@armada/core";
 import { parseArgs, single } from "./args.ts";
 import { type ArmadaApiClient, createArmadaApiClient } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
 
 const UUID = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
 const HELP =
-  "Usage: armada host add [--name NAME] [--org UUID] | list [--json] [--org UUID] | revoke UUID [--org UUID]\n";
+  "Usage: armada host add [--name NAME] [--org UUID] | list [--json] [--org UUID] | snapshots UUID|NAME [--json] [--org UUID] | revoke UUID [--org UUID]\n";
 const invalid = (message: string): never => {
   throw new GoldenError("invalid_config", message);
 };
@@ -63,7 +68,7 @@ export async function hostCommand(argv: readonly string[], auth: AuthIo): Promis
   const allowed =
     operation === "add"
       ? ["--org", "--name"]
-      : operation === "list"
+      : operation === "list" || operation === "snapshots"
         ? ["--org", "--json"]
         : operation === "revoke"
           ? ["--org"]
@@ -71,7 +76,7 @@ export async function hostCommand(argv: readonly string[], auth: AuthIo): Promis
   if (
     !allowed.length ||
     [...args.options.keys()].some((key) => !allowed.includes(key)) ||
-    args.positionals.length !== (operation === "revoke" ? 1 : 0)
+    args.positionals.length !== (operation === "revoke" || operation === "snapshots" ? 1 : 0)
   )
     return invalid(HELP.trim());
   const org = single(args, "--org");
@@ -82,6 +87,47 @@ export async function hostCommand(argv: readonly string[], auth: AuthIo): Promis
   const hostId = args.positionals[0];
   if (operation === "revoke" && (!hostId || !UUID.test(hostId))) return invalid("host revoke requires a host UUID.");
   const client = await createArmadaApiClient(auth);
+  if (operation === "snapshots") {
+    if (!hostId || hostId.length > 64 || /[\p{C}]/u.test(hostId)) return invalid("Choose a host UUID or exact name.");
+    const resolved = await resolveHost(client, org, hostId);
+    const result = await client.request<DockerSnapshotListResponse>("/api/v1/docker/snapshots/list", {
+      method: "POST",
+      body: JSON.stringify({ org, hostId: resolved }),
+    });
+    if (!record(result) || !Array.isArray(result.snapshots))
+      return invalid("The server returned an invalid snapshot list.");
+    const ids = new Set<string>();
+    for (const snapshot of result.snapshots) {
+      if (
+        !record(snapshot) ||
+        typeof snapshot.id !== "string" ||
+        !UUID.test(snapshot.id) ||
+        ids.has(snapshot.id) ||
+        snapshot.hostId !== resolved ||
+        typeof snapshot.name !== "string" ||
+        !snapshot.name.trim() ||
+        snapshot.name.length > 80 ||
+        /[\p{C}]/u.test(snapshot.name) ||
+        typeof snapshot.officialImageVersion !== "string" ||
+        snapshot.officialImageVersion.length > 80 ||
+        !/^[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?$/.test(snapshot.officialImageVersion) ||
+        typeof snapshot.officialImage !== "string" ||
+        !/^ghcr\.io\/the-vibe-company\/armada-sandbox@sha256:[a-f0-9]{64}$/.test(snapshot.officialImage) ||
+        typeof snapshot.createdAt !== "string" ||
+        !Number.isFinite(Date.parse(snapshot.createdAt))
+      )
+        return invalid("The server returned an invalid snapshot list.");
+      ids.add(snapshot.id);
+    }
+    if (args.options.has("--json")) auth.out(`${JSON.stringify(result, null, 2)}\n`);
+    else {
+      auth.out("ID\tNAME\tBUILT ON ARMADA\n");
+      for (const snapshot of result.snapshots)
+        auth.out(`${snapshot.id}\t${snapshot.name}\t${snapshot.officialImageVersion}\n`);
+      if (!result.snapshots.length) auth.out("No saved Docker snapshots.\n");
+    }
+    return 0;
+  }
   if (operation === "list") {
     const result = await listHosts(client, org);
     if (args.options.has("--json")) auth.out(`${JSON.stringify(result, null, 2)}\n`);
