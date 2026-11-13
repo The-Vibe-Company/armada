@@ -6,6 +6,14 @@ import { join } from "node:path";
 import type { Subprocess } from "bun";
 import { GitHubBroker } from "../src/github-broker.ts";
 
+// Use Git's installed executable, not a PATH launcher that can inject a real
+// credential helper. The fixture must exercise only its private offline broker.
+function installedGit(): string {
+  const result = Bun.spawnSync(["git", "--exec-path"]);
+  if (result.exitCode !== 0) throw Error("Cannot locate the installed Git executable");
+  return join(result.stdout.toString().trim(), "git");
+}
+
 // Owning process boundary: an already-running shell, actual gh executable and Git credential IPC.
 // No network, user HOME, fixed sleeps, test-only production hooks or token-bearing argv.
 test("existing native children use new GitHub material and register it before gh/git consumption", async () => {
@@ -38,7 +46,7 @@ test("existing native children use new GitHub material and register it before gh
     await mkdir(home);
     await mkdir(bin);
     const gh = Bun.which("gh");
-    const git = Bun.which("git");
+    const git = installedGit();
     if (!gh || !git) throw Error("Actual gh and git executables required for credential-boundary verification");
     const observer = join(root, "observe-gh");
     // A consumer may read stdin: it must see EOF, never the shell control pipe.
@@ -263,7 +271,7 @@ test.each(["canonical", "denied-endpoint", "denied-prefix"] as const)(
       const gh = join(root, "offline-gh"),
         git = join(root, "offline-git");
       await writeFile(gh, '#!/bin/sh\nprintf "DOWNSTREAM\\n"\nprintf "%s\\n" "$@"\n', { mode: 0o755 });
-      await writeFile(git, `#!/bin/sh\nexec "${Bun.which("git")}" "$@"\n`, { mode: 0o755 });
+      await writeFile(git, `#!/bin/sh\nexec "${installedGit()}" "$@"\n`, { mode: 0o755 });
       const installer = Bun.spawn(
         ["sudo", "-n", process.execPath, join(import.meta.dir, "../dist/main.js"), "github-install"],
         { stdin: "pipe", stdout: "pipe", stderr: "pipe" },
