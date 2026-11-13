@@ -648,6 +648,11 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
   };
   const live = async (sandboxId: string, allowUnbound = false) => {
     const found = await visible(sandboxId);
+    if (found.boatRuntime && !allowUnbound)
+      throw new ToolError(
+        "unsupported",
+        "Experimental runtime supports initial launch, reads and compute stop/delete only.",
+      );
     if (found.status === "deleted") throw new ToolError("conflict", `Sandbox '${sandboxId}' is deleted.`);
     if (!allowUnbound && found.provider === "modal" && !found.credentialId)
       throw new VaultError("credential_binding_required", CREDENTIAL_BINDING_GUIDANCE);
