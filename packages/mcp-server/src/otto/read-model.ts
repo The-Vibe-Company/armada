@@ -1,31 +1,29 @@
-import type { OttoFact, OttoResource, OttoTask } from "@armada/core";
+import type { OttoResource, OttoTask } from "@armada/core";
 import type { Sql } from "@armada/core/server";
 import type { Caller } from "../caller.ts";
+import { fresh, issueFromBranch, readFleet, repositoryOf } from "./fleet.ts";
 import type { OttoScope } from "./observation.ts";
+import { needsWork, type OwnershipFact, ownership } from "./ownership.ts";
 
-interface Sandbox {
-  id: string;
-  owner_id: string;
-  access_owner_id: string | null;
-  visibility: string;
-  status: string;
-  last_observed_at: string | null;
-  resource_project: { url: string; branch: string } | null;
-}
-/** No prompt parsing, exec, provider queries, declarations or task mutation. */
-export async function readOttoModel(sql: Sql, scope: OttoScope, caller: Caller, now: Date) {
+/** No prompt execution, provider queries or task commands. */
+export async function readOttoModel(sql: Sql, scope: OttoScope, caller: Caller, now: Date, key?: string) {
   const params = [scope.orgId, scope.repository];
   const facts = (
-    await sql.query<OttoFact>(
-      `select distinct on(subject,kind) * from public.otto_facts where org_id=$1 and repository=$2 order by subject,kind,observed_at desc,id desc`,
+    await sql.query<OwnershipFact>(
+      `select * from (select f.*,row_number() over(partition by subject,kind order by observed_at desc,id desc) as rank from (select distinct on(subject,kind,coalesce(evidence->'head'->>'sha','')) *,min(observed_at) over(partition by subject,kind,coalesce(evidence->'head'->>'sha','')) as head_first_seen_at from public.otto_facts where org_id=$1 and repository=$2 order by subject,kind,coalesce(evidence->'head'->>'sha',''),observed_at desc,id desc) f) ranked where rank<=2 order by subject,kind,observed_at desc,id desc`,
       params,
     )
-  ).rows;
+  ).rows.map((f) => ({
+    ...f,
+    observed_at: new Date(f.observed_at).toISOString(),
+    ...(f.head_first_seen_at ? { head_first_seen_at: new Date(f.head_first_seen_at).toISOString() } : {}),
+  }));
   const inventory = facts.find((f) => f.kind === "repository.open_prs");
-  const fresh = inventory && now.getTime() - new Date(inventory.observed_at).getTime() < 600_000;
-  const completeness = fresh && inventory.completeness === "complete" ? "complete" : "unknown";
+  const inventoryFresh = inventory && fresh(inventory.observed_at, now);
+  const completeness = inventoryFresh && inventory.completeness === "complete" ? "complete" : "unknown";
   const listed = new Set(Array.isArray(inventory?.evidence.numbers) ? inventory.evidence.numbers : []);
-  const prs = facts.filter(
+  const latest = [...new Map([...facts].reverse().map((f) => [`${f.subject}:${f.kind}`, f])).values()];
+  const prs = latest.filter(
     (f) =>
       f.kind === "pr.open" &&
       f.value === "true" &&
@@ -35,15 +33,8 @@ export async function readOttoModel(sql: Sql, scope: OttoScope, caller: Caller, 
         !listed.has(f.evidence.number)
       ),
   );
-  // Privileged SQL must carry visibility itself; hidden sandboxes never become candidates.
-  const sandboxes = (
-    await sql.query<Sandbox>(
-      `select id,owner_id,access_owner_id,visibility,status,last_observed_at,resource_project from public.sandboxes
- where org_id=$1 and deleted_at is null and status in ('ready','running','starting')
- and (visibility='org' or access_owner_id=$2)`,
-      [scope.orgId, caller.userId],
-    )
-  ).rows;
+  const fleet = await readFleet(sql, scope, caller, now, key);
+  const sandboxes = fleet.sandboxes;
   const resources: OttoResource[] = [],
     tasks = new Map<number, OttoTask>();
   for (const pr of prs) {
@@ -66,28 +57,67 @@ export async function readOttoModel(sql: Sql, scope: OttoScope, caller: Caller, 
         [...params, issue, task.title, task.state, task.factId, pr.observed_at],
       );
     }
-    // Launch branch and agent-declared task_outcome are not proof of current responsibility.
+    const attribution = ownership(pr, sandboxes, scope.repository, fleet.restricted, now, facts);
+    const work = needsWork(pr, facts, now);
+    const owner = sandboxes.find((s) => s.id === attribution.owner.sandboxId);
     resources.push({
       kind: "pr",
       externalId: String(e.number),
       taskIssue: issue,
-      owner: { state: "unknown", userId: null },
-      reason: "current_worker_branch_not_observed",
+      ...attribution,
+      reason:
+        attribution.owner.state === "owned" && owner?.activity === "idle" && work === "true"
+          ? "idle_owner_needs_work"
+          : attribution.reason,
       observedAt: pr.observed_at,
-      evidence: { factId: pr.id, head: head ?? null, title: e.title },
+      needsWork: work,
+      ...(owner
+        ? { activity: { state: owner.activity, observedAt: owner.activityObservedAt, since: owner.activityAt } }
+        : {}),
+      evidence: { factId: pr.id, head: head ?? null, title: e.title, ownerSource: attribution.reason },
     });
   }
   for (const s of sandboxes) {
-    const project = s.resource_project;
-    if (!project || project.url.replace(/\.git$/, "") !== `https://github.com/${scope.repository}`) continue;
+    const repo = repositoryOf(s.resource_project?.url);
+    if (repo && repo !== scope.repository) continue;
+    const task = repo === scope.repository ? issueFromBranch(s.branch) : null;
+    if (task !== null && !tasks.has(task)) {
+      const observed = facts.find((f) => f.kind === "issue" && f.evidence.number === task);
+      tasks.set(task, {
+        issueNumber: task,
+        title: String(observed?.evidence.title ?? `Issue #${task}`),
+        state: observed?.value === "true" ? "open" : "unknown",
+        factId: observed?.id ?? null,
+      });
+    }
+    const linked = resources.some(
+      (r) => r.kind === "pr" && (r.owner.sandboxId === s.id || r.owner.candidateSandboxIds?.includes(s.id)),
+    );
+    const orphan =
+      repo === scope.repository &&
+      s.branchComplete &&
+      task === null &&
+      !linked &&
+      completeness === "complete" &&
+      ["live", "idle"].includes(s.activity);
     resources.push({
       kind: "sandbox",
       externalId: s.id,
-      taskIssue: null,
+      taskIssue: task,
       owner: { state: "owned", userId: s.owner_id },
-      reason: "armada_user_owner_task_link_unknown",
+      reason: orphan
+        ? "live_sandbox_without_task_or_pr"
+        : task !== null || linked
+          ? "sandbox_task_link"
+          : "sandbox_task_link_unknown",
       observedAt: s.last_observed_at,
-      evidence: { status: s.status, launchBranch: project.branch, branchIsCurrent: false },
+      activity: { state: s.activity, observedAt: s.activityObservedAt, since: s.activityAt },
+      evidence: {
+        status: s.status,
+        launchBranch: s.resource_project?.branch ?? null,
+        branch: s.branch,
+        branchIsCurrent: false,
+      },
     });
   }
   for (const r of resources) {
@@ -101,7 +131,7 @@ export async function readOttoModel(sql: Sql, scope: OttoScope, caller: Caller, 
         r.kind,
         r.externalId,
         r.taskIssue,
-        r.owner.state,
+        r.owner.state === "candidate" ? "unknown" : r.owner.state,
         r.owner.userId,
         s?.visibility === "private" ? s.access_owner_id : null,
         r.reason,
@@ -115,5 +145,25 @@ export async function readOttoModel(sql: Sql, scope: OttoScope, caller: Caller, 
     tasks: [...tasks.values()].sort((a, b) => a.issueNumber - b.issueNumber),
     completeness,
     observedAt: inventory?.observed_at ?? null,
+    orphanCompleteness:
+      completeness === "complete" &&
+      !fleet.restricted &&
+      resources.every(
+        (r) =>
+          !["unknown", "candidate"].includes(r.owner.state) &&
+          r.activity?.state !== "unknown" &&
+          !(r.kind === "pr" && r.activity?.state === "idle" && r.needsWork === "unknown") &&
+          r.reason !== "sandbox_task_link_unknown",
+      )
+        ? "complete"
+        : "unknown",
+    fleetCompleteness: "complete",
+    ownershipCompleteness:
+      !fleet.restricted &&
+      resources
+        .filter((r) => r.kind === "pr")
+        .every((r) => !["unknown", "candidate"].includes(r.owner.state) && r.activity?.state !== "unknown")
+        ? "complete"
+        : "unknown",
   };
 }

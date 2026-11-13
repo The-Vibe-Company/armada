@@ -35,25 +35,46 @@ Every page carries `items`, `observedAt`, `completeness`, `nextCursor`; response
 are not cached. Resource/task projections are server-owned and disposable.
 The facts cursor is an observation-time/UUID pair. No write API is exposed.
 
-**Acceptance limitation requiring owner decision:** existing metadata identifies
-sandbox *user* owners and launch-time repository branches, not current worker
-responsibility for a PR. Otto deliberately does not turn launch defaults,
-agent-declared outcomes, or free-text prompts into facts. Consequently current
-PR ownership and orphan classification are unknown; `/orphans` exposes unknown
-candidates, not confirmed detections. `orphanCount` is null. Historical daily
-orphan detection is not claimed. The `day` field is the UTC evaluation day, not
-an invented first-seen timestamp. Unknown cannot satisfy staging acceptance for
-confirmed ownership or orphans.
+## Owners and daily orphans (coordinator decisions on #1277)
 
-To complete that acceptance, identify an authoritative already-observed structured
-sandbox↔PR/branch/task source (including legacy non-Armada Boat workers), or approve
-a separate observation contract. Do not change protected runtime/provider files
-in this ticket to manufacture the missing source. A launch branch is returned as
-context with `branchIsCurrent:false`. Private workers are filtered before any
-projection/response; no hidden candidates or absence-based orphan assertions.
+Armada DB rows are the complete fleet source in the caller's authorized view.
+There are no legacy external-provider workers to import. Human workstations are
+not observable. Private sandbox rows and journals are never expanded for admins.
+A hidden or unknown active binding prevents absence-based orphan assertions.
 
-Coordinator validation: compare all pages of resources with a complete `gh pr list`
-for the configured repository. Then validate known and missing-owner examples
-against the agreed authoritative source. Reconciliation stale by ten minutes,
-missing token, expired credentials, or incomplete pagination must show unknown,
-never zero PRs or completed tasks. The dashboard slice remains unimplemented.
+Exact repository/ref matching from recorded project or prompt branch tokens gives
+`owner.state=candidate`, never confirmed ownership. Multiple matches are UNKNOWN.
+A report of this PR and exact head, or an observed head transition between two
+observations inside that sandbox's running turn, gives `owned` with
+`confirmation=confirmed`. A repeated listing of an unchanged head is not a move.
+Candidate IDs are restricted to visible sandboxes; prompts and sealed events are
+never returned or copied to Otto facts. Existing Modal scope bindings and Boat's
+server encryption key are used only to read existing journals, not provider I/O.
+A bounded journal read without a prompt state yields UNKNOWN.
+
+`activity` distinguishes live, idle, not_live and unknown. `observedAt` is the
+sandbox observation time and `since` is the last turn transition time. Observations
+at least ten minutes old or in the future are UNKNOWN. Durable stopped/failed/deleted DB lifecycle rows are
+not_live at the DB read time (not an assertion of external machine state). An old finished turn can
+still prove idle when its sandbox observation is fresh. Missing turn state is not
+inferred from usage counters. The three orphan reasons are `pr_without_live_owner`,
+`live_sandbox_without_task_or_pr`, and `idle_owner_needs_work`.
+
+Needs-work evidence must match the exact current head: a failed REQUIRED check,
+a conflict, or observed queue removal after entry. Pending/missing evidence is
+UNKNOWN, never a failure. The follow-up GitHub evidence slice supplies these facts.
+
+`/orphans?day=YYYY-MM-DD` returns retained UTC detections in this viewer's scope;
+default is today. `firstSeenAt` and `lastSeenAt` record actual read-model detections,
+not invented start times. `current` is true, false (known recovered/closed), or null
+(current truth unknown). Today's unknown candidates are separately marked UNKNOWN.
+Detections are recorded when the API evaluates observations; no unobserved interval
+or continuously monitored history is claimed. History rechecks current sandbox
+visibility and is partitioned by viewer. No raw prompt/report payload is stored.
+
+Summary distinguishes complete GitHub listing, complete visible DB inventory,
+ownership completeness and orphan completeness; an unproven total stays null.
+`confirmedDailyOrphanCount` counts observed detections, including recovered ones.
+Compare every paginated PR with a complete `gh pr list` in staging. Provisioning,
+webhook configuration, migration application and deployment remain coordinator-only.
+The dashboard slice is reserved for its assigned frontend agent.
