@@ -54,18 +54,22 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string) {
     const sealed = await encryptSecret(serialized, encryptionKey);
     const enrolmentToken = token("enrol");
     const hash = await sha256Hex(enrolmentToken);
-    await transaction(async (tx) => {
+    const receipt = await transaction(async (tx) => {
       const sandbox = await lockSandbox(tx, input.sandboxId, input.ownerId);
-      await tx.query(
-        `insert into public.runtime_enrolments(sandbox_id,lifecycle_generation,enrolment_hash,enrolment_expires_at,configuration_enc)
+      const row = (
+        await tx.query<{ epoch: string }>(
+          `insert into public.runtime_enrolments(sandbox_id,lifecycle_generation,enrolment_hash,enrolment_expires_at,configuration_enc)
          values($1,$2,$3,now()+interval '5 minutes',$4)
          on conflict(sandbox_id) do update set lifecycle_generation=excluded.lifecycle_generation,
          enrolment_hash=excluded.enrolment_hash,enrolment_expires_at=excluded.enrolment_expires_at,
-         configuration_enc=excluded.configuration_enc,runtime_hash=null`,
-        [sandbox.id, sandbox.lifecycle_generation, hash, sealed],
-      );
+         configuration_enc=excluded.configuration_enc,runtime_hash=null returning epoch::text`,
+          [sandbox.id, sandbox.lifecycle_generation, hash, sealed],
+        )
+      ).rows[0];
+      if (!row) throw new RuntimeEnrolmentDenied();
+      return { epoch: String(BigInt(row.epoch) + 1n), lifecycleGeneration: sandbox.lifecycle_generation };
     });
-    return { enrolmentToken };
+    return { enrolmentToken, ...receipt };
   }
   async function enrol(enrolmentToken: string) {
     if (!valid(enrolmentToken, "enrol")) throw new RuntimeEnrolmentDenied();
@@ -134,9 +138,12 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string) {
     sandboxId: string,
     ownerId: string,
     work: (tx: Sql, scope: RuntimeSessionScope) => Promise<T>,
+    expectedLifecycleGeneration?: string,
   ) {
     return transaction(async (tx) => {
       const sandbox = await lockSandbox(tx, sandboxId, ownerId);
+      if (expectedLifecycleGeneration !== undefined && sandbox.lifecycle_generation !== expectedLifecycleGeneration)
+        throw new RuntimeEnrolmentDenied();
       const row = (
         await tx.query<{ epoch: string }>(
           `select epoch::text from public.runtime_enrolments where sandbox_id=$1
