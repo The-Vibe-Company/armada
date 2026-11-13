@@ -43,6 +43,7 @@ import {
 } from "./auth-commands.ts";
 import { launchDocker } from "./docker-launch.ts";
 import { hostCommand } from "./host-commands.ts";
+import { type LocalHostIo, localHostCommand, productionLocalHostIo } from "./local-host.ts";
 import { operation, parseTtl } from "./operations.ts";
 import { printOptionalResourceAdvice } from "./resource-advice.ts";
 import { routineCommand } from "./routine-commands.ts";
@@ -63,6 +64,8 @@ export interface Deps {
   readFile?: (path: string) => Promise<string>;
   /** Values for credential/application vault writes. By default stdin, only when piped. */
   readStdin?: () => Promise<string>;
+  /** Separate native Docker host binary boundary; no Armada session required. */
+  localHost?: LocalHostIo;
   /** Legacy test seam; commands use the Armada API rather than direct stores. */
   actor?: GoldenActor;
   store?: GoldenStore;
@@ -82,6 +85,8 @@ export interface Deps {
 const HELP = `armada ${VERSION}: launch coding agents in provider-scoped sandboxes
 
 Usage:
+  armada host install --server HTTPS_ORIGIN   Install on the Docker machine; one-use token on stdin, no login
+  armada host status|uninstall                Local host binary wrappers; no login
   armada host add [--name NAME] [--org UUID]
   armada host list [--json] [--org UUID]
   armada host revoke UUID [--org UUID]
@@ -267,6 +272,16 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
     error instanceof AuthError &&
     (error.code === "unauthorized" || (error instanceof ArmadaApiError && error.status === 401));
   try {
+    if (argv[0] === "host" && ["install", "status", "uninstall"].includes(argv[1] ?? ""))
+      return await localHostCommand(
+        argv.slice(1),
+        io,
+        deps.localHost ??
+          productionLocalHostIo({
+            ...(deps.fetch ? { fetch: deps.fetch } : {}),
+            ...(deps.readStdin ? { readStdin: deps.readStdin } : {}),
+          }),
+      );
     auth = authOf(io, deps);
     try {
       if (argv.length === 0) {

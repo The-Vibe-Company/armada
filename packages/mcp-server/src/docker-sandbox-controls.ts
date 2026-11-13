@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   type AgentEvent,
+  DOCKER_IMAGE_UNAVAILABLE_MESSAGE,
   type DockerSandboxStatus,
   GoldenError,
   HARNESS_CAPABILITIES,
@@ -61,7 +62,8 @@ const invalid = () => failure("invalid_request", "Invalid Docker sandbox request
 const terminal = (row: Row) => ["stopped", "deleted", "failed"].includes(row.status);
 function reason(row: Row) {
   if (row.status_reason === "expired") return "expired";
-  return row.status === "failed" ? "Docker sandbox failed." : null;
+  if (row.status !== "failed") return null;
+  return row.status_reason === DOCKER_IMAGE_UNAVAILABLE_MESSAGE ? row.status_reason : "Docker sandbox failed.";
 }
 function usage(value: unknown): SandboxUsage | null {
   if (!value || typeof value !== "object" || !("turnCount" in value) || !("turns" in value)) return null;

@@ -174,7 +174,7 @@ async function runPostDeploySmoke(
   io: SmokeIo,
   cleanupEnd?: number,
 ): Promise<boolean> {
-  if (args.length === 1 && args[0] === "--parity") return providerParitySmoke(env, io);
+  if (args[0] === "--parity") return providerParitySmoke(env, io, args.slice(1));
   function report(index: number, step: string, error?: unknown) {
     io.out(
       JSON.stringify({
