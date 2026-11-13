@@ -32,13 +32,10 @@ export {
   type ConnectionModelInfo,
   CREDENTIAL_KINDS,
   type CredentialReader,
-  type CredentialSource,
   connectionModels,
   credentialName,
   HARNESS_KINDS,
   type HarnessCredentials,
-  harnessCredentials,
-  type LaunchCredentialKind,
   listConnectionModels,
   MAX_AUTH_FILE_LENGTH,
   MAX_SECRET_LENGTH,
@@ -49,7 +46,6 @@ export {
   type ResolvedCredentials,
   redact,
   resolveBoatKey,
-  resolveCredential,
   resolveCredentials,
   resolveModalTokens,
   resolveSkillpackCredential,
@@ -349,10 +345,7 @@ export type {
 } from "./resource-observation.ts";
 export { ROUTINE_REASON_HELP, type Routine, routineReasonHelp } from "./routines.ts";
 export {
-  type CleanupResult,
-  cleanupSandboxes,
   createSqlSandboxStore,
-  DEFAULT_SANDBOX_RETENTION_DAYS,
   MAX_STATUS_REASON_LENGTH,
   mapSandboxRow,
   type ResourceProject,

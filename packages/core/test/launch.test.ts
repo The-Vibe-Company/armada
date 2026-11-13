@@ -6,8 +6,7 @@ import { join } from "node:path";
 import helperManifest from "../helper/manifest.json";
 import {
   type AgentEvent,
-  type CredentialSource,
-  cleanupSandboxes,
+  CODEX_AUTH_PATH,
   dedupeEvents,
   type ForkRequest,
   GH_MISSING_NOTE,
@@ -16,7 +15,7 @@ import {
   type GoldenActor,
   type GoldenRecord,
   type GoldenStore,
-  harnessCredentials,
+  type HarnessCredentials,
   LaunchError,
   type LaunchStores,
   launchSandbox,
@@ -29,6 +28,7 @@ import {
   type SandboxPatch,
   type SandboxRecord,
   type SandboxStore,
+  toHarnessCredentials,
 } from "../src/index.ts";
 import { prepareLaunchWorkspace } from "../src/launch.ts";
 import { catalogLock, catalogReference } from "./support/skillpack-catalog.ts";
@@ -38,9 +38,14 @@ const OWNER = "22222222-2222-4222-8222-222222222222";
 const OTHER = "33333333-3333-4333-8333-333333333333";
 const SNAPSHOT = `a${"1".repeat(62)}`;
 const CLAUDE_TOKEN = "sk-ant-oat01-user-token-value";
-const ORG_CLAUDE_TOKEN = "sk-ant-oat01-org-token-value";
 const OPENAI_KEY = "sk-openai-user-key-value";
 const AUTH_JSON = JSON.stringify({ tokens: { access_token: "codex-access-token-value", account_id: "acct" } });
+const authCredentials = () =>
+  toHarnessCredentials({
+    env: {},
+    files: [{ path: CODEX_AUTH_PATH, content: AUTH_JSON, mode: 0o600 }],
+    sources: [],
+  });
 
 const GITHUB_TOKEN = "ghu_launch_test_token_aaaaaaaaaaaaaaaaaaaa";
 const IDENTITY = {
@@ -163,7 +168,7 @@ describe("launch", () => {
       const world = setup({
         golden: golden("org"),
         github: { status: "connected", token: GITHUB_TOKEN, identity: IDENTITY },
-        ...(kind === "auth" ? { credentials: { user: { openai: AUTH_JSON } } } : {}),
+        ...(kind === "auth" ? { credentials: authCredentials() } : {}),
       });
       world.stores.credentials.hydrateNative = async () => {
         throw Error("must not hydrate native Boat");
@@ -635,7 +640,7 @@ describe("launch", () => {
       const world = setup({
         golden: golden("org"),
         prepare: true,
-        credentials: { user: { openai: AUTH_JSON, claude_oauth: CLAUDE_TOKEN } },
+        ...(harness === "codex" ? { credentials: authCredentials() } : {}),
         github: { status: "connected", token: GITHUB_TOKEN, identity: IDENTITY },
       });
       await launchSandbox(world.provider, world.stores, owner, {
@@ -681,7 +686,6 @@ exit 1
         for (const prompt of [undefined, "Go"]) {
           const world = setup({
             golden: golden("org"),
-            credentials: { user: { openai: OPENAI_KEY, claude_oauth: CLAUDE_TOKEN } },
             exec: (command) => {
               if (!command.startsWith(`${harness} --version`)) return { exitCode: 0 };
               const result = spawnSync("/bin/sh", ["-c", command], { env: { PATH: dir }, timeout: 1000 });
@@ -750,29 +754,15 @@ exit 1
     expect(world.order).toEqual(["credentials", "fork", "ready", "exec", "exec", "exec", "exec", "prompt"]);
   });
 
-  test("the user's own credential wins over the org's, and the org's is the fallback", async () => {
-    const own = setup({
-      golden: golden("org"),
-      credentials: { user: { claude_oauth: CLAUDE_TOKEN }, org: { claude_oauth: ORG_CLAUDE_TOKEN } },
-    });
-    await launchSandbox(own.provider, own.stores, owner, { golden: "web", harness: "claude" });
-    expect(own.forks[0]?.env).toEqual({ CLAUDE_CODE_OAUTH_TOKEN: CLAUDE_TOKEN });
-
-    const fallback = setup({ golden: golden("org"), credentials: { org: { claude_oauth: ORG_CLAUDE_TOKEN } } });
-    await launchSandbox(fallback.provider, fallback.stores, owner, { golden: "web", harness: "claude" });
-    expect(fallback.forks[0]?.env).toEqual({ CLAUDE_CODE_OAUTH_TOKEN: ORG_CLAUDE_TOKEN });
-  });
-
   test("Codex gets OPENAI_API_KEY, or writes auth.json from the environment and never from the command line", async () => {
     const key = setup({
       golden: golden("org"),
-      credentials: { user: { openai: OPENAI_KEY, claude_oauth: CLAUDE_TOKEN } },
     });
     await launchSandbox(key.provider, key.stores, owner, { golden: "web", harness: "codex", prompt: "go" });
     expect(key.forks[0]).toMatchObject({ noEnv: true, env: { OPENAI_API_KEY: OPENAI_KEY } });
     expect(key.prompts[0]?.harness).toBe("codex");
 
-    const login = setup({ golden: golden("org"), credentials: { org: { openai: AUTH_JSON } } });
+    const login = setup({ golden: golden("org"), credentials: authCredentials() });
     await launchSandbox(login.provider, login.stores, owner, { golden: "web", harness: "codex" });
     expect(login.forks[0]?.env).toEqual({ ARMADA_CODEX_AUTH_JSON: AUTH_JSON });
     expect(login.execs[0]?.command).toContain('"$ARMADA_CODEX_AUTH_JSON" > /home/user/.codex/auth.json');
@@ -1043,12 +1033,11 @@ exit 1
       launchSandbox(noSnapshot.provider, noSnapshot.stores, owner, { golden: "web", harness: "claude" }),
     ).rejects.toThrow(/no snapshot yet/);
 
-    const none = setup({ golden: golden("org"), credentials: { user: { claude_oauth: CLAUDE_TOKEN } } });
-    await expect(
-      launchSandbox(none.provider, none.stores, owner, { golden: "web", harness: "codex" }),
-    ).rejects.toMatchObject({
-      code: "no_credentials",
-    });
+    const refused = new Error("Fixture credential resolution refused.");
+    const none = setup({ golden: golden("org"), credentialError: refused });
+    await expect(launchSandbox(none.provider, none.stores, owner, { golden: "web", harness: "codex" })).rejects.toBe(
+      refused,
+    );
 
     const world = setup({ golden: golden("org") });
     for (const request of [
@@ -1185,45 +1174,6 @@ describe("prompt outcome", () => {
   });
 });
 
-describe("cleanup", () => {
-  test("deletes sandboxes older than the retention from the provider, tolerates a missing one and reports failures", async () => {
-    const now = new Date("2026-11-20T00:00:00.000Z");
-    const rows = new Map<string, SandboxRecord>(
-      [
-        ["old", "bx_old", "2026-11-10T00:00:00.000Z"],
-        ["gone", "bx_gone", "2026-11-11T00:00:00.000Z"],
-        ["stuck", "bx_stuck", "2026-11-12T00:00:00.000Z"],
-        ["fresh", "bx_fresh", "2026-11-19T00:00:00.000Z"],
-      ].map(([id, boatId, createdAt]) => [
-        id as string,
-        sandboxRecord(id as string, boatId as string, createdAt as string),
-      ]),
-    );
-    const deleted: string[] = [];
-    const provider = {
-      id: "boat",
-      async delete({ sandboxId }: { sandboxId: string }) {
-        deleted.push(sandboxId);
-        if (sandboxId === "bx_gone")
-          throw new ProviderError({ provider: "boat", code: "not_found", message: "gone", retryable: false });
-        if (sandboxId === "bx_stuck")
-          throw new ProviderError({ provider: "boat", code: "unavailable", message: "boat is down", retryable: true });
-        return { status: "pending" };
-      },
-    } as unknown as Provider;
-    const store = sandboxStore(rows);
-
-    const result = await cleanupSandboxes(provider, store, { retentionDays: 7, now });
-    expect(deleted).toEqual(["bx_old", "bx_gone", "bx_stuck"]);
-    expect(result.deleted).toEqual(["old", "gone"]);
-    expect(result.failed).toEqual([{ id: "stuck", message: "boat is down" }]);
-    expect(rows.get("old")).toMatchObject({ status: "deleted", deletedAt: now.toISOString() });
-    expect(rows.get("stuck")?.status).toBe("ready");
-    expect(rows.get("fresh")?.status).toBe("ready");
-    await expect(cleanupSandboxes(provider, store, { retentionDays: 0 })).rejects.toThrow(RangeError);
-  });
-});
-
 function golden(visibility: "org" | "private"): GoldenRecord {
   return {
     id: "golden-1",
@@ -1248,7 +1198,8 @@ function golden(visibility: "org" | "private"): GoldenRecord {
 
 interface Setup {
   golden: GoldenRecord;
-  credentials?: { user?: Record<string, string>; org?: Record<string, string> };
+  credentials?: HarnessCredentials;
+  credentialError?: Error;
   exec?: (command: string) => { exitCode: number; stderr?: string; stdout?: string };
   promptError?: Error;
   insertError?: Error;
@@ -1342,17 +1293,17 @@ function setup(options: Setup) {
     async setSandbox() {},
     async setSnapshot() {},
   };
-  const credentialMap = options.credentials ?? { user: { claude_oauth: CLAUDE_TOKEN, openai: OPENAI_KEY } };
-  const source: CredentialSource = {
-    async get(scope, _ownerId, kind) {
-      return credentialMap[scope]?.[kind] ?? null;
-    },
-  };
   const credentials = {
-    resolve: async (actor: GoldenActor, harness: "claude" | "codex") => {
+    resolve: async (_actor: GoldenActor, harness: "claude" | "codex") => {
       order.push("credentials");
+      if (options.credentialError) throw options.credentialError;
       return {
-        ...(await harnessCredentials(source, actor, harness)),
+        ...(options.credentials ??
+          toHarnessCredentials({
+            env: harness === "claude" ? { CLAUDE_CODE_OAUTH_TOKEN: CLAUDE_TOKEN } : { OPENAI_API_KEY: OPENAI_KEY },
+            files: [],
+            sources: [],
+          })),
         ...(options.github ? { github: options.github } : {}),
       };
     },
@@ -1390,27 +1341,6 @@ function sandboxStore(rows: Map<string, SandboxRecord>, insertError?: Error): Sa
 
 function definedOnly(patch: SandboxPatch): Record<string, unknown> {
   return Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined));
-}
-
-function sandboxRecord(id: string, providerSandboxId: string, createdAt: string): SandboxRecord {
-  return {
-    repositoryDir: null,
-    id,
-    provider: "boat",
-    providerSandboxId,
-    goldenId: "golden-1",
-    orgId: ORG,
-    ownerId: OWNER,
-    harness: "claude",
-    status: "ready",
-    conversationIds: [],
-    createdAt,
-    stoppedAt: null,
-    deletedAt: null,
-    statusReason: null,
-    model: null,
-    reasoningEffort: null,
-  };
 }
 
 function prompt(status: PromptStatus, reason?: string): AgentEvent {

@@ -27,13 +27,14 @@ for (const provider of [
     await page.getByRole("button", { name: "Add a model account", exact: true }).click();
     const dialog = page.getByRole("dialog");
     await expect(dialog.getByRole("heading", { name: "Add a model account" })).toBeVisible();
-    await expect(dialog.getByRole("radio", { name: /subscription/ })).toHaveCount(2);
-    await expect(dialog.getByRole("radio", { name: /API key/ })).toHaveCount(3);
+    const connection = dialog.getByLabel("Provider", { exact: true });
+    await expect(connection.locator('option[value="claude_oauth"]')).toHaveText("Claude subscription");
+    await expect(connection.locator('option[value="codex_auth"]')).toHaveText("ChatGPT subscription");
     await expect(dialog.getByLabel("Name")).toHaveValue("");
     await expect(dialog.getByLabel("Name")).toHaveAttribute("placeholder", "Choose a name");
-    await dialog.getByRole("radio", { name: new RegExp(`${provider.label} API key`) }).check();
+    await connection.selectOption(provider.kind);
     // Switching kinds keeps all choices available, including subscriptions.
-    await expect(dialog.getByRole("radio", { name: /Claude subscription/ })).toBeVisible();
+    await expect(connection.locator('option[value="claude_oauth"]')).toBeAttached();
     await dialog.getByLabel("Name").fill("Personal key");
     await dialog.getByRole("textbox", { name: "API key" }).fill(provider.key);
     await dialog.getByRole("button", { name: "Add API key" }).click();

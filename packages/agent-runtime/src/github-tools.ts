@@ -1,5 +1,6 @@
 import { chmod, chown, lstat, mkdir, rename, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { shellQuote as q } from "../../core/src/shell-quote.ts";
 
 /** Private local installer. Only paths and a one-use activation key cross stdin; never argv. */
 export async function prepareGitHubTools(input: Parameters<typeof installGitHubTools>[0]): Promise<void> {
@@ -51,7 +52,6 @@ export async function installUserGitHubTools(input: {
   const binInfo = await lstat(bin);
   if (!binInfo.isDirectory() || binInfo.isSymbolicLink() || binInfo.uid !== directory.uid || binInfo.mode & 0o077)
     throw Error("github_tools_denied");
-  const q = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
   async function replace(path: string, content: string, mode: number) {
     const existing = await lstat(path).catch(() => undefined);
     if (existing && (existing.isSymbolicLink() || !existing.isFile() || existing.uid !== directory.uid))
@@ -168,7 +168,6 @@ export async function installGitHubTools(input: {
   });
   await rename(temporary, client);
   const privileged = "/usr/bin/python3 -I";
-  const q = (v: string) => `'${v.replaceAll("'", "'\\''")}'`;
   if (ghOriginal) {
     const wrapper = `#!/bin/sh\nexec ${privileged} ${q(client)} elevate gh ${q(input.socket)} ${q(ghOriginal)} "$@"\n`;
     const info = await lstat(input.ghWrapper).catch(() => undefined);

@@ -56,6 +56,7 @@ import {
   VM_RESOURCE_PATHS,
 } from "../../core/src/vm-resource-reading.ts";
 import { invalidRequest, PROVIDER_ID, toProviderError, unexpectedAnswer } from "./errors.ts";
+import { readEventCursor, writeEventCursor } from "./event-cursor.ts";
 import { eventCursor, normalizeEvent, promptStatus } from "./events.ts";
 import { installNativeCwdWrapper, type NATIVE_HARNESS_PATHS } from "./native-cwd.ts";
 import { admitNativeUsage, bindNativeUsage, collectNativeUsage } from "./native-usage.ts";
@@ -833,15 +834,50 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
     async events(request: EventsRequest): Promise<EventPage> {
       request.signal?.throwIfAborted();
       const { limit, backward } = eventPageOptions(request, "boat");
+      const continuation = readEventCursor(request.cursor);
+      const pending = new Map(continuation.pending.map((p) => [p.id, p]));
+      const entries: { cursor: string; event: EventPage["events"][number] }[] = [];
+      let native = continuation.native;
+      const fingerprint = (event: EventPage["events"][number]) =>
+        createHash("sha256").update(JSON.stringify(event)).digest("hex");
+      const mutable = (event: EventPage["events"][number]) =>
+        (event.kind === "prompt" && (event.status === "queued" || event.status === "running")) ||
+        (event.kind === "message" && event.partial === true);
+      // Boat mutates prompt and partial response rows behind the physical
+      // timestamp cursor. Re-read only unfinished rows; never rewind the raw frontier.
+      if (!backward)
+        for (const saved of continuation.pending) {
+          const updated = await call(() =>
+            api.events(
+              {
+                sandboxId: request.sandboxId,
+                sort: "asc",
+                limit: 1,
+                ...(saved.before ? { cursor: saved.before } : {}),
+                ...(request.conversationId ? { conversation: request.conversationId } : {}),
+              },
+              request.signal ? { signal: request.signal } : undefined,
+            ),
+          );
+          const raw = updated.events?.[0];
+          // A row moved by the source will appear at the forward frontier.
+          // Keep tracking it until then rather than fabricating a terminal state.
+          if (!raw || raw.id !== saved.id || (raw.type !== "prompt" && raw.type !== "response")) continue;
+          const event = normalizeEvent(raw);
+          if (event.kind !== "prompt" && event.kind !== "message") throw unexpectedAnswer("mutable event snapshot");
+          const currentFingerprint = fingerprint(event);
+          if (currentFingerprint === saved.fingerprint) continue;
+          if (mutable(event)) pending.set(saved.id, { ...saved, fingerprint: currentFingerprint });
+          else pending.delete(saved.id);
+          entries.push({ cursor: writeEventCursor(native, [...pending.values()]), event });
+        }
       const response = await call(() =>
         api.events(
           {
             sandboxId: request.sandboxId,
             sort: backward ? "desc" : "asc",
-            ...(request.cursor ? { cursor: request.cursor } : {}),
+            ...(native ? { cursor: native } : {}),
             ...(request.conversationId ? { conversation: request.conversationId } : {}),
-            // Boat's physical page limit is 200; preserve its cursor/hasMore
-            // rather than forwarding Armada's larger logical history budget.
             limit: Math.min(limit, 200),
           },
           request.signal ? { signal: request.signal } : undefined,
@@ -849,14 +885,28 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
       );
       request.signal?.throwIfAborted();
       const raw = response.events ?? [];
+      for (const row of raw) {
+        const event = normalizeEvent(row);
+        const before = native;
+        native = eventCursor(row) ?? response.pageInfo?.nextCursor ?? native;
+        if (!backward) {
+          if (mutable(event)) pending.set(event.id, { id: event.id, before, fingerprint: fingerprint(event) });
+          else pending.delete(event.id);
+        }
+        entries.push({
+          cursor: backward ? (native ?? "") : writeEventCursor(native, [...pending.values()]),
+          event,
+        });
+      }
       const normalized = options.sanitizeEvents
-        ? await options.sanitizeEvents(provider, request.sandboxId, raw.map(normalizeEvent))
-        : raw.map(normalizeEvent);
+        ? await options.sanitizeEvents(
+            provider,
+            request.sandboxId,
+            entries.map((e) => e.event),
+          )
+        : entries.map((e) => e.event);
       const page = buildEventPage(
-        raw.map((event, index) => ({
-          cursor: eventCursor(event) ?? response.pageInfo?.nextCursor ?? request.cursor ?? "",
-          event: normalized[index]!,
-        })),
+        entries.map((entry, index) => ({ ...entry, event: normalized[index]! })),
         request,
         response.pageInfo?.hasMore === true,
         "boat",
@@ -869,8 +919,10 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
           message: "Boat events lack a stable pagination boundary.",
         });
       }
-      // Boat can advance an empty forward page over filtered journal records.
-      if (!raw.length && !backward && response.pageInfo?.nextCursor) page.cursor = response.pageInfo.nextCursor;
+      // An empty physical page may advance over filtered records, but must not
+      // acknowledge updates/rows excluded by the logical byte/count budget.
+      if (!entries.length && !backward && response.pageInfo?.nextCursor)
+        page.cursor = writeEventCursor(response.pageInfo.nextCursor, [...pending.values()]);
       return page;
     },
 

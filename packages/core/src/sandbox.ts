@@ -4,7 +4,6 @@ import type { SkillReceipt } from "./delegated-access.ts";
 import type { Sql } from "./golden-store.ts";
 import { isHarness } from "./harnesses.ts";
 import type { MachineSizeEvidence } from "./machine-size.ts";
-import { type Provider, ProviderError } from "./provider.ts";
 import { isSandboxProvider, type SandboxProviderId } from "./sandbox-provider.ts";
 import { type SandboxUsage, withUsageTotals } from "./sandbox-usage.ts";
 import type { TaskOutcome } from "./task-outcome.ts";
@@ -133,53 +132,6 @@ export interface SandboxStore {
   update(id: string, patch: SandboxPatch): Promise<void>;
   /** Sandboxes created before `cutoff` (ISO) that are not deleted yet, oldest first. */
   listBefore(cutoff: string): Promise<SandboxRecord[]>;
-}
-
-/** How long Armada keeps a sandbox before its cleanup deletes it, when nobody says otherwise. */
-export const DEFAULT_SANDBOX_RETENTION_DAYS = 7;
-
-export interface CleanupResult {
-  deleted: string[];
-  failed: { id: string; message: string }[];
-}
-
-/**
- * Deletes this provider's sandboxes older than `retentionDays` from it and marks them `deleted`.
- * A sandbox the provider no longer has counts as deleted. One failure does not stop the others.
- */
-export async function cleanupSandboxes(
-  provider: Provider,
-  store: SandboxStore,
-  options: { retentionDays?: number; now?: Date } = {},
-): Promise<CleanupResult> {
-  const days = options.retentionDays ?? DEFAULT_SANDBOX_RETENTION_DAYS;
-  if (!Number.isFinite(days) || days <= 0) throw new RangeError("retentionDays must be a positive number.");
-  const now = options.now ?? new Date();
-  const cutoff = new Date(now.getTime() - days * 86_400_000).toISOString();
-  const result: CleanupResult = { deleted: [], failed: [] };
-  for (const sandbox of await store.listBefore(cutoff)) {
-    // Another provider's sandboxes are that provider's cleanup to delete.
-    if (sandbox.provider !== provider.id) continue;
-    try {
-      await provider.delete({ sandboxId: sandbox.providerSandboxId });
-    } catch (error) {
-      if (!(error instanceof ProviderError && error.code === "not_found")) {
-        result.failed.push({ id: sandbox.id, message: error instanceof Error ? error.message : String(error) });
-        continue;
-      }
-    }
-    try {
-      await store.update(sandbox.id, {
-        status: "deleted",
-        deletedAt: now.toISOString(),
-        ...(sandbox.stoppedAt === null ? { usageRuntimeUnknown: true } : {}),
-      });
-      result.deleted.push(sandbox.id);
-    } catch (error) {
-      result.failed.push({ id: sandbox.id, message: error instanceof Error ? error.message : String(error) });
-    }
-  }
-  return result;
 }
 
 export interface SandboxRow {
