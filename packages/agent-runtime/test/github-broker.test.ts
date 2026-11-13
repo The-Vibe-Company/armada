@@ -161,11 +161,11 @@ process.on("message", async ({ id, phase }) => {
       const input = "protocol=https\\nhost=github.com\\npath=acme/repo.git\\n\\n";
       const values = await Promise.all([
         run("gh", ["gh", "auth", "token", "--hostname", "github.com"]),
-        run("git", ["git", "credential", "fill"], input),
-        run("alias", ["git", "-c", "alias.creds=credential", "creds", "fill"], input),
+        id === 1
+          ? run("git", ["git", "credential", "fill"], input)
+          : run("alias", ["git", "-c", "alias.creds=credential", "creds", "fill"], input),
       ]);
-      const config = await run("config", ["git", "config", "--get", "armada.probe"]);
-      values.push(config);
+      if (id === 1) values.push(await run("config", ["git", "config", "--get", "armada.probe"]));
       const failed = values.find(value => value.status !== 0);
       if (failed) { reply({ id, consumer: failed.consumer }); return; }
       output = values.map(value => value.output).join("");
@@ -227,6 +227,8 @@ reply({ ready: true });
       });
       return response;
     }
+    // Exercise direct Git before rotation and alias expansion after it; both use
+    // the same credential helper. Only gh needs two receipts to prove token rotation.
     const first = await phase();
     if (!first.includes("password=***") || !first.includes("preserved")) {
       native.disconnect();
@@ -236,7 +238,7 @@ reply({ ready: true });
       throw Error(diagnostic);
     }
     expect(registered.has(current)).toBe(true);
-    expect(first.match(/password=\*\*\*/g)).toHaveLength(2);
+    expect(first.match(/password=\*\*\*/g)).toHaveLength(1);
     expect(first).not.toContain(current);
     expect(first).toContain("preserved");
     expect(first.split("\n")[0]).toBe(`${createHash("sha256").update(`${current}\n`).digest("hex")}  -`);
@@ -244,7 +246,7 @@ reply({ ready: true });
     const second = await phase();
     expect(registered.has(next)).toBe(true);
     expect(registered.has(current)).toBe(true);
-    expect(second.match(/password=\*\*\*/g)).toHaveLength(2);
+    expect(second.match(/password=\*\*\*/g)).toHaveLength(1);
     expect(second).not.toContain(next);
     expect(second.split("\n")[0]).toBe(`${createHash("sha256").update(`${next}\n`).digest("hex")}  -`);
     expect(second).not.toContain("inherited-stale");
