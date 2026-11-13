@@ -669,7 +669,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
           version ?? null,
         ]);
         await tx.query(
-          "update public.docker_snapshots set status='failed',image_id=null where host_id=$1 and status='building' and build_expires_at<=now()",
+          "update public.docker_snapshots set status='failed',image_id=null,failure_reason='Snapshot build expired before an image was published.' where host_id=$1 and status='building' and build_expires_at<=now()",
           [host.id],
         );
         await tx.query(
@@ -714,7 +714,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
             await authorizeSnapshotBuild(tx, host.id, installationId, job);
           } catch {
             await tx.query(
-              "update public.docker_snapshots set status='failed',image_id=null where id=$1 and status='building'",
+              "update public.docker_snapshots set status='failed',image_id=null,failure_reason='Snapshot build authorization is no longer valid.' where id=$1 and status='building'",
               [row.snapshot_id],
             );
             await tx.query(
@@ -828,6 +828,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
           (job.outcome !== result.outcome || (job.result_image_id ?? null) !== (result.imageId ?? null))
         )
           deny();
+        if (result.reason === "snapshot_build_failed" && !job.snapshot_id) deny();
         if (job.snapshot_id) {
           const parsed = await readJob(job);
           if (
@@ -846,8 +847,17 @@ export function createDockerHostStore(sql: Sql, key: string) {
               } catch {}
             }
             await tx.query(
-              "update public.docker_snapshots set status=$2,image_id=$3 where id=$1 and status='building'",
-              [job.snapshot_id, eligible ? "ready" : "failed", eligible ? result.imageId : null],
+              "update public.docker_snapshots set status=$2,image_id=$3,failure_reason=$4 where id=$1 and status='building'",
+              [
+                job.snapshot_id,
+                eligible ? "ready" : "failed",
+                eligible ? result.imageId : null,
+                eligible
+                  ? null
+                  : result.outcome === "completed"
+                    ? "Snapshot build authorization is no longer valid."
+                    : "Snapshot image build failed. Check registry access, repository access, init commands and the secret scan; build output is suppressed to protect secrets.",
+              ],
             );
           }
         } else if (result.imageId !== undefined) deny();

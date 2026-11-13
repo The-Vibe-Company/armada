@@ -72,6 +72,13 @@ after successful build/scan and exact immutable provenance verification. Known
 pattern scanning is not a proof against arbitrary encoded/user-supplied secrets:
 never put credentials in repository/config/init content.
 
+Failed builds expose a safe `failureReason` in `armada golden get`,
+`armada golden list` and the dashboard snapshot details. The host daemon logs
+the snapshot ID and a fixed failure message. Raw Docker/build/init output is
+not returned or logged because it can contain credentials. A failed build, an
+expired build and invalidated build authorization have distinct messages;
+older failed snapshots retain a generic diagnostic.
+
 There is one active build per host and a one-hour deadline. While building, the
 daemon continues ordinary mailbox work and physical TTL sweeps. Recovery adopts
 only a matching already-built image; an unknown unfinished build is not replayed.
