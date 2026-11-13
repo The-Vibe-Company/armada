@@ -69,7 +69,7 @@ const KIND_PRESENTATION: Record<AccountKind, Omit<KindInfo, "harness" | "harness
     label: "OpenCode API key",
     billing: "api",
     valueLabel: "API key",
-    hint: "OpenCode plan key, or use armada creds set opencode --base-url to create a custom endpoint connection. Modal only.",
+    hint: "An OpenCode plan key from opencode.ai, or a DeepSeek, OpenRouter or other OpenAI-compatible connection. Modal only.",
   },
 };
 

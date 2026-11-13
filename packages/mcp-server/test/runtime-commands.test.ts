@@ -690,3 +690,40 @@ test.each(["selection", "pre-abort", "timeout", "bootstrap", "replacement", "lif
       expect((await f.db.query("select sandbox_id from runtime_enrolments")).rows).toEqual([]);
   },
 );
+
+test("only private launch workspace commands admit the native ten-minute step budget", async () => {
+  const f = await fixture(),
+    active = await f.enrol(),
+    bridge = f.bridge();
+  await expect(bridge.call(f.people.owner, f.command("no-long-health"), { timeoutMs: 610000 })).rejects.toThrow(
+    "runtime_command_conflict",
+  );
+  const wire: RunnerRequest = {
+    ...f.command("workspace-long"),
+    op: "workspaceExec",
+    input: { command: "true", cwd: "/home/user", timeoutSeconds: 600, phase: "init", index: 0, attempt: 0 },
+  };
+  f.onWait(async () => {
+    expect(
+      await (await f.request("poll", active.runtimeToken, active.epoch, { epoch: active.epoch })).json(),
+    ).toMatchObject({ command: wire });
+    expect(
+      (
+        await f.request("results", active.runtimeToken, active.epoch, {
+          epoch: active.epoch,
+          requestId: wire.requestId,
+          status: 200,
+          body: {
+            version: 1,
+            requestId: wire.requestId,
+            result: { exitCode: 0, detached: false, stdout: "", stderr: "" },
+          },
+        })
+      ).status,
+    ).toBe(200);
+  });
+  expect(await bridge.call(f.people.owner, wire, { timeoutMs: 610000, expectedEpoch: active.epoch })).toMatchObject({
+    epoch: active.epoch,
+    body: { result: { exitCode: 0 } },
+  });
+});
