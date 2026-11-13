@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test";
+import { createMemoryAuthStore } from "@armada/auth";
 import type { Provider } from "@armada/core/server";
+import { createSqlVaultStore } from "@armada/core/server";
+import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { createRuntimeCheckpoint } from "../src/runtime-checkpoint.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
@@ -46,7 +49,11 @@ test("checkpoint interrupts, flushes and seals a real Runner before stop; receip
     const work = await f.send(f.caller, f.input("active turn"));
     const input = args(f.row.id),
       checkpoint = createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, f.bridge);
-    const receipt = await checkpoint(f.caller, input);
+    const receipt = (await callSharedTool(
+      { ...f.context, runtimeCheckpoint: checkpoint },
+      "runtime_checkpoint",
+      input,
+    )) as Awaited<ReturnType<typeof checkpoint>>;
     const high = (
       await f.db.query<{ n: string }>("select max(sequence)::text as n from runtime_events where sandbox_id=$1", [
         f.row.id,
@@ -61,7 +68,35 @@ test("checkpoint interrupts, flushes and seals a real Runner before stop; receip
     const stop = stopPort(f);
     expect(await callSharedTool(stop.context, "stop", { id: f.row.id })).toMatchObject({ status: "stopped" });
     expect(stop.calls()).toBe(1);
-    expect(await createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, f.bridge)(f.caller, input)).toEqual(receipt);
+    const authStore = createMemoryAuthStore();
+    authStore.addMembership(f.people.owner, { orgId: f.people.org, name: "Fixture", role: "member" });
+    const bearer = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: f.people.owner })).replace(/=+$/, "")}.sig`;
+    const response = await handleControlRequest(
+      new Request("https://armada.test/api/v1/sandbox/checkpoint-runtime-v1", {
+        method: "POST",
+        headers: { authorization: `Bearer ${bearer}` },
+        body: JSON.stringify(input),
+      }),
+      {
+        authStore,
+        store: createSqlVaultStore(f.sql),
+        encryptionKey: ENCRYPTION_KEY,
+        supabase: {
+          supabaseUrl: "https://supabase.test",
+          anonKey: "fixture",
+          fetch: async () => Response.json({ id: f.people.owner }),
+        },
+        data: createSqlData(f.sql),
+        runtimeCheckpoint: createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, f.bridge),
+        providers: {
+          async resolve() {
+            throw Error("No compute/provider resolution for cached checkpoint");
+          },
+        },
+      },
+    );
+    expect(response?.status).toBe(200);
+    expect(await response?.json()).toEqual(receipt);
     const history = await createRuntimeHistory(f.sql, ENCRYPTION_KEY)(f.caller, f.row.id, {});
     expect(history.source).toBe("armada-runtime");
     expect(
@@ -165,6 +200,33 @@ test("a late journal tail or application-secret exposure invalidates checkpoint 
     );
     await f.db.query("update sandboxes set application_secret_tainted=true where id=$1", [f.row.id]);
     await expect(checkpoint(f.caller, input)).rejects.toMatchObject({ code: "conflict" });
+  } finally {
+    await f.close();
+  }
+});
+
+test("an undelivered checkpoint intent fences new work across replicas until the same operation reconciles", async () => {
+  const f = await runtimeFixture();
+  try {
+    const input = args(f.row.id);
+    const unavailable = {
+      ...f.bridge,
+      async call() {
+        throw Error("dropped before delivery");
+      },
+    };
+    await expect(createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, unavailable)(f.caller, input)).rejects.toMatchObject({
+      code: "conflict",
+    });
+    await expect(f.send(f.caller, f.input("must not run"))).rejects.toMatchObject({ code: "conflict" });
+    expect(f.starts).toHaveLength(1);
+    await expect(
+      createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, f.bridge)(f.caller, args(f.row.id)),
+    ).rejects.toMatchObject({ code: "conflict" });
+    expect((await createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, f.bridge)(f.caller, input)).checkpoint.state).toBe(
+      "complete",
+    );
+    expect(f.starts).toHaveLength(1);
   } finally {
     await f.close();
   }

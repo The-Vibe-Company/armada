@@ -612,7 +612,7 @@ test("runtime lifecycle stops compute with explicit no-checkpoint note, without 
     expect(calls).toEqual(["stop"]);
     const final = await store.get(row.id);
     expect(final?.status).toBe("stopped");
-    expect(final?.preservationNote).toContain("work preservation and resumable checkpoint are unavailable");
+    expect(final?.preservationNote).toContain("no acknowledged runtime checkpoint");
     await lifecycle.drain();
   } finally {
     await db.close();

@@ -12,12 +12,18 @@ const org = process.env.ARMADA_RUNTIME_ORG;
 const credentialId = process.env.ARMADA_RUNTIME_CREDENTIAL_ID;
 if (!token || !golden || !org || !credentialId) throw Error("Missing coordinator staging inputs.");
 interface Reply {
-  boatRuntime?: { enabled?: boolean; diagnosticsVersion?: number; followupVersion?: number };
+  boatRuntime?: {
+    enabled?: boolean;
+    diagnosticsVersion?: number;
+    followupVersion?: number;
+    checkpointVersion?: number;
+  };
   sandbox?: { id?: string; goldenId?: string; boatRuntime?: boolean };
   runtime?: { kind?: string; epoch?: string };
   promptId?: string;
   conversationId?: string;
   requestId?: string;
+  checkpoint?: { state?: string; watermark?: number; acknowledgedSequence?: number };
   source?: string;
   runtimeFailure?: { status: string; reason: string };
   cursor?: string | null;
@@ -40,7 +46,10 @@ if (options.boatRuntime?.enabled !== true || options.boatRuntime.diagnosticsVers
   throw Error(
     "Use the armada-server origin with experimental Boat runtime diagnostics v1 enabled; no launch attempted.",
   );
-const followup = process.argv.includes("--followup");
+const checkpointMode = process.argv.includes("--checkpoint");
+const followup = process.argv.includes("--followup") || checkpointMode;
+if (checkpointMode && options.boatRuntime.checkpointVersion !== 1)
+  throw Error("Server has no runtime checkpoint v1; no launch attempted.");
 if (followup && options.boatRuntime.followupVersion !== 1)
   throw Error("Server has no runtime follow-up v1; no launch attempted.");
 const memory = `ARMADA_MEMORY_${crypto.randomUUID().replaceAll("-", "")}`;
@@ -48,6 +57,9 @@ const marker = `ARMADA_RUNTIME_${crypto.randomUUID().replaceAll("-", "")}`;
 let id: string | undefined;
 let goldenId: string | undefined;
 let failure: unknown;
+let checkpointInput: { id: string; request_id: string; runtimeVersion: 1 } | undefined;
+let checkpointReceipt: Reply | undefined;
+let verifyStoppedHistory: (() => Promise<void>) | undefined;
 try {
   const launched = await api("sandbox/launch-runtime-v1", {
     runtimeVersion: 1,
@@ -137,6 +149,32 @@ try {
     await verify(sent.promptId, memory);
     nextPromptId = sent.promptId;
   }
+  if (checkpointMode) {
+    checkpointInput = { id, request_id: crypto.randomUUID(), runtimeVersion: 1 };
+    console.log(
+      JSON.stringify({ operation: "runtime_checkpoint", sandboxId: id, requestId: checkpointInput.request_id }),
+    );
+    const candidate = await api("sandbox/checkpoint-runtime-v1", checkpointInput);
+    const proof = candidate.checkpoint;
+    if (
+      candidate.requestId !== checkpointInput.request_id ||
+      candidate.runtime?.kind !== "armada" ||
+      candidate.runtime.epoch !== launched.runtime.epoch ||
+      proof?.state !== "complete" ||
+      typeof proof.watermark !== "number" ||
+      !Number.isSafeInteger(proof.watermark) ||
+      proof.watermark < 0 ||
+      proof.acknowledgedSequence !== proof.watermark
+    )
+      throw Error("Missing complete runtime checkpoint acknowledgement. Do not claim resume.");
+    checkpointReceipt = candidate;
+    const first = launched.promptId,
+      second = nextPromptId;
+    verifyStoppedHistory = async () => {
+      await verify(first, marker);
+      if (second) await verify(second, memory);
+    };
+  }
   console.log(
     JSON.stringify({
       sandboxId: id,
@@ -144,6 +182,7 @@ try {
       epoch: launched.runtime.epoch,
       promptId: launched.promptId,
       answer: "verified",
+      ...(checkpointReceipt ? { checkpoint: "verified", watermark: checkpointReceipt.checkpoint?.watermark } : {}),
       ...(nextPromptId
         ? { followup: "verified", followupPromptId: nextPromptId, conversationId: launched.conversationId }
         : {}),
@@ -175,7 +214,25 @@ try {
       await Bun.sleep(1000);
     }
     if (!stopped) throw Error(`Stop not confirmed for ${id}; coordinator must inspect it. Do not launch again.`);
-    console.log("Experimental runtime compute stopped; resume/work preservation unsupported.");
+    console.log(
+      checkpointReceipt
+        ? "Runtime compute stopped after acknowledged checkpoint; resume is not implemented yet."
+        : "Experimental runtime compute stopped; resume/work preservation unsupported.",
+    );
+    if (checkpointInput && checkpointReceipt) {
+      const cached = await api("sandbox/checkpoint-runtime-v1", checkpointInput);
+      if (
+        cached.requestId !== checkpointInput.request_id ||
+        cached.runtime?.kind !== "armada" ||
+        cached.runtime.epoch !== checkpointReceipt.runtime?.epoch ||
+        cached.checkpoint?.state !== "complete" ||
+        cached.checkpoint.watermark !== checkpointReceipt.checkpoint?.watermark ||
+        cached.checkpoint.acknowledgedSequence !== cached.checkpoint.watermark
+      )
+        throw Error("Stopped checkpoint receipt did not survive. Do not claim resume.");
+      await verifyStoppedHistory?.();
+      console.log("Runtime checkpoint and stopped history verified; resume not implemented yet.");
+    }
   }
 } catch (error) {
   failure ??= error;

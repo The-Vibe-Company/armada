@@ -181,3 +181,7 @@ This first follow-up slice is running-only and model-only, with the existing
 conversation and launch model/effort. New conversations and model overrides
 refuse; stop/resume, GitHub/MCP, subscription acceptance and usage/cost proof
 remain the owner's next ordered checks. The Boat native path is not deleted.
+
+Checkpoint-before-stop and stopped history verification are documented in
+[Boat runtime checkpoints](boat-runtime-checkpoints.md). Resume is still a later
+slice; a complete checkpoint receipt alone is not permission to resume.
