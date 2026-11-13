@@ -29,6 +29,7 @@ import { retryDatabaseBoot } from "./database-boot.ts";
 import { createDatabaseReadiness } from "./database-readiness.ts";
 import { requireDatabaseSchema } from "./database-schema.ts";
 import { createDockerBootstrapService } from "./docker-bootstrap-service.ts";
+import { createDockerHostInstallRoute } from "./docker-host-install.ts";
 import { createDockerHostRoutes } from "./docker-host-routes.ts";
 import { createDockerHostStore } from "./docker-host-store.ts";
 import { createDockerNormalLaunch } from "./docker-normal-launch.ts";
@@ -546,7 +547,7 @@ export async function startServer(
                   supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
                   now: new Date(),
                 }),
-              { placement: dockerLaunchEnabled },
+              { placement: dockerLaunchEnabled, publicUrl: config.publicUrl },
             ),
           ]
         : []),
@@ -567,6 +568,7 @@ export async function startServer(
             ),
           ]
         : []),
+      createDockerHostInstallRoute(env.ARMADA_RUNTIME_ARTIFACT_DIR, config.publicUrl),
       createRuntimeArtifactRoute(env.ARMADA_RUNTIME_ARTIFACT_DIR),
       runtimeEnrolments.route,
       createRuntimeProgress(runtimeEnrolments),

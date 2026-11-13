@@ -82,9 +82,9 @@ export function launchProviderOptions(
     github: false,
     mcp: false,
     skills: false,
-    exec: false,
-    steer: false,
-    interrupt: false,
+    exec: normal,
+    steer: normal,
+    interrupt: normal,
   };
   const unsupportedReasons: LaunchProviderOption["unsupportedReasons"] = {};
   const reasons: Record<keyof LaunchProviderCapabilities, string> = {

@@ -206,7 +206,7 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
           (
             await tx.query<{ installation_id: string }>(
               `select installation_id from public.docker_hosts where id=$1 and org_id=$2 and owner_id=$3
-           and installation_id=$4 and hash is not null and registration_hash is null and revoked_at is null for update`,
+           and draining_at is null and installation_id=$4 and hash is not null and registration_hash is null and revoked_at is null for update`,
               [request.hostId, actor.orgId, hint.owner_id, hint.installation_id],
             )
           ).rows[0] ?? deny();
