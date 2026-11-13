@@ -1,5 +1,5 @@
+import type { SkillReceipt } from "./delegated-access.ts";
 import { HARNESS_CATALOG, isHarness } from "./harnesses.ts";
-import type { OrchestratorSkillReceipt } from "./orchestrator.ts";
 import { skillRefusalMessage } from "./skill-diagnostics.ts";
 import { validateSkillPins } from "./skill-pins.ts";
 
@@ -12,9 +12,9 @@ function skillpackTool(harness: string): string {
   return HARNESS_CATALOG[harness].skillpackTool;
 }
 
-export function parseSkillReceipt(output: string, skill: string, harness: string): OrchestratorSkillReceipt {
+export function parseSkillReceipt(output: string, skill: string, harness: string): SkillReceipt {
   const [reference, version] = skill.split("@");
-  let receipt: OrchestratorSkillReceipt;
+  let receipt: SkillReceipt;
   const lock = JSON.parse(output);
   const [org, slug] = reference!.split("/");
   const workspace = lock.workspaces?.[`catalog:${org}`];
@@ -54,7 +54,7 @@ export async function installSkill(
   harness: string,
   skill: string,
   buildWarnings: readonly string[] = [],
-): Promise<OrchestratorSkillReceipt> {
+): Promise<SkillReceipt> {
   validateSkillPins([skill], true);
   let reason = "skillpack_transport_failed";
   try {

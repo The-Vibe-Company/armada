@@ -339,12 +339,6 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
     io.out(command === "logs" ? LOGS_HELP : HELP);
     return 0;
   }
-  if (command === "orchestrator") {
-    io.err(
-      "Orchestrators have been removed. Launch an ordinary sandbox with --armada-access instead; see docs/sandbox-armada-access.md (#1002).\n",
-    );
-    return 1;
-  }
   let rest = original;
   const terminator = rest.indexOf("--");
   const optionArgs = terminator < 0 ? rest : rest.slice(0, terminator);

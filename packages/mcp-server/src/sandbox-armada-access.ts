@@ -1,18 +1,18 @@
 import {
   createSqlVaultStore,
+  DelegatedAuthority,
   GOLDEN_ROOT,
   type GoldenActor,
-  OrchestratorAuthority,
   type Provider,
   resolveCredentials,
   type SandboxRecord,
   type Sql,
   VaultError,
 } from "@armada/core/server";
-import { createBoatOrchestratorProvider } from "./boat-orchestrator-provider.ts";
-import { bootstrapOrchestrator } from "./orchestrator-bootstrap.ts";
-import { orchestratorScopedMcpUrl } from "./orchestrator-scoped-gateway.ts";
-import { createOrchestratorTransport } from "./orchestrator-transport.ts";
+import { createBoatOrchestratorProvider } from "./boat-delegated-access-provider.ts";
+import { bootstrapSandboxAccess } from "./sandbox-access-bootstrap.ts";
+import { orchestratorScopedMcpUrl } from "./sandbox-access-scoped-gateway.ts";
+import { createDelegatedTransport } from "./sandbox-access-transport.ts";
 
 export interface SandboxArmadaAccessOptions {
   maxActiveChildren?: number;
@@ -37,7 +37,7 @@ export function parseSandboxArmadaAccess(value: unknown): SandboxArmadaAccessOpt
  * orchestration policy, owner token or ambient access for unselected sandboxes. */
 export function createSandboxArmadaAccess(input: { sql: Sql; encryptionKey: string; publicUrl: string }) {
   const { sql } = input;
-  const authority = new OrchestratorAuthority(sql, async (tx, account) => {
+  const authority = new DelegatedAuthority(sql, async (tx, account) => {
     await resolveCredentials(createSqlVaultStore(tx), input.encryptionKey, account);
   });
   const native = (provider: Provider) =>
@@ -94,7 +94,7 @@ export function createSandboxArmadaAccess(input: { sql: Sql; encryptionKey: stri
     if (current.rows.length) return;
     await authority.installEpoch(
       parent.id,
-      createOrchestratorTransport({
+      createDelegatedTransport({
         provider: target,
         providerSandboxId: id,
         physicalGeneration: physical.physicalGeneration,
@@ -120,7 +120,7 @@ export function createSandboxArmadaAccess(input: { sql: Sql; encryptionKey: stri
     await target.quiesceOrchestrator({ sandboxId: id, physicalGeneration: physical.physicalGeneration });
     await authority.scrubBeforeCheckpoint(
       parent.id,
-      createOrchestratorTransport({
+      createDelegatedTransport({
         provider: target,
         providerSandboxId: id,
         physicalGeneration: physical.physicalGeneration,
@@ -149,7 +149,7 @@ export function createSandboxArmadaAccess(input: { sql: Sql; encryptionKey: stri
         sandbox.id,
         options.maxActiveChildren ?? 3,
       ]);
-      await bootstrapOrchestrator(native(provider), {
+      await bootstrapSandboxAccess(native(provider), {
         sandboxId: sandbox.providerSandboxId,
         projectDir: sandbox.repositoryDir ? `${GOLDEN_ROOT}/${sandbox.repositoryDir}` : GOLDEN_ROOT,
         harness: sandbox.harness,

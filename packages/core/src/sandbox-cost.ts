@@ -146,7 +146,7 @@ export function sandboxCost(usage: SandboxUsage | null, harness: Harness, basis:
 }
 
 /**
- * Several sandboxes' costs as one: an orchestrator's own plus its workers'. The amount sums the priced turns; compute
+ * Several sandboxes' costs as one: a parent's own plus its children'. The amount sums the priced turns; compute
  * time is known only when every part's is. The basis is "estimated" only when every part is, else "API-equivalent",
  * which is true of any account.
  */

@@ -77,9 +77,6 @@ export function createRuntimeNativeAuth(sql: Sql, key: string) {
           binding.credential_id,
           binding.credential_version,
           input.sandboxId,
-          async () => {
-            throw new RuntimeEnrolmentDenied();
-          },
         );
         return { authRevision: revision, committed: false };
       }

@@ -142,10 +142,6 @@ export const CONTROL_PREFIX = "/api/v1/";
 const MAX_BODY_BYTES = 128 * 1024;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-import type { OrchestratorPair } from "./orchestrator-activation.ts";
-import { orchestratorHttp } from "./orchestrator-api.ts";
-import type { OrchestratorRuntime } from "./orchestrator-runtime.ts";
-
 export interface ControlOptions {
   runtimeGitHub?: RuntimeGitHub;
   runtimeResume?: RuntimeResume;
@@ -162,10 +158,8 @@ export interface ControlOptions {
   skillDefaults?: SkillDefaultsService;
   routines?: RoutineService;
   applicationVault?: ApplicationVault;
-  orchestratorPairs?: readonly OrchestratorPair[];
   /** Trusted dashboard origin, from ARMADA_PUBLIC_URL; never request Host headers. */
   publicUrl?: string;
-  orchestrators?: OrchestratorRuntime;
   modelAuth?: ModelAuthOwnership;
   credentialBindingRecovery?: CredentialBindingRecovery;
   modelUsage?: ModelUsageApi;
@@ -259,16 +253,6 @@ export async function handleControlRequest(request: Request, options: ControlOpt
   if (route === "token/create") return tokenCreateRoute(request, options);
   if (route === "token/revoke") return tokenRevokeRoute(request, options);
   if (route === "auth/refresh") return refreshRoute(request, options);
-  if (route === "orchestrators" || route.startsWith("orchestrators/")) {
-    try {
-      const caller = await authenticatedCaller(request, options);
-      return orchestratorHttp(request, caller, options.orchestrators, options.orchestratorPairs);
-    } catch (error) {
-      return error instanceof AuthUnavailable
-        ? fail(503, "dependency_unavailable", "Authentication unavailable.")
-        : fail(401, "unauthorized", "Run armada login.");
-    }
-  }
   const deletion = /^sandboxes\/([0-9a-f-]+)$/i.exec(route);
   if (deletion ? request.method !== "DELETE" : request.method !== "POST")
     return fail(405, "invalid", deletion ? "Use DELETE." : "Use POST.");
@@ -1554,7 +1538,7 @@ async function launchRoute(
   )
     throw new VaultError("invalid", "connections must contain at most 100 connection UUIDs.");
   const armadaAccess = parseSandboxArmadaAccess(body.armadaAccess);
-  if (armadaAccess && (!options.sandboxArmadaAccess || !options.orchestrators))
+  if (armadaAccess && !options.sandboxArmadaAccess)
     throw new VaultError("unavailable", "Sandbox Armada access is not enabled on this server.");
   if (armadaAccess && (typeof body.credentialId !== "string" || !UUID.test(body.credentialId)))
     throw new VaultError("invalid", "Sandbox Armada access requires an explicit credentialId.");
@@ -1571,10 +1555,7 @@ async function launchRoute(
     optional(body, "provider") as "boat" | "modal" | undefined,
   );
   resolveRepositoryDir(golden, optional(body, "repo"));
-  if (
-    armadaAccess &&
-    (harness !== "codex" || !options.orchestrators?.enabledPairs.includes(`${golden.provider}:${harness}`))
-  )
+  if (armadaAccess && harness !== "codex")
     throw new VaultError("unavailable", "Sandbox Armada access is unavailable for this provider/harness.");
   if (runtime && golden.provider !== "boat") throw new VaultError("invalid", "Runtime v1 requires a Boat golden.");
   const provider = runtimeHost
@@ -1638,7 +1619,7 @@ async function launchRoute(
             privateVisibility: true as const,
             beforeStart: async (provider: Provider, sandbox: import("@armada/core").SandboxRecord) => {
               await options.launch?.beforeStart?.(provider, sandbox);
-              await options.sandboxArmadaAccess!.prepare(provider, sandbox, actor, armadaAccess);
+              await options.sandboxArmadaAccess?.prepare(provider, sandbox, actor, armadaAccess);
             },
           }
         : {}),

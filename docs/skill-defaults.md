@@ -83,5 +83,4 @@ On **Boat and Modal**, coordinator:
    missing-key refusal, no prompt. Admin/member/private-golden access checks.
 6. More than 20 effective distinct slugs: refusal before allocation.
 
-CLI and dashboard controls remain separate follow-up PRs. No orchestrator
-behavior is added.
+CLI and dashboard controls remain separate follow-up PRs.

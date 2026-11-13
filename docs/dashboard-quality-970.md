@@ -45,6 +45,5 @@ Cost and viewport owner tests retain all original price, refresh, keyboard, cont
 
 - Sandboxes list filters/design belong to #1005; its page and row-cost rendering are not changed here.
 - Skill pickers belong to #1007; no picker source is changed or audited here.
-- Orchestrator-specific pages/behavior are excluded by owner decision and remain untouched.
 - Sonner preparation is inactive on a separate branch, pending owner choice: native queue, repeated-message timer and announcement/focus policies differ from the existing toast contracts. Do not silently weaken those contracts or build a second custom toast manager in the name of adopting a standard component.
 - Shared Empty presentation is retained rather than changing the list owner's design through a global primitive. No speculative bug is claimed from an unused area or a sparse fixture.

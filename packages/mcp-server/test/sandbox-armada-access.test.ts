@@ -2,12 +2,12 @@ import { expect, test } from "bun:test";
 import {
   createSqlMcpRegistry,
   createSqlSandboxStore,
-  OrchestratorAuthority,
+  DelegatedAuthority,
   type Provider,
   type Sql,
 } from "@armada/core/server";
 import { createMcpLifecycle } from "../src/mcp-lifecycle.ts";
-import { createOrchestratorChildren } from "../src/orchestrator-children.ts";
+import { createSandboxChildren } from "../src/sandbox-access-children.ts";
 import { createSandboxArmadaAccess } from "../src/sandbox-armada-access.ts";
 import { database, ENCRYPTION_KEY, fakeBoat, PUBLIC_URL } from "./support.ts";
 
@@ -83,9 +83,9 @@ test("ordinary sandbox opt-in bounds child admission and scrubs authority before
     );
     expect((await db.query("select id from orchestrators")).rows).toHaveLength(0);
     expect((await db.query("select id from sandboxes where id=$1", [saved.id])).rows).toHaveLength(1);
-    const authority = new OrchestratorAuthority(sql, async () => {});
+    const authority = new DelegatedAuthority(sql, async () => {});
     let allocations = 0;
-    const children = createOrchestratorChildren(sql, authority, {
+    const children = createSandboxChildren(sql, authority, {
       launch: async () => {
         allocations++;
         throw Error("response lost");

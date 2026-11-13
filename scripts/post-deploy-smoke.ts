@@ -3,9 +3,8 @@ import { HARNESS_CATALOG, type Harness, isHarness } from "../packages/core/src/h
  * ARMADA_URL must be an HTTPS origin; ARMADA_TOKEN is the only credential.
  * ARMADA_SMOKE_CASES is a JSON array of {provider, harness, org, golden, model,
  * modelAccountId, repo, goldenId?, reasoningEffort?}. golden is a launch name;
- * repo is an absolute sandbox cwd for exec. goldenId is required with
- * --orchestrator, which runs the lifecycle for every selected case (only enabled
- * provider/harness pairs work). --templates-skills requires goldenId; optional
+ * repo is an absolute sandbox cwd for exec.
+ * --templates-skills requires goldenId; optional
  * publicSkill/privateSkill exact pins enable install checks. No provider credentials or DB access.
  */
 
@@ -13,11 +12,6 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { API_FAILURE_STATUS, type ApiFailureCode } from "../packages/core/src/api-failure.ts";
-import type {
-  OrchestratorDetail,
-  OrchestratorEventPage,
-  OrchestratorOperation,
-} from "../packages/core/src/orchestrator.ts";
 import { DefaultSkillSmokeFailure, readDefaultPins, verifyDefaultReceipts } from "./default-skill-smoke.ts";
 import { ExpirySmokeFailure, runExpiryCase } from "./expiry-smoke.ts";
 import { helperProbe, skillpackProbe } from "./golden-runtime-smoke.ts";
@@ -46,7 +40,6 @@ type Code =
   | "invalid_receipt"
   | "provider_not_stopped"
   | "pair_disabled"
-  | "orchestrator_disabled"
   | "operation_failed"
   | "continuity_failed"
   | "preservation_failed"
@@ -192,7 +185,6 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
   }
   let origin: string;
   let cases: SmokeCase[];
-  const orchestrator = args.includes("--orchestrator");
   const github = args.includes("--github-runtime");
   const preservation = args.includes("--work-preservation");
   const defaultSkills = args.includes("--default-skills");
@@ -207,13 +199,11 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
     if (env.ARMADA_SMOKE !== "create_real_compute") fail("compute_opt_in_required");
     if (
       ((defaultSkills || scopedAccess) && !preservation) ||
-      (scopedAccess && orchestrator) ||
-      (githubRefresh && (!lifecycle || orchestrator)) ||
-      (expiry && (orchestrator || (!lifecycle && args.length > 1))) ||
-      (goldenRuntime && (orchestrator || (templatesSkills && !preservation && !lifecycle))) ||
+      (githubRefresh && !lifecycle) ||
+      (expiry && !lifecycle && args.length > 1) ||
+      (goldenRuntime && templatesSkills && !preservation && !lifecycle) ||
       (github &&
-        (orchestrator ||
-          preservation ||
+        (preservation ||
           templatesSkills ||
           defaultSkills ||
           scopedAccess ||
@@ -224,7 +214,6 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
           vault)) ||
       args.some(
         (arg) =>
-          arg !== "--orchestrator" &&
           arg !== "--github-runtime" &&
           arg !== "--work-preservation" &&
           arg !== "--templates-skills" &&
@@ -281,8 +270,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
             !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(item.org))) ||
         (vault && !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(item.org)) ||
         (item.reasoningEffort !== undefined &&
-          (typeof item.reasoningEffort !== "string" || !item.reasoningEffort.trim())) ||
-        (orchestrator && (typeof item.goldenId !== "string" || !item.goldenId.trim()))
+          (typeof item.reasoningEffort !== "string" || !item.reasoningEffort.trim()))
       )
         fail("invalid_configuration");
     }
@@ -522,34 +510,6 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
       expiryPassed &&= result;
     }
     if (args.length === 1) return expiryPassed;
-  }
-  // Validate the entire selected matrix before any billable mutation. A later
-  // disabled case must not be discovered after earlier cases have allocated.
-  if (orchestrator) {
-    let index = 0;
-    try {
-      const capabilities = await request<{
-        version: number;
-        enabled: boolean;
-        pairs?: { provider: string; harness: string; enabled: boolean }[];
-      }>("orchestrators/capabilities");
-      if (capabilities?.version !== 1) fail("invalid_response");
-      if (capabilities.enabled !== true) fail("orchestrator_disabled");
-      if (!Array.isArray(capabilities.pairs)) fail("invalid_response");
-      for (const [caseIndex, item] of cases.entries()) {
-        index = caseIndex;
-        if (
-          !capabilities.pairs.some(
-            (pair) => pair?.provider === item.provider && pair.harness === item.harness && pair.enabled === true,
-          )
-        )
-          fail("pair_disabled");
-        report(index, "orchestrator_capabilities");
-      }
-    } catch (error) {
-      report(index, "orchestrator_capabilities", error);
-      return false;
-    }
   }
   let passed = templateSkillsPassed && vaultPassed && expiryPassed;
   for (const { index, item, dirty } of cases.flatMap((item, index) =>
@@ -1195,160 +1155,6 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
           golden: item.golden,
         }),
       );
-    if (!orchestrator || dirty) continue;
-    let orchestratorId: string | undefined;
-    let orchestratorStopped = false;
-    let createAttempted = false;
-    const root = "orchestrators";
-    const runId = crypto.randomUUID();
-    const detail = () =>
-      request<OrchestratorDetail>(
-        `${root}/${encodeURIComponent(orchestratorId ?? "")}?${new URLSearchParams({ orgId: item.org })}`,
-      );
-    async function settle(operation: OrchestratorOperation, state: "ready" | "stopped") {
-      if (operation?.version !== 1 || !operation.id || operation.orchestratorId !== orchestratorId)
-        fail("invalid_response");
-      if (operation.state === "failed" || operation.state === "uncertain") fail("operation_failed");
-      return poll(detail, (current) => {
-        if (current?.version !== 1 || !Array.isArray(current.operations)) fail("invalid_response");
-        const receipt = current.operations.find((entry) => entry.id === operation.id);
-        if (receipt?.state === "failed" || receipt?.state === "uncertain" || current.orchestrator.state === "blocked")
-          fail("operation_failed");
-        return receipt?.state === "succeeded" && current.orchestrator.state === state;
-      });
-    }
-    async function mutate(action: "message" | "stop" | "resume") {
-      const current = await detail();
-      if (current?.version !== 1 || !Number.isSafeInteger(current.orchestrator?.revision)) fail("invalid_response");
-      // Dispatch once: never replay an uncertain send/resume with a fresh key.
-      if (action === "resume") orchestratorStopped = false;
-      return request<OrchestratorOperation>(
-        `${root}/${encodeURIComponent(orchestratorId ?? "")}/${action}`,
-        {
-          orgId: item.org,
-          expectedRevision: current.orchestrator.revision,
-          ...(action === "message" ? { text: PROMPT } : {}),
-        },
-        `${runId}-${crypto.randomUUID()}`,
-      );
-    }
-    async function stopOrchestrator() {
-      await settle(await mutate("stop"), "stopped");
-      orchestratorStopped = true;
-    }
-    try {
-      await step("orchestrator_create", async () => {
-        createAttempted = true;
-        const operation = await request<OrchestratorOperation>(
-          root,
-          {
-            version: 1,
-            orgId: item.org,
-            name: `post-deploy-smoke-${runId}`,
-            goldenId: item.goldenId,
-            idleSeconds: 900,
-            provider: item.provider,
-            harness: item.harness,
-            model: item.model,
-            modelAccountId: item.modelAccountId,
-            ...(item.reasoningEffort ? { reasoningEffort: item.reasoningEffort } : {}),
-          },
-          `${runId}-create`,
-        );
-        if (typeof operation?.orchestratorId === "string" && operation.orchestratorId)
-          orchestratorId = operation.orchestratorId;
-        await settle(operation, "ready");
-      });
-      await step("orchestrator_send", async () => {
-        await settle(await mutate("message"), "ready");
-        let cursor: string | null = null;
-        let finished = false;
-        await poll(
-          async () => {
-            const page = await request<OrchestratorEventPage>(
-              `${root}/${encodeURIComponent(orchestratorId ?? "")}/events?${new URLSearchParams({ orgId: item.org, ...(cursor ? { cursor } : {}) })}`,
-            );
-            if (page?.version !== 1 || !Array.isArray(page.events) || typeof page.hasMore !== "boolean")
-              fail("invalid_response");
-            for (const entry of page.events) {
-              if (entry.kind !== "agent" || entry.event.kind !== "prompt") continue;
-              if (entry.event.status === "failed" || entry.event.status === "interrupted") fail("turn_failed");
-              if (entry.event.status === "finished") finished = true;
-            }
-            if (page.hasMore && (!page.cursor || page.cursor === cursor)) fail("invalid_response");
-            cursor = page.cursor ?? cursor;
-            return finished && !page.hasMore;
-          },
-          (done) => done,
-        );
-      });
-      await step("orchestrator_stop", stopOrchestrator);
-      await step("orchestrator_resume", async () => {
-        const before = (await detail()).orchestrator;
-        const after = (await settle(await mutate("resume"), "ready")).orchestrator;
-        if (
-          !before.conversationId ||
-          after.conversationId !== before.conversationId ||
-          after.sandboxId !== before.sandboxId ||
-          after.continuity !== "native"
-        )
-          fail("continuity_failed");
-      });
-      await step("orchestrator_stop_final", stopOrchestrator);
-    } catch {
-      passed = false;
-    } finally {
-      if (!orchestratorId && createAttempted) {
-        // A lost create response is not permission to allocate again. Discover the
-        // unique run name using the read-only API, then clean up that handle.
-        cleaning = true;
-        try {
-          await step("reconcile_orchestrator", async () => {
-            let cursor: string | null = null;
-            const seen = new Set<string>();
-            for (let page = 0; page < POLLS; page++) {
-              const list: {
-                version: number;
-                items: { id: string; configuration: { name: string } }[];
-                cursor: string | null;
-              } = await request(
-                `${root}?${new URLSearchParams({ orgId: item.org, limit: "100", ...(cursor ? { cursor } : {}) })}`,
-              );
-              if (
-                list?.version !== 1 ||
-                !Array.isArray(list.items) ||
-                (list.cursor !== null && typeof list.cursor !== "string")
-              )
-                fail("invalid_response");
-              const found = list.items.find((entry) => entry.configuration.name === `post-deploy-smoke-${runId}`);
-              if (found?.id) {
-                orchestratorId = found.id;
-                return;
-              }
-              if (list.cursor === null) fail("not_found");
-              if (!list.cursor || seen.has(list.cursor)) fail("invalid_response");
-              seen.add(list.cursor);
-              cursor = list.cursor;
-            }
-            fail("poll_limit_exceeded");
-          });
-        } catch {
-          passed = false;
-        } finally {
-          cleaning = false;
-        }
-      }
-      if (orchestratorId && !orchestratorStopped) {
-        cleaning = true;
-        try {
-          await step("cleanup_orchestrator", stopOrchestrator);
-        } catch {
-          passed = false;
-        } finally {
-          cleaning = false;
-        }
-      }
-    }
   }
   return passed;
 }

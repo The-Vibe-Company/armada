@@ -264,201 +264,7 @@ test("reserves cleanup time after the overall deadline and rejects a stopped DB 
   }
 });
 
-function orchestratorFixture(failure?: "resume" | "create_response" | "turn" | "disabled" | "continuity") {
-  let revision = 0;
-  let state = "ready";
-  let createdName = "";
-  const operations: { version: number; id: string; orchestratorId: string; state: string }[] = [];
-  const fake = fixture((call) => {
-    if (call.path === "sandbox/status" && fake.calls.some((entry) => entry.path === "sandbox/stop"))
-      return json({ status: "stopped", providerState: "stopped" });
-    if (call.path === "orchestrators/capabilities")
-      return json({
-        version: 1,
-        enabled: failure !== "disabled",
-        ...(failure === "disabled"
-          ? { reason: "native_conformance_required" }
-          : { pairs: [{ provider: "modal", harness: "codex", enabled: true }] }),
-      });
-    if (call.path.startsWith("orchestrators?") && call.init.method === "GET") {
-      const cursor = new URL(`https://smoke.invalid/${call.path}`).searchParams.get("cursor");
-      if (!cursor)
-        return json({
-          version: 1,
-          items: [{ id: "old-stopped-id", configuration: { name: "old-smoke" } }],
-          cursor: "opaque-next-page",
-        });
-      expect(cursor).toBe("opaque-next-page");
-      return json({
-        version: 1,
-        items: [{ id: "orchestrator-id", configuration: { name: createdName } }],
-        cursor: null,
-      });
-    }
-    if (call.path.startsWith("orchestrators/orchestrator-id/events?"))
-      return json({
-        version: 1,
-        cursor: "cursor",
-        hasMore: false,
-        events: [
-          {
-            kind: "agent",
-            event: { kind: "prompt", status: failure === "turn" ? "failed" : "finished", reason: "secret" },
-          },
-        ],
-      });
-    if (call.path.startsWith("orchestrators/orchestrator-id?"))
-      return json({
-        version: 1,
-        orchestrator: {
-          revision,
-          state,
-          conversationId: "conversation",
-          sandboxId: failure === "continuity" && revision >= 4 ? "changed-sandbox" : "orchestrator-sandbox",
-          continuity: "native",
-        },
-        operations,
-      });
-    if (call.path === "orchestrators" || /^orchestrators\/orchestrator-id\/(message|stop|resume)$/.test(call.path)) {
-      if (call.path === "orchestrators") {
-        expect(call.body).toMatchObject({
-          version: 1,
-          orgId: "org",
-          goldenId: "golden-id",
-          modelAccountId: "account",
-          provider: "modal",
-          harness: "codex",
-        });
-        createdName = String(call.body.name);
-      } else {
-        expect(call.body.orgId).toBe("org");
-        expect(call.body.expectedRevision).toBe(revision);
-      }
-      expect(new Headers(call.init.headers).get("idempotency-key")).toBeTruthy();
-      revision++;
-      state = call.path.endsWith("/stop") ? "stopped" : "ready";
-      const operation = {
-        version: 1,
-        id: `operation-${revision}`,
-        orchestratorId: "orchestrator-id",
-        state: "succeeded",
-      };
-      operations.push(operation);
-      if (
-        (failure === "resume" && call.path.endsWith("/resume")) ||
-        (failure === "create_response" && call.path === "orchestrators")
-      )
-        throw new Error("secret lost mutation response");
-      return json(operation);
-    }
-  });
-  return fake;
-}
-const orchestratorEnv = { ...env, ARMADA_SMOKE_CASES: JSON.stringify([{ ...selected, provider: "modal" }]) };
-
-test("optional orchestrator lifecycle uses capabilities, CAS fences, idempotency keys, turn outcome and native continuity", async () => {
-  const fake = orchestratorFixture();
-  expect(await postDeploySmoke(orchestratorEnv, ["--orchestrator"], fake.io)).toBe(true);
-  const mutations = fake.calls.filter((call) => call.path.startsWith("orchestrators") && call.init.method === "POST");
-  expect(mutations.map((call) => call.path)).toEqual([
-    "orchestrators",
-    "orchestrators/orchestrator-id/message",
-    "orchestrators/orchestrator-id/stop",
-    "orchestrators/orchestrator-id/resume",
-    "orchestrators/orchestrator-id/stop",
-  ]);
-  expect(new Set(mutations.map((call) => new Headers(call.init.headers).get("idempotency-key"))).size).toBe(5);
-  expect(fake.receipts().at(-1)).toEqual({ case: 0, step: "orchestrator_stop_final", pass: true });
-  expect(fake.lines.join("")).not.toContain("secret");
-});
-
-test("orchestrator failures clean up after uncertain resume, lost create response and native turn failure without retrying compute mutations", async () => {
-  for (const failure of ["resume", "create_response", "turn", "continuity"] as const) {
-    const fake = orchestratorFixture(failure);
-    expect(await postDeploySmoke(orchestratorEnv, ["--orchestrator"], fake.io)).toBe(false);
-    expect(fake.calls.filter((call) => call.path === "orchestrators")).toHaveLength(1);
-    if (failure === "create_response")
-      expect(fake.calls.filter((call) => call.path.startsWith("orchestrators?"))).toHaveLength(2);
-    expect(fake.calls.filter((call) => call.path.endsWith("/resume"))).toHaveLength(
-      failure === "resume" || failure === "continuity" ? 1 : 0,
-    );
-    expect(fake.calls.filter((call) => call.path.endsWith("/stop"))).toHaveLength(
-      failure === "resume" || failure === "continuity" ? 3 : 2,
-    ); // includes worker stop
-    expect(fake.receipts().at(-1)).toEqual({ case: 0, step: "cleanup_orchestrator", pass: true });
-    expect(fake.lines.join("")).not.toContain("secret");
-  }
-});
-
-test("disabled orchestrator service reports a distinct cause before allocating compute", async () => {
-  const fake = orchestratorFixture("disabled");
-  expect(await postDeploySmoke(orchestratorEnv, ["--orchestrator"], fake.io)).toBe(false);
-  expect(fake.calls.map((call) => call.path)).toEqual(["orchestrators/capabilities"]);
-  expect(fake.receipts().at(-1)).toEqual({
-    case: 0,
-    step: "orchestrator_capabilities",
-    pass: false,
-    code: "orchestrator_disabled",
-  });
-});
-
-test.each([
-  {
-    name: "later pair absent",
-    capabilities: { version: 1, enabled: true, pairs: [{ provider: "modal", harness: "codex", enabled: true }] },
-    code: "pair_disabled",
-    index: 1,
-  },
-  {
-    name: "pair enabled flag is not boolean true",
-    capabilities: { version: 1, enabled: true, pairs: [{ provider: "modal", harness: "codex", enabled: "true" }] },
-    code: "pair_disabled",
-    index: 0,
-  },
-  {
-    name: "unsupported version",
-    capabilities: { version: 2, enabled: true, pairs: [] },
-    code: "invalid_response",
-    index: 0,
-  },
-  {
-    name: "pairs is not an array",
-    capabilities: { version: 1, enabled: true, pairs: null },
-    code: "invalid_response",
-    index: 0,
-  },
-])("preflights $name before allocating any compute", async ({ capabilities, code, index }) => {
-  const fake = fixture((call) => (call.path === "orchestrators/capabilities" ? json(capabilities) : undefined));
-  expect(
-    await postDeploySmoke(
-      {
-        ...env,
-        ARMADA_SMOKE_CASES: JSON.stringify([{ ...selected, provider: "modal" }, selected]),
-      },
-      ["--orchestrator"],
-      fake.io,
-    ),
-  ).toBe(false);
-  expect(fake.calls.map((call) => call.path)).toEqual(["orchestrators/capabilities"]);
-  expect(fake.receipts().at(-1)).toEqual({
-    case: index,
-    pass: false,
-    step: "orchestrator_capabilities",
-    code,
-  });
-});
-
-test("capability API failures fail closed without exposing remote bodies", async () => {
-  const fake = fixture((call) =>
-    call.path === "orchestrators/capabilities"
-      ? json({ error: { code: "forbidden", message: "secret" } }, 403)
-      : undefined,
-  );
-  expect(await postDeploySmoke(orchestratorEnv, ["--orchestrator"], fake.io)).toBe(false);
-  expect(fake.calls).toHaveLength(1);
-  expect(fake.receipts()).toEqual([{ case: 0, step: "orchestrator_capabilities", pass: false, code: "forbidden" }]);
-  expect(fake.lines.join("")).not.toContain("secret");
-});
+const modalEnv = { ...env, ARMADA_SMOKE_CASES: JSON.stringify([{ ...selected, provider: "modal" }]) };
 
 test("waits for readiness and retries only rejected sends with bounded injected backoff", async () => {
   let reads = 0;
@@ -524,7 +330,7 @@ test("unknown stop outcomes are observed once, including Modal checkpoint fallba
           preservationNote: unknown ? "checkpoint_failed_disk_not_retained" : null,
         });
     });
-    expect(await postDeploySmoke(orchestratorEnv, [], fake.io)).toBe(true);
+    expect(await postDeploySmoke(modalEnv, [], fake.io)).toBe(true);
     expect(fake.calls.filter((call) => call.path === "sandbox/stop")).toHaveLength(1);
     expect(reads).toBe(3);
     expect(fake.receipts()).toContainEqual({
@@ -549,7 +355,7 @@ test("unknown cleanup stops poll failed terminal states and bound unsettled stop
       if (call.path === "sandbox/status" && stopping)
         return json({ status: terminal ? "failed" : "stopping", providerState: terminal ? "stopped" : "active" });
     });
-    expect(await postDeploySmoke(orchestratorEnv, [], fake.io)).toBe(false);
+    expect(await postDeploySmoke(modalEnv, [], fake.io)).toBe(false);
     expect(fake.calls.filter((call) => call.path === "sandbox/stop")).toHaveLength(1);
     expect(fake.receipts().at(-1)).toEqual({
       case: 0,
@@ -1442,7 +1248,6 @@ test("scoped access validates its matched control pair and explicit account IDs 
     modelAccountId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
   };
   for (const config of [
-    { args: ["--orchestrator", "--work-preservation", "--scoped-access"], cases: [valid] },
     { args: ["--scoped-access"], cases: [valid] },
     { args: ["--work-preservation", "--scoped-access"], cases: [valid, { ...valid, modelAccountId: "invalid" }] },
   ]) {
@@ -1813,11 +1618,7 @@ test("GitHub refresh rejects false receipts, identity changes and broken access 
 });
 
 test("GitHub refresh refuses modes that bypass its ordinary lifecycle worker before traffic", async () => {
-  for (const args of [
-    ["--github-refresh"],
-    ["--github-refresh", "--templates-skills"],
-    ["--github-refresh", "--lifecycle", "--orchestrator"],
-  ]) {
+  for (const args of [["--github-refresh"], ["--github-refresh", "--templates-skills"]]) {
     const fake = fixture();
     const staging = "https://armada-mcp-staging.up.railway.app";
     expect(
@@ -1830,23 +1631,21 @@ test("GitHub refresh refuses modes that bypass its ordinary lifecycle worker bef
   }
 });
 
-test("the advertised smoke workflow invocation admits ordinary staging checks without an orchestrator option", async () => {
+test("the advertised smoke workflow invocation admits ordinary staging checks", async () => {
   const workflow = Bun.YAML.parse(
     readFileSync(new URL("../.github/workflows/post-deploy-smoke.yml", import.meta.url), "utf8"),
   ) as {
     on: { workflow_dispatch: { inputs?: Record<string, unknown> } | null };
     jobs: { smoke: { steps: { name?: string; env?: Record<string, string>; run?: string }[] } };
   };
-  expect(workflow.on.workflow_dispatch?.inputs?.orchestrator).toBeUndefined();
   const exercise = workflow.jobs.smoke.steps.find((step) => step.name === "Exercise deployed staging API")!;
-  expect(exercise.env?.ORCHESTRATOR).toBeUndefined();
   const directory = mkdtempSync(join(tmpdir(), "smoke-workflow-admission-"));
   try {
     const bun = join(directory, "bun");
     writeFileSync(bun, '#!/bin/bash\nprintf "%s\\0" "$@"\n');
     chmodSync(bun, 0o755);
     const command = Bun.spawnSync(["bash", "-eu", "-c", exercise.run!], {
-      env: { ...process.env, PATH: `${directory}:${process.env.PATH}`, ORCHESTRATOR: "true" },
+      env: { ...process.env, PATH: `${directory}:${process.env.PATH}` },
     });
     expect(command.exitCode).toBe(0);
     const argv = command.stdout.toString().split("\0").slice(0, -1);
@@ -1932,11 +1731,7 @@ test("golden runtime integrity probes are staging-only, fail closed, and retain 
       expect(fake.lines.join("\n")).not.toContain("private-error");
     }
   }
-  for (const flags of [
-    ["--golden-runtime"],
-    ["--golden-runtime", "--templates-skills"],
-    ["--golden-runtime", "--orchestrator"],
-  ]) {
+  for (const flags of [["--golden-runtime"], ["--golden-runtime", "--templates-skills"]]) {
     const invalid = fixture();
     expect(
       await postDeploySmoke({ ...env, ...(flags.length > 1 ? { ARMADA_URL: staging } : {}) }, flags, {

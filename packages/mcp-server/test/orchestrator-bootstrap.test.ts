@@ -1,7 +1,6 @@
 import { expect, test } from "bun:test";
 import { type Provider, ProviderError } from "@armada/core";
-import { bootstrapOrchestrator } from "../src/orchestrator-bootstrap.ts";
-import { OrchestratorDiagnostics } from "../src/orchestrator-diagnostics.ts";
+import { bootstrapSandboxAccess } from "../src/sandbox-access-bootstrap.ts";
 
 const reference = "example/notes@1.0.0";
 const checksum = `sha256:${"a".repeat(64)}`;
@@ -35,9 +34,6 @@ test.each([
 ])("bootstrap %s", async (mode) => {
   const calls: string[] = [];
   const commands: string[] = [];
-  const lines: string[] = [];
-  const diagnostics = new OrchestratorDiagnostics((line) => lines.push(line), "create");
-  diagnostics.stage("skills");
   const provider = {
     exec: async ({ command }: { command: string }) => {
       commands.push(command);
@@ -63,9 +59,8 @@ test.each([
       };
     },
   } as unknown as Provider;
-  const run = bootstrapOrchestrator(provider, {
+  const run = bootstrapSandboxAccess(provider, {
     sandboxId: "parent",
-    diagnostics,
     projectDir: "/home/user/repo'$(false)",
     skillRevision: "a".repeat(40),
     ...(mode === "plain"
@@ -108,29 +103,6 @@ test.each([
         : "orchestrator_skill_bootstrap_failed",
     );
     expect(calls).toEqual(mode === "invalid reference" || mode === "reserved reference" ? [] : ["install"]);
-    diagnostics.report("failed");
-    const reason =
-      mode === "provider error"
-        ? "provider_unavailable"
-        : ["invalid JSON", "wrong version", "wrong checksum"].includes(mode)
-          ? "skill_provenance_missing"
-          : mode === "detached"
-            ? "skill_execution_detached"
-            : mode === "truncated"
-              ? "skill_output_truncated"
-              : ["invalid reference", "reserved reference"].includes(mode)
-                ? "skill_configuration_invalid"
-                : "skill_install_nonzero";
-    expect(lines.map((line) => JSON.parse(line))).toEqual([
-      {
-        event: "orchestrator_operation_failure",
-        component: "owner",
-        action: "create",
-        outcome: "failed",
-        stage: "skills",
-        reason,
-      },
-    ]);
   }
 });
 
@@ -159,11 +131,11 @@ test("built-in reference preserves conflicting files", async () => {
     configureAuthority: async () => {},
   };
   try {
-    await bootstrapOrchestrator(provider, request);
-    await bootstrapOrchestrator(provider, request);
+    await bootstrapSandboxAccess(provider, request);
+    await bootstrapSandboxAccess(provider, request);
     const path = `${root}/.agents/skills/armada-tools/SKILL.md`;
     await writeFile(path, "user content");
-    await expect(bootstrapOrchestrator(provider, request)).rejects.toThrow("orchestrator_skill_bootstrap_failed");
+    await expect(bootstrapSandboxAccess(provider, request)).rejects.toThrow("orchestrator_skill_bootstrap_failed");
     expect(await readFile(path, "utf8")).toBe("user content");
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -173,10 +145,8 @@ test("built-in reference preserves conflicting files", async () => {
 // Missing private auth is rejected before guest commands, receipts or delegated authority.
 test.each(["boat", "modal"] as const)("private bootstrap without a key fails closed on %s", async (id) => {
   const calls: string[] = [];
-  const diagnostics = new OrchestratorDiagnostics(() => {}, "create");
-  diagnostics.stage("skills");
   await expect(
-    bootstrapOrchestrator(
+    bootstrapSandboxAccess(
       {
         id,
         exec: async () => {
@@ -189,7 +159,6 @@ test.each(["boat", "modal"] as const)("private bootstrap without a key fails clo
         projectDir: "/home/user/repo",
         skillRevision: "a".repeat(40),
         skill: "notes@1.0.0",
-        diagnostics,
         recordReceipt: async () => {
           calls.push("receipt");
         },

@@ -7,7 +7,6 @@ import {
   ProviderError,
   type Sql,
 } from "@armada/core";
-import { authorizeModalCleanup, cleanupIngestAllowed } from "./cleanup.ts";
 import { refusal } from "./errors.ts";
 import type { IngestPayload, Machine, ModalStore, SavedImage, Scope } from "./ports.ts";
 
@@ -34,11 +33,7 @@ function revive(row: Machine): Machine {
  * controller entry rechecks live org membership (including private owner), not cached authorization. */
 export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
   const key = scopeKey(scope);
-  async function authorize(db = sql, id?: string) {
-    if (scope.cleanup) {
-      if (!id) throw refusal("forbidden", "Cleanup cannot enumerate or allocate resources.");
-      return authorizeModalCleanup(db, scope, id);
-    }
+  async function authorize(db = sql) {
     const result = await db.query(`select 1 from public.members where org_id=$1 and user_id=$2`, [
       scope.orgId,
       scope.userId,
@@ -46,7 +41,7 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
     if (!result.rows.length) throw refusal("forbidden", "Organization membership required.");
   }
   async function get(id: string, db = sql): Promise<Machine> {
-    await authorize(db, id);
+    await authorize(db);
     const result = await db.query<{ record: Machine }>(
       `select record from public.modal_machines where scope=$1 and id=$2 and org_id=$3 and (visibility='org' or owner_id=$4)`,
       [key, id, scope.orgId, scope.userId],
@@ -118,9 +113,7 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
         });
       try {
         return await work(await get(id), async (row) => {
-          if (scope.cleanup && !scope.cleanup.operationId)
-            throw refusal("forbidden", "Observation cannot mutate a machine.");
-          await authorize(sql, id);
+          await authorize(sql);
           const result = await sql.query(
             `update public.modal_machines set record=$4::jsonb,lease_until=now()+interval '15 minutes' where scope=$1 and id=$2 and lease_id=$3 and lease_until>now() returning id`,
             [key, id, token, JSON.stringify(row)],
@@ -225,8 +218,7 @@ export async function appendModalEvents(
       scope.orgId,
       scope.userId,
     ]);
-    if (!member.rows.length && !(await cleanupIngestAllowed(db, scope, sandboxId, generation)))
-      throw refusal("forbidden", "Organization membership revoked.");
+    if (!member.rows.length) throw refusal("forbidden", "Organization membership revoked.");
     const row = (
       await db.query<{ record: Machine }>(
         `select record from public.modal_machines where scope=$1 and id=$2 for update`,

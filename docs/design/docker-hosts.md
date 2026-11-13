@@ -124,5 +124,5 @@ Modal's tunnel (step 6). No Docker-agent implementation starts without coordinat
 
 ## Later
 
-Hostile multi-tenancy/microVMs, shared registries, failover, non-Linux hosts, public tunnels,
-live process migration and orchestrator continuity. No speculative scaffolding for these now.
+Hostile multi-tenancy/microVMs, shared registries, failover, non-Linux hosts, public tunnels.
+Live process migration is deferred. No speculative scaffolding for these now.

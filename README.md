@@ -148,7 +148,7 @@ Details: [docs/cli-capabilities-and-mcp-shortcuts.md](docs/cli-capabilities-and-
 
 ## Drive Armada from your own agent
 
-Armada is also a remote MCP server. Add it to Claude Code, Codex, Cursor or your own orchestrator, and that agent can list and build goldens, launch sandboxes and drive them with `golden_list`, `golden_create`, `launch`, `list`, `status`, `wait`, `logs`, `send`, `steer`, `interrupt`, `exec`, `extend` and `stop`.
+Armada is also a remote MCP server. Add it to Claude Code, Codex, Cursor or your own coordinator, and that agent can list and build goldens, launch sandboxes and drive them with `golden_list`, `golden_create`, `launch`, `list`, `status`, `wait`, `logs`, `send`, `steer`, `interrupt`, `exec`, `extend` and `stop`.
 
 MCP clients sign in with OAuth; bots and CI use a service token bound to one organization:
 
@@ -156,7 +156,7 @@ MCP clients sign in with OAuth; bots and CI use a service token bound to one org
 armada token create --org acme --label ci   # printed once; Armada keeps only its hash
 ```
 
-Your orchestrator decides what to work on and when to merge; Armada gives each task a sandbox, an agent and a live event stream to drive. Endpoints and client configuration: [Connect an MCP client](docs/dave-onboarding.md#7-connect-an-mcp-client).
+Your coordinator decides what to work on and when to merge; Armada gives each task a sandbox, an agent and a live event stream to drive. Endpoints and client configuration: [Connect an MCP client](docs/dave-onboarding.md#7-connect-an-mcp-client).
 
 ## Teams
 
@@ -174,7 +174,7 @@ Start with the [Use / Develop / Operate reader map](docs/README.md) for canonica
 
 ## Armada v1
 
-This repository used to hold Armada v1, a fleet orchestrator (Linear, merge queue, desktop app; npm versions up to 0.2.73). Its last commit is tagged [`armada-v1-final`](https://github.com/The-Vibe-Company/armada/tree/armada-v1-final), and its history and release tags stay here. v2 replaces it under the same `@the-vibe-company/armada` package: installing the latest version upgrades the global CLI.
+This repository used to hold Armada v1, a fleet coordinator (Linear, merge queue, desktop app; npm versions up to 0.2.73). Its last commit is tagged [`armada-v1-final`](https://github.com/The-Vibe-Company/armada/tree/armada-v1-final), and its history and release tags stay here. v2 replaces it under the same `@the-vibe-company/armada` package: installing the latest version upgrades the global CLI.
 
 ## License
 

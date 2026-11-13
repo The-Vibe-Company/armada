@@ -12,7 +12,7 @@ only the sandbox owner or an organization administrator can retrieve them throug
 
 Provider-native TTL termination cannot be intercepted by this version. Armada's
 lifecycle reconciler attempts preservation when it drives expiry while compute is
-still available. Ordinary sandboxes have no idle-stop scheduler; orchestrator parents have a separate fenced idle-stop policy. Oversize, unavailable or
+still available. Ordinary sandboxes have no idle-stop scheduler. Oversize, unavailable or
 late capture is reported, never allowed to prevent a stop. Automatic restoration,
 rescue-ref pushing and external object storage are deliberately out of scope.
 
@@ -23,7 +23,7 @@ Use `armada recovery <sandbox-id>` (or MCP `work_recovery`) to retrieve the late
 archive as base64 JSON. MCP also accepts `recovery_id` from an earlier receipt;
 subsequent stops never overwrite older archives. These are sensitive responses:
 redirect to a private file, not a shared transcript. Archives are retained until
-the sandbox is deleted (`armada rm <id> --yes`, API DELETE `/api/v1/sandboxes/:id`, or MCP `delete`); ordinary stop does not delete them. Deletion requires the owner or a current org admin and a stopped/failed sandbox. Managed orchestrator parents and children use their own lifecycle. Provider deletion errors or queued/pending deletion leave the row and archives intact. Retry deletion after the short activity lease (up to two minutes); do not resume a sandbox with deletion pending. Replays after completed deletion are safe.
+the sandbox is deleted (`armada rm <id> --yes`, API DELETE `/api/v1/sandboxes/:id`, or MCP `delete`); ordinary stop does not delete them. Deletion requires the owner or a current org admin and a stopped/failed sandbox. Provider deletion errors or queued/pending deletion leave the row and archives intact. Retry deletion after the short activity lease (up to two minutes); do not resume a sandbox with deletion pending. Replays after completed deletion are safe.
 
 Decode the `archive` field to a tar file. Extract only into an empty private
 directory (treat paths and symlinks as untrusted). `manifest.json` maps `repo-N`
@@ -37,9 +37,7 @@ Capture requires the Armada runtime Bun (or Bun on PATH) and git in the provider
 2 MiB total; collection gets 12 seconds at the provider and a 15-second server
 bound. The whole preservation attempt has a 20-second wait budget. SQL failure
 may prevent recording a receipt, but never prevents stopping compute. In-flight
-storage operations can finish after the wait budget. Parent orchestrator recovery
-continues to use its existing fenced checkpoint protocol; child sandbox stops
-use this work archive too.
+storage operations can finish after the wait budget. Child sandbox stops use this work archive too.
 
 Before capture Armada interrupts active turns and waits for acknowledgement under
 its stop lease. Repository fingerprints before/after capture reject concurrent

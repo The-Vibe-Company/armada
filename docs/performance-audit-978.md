@@ -103,14 +103,11 @@ The current PR's chat change has only synthetic CPU before/after evidence;
 these staging numbers do not demonstrate its end-to-end user impact. Missing:
 Boat/Claude lifecycle, resume, browser/navigation, real long-session phone-open,
 internal launch subphases, complete route census and SQL trip counts. #978 stays
-open. Orchestrators remain excluded.
+open.
 
 ## Scope exclusion
 
-Per the owner decision on #978 (2026-11-11), orchestrators are out of scope:
-do not audit, test, polish or change their implementation, dashboard or iPhone
-screens. A separate ticket owns feature removal. All backlog items below apply
-only to non-orchestrator paths.
+All backlog items below apply to ordinary sandbox paths.
 
 ## Audit / measurement backlog
 

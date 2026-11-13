@@ -18,7 +18,7 @@ proxy uses a 660-second AbortSignal and declares maxDuration=800. These do not
 explain a client transport rejection after 270246ms. That elapsed time alone
 does not establish which runtime, gateway or connection imposed the deadline.
 
-For an orchestrator-approved candidate test, use ARMADA_URL pointing directly
+For a coordinator-approved candidate test, use ARMADA_URL pointing directly
 to the approved control API origin, bypassing the dashboard proxy. This still
 authenticates only to Armada and requires no provider or database credentials.
 The direct endpoint remains subject to its own infrastructure deadlines.

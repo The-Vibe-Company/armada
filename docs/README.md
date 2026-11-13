@@ -23,7 +23,6 @@ Choose a starting point below; these are selected guides, not an inventory of ev
 - [Database migrations](database-migrations.md) and [releasing](releasing.md): operator-controlled schema history and package releases.
 - [Post-deploy smoke](post-deploy-smoke.md): deployment validation, not proof that a deployment has already passed.
 - [Work preservation](work-preservation.md), [Modal stop recovery](modal-stop-recovery.md) and [Modal builder recovery](modal-builder-recovery.md): preservation limits and authorized recovery.
-- [Orchestrator troubleshooting](orchestrator-troubleshooting.md): retained compatibility/recovery guidance for existing orchestrator resources, not a new launcher workflow.
 
 ## Designs and historical evidence
 

@@ -317,100 +317,6 @@ describe("tools", () => {
     });
   });
 
-  test("the tools an orchestrator and the dashboard use are listed, with schemas", async () => {
-    const { token, client, people } = await start();
-    const mcp = await client(await token(people.member));
-    const { tools } = await mcp.listTools();
-    expect(tools.map((tool) => tool.name).sort()).toEqual(
-      [
-        "delete",
-        "extend",
-        "exec",
-        "work_recovery",
-        "github_refresh",
-        "golden_build_status",
-        "golden_capabilities",
-        "golden_create",
-        "golden_adopt",
-        "golden_list",
-        "golden_snapshot",
-        "golden_size_policy",
-        "golden_update",
-        "interrupt",
-        "launch",
-        "launch_sized_v1",
-        "list",
-        "logs",
-        "skill_defaults_get",
-        "skill_defaults_set",
-        "template_create",
-        "template_list",
-        "template_get",
-        "template_publish",
-        "template_delete",
-        "template_launch",
-        "variable_list",
-        "variable_read",
-        "variable_set",
-        "variable_update",
-        "variable_delete",
-        "secret_list",
-        "secret_commit",
-        "secret_revoke",
-        "secret_delete",
-        "report",
-        "resource_advice",
-        "send",
-        "runtime_checkpoint",
-        "runtime_resume",
-        "runtime_github_status",
-        "status",
-        "steer",
-        "stop",
-        "wait",
-      ].sort(),
-    );
-    for (const tool of tools) expect(tool.outputSchema).toBeDefined();
-    const secretCommit = tools.find((tool) => tool.name === "secret_commit");
-    expect(secretCommit?.inputSchema.required).toEqual(["org", "uploadReference"]);
-    expect(secretCommit?.inputSchema.properties?.uploadReference).toMatchObject({ type: "string" });
-    const variableSet = tools.find((tool) => tool.name === "variable_set");
-    expect(variableSet?.inputSchema.required).toEqual(["org", "scope", "name", "value"]);
-    expect(variableSet?.inputSchema.properties?.scope).toMatchObject({ enum: ["personal", "org"] });
-    expect(variableSet?.inputSchema.properties?.value).toMatchObject({ type: "string" });
-    for (const name of ["variable_update", "variable_delete", "secret_revoke", "secret_delete"]) {
-      const schema = tools.find((tool) => tool.name === name)?.inputSchema;
-      expect(schema?.required).toEqual(["org", "id", "expectedVersion"]);
-      expect(schema?.properties?.expectedVersion).toMatchObject({ type: "integer", minimum: 1 });
-    }
-    for (const tool of tools.filter((tool) => /^(secret|variable)_/.test(tool.name))) {
-      expect(tool.inputSchema.additionalProperties).toBe(false);
-      if (tool.name.startsWith("secret_")) {
-        expect(Object.keys(tool.inputSchema.properties ?? {})).not.toContain("value");
-        expect(Object.keys(tool.inputSchema.properties ?? {})).not.toContain("value_enc");
-      }
-    }
-    const launch = tools.find((tool) => tool.name === "launch");
-    expect(launch?.inputSchema.properties?.repo).toMatchObject({ type: "string" });
-    expect(launch?.inputSchema.required ?? []).not.toContain("repo");
-    const goldenUpdate = tools.find((tool) => tool.name === "golden_update");
-    const goldenSnapshot = tools.find((tool) => tool.name === "golden_snapshot");
-    expect(goldenUpdate?.annotations).toMatchObject({
-      readOnlyHint: false,
-      destructiveHint: false,
-      openWorldHint: true,
-    });
-    expect(goldenSnapshot?.annotations).toMatchObject({
-      readOnlyHint: false,
-      destructiveHint: false,
-      openWorldHint: true,
-    });
-    expect(goldenUpdate?.inputSchema).toBeDefined();
-    expect(goldenUpdate?.outputSchema).toBeDefined();
-    expect(goldenSnapshot?.inputSchema).toBeDefined();
-    expect(goldenSnapshot?.outputSchema).toBeDefined();
-  });
-
   test("golden_capabilities is read-only, scoped before resolution, and reports provider metadata only", async () => {
     const { token, client, people, boat, db, auth, clock } = await start();
     const bearer = await token(people.member);
@@ -1689,26 +1595,6 @@ describe("tools", () => {
   });
 });
 
-test("cached retired MCP tool calls return removal guidance without dispatching the runtime", async () => {
-  let called = false;
-  const runtime = {
-    list: async () => {
-      called = true;
-      throw new Error("retired runtime must not dispatch");
-    },
-  } as unknown as import("../src/orchestrator-runtime.ts").OrchestratorRuntime;
-  const s = await start({ orchestrators: runtime });
-  const mcp = await s.client(await s.token(s.people.owner));
-  const result = await mcp.callTool({ name: "orchestrator_list", arguments: { args: { orgId: s.people.org } } });
-  expect(result.isError).toBe(true);
-  expect(JSON.stringify(result.content)).toContain("removed");
-  expect(JSON.stringify(result.content)).toContain("--armada-access");
-  expect(JSON.stringify(result.content)).toContain("#1002");
-  expect(called).toBe(false);
-  expect((await mcp.listTools()).tools.some((tool) => tool.name.startsWith("orchestrator_"))).toBe(false);
-  expect((await call(mcp, "list")).isError).not.toBe(true);
-});
-
 // Token resolution in these fixtures must not leak audit records to stdout.
 captureGitHubAuditLogs();
 
@@ -1724,4 +1610,98 @@ test("MCP launch preserves the closed busy account code and safe action", async 
   expect(result.text).toContain("error code: credential_busy");
   expect(result.text).toContain("The model account is unavailable. Check its current credentials.");
   expect(boat.forks).toHaveLength(0);
+});
+
+test("public MCP schemas protect secret boundaries and mutation contracts", async () => {
+  const { token, client, people } = await start();
+  const mcp = await client(await token(people.member));
+  const { tools } = await mcp.listTools();
+  expect(tools.map((tool) => tool.name).sort()).toEqual(
+    [
+      "delete",
+      "extend",
+      "exec",
+      "work_recovery",
+      "github_refresh",
+      "golden_build_status",
+      "golden_capabilities",
+      "golden_create",
+      "golden_adopt",
+      "golden_list",
+      "golden_snapshot",
+      "golden_size_policy",
+      "golden_update",
+      "interrupt",
+      "launch",
+      "launch_sized_v1",
+      "list",
+      "logs",
+      "skill_defaults_get",
+      "skill_defaults_set",
+      "template_create",
+      "template_list",
+      "template_get",
+      "template_publish",
+      "template_delete",
+      "template_launch",
+      "variable_list",
+      "variable_read",
+      "variable_set",
+      "variable_update",
+      "variable_delete",
+      "secret_list",
+      "secret_commit",
+      "secret_revoke",
+      "secret_delete",
+      "report",
+      "resource_advice",
+      "send",
+      "runtime_checkpoint",
+      "runtime_resume",
+      "runtime_github_status",
+      "status",
+      "steer",
+      "stop",
+      "wait",
+    ].sort(),
+  );
+  for (const tool of tools) expect(tool.outputSchema).toBeDefined();
+  const secretCommit = tools.find((tool) => tool.name === "secret_commit");
+  expect(secretCommit?.inputSchema.required).toEqual(["org", "uploadReference"]);
+  expect(secretCommit?.inputSchema.properties?.uploadReference).toMatchObject({ type: "string" });
+  const variableSet = tools.find((tool) => tool.name === "variable_set");
+  expect(variableSet?.inputSchema.required).toEqual(["org", "scope", "name", "value"]);
+  expect(variableSet?.inputSchema.properties?.scope).toMatchObject({ enum: ["personal", "org"] });
+  expect(variableSet?.inputSchema.properties?.value).toMatchObject({ type: "string" });
+  for (const name of ["variable_update", "variable_delete", "secret_revoke", "secret_delete"]) {
+    const schema = tools.find((tool) => tool.name === name)?.inputSchema;
+    expect(schema?.required).toEqual(["org", "id", "expectedVersion"]);
+    expect(schema?.properties?.expectedVersion).toMatchObject({ type: "integer", minimum: 1 });
+  }
+  for (const tool of tools.filter((tool) => /^(secret|variable)_/.test(tool.name))) {
+    expect(tool.inputSchema.additionalProperties).toBe(false);
+    if (tool.name.startsWith("secret_")) {
+      expect(Object.keys(tool.inputSchema.properties ?? {})).not.toContain("value");
+      expect(Object.keys(tool.inputSchema.properties ?? {})).not.toContain("value_enc");
+    }
+  }
+  const launch = tools.find((tool) => tool.name === "launch");
+  expect(launch?.inputSchema.properties?.repo).toMatchObject({ type: "string" });
+  expect(launch?.inputSchema.required ?? []).not.toContain("repo");
+  const goldenUpdate = tools.find((tool) => tool.name === "golden_update");
+  const goldenSnapshot = tools.find((tool) => tool.name === "golden_snapshot");
+  expect(goldenUpdate?.annotations).toMatchObject({
+    readOnlyHint: false,
+    destructiveHint: false,
+    openWorldHint: true,
+  });
+  expect(goldenSnapshot?.annotations).toMatchObject({
+    readOnlyHint: false,
+    destructiveHint: false,
+    openWorldHint: true,
+  });
+  expect(goldenUpdate?.inputSchema).toBeDefined();
+  expect(goldenUpdate?.outputSchema).toBeDefined();
+  expect(goldenSnapshot?.inputSchema).toBeDefined();
+  expect(goldenSnapshot?.outputSchema).toBeDefined();
 });
