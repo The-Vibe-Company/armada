@@ -80,7 +80,7 @@ export interface LaunchOptionsResponse {
   machineSizes: readonly MachineSize[];
   ttl: { defaultSeconds: number; maxSeconds: Partial<Record<SandboxPlacementProviderId, number>> };
   providers: LaunchProviderOption[];
-  modalRuntime?: { version: number; enabled: boolean; followupVersion?: number };
+  modalRuntime?: { version: number; enabled: boolean; followupVersion?: number; resumeVersion?: number };
   boatRuntime: {
     version: number;
     diagnosticsVersion: number;

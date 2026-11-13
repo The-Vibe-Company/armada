@@ -71,6 +71,17 @@ export interface ModalProvider extends Provider {
     cacheDir: string;
     artifact: { sha256: string; bytes: number };
   }): Promise<void>;
+  /** Trusted server only: common checkpoint has been durably sealed and ACKed. */
+  stopRuntime(input: {
+    sandboxId: string;
+    physicalGeneration: string;
+    epoch: string;
+    watermark: number;
+  }): Promise<void>;
+  resumeRuntime(
+    input: { sandboxId: string; checkpoint: { epoch: string; watermark: number }; ttlSeconds: number },
+    signal?: AbortSignal,
+  ): Promise<SandboxInfo>;
   configureGitHub: NonNullable<Provider["configureGitHub"]>;
   findGoldenBuilder: NonNullable<Provider["findGoldenBuilder"]>;
   disposeGoldenBuilder: NonNullable<Provider["disposeGoldenBuilder"]>;
@@ -582,7 +593,10 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     if (row.phase === "stopped") return;
     const sb = await physical(row);
     if (row.commonRuntime) {
-      // Initial model-only lane deliberately retains no disk image or resume claim.
+      // Explicit compute-only fallback must never retain an earlier recovery claim.
+      if (row.recoveryImageId) row.retainedRecoveryIds = [...(row.retainedRecoveryIds ?? []), row.recoveryImageId];
+      delete row.recoveryImageId;
+      delete row.runtimeCheckpoint;
       row.phase = "terminate";
       row.info.state = "stopping";
       await save(row);
@@ -767,6 +781,145 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
           throw refusal("unavailable", "Enrolled Modal bootstrap failed; spawn outcome must be reconciled.");
         }
       });
+    },
+    async stopRuntime(input) {
+      if (!/^[1-9][0-9]{0,18}$/.test(input.epoch) || !Number.isSafeInteger(input.watermark) || input.watermark < 0)
+        throw refusal("invalid_request", "A durable common checkpoint epoch and watermark are required.");
+      await bound();
+      let observed: Machine | undefined;
+      try {
+        await store.lease(input.sandboxId, async (row, save) => {
+          observed = row;
+          assertMachineSource(row);
+          if (
+            !row.commonRuntime ||
+            row.golden ||
+            !row.physicalId ||
+            input.physicalGeneration !== String(row.generation)
+          )
+            throw refusal("conflict", "Retained stop requires the exact enrolled physical incarnation.");
+          const expected = {
+            epoch: input.epoch,
+            watermark: input.watermark,
+            physicalId: row.physicalId,
+            generation: row.generation,
+          };
+          const prior = row.runtimeCheckpoint;
+          if (
+            prior &&
+            prior.generation === row.generation &&
+            (prior.epoch !== expected.epoch ||
+              prior.watermark !== expected.watermark ||
+              prior.physicalId !== expected.physicalId)
+          )
+            throw refusal("conflict", "Retained stop belongs to another checkpoint.");
+          if (row.phase === "stopped") {
+            if (!row.recoveryImageId || !prior) throw refusal("conflict", "No retained common checkpoint exists.");
+            return;
+          }
+          if (!["active", "checkpoint", "terminate"].includes(row.phase))
+            throw refusal("conflict", "Snapshot outcome is unknown; retain the physical source for reconciliation.");
+          const sb = await physical(row);
+          if (row.phase !== "terminate") {
+            if ((await sb.poll()) !== null) throw refusal("sandbox_not_ready", "Checkpoint source has exited.");
+            row.runtimeCheckpoint = expected;
+            row.phase = "checkpoint";
+            row.info.state = "stopping";
+            await save(row);
+            if (!row.quiesced) {
+              // Scrub SSH and kill all post-baseline writers, including the dial-out process.
+              // SQLite journal/native session files survive, but are never snapshotted live.
+              await distribution.prepareSnapshot(sb, row);
+              row.quiesced = true;
+              await save(row);
+            }
+            row.phase = "snapshot";
+            await save(row);
+            const image = await sb.snapshotFilesystem({ ttlMs: null });
+            if (row.recoveryImageId)
+              row.retainedRecoveryIds = [...(row.retainedRecoveryIds ?? []), row.recoveryImageId];
+            row.recoveryImageId = image.imageId;
+            row.phase = "terminate";
+            await save(row); // Persist retained image before destroying the source.
+          } else if (!row.recoveryImageId || !prior || !row.quiesced) {
+            throw refusal("conflict", "Termination lacks a retained common checkpoint.");
+          }
+          await sb.terminate({ wait: true });
+          if ((await sb.poll()) === null) throw refusal("unavailable", "Termination has not completed.");
+          row.phase = "stopped";
+          row.info.state = "stopped";
+          row.info.providerState = "stopped";
+          row.info.stoppedAt = new Date();
+          await save(row);
+        });
+      } catch (error) {
+        if (observed) throw new ModalOperationError(error, await resourceReceipt(observed));
+        throw error;
+      }
+    },
+    async resumeRuntime(input, signal) {
+      const { epoch, watermark } = input.checkpoint;
+      if (
+        !/^[1-9][0-9]{0,18}$/.test(epoch) ||
+        !Number.isSafeInteger(watermark) ||
+        watermark < 0 ||
+        !Number.isInteger(input.ttlSeconds) ||
+        input.ttlSeconds < 1 ||
+        input.ttlSeconds > 86400
+      )
+        throw refusal("invalid_request", "Common resume requires a checkpoint and a valid physical TTL.");
+      signal?.throwIfAborted();
+      await bound();
+      let observed: Machine | undefined;
+      try {
+        return await store.lease(input.sandboxId, async (row, save) => {
+          signal?.throwIfAborted();
+          observed = row;
+          assertMachineSource(row);
+          const checkpoint = row.runtimeCheckpoint;
+          if (
+            !row.commonRuntime ||
+            row.golden ||
+            !row.recoveryImageId ||
+            !checkpoint ||
+            checkpoint.epoch !== epoch ||
+            checkpoint.watermark !== watermark
+          )
+            throw refusal("conflict", "No matching retained common checkpoint is available.");
+          if (row.phase === "stopped") {
+            if (checkpoint.generation !== row.generation || checkpoint.physicalId !== row.physicalId)
+              throw refusal("conflict", "Retained source incarnation does not match.");
+            row.generation++;
+            row.ttlSeconds = input.ttlSeconds;
+            row.imageId = row.recoveryImageId;
+            row.phase = "reserved";
+            row.info.state = "starting";
+            row.quiesced = false;
+            row.physicalName = `armada-${createHash("sha256").update(row.info.id).digest("hex").slice(0, 32)}-${row.generation}`;
+            delete row.physicalId;
+            delete row.processBaseline;
+            delete row.runtimeStartAttempted;
+            delete row.ordinaryStopAttempted;
+            delete row.info.stopNote;
+            delete row.info.stoppedAt;
+            await save(row); // Persist the new physical generation before remote activation.
+          }
+          if (
+            row.generation !== checkpoint.generation + 1 ||
+            row.imageId !== row.recoveryImageId ||
+            row.ttlSeconds !== input.ttlSeconds
+          )
+            throw refusal("conflict", "Common resume belongs to another activation.");
+          signal?.throwIfAborted();
+          if (["reserved", "creating", "booting"].includes(row.phase)) return create(row, save, {});
+          if (row.phase !== "active" || (await (await physical(row)).poll()) !== null)
+            throw refusal("conflict", "Resume activation outcome is unavailable; do not allocate again.");
+          return sandboxInfo(row);
+        });
+      } catch (error) {
+        if (observed) throw new ModalOperationError(error, await resourceReceipt(observed));
+        throw error;
+      }
     },
     async observeResources(id) {
       await bound();

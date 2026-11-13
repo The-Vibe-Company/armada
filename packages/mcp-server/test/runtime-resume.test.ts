@@ -14,8 +14,8 @@ import { ENCRYPTION_KEY } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
 
-async function stopped(harness: "codex" | "claude" = "codex") {
-  const f = await runtimeFixture(await sharedDatabase(), "boat", harness);
+async function stopped(harness: "codex" | "claude" = "codex", provider: "boat" | "modal" = "boat") {
+  const f = await runtimeFixture(await sharedDatabase(), provider, harness);
   const cp = await createRuntimeCheckpoint(
     f.sql,
     ENCRYPTION_KEY,
@@ -34,12 +34,16 @@ const input = (id: string) => ({
   prompt: "continue the previous conversation",
 });
 
-describe.each(["codex", "claude"] as const)("retained runtime resume (%s)", (harness) => {
+describe.each([
+  ["boat", "codex"],
+  ["boat", "claude"],
+  ["modal", "codex"],
+] as const)("retained runtime resume (%s/%s)", (provider, harness) => {
   let f: Awaited<ReturnType<typeof stopped>>;
   // Cold WASM/migrations and building the stopped checkpoint are prerequisites,
   // not resume/replay work. Keep the behavior timeout and real assertions intact.
   beforeAll(async () => {
-    f = await stopped(harness);
+    f = await stopped(harness, provider);
   }, 20_000);
   afterAll(async () => {
     await f?.close();
@@ -48,15 +52,25 @@ describe.each(["codex", "claude"] as const)("retained runtime resume (%s)", (har
   test("resume reopens the same journal into a new attested epoch; stable replay never activates or starts a turn twice", async () => {
     const old = f.active;
     let activations = 0;
-    const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, async () => ({
-      async start(_signal, restore) {
-        activations++;
-        return f.reboot(restore);
-      },
-      async stop() {
-        throw Error("Healthy resume must not stop compute");
-      },
-    }));
+    const resume = createRuntimeResume(
+      f.sql,
+      ENCRYPTION_KEY,
+      f.bridge,
+      async () => ({
+        async start(_signal, restore) {
+          activations++;
+          return f.reboot(restore);
+        },
+        async stop() {
+          throw Error("Healthy resume must not stop compute");
+        },
+      }),
+      provider === "modal"
+        ? async () => {
+            throw Error("No Boat MCP preparation on model-only Modal resume");
+          }
+        : undefined,
+    );
     const request = input(f.row.id);
     const result = (await callSharedTool(
       { ...f.context, runtimeResume: resume },
