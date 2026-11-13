@@ -40,9 +40,13 @@ it never stopped compute, so the explicit server-side idle policy fills that gap
 
 ## Remaining deliveries / staging evidence
 
-This is PR 1: detection and checkpointed stop only. Wake-on-send, user-facing
-paused wording, Docker integration and #1532 parity rows remain follow-ups.
-Until wake-on-send ships, use the existing explicit runtime resume operation.
+PR 1 provides detection and checkpointed stop. PR 2 routes ordinary `send` to
+the existing checkpointed resume path for stopped Boat/Modal runtimes, without
+a provider-specific client request. Use a stable request UUID; identical replay
+returns the durable accepted outcome rather than starting another turn, even
+after the machine becomes running. Model/effort and the conversation stay pinned.
+Resume preserves the original absolute expiry and refuses activation after it.
+User-facing paused wording, Docker integration and #1532 parity rows remain follow-ups.
 This PR does not claim the issue's end-to-end acceptance criteria are met.
 
 The coordinator must validate idle shutdown and conversation-preserving wake

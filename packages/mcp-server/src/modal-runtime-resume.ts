@@ -41,7 +41,7 @@ export function modalRuntimeResume(options: {
           where s.id=$1 and s.owner_id=$2 and s.lifecycle_generation=$3 and s.status='starting'
           and s.runtime_transport='dialout' and s.provider='modal' and s.activity_lease_id is not null
           and s.stop_requested_at is null and s.deleted_at is null and not s.application_secret_tainted
-          and r.epoch=$4 and c.status='active' and (c.expires_at is null or c.expires_at>now())
+          and s.expires_at>now() and r.epoch=$4 and c.status='active' and (c.expires_at is null or c.expires_at>now())
           and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id)`,
                 [sandbox.id, caller.userId, sandbox.lifecycleGeneration, restoreCheckpoint.epoch],
               )
@@ -52,7 +52,8 @@ export function modalRuntimeResume(options: {
                 sandboxId: sandbox.providerSandboxId,
                 ttlSeconds: Math.min(
                   PROVIDER_LIMITS.modal.maxTtlSeconds,
-                  (sandbox.effectiveTtlSeconds ?? 14400) + SANDBOX_STOP_MARGIN_SECONDS,
+                  Math.max(1, Math.ceil((Date.parse(sandbox.expiresAt ?? "") - Date.now()) / 1000)) +
+                    SANDBOX_STOP_MARGIN_SECONDS,
                 ),
                 checkpoint: { epoch: restoreCheckpoint.epoch, watermark: restoreCheckpoint.watermark },
               },
