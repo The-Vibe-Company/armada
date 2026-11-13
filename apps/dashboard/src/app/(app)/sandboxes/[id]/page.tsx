@@ -1,4 +1,10 @@
-import { isSandboxProvider, MODEL_CATALOG, SANDBOX_PLACEMENT_LABELS, type SandboxListMetadata } from "@armada/core";
+import {
+  isSandboxProvider,
+  MODEL_CATALOG,
+  SANDBOX_PLACEMENT_LABELS,
+  type Sandbox,
+  type SandboxListMetadata,
+} from "@armada/core";
 import { ArrowLeftIcon, ClockAlertIcon, ContainerIcon, LockIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
@@ -22,10 +28,13 @@ import { bindableStatus, needsAccountChoice } from "@/lib/account-recovery";
 import { isUuid } from "@/lib/action";
 import { readAccountChoices } from "@/lib/data/account-recovery";
 import { listSandboxConnections, type SandboxConnections } from "@/lib/data/connections";
+import { readDockerLaunchOption } from "@/lib/data/docker-hosts";
 import { findGoldenLabel } from "@/lib/data/goldens";
 import { credentialKinds, getSandbox, getSandboxMetadata } from "@/lib/data/sandboxes";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { displayUser, listMemberships, memberDirectory, requireViewer } from "@/lib/data/viewer";
+import { shortHostId } from "@/lib/docker-hosts";
+import { type DockerSandboxControls, dockerSandboxControls } from "@/lib/docker-launch";
 import { mcpUrl } from "@/lib/env";
 import { isActiveStatus } from "@/lib/events";
 import { PROVIDER_LABELS } from "@/lib/golden-form";
@@ -72,12 +81,20 @@ export default async function SandboxPage({ params }: Props) {
     return <RestrictedSandbox sandbox={listed} owner={displayUser(directory, listed.ownerId, viewer.id)} />;
   }
   if (sandbox.provider === "docker") {
-    // A sandbox on an owned Docker host (#1165): its facts are listed, its conversation and actions are not in the
-    // dashboard yet. Said plainly instead of a missing page or buttons the server would refuse.
-    const listed = await getSandboxMetadata(supabase, id);
-    if (!listed) notFound();
+    // A sandbox on an owned Docker host (#1165): the same page, with what the server supports on Docker. A control the
+    // server marks unsupported is listed with its reason, never offered as a button it would refuse.
+    const [option, kinds] = await Promise.all([
+      readDockerLaunchOption(),
+      credentialKinds(supabase, [sandbox.credential_id]),
+    ]);
     return (
-      <RestrictedSandbox sandbox={listed} owner={displayUser(directory, listed.ownerId, viewer.id)} reason="docker" />
+      <DockerSandbox
+        sandbox={sandbox}
+        controls={dockerSandboxControls(option)}
+        org={memberships.find((item) => item.org.id === sandbox.org_id)?.org.name ?? "Unknown"}
+        owner={displayUser(directory, sandbox.owner_id, viewer.id)}
+        cost={costOfRow(sandbox, kinds.get(sandbox.credential_id ?? "") ?? null)}
+      />
     );
   }
   if (!isSandboxProvider(sandbox.provider) || sandbox.golden_id === null) notFound();
@@ -215,21 +232,146 @@ export default async function SandboxPage({ params }: Props) {
   );
 }
 
-/**
- * A sandbox's address shown from its listed metadata only, and why the rest is not shown: either the viewer may not
- * open it (its conversation, files and connections are then never read for this page), or it runs on a Docker host,
- * whose conversation and actions the dashboard does not offer yet.
- */
-function RestrictedSandbox({
+/** A Docker sandbox's page: its conversation and the controls the server supports on Docker, with reasons for the rest. */
+function DockerSandbox({
   sandbox,
+  controls,
+  org,
   owner,
-  reason = "access",
+  cost,
 }: {
-  sandbox: SandboxListMetadata;
+  sandbox: Sandbox;
+  controls: DockerSandboxControls;
+  org: string;
   owner: string;
-  /** Why the interior is not shown: the viewer may not open it, or it runs on a Docker host. */
-  reason?: "access" | "docker";
+  cost: ReturnType<typeof costOfRow>;
 }) {
+  const configured = mcpUrl() !== null;
+  const lifecycle = readLifecycle(sandbox);
+  const life = lifecycleView(sandbox.status, lifecycle, new Date());
+  const { reasons } = controls;
+  const facts: [string, string][] = [
+    ["Org", org],
+    ["Provider", SANDBOX_PLACEMENT_LABELS.docker],
+    ["Host", sandbox.docker_host_id ? `Host ${shortHostId(sandbox.docker_host_id)}` : "Unknown"],
+    ["Image", sandbox.docker_image ?? "Unknown"],
+    ["Harness", HARNESS_LABELS[sandbox.harness] ?? sandbox.harness],
+    ["Model", sandbox.model ?? "Provider default"],
+    ["Reasoning effort", sandbox.reasoning_effort ?? "Provider default"],
+    ["Owner", owner],
+    ["Created", formatDate(sandbox.created_at)],
+    ...(life.lifetime ? [["Lifetime", life.lifetime] as [string, string]] : []),
+    ...(lifecycle.expiresAt
+      ? [
+          ["Deadline", `${formatDate(lifecycle.expiresAt)}${life.remaining ? `, ${life.remaining}` : ""}`] as [
+            string,
+            string,
+          ],
+        ]
+      : []),
+    ["Stopped", sandbox.stopped_at ? formatDate(sandbox.stopped_at) : "Not stopped"],
+    ["Conversations", String(sandbox.conversation_ids.length)],
+  ];
+  return (
+    <div data-fit-viewport data-docker-sandbox className="space-y-3 md:space-y-6">
+      <div className="space-y-3">
+        <Button variant="ghost" size="sm" asChild className="-ml-3 text-muted-foreground max-md:hidden">
+          <Link href="/sandboxes">
+            <LinkPendingIcon>
+              <ArrowLeftIcon />
+            </LinkPendingIcon>
+            Sandboxes
+          </Link>
+        </Button>
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-2 sm:gap-x-3">
+            <h1 className="min-w-0 font-mono text-xl font-semibold tracking-tight break-all">
+              {sandbox.provider_sandbox_id || `Sandbox ${sandbox.id}`}
+            </h1>
+            <StatusBadge status={sandbox.status} />
+            <CopyButton value={sandbox.id} label="Copy sandbox ID" className="-ml-1.5" />
+          </div>
+          {configured && (
+            <SandboxActions
+              sandboxId={sandbox.id}
+              status={sandbox.status}
+              canStop={!reasons.stop}
+              canDelete={!reasons.delete}
+              stopDescription={`The container stops and its workspace stays on the host.${reasons.resume ? ` It cannot be resumed from here: ${reasons.resume}` : ""}`}
+            />
+          )}
+        </div>
+      </div>
+
+      {life.notice && (
+        <Alert data-lifecycle-notice={life.notice.kind} className="border-warning/40">
+          <ClockAlertIcon className="text-warning" />
+          <AlertTitle>{life.notice.title}</AlertTitle>
+          <AlertDescription>{life.notice.text}</AlertDescription>
+        </Alert>
+      )}
+
+      <div data-fit="body" className="grid items-start gap-2 md:gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
+        <div data-fit="column" className="min-w-0 space-y-2 md:space-y-6">
+          {reasons.logs ? (
+            <Alert data-docker-conversation-unavailable role="status">
+              <ContainerIcon />
+              <AlertTitle>Conversation unavailable</AlertTitle>
+              <AlertDescription>{reasons.logs}</AlertDescription>
+            </Alert>
+          ) : (
+            <SandboxChat
+              sandboxId={sandbox.id}
+              initialStatus={sandbox.status}
+              initialUsageRevision={usageRevision(sandbox.usage_turns)}
+              live={isActiveStatus(sandbox.status)}
+              harness={sandbox.harness}
+              catalog={MODEL_CATALOG}
+              launchedModel={sandbox.model}
+              conversations={sandbox.conversation_ids}
+              configured={configured}
+              composerUnavailable={reasons.followupPrompts}
+            />
+          )}
+        </div>
+        <SandboxDetailsPanel>
+          <Card className="gap-3 py-5">
+            <CardHeader className="px-5">
+              <CardTitle className="text-sm">Details</CardTitle>
+            </CardHeader>
+            <CardContent className="px-5">
+              <Facts facts={facts} />
+            </CardContent>
+          </Card>
+          <SandboxCostCard cost={cost} />
+          {controls.unavailable.length > 0 && (
+            <Card className="gap-3 py-5" data-docker-unavailable>
+              <CardHeader className="px-5">
+                <CardTitle className="text-sm">Not available on Docker yet</CardTitle>
+              </CardHeader>
+              <CardContent className="px-5">
+                <ul className="space-y-1.5 text-[13px]">
+                  {controls.unavailable.map((item) => (
+                    <li key={item.name}>
+                      <span className="font-medium">{item.name}</span>
+                      <span className="text-muted-foreground">: {item.reason}</span>
+                    </li>
+                  ))}
+                </ul>
+              </CardContent>
+            </Card>
+          )}
+        </SandboxDetailsPanel>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * What a member who may not open a sandbox sees at its address: the metadata every member already has on the list,
+ * and why the rest is closed. Its conversation, files and connections are never read for this page.
+ */
+function RestrictedSandbox({ sandbox, owner }: { sandbox: SandboxListMetadata; owner: string }) {
   const life = lifecycleView(sandbox.status, readLifecycle(sandbox), new Date());
   const facts: [string, string][] = [
     ["Provider", SANDBOX_PLACEMENT_LABELS[sandbox.provider]],
@@ -269,24 +411,14 @@ function RestrictedSandbox({
           <StatusBadge status={sandbox.status} />
         </div>
       </div>
-      {reason === "docker" ? (
-        <Alert data-docker-sandbox role="status">
-          <ContainerIcon />
-          <AlertTitle>Runs on a Docker host</AlertTitle>
-          <AlertDescription>
-            Its conversation, messages, stop and delete are not available in the dashboard for Docker sandboxes yet.
-          </AlertDescription>
-        </Alert>
-      ) : (
-        <Alert data-restricted role="status">
-          <LockIcon />
-          <AlertTitle>Owner and admins only</AlertTitle>
-          <AlertDescription>
-            Only its owner and organization admins can open this sandbox. Every member sees that it exists; its
-            conversation, files and connections stay closed to them.
-          </AlertDescription>
-        </Alert>
-      )}
+      <Alert data-restricted role="status">
+        <LockIcon />
+        <AlertTitle>Owner and admins only</AlertTitle>
+        <AlertDescription>
+          Only its owner and organization admins can open this sandbox. Every member sees that it exists; its
+          conversation, files and connections stay closed to them.
+        </AlertDescription>
+      </Alert>
       <Card className="max-w-xl gap-4">
         <CardHeader>
           <CardTitle className="text-base">Details</CardTitle>
