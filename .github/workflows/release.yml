@@ -230,6 +230,7 @@ jobs:
     uses: ./.github/workflows/staging-gated-production.yml
     with:
       source_sha: ${{ needs.check.outputs.sha }}
+      release_gate: true
       official_image: ${{ needs.sandbox-image.outputs.enabled == 'true' }}
     secrets: inherit
 

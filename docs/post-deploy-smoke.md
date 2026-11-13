@@ -919,3 +919,49 @@ A default ten-minute idle delay cannot be proven in a two-minute feature run.
 Any shortened staging-only global idle setting and its restoration require
 coordinator/operator control. This procedure neither changes that setting nor
 adds a new script, CI job, provider call or staging success claim.
+
+
+## Main smoke cadence and provider quota (#1547)
+
+Main still deploys its pinned staging server/dashboard on pushes, but **full
+compute smoke attempts** are interval-admitted. Repository variable
+STAGING_SMOKE_INTERVAL_MINUTES is an integer 1–1440, default 30. The serialized
+workflow checks a durable staging-full-smoke-slot artifact, verifies its same-repo
+main producer/path/event, and reserves an artifact before compute. Failed/quota
+attempts consume the interval too; missing/invalid evidence or GitHub API failure
+fails closed, never authorizes a release through a successful no-op. No secret is
+stored in the slot; authoritative timestamps/source SHA are GitHub metadata.
+
+A half-hour main schedule catches a quiet latest tip after cadence opens. It
+skips the entire deployment job if the interval has not opened or that SHA has
+a retained attempt slot; it avoids rebuilding an unchanged tip on each tick. Delays
+are possible because GitHub cron is best-effort. Non-default intervals are still
+checked on pushes/manual dispatch and at the half-hour scheduled ticks. Stale
+ordinary main sources are rejected before mutation as before. A newer commit
+wins before a queued deployment starts; running smoke is not cancelled. Slots are retained for two days (longer than the maximum one-day interval).
+After expiry, cron may re-attempt a quiet latest tip, still subject to the same
+interval; this is bounded suppression, not an indefinite cache. Manual main
+dispatch may retry after the interval. Do not delete admission artifacts early:
+that removes rate-limit evidence. Already-attempted is **not** a successful-test
+claim.
+
+Publishing Release passes an explicit release_gate input: bypass cadence, do
+not consume main's slot, and require complete smoke. Any quota refusal in that
+release smoke blocks production/npm. Main may finish with explicit partial
+not-run receipts, never fabricated pass receipts. A 30-minute interval does not
+promise a daily-start budget: each full run can start multiple sandboxes; choose
+a larger interval if the plan needs it.
+
+Boat quota is recognized only from structured API evidence: HTTP 429 with
+error.code=rate_limited and error.details.provider=boat, or a failed template
+result with the closed rate_limited reason and frozen manifest provider boat.
+The latter is the service's persisted typed non-mutating Boat 429 refusal.
+Unknown/unrecognized_refusal strings or messages containing quota/200/day are
+**not** classified as quota. They remain failures requiring diagnosis.
+
+A recognized refusal emits status=not-run, reason=quota; the remaining Boat
+cases/phases are not attempted, while other providers continue. Known handles
+still undergo cleanup and receipt reconciliation; cleanup failure/unconfirmed
+resources remain failures. Definitively refused template allocations do not
+create fake unknown-resource cleanup failures. The initial refusal and skipped
+cases retain explicit incomplete evidence; release smoke cannot call it green.

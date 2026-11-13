@@ -367,3 +367,18 @@ test("launch refusal diagnostics drop arbitrary remote text but retain closed un
   });
   expect(JSON.stringify(fake.lines)).not.toContain("secret-provider-detail");
 });
+
+test("typed Boat start refusal retains definite absence and cleans owned template resources", async () => {
+  const fake = fixture();
+  const request = fake.io.request;
+  fake.io.request = async <T>(path: string, body: object): Promise<T> => {
+    if (path === "templates/launch")
+      return { state: "failed", reason: "rate_limited", manifest: { definition: { provider: "boat" } } } as T;
+    return request<T>(path, body);
+  };
+  expect(await runTemplateSkillCase(selected, fake.io)).toBe(false);
+  expect(fake.lines.some((line) => line.code === "provider_quota")).toBe(true);
+  expect(fake.lines.some((line) => line.code === "cleanup_unconfirmed")).toBe(false);
+  expect(fake.calls.some((call) => call.path === "templates/delete")).toBe(true);
+  expect(fake.calls.at(-1)?.path).toBe("variables/delete");
+});

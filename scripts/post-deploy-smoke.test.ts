@@ -1636,6 +1636,7 @@ test("the advertised smoke workflow invocation admits ordinary staging checks", 
         ARMADA_TOKEN: "fixture",
         ARMADA_SMOKE_CASES: JSON.stringify([selected]),
         ARMADA_SMOKE: "create_real_compute",
+        ARMADA_SMOKE_REQUIRE_FULL: "false",
         ARMADA_SMOKE_JOURNAL: join(directory, "sandboxes.json"),
       },
     });
@@ -1833,3 +1834,65 @@ test.each(["unknown", "missing", "old", "partial", "measured", "null-totals", "c
     );
   },
 );
+
+test.each([false, true])(
+  "structured Boat quota stops later Boat cases without inventing a release pass (%s)",
+  async (release) => {
+    const fake = fixture((call) =>
+      call.path === "sandbox/launch"
+        ? json({ error: { code: "rate_limited", details: { provider: "boat", window: "day" } } }, 429)
+        : undefined,
+    );
+    const passed = await postDeploySmoke(
+      {
+        ...env,
+        ARMADA_SMOKE_REQUIRE_FULL: String(release),
+        ARMADA_SMOKE_CASES: JSON.stringify([selected, { ...selected, golden: "second" }]),
+      },
+      [],
+      fake.io,
+    );
+    expect(passed).toBe(!release);
+    expect(fake.calls.filter((call) => call.path === "sandbox/launch")).toHaveLength(1);
+    expect(
+      fake.receipts().filter((line) => line.status === "not-run" && line.reason === "quota").length,
+    ).toBeGreaterThan(0);
+  },
+);
+
+test.each([503, 429])("unrecognized refusal text without structured Boat code remains failure (%s)", async (status) => {
+  const fake = fixture((call) =>
+    call.path === "sandbox/launch"
+      ? json({ error: { code: "unrecognized_refusal", message: "Boat quota 200 starts per day" } }, status)
+      : undefined,
+  );
+  expect(await postDeploySmoke(env, [], fake.io)).toBe(false);
+  expect(fake.receipts().some((line) => line.reason === "quota")).toBe(false);
+});
+
+test("Boat quota does not suppress the remaining provider's smoke", async () => {
+  let modal = false;
+  let stopped = false;
+  const fake = fixture((call) => {
+    if (call.path === "sandbox/launch") {
+      if (call.body.provider === "boat")
+        return json({ error: { code: "rate_limited", details: { provider: "boat" } } }, 429);
+      modal = true;
+    }
+    if (call.path === "sandbox/stop") stopped = true;
+    if (modal && call.path === "sandbox/status")
+      return json({ status: stopped ? "stopped" : "ready", providerState: stopped ? "stopped" : "running" });
+  });
+  expect(
+    await postDeploySmoke(
+      { ...env, ARMADA_SMOKE_CASES: JSON.stringify([selected, { ...selected, provider: "modal" }]) },
+      [],
+      fake.io,
+    ),
+  ).toBe(true);
+  expect(fake.calls.filter((call) => call.path === "sandbox/launch").map((call) => call.body.provider)).toEqual([
+    "boat",
+    "modal",
+  ]);
+  expect(fake.calls.some((call) => call.path === "sandbox/stop")).toBe(true);
+});

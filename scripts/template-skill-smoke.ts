@@ -16,6 +16,7 @@ export interface TemplateSkillCase {
   privateSkill?: string | undefined;
 }
 export type TemplateSkillCode =
+  | "provider_quota"
   | "invalid_response"
   | "template_launch_failed"
   | "template_answer_mismatch"
@@ -30,6 +31,14 @@ export class TemplateSkillSmokeFailure extends Error {
   ) {
     super(code);
   }
+}
+/** This closed failed-state reason is published only for a typed non-mutating Boat 429. */
+export function isBoatTemplateQuota(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  const result = value as { state?: unknown; reason?: unknown; manifest?: { definition?: { provider?: unknown } } };
+  return (
+    result.state === "failed" && result.reason === "rate_limited" && result.manifest?.definition?.provider === "boat"
+  );
 }
 const REFUSALS = new Set<string>([
   ...Object.keys(TEMPLATE_REFUSAL_HELP),
@@ -54,6 +63,7 @@ function fail(code: TemplateSkillCode): never {
 }
 export interface TemplateSkillIo {
   request<T>(path: string, body: object): Promise<T>;
+  isQuotaFailure?(error: unknown): boolean;
   poll<T>(read: () => Promise<T>, done: (value: T) => boolean): Promise<T>;
   step<T>(name: string, action: () => Promise<T>): Promise<T>;
   out(line: string): void;
@@ -186,7 +196,7 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
           id?: string;
           promptId?: string;
           provider?: string;
-          manifest?: { skillReceipts?: unknown };
+          manifest?: { skillReceipts?: unknown; definition?: { provider?: unknown } };
         }>("templates/launch", {
           id: record.resource!.id,
           revision: record.resource!.currentRevision,
@@ -195,11 +205,18 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
           // Explicit template pins are isolated from the separate defaults probe.
           skipSkillDefaults: true,
           prompt: `Read the environment variable ${key} using your terminal tool. Reply with only its exact value, with no formatting or other text. Do not modify files.`,
+        }).catch((error: unknown) => {
+          if (io.isQuotaFailure?.(error)) {
+            record.uncertain = false;
+            record.launchAttempted = false;
+          }
+          throw error;
         });
         if (typeof result?.id === "string" && result.id) record.sandboxId = result.id;
         if (typeof result?.requestId === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(result.requestId))
           record.requestId = result.requestId;
         record.uncertain = result?.state !== "failed" && (result?.state !== "succeeded" || !record.sandboxId);
+        if (isBoatTemplateQuota(result)) throw new TemplateSkillSmokeFailure("provider_quota");
         if (result?.state !== "succeeded") launchFailure(result?.state, result?.reason);
         if (
           !record.sandboxId ||
@@ -310,7 +327,7 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
       for (const record of templates.toReversed()) {
         if (record.sandboxId)
           record.stopConfirmed = await cleanup("cleanup_template_sandbox", () => io.stopSandbox(record.sandboxId!));
-        else if (record.launchAttempted)
+        else if (record.launchAttempted && record.uncertain)
           await cleanup("cleanup_template_sandbox", async () => fail("cleanup_unconfirmed"));
         if (!record.resource && record.attempted)
           await cleanup("reconcile_template", async () => {

@@ -15,6 +15,7 @@ test("journal restore rejects untrusted artifact producers before downloading de
     expect(script).toBeDefined();
     for (const [event, repo, branch, path, allowed] of [
       ["push", "owner/repo", "main", ".github/workflows/staging-gated-production.yml", true],
+      ["schedule", "owner/repo", "main", ".github/workflows/staging-gated-production.yml", true],
       ["push", "owner/repo", "v2.26.0", ".github/workflows/release.yml", true],
       ["deployment_status", "owner/repo", "main", ".github/workflows/post-deploy-smoke.yml", true],
       ["pull_request", "owner/repo", "main", ".github/workflows/post-deploy-smoke.yml", false],

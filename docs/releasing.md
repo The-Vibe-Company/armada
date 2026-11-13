@@ -286,3 +286,22 @@ Required secret names that must resolve (environment or inherited scope):
 Never paste token values into an issue, PR, command argument or log. This is a
 repository-only interim change; no actual provider settings or deployments were
 changed or verified by the agent.
+
+
+## Main full-smoke budget (#1547)
+
+Main deployment cadence is unchanged, but main full compute smoke attempts are
+limited by STAGING_SMOKE_INTERVAL_MINUTES (repository variable, default 30).
+The durable admission slot counts failed/quota attempts. A half-hour main cron
+catches a quiet changed tip when eligible and skips deployment entirely for a
+recent slot or the SHA has a retained attempt slot. Slots last two days; after
+expiry a quiet latest tip may be re-attempted, still interval-limited. Suppression
+is bounded, never proof that a prior attempt passed. See [smoke cadence and quota](post-deploy-smoke.md#main-smoke-cadence-and-provider-quota-1547).
+
+Publishing Release explicitly bypasses cadence and requires full smoke. Typed
+Boat quota refusals are shown as not-run (quota), not repeated fabricated
+failures in subsequent Boat cases; they cannot authorize production. Unknown
+refusal strings remain failures. Main's other providers continue and known
+resources still require cleanup. Release fails closed if compute coverage is
+incomplete. This is independent of the separate pending release-secret preflight
+improvement; existing production RAILWAY_TOKEN remains mandatory.

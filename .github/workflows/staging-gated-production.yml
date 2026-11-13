@@ -3,6 +3,8 @@ name: Pinned staging smoke
 on:
   push:
     branches: [main]
+  schedule:
+    - cron: "*/30 * * * *"
   workflow_dispatch:
   workflow_call:
     inputs:
@@ -10,6 +12,11 @@ on:
         description: Validated release commit from Release
         required: true
         type: string
+
+      release_gate:
+        description: Publishing release requires a full unthrottled smoke
+        type: boolean
+        default: false
 
       official_image:
         description: Consume the official image pin from the calling release
@@ -29,6 +36,8 @@ concurrency:
 
 jobs:
   configuration:
+    outputs:
+      smoke: ${{ steps.admission.outputs.run }}
     runs-on: ubuntu-latest
     steps:
       - name: Validate deployment source
@@ -44,10 +53,24 @@ jobs:
             echo "::error::Tag staging deployment requires the validated release SHA."
             exit 1
           fi
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      - name: Admit full staging smoke interval
+        id: admission
+        env:
+          SMOKE_SCHEDULED: ${{ github.event_name == 'schedule' && 'true' || 'false' }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          STAGING_SMOKE_INTERVAL_MINUTES: ${{ vars.STAGING_SMOKE_INTERVAL_MINUTES || '30' }}
+          SMOKE_RELEASE_GATE: ${{ inputs.release_gate && 'true' || 'false' }}
+        run: bun scripts/staging-smoke-admission.ts
 
   staging:
     needs: configuration
-    if: github.ref == 'refs/heads/main' || (startsWith(github.ref, 'refs/tags/v') && inputs.source_sha != '')
+    if: (github.ref == 'refs/heads/main' || (startsWith(github.ref, 'refs/tags/v') && inputs.source_sha != '')) && (github.event_name != 'schedule' || needs.configuration.outputs.smoke == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 85
     environment: staging
@@ -119,8 +142,17 @@ jobs:
         run: bash .release-tools/scripts/release/deploy-production.sh
       - run: bun install --frozen-lockfile
         if: steps.deployment.outputs.superseded != 'true'
+      - name: Reserve full smoke attempt before compute
+        if: steps.deployment.outputs.superseded != 'true' && needs.configuration.outputs.smoke == 'true' && !inputs.release_gate
+        run: printf 'reserved\n' > "$RUNNER_TEMP/staging-full-smoke-slot.txt"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: steps.deployment.outputs.superseded != 'true' && needs.configuration.outputs.smoke == 'true' && !inputs.release_gate
+        with:
+          name: staging-full-smoke-slot
+          path: ${{ runner.temp }}/staging-full-smoke-slot.txt
+          retention-days: 2
       - name: Restore staging smoke receipts across branches and tags
-        if: steps.deployment.outputs.superseded != 'true'
+        if: steps.deployment.outputs.superseded != 'true' && needs.configuration.outputs.smoke == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -137,7 +169,7 @@ jobs:
             # Artifacts from arbitrary PR workflows must never authorize deletion.
             gh api "repos/$GH_REPO/actions/runs/$run" | jq -e --arg repo "$GH_REPO" '
               .head_repository.full_name == $repo and
-              (.event == "push" or .event == "workflow_dispatch" or .event == "deployment_status") and
+              (.event == "push" or .event == "schedule" or .event == "workflow_dispatch" or .event == "deployment_status") and
               (.head_branch == "main" or (.head_branch | test("^v[0-9]+\\.[0-9]+\\.[0-9]+(-[A-Za-z0-9.-]+)?$"))) and
               (.path == ".github/workflows/post-deploy-smoke.yml" or
                .path == ".github/workflows/staging-gated-production.yml" or
@@ -146,8 +178,9 @@ jobs:
             unzip -p "$RUNNER_TEMP/smoke-journal.zip" sandboxes.json > .smoke/sandboxes.json
           fi
       - name: Smoke pinned staging
-        if: steps.deployment.outputs.superseded != 'true'
+        if: steps.deployment.outputs.superseded != 'true' && needs.configuration.outputs.smoke == 'true'
         env:
+          ARMADA_SMOKE_REQUIRE_FULL: ${{ inputs.release_gate && 'true' || 'false' }}
           ARMADA_SMOKE: create_real_compute
           ARMADA_SMOKE_JOURNAL: .smoke/sandboxes.json
         run: |
@@ -157,7 +190,7 @@ jobs:
           dashboard_pid=$!
           status=0
           env -i PATH="$PATH" HOME="$HOME" ARMADA_URL="$ARMADA_URL" ARMADA_TOKEN="$ARMADA_TOKEN" \
-            ARMADA_SMOKE_CASES="$ARMADA_SMOKE_CASES" ARMADA_SMOKE="$ARMADA_SMOKE" ARMADA_SMOKE_JOURNAL="$ARMADA_SMOKE_JOURNAL" \
+            ARMADA_SMOKE_CASES="$ARMADA_SMOKE_CASES" ARMADA_SMOKE="$ARMADA_SMOKE" ARMADA_SMOKE_REQUIRE_FULL="$ARMADA_SMOKE_REQUIRE_FULL" ARMADA_SMOKE_JOURNAL="$ARMADA_SMOKE_JOURNAL" \
             bun scripts/post-deploy-smoke.ts --work-preservation --templates-skills --lifecycle --vault --default-skills --scoped-access --github-refresh --golden-runtime --expiry || status=$?
           wait "$dashboard_pid" || status=1
           exit "$status"

@@ -35,6 +35,10 @@ Owner-facing orchestrators have been removed, with no compatibility route or fea
 ## CI: what we test and what we do not
 
 One verdict, under two minutes. A pull request has a single required check, `Lint, typecheck and test`. If it takes more than two minutes, that is a defect to fix before anything else merges.
+Full main staging compute smoke is admitted at most once per configured interval
+(default 30 minutes); main deployments still proceed. Publishing releases bypass
+cadence and require complete smoke. Structured provider quota is not-run evidence,
+never authorization to promote production.
 No blocking PR or merge-queue check may exceed two minutes. The only slow gated
 path is a publishing release: release → exact-commit staging deployment/smoke →
 production. Staging smoke otherwise runs only after deploying a main commit,

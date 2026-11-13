@@ -24,7 +24,7 @@ import { DefaultSkillSmokeFailure, readDefaultPins, verifyDefaultReceipts } from
 import { ExpirySmokeFailure, runExpiryCase } from "./expiry-smoke.ts";
 import { helperProbe, skillpackProbe } from "./golden-runtime-smoke.ts";
 import { createScopedProbe, ScopedAccessSmokeFailure } from "./scoped-access-smoke.ts";
-import { runTemplateSkillCase, TemplateSkillSmokeFailure } from "./template-skill-smoke.ts";
+import { isBoatTemplateQuota, runTemplateSkillCase, TemplateSkillSmokeFailure } from "./template-skill-smoke.ts";
 import { runVaultCase, VaultSmokeFailure } from "./vault-smoke.ts";
 
 type Code =
@@ -35,6 +35,7 @@ type Code =
   | "request_failed"
   | "invalid_response"
   | "api_failed"
+  | "provider_quota"
   | "unauthorized"
   | "forbidden"
   | "not_found"
@@ -175,12 +176,24 @@ async function runPostDeploySmoke(
   cleanupEnd?: number,
 ): Promise<boolean> {
   if (args[0] === "--parity") return providerParitySmoke(env, io, args.slice(1));
+  const quotaProviders = new Set<string>();
+  let nonQuotaFailure = false;
+  const isQuota = (error: unknown) =>
+    (error instanceof SmokeFailure || error instanceof TemplateSkillSmokeFailure) && error.code === "provider_quota";
+  const quotaFailure = () => {
+    quotaProviders.add("boat");
+    return new SmokeFailure("provider_quota", 429);
+  };
+  const verdict = (passed: boolean) =>
+    passed && !nonQuotaFailure && !(quotaProviders.size && env.ARMADA_SMOKE_REQUIRE_FULL === "true");
   function report(index: number, step: string, error?: unknown) {
+    if (error !== undefined && !isQuota(error)) nonQuotaFailure = true;
     io.out(
       JSON.stringify({
         case: index,
         step,
         pass: error === undefined,
+        ...(isQuota(error) ? { status: "not-run", reason: "quota" } : {}),
         ...(error === undefined
           ? {}
           : {
@@ -197,6 +210,11 @@ async function runPostDeploySmoke(
             }),
       }),
     );
+  }
+  function skipQuota(index: number, item: SmokeCase): boolean {
+    if (!quotaProviders.has(item.provider)) return false;
+    report(index, "provider_case", new SmokeFailure("provider_quota", 429));
+    return true;
   }
   let origin: string;
   let cases: SmokeCase[];
@@ -360,20 +378,27 @@ async function runPostDeploySmoke(
         signal: AbortSignal.timeout(Math.min(timeoutMs, remaining)),
       });
       if (!response.ok) {
-        const payload = (await response.json().catch(() => null)) as { error?: { code?: unknown } } | null;
+        const payload = (await response.json().catch(() => null)) as {
+          error?: { code?: unknown; details?: { provider?: unknown; window?: unknown } };
+        } | null;
         if ([...protectedCanaries].some((value) => JSON.stringify(payload).includes(value)))
           throw new VaultSmokeFailure("secret_exposed");
         const code = payload?.error?.code;
+        // The API preserves Boat's typed 429 rate-limit diagnostic, not message text.
+        if (response.status === 429 && code === "rate_limited" && payload?.error?.details?.provider === "boat")
+          throw quotaFailure();
         throw new SmokeFailure(
           typeof code === "string" && API_CODES.has(code as Code) ? (code as Code) : "api_failed",
           response.status,
         );
       }
-      try {
-        return (await response.json()) as T;
-      } catch {
-        fail("invalid_response");
-      }
+      const result = (await response.json().catch(() => fail("invalid_response"))) as {
+        state?: unknown;
+        reason?: unknown;
+        manifest?: { definition?: { provider?: unknown } };
+      } | null;
+      if (path === "templates/launch" && isBoatTemplateQuota(result)) quotaProviders.add("boat");
+      return result as T;
     } catch (error) {
       if (error instanceof SmokeFailure || error instanceof VaultSmokeFailure) throw error;
       fail("request_failed");
@@ -390,6 +415,7 @@ async function runPostDeploySmoke(
   const defaultPins = new Map<number, string[]>();
   if (defaultSkills) {
     for (const [index, item] of cases.entries()) {
+      if (skipQuota(index, item)) continue;
       try {
         const pins = await readDefaultPins(item.org, item.goldenId!, {
           request,
@@ -408,6 +434,7 @@ async function runPostDeploySmoke(
         report(index, "default_skills_policy");
       } catch (error) {
         report(index, "default_skills_policy", error);
+        if (isQuota(error)) continue;
         return false;
       }
     }
@@ -415,6 +442,7 @@ async function runPostDeploySmoke(
   let vaultPassed = true;
   if (vault) {
     for (const [index, item] of cases.entries()) {
+      if (skipQuota(index, item)) continue;
       const ok = await runVaultCase(item.org, {
         request,
         protect: (value) => protectedCanaries.add(value),
@@ -440,17 +468,19 @@ async function runPostDeploySmoke(
           }
         },
       });
-      if (!ok) vaultPassed = false;
+      if (!ok && !quotaProviders.has(item.provider)) vaultPassed = false;
     }
-    if (args.every((arg) => arg === "--vault")) return vaultPassed;
+    if (args.every((arg) => arg === "--vault")) return verdict(vaultPassed);
   }
   let templateSkillsPassed = true;
   if (templatesSkills) {
     for (const [index, item] of cases.entries()) {
+      if (skipQuota(index, item)) continue;
       const ok = await runTemplateSkillCase(
         { ...item, goldenId: item.goldenId! },
         {
           request: (path, body) => request(path, body, undefined, path === "templates/launch" ? 600_000 : 120_000),
+          isQuotaFailure: isQuota,
           poll,
           step: async (name, action) => {
             try {
@@ -489,15 +519,16 @@ async function runPostDeploySmoke(
           },
         },
       );
-      if (!ok) templateSkillsPassed = false;
+      if (!ok && !quotaProviders.has(item.provider)) templateSkillsPassed = false;
     }
     // This mode is independently runnable; combined staging runs keep the existing
     // preservation baseline as well, under the same shared deadline.
-    if (!preservation && !lifecycle) return templateSkillsPassed && vaultPassed;
+    if (!preservation && !lifecycle) return verdict(templateSkillsPassed && vaultPassed);
   }
   let expiryPassed = true;
   if (expiry) {
     for (const [index, item] of cases.entries()) {
+      if (skipQuota(index, item)) continue;
       const result = await runExpiryCase(item, {
         request,
         now: io.now,
@@ -522,14 +553,15 @@ async function runPostDeploySmoke(
           }
         },
       });
-      expiryPassed &&= result;
+      expiryPassed &&= result || quotaProviders.has(item.provider);
     }
-    if (args.length === 1) return expiryPassed;
+    if (args.length === 1) return verdict(expiryPassed);
   }
   let passed = templateSkillsPassed && vaultPassed && expiryPassed;
   for (const { index, item, dirty } of cases.flatMap((item, index) =>
     (preservation ? [false, true] : [false]).map((dirty) => ({ index, item, dirty })),
   )) {
+    if (skipQuota(index, item)) continue;
     async function step<T>(name: string, action: () => Promise<T>): Promise<T> {
       try {
         const value = await action();
@@ -1096,8 +1128,9 @@ async function runPostDeploySmoke(
         await step("stop_resumed", stopSandbox);
         await step("list_stopped_final", () => consistent("stopped"));
       }
-    } catch {
-      passed = false;
+    } catch (error) {
+      if (!isQuota(error)) passed = false;
+      else if (!sandboxId) launchAttempted = false;
     } finally {
       if (github && sandboxId && pushAttempted) {
         cleaning = true;
@@ -1139,6 +1172,10 @@ async function runPostDeploySmoke(
       }
     }
     if (scoped && !(await scoped.cleanup(sandboxId, stopped, launchAttempted))) passed = false;
+    if (quotaProviders.has(item.provider)) {
+      report(index, "provider_case", new SmokeFailure("provider_quota", 429));
+      continue;
+    }
     if (preservation)
       io.out(
         JSON.stringify({
@@ -1172,7 +1209,7 @@ async function runPostDeploySmoke(
         }),
       );
   }
-  return passed;
+  return verdict(passed);
 }
 
 /** Persist handles before callers inspect receipts; cleanup also runs after failed probes. */
@@ -1248,7 +1285,8 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
         rows.push(row);
         await saveSmokeJournal(path, [...earlierRows, ...rows]);
         io.out(JSON.stringify({ step: "smoke_sandbox_receipt", ...row }));
-      } else if (response.ok) unknownLaunch = true;
+      } else if (response.ok && !(url.endsWith("/api/v1/templates/launch") && isBoatTemplateQuota(result)))
+        unknownLaunch = true;
       return response;
     },
   };
