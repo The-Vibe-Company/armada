@@ -2,6 +2,7 @@ import { resourceUrl } from "@armada/auth";
 import { DEFAULT_SANDBOX_EXTENSION_HEADROOM_SECONDS, PROVIDER_LIMITS, SANDBOX_STOP_MARGIN_SECONDS } from "@armada/core";
 
 export interface ServerConfig {
+  boatAgentPath: "native" | "runtime";
   sandboxExtensionHeadroomSeconds: number;
   port: number;
   /** Managed GitHub wrappers/broker are opt-in while the runtime is under repair. */
@@ -99,9 +100,13 @@ export function configFromEnv(env: Record<string, string | undefined>): ServerCo
     throw new Error(
       "ARMADA_SANDBOX_EXTENSION_HEADROOM_SECONDS must be a non-negative whole number within the Modal lifetime limit minus stop margin.",
     );
+  const boatAgentPath = env.ARMADA_BOAT_AGENT_PATH ?? "native";
+  if (boatAgentPath !== "native" && boatAgentPath !== "runtime")
+    throw Error("ARMADA_BOAT_AGENT_PATH must be native or runtime.");
   const development = env.NODE_ENV === "development";
 
   return {
+    boatAgentPath,
     sandboxExtensionHeadroomSeconds,
     port,
     githubRuntimeEnabled: env.ARMADA_GITHUB_RUNTIME_ENABLED === "true",

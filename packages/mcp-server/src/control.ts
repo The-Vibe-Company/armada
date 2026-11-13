@@ -788,6 +788,7 @@ async function dispatch(
         resumeVersion: options.runtimeResume && options.modalRuntimeLaunch ? 1 : 0,
       },
       boatRuntime: {
+        defaultPath: options.launch?.boatRuntimeDefault ? "runtime" : "native",
         version: 1,
         diagnosticsVersion: 1,
         followupVersion: options.runtimeSend ? 1 : 0,
