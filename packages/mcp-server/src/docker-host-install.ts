@@ -1,11 +1,12 @@
 import { join } from "node:path";
+import { VERSION } from "@armada/core";
 import type { Route } from "./http.ts";
 
 /** Public script contains build pins, never tokens. Only the one-use token is accepted in installer argv. */
 export function createDockerHostInstallRoute(directory: string | undefined, publicUrl: string): Route {
   return async (request) => {
     const url = new URL(request.url);
-    if (url.pathname !== "/install-host.sh") return null;
+    if (!["/install-host.sh", "/api/docker-host/install.json"].includes(url.pathname)) return null;
     if (request.method !== "GET") return new Response(null, { status: 405 });
     const publicOrigin = new URL(publicUrl);
     if (!directory || publicOrigin.protocol !== "https:") return new Response(null, { status: 404 });
@@ -14,6 +15,11 @@ export function createDockerHostInstallRoute(directory: string | undefined, publ
       for (const arch of ["x64", "arm64"]) {
         if (!/^[a-f0-9]{64}$/.test(pins[arch])) throw new Error("Invalid host artifact");
       }
+      if (url.pathname === "/api/docker-host/install.json")
+        return Response.json(
+          { version: VERSION, x64: pins.x64, arm64: pins.arm64 },
+          { headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" } },
+        );
       // URL.origin is not shell text: encode its bytes before embedding in shell.
       const origin = Buffer.from(publicOrigin.origin).toString("base64");
       return new Response(
