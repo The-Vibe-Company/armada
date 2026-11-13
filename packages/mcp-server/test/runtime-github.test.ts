@@ -189,7 +189,8 @@ test.each(["boat", "modal"] as const)(
   },
 );
 
-test.each(["boat", "modal"] as const)(
+// Shared reissue runs on Modal; runtime-checkpoint.test.ts owns the broader Boat checkpoint matrix.
+test.each(["modal"] as const)(
   "checkpoint revokes acquisition immediately and a fresh epoch requires a new GitHub configuration (%s)",
   async (provider) => {
     const x = await fixture(provider),
@@ -203,6 +204,12 @@ test.each(["boat", "modal"] as const)(
         ENCRYPTION_KEY,
         f.bridge,
       )(f.caller, { id: f.row.id, request_id: crypto.randomUUID(), runtimeVersion: 1 });
+      expect(cp).toMatchObject({
+        runtime: { kind: "armada", epoch: f.active.epoch },
+        checkpoint: { state: "complete" },
+      });
+      expect(cp.checkpoint.watermark).toBe(cp.checkpoint.acknowledgedSequence);
+      expect(cp.checkpoint.watermark).toBeGreaterThan(0);
       await expect(x.broker.acquire("example/web", "git")).rejects.toThrow();
       await expect(service.prepare(f.caller, f.row.id)).rejects.toThrow();
       await f.db.query("update sandboxes set status='starting' where id=$1", [f.row.id]);

@@ -125,10 +125,24 @@ test("checkpoint interrupts, flushes and seals a real Runner before stop; receip
   }
 });
 
-test("a lost checkpoint response reconciles from durable encrypted result after compute stops, never by waking the guest", async () => {
+test("undelivered checkpoint intent and a lost response reconcile after stop without waking the guest", async () => {
   const f = await runtimeFixture();
   try {
     const input = args(f.row.id);
+    const unavailable = {
+      ...f.bridge,
+      async call() {
+        throw Error("dropped before delivery");
+      },
+    };
+    await expect(createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, unavailable)(f.caller, input)).rejects.toMatchObject({
+      code: "conflict",
+    });
+    await expect(f.send(f.caller, f.input("must not run"))).rejects.toMatchObject({ code: "conflict" });
+    expect(f.starts).toHaveLength(1);
+    await expect(
+      createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, f.bridge)(f.caller, args(f.row.id)),
+    ).rejects.toMatchObject({ code: "conflict" });
     const lost = {
       ...f.bridge,
       async call(...params: Parameters<typeof f.bridge.call>) {
@@ -200,50 +214,6 @@ test("a late journal tail or application-secret exposure invalidates checkpoint 
     );
     await f.db.query("update sandboxes set application_secret_tainted=true where id=$1", [f.row.id]);
     await expect(checkpoint(f.caller, input)).rejects.toMatchObject({ code: "conflict" });
-  } finally {
-    await f.close();
-  }
-});
-
-test("an undelivered checkpoint intent fences new work across replicas until the same operation reconciles", async () => {
-  const f = await runtimeFixture();
-  try {
-    const input = args(f.row.id);
-    const unavailable = {
-      ...f.bridge,
-      async call() {
-        throw Error("dropped before delivery");
-      },
-    };
-    await expect(createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, unavailable)(f.caller, input)).rejects.toMatchObject({
-      code: "conflict",
-    });
-    await expect(f.send(f.caller, f.input("must not run"))).rejects.toMatchObject({ code: "conflict" });
-    expect(f.starts).toHaveLength(1);
-    await expect(
-      createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, f.bridge)(f.caller, args(f.row.id)),
-    ).rejects.toMatchObject({ code: "conflict" });
-    expect((await createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, f.bridge)(f.caller, input)).checkpoint.state).toBe(
-      "complete",
-    );
-    expect(f.starts).toHaveLength(1);
-  } finally {
-    await f.close();
-  }
-});
-
-// Same actual Runner/checkpoint owner, distinct Modal SQL authorization predicate.
-test("Modal first-answer checkpoint publishes the common archive ACK without a tunnel", async () => {
-  const f = await runtimeFixture(undefined, "modal");
-  try {
-    const checkpoint = createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, f.bridge);
-    const receipt = await checkpoint(f.caller, args(f.row.id));
-    expect(receipt).toMatchObject({
-      runtime: { kind: "armada", epoch: f.active.epoch },
-      checkpoint: { state: "complete" },
-    });
-    expect(receipt.checkpoint.watermark).toBe(receipt.checkpoint.acknowledgedSequence);
-    expect(receipt.checkpoint.watermark).toBeGreaterThan(0);
   } finally {
     await f.close();
   }
