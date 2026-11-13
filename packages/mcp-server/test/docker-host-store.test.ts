@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
-import type { Sql } from "@armada/core";
+import { DOCKER_IMAGE_UNAVAILABLE_MESSAGE, type Sql } from "@armada/core";
 import { decryptSecret } from "@armada/core/server";
 import { createDockerHostStore, DockerHostDenied } from "../src/docker-host-store.ts";
 import { migratedDatabase } from "./migrated-database.ts";
@@ -746,6 +746,23 @@ test("failed startup ACK or rejected admission fails logical startup without cla
       await store.complete(a.hostToken, a.installationId, { requestId: remove.requestId, outcome: "completed" });
       expect((await lifecycle(a.sandboxId))?.status).toBe("deleted");
     }
+  }
+});
+
+test("a host that could not fetch the image fails the sandbox in plain words; a reason never rides on success", async () => {
+  for (const operation of ["create", "bootstrap"] as const) {
+    const a = await boundStartup(operation);
+    const startup = { requestId: a.startup.requestId };
+    await denied(
+      store.complete(a.hostToken, a.installationId, { ...startup, outcome: "completed", reason: "image_unavailable" }),
+    );
+    await store.complete(a.hostToken, a.installationId, { ...startup, outcome: "failed", reason: "image_unavailable" });
+    const failed = await lifecycle(a.sandboxId);
+    expect(failed?.status).toBe("failed");
+    // Only a create fetches the image; another operation's reason is not believed.
+    expect(failed?.status_reason).toBe(
+      operation === "create" ? DOCKER_IMAGE_UNAVAILABLE_MESSAGE : "Docker sandbox startup failed.",
+    );
   }
 });
 

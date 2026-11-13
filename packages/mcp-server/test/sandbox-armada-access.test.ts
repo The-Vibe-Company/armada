@@ -3,30 +3,55 @@ import {
   createSqlMcpRegistry,
   createSqlSandboxStore,
   DelegatedAuthority,
+  encryptSecret,
   type Provider,
   type Sql,
 } from "@armada/core/server";
 import { createMcpLifecycle } from "../src/mcp-lifecycle.ts";
 import { createSandboxChildren } from "../src/sandbox-access-children.ts";
 import { createSandboxArmadaAccess } from "../src/sandbox-armada-access.ts";
-import { database, ENCRYPTION_KEY, fakeBoat, PUBLIC_URL } from "./support.ts";
+import { migratedDatabase } from "./migrated-database.ts";
+import { ENCRYPTION_KEY, fakeBoat, PUBLIC_URL, SECRETS } from "./support.ts";
 
 // Primary contract: an ordinary parent obtains only delegated child authority;
 // no managed-orchestrator identity is needed, and checkpointing fails closed.
 test("ordinary sandbox opt-in bounds child admission and scrubs authority before stop without hiding the parent", async () => {
-  const { db, people } = await database();
+  const db = await migratedDatabase();
+  const people = { org: crypto.randomUUID(), owner: crypto.randomUUID(), admin: crypto.randomUUID() };
   const sql: Sql = {
     query: (q, v) => db.query(q, v),
     transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
   };
   try {
+    await db.query("insert into auth.users(id) values($1),($2)", [people.owner, people.admin]);
+    await db.query("insert into orgs(id,name) values($1,'Scoped sandbox access')", [people.org]);
+    await db.query("insert into members(org_id,user_id,role) values($1,$2,'member'),($1,$3,'admin')", [
+      people.org,
+      people.owner,
+      people.admin,
+    ]);
     const golden = (
       await db.query<{
         id: string;
-      }>(`insert into goldens(org_id,name,visibility,owner_id,provider,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config)
-      select org_id,'modal-access','org',owner_id,'modal','image','workspace','main','app',config from goldens where name='shared' returning id`)
+      }>(
+        `insert into goldens(org_id,name,visibility,owner_id,provider,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config)
+      values($1,'modal-access','org',$2,'modal','image','workspace','main','app',$3::jsonb) returning id`,
+        [
+          people.org,
+          people.admin,
+          JSON.stringify({
+            repos: [{ url: "https://github.com/example/web.git", branch: "main", dir: "web" }],
+            init: ["bun install"],
+          }),
+        ],
+      )
     ).rows[0]!;
-    const account = (await db.query<{ id: string }>("select id from credentials where kind='openai'")).rows[0]!;
+    const account = (
+      await db.query<{ id: string }>(
+        "insert into credentials(scope,owner_id,kind,value_enc) values('org',$1,'openai',$2) returning id",
+        [people.org, await encryptSecret(SECRETS.orgOpenai, ENCRYPTION_KEY)],
+      )
+    ).rows[0]!;
     const fake = fakeBoat();
     const info = await fake.provider.fork({ from: "test", name: "parent", ttlSeconds: 3600, env: {}, noEnv: true });
     let token = "";

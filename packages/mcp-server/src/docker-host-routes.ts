@@ -1,4 +1,5 @@
 import { readBoundedText } from "@armada/auth";
+import { DOCKER_JOB_FAILURE_REASONS, type DockerJobFailureReason } from "@armada/core";
 import type { CallerResult } from "./caller.ts";
 import { type createDockerHostStore, DockerHostDenied } from "./docker-host-store.ts";
 import type { Route } from "./http.ts";
@@ -87,7 +88,11 @@ export function createDockerHostRoutes(
       fields(
         body,
         path.endsWith("/results")
-          ? ["installationId", "requestId", "expired" in body ? "expired" : "outcome"]
+          ? [
+              "installationId",
+              "requestId",
+              ...("expired" in body ? ["expired"] : "reason" in body ? ["outcome", "reason"] : ["outcome"]),
+            ]
           : path.endsWith("/poll") && "version" in body
             ? ["installationId", "version"]
             : ["installationId"],
@@ -112,7 +117,18 @@ export function createDockerHostRoutes(
       const outcome = string(body.outcome);
       if (outcome !== "completed" && outcome !== "failed") throw new InvalidInput();
       const requestId = string(body.requestId);
-      await store.complete(token, installationId, { requestId, outcome });
+      // A reason explains a failure; it never accompanies a success.
+      const reason = body.reason === undefined ? undefined : string(body.reason);
+      if (
+        reason !== undefined &&
+        (outcome !== "failed" || !DOCKER_JOB_FAILURE_REASONS.includes(reason as DockerJobFailureReason))
+      )
+        throw new InvalidInput();
+      await store.complete(token, installationId, {
+        requestId,
+        outcome,
+        ...(reason === undefined ? {} : { reason: reason as DockerJobFailureReason }),
+      });
       return Response.json({ requestId }, { headers });
     } catch (error) {
       return Response.json(

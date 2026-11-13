@@ -141,6 +141,13 @@ export async function fileStore(
   };
 }
 
+/** A host request the server answered with an error status. */
+class HostRequestDenied extends Error {
+  constructor(readonly status: number) {
+    super("Host request denied");
+  }
+}
+
 /** Outbound HTTPS only. Redirects cannot forward host credentials to another origin. */
 export function httpApi(request: typeof fetch = fetch): Api & {
   unregister(state: State): Promise<boolean>;
@@ -156,7 +163,7 @@ export function httpApi(request: typeof fetch = fetch): Api & {
     });
     if (!response.ok) {
       await response.body?.cancel();
-      throw new Error("Host request denied");
+      throw new HostRequestDenied(response.status);
     }
     if (endpoint === "results") {
       await response.body?.cancel();
@@ -228,18 +235,27 @@ export function httpApi(request: typeof fetch = fetch): Api & {
       };
     },
     async result(state, receipt, expired) {
-      await post(state.server, "results", state.hostToken, {
+      const body = {
         installationId: state.installationId,
         requestId: receipt.requestId,
         ...(expired ? { expired: true } : { outcome: receipt.outcome }),
-      });
+      };
+      if (expired || !receipt.reason) return void (await post(state.server, "results", state.hostToken, body));
+      try {
+        await post(state.server, "results", state.hostToken, { ...body, reason: receipt.reason });
+      } catch (error) {
+        // Only a server older than failure reasons refuses the field (400): the plain outcome is still the machine
+        // fact. Any other failure is retried with the reason on the next tick.
+        if (!(error instanceof HostRequestDenied) || error.status !== 400) throw error;
+        await post(state.server, "results", state.hostToken, body);
+      }
     },
   };
 }
 
 /** Never a shell, never inherited output; inspect can contain secrets. */
 export const dockerCli: DockerMachineCli = {
-  run(argv, stdin) {
+  run(argv, stdin, options) {
     return new Promise((resolve, reject) => {
       const child = spawn("docker", [...argv], { stdio: ["pipe", "pipe", "ignore"] });
       let output = "";
@@ -249,7 +265,7 @@ export const dockerCli: DockerMachineCli = {
         failed = true;
         child.kill("SIGKILL");
       };
-      const timer = setTimeout(fail, 30_000);
+      const timer = setTimeout(fail, options?.timeoutMs ?? 30_000);
       child.stdout.on("data", (data: Buffer) => {
         bytes += data.length;
         if (bytes > 1024 * 1024) fail();
