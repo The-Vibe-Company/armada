@@ -1,6 +1,7 @@
 import type { GoldenActor, LaunchCredentialResolver, Sql } from "@armada/core";
 import { HARNESS_KINDS } from "@armada/core";
 import { decryptSecret } from "@armada/core/server";
+import { requirePublishedRuntimeArchitecture } from "../../agent-runtime/src/publication.ts";
 import { type BootstrapDescriptor, parseDockerHostJob } from "../../core/src/docker-host-job.ts";
 import { createDockerHostStore } from "./docker-host-store.ts";
 import { dockerRuntimeConfiguration } from "./docker-runtime-configuration.ts";
@@ -36,6 +37,7 @@ const scopedSql = (tx: Sql): Sql => ({ query: tx.query.bind(tx), transaction: (w
 
 /** Private opt-in composition, not a placement provider or a public launch route. */
 export function createDockerBootstrapService(sql: Sql, key: string, options: Options) {
+  requirePublishedRuntimeArchitecture(options.architecture);
   // Freeze trusted launch inputs across asynchronous credential admission.
   const manifest = structuredClone(options.manifest);
   const serverUrl = options.serverUrl;

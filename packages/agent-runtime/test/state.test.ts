@@ -40,16 +40,16 @@ test("checkpoint preserves sanitized native sessions but discards whole transien
     await writeFile(join(root, "claude/cache/oauth-cache"), "synthetic-unread-refreshed-cache");
     await writeFile(join(root, "codex/log/output"), credential);
     const path = join(root, "journal.sqlite");
-    const legacy = new Journal(path, (s) => s);
-    legacy.append({
+    const journal = new Journal(path, (s) => s);
+    journal.append({
       id: "fixture",
       at: 1,
       kind: "other",
       type: "config",
       data: { headers: { Authorization: credential }, text: credential },
     });
-    legacy.close();
-    const journal = new Journal(path, redact);
+    // Register after the raw event exists; historical-byte scrubbing needs no second journal open.
+    journal.registerSecrets([credential]);
     await state.checkpoint();
     journal.sanitize();
     journal.close();

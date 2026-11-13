@@ -11,6 +11,7 @@ describe.each([
   { provider: "modal", harness: "codex" },
 ] as const)("$provider $harness shared runtime send", ({ provider, harness }) => {
   let f: Awaited<ReturnType<typeof fixture>>;
+  let preparations = 0;
   // Cold PGlite WASM startup, all migrations, fixture seeding and the initial
   // Runner turn are setup, not send/replay behavior. Keep them out of the test's
   // 5s budget; the real SQL/Runner/epoch assertions below remain unchanged.
@@ -18,7 +19,8 @@ describe.each([
     f = await fixture(undefined, provider, harness);
     if (provider === "modal")
       f.context.runtimeSend = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, async () => {
-        throw Error("No Boat MCP setup on model-only Modal follow-up");
+        preparations++;
+        return undefined;
       });
   }, 20_000);
   afterAll(async () => {
@@ -42,6 +44,7 @@ describe.each([
     expect(row.taskPromptId).toBe(next.promptId as string);
     expect(row.lifecycleGeneration).toBe(originalGeneration + 4);
     expect(f.starts).toHaveLength(3);
+    if (provider === "modal") expect(preparations).toBe(2);
     expect(await f.authority.withSession(f.active.runtimeToken, f.active.epoch, async () => true)).toBe(true);
   });
 });
