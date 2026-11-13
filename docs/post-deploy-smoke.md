@@ -852,3 +852,28 @@ appended to `GITHUB_STEP_SUMMARY` (or printed locally). Normal sandbox cleanup
 journaling via `ARMADA_SMOKE_JOURNAL` remains available; retain that journal after
 unknown outcomes for reconciliation. This command creates real staging compute;
 a procedure or fake-API test is not evidence of a successful staging run.
+
+#### First staging findings (#1532, 2026-11-13)
+
+Failure cells now include the public API error code, HTTP status, and bounded
+credential-redacted server message (never the envelope/details). Local validation
+and transport failures have fixed diagnostics. HTTP 429 / explicit quota codes
+are `not-run: quota`; dependent cells inherit that diagnostic, not a defect.
+No automatic launch retry is made.
+
+Docker's send path sets the persisted machine state to `running`
+(`docker-runtime-lifecycle.ts`); status returns that persisted state even after a
+prompt finishes. The old Python runner checks host/conversation identity rather
+than demanding `ready`. Parity now accepts both live states, with turn completion
+proved independently by the logs. The provider field is optional in the shared
+status schema; launch already checks provider identity. This is a runner
+assertion mismatch, not evidence of a provider regression.
+
+Modal delete was a single attempt here. The adapter can report pending termination
+or recovery-image removal; cleanup can retain a two-minute activity lease.
+Parity now reconciles the same delete/request ID with a bounded retry, without
+replaying stop, and retains the last server diagnostic if confirmation never
+arrives. The older Modal runtime script **only stops**, never deletes; its success
+does not contradict a delete failure. Because the historical run hid its error,
+we cannot assert which server refusal it received; the next staging run will
+identify it. No staging result is claimed by these code-level corrections.

@@ -13,10 +13,15 @@ for (const mode of [
   "unimplemented",
   "invalid_filter",
   "recall_loss",
+  "quota",
+  "resume_quota",
+  "server_failure",
+  "delete_retry",
 ] as const) {
   test(`parity normal lifecycle and honest reporting: ${mode}`, async () => {
     const lines: string[] = [];
     const calls: string[] = [];
+    const deletes = new Map<string, number>();
     const prompts = new Map<string, string>();
     const states = new Map<string, string>();
     const providers = ["boat", "modal", "docker"];
@@ -79,13 +84,27 @@ for (const mode of [
               result = { hosts: [{ id: "owned-host", state: mode === "offline" ? "offline" : "online" }] };
               break;
             case "sandbox/launch":
+              if (p === "boat" && (mode === "quota" || mode === "server_failure"))
+                return Response.json(
+                  {
+                    error: {
+                      code: mode === "quota" ? "rate_limited" : "forbidden",
+                      message:
+                        mode === "quota"
+                          ? "The Boat plan start limit per day has been reached."
+                          : "Access denied. token=do-not-print ghp_abcdefghijklmnopqrstuvwxyz0123456789 sk-abcdefghijklmnopqrstuvwxyz eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.c2lnbmF0dXJl",
+                      details: { secret: "do-not-print-details" },
+                    },
+                  },
+                  { status: mode === "quota" ? 429 : 403 },
+                );
               states.set(p, "ready");
               result = { sandbox: { id: p, provider: p } };
               break;
             case "sandbox/send":
               if (p !== "docker") expect(body.request_id).toBeUndefined();
               if (body.prompt.includes("Remember this token")) prompts.set(p, body.prompt.match(/PARITY_[a-z0-9]+/)[0]);
-              states.set(p, "ready");
+              states.set(p, p === "docker" ? "running" : "ready");
               result = { promptId: "turn-1" };
               break;
             case "logs/read":
@@ -100,7 +119,7 @@ for (const mode of [
               result = { exitCode: 0, timedOut: false, stdout: "PARITY_EXEC_OK" };
               break;
             case "sandbox/status":
-              result = { id: p, ...(p === "docker" ? { provider: p } : {}), status: states.get(p) };
+              result = { id: p, status: states.get(p) };
               break;
             case "sandbox/stop":
               states.set(p, "stopped");
@@ -108,12 +127,23 @@ for (const mode of [
               result = { status: "stopped" };
               break;
             case "sandbox/resume":
+              if (mode === "resume_quota")
+                return Response.json(
+                  { error: { code: "rate_limited", message: "Start quota reached." } },
+                  { status: 429 },
+                );
               expect(p).toBe("docker");
               states.set(p, "ready");
               if (mode === "resume_failure") throw new Error("lost_resume_response");
               result = { status: "ready" };
               break;
             case "sandbox/delete":
+              deletes.set(p, (deletes.get(p) ?? 0) + 1);
+              if (mode === "delete_retry" && p === "modal" && deletes.get(p) === 1)
+                return Response.json(
+                  { error: { code: "conflict", message: "Provider deletion is pending." } },
+                  { status: 409 },
+                );
               expect(states.get(p)).toBe("stopped");
               result = { status: mode === "delete_failure" && p === "docker" ? "pending" : "deleted" };
               break;
@@ -146,9 +176,31 @@ for (const mode of [
       return;
     }
     expect(report.starts).toBe(mode === "offline" ? 2 : 3);
+    if (mode === "quota" || mode === "server_failure") {
+      const cell = report.features.launch.boat;
+      expect(cell.status).toBe(mode === "quota" ? "not-run" : "fail");
+      expect(cell.diagnostic.httpStatus).toBe(mode === "quota" ? 429 : 403);
+      expect(cell.diagnostic.code).toBe(mode === "quota" ? "rate_limited" : "forbidden");
+      expect(report.features.send.boat.status).toBe(cell.status);
+      expect(passed).toBe(mode === "quota");
+      expect(lines.join("\n")).not.toContain("do-not-print");
+      expect(lines.join("\n")).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz");
+      expect(lines.join("\n")).not.toContain("sk-abcdefghijklmnopqrstuvwxyz");
+      expect(lines.join("\n")).not.toContain("eyJhbGci");
+      expect(lines.at(-1)).toContain(mode === "quota" ? "HTTP 429" : "HTTP 403");
+      return;
+    }
+    if (mode === "resume_quota") {
+      expect(report.features.resume.docker.status).toBe("not-run");
+      expect(report.features["resume-recall"].docker.status).toBe("not-run");
+      expect(report.features["resume-recall"].docker.diagnostic.httpStatus).toBe(429);
+      expect(passed).toBe(true);
+      return;
+    }
+    if (mode === "delete_retry") expect(deletes.get("modal")).toBe(2);
     expect(report.features.launch.boat.status).toBe("pass");
     expect(report.features.delete.modal.status).toBe("pass");
-    expect(passed).toBe(mode === "online" || mode === "unsupported");
+    expect(passed).toBe(mode === "online" || mode === "unsupported" || mode === "delete_retry");
     expect(lines.at(-1)).toContain("| Feature | Boat | Modal | Docker |");
     if (mode === "offline") {
       expect(report.features.launch.docker).toEqual({ status: "fail", reason: "host_offline" });
