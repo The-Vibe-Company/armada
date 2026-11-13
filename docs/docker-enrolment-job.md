@@ -23,6 +23,8 @@ The private token is passed in memory to the native starter and ultimately via
 stdin as {serverUrl,enrolmentToken}. The fixed shell command never interpolates
 it into command arguments, environment variables or a file. Runtime output is
 disconnected before docker exec returns; runtime communication is outbound.
+The fixed /bin/sh launcher refuses shells without builtin printf, rather than
+falling back to an external printf process whose arguments could contain input.
 
 ## Recovery and limits
 

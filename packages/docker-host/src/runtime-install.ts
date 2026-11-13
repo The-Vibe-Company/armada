@@ -32,7 +32,7 @@ export function dockerRuntimeInstaller(machine: Machine, request: typeof fetch =
  * the docker exec shell exits; the runtime thereafter owns its dial-out channel.
  */
 const START_RUNTIME =
-  'payload=$(cat) || exit 1; (trap "" HUP; printf "%s" "$payload" | "$1" dialout >/dev/null 2>&1) </dev/null >/dev/null 2>&1 &';
+  '[ "$(command -v printf)" = printf ] || exit 1; payload=$(cat) || exit 1; (trap "" HUP; command printf "%s" "$payload" | "$1" dialout >/dev/null 2>&1) </dev/null >/dev/null 2>&1 &';
 
 /** Called only after the daemon durably fences a newly admitted bootstrap job. */
 export function dockerRuntimeStarter(
