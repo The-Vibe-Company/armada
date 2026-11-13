@@ -9,14 +9,24 @@ test("host-only orgs skip cloud onboarding even while their host is offline, but
 });
 
 test("only published snapshots on an available installation offer launch; pending and failed builds stay visible", () => {
-  expect(snapshotState({ status: "ready", hostAvailable: true })).toMatchObject({ bucket: "ready", label: "Ready" });
-  expect(snapshotState({ status: "ready", hostAvailable: false })).toMatchObject({
+  expect(snapshotState({ status: "ready", hostAvailable: true }, true)).toMatchObject({
+    bucket: "ready",
+    label: "Ready",
+  });
+  expect(snapshotState({ status: "ready", hostAvailable: false }, true)).toMatchObject({
     bucket: "rest",
     label: "Host unavailable",
   });
+  expect(snapshotState({ status: "ready", hostAvailable: true }, false)).toMatchObject({
+    bucket: "rest",
+    label: "Launch unavailable",
+  });
   for (const hostAvailable of [true, false]) {
-    expect(snapshotState({ status: "building", hostAvailable })).toMatchObject({ bucket: "rest", label: "Building" });
-    expect(snapshotState({ status: "failed", hostAvailable })).toMatchObject({
+    expect(snapshotState({ status: "building", hostAvailable }, true)).toMatchObject({
+      bucket: "rest",
+      label: "Building",
+    });
+    expect(snapshotState({ status: "failed", hostAvailable }, true)).toMatchObject({
       bucket: "action",
       label: "Build failed",
     });

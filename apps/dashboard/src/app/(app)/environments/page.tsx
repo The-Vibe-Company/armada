@@ -200,7 +200,16 @@ export default async function GoldensPage({ searchParams }: Props) {
   });
   const skipped = goldens.length - shown.length;
   const cloudRows = shown.map((golden) => environmentRow(golden, context, now));
-  const rows = sortResources([...cloudRows, ...snapshots.map((snapshot) => dockerSnapshotRow(snapshot, context))]);
+  const rows = sortResources([
+    ...cloudRows,
+    ...snapshots.map((snapshot) =>
+      dockerSnapshotRow(
+        snapshot,
+        context,
+        Boolean(dockerOption?.capabilities.launch && dockerOption.capabilities.goldens),
+      ),
+    ),
+  ]);
   const providerPending = setupPending && !hasDocker && selected !== null;
   const blockers = environmentBlockers({
     providerPending,
@@ -840,8 +849,9 @@ function launchTemplates(
 function dockerSnapshotRow(
   snapshot: DockerSnapshotRecord,
   context: RowContext,
+  launchEnabled: boolean,
 ): ResourceRow & { bucket: Bucket; tie: string } {
-  const state = snapshotState(snapshot);
+  const state = snapshotState(snapshot, launchEnabled);
   const action =
     state.bucket === "ready" ? (
       <LaunchDialog
@@ -864,7 +874,9 @@ function dockerSnapshotRow(
         ? "The build did not publish a snapshot. Check the config and host, then create a new build."
         : !snapshot.hostAvailable
           ? "Bring the original registered host online. Snapshots are local to its installation; they are not copied to other hosts."
-          : "Launch the saved workspace on its original host, with your current account and GitHub access.";
+          : !launchEnabled
+            ? "Snapshot launches are unavailable on this server. Check Docker placement and the server version."
+            : "Launch the saved workspace on its original host, with your current account and GitHub access.";
   return {
     key: snapshot.id,
     name: snapshot.name,
