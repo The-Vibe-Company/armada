@@ -1,6 +1,6 @@
 /** Opt-in Boat artifact. The existing Modal bundle/build is deliberately unchanged. */
 import { createHash } from "node:crypto";
-import { chmod, mkdir, rm } from "node:fs/promises";
+import { chmod, copyFile, mkdir, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { parseArgs } from "node:util";
@@ -41,6 +41,19 @@ const pack = Bun.spawn(
   },
 );
 if (await pack.exited) throw Error("Codex archive failed");
+const claudeRequire = createRequire(require.resolve("@anthropic-ai/claude-code/package.json"));
+const claudeRoot = join(out, "claude-runtime");
+await mkdir(claudeRoot);
+await copyFile(
+  join(dirname(claudeRequire.resolve(`@anthropic-ai/claude-code-linux-${architecture}/package.json`)), "claude"),
+  join(claudeRoot, "claude"),
+);
+await chmod(join(claudeRoot, "claude"), 0o755);
+const claudePack = Bun.spawn(["tar", "-czf", join(out, "claude.tar.gz"), "-C", claudeRoot, "."], {
+  stdout: "inherit",
+  stderr: "inherit",
+});
+if (await claudePack.exited) throw Error("Claude archive failed");
 await chmod(executable, 0o755);
 async function file(name: string) {
   const bytes = await Bun.file(join(out, name)).arrayBuffer();
@@ -62,6 +75,12 @@ await Bun.write(
       bun: Bun.version,
       runtime: await file("armada-runtime"),
       harnesses: {
+        claude: {
+          version: "2.1.322",
+          archive: await file("claude.tar.gz"),
+          executable: "claude",
+          files: await harnessInventory(claudeRoot),
+        },
         codex: {
           version: "0.167.0",
           archive: await file("codex.tar.gz"),
