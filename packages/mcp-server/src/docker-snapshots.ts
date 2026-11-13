@@ -17,7 +17,7 @@ const invalid = () => new VaultError("invalid", "Invalid snapshot request.");
 export function createDockerSnapshots(
   sql: Sql,
   key: string,
-  options: { github: GitHubResolveDeps; installationApp: GitHubInstallationApp | null },
+  options: { enabled: boolean; github: GitHubResolveDeps; installationApp: GitHubInstallationApp | null },
 ) {
   async function command(caller: Caller, operation: string, body: Record<string, unknown>) {
     const org = body.org;
@@ -53,6 +53,8 @@ export function createDockerSnapshots(
       if (!row) throw new VaultError("not_found", "Snapshot not found.");
       return { snapshot: snapshotRecord(row) };
     }
+    if (operation === "create" && options.enabled !== true)
+      throw new VaultError("unavailable", "Docker snapshot building is disabled.");
     if (
       operation !== "create" ||
       Object.keys(body).some((k) => !["org", "hostId", "requestId", "name", "visibility", "config"].includes(k))
@@ -82,6 +84,13 @@ export function createDockerSnapshots(
         throw new VaultError("conflict", "Snapshot request changed.");
       return { snapshot: snapshotRecord(known) };
     }
+    const target = (
+      await sql.query(
+        "select h.id from public.docker_hosts h join public.members m on m.org_id=h.org_id and m.user_id=h.owner_id where h.id=$1 and h.org_id=$2 and h.hash is not null and h.registration_hash is null and h.revoked_at is null and h.draining_at is null",
+        [hostId, org],
+      )
+    ).rows[0];
+    if (!target) throw new VaultError("not_found", "Host unavailable.");
     const authorizer = goldenGitHubAdapter({
       app: options.installationApp,
       ...(options.github.fetch ? { fetch: options.github.fetch } : {}),
@@ -142,6 +151,15 @@ export function createDockerSnapshots(
           throw new VaultError("conflict", "Snapshot request changed.");
         return;
       }
+      if (
+        (
+          await tx.query(
+            "select id from public.docker_snapshots where host_id=$1 and status='building' and build_expires_at>now() limit 1",
+            [hostId],
+          )
+        ).rows.length
+      )
+        throw new VaultError("conflict", "This host is already building a snapshot. Retry after that build finishes.");
       const epochs = (
         await tx.query<{ actor: string; issuer: string }>(
           "select a.epoch::text as actor,i.epoch::text as issuer from public.mcp_actor_epochs a join public.mcp_actor_epochs i on i.org_id=a.org_id and i.user_id=$3 where a.org_id=$1 and a.user_id=$2",

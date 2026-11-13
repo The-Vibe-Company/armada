@@ -51,7 +51,7 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
   const org = requiredId("--org"),
     credentialId = requiredId("--credential-id");
   const snapshotId = single(args, "--golden");
-  if (snapshotId && !uuid.test(snapshotId))
+  if (snapshotId !== undefined && !uuid.test(snapshotId))
     throw new GoldenError("invalid_config", "--golden requires a Docker snapshot UUID.");
   const selector = single(args, "--host");
   if ((!snapshotId && !selector) || (selector !== undefined && (selector.length > 64 || /[\p{C}]/u.test(selector))))

@@ -12,8 +12,10 @@ export function parseDockerSnapshotRecord(input: unknown): DockerSnapshotRecord 
     typeof r.name !== "string" ||
     !r.name ||
     (r.visibility !== "private" && r.visibility !== "org") ||
-    !DOCKER_SNAPSHOT_STATUSES.includes(r.status as never) ||
+    !DOCKER_SNAPSHOT_STATUSES.some((value) => value === r.status) ||
     typeof r.hostAvailable !== "boolean" ||
+    typeof r.definitionHash !== "string" ||
+    !/^[0-9a-f]{64}$/.test(r.definitionHash) ||
     (r.hostName !== null && typeof r.hostName !== "string") ||
     typeof r.createdAt !== "string" ||
     !Number.isFinite(Date.parse(r.createdAt)) ||
@@ -32,6 +34,7 @@ export function parseDockerSnapshotRecord(input: unknown): DockerSnapshotRecord 
     hostName: r.hostName as string | null,
     hostAvailable: r.hostAvailable,
     createdAt: r.createdAt,
+    definitionHash: r.definitionHash as string,
     status: r.status as DockerSnapshotRecord["status"],
     image: r.image as string | null,
     config: parseGoldenConfig(r.config),

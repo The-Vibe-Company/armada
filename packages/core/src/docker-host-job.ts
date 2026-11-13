@@ -63,7 +63,10 @@ export function parseDockerHostJob(value: unknown): DockerHostJob {
     image: r.image,
     ttlSeconds: r.ttlSeconds,
   };
-  if (r.snapshot !== undefined) request.snapshot = parseDockerSnapshotBinding(r.snapshot);
+  if (r.snapshot !== undefined) {
+    request.snapshot = parseDockerSnapshotBinding(r.snapshot);
+    if (request.image.includes("@")) invalid();
+  }
   if (absolute) {
     const end = r.expiresAt;
     if (typeof end !== "number" || !Number.isSafeInteger(end) || end <= 0 || end > 8_640_000_000_000_000) invalid();

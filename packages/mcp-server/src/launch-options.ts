@@ -76,7 +76,7 @@ export function launchProviderOptions(
     stop: normal,
     delete: normal,
     resume: normal && docker.normalResume === true && docker.placement === true,
-    goldens: false,
+    goldens: normal && docker.normalLaunch === true && docker.placement === true,
     repositories: normal && docker.normalLaunch === true && docker.placement === true,
     machineSizes: false,
     github: false,
@@ -135,7 +135,7 @@ export function launchProviderOptions(
     {
       id: "docker",
       enabled: hosts,
-      launchSources: ["image"],
+      launchSources: capabilities.goldens ? ["golden", "image"] : ["image"],
       harnesses: ["codex", "claude", "opencode"],
       capabilities,
       unsupportedReasons,

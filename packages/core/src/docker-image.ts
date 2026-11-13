@@ -9,13 +9,15 @@ export function isDockerImageReference(value: unknown): value is string {
   );
 }
 
-/** Host operator approval for locally built org-shared images; private environments need later authorization. */
+/** Immutable product-owned host snapshot provenance; private images additionally require a server-authorized binding. */
 export const DOCKER_LOCAL_IMAGE_LABELS = {
   installation: "dev.armada.environment.installation",
   host: "dev.armada.environment.host",
   scope: "dev.armada.environment.scope",
   owner: "dev.armada.environment.owner",
   snapshot: "dev.armada.environment.snapshot",
+  generation: "dev.armada.environment.generation",
+  definition: "dev.armada.environment.definition",
 } as const;
 
 export interface DockerSnapshotBinding {

@@ -31,6 +31,7 @@ import { createDockerNormalLaunch } from "../src/docker-normal-launch.ts";
 import { createDockerNormalSend } from "../src/docker-normal-send.ts";
 import { createDockerSandboxControls } from "../src/docker-sandbox-controls.ts";
 import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
+import { createDockerSnapshots } from "../src/docker-snapshots.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
@@ -1192,4 +1193,181 @@ test("a lost Docker template response retains one reconciling claim and never re
   });
   expect(dispatches).toBe(1);
   expect(await counts(f)).toMatchObject({ sandboxes: 1, claims: 1, jobs: 2 });
+});
+
+async function snapshotFixture(enabled = true) {
+  const f = await fixture();
+  for (const [userId, githubId, access] of [
+    [f.actor.userId, 123, "offline-snapshot-access"],
+    [f.admin.userId, 124, "offline-admin-access"],
+  ] as const)
+    await db.query(
+      `insert into public.github_connections(user_id,github_id,login,name,refresh_token_enc,access_token_enc,access_expires_at) values($1,$2,'owner','Owner',$3,$4,now()+interval '2 hours')`,
+      [userId, githubId, await encryptSecret("offline-refresh", key), await encryptSecret(access, key)],
+    );
+  const githubFetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    const path = String(url),
+      admin = new Headers(init?.headers).get("authorization")?.includes("admin");
+    return path.includes("/user/installations")
+      ? Response.json({ installations: [] })
+      : path.includes("/repos/")
+        ? Response.json({
+            id: 1234,
+            name: "project",
+            owner: { login: "example" },
+            private: false,
+            default_branch: "main",
+          })
+        : Response.json({ id: admin ? 124 : 123, login: "owner", name: "Owner" });
+  }) as unknown as typeof fetch;
+  const snapshots = createDockerSnapshots(sql, key, {
+    enabled,
+    github: {
+      store: createSqlVaultStore(sql),
+      app: { clientId: "offline-app", clientSecret: "offline-app-secret" },
+      encryptionKey: key,
+      fetch: githubFetch,
+    },
+    installationApp: null,
+  });
+  const adminCaller = { ...f.caller, userId: f.admin.userId, orgs: [{ orgId: f.actor.orgId, role: "admin" as const }] };
+  const config = {
+    repos: [{ url: "https://github.com/example/project.git", branch: "main", dir: "project" }],
+    init: ["printf built > /home/user/proof"],
+  };
+  return { ...f, snapshots, adminCaller, config };
+}
+
+test.each(["private", "org"] as const)(
+  "host snapshot %s publication enforces visibility and launches the baked image without cloning again",
+  async (visibility) => {
+    const f = await snapshotFixture(),
+      id = randomUUID();
+    const creator = visibility === "private" ? f.caller : f.adminCaller;
+    const input = {
+      org: f.actor.orgId,
+      hostId: f.hostId,
+      requestId: id,
+      name: "local-snapshot",
+      visibility,
+      config: f.config,
+    };
+    const created = await f.snapshots.command(creator, "create", input);
+    expect(created).toMatchObject({ snapshot: { id, status: "building", visibility } });
+    expect(JSON.stringify(created)).not.toContain("offline-snapshot-access");
+    expect(await f.snapshots.command(creator, "create", input)).toMatchObject({ snapshot: { id } });
+    const build = await hosts.poll(f.hostToken, f.installationId);
+    if (build?.operation !== "buildSnapshot") throw Error("missing snapshot build");
+    expect(build.build.config).toEqual(input.config);
+    expect(build.build.token).toBe(visibility === "private" ? "offline-snapshot-access" : "offline-admin-access");
+    const image = `sha256:${"d".repeat(64)}`;
+    await hosts.complete(f.hostToken, f.installationId, { requestId: id, outcome: "completed", imageId: image });
+    await hosts.complete(f.hostToken, f.installationId, { requestId: id, outcome: "completed", imageId: image });
+    expect(await f.snapshots.command(f.caller, "get", { org: f.actor.orgId, id })).toMatchObject({
+      snapshot: { id, status: "ready", image, hostAvailable: true },
+    });
+    if (visibility === "private") {
+      await expect(f.snapshots.command(f.adminCaller, "get", { org: f.actor.orgId, id })).rejects.toMatchObject({
+        code: "not_found",
+      });
+      const resolutions = f.resolutions();
+      await expect(
+        f.service().launch(f.adminCaller, { ...f.body, snapshotId: id, image: undefined }),
+      ).rejects.toThrow();
+      expect(f.resolutions()).toBe(resolutions);
+    }
+    const { image: _, hostId: __, ...body } = f.body;
+    const launched = await f.service().launch(f.caller, { ...body, snapshotId: id });
+    expect(launched.sandbox).toMatchObject({ image, snapshotId: id, hostId: f.hostId });
+    expect(f.jobs[0]).toMatchObject({ request: { image, snapshot: { id, ownerId: creator.userId, visibility } } });
+    expect((f.native as { op: string }[]).map((cmd) => cmd.op)).toEqual(["health", "configureGitHub", "prompt"]);
+    const controls = createDockerSandboxControls(sql, key, {
+      clock: f.clock,
+      resume: bootstrap,
+      prepareSnapshotGitHub: f.github.prepareLaunch,
+    });
+    const firstEpoch = f.session()?.epoch;
+    await controls.invoke(f.caller, "stop", { id: f.body.requestId });
+    await controls.invoke(f.caller, "resume", { id: f.body.requestId, request_id: randomUUID() });
+    expect(f.session()?.epoch).not.toBe(firstEpoch);
+    expect(await f.github.status(f.caller, f.body.requestId)).toMatchObject({
+      configured: true,
+      runtime: { epoch: f.session()?.epoch },
+    });
+
+    await expect(
+      f.snapshots.command(f.caller, "create", { ...input, requestId: randomUUID(), visibility: "org" }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    await db.transaction(async (tx) => {
+      await tx.query("select set_config('request.jwt.claim.sub',$1,true)", [
+        visibility === "private" ? f.admin.userId : f.otherId,
+      ]);
+      await tx.exec("set local role authenticated");
+      expect((await tx.query("select id from public.docker_snapshots where id=$1", [id])).rows).toHaveLength(
+        visibility === "private" ? 0 : 1,
+      );
+      expect(
+        (
+          await tx.query(
+            "select has_table_privilege(current_user,'public.docker_snapshots','INSERT,UPDATE,DELETE') as write",
+          )
+        ).rows[0],
+      ).toEqual({ write: false });
+    });
+  },
+);
+
+test.each([
+  ["owner-rejoined", false],
+  ["issuer-rejoined", false],
+  ["owner-rejoined", true],
+] as const)("snapshot authorization fences %s (already delivered: %s)", async (reason, delivered) => {
+  const f = await snapshotFixture(),
+    id = randomUUID();
+  await f.snapshots.command(f.caller, "create", {
+    org: f.actor.orgId,
+    hostId: f.hostId,
+    requestId: id,
+    name: "revoked-build",
+    visibility: "private",
+    config: f.config,
+  });
+  if (reason === "issuer-rejoined")
+    await db.query("update public.members set role='admin' where org_id=$1 and user_id=$2", [f.actor.orgId, f.otherId]);
+  if (delivered) expect((await hosts.poll(f.hostToken, f.installationId))?.operation).toBe("buildSnapshot");
+  const userId = reason === "owner-rejoined" ? f.actor.userId : f.admin.userId;
+  await db.query("delete from public.members where org_id=$1 and user_id=$2", [f.actor.orgId, userId]);
+  await db.query("insert into public.members(org_id,user_id,role) values($1,$2,$3)", [
+    f.actor.orgId,
+    userId,
+    reason === "issuer-rejoined" ? "admin" : "member",
+  ]);
+  if (delivered)
+    await hosts.complete(f.hostToken, f.installationId, {
+      requestId: id,
+      outcome: "completed",
+      imageId: `sha256:${"e".repeat(64)}`,
+    });
+  else expect(await hosts.poll(f.hostToken, f.installationId)).toBeNull();
+  expect((await db.query("select status,image_id from public.docker_snapshots where id=$1", [id])).rows[0]).toEqual({
+    status: "failed",
+    image_id: null,
+  });
+});
+
+test("snapshot building respects the existing Docker placement switch", async () => {
+  const f = await snapshotFixture(false);
+  await expect(
+    f.snapshots.command(f.caller, "create", {
+      org: f.actor.orgId,
+      hostId: f.hostId,
+      requestId: randomUUID(),
+      name: "disabled",
+      visibility: "private",
+      config: f.config,
+    }),
+  ).rejects.toMatchObject({ code: "unavailable" });
+  expect((await db.query("select id from public.docker_snapshots where org_id=$1", [f.actor.orgId])).rows).toHaveLength(
+    0,
+  );
 });

@@ -36,31 +36,16 @@ secret-free host-local images; no Boat/Modal snapshot alias is introduced.
 Private Docker environment authorization and versionable repos/branches/init
 build/publication remain later work.
 
-## Deployment and the coordinator's one check
+## Product snapshot builds and deployment
 
-The new append-only constraint migration is
-`20261113170001_docker_local_image_ids.sql`. Apply it through the normal operator
-procedure before server traffic uses local IDs; deploy matching host daemon,
-server and clients. Old daemons must be upgraded before sending them the new
-reference form. No remote migration/deployment is performed by this PR.
+Prefer `golden create --provider docker --host ... --config ...` and launch with
+`--golden SNAPSHOT_UUID`. The product creates the labels; nobody prepares them by
+hand. Private images additionally require an authorized snapshot binding.
+See [host-local snapshots](docker-snapshots.md) for the single coordinator check
+on host `1bd0db41-6429-430b-99e2-06d60ddf1aa3` and normal build/launch commands.
 
-On host `70bde9cd-36c9-40af-b15e-65b2f9d3c2a2`, use an existing dedicated,
-secret-free Linux x64/glibc local image with Git/gh/Python3 and suitable UID1000
-workspace permissions. Its labels must explicitly approve this host and its
-current installation for org-shared use. Obtain its full image ID privately on
-that host; never substitute a mutable tag or mark a private workload image as
-shared. With the existing server/org/account/SSH inputs and ARMADA_TOKEN only in
-the environment:
-
-```sh
-python3 scripts/smoke-docker-lifecycle.py \
-  --server "$ARMADA_URL" --org "$ARMADA_ORG" --credential "$ARMADA_CREDENTIAL_ID" \
-  --ssh "$ARMADA_DOCKER_SSH" --host-id 70bde9cd-36c9-40af-b15e-65b2f9d3c2a2 \
-  --image "$ARMADA_DOCKER_LOCAL_IMAGE_ID" --normal-lifecycle
-```
-
-`ARMADA_DOCKER_LOCAL_IMAGE_ID` is exactly `sha256:<64 lowercase hex>`. The script
-uses one allocation through normal launch, requires the exact image echoed in
-its receipt, proves retained conversation through follow-up and same-host resume,
-and stops/deletes once. This procedure is not evidence of a real-host pass and
-does not claim the later config-file environment builder is implemented.
+Migration `20261113170001_docker_local_image_ids.sql` introduces local image IDs;
+`20261113180001_docker_snapshots.sql` adds their scoped catalog/publication.
+Apply through operator procedures before matching binaries. Old daemons must be
+updated before these build jobs; no compatibility fallback or remote deployment
+is performed by a worker.

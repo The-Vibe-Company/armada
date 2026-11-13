@@ -83,7 +83,7 @@ function input(job: Job): string {
 
 /** Internal service-role store, deliberately not mounted as a route or wired into placement.
  * Poll is at-least-once; a host must serialize execution and deduplicate request IDs durably.
- * Only trusted internal bootstrap tickets enter this mailbox; no model credentials or arbitrary execution payloads.
+ * Only trusted bootstrap tickets and authorized snapshot definitions enter this mailbox; Docker argv is generated on the host, and model credentials never enter build jobs.
  */
 export function createDockerHostStore(sql: Sql, key: string) {
   async function transaction<T>(work: (tx: Sql) => Promise<T>): Promise<T> {
@@ -592,7 +592,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
         const hint = (
           await tx.query<StoredJob>(
             `select j.* from public.docker_host_jobs j join public.docker_hosts h on h.id=j.host_id
-           where h.hash=$1 and h.installation_id=$2 and h.revoked_at is null and j.outcome is null and (not $3::boolean or j.snapshot_id is null) order by j.position limit 1`,
+           where h.hash=$1 and h.installation_id=$2 and h.revoked_at is null and j.outcome is null and (not $3::boolean or j.snapshot_id is null) order by (j.snapshot_id is not null),j.position limit 1`,
             [hash(hostToken), installationId, skipSnapshots],
           )
         ).rows[0];
@@ -601,6 +601,14 @@ export function createDockerHostStore(sql: Sql, key: string) {
           host.id,
           version ?? null,
         ]);
+        await tx.query(
+          "update public.docker_snapshots set status='failed',image_id=null where host_id=$1 and status='building' and build_expires_at<=now()",
+          [host.id],
+        );
+        await tx.query(
+          "update public.docker_host_jobs j set outcome='failed',completed_at=now() from public.docker_snapshots s where j.snapshot_id=s.id and j.host_id=$1 and j.outcome is null and s.status='failed'",
+          [host.id],
+        );
         // Older servers acknowledged failed startup without terminalizing the
         // logical row. Reconcile that saved fact without replaying the machine.
         const histories = (
@@ -627,7 +635,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
         }
         const row = (
           await tx.query<StoredJob>(
-            `select * from public.docker_host_jobs where host_id=$1 and outcome is null and (not $2::boolean or snapshot_id is null) order by position limit 1`,
+            `select * from public.docker_host_jobs where host_id=$1 and outcome is null and (not $2::boolean or snapshot_id is null) order by (snapshot_id is not null),position limit 1`,
             [host.id, skipSnapshots],
           )
         ).rows[0];

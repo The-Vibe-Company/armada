@@ -34,8 +34,8 @@ export {
   type AuthorizedRepo,
   type GoldenCreateDeps,
   GoldenCreateService,
-  goldenScript,
   goldenCheckoutScript,
+  goldenScript,
   type PreparedRepo,
   withGoldenDirs,
 } from "./golden-create-service.ts";

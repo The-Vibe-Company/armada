@@ -23,7 +23,7 @@ const args = [
   "--request-id",
   requestId,
 ];
-async function capture(argv: string[], fetcher: (request: Request) => Promise<Response>) {
+async function capture(argv: string[], fetcher: (request: Request) => Promise<Response>, config?: unknown) {
   let out = "",
     err = "";
   const code = await run(
@@ -37,6 +37,7 @@ async function capture(argv: string[], fetcher: (request: Request) => Promise<Re
       },
     },
     {
+      ...(config === undefined ? {} : { readFile: async () => JSON.stringify(config) }),
       auth: {
         out: () => {},
         err: () => {},
@@ -239,4 +240,88 @@ test("Docker CLI translates repeated repository flags with golden branch and dir
       { url: "https://github.com/acme/api", branch: "main", dir: "api" },
     ],
   });
+});
+
+test("Docker snapshots build through the normal golden command and launch through a scoped snapshot selector", async () => {
+  const id = "55555555-5555-4555-8555-555555555555",
+    config = {
+      repos: [{ url: "https://github.com/example/project.git", branch: "main", dir: "project" }],
+      init: ["printf built > /home/user/proof"],
+    };
+  const snapshot = {
+    id,
+    orgId: org,
+    ownerId: credential,
+    name: "owned",
+    provider: "docker",
+    visibility: "private",
+    hostId: host,
+    installationId: requestId,
+    hostName: "office",
+    hostAvailable: true,
+    status: "building",
+    definitionHash: "a".repeat(64),
+    image: null,
+    config,
+    createdAt: "2026-11-13T00:00:00.000Z",
+  };
+  const build = await capture(
+    [
+      "golden",
+      "create",
+      "owned",
+      "--provider",
+      "docker",
+      "--host",
+      host,
+      "--org",
+      org,
+      "--config",
+      "env.json",
+      "--private",
+      "--request-id",
+      id,
+    ],
+    async (request) => {
+      expect(new URL(request.url).pathname).toBe("/api/v1/docker/snapshots/create");
+      expect(await request.json()).toEqual({
+        org,
+        hostId: host,
+        requestId: id,
+        name: "owned",
+        visibility: "private",
+        config,
+      });
+      return Response.json({ snapshot });
+    },
+    config,
+  );
+  expect(build.code).toBe(0);
+  expect(build.out).toContain(id);
+  expect(build.out).toContain("building");
+  const sourceArgs = args.filter(
+    (arg, index) => !["--image", "--host"].includes(arg) && !["--image", "--host"].includes(args[index - 1] ?? ""),
+  );
+  const launched = await capture([...sourceArgs, "--golden", id, "Work"], async (request) => {
+    const body = (await request.json()) as Record<string, unknown>;
+    expect(body).toMatchObject({ snapshotId: id, provider: "docker", prompt: "Work" });
+    expect(body.hostId).toBeUndefined();
+    expect(body.image).toBeUndefined();
+    return Response.json({
+      sandbox: { id: requestId, provider: "docker", snapshotId: id, status: "running" },
+      golden: null,
+      runtime: { epoch: "1" },
+    });
+  });
+  expect(launched.code).toBe(0);
+  let calls = 0;
+  expect(
+    (
+      await capture([...args, "--golden", id], async () => {
+        calls++;
+        throw Error("unexpected HTTP");
+      })
+    ).code,
+  ).not.toBe(0);
+  expect(calls).toBe(0);
 });

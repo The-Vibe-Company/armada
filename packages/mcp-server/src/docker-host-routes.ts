@@ -49,7 +49,7 @@ export function createDockerHostRoutes(
       if (owner) {
         const result = await authenticate(request);
         if (!result.ok) return Response.json({ error: "unauthorized" }, { status: 401, headers });
-        const body: unknown = JSON.parse(await readBoundedText(request, path.includes("/snapshots/") ? 262144 : 4096));
+        const body: unknown = JSON.parse(await readBoundedText(request, path.includes("/snapshots/") ? 1048576 : 4096));
         if (!object(body)) throw new InvalidInput();
         if (path.includes("/snapshots/")) {
           if (!options.snapshots) throw new InvalidInput();

@@ -197,6 +197,7 @@ export interface DockerSnapshotRecord {
   installationId: string;
   hostName: string | null;
   hostAvailable: boolean;
+  definitionHash: string;
   status: (typeof DOCKER_SNAPSHOT_STATUSES)[number];
   image: string | null;
   config: import("./golden-config.ts").GoldenConfig;

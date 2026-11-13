@@ -194,13 +194,15 @@ def main():
     parser.add_argument("--org", required=True)
     parser.add_argument("--credential", required=True)
     parser.add_argument("--credential-version", type=int)
-    parser.add_argument("--ssh", required=True, help="Existing SSH config name or user@host")
-    parser.add_argument("--image", required=True, help="Linux x64 glibc registry digest or host-approved full local image ID")
+    parser.add_argument("--ssh", help="Existing SSH config name or user@host")
+    parser.add_argument("--image", help="Linux x64 glibc registry digest or host-approved full local image ID")
     parser.add_argument("--mcp", help="MCP connection UUID to deliver through the scoped runtime gateway")
     parser.add_argument("--mcp-tool", help="Safe read-only tool name on --mcp; its successful native tool result is required")
     parser.add_argument("--skills", action="append", default=[], help="Exact Skillpack pin to install and verify (repeatable)")
     parser.add_argument("--skill-defaults", action="store_true", help="Require at least one receipt from existing personal/org defaults; does not modify defaults")
     parser.add_argument("--model")
+    parser.add_argument("--snapshot", action="store_true", help="Build a private host snapshot from --config, then launch its baked repos/init through the normal route")
+    parser.add_argument("--config", help="Versionable golden JSON for --snapshot; product-written snapshot receipt proves baked initialization")
     parser.add_argument("--repository", help="Clone owner/repo before the first prompt and prove git log -1; implies --normal-launch")
     parser.add_argument("--branch", default="main", help="Repository branch for --repository")
     parser.add_argument("--host-id", help="Reuse an existing host registration")
@@ -235,6 +237,27 @@ def main():
         except ValueError:
             parser.error("--mcp requires a connection UUID")
     harness = "claude" if args.claude else "opencode" if args.opencode else "codex"
+    snapshot_config = None
+    if args.snapshot:
+        if not args.config or args.image or args.template or args.routine or args.claude or args.opencode:
+            parser.error("--snapshot requires --config and Codex, without --image/template/routine")
+        try:
+            with open(args.config, "rb") as stream:
+                raw = stream.read(1048577)
+            if len(raw) > 1048576:
+                raise ValueError()
+            snapshot_config = json.loads(raw)
+            if (not isinstance(snapshot_config, dict) or set(snapshot_config) - {"repos", "init"}
+                    or not isinstance(snapshot_config["repos"], list) or not snapshot_config["repos"]
+                    or not isinstance(snapshot_config["repos"][0], dict)):
+                raise ValueError()
+        except (OSError, ValueError, TypeError):
+            parser.error("--snapshot config must be bounded golden JSON with an explicit first repo dir")
+        args.normal_launch = True
+    elif args.config or not args.image:
+        parser.error("Use --image, or --snapshot --config FILE")
+    if not args.ssh and (not args.host_id or args.start_host):
+        parser.error("--ssh is required to register or start a host")
     if args.exec or args.steer or args.interrupt:
         args.normal_launch = True
     if args.cost or args.claude or args.opencode:
@@ -259,7 +282,7 @@ def main():
     origin = urllib.parse.urlsplit(args.server)
     if (origin.scheme != "https" or not origin.netloc or origin.username or origin.password
             or origin.path not in ("", "/") or origin.query or origin.fragment
-            or args.ssh.startswith("-") or not 1 <= args.timeout <= 1800):
+            or (args.ssh or "").startswith("-") or not 1 <= args.timeout <= 1800):
         parser.error("HTTPS origin, SSH target and bounded timeout required")
     token = os.environ.get("ARMADA_TOKEN", "")
     if not token or any(c.isspace() for c in token):
@@ -339,11 +362,48 @@ def main():
     marker = "DOCKER_MEMORY_" + uuid.uuid4().hex
     first = (f"Remember this marker for my next message: {marker}. " if args.follow_up else "")
     initial_task = first + "Reply with exactly DOCKER_OK. Do not run tools or modify files."
-    if args.repository:
+    if args.repository and not args.snapshot:
         directory = "/home/user/" + args.repository.split("/")[1]
         launch["repos"] = [{"url": "https://github.com/" + args.repository + ".git",
                             "branch": args.branch, "dir": args.repository.split("/")[1]}]
         initial_task = first + f"Run git -C {shlex.quote(directory)} log -1 --format=%H using your command tool. Then reply with exactly DOCKER_OK."
+    snapshot_proof_task = ""
+    expected_image = args.image
+    if args.snapshot:
+        snapshot_id = str(uuid.uuid4())
+        print("SNAPSHOT_ID=" + snapshot_id, flush=True)
+        api("snapshots/create", {"requestId": snapshot_id, "hostId": host_id, "name": "smoke-" + snapshot_id[:8], "visibility": "private", "config": snapshot_config})
+        deadline = time.monotonic() + args.timeout
+        while True:
+            built = api("snapshots/get", {"id": snapshot_id}).get("snapshot", {})
+            if built.get("status") == "ready":
+                break
+            if built.get("status") == "failed":
+                raise RuntimeError("Snapshot build failed; retain printed snapshot ID")
+            if time.monotonic() >= deadline:
+                raise RuntimeError("Snapshot build pending; retain printed snapshot ID, do not start a second build")
+            time.sleep(2)
+        if built.get("id") != snapshot_id or built.get("hostId") != host_id or not re.fullmatch(r"sha256:[0-9a-f]{64}", built.get("image", "")):
+            raise RuntimeError("Snapshot publication did not confirm this host and immutable image")
+        expected_image = built["image"]
+        launch.pop("image", None)
+        launch.pop("repos", None)
+        launch["snapshotId"] = snapshot_id
+        try:
+            actual_config = built["config"]
+            definition_hash = built["definitionHash"]
+            directory = "/home/user/" + actual_config["repos"][0]["dir"]
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,80}", actual_config["repos"][0]["dir"]) or not re.fullmatch(r"[0-9a-f]{64}", definition_hash):
+                raise ValueError()
+        except (KeyError, TypeError, ValueError):
+            raise RuntimeError("Snapshot publication did not return its canonical config and definition") from None
+        repository = re.sub(r"^(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)", "", actual_config["repos"][0]["url"])
+        if repository.endswith(".git"):
+            repository = repository[:-4]
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
+            raise RuntimeError("Snapshot repository identity is invalid")
+        snapshot_proof_task = f"Run gh api repos/{repository} --jq .full_name, git -C {shlex.quote(directory)} log -1 --format=%H and cat /opt/armada-build/receipt.json using your command tool. "
+        initial_task = first + snapshot_proof_task + "Then reply with exactly DOCKER_OK."
     cleanup_needed = True
     try:
         launch_receipt = None
@@ -359,7 +419,8 @@ def main():
             launched = api("sandbox/launch", launch, normal=True)
             if (launched.get("sandbox", {}).get("id") != sandbox_id
                     or launched.get("sandbox", {}).get("provider") != "docker"
-                    or launched.get("sandbox", {}).get("image") != args.image
+                    or launched.get("sandbox", {}).get("image") != expected_image
+                    or (args.snapshot and launched.get("sandbox", {}).get("snapshotId") != snapshot_id)
                     or not launched.get("promptId") or not launched.get("conversationId")):
                 raise RuntimeError("Normal launch outcome unknown; retain sandbox/request ID")
             launch_receipt = {"promptId": launched["promptId"], "conversationId": launched["conversationId"]}
@@ -417,6 +478,7 @@ def main():
         def turn(text, expected_answer, conversation=None, receipt=None, require_mcp=False):
             nonlocal cursor
             if receipt is None:
+                text = snapshot_proof_task + text
                 prompt_id = str(uuid.uuid4())
                 print("PROMPT_REQUEST_ID=" + prompt_id, flush=True)
                 body = {"sandboxId": sandbox_id, "requestId": prompt_id, "text": text}
@@ -434,7 +496,9 @@ def main():
             deadline = time.monotonic() + args.timeout
             answer, finished, used_mcp = False, False, False
             matching_mcp_calls = set()
-            repository_proven = not (args.repository and receipt is launch_receipt)
+            repository_proven = not (args.snapshot or (args.repository and receipt is launch_receipt))
+            snapshot_proven = not args.snapshot
+            snapshot_github = not args.snapshot
             while True:
                 if args.normal_controls:
                     page = api("logs/read", {"id": sandbox_id, **({"cursor": cursor} if cursor else {})}, normal=True)
@@ -442,7 +506,7 @@ def main():
                     if summary.get("provider") != "docker" or summary.get("golden") is not None:
                         raise RuntimeError("Normal Docker status did not match its contract")
                     page["usage"] = summary.get("usage")
-                    if args.repository and page.get("source") != "armada-runtime":
+                    if (args.repository or args.snapshot) and page.get("source") != "armada-runtime":
                         raise RuntimeError("Repository proof requires the archived Armada runtime journal")
                 else:
                     page = api("sandboxes/journal", {"sandboxId": sandbox_id, "cursor": cursor})
@@ -456,6 +520,22 @@ def main():
                         continue
                     if event.get("kind") == "message" and expected_answer in event.get("text", ""):
                         answer = True
+                    if args.snapshot and event.get("kind") == "message":
+                        for tool in event.get("tools", []):
+                            command = (tool.get("input") or {}).get("command", "")
+                            result = tool.get("result") or {}
+                            if (tool.get("name") == "commandExecution" and isinstance(command, str)
+                                    and "gh api" in command and "repos/" + repository in command
+                                    and result.get("isError") is False and repository.lower() in str(result.get("output", "")).lower()):
+                                snapshot_github = True
+                            if (tool.get("name") == "commandExecution" and isinstance(command, str)
+                                    and "cat" in command and "/opt/armada-build/receipt.json" in command
+                                    and result.get("isError") is False):
+                                try:
+                                    proof = json.loads(result.get("output", ""))
+                                    snapshot_proven = proof.get("id") == snapshot_id and proof.get("hostId") == host_id and proof.get("definitionHash") == definition_hash and proof.get("initSteps") == len(actual_config.get("init", []))
+                                except (ValueError, TypeError, AttributeError):
+                                    pass
                     if not repository_proven and event.get("kind") == "message":
                         for tool in event.get("tools", []):
                             command = (tool.get("input") or {}).get("command", "")
@@ -473,7 +553,11 @@ def main():
                 usage = next((t for t in turns if t.get("promptId") == native_prompt
                               and isinstance(t.get("inputTokens"), int)
                               and isinstance(t.get("outputTokens"), int)), None)
-                if answer and finished and usage and repository_proven and (not require_mcp or used_mcp):
+                if answer and finished and usage and repository_proven and snapshot_proven and snapshot_github and (not require_mcp or used_mcp):
+                    if args.snapshot:
+                        github_status = api("github/runtime-status", {"id": sandbox_id}, normal=True)
+                        if not github_status.get("configured") or github_status.get("credentialRequests", 0) < 1:
+                            raise RuntimeError("Snapshot GitHub proof requires current-epoch credential delivery")
                     if args.cost:
                         check_cost(page["usage"], native_prompt)
                     print(json.dumps({"answer": expected_answer, "promptId": native_prompt,
@@ -481,6 +565,10 @@ def main():
                                       "inputTokens": usage["inputTokens"], "outputTokens": usage["outputTokens"]}),
                           flush=True)
                     return receipt["conversationId"]
+                if finished and not snapshot_github and not page["hasMore"]:
+                    raise RuntimeError("Snapshot GitHub proof missing: successful gh API result required")
+                if finished and not snapshot_proven and not page["hasMore"]:
+                    raise RuntimeError("Snapshot proof missing: successful immutable build-receipt output required")
                 if finished and not repository_proven and not page["hasMore"]:
                     raise RuntimeError("Repository proof missing: successful git log -1 command result required")
                 if time.monotonic() >= deadline:

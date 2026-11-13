@@ -10,6 +10,14 @@ export async function dockerSnapshotCommand(
   auth: AuthIo,
   config?: GoldenConfig,
 ) {
+  const allowed = new Set([
+    "--org",
+    "--provider",
+    "--json",
+    ...(operation === "create" ? ["--host", "--request-id", "--private", "--config", "--repo", "--init"] : []),
+  ]);
+  if ([...args.options.keys()].some((key) => !allowed.has(key)))
+    throw new GoldenError("invalid_config", "Unsupported Docker snapshot option.");
   const org = single(args, "--org");
   if (!org || !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(org))
     throw new GoldenError("invalid_config", "Docker snapshots require --org UUID.");
@@ -46,8 +54,10 @@ export async function dockerSnapshotCommand(
     );
   const selector = single(args, "--host");
   if (!selector) throw new GoldenError("invalid_config", "Docker snapshot creation requires --host UUID|NAME.");
-  const hostId = await resolveHost(client, org, selector);
   const requestId = single(args, "--request-id") ?? crypto.randomUUID();
+  if (!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(requestId))
+    throw new GoldenError("invalid_config", "--request-id requires a UUID.");
+  const hostId = await resolveHost(client, org, selector);
   io.err(`Snapshot request ${requestId}. Reuse this --request-id with identical input after an unknown outcome.\n`);
   const row = parseDockerSnapshotRecord(
     (

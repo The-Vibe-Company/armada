@@ -90,7 +90,10 @@ export function createDockerMachineExecutor(options: {
           request.expiresAt > 8_640_000_000_000_000))
     )
       fail("invalid_request");
-    if (request.snapshot !== undefined) parseDockerSnapshotBinding(request.snapshot);
+    if (request.snapshot !== undefined) {
+      parseDockerSnapshotBinding(request.snapshot);
+      if (request.image.includes("@")) fail("invalid_request");
+    }
     const name = `armada-${options.installationId}-${options.hostId}-${request.sandboxId}-${request.generation}`;
     return {
       containerName: name,

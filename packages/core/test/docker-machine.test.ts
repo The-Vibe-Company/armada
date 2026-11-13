@@ -404,6 +404,8 @@ test.each([
   "missing-approval",
   "wrong-id",
   "missing-image",
+  "private-authorized",
+  "private-wrong-owner",
 ])("local immutable image admission requires exact host org approval (%s)", async (mode) => {
   const f = fixture();
   const image = `sha256:${"b".repeat(64)}`;
@@ -415,7 +417,11 @@ test.each([
   if (mode === "foreign-host") labels[DOCKER_LOCAL_IMAGE_LABELS.host] = "55555555-5555-5555-5555-555555555555";
   if (mode === "foreign-installation")
     labels[DOCKER_LOCAL_IMAGE_LABELS.installation] = "55555555-5555-5555-5555-555555555555";
-  if (mode === "private") labels[DOCKER_LOCAL_IMAGE_LABELS.scope] = "private";
+  if (mode === "private" || mode.startsWith("private-")) labels[DOCKER_LOCAL_IMAGE_LABELS.scope] = "private";
+  if (mode.startsWith("private-")) {
+    labels[DOCKER_LOCAL_IMAGE_LABELS.owner] = request.sandboxId;
+    labels[DOCKER_LOCAL_IMAGE_LABELS.snapshot] = request.sandboxId;
+  }
   if (mode === "missing-approval") delete labels[DOCKER_LOCAL_IMAGE_LABELS.scope];
   if (mode !== "missing-image")
     f.images.set(image, { Id: mode === "wrong-id" ? `sha256:${"c".repeat(64)}` : image, Config: { Labels: labels } });

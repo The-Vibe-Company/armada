@@ -130,13 +130,11 @@ export async function tick(store: Store, api: Api, executor: Executor, skipSnaps
       if (receipt.operation === "buildSnapshot") {
         if (job.operation !== "buildSnapshot" || !executor.buildSnapshot) throw Error("Snapshot builds unavailable.");
         let sweeping: Promise<void> | undefined;
-        const timer = setInterval(() => {
+        const timer = setInterval(async () => {
           if (sweeping) return;
-          sweeping = tick(store, api, executor, true)
-            .catch(() => {})
-            .finally(() => {
-              sweeping = undefined;
-            });
+          sweeping = tick(store, api, executor, true).catch(() => {});
+          await sweeping;
+          sweeping = undefined;
         }, 10000);
         try {
           receipt.imageId = await executor.buildSnapshot(job, !admitted);

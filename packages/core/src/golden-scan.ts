@@ -39,7 +39,10 @@ const SCAN_ROOTS = "/home/user /root /tmp";
  * and object shas are ever inspected for *presence* of a match (`grep -l`/`-q`); the matched text
  * itself is never printed, logged, or returned.
  */
-export function goldenScanScript(): string {
+export function goldenScanScript(extraRoots: readonly string[] = []): string {
+  if (extraRoots.some((root) => !/^\/[A-Za-z0-9_./-]+$/.test(root)))
+    throw new GoldenError("invalid_config", "Invalid scan root.");
+  const roots = [SCAN_ROOTS, ...extraRoots].join(" ");
   const script = [
     "set -u",
     // Inert helper code is allowed; workload state and resident brokers are not.
@@ -52,7 +55,7 @@ export function goldenScanScript(): string {
     '  case "$name" in armada-helper|armada-broker|armada-github-b*) exit 97 ;; esac',
     "done",
     `pattern='${GITHUB_TOKEN_PATTERN}|${SKILLPACK_TOKEN_PATTERN}|armada_gh_[a-f0-9]{64}'`,
-    `roots='${SCAN_ROOTS}'`,
+    `roots='${roots}'`,
     // Classify paths in memory; only fixed labels and counts leave this process.
     "scan_location() {",
     '  case "$1" in',

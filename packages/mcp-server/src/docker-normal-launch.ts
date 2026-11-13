@@ -4,6 +4,7 @@ import {
   DOCKER_DEFAULT_IMAGE,
   type DockerLaunchResult,
   type DockerSandboxRecord,
+  type GitHubLaunchInfo,
   type GoldenActor,
   type GoldenRepo,
   HARNESSES,
@@ -72,7 +73,7 @@ type Receipt = {
   epoch: string;
   promptId?: string;
   conversationId?: string;
-  github?: { status: "connected"; login: string };
+  github?: GitHubLaunchInfo;
 };
 type Claim = {
   actor_epoch: string;
@@ -110,7 +111,7 @@ type Row = {
 type Clock = { now(): number; wait(ms: number): Promise<void> };
 type Options = {
   enabled?: boolean;
-  github?: Pick<RuntimeGitHub, "prepare" | "preflightRepositories">;
+  github?: Pick<RuntimeGitHub, "prepare" | "prepareLaunch" | "preflightRepositories">;
   credentials: Pick<LaunchCredentialResolver, "resolve" | "skillpackKey">;
   mcp?: RuntimeMcp;
   bootstrap?: ReturnType<typeof createDockerBootstrapService>;
@@ -396,7 +397,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
         if (
           source &&
           (!caller.orgs.some((m) => m.orgId === source.org_id) ||
-            (body.hostId !== undefined && body.hostId !== source.host_id))
+            (body.hostId !== undefined && identifier(body.hostId) !== source.host_id))
         )
           throw failure("not_found");
         const request = normalize(source ? { ...body, hostId: source.host_id, image: source.image_id } : body);
@@ -407,7 +408,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
         if (state.row && state.receipt) return envelope(state.row, state.receipt);
         if (options.enabled !== true || !options.bootstrap) throw failure("unavailable");
         if (!state.manifest) {
-          if (request.repos || source) {
+          if (request.repos) {
             if (!options.github) throw failure("unavailable");
             await options.github.preflightRepositories(
               caller,
@@ -538,7 +539,9 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
           }
           await wait();
         }
-        if (manifest.request.repos || manifest.snapshotConfig?.repos.length) {
+        if (!manifest.request.repos && manifest.snapshotConfig?.repos.length && options.github)
+          receipt.github = await options.github.prepareLaunch(caller, request.requestId);
+        if (manifest.request.repos) {
           if (!options.github) throw failure("unavailable");
           const github = await options.github.prepare(caller, request.requestId);
           receipt.github = { status: "connected", login: github.login };

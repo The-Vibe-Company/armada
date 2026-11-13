@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { type DockerSnapshotRecord, parseGoldenConfig } from "@armada/core";
 import { type Sql, VaultError } from "@armada/core/server";
 import type { DockerHostJob } from "../../core/src/docker-host-job.ts";
@@ -16,6 +17,7 @@ export type SnapshotRow = {
   issuer_epoch: string;
   generation: string;
   base_image: string;
+  build_expires_at: Date | string;
   status: DockerSnapshotRecord["status"];
   image_id: string | null;
   created_at: Date | string;
@@ -33,7 +35,10 @@ export function snapshotRecord(row: SnapshotRow): DockerSnapshotRecord {
     visibility: row.visibility,
     provider: "docker",
     config: parseGoldenConfig(row.config),
-    status: row.status,
+    definitionHash: createHash("sha256")
+      .update(JSON.stringify({ image: row.base_image, config: parseGoldenConfig(row.config) }))
+      .digest("hex"),
+    status: row.status === "building" && new Date(row.build_expires_at).getTime() <= Date.now() ? "failed" : row.status,
     image: row.image_id,
     createdAt: new Date(row.created_at).toISOString(),
     hostName: row.host_name,
@@ -77,6 +82,8 @@ export async function authorizeSnapshotBuild(
     row.id !== job.request.sandboxId ||
     row.generation !== job.request.generation ||
     row.base_image !== job.request.image ||
+    new Date(row.build_expires_at).getTime() !== job.request.expiresAt ||
+    job.request.ttlSeconds !== 3600 ||
     row.owner_id !== job.build.ownerId ||
     row.visibility !== job.build.visibility ||
     JSON.stringify(parseGoldenConfig(row.config)) !== JSON.stringify(job.build.config)

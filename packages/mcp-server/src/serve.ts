@@ -379,9 +379,11 @@ export async function startServer(
     env.ARMADA_DOCKER_HOSTS === "1"
       ? createDockerSandboxControls(sql, config.encryptionKey, {
           prepareMcp: runtimeMcp.prepare,
+          ...(runtimeGitHub ? { prepareSnapshotGitHub: runtimeGitHub.prepareLaunch } : {}),
           ...(dockerBootstrap ? { resume: dockerBootstrap } : {}),
           send: createDockerNormalSend(sql, config.encryptionKey, {
             prepareMcp: runtimeMcp.prepare,
+            ...(runtimeGitHub ? { prepareSnapshotGitHub: runtimeGitHub.prepareLaunch } : {}),
             enabled: dockerEnabled && Boolean(dockerBootstrap),
           }),
         })
@@ -558,6 +560,7 @@ export async function startServer(
                 placement: dockerLaunchEnabled,
                 publicUrl: config.publicUrl,
                 snapshots: createDockerSnapshots(sql, config.encryptionKey, {
+                  enabled: dockerLaunchEnabled,
                   github: { store, app: githubApp, encryptionKey: config.encryptionKey },
                   installationApp: githubInstallationAppFromEnv(env),
                 }),
