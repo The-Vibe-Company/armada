@@ -1,5 +1,8 @@
 /** Coordinator-only staging check: exactly one Modal allocation, never retried. */
+import { createHash } from "node:crypto";
 import type { AgentEvent } from "../packages/core/src/provider.ts";
+import { validateReadableVariables } from "../packages/core/src/readable-variables.ts";
+import type { TemplateDefinition } from "../packages/core/src/templates.ts";
 import { readDefaultPins, verifyDefaultReceipts } from "./default-skill-smoke.ts";
 
 if (process.env.ARMADA_RUNTIME_SMOKE !== "one_real_modal_launch")
@@ -14,6 +17,19 @@ const credentialId = process.env.ARMADA_RUNTIME_CREDENTIAL_ID;
 if (!token || !golden || !org || !credentialId) throw Error("Missing coordinator staging inputs.");
 
 interface Reply {
+  id?: string;
+  state?: string;
+  manifest?: {
+    templateId?: string;
+    requestKey?: string;
+    revision?: number;
+    revisionId?: string;
+    golden?: { id?: string; orgId?: string; provider?: string };
+    account?: { id?: string; version?: number };
+    definition?: TemplateDefinition;
+    variables?: unknown;
+    skillReceipts?: unknown;
+  };
   provider?: import("../packages/core/src/sandbox-provider.ts").SandboxProviderId;
   githubReady?: boolean;
   mcpReady?: boolean;
@@ -29,6 +45,7 @@ interface Reply {
     resumeVersion?: number;
     mcpVersion?: number;
     skillsVersion?: number;
+    variablesVersion?: number;
   };
   skills?: unknown;
   sandbox?: { id?: string; goldenId?: string; skills?: unknown; provider?: string; runtimeTransport?: string };
@@ -75,6 +92,20 @@ if (
 const resumeMode = process.argv.includes("--resume");
 if (resumeMode && options.modalRuntime.resumeVersion !== 1)
   throw Error("Modal retained resume v1 is unavailable; no launch attempted.");
+const variablesMode = process.argv.includes("--variables");
+const templateId = process.env.ARMADA_RUNTIME_TEMPLATE_ID ?? "";
+if (
+  variablesMode &&
+  (options.modalRuntime.variablesVersion !== 1 || !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(templateId))
+)
+  throw Error(
+    "Modal readable-variable check requires variables v1 and an existing template UUID; no launch attempted.",
+  );
+let templateSource:
+  | { org: string; revision: number; revisionId: string; goldenId: string; definition: TemplateDefinition }
+  | undefined;
+let variableKeys: string[] = [];
+let expectedVariableDigest: string | undefined;
 const skillsMode = process.argv.includes("--skills");
 if (skillsMode && options.modalRuntime.skillsVersion !== 1)
   throw Error("Modal runtime skills v1 is unavailable; no launch attempted.");
@@ -112,12 +143,63 @@ if (mcpMode) {
 }
 if (githubMode && !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository))
   throw Error("GitHub check requires existing ARMADA_RUNTIME_GITHUB_REPOSITORY=owner/repo; no launch attempted.");
-if (githubMode || mcpMode || skillsMode) {
+if (githubMode || mcpMode || skillsMode || variablesMode) {
   const choices = (await api("golden/list", { org })).goldens?.filter(
     (row) => row.provider === "modal" && (row.id === golden || row.name === golden),
   );
   if (choices?.length !== 1 || !choices[0])
     throw Error("No unique authorized Modal golden for preflight; no launch attempted.");
+  if (variablesMode) {
+    const selected = await api<{
+      item?: { id?: string; status?: string; orgId?: string };
+      revision?: { id?: string; revision?: number; definition?: TemplateDefinition };
+    }>("templates/get", { org: choices[0].orgId, id: templateId });
+    const revision = selected.revision,
+      def = revision?.definition;
+    if (
+      selected.item?.id !== templateId ||
+      selected.item.status !== "active" ||
+      selected.item.orgId !== choices[0].orgId ||
+      !revision?.id ||
+      !Number.isSafeInteger(revision.revision) ||
+      (revision.revision ?? 0) < 1 ||
+      !def ||
+      def.provider !== "modal" ||
+      def.harness !== "codex" ||
+      def.goldenId !== choices[0].id ||
+      !Array.isArray(def.variables) ||
+      !def.variables.length ||
+      def.variables.some((binding) => !/^[A-Z_][A-Z0-9_]*$/.test(binding.key)) ||
+      (def.secrets !== undefined && (!Array.isArray(def.secrets) || def.secrets.length > 0)) ||
+      !Array.isArray(def.skills) ||
+      def.skills.length ||
+      !def.modelAccount ||
+      def.modelAccount.id !== credentialId ||
+      !Number.isSafeInteger(def.modelAccount.version) ||
+      def.modelAccount.version < 1 ||
+      !Array.isArray(def.connections) ||
+      canonical([...def.connections].sort()) !== canonical(mcpMode ? [mcpConnection] : []) ||
+      (process.env.ARMADA_RUNTIME_MODEL !== undefined && def.model !== process.env.ARMADA_RUNTIME_MODEL)
+    )
+      throw Error(
+        "Existing Modal template is ineligible for the selected golden/account/readable bindings/connections; no launch attempted.",
+      );
+    variableKeys = def.variables.map((binding) => binding.key).sort();
+    if (new Set(variableKeys).size !== variableKeys.length)
+      throw Error("Template readable keys are not distinct; no launch attempted.");
+    try {
+      validateReadableVariables(Object.fromEntries(variableKeys.map((key) => [key, ""])));
+    } catch {
+      throw Error("Template readable keys are unavailable; no launch attempted.");
+    }
+    templateSource = {
+      org: choices[0].orgId,
+      revision: Number(revision.revision),
+      revisionId: revision.id,
+      goldenId: choices[0].id,
+      definition: def,
+    };
+  }
   if (skillsMode) {
     defaultGoldenId = choices[0].id;
     defaultPins = await readDefaultPins(choices[0].orgId, defaultGoldenId, {
@@ -157,6 +239,23 @@ function canonical(value: unknown): string {
       .join(",")}}`;
   return JSON.stringify(value) ?? "undefined";
 }
+function shellQuote(value: string): string {
+  return "'" + value.replaceAll("'", "'\\''") + "'";
+}
+function exactCommand(command: unknown, expected: string): boolean {
+  if (typeof command !== "string") return false;
+  const quoted = `"${expected.replace(/["\\$`]/g, "\\$&")}"`;
+  return [
+    expected,
+    ...["/bin/bash", "/usr/bin/bash", "bash", "/bin/sh", "sh"].flatMap((shell) => [
+      `${shell} -lc ${shellQuote(expected)}`,
+      `${shell} -lc ${quoted}`,
+    ]),
+  ].includes(command.trim());
+}
+const variableProgram = `process.stdout.write(require("node:crypto").createHash("sha256").update(JSON.stringify(Object.fromEntries(${JSON.stringify(variableKeys)}.map(k=>[k,process.env[k]??null])))).digest("hex"))`;
+const variableCommand = `node -e ${shellQuote(variableProgram)}`;
+const variableInstruction = `Run exactly: ${variableCommand} successfully. Do not print environment values or repeat tool output in your final answer.`;
 const answer = `ARMADA_MODAL_${crypto.randomUUID().replaceAll("-", "")}`;
 const memory = `ARMADA_MEMORY_${crypto.randomUUID().replaceAll("-", "")}`;
 let id: string | undefined;
@@ -184,6 +283,7 @@ const githubInstruction = `Run exactly: gh api repos/${repository} --jq .full_na
 const recallInstruction =
   "After the tool succeeds, reply exactly with the token I originally asked you to remember. Do not change files.";
 const toolsInstruction = [
+  ...(variablesMode ? [variableInstruction] : []),
   ...(mcpMode ? [mcpInstruction] : []),
   ...(githubMode ? [githubInstruction] : [recallInstruction]),
 ].join(" ");
@@ -216,8 +316,9 @@ const verifyPrompt = async (expectedPromptId: string, expectedAnswer: string) =>
   let foundAnswer = false;
   let finished = false;
   let foundMcp = !mcpMode;
+  let foundVariables = !variablesMode;
   const deadline = Date.now() + 300000;
-  while (Date.now() < deadline && (!foundAnswer || !finished || !foundMcp)) {
+  while (Date.now() < deadline && (!foundAnswer || !finished || !foundMcp || !foundVariables)) {
     const page = await api("logs/read", { id, limit: 1000, ...(cursor ? { cursor } : {}) });
     if (page.source !== "armada-runtime") throw Error("Modal answer was not read from the common runtime archive.");
     if (page.runtimeFailure) throw Error("Modal enrolled runtime failed; inspect server diagnostics.");
@@ -234,19 +335,25 @@ const verifyPrompt = async (expectedPromptId: string, expectedAnswer: string) =>
           )
             foundMcp = true;
       }
+      if (variablesMode && event.kind === "message" && !event.parentToolUseId && !event.retracted) {
+        for (const tool of event.tools)
+          if (
+            tool.name === "commandExecution" &&
+            exactCommand((tool.input as { command?: unknown } | undefined)?.command, variableCommand) &&
+            tool.result?.isError === false &&
+            typeof tool.result.output === "string" &&
+            expectedVariableDigest &&
+            tool.result.output.trim() === expectedVariableDigest
+          )
+            foundVariables = true;
+      }
       if (githubMode && event.kind === "message" && !event.parentToolUseId && !event.retracted) {
         for (const tool of event.tools) {
           const command = (tool.input as { command?: unknown } | undefined)?.command;
           if (
             tool.name === "commandExecution" &&
             typeof command === "string" &&
-            [
-              `gh api repos/${repository} --jq .full_name`,
-              ...["/bin/bash", "/usr/bin/bash", "bash", "/bin/sh", "sh"].flatMap((shell) => [
-                `${shell} -lc 'gh api repos/${repository} --jq .full_name'`,
-                `${shell} -lc "gh api repos/${repository} --jq .full_name"`,
-              ]),
-            ].includes(command.trim()) &&
+            exactCommand(command, `gh api repos/${repository} --jq .full_name`) &&
             tool.result?.isError === false &&
             typeof tool.result.output === "string" &&
             tool.result.output.trim().toLowerCase() === repository.toLowerCase()
@@ -268,12 +375,12 @@ const verifyPrompt = async (expectedPromptId: string, expectedAnswer: string) =>
         throw Error("Modal runtime prompt did not finish successfully.");
     }
     cursor = page.cursor ?? cursor;
-    if (foundAnswer && finished && !foundMcp)
-      throw Error("Missing this prompt's archived MCP server/tool/arguments/successful-result proof.");
-    if (!foundAnswer || !finished || !foundMcp) await Bun.sleep(1000);
+    if (foundAnswer && finished && (!foundMcp || !foundVariables))
+      throw Error("Missing this prompt's archived MCP or exact readable-environment command/result proof.");
+    if (!foundAnswer || !finished || !foundMcp || !foundVariables) await Bun.sleep(1000);
   }
-  if (!foundAnswer || !finished)
-    throw Error("Timed out waiting for this Modal prompt's archived answer and finished event.");
+  if (!foundAnswer || !finished || !foundMcp || !foundVariables)
+    throw Error("Timed out waiting for this Modal prompt's archived answer, tool proof and finished event.");
 };
 
 const validateCheckpoint = (receipt: Reply, expectedEpoch: string, requestId: string, watermark?: number) => {
@@ -298,24 +405,84 @@ const checkpoint = async (expectedEpoch: string) => {
   return { requestId, receipt };
 };
 try {
-  const launched = await api("sandbox/launch-modal-runtime-v1", {
+  const templateRequestKey = templateSource ? crypto.randomUUID() : undefined;
+  if (templateSource)
+    console.log(
+      JSON.stringify({
+        operation: "runtime_template_launch",
+        templateId,
+        revision: templateSource.revision,
+        requestKey: templateRequestKey,
+      }),
+    );
+  const raw = await api("sandbox/launch-modal-runtime-v1", {
     runtimeVersion: 1,
     runtimeTransport: "dialout",
     provider: "modal",
     harness: "codex",
-    org,
-    golden,
-    credentialId,
-    ...(process.env.ARMADA_RUNTIME_MODEL ? { model: process.env.ARMADA_RUNTIME_MODEL } : {}),
-    connections: mcpMode ? [mcpConnection] : [],
+    ...(templateSource
+      ? { org: templateSource.org, id: templateId, revision: templateSource.revision, requestKey: templateRequestKey }
+      : {
+          org,
+          golden,
+          credentialId,
+          ...(process.env.ARMADA_RUNTIME_MODEL ? { model: process.env.ARMADA_RUNTIME_MODEL } : {}),
+          connections: mcpMode ? [mcpConnection] : [],
+        }),
     ...(!skillsMode ? { skills: [], skipSkillDefaults: true } : {}),
     ttlSeconds: 900,
-    prompt: mcpMode
-      ? `Remember token ${memory}. ${mcpInstruction} After it succeeds, reply exactly ${answer}. Do not change files.`
-      : `Remember token ${memory}. Reply exactly ${answer}. Do not use tools or change files.`,
+    prompt:
+      mcpMode || variablesMode
+        ? `Remember token ${memory}. ${[...(variablesMode ? [variableInstruction] : []), ...(mcpMode ? [mcpInstruction] : [])].join(" ")} After it succeeds, reply exactly ${answer}. Do not change files.`
+        : `Remember token ${memory}. Reply exactly ${answer}. Do not use tools or change files.`,
   });
-  id = launched.sandbox?.id;
+  id = templateSource ? raw.id : raw.sandbox?.id;
   shouldStop = Boolean(id);
+  if (templateSource) {
+    const m = raw.manifest;
+    if (
+      raw.state !== "succeeded" ||
+      !id ||
+      raw.provider !== "modal" ||
+      !m ||
+      m.templateId !== templateId ||
+      m.requestKey !== templateRequestKey ||
+      m.revision !== templateSource.revision ||
+      m.revisionId !== templateSource.revisionId ||
+      m.golden?.id !== templateSource.goldenId ||
+      m.golden.orgId !== templateSource.org ||
+      m.golden.provider !== "modal" ||
+      m.account?.id !== templateSource.definition.modelAccount?.id ||
+      m.account?.version !== templateSource.definition.modelAccount?.version ||
+      canonical(m.definition) !== canonical(templateSource.definition)
+    )
+      throw Error(
+        "Modal template launch manifest identity is unavailable; cleanup the known allocation, never launch again.",
+      );
+    let values: Record<string, string>;
+    try {
+      values = validateReadableVariables(m.variables);
+    } catch {
+      throw Error("Modal frozen readable manifest is invalid; no allocation retry.");
+    }
+    if (canonical(Object.keys(values).sort()) !== canonical(variableKeys))
+      throw Error("Modal frozen readable keyset differs from the pinned template; no allocation retry.");
+    expectedVariableDigest = createHash("sha256")
+      .update(JSON.stringify(Object.fromEntries(variableKeys.map((key) => [key, values[key]]))))
+      .digest("hex");
+  }
+  const launched: Reply = templateSource
+    ? {
+        ...raw,
+        sandbox: {
+          ...(id ? { id } : {}),
+          goldenId: templateSource.goldenId,
+          provider: "modal",
+          runtimeTransport: "dialout",
+          skills: raw.manifest?.skillReceipts,
+        },
+      }
+    : raw;
   conversationId = launched.conversationId;
   epoch = launched.runtime?.epoch;
   promptId = launched.promptId;
@@ -347,7 +514,7 @@ try {
   const followed = await api("sandbox/send", {
     id,
     prompt:
-      githubMode || mcpMode
+      githubMode || mcpMode || variablesMode
         ? toolsInstruction
         : "Reply exactly with the token I originally asked you to remember. Do not use tools or change files.",
     request_id: followupRequestId,
@@ -384,6 +551,7 @@ try {
       ...(githubMode ? { github: "verified" } : {}),
       ...(mcpMode ? { mcp: "verified" } : {}),
       ...(skillsMode ? { skills: "verified" } : {}),
+      ...(variablesMode ? { variables: "verified" } : {}),
     }),
   );
 } catch (error) {
@@ -454,9 +622,10 @@ if (
       runtimeVersion: 1,
       request_id: requestId,
       conversation_id: conversationId,
-      prompt: mcpMode
-        ? `${mcpInstruction} ${recallInstruction}`
-        : "Again reply exactly with the token I originally asked you to remember. Do not use tools or change files.",
+      prompt:
+        mcpMode || variablesMode
+          ? `${[...(variablesMode ? [variableInstruction] : []), ...(mcpMode ? [mcpInstruction] : [])].join(" ")} ${recallInstruction}`
+          : "Again reply exactly with the token I originally asked you to remember. Do not use tools or change files.",
     });
     if (
       resumed.requestId !== requestId ||
@@ -527,6 +696,7 @@ if (
         ...(githubMode ? { githubAfterResume: "verified" } : {}),
         ...(mcpMode ? { mcpAfterResume: "verified" } : {}),
         ...(skillsMode ? { skillsAfterResume: "verified" } : {}),
+        ...(variablesMode ? { variablesAfterResume: "verified" } : {}),
       }),
     );
 }
