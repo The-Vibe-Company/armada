@@ -504,7 +504,7 @@ test("the normal HTTP route accepts the dashboard body and returns a launched sa
     },
   };
   const bearer = `eyJhbGciOiJIUzI1NiJ9.${Buffer.from(JSON.stringify({ sub: f.actor.userId })).toString("base64url")}.sig`;
-  async function post(path: string, input: Record<string, unknown>) {
+  async function post(path: string, input: object) {
     const response = await handleControlRequest(
       new Request(`https://armada.example/api/v1/${path}`, {
         method: "POST",
