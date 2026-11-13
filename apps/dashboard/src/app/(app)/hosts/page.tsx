@@ -26,23 +26,10 @@ const DESCRIPTION = "Machines you own that run sandboxes in Docker.";
 
 export default async function HostsPage({ searchParams }: Props) {
   const [selected, hosts, query] = await Promise.all([selectedOrganization(), readSelectedDockerHosts(), searchParams]);
-  // Behind the server's opt-in: without Docker hosts there is no page, as there is no menu entry.
-  if (hosts.state === "disabled") notFound();
+  // Behind the server's opt-in (and an organization): otherwise there is no page, as there is no menu entry.
+  if (!selected || hosts.state === "disabled") notFound();
   const header = <PageHeader title={TITLE} description={DESCRIPTION} />;
 
-  if (!selected || hosts.state === "no-org") {
-    return (
-      <>
-        {header}
-        <Empty title="No organization yet">
-          <Link className="underline" href="/orgs">
-            Create an organization
-          </Link>{" "}
-          to add hosts.
-        </Empty>
-      </>
-    );
-  }
   if (hosts.state === "error") {
     return (
       <>

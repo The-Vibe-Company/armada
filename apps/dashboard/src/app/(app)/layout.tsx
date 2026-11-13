@@ -21,7 +21,7 @@ import { createClient } from "@/lib/supabase/server";
 export default async function AppLayout({ children }: { children: ReactNode }) {
   const viewer = await requireViewer();
   const memberships = await listMemberships(await createClient(), viewer.id);
-  const [selected, dockerHosts] = await Promise.all([selectedOrganization(), dockerHostsEnabled()]);
+  const selected = await selectedOrganization();
   const header = (
     <>
       <div className="flex items-center justify-between gap-2 px-4 pt-3 pb-2 md:px-5 md:pt-5 md:pb-4">
@@ -66,7 +66,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
           </>
         }
       >
-        <NavLinks className="px-3 pb-3 md:pb-4" optIns={{ dockerHosts }} />
+        <NavLinks className="px-3 pb-3 md:pb-4" optIns={{ dockerHosts: dockerHostsEnabled() }} />
       </AppSidebar>
       <CommandMenu />
       <Toaster />

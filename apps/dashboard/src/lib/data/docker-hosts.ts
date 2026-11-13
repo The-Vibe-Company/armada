@@ -4,6 +4,7 @@ import {
   DOCKER_HOST_ROUTES,
   type DockerHostList,
   type HostRegistration,
+  isRouteAbsent,
   parseDockerHostList,
   parseHostRegistration,
 } from "@/lib/docker-hosts";
@@ -13,19 +14,16 @@ import { requireViewer } from "./viewer";
 
 const FEATURE = "Docker hosts";
 
-/** The navigation asks once per render and must not hold the shell: a slow answer reads as "not enabled". */
-const ENABLED_TIMEOUT_MS = 3_000;
-
 /**
  * The Docker host control client, acting as the signed-in viewer from the dashboard's server, or null when no Armada
  * server is configured. The server refuses these routes from a browser (any `Origin`), so they are never proxied.
  * A registration token is returned once to the caller and never logged or kept here.
  */
-export async function viewerDockerHosts(timeoutMs?: number) {
+export async function viewerDockerHosts() {
   const viewer = await requireViewer();
   const serverUrl = mcpUrl();
   if (!serverUrl || !viewer.token) return null;
-  const options = { serverUrl, token: viewer.token, ...(timeoutMs ? { timeoutMs } : {}) };
+  const options = { serverUrl, token: viewer.token };
   const post = (route: string, body: object) => controlPost(options, `/api/v1/${route}`, body, FEATURE);
   return {
     serverUrl,
@@ -46,46 +44,36 @@ export async function viewerDockerHosts(timeoutMs?: number) {
   };
 }
 
-/** A route the server does not mount answers 404 without a code: Docker hosts are not enabled there. */
-function isNotEnabled(error: ControlError): boolean {
-  return (error.status === 404 || error.status === 405) && error.code === undefined;
-}
-
 export type DockerHostsState =
   | { state: "ready"; list: DockerHostList }
   | { state: "disabled" }
-  | { state: "no-org" }
   | { state: "error"; message: string };
 
-/** The selected organization's Docker hosts, or why there are none to show. */
-export async function readSelectedDockerHosts(): Promise<DockerHostsState> {
+/**
+ * The selected organization's Docker hosts, or why there are none to show, read once per request: the navigation and
+ * the Hosts page share it. Without an organization, an Armada server or the server's host list, Docker hosts are
+ * "disabled" here (the list is the opt-in signal).
+ */
+export const readSelectedDockerHosts = cache(async (): Promise<DockerHostsState> => {
   const selected = await selectedOrganization();
-  if (!selected) return { state: "no-org" };
+  if (!selected) return { state: "disabled" };
   const control = await viewerDockerHosts();
   if (!control) return { state: "disabled" };
   try {
     return { state: "ready", list: await control.list(selected.org.id) };
   } catch (error) {
     if (!(error instanceof ControlError)) throw error;
-    if (isNotEnabled(error)) return { state: "disabled" };
+    if (isRouteAbsent(error)) return { state: "disabled" };
     return { state: "error", message: error.message };
   }
-}
-
-/**
- * Whether the navigation shows Hosts: the server answers the host list for the selected organization. Any failure
- * hides the entry; the page itself says what went wrong when visited directly.
- */
-export const dockerHostsEnabled = cache(async (): Promise<boolean> => {
-  const selected = await selectedOrganization();
-  if (!selected) return false;
-  const control = await viewerDockerHosts(ENABLED_TIMEOUT_MS);
-  if (!control) return false;
-  try {
-    await control.list(selected.org.id);
-    return true;
-  } catch (error) {
-    if (error instanceof ControlError) return false;
-    throw error;
-  }
 });
+
+/** Whether the navigation shows Hosts. The shell does not wait for it: only that one entry does. */
+export async function dockerHostsEnabled(): Promise<boolean> {
+  try {
+    return (await readSelectedDockerHosts()).state !== "disabled";
+  } catch {
+    // Streamed to the client navigation: an unexpected failure hides the entry instead of breaking the menu.
+    return false;
+  }
+}

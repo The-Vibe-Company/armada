@@ -2,7 +2,7 @@
 
 import { CircleCheckIcon, Loader2Icon, ServerIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useActionState, useEffect, useState } from "react";
+import { useActionState, useCallback, useEffect, useRef, useState } from "react";
 import { dockerHostCheckedIn, registerDockerHost, revokeDockerHost } from "@/app/actions/docker-hosts";
 import { ConfirmedAction } from "@/components/confirmed-action";
 import { CopyButton } from "@/components/copy-button";
@@ -33,8 +33,11 @@ export function HostMark() {
 export function AddHostDialog({ orgId }: { orgId: string }) {
   const [open, setOpen] = useState(false);
   const [generation, setGeneration] = useState(0);
+  // While a token is being issued or shown and the host has not checked in, only the close button closes the dialog.
+  const [guarded, setGuarded] = useState(false);
   return (
     <CreateDialog
+      dismissible={!guarded}
       label="Add host"
       title="Add a Docker host"
       description="Register a machine you own that runs Docker, so sandboxes can run on it."
@@ -43,27 +46,43 @@ export function AddHostDialog({ orgId }: { orgId: string }) {
         setOpen(next);
         // Every opening starts clean: a token from an earlier opening is never shown again.
         if (next) setGeneration((value) => value + 1);
+        setGuarded(false);
       }}
       triggerAttrs={{ "data-add-host": "" }}
     >
-      {open && <AddHostForm key={generation} orgId={orgId} />}
+      {open && <AddHostForm key={generation} orgId={orgId} onGuard={setGuarded} />}
     </CreateDialog>
   );
 }
 
-function AddHostForm({ orgId }: { orgId: string }) {
+function AddHostForm({ orgId, onGuard }: { orgId: string; onGuard: (guarded: boolean) => void }) {
   const [state, formAction, pending] = useActionState(registerDockerHost, null);
+  const issued = state?.ok === true;
+  const checkedIn = useCallback(() => onGuard(false), [onGuard]);
+  useEffect(() => {
+    onGuard(pending || issued);
+  }, [pending, issued, onGuard]);
 
   if (state?.ok)
-    return <Registration orgId={orgId} hostId={state.hostId} token={state.registrationToken} command={state.command} />;
+    return (
+      <Registration
+        orgId={orgId}
+        hostId={state.hostId}
+        token={state.registrationToken}
+        command={state.command}
+        onCheckedIn={checkedIn}
+      />
+    );
 
   return (
     <form action={formAction} className="space-y-4" data-add-host-form>
       <input type="hidden" name="org" value={orgId} />
       <ul className="list-disc space-y-1 pl-5 text-sm text-muted-foreground">
         <li>
-          The machine needs Docker and the <code className="font-mono text-foreground">armada-docker-host</code> binary,
-          run by an account with Docker access.
+          Install the <code className="font-mono text-foreground">armada-docker-host</code> binary on the machine first,
+          on the PATH of an account with Docker access (see{" "}
+          <code className="font-mono">docs/docker-host-daemon.md</code>
+          in the Armada repository).
         </li>
         <li>Docker access is powerful: add only machines you own and trust.</li>
         <li>The next step shows a registration token once. It works once, for five minutes.</li>
@@ -88,15 +107,20 @@ function Registration({
   hostId,
   token,
   command,
+  onCheckedIn,
 }: {
   orgId: string;
   hostId: string;
   token: string;
   command: string;
+  onCheckedIn: () => void;
 }) {
   const router = useRouter();
   const [checkedIn, setCheckedIn] = useState(false);
   const [gaveUp, setGaveUp] = useState(false);
+  const heading = useRef<HTMLHeadingElement>(null);
+  // The form and its button are gone: focus lands on the token, which is the one thing to act on now.
+  useEffect(() => heading.current?.focus(), []);
 
   useEffect(() => {
     let stopped = false;
@@ -108,6 +132,7 @@ function Registration({
       if (stopped) return;
       if (answer === true) {
         setCheckedIn(true);
+        onCheckedIn();
         router.refresh();
         return;
       }
@@ -122,12 +147,14 @@ function Registration({
       stopped = true;
       clearTimeout(timer);
     };
-  }, [orgId, hostId, router]);
+  }, [orgId, hostId, router, onCheckedIn]);
 
   return (
     <div className="space-y-4" data-host-registration={hostId}>
       <section className="space-y-1.5">
-        <h3 className="text-sm font-medium">1. Copy the registration token</h3>
+        <h3 ref={heading} tabIndex={-1} className="text-sm font-medium outline-none">
+          1. Copy the registration token
+        </h3>
         <div className="flex items-center gap-1 rounded-md border bg-muted/50 px-3 py-2">
           <code className="min-w-0 flex-1 truncate font-mono text-xs" data-registration-token>
             {token}
@@ -152,23 +179,32 @@ function Registration({
         </p>
       </section>
       <p role="status" className="flex items-center gap-2 text-sm" data-host-checked-in={checkedIn ? "" : undefined}>
-        {checkedIn ? (
-          <>
-            <CircleCheckIcon aria-hidden className="size-4 text-success" /> The host has checked in. You can close this
-            dialog.
-          </>
-        ) : gaveUp ? (
-          <span className="text-muted-foreground">
-            The host has not checked in yet. It appears in the list once it does.
-          </span>
-        ) : (
-          <>
-            <Loader2Icon aria-hidden className="size-4 animate-spin text-muted-foreground" />
-            <span className="text-muted-foreground">Waiting for the host to check in…</span>
-          </>
-        )}
+        <CheckInStatus checkedIn={checkedIn} gaveUp={gaveUp} />
       </p>
     </div>
+  );
+}
+
+function CheckInStatus({ checkedIn, gaveUp }: { checkedIn: boolean; gaveUp: boolean }) {
+  if (checkedIn)
+    return (
+      <>
+        <CircleCheckIcon aria-hidden className="size-4 text-success" /> The host has checked in. You can close this
+        dialog.
+      </>
+    );
+  if (gaveUp)
+    return (
+      <span className="text-muted-foreground">
+        The host has not checked in and this token has expired. If the command did not finish registering, revoke the
+        waiting entry in the list and add the host again.
+      </span>
+    );
+  return (
+    <>
+      <Loader2Icon aria-hidden className="size-4 animate-spin text-muted-foreground" />
+      <span className="text-muted-foreground">Waiting for the host to check in…</span>
+    </>
   );
 }
 

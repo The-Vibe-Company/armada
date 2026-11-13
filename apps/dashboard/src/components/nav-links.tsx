@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { type ReactNode, Suspense, use } from "react";
 
 import { LinkPendingIcon } from "@/components/link-pending";
 import {
@@ -63,11 +64,14 @@ const GROUPS = [
   },
 ] as const;
 
-/** Destinations behind a server opt-in, shown only when the shell says the server offers them. */
-export type NavOptIns = { dockerHosts: boolean };
+/**
+ * Destinations behind a server opt-in. The shell passes the server's answer as a promise and does not wait for it:
+ * only the entry itself appears once the answer says the server offers it.
+ */
+export type NavOptIns = { dockerHosts: Promise<boolean> };
 
-function linksOf(group: (typeof GROUPS)[number], optIns: NavOptIns) {
-  return group.links.filter((link) => !("optIn" in link) || optIns[link.optIn]);
+function OptIn({ when, children }: { when: Promise<boolean>; children: ReactNode }) {
+  return use(when) ? children : null;
 }
 
 export function NavMobileTrigger() {
@@ -108,9 +112,10 @@ export function NavLinks({ className, optIns }: { className?: string; optIns: Na
             </SidebarGroupLabel>
             <SidebarGroupContent>
               <SidebarMenu className="gap-0.5">
-                {linksOf(group, optIns).map(({ href, label, icon: Icon }) => {
+                {group.links.map((link) => {
+                  const { href, label, icon: Icon } = link;
                   const active = pathname === href || pathname.startsWith(`${href}/`);
-                  return (
+                  const item = (
                     <SidebarMenuItem key={href}>
                       <SidebarMenuButton
                         asChild
@@ -135,6 +140,12 @@ export function NavLinks({ className, optIns }: { className?: string; optIns: Na
                         </Link>
                       </SidebarMenuButton>
                     </SidebarMenuItem>
+                  );
+                  if (!("optIn" in link)) return item;
+                  return (
+                    <Suspense key={href} fallback={null}>
+                      <OptIn when={optIns[link.optIn]}>{item}</OptIn>
+                    </Suspense>
                   );
                 })}
               </SidebarMenu>

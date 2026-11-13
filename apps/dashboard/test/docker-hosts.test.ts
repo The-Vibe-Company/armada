@@ -5,6 +5,7 @@ import {
   hostName,
   hostRegistrationCommand,
   hostState,
+  isRouteAbsent,
   parseDockerHostList,
   parseHostRegistration,
   revokeWarning,
@@ -67,9 +68,13 @@ test("a host's state reads in plain words and an offline or unregistered host so
     bucket: "action",
     label: "Last seen 2 hours ago",
   });
+  expect(hostState(host({ state: "pending", lastSeenAt: null, createdAt: "2026-11-13T11:58:00Z" }), NOW)).toMatchObject(
+    { bucket: "action", label: "Waiting for check-in" },
+  );
   expect(hostState(host({ state: "pending", lastSeenAt: null }), NOW)).toMatchObject({
     bucket: "action",
-    label: "Waiting for check-in",
+    tone: "warning",
+    label: "Registration expired",
   });
   expect(hostState(host({ state: "revoked", revokedAt: "2026-11-13T09:00:00Z" }), NOW)).toMatchObject({
     bucket: "rest",
@@ -95,4 +100,13 @@ test("revoking warns that a revoked host can no longer clean up its sandboxes", 
   expect(revokeWarning(0)).not.toContain("delete");
   expect(revokeWarning(1)).toContain("It still has 1 sandbox: delete it first");
   expect(revokeWarning(3)).toContain("It still has 3 sandboxes: delete them first");
+});
+
+test("only an unmounted host route (404 or 405 without a code) reads as Docker not enabled", () => {
+  expect(isRouteAbsent({ status: 404, code: undefined })).toBe(true);
+  expect(isRouteAbsent({ status: 405, code: undefined })).toBe(true);
+  expect(isRouteAbsent({ status: 404, code: "not_found" })).toBe(false);
+  expect(isRouteAbsent({ status: 403, code: undefined })).toBe(false);
+  expect(isRouteAbsent({ status: 503, code: undefined })).toBe(false);
+  expect(isRouteAbsent({ status: undefined, code: undefined })).toBe(false);
 });

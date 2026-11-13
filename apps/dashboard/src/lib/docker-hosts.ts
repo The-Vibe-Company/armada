@@ -93,6 +93,17 @@ export function parseHostRegistration(value: unknown): HostRegistration | null {
   return { hostId, registrationToken };
 }
 
+/**
+ * A route the server does not mount answers 404 (or 405) without an error code, which `controlPost` reports with no
+ * `code`: for the host list, that means Docker hosts are not enabled on this server. Any other refusal is an error.
+ */
+export function isRouteAbsent(error: { status: number | undefined; code: string | undefined }): boolean {
+  return (error.status === 404 || error.status === 405) && error.code === undefined;
+}
+
+/** How long a registration token works (the server's `registration_expires_at`). */
+export const REGISTRATION_TTL_MS = 5 * 60_000;
+
 /** The first block of a host ID, which is what the page shows until hosts have names. */
 export function shortHostId(id: string): string {
   return id.slice(0, 8);
@@ -121,6 +132,14 @@ export function hostState(host: DockerHost, now: number): ResourceState & { deta
         detail: "The host has not checked in recently: its daemon may be stopped or the machine offline.",
       };
     case "pending":
+      if (now - Date.parse(host.createdAt) > REGISTRATION_TTL_MS)
+        return {
+          bucket: "action",
+          tone: "warning",
+          label: "Registration expired",
+          detail:
+            "Its registration token expired before the host checked in. Revoke this entry and add the host again.",
+        };
       return {
         bucket: "action",
         tone: "info",

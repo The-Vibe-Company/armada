@@ -33,6 +33,7 @@ export function CreateDialog({
   className,
   triggerAttrs,
   onCloseAutoFocus,
+  dismissible = true,
 }: {
   /** The header button's text, beside a plus. */
   label: string;
@@ -48,6 +49,8 @@ export function CreateDialog({
   triggerAttrs?: Record<string, string>;
   /** Where the focus goes on close, when not back to the button (`preventDefault` keeps it elsewhere). */
   onCloseAutoFocus?: (event: Event) => void;
+  /** False while closing would lose something shown only once: Escape and an outside click then do not close it. */
+  dismissible?: boolean;
 }) {
   return (
     <Dialog {...(open === undefined ? {} : { open })} {...(onOpenChange ? { onOpenChange } : {})}>
@@ -59,6 +62,12 @@ export function CreateDialog({
       <DialogContent
         className={cn("max-h-[calc(100dvh-2rem)] gap-5 overflow-y-auto sm:max-w-xl", className)}
         {...(onCloseAutoFocus ? { onCloseAutoFocus } : {})}
+        {...(dismissible
+          ? {}
+          : {
+              onEscapeKeyDown: (event: KeyboardEvent) => event.preventDefault(),
+              onInteractOutside: (event: Event) => event.preventDefault(),
+            })}
       >
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
