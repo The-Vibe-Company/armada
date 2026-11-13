@@ -2,12 +2,14 @@ import { expect, test } from "bun:test";
 import { launchProviderOptions } from "../../../packages/mcp-server/src/launch-options.ts";
 import {
   DOCKER_CAPABILITIES,
+  dockerHarnesses,
   dockerLaunchBlocker,
   dockerLaunchBody,
   dockerLaunchOption,
   dockerSandboxControls,
   dockerUnavailable,
   launchedDockerSandbox,
+  preferredHarness,
 } from "../src/lib/docker-launch.ts";
 
 const ORG = "00000000-0000-4000-8000-000000000010";
@@ -50,7 +52,7 @@ test("the Docker launch option is read strictly from launch/options; anything un
   });
 });
 
-test("a host takes a launch only when the server launches Codex in the official Armada environment on Docker and the host is online", () => {
+test("a host takes a launch only when the server launches an agent in the official Armada environment on Docker and the host is online", () => {
   const ready = dockerLaunchOption(options());
   expect(dockerLaunchBlocker(ready, true, { state: "online" })).toBeNull();
   expect(dockerLaunchBlocker(null, true, { state: "online" })).toContain("does not launch on Docker");
@@ -63,7 +65,10 @@ test("a host takes a launch only when the server launches Codex in the official 
   expect(dockerLaunchBlocker(off, false, { state: "online" })).toBe("Wired in the next increment.");
   expect(
     dockerLaunchBlocker(dockerLaunchOption(options({ harnesses: ["claude"] })), true, { state: "online" }),
-  ).toContain("Codex in the official Armada environment");
+  ).toBeNull();
+  expect(dockerLaunchBlocker(dockerLaunchOption(options({ harnesses: [] })), true, { state: "online" })).toContain(
+    "an agent in the official Armada environment",
+  );
   expect(dockerLaunchBlocker(ready, true, { state: "offline" })).toBe("The host must be online to launch on it.");
   expect(dockerLaunchBlocker(ready, true, { state: "revoked" })).toBe("This host is revoked.");
   expect(dockerLaunchBlocker(null, false, { state: "revoked" })).toBe("This host is revoked.");
@@ -77,11 +82,29 @@ test("what Docker cannot do yet is listed with the server's reason, or a plain d
   expect(unavailable.map((item) => item.name)).not.toContain("Launch");
 });
 
-test("the launch body omits image overrides: Codex, private, the form key as requestId", () => {
+test("the dialog offers the agents the server launches on Docker, Codex chosen first when offered", () => {
+  expect(dockerHarnesses(dockerLaunchOption(options({ harnesses: ["opencode", "codex", "claude"] })))).toEqual({
+    offered: ["claude", "codex", "opencode"],
+    initial: "codex",
+  });
+  expect(dockerHarnesses(dockerLaunchOption(options({ harnesses: ["opencode", "claude"] })))).toEqual({
+    offered: ["claude", "opencode"],
+    initial: "claude",
+  });
+  expect(dockerHarnesses(null)).toEqual({ offered: [], initial: null });
+  const all = ["claude", "codex", "opencode"] as const;
+  expect(preferredHarness(all, "codex", () => true)).toBe("codex");
+  expect(preferredHarness(all, "codex", (agent) => agent === "opencode")).toBe("opencode");
+  expect(preferredHarness(all, "codex", () => false)).toBe("codex");
+  expect(preferredHarness(["claude"], "codex", () => false)).toBe("claude");
+});
+
+test("the launch body omits image overrides: the chosen agent, private, the form key as requestId", () => {
   expect(
     dockerLaunchBody({
       org: ORG,
       hostId: HOST,
+      harness: "codex",
       credentialId: ACCOUNT,
       requestId: REQUEST,
       model: "gpt-5",
@@ -104,12 +127,24 @@ test("the launch body omits image overrides: Codex, private, the form key as req
     dockerLaunchBody({
       org: ORG,
       hostId: HOST,
+      harness: "codex",
       credentialId: ACCOUNT,
       requestId: "x",
       model: "m",
       reasoningEffort: "e",
     }),
   ).toThrow();
+  expect(
+    dockerLaunchBody({
+      org: ORG,
+      hostId: HOST,
+      harness: "claude",
+      credentialId: ACCOUNT,
+      requestId: REQUEST,
+      model: "m",
+      reasoningEffort: "e",
+    }).harness,
+  ).toBe("claude");
   expect(launchedDockerSandbox({ sandbox: { id: REQUEST, provider: "docker" } })).toBe(REQUEST);
   expect(launchedDockerSandbox({ sandbox: { id: REQUEST, provider: "boat" } })).toBeNull();
 });

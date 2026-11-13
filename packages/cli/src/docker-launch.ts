@@ -1,4 +1,5 @@
 import {
+  configFromFlags,
   type DockerLaunchRequest,
   type DockerLaunchResult,
   GoldenError,
@@ -17,6 +18,7 @@ const uuid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
 /** API-only plain-image launch. No golden, provider credential or database dependency. */
 export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, auth: AuthIo): Promise<number> {
   const allowed = new Set([
+    "--repo",
     "--provider",
     "--host",
     "--credential-id",
@@ -33,10 +35,7 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
     "--no-connections",
   ]);
   if ([...args.options.keys()].some((key) => !allowed.has(key)) || args.positionals.length > 1)
-    throw new GoldenError(
-      "invalid_config",
-      "Docker launch takes at most one prompt and no golden, repository or size.",
-    );
+    throw new GoldenError("invalid_config", "Docker launch takes at most one prompt and no golden or size.");
   const harness = (single(args, "--agent") ?? "codex") as Harness;
   if (!HARNESSES.includes(harness)) throw new GoldenError("invalid_config", "Unknown Docker harness.");
   const requiredId = (flag: string) => {
@@ -58,6 +57,7 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
   if (version !== undefined && (!/^[1-9][0-9]*$/.test(version) || !Number.isSafeInteger(Number(version))))
     throw new GoldenError("invalid_config", "--credential-version must be a positive integer.");
   const ttl = single(args, "--ttl");
+  const repos = values(args, "--repo");
   const skills = values(args, "--skill");
   try {
     validateSkillPins(skills);
@@ -73,6 +73,16 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
   const client = await createArmadaApiClient(auth);
   const hostId = await resolveHost(client, org, selector);
   const body: DockerLaunchRequest = {
+    ...(repos.length
+      ? {
+          repos: configFromFlags(
+            repos.map((repo) =>
+              /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:@.+)?$/.test(repo) ? `https://github.com/${repo}` : repo,
+            ),
+            [],
+          ).repos,
+        }
+      : {}),
     org,
     provider: "docker",
     hostId,

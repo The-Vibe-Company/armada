@@ -88,7 +88,7 @@ export function dockerLaunchOption(payload: unknown): DockerLaunchOption | null 
 
 /**
  * Whether this host takes a launch now, or why not. The launch needs the server to say it launches on Docker
- * (`capabilities.launch`, from the official environment, with Codex) and the host list's `placement`; the host itself must be
+ * (`capabilities.launch`, in the official Armada environment, with at least one agent) and the host list's `placement`; the host itself must be
  * online. The server checks all of it again.
  */
 export function dockerLaunchBlocker(
@@ -101,8 +101,8 @@ export function dockerLaunchBlocker(
   if (!option.capabilities.launch)
     return option.unsupportedReasons.launch ?? "This Armada server does not launch on Docker hosts yet.";
   if (!placement) return "This Armada server does not launch on Docker hosts yet.";
-  if (!option.launchSources.includes("image") || !option.harnesses.includes("codex"))
-    return "This Armada server does not launch Codex in the official Armada environment on Docker hosts.";
+  if (!option.launchSources.includes("image") || option.harnesses.length === 0)
+    return "This Armada server does not launch an agent in the official Armada environment on Docker hosts.";
   if (host.state !== "online") return "The host must be online to launch on it.";
   return null;
 }
@@ -127,9 +127,33 @@ export function dockerUnavailable(option: DockerLaunchOption): { name: string; r
   }));
 }
 
+/**
+ * The agents the dialog offers on Docker (#1507): those the server launches there, in Armada's usual order, Codex
+ * first chosen when offered (the first agent Docker hosts ran).
+ */
+export function dockerHarnesses(option: DockerLaunchOption | null): { offered: Harness[]; initial: Harness | null } {
+  const offered = HARNESSES.filter((harness) => option?.harnesses.includes(harness));
+  return { offered, initial: offered.includes("codex") ? "codex" : (offered[0] ?? null) };
+}
+
+/**
+ * The agent the dialog starts on: the server's first choice when the viewer has a usable account for it, else the
+ * first offered agent they can launch with, else the first choice (the dialog then says an account is needed).
+ */
+export function preferredHarness(
+  offered: readonly Harness[],
+  initial: Harness,
+  usable: (harness: Harness) => boolean,
+): Harness {
+  const first = offered.includes(initial) ? initial : (offered[0] ?? initial);
+  if (usable(first)) return first;
+  return offered.find(usable) ?? first;
+}
+
 export type DockerLaunchArgs = {
   org: string;
   hostId: string;
+  harness: Harness;
   credentialId: string;
   requestId: string;
   model: string;
@@ -137,7 +161,7 @@ export type DockerLaunchArgs = {
   prompt?: string;
 };
 
-/** The `sandbox/launch` body for a Docker host: Codex in the official Armada environment, private, with no image override. */
+/** The `sandbox/launch` body for a Docker host: an agent in the official Armada environment, private, with no image override. */
 export function dockerLaunchBody(args: DockerLaunchArgs): DockerLaunchRequest {
   if (![args.org, args.hostId, args.credentialId, args.requestId].every(isUuid))
     throw new Error("Docker launch identifiers must be UUIDs.");
@@ -145,7 +169,7 @@ export function dockerLaunchBody(args: DockerLaunchArgs): DockerLaunchRequest {
     org: args.org,
     provider: "docker",
     hostId: args.hostId,
-    harness: "codex",
+    harness: args.harness,
     credentialId: args.credentialId,
     requestId: args.requestId,
     model: args.model,

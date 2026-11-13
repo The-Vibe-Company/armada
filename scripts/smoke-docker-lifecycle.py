@@ -201,6 +201,8 @@ def main():
     parser.add_argument("--skills", action="append", default=[], help="Exact Skillpack pin to install and verify (repeatable)")
     parser.add_argument("--skill-defaults", action="store_true", help="Require at least one receipt from existing personal/org defaults; does not modify defaults")
     parser.add_argument("--model")
+    parser.add_argument("--repository", help="Clone owner/repo before the first prompt and prove git log -1; implies --normal-launch")
+    parser.add_argument("--branch", default="main", help="Repository branch for --repository")
     parser.add_argument("--host-id", help="Reuse an existing host registration")
     parser.add_argument("--start-host", action="store_true", help="Start that stopped host daemon; never remove its lock")
     parser.add_argument("--follow-up", action="store_true", help="Prove a second prompt recalls the same conversation")
@@ -237,6 +239,12 @@ def main():
         args.normal_launch = True
     if args.cost or args.claude or args.opencode:
         args.normal_lifecycle = True
+    if args.repository:
+        if args.claude or args.opencode:
+            parser.error("--repository currently verifies Codex commandExecution evidence only")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*", args.repository):
+            parser.error("--repository requires owner/repo")
+        args.normal_launch = True
     if args.service_install:
         if not args.host_id or args.start_host:
             parser.error("--service-install requires --host-id for the new managed installation, without --start-host")
@@ -332,6 +340,12 @@ def main():
         launch["skills"] = args.skills
     marker = "DOCKER_MEMORY_" + uuid.uuid4().hex
     first = (f"Remember this marker for my next message: {marker}. " if args.follow_up else "")
+    initial_task = first + "Reply with exactly DOCKER_OK. Do not run tools or modify files."
+    if args.repository:
+        directory = "/home/user/" + args.repository.split("/")[1]
+        launch["repos"] = [{"url": "https://github.com/" + args.repository + ".git",
+                            "branch": args.branch, "dir": args.repository.split("/")[1]}]
+        initial_task = first + f"Run git -C {shlex.quote(directory)} log -1 --format=%H using your command tool. Then reply with exactly DOCKER_OK."
     cleanup_needed = True
     try:
         launch_receipt = None
@@ -343,7 +357,7 @@ def main():
             if harness not in docker.get("harnesses", []):
                 raise RuntimeError("Requested Docker harness is not advertised by launch/options")
             launch.update({"provider": "docker", "harness": harness, "visibility": "private",
-                           "prompt": first + "Reply with exactly DOCKER_OK. Do not run tools or modify files."})
+                           "prompt": initial_task})
             launched = api("sandbox/launch", launch, normal=True)
             if (launched.get("sandbox", {}).get("id") != sandbox_id
                     or launched.get("sandbox", {}).get("provider") != "docker"
@@ -422,6 +436,7 @@ def main():
             deadline = time.monotonic() + args.timeout
             answer, finished, used_mcp = False, False, False
             matching_mcp_calls = set()
+            repository_proven = not (args.repository and receipt is launch_receipt)
             while True:
                 if args.normal_controls:
                     page = api("logs/read", {"id": sandbox_id, **({"cursor": cursor} if cursor else {})}, normal=True)
@@ -429,6 +444,8 @@ def main():
                     if summary.get("provider") != "docker" or summary.get("golden") is not None:
                         raise RuntimeError("Normal Docker status did not match its contract")
                     page["usage"] = summary.get("usage")
+                    if args.repository and page.get("source") != "armada-runtime":
+                        raise RuntimeError("Repository proof requires the archived Armada runtime journal")
                 else:
                     page = api("sandboxes/journal", {"sandboxId": sandbox_id, "cursor": cursor})
                 cursor = page["cursor"]
@@ -441,6 +458,15 @@ def main():
                         continue
                     if event.get("kind") == "message" and expected_answer in event.get("text", ""):
                         answer = True
+                    if not repository_proven and event.get("kind") == "message":
+                        for tool in event.get("tools", []):
+                            command = (tool.get("input") or {}).get("command", "")
+                            result = tool.get("result") or {}
+                            if (tool.get("name") == "commandExecution" and isinstance(command, str)
+                                    and "git" in command and "log -1" in command and directory in command
+                                    and result.get("isError") is False
+                                    and re.search(r"\b[0-9a-f]{40}\b", str(result.get("output", "")))):
+                                repository_proven = True
                     if event.get("kind") == "prompt":
                         if event.get("status") in ("failed", "interrupted"):
                             raise RuntimeError("Agent turn failed/interrupted; inspect retained journal")
@@ -449,7 +475,7 @@ def main():
                 usage = next((t for t in turns if t.get("promptId") == native_prompt
                               and isinstance(t.get("inputTokens"), int)
                               and isinstance(t.get("outputTokens"), int)), None)
-                if answer and finished and usage and (not require_mcp or used_mcp):
+                if answer and finished and usage and repository_proven and (not require_mcp or used_mcp):
                     if args.cost:
                         check_cost(page["usage"], native_prompt)
                     print(json.dumps({"answer": expected_answer, "promptId": native_prompt,
@@ -457,13 +483,15 @@ def main():
                                       "inputTokens": usage["inputTokens"], "outputTokens": usage["outputTokens"]}),
                           flush=True)
                     return receipt["conversationId"]
+                if finished and not repository_proven and not page["hasMore"]:
+                    raise RuntimeError("Repository proof missing: successful git log -1 command result required")
                 if time.monotonic() >= deadline:
                     raise RuntimeError("Journal answer/finished/reported-token proof incomplete; inspect retained journal")
                 if not page["hasMore"]:
                     time.sleep(2)
 
         # Only the first prompt contains the public random marker. Recall proves thread continuity.
-        conversation = turn(first + "Reply with exactly DOCKER_OK. Do not run tools or modify files.", "DOCKER_OK", receipt=launch_receipt)
+        conversation = turn(initial_task, "DOCKER_OK", receipt=launch_receipt)
         if args.mcp:
             turn("Call the selected MCP tool " + args.mcp_tool + " once using safe read-only arguments, then reply exactly DOCKER_MCP_OK.",
                  "DOCKER_MCP_OK", conversation, require_mcp=True)

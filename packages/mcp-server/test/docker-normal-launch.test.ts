@@ -35,6 +35,7 @@ import { launchCredentials } from "../src/launch-credentials.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
+import { createRuntimeGitHub } from "../src/runtime-github.ts";
 import { createRuntimeMcp } from "../src/runtime-mcp.ts";
 import { migratedDatabase } from "./migrated-database.ts";
 
@@ -72,7 +73,9 @@ afterAll(async () => {
 
 // The real migrated boundary owns normal-launch sequencing and durable retries.
 // Existing private-lane tests own the individual host/runtime protocol matrices.
-async function fixture(options: { lifecycleGenerationAfterCreate?: number; harness?: Harness } = {}) {
+async function fixture(
+  options: { lifecycleGenerationAfterCreate?: number; harness?: Harness; checkoutExitCode?: number } = {},
+) {
   const orgId = randomUUID(),
     userId = randomUUID(),
     adminId = randomUUID(),
@@ -161,19 +164,30 @@ async function fixture(options: { lifecycleGenerationAfterCreate?: number; harne
             result:
               command.op === "health"
                 ? { ready: true, generation: session.epoch, mcpVersion: 1, skillsVersion: 1 }
-                : command.op === "configureMcp"
-                  ? { revision: command.configuration.revision }
-                  : command.op === "installSkills"
+                : command.op === "configureGitHub"
+                  ? { acknowledged: true }
+                  : command.op === "exec"
                     ? {
-                        receipts: command.input.references.map((reference) => ({
-                          reference,
-                          version: reference.split("@")[1],
-                          skillId: randomUUID(),
-                          checksum: malformedSkills ? "bad" : `sha256:${"a".repeat(64)}`,
-                          origin: "https://skillpack.app/v1",
-                        })),
+                        detached: false,
+                        exitCode: options.checkoutExitCode ?? 0,
+                        timedOut: false,
+                        stdout: "",
+                        stderr: "",
+                        truncated: false,
                       }
-                    : receipt,
+                    : command.op === "configureMcp"
+                      ? { revision: command.configuration.revision }
+                      : command.op === "installSkills"
+                        ? {
+                            receipts: command.input.references.map((reference) => ({
+                              reference,
+                              version: reference.split("@")[1],
+                              skillId: randomUUID(),
+                              checksum: malformedSkills ? "bad" : `sha256:${"a".repeat(64)}`,
+                              origin: "https://skillpack.app/v1",
+                            })),
+                          }
+                        : receipt,
           },
         });
       }
@@ -193,6 +207,26 @@ async function fixture(options: { lifecycleGenerationAfterCreate?: number; harne
       return credentials.resolve(...args);
     },
   };
+  const github = createRuntimeGitHub({
+    sql,
+    key,
+    origin: "https://armada.example",
+    commands: createRuntimeCommands(authority, key, {
+      now: clock.now,
+      wait: async () => {
+        await step();
+      },
+    }),
+    github: {
+      store: createSqlVaultStore(sql),
+      encryptionKey: key,
+      app: { clientId: "offline-app", clientSecret: "offline-secret" },
+      fetch: (async (url: string | URL | Request) =>
+        String(url).includes("/repos/")
+          ? Response.json({ full_name: "example/project" })
+          : Response.json({ id: 123, login: "owner", name: "Owner" })) as typeof fetch,
+    },
+  });
   function mcp(target = sql) {
     const bridge = createRuntimeCommands(createRuntimeEnrolments(target, key), key, {
       now: clock.now,
@@ -208,6 +242,7 @@ async function fixture(options: { lifecycleGenerationAfterCreate?: number; harne
       bootstrap,
       clock,
       timeoutMs,
+      github,
       mcp: mcp(target),
     });
   }
@@ -227,6 +262,7 @@ async function fixture(options: { lifecycleGenerationAfterCreate?: number; harne
     jobs,
     native,
     receipt,
+    github,
     service,
     mcp,
     step,
@@ -555,6 +591,7 @@ test("the normal HTTP route accepts the dashboard body and returns a launched sa
   const body = dockerLaunchBody({
     org: f.actor.orgId,
     hostId: f.hostId,
+    harness: "codex",
     credentialId: f.body.credentialId,
     requestId: f.body.requestId,
     model: "normal-http-model",
@@ -752,6 +789,74 @@ test("normal Docker launch refuses caller-selected images before allocation", as
   await rejected(f.service().launch(f.caller, { ...f.body, image: officialImage }), "invalid_request");
   expect(f.jobs).toHaveLength(0);
 });
+
+for (const checkoutExitCode of [0, 1])
+  test(`Docker checkout exit ${checkoutExitCode} gates its first prompt and scopes GitHub access`, async () => {
+    const f = await fixture({ checkoutExitCode });
+    await db.query(
+      `insert into public.github_connections(user_id,github_id,login,name,refresh_token_enc,access_token_enc,access_expires_at)
+    values($1,123,'owner','Owner',$2,$3,now()+interval '1 hour')`,
+      [f.actor.userId, await encryptSecret("offline-refresh", key), await encryptSecret("offline-github-token", key)],
+    );
+    const remote = await defaultRemote(f);
+    const body = {
+      ...f.body,
+      skills: ["catalog/repository@1.0.0"],
+      connections: [remote.id],
+      repos: [{ url: "https://github.com/example/project.git", branch: "feature/work", dir: "project" }],
+    };
+    if (checkoutExitCode !== 0) {
+      await rejected(f.service().launch(f.caller, body), "sandbox_not_ready");
+      expect((f.native as { op: string }[]).map((c) => c.op)).toEqual(["health", "configureGitHub", "exec"]);
+      return;
+    }
+    const launched = await f.service().launch(f.caller, body);
+    expect(launched.github).toMatchObject({ status: "connected", login: "owner" });
+    const native = f.native as { op: string; input?: { command?: string } }[];
+    expect(native.filter((c) => c.op !== "health").map((c) => c.op)).toEqual([
+      "configureGitHub",
+      "exec",
+      "installSkills",
+      "configureMcp",
+      "prompt",
+    ]);
+    expect(launched.sandbox.skills?.map((receipt) => receipt.reference)).toEqual(["catalog/repository@1.0.0"]);
+    expect(native[2]?.input?.command).toContain("--branch 'feature/work'");
+    expect(native[2]?.input?.command).toContain("'/home/user/project'");
+    expect(JSON.stringify(native)).not.toContain("offline-github-token");
+    expect(JSON.stringify(f.jobs)).not.toContain("offline-github-token");
+    expect(launched.promptId).toBe(f.receipt.promptId);
+    const beforeReplay = f.native.length;
+    await f.service().launch(f.caller, body);
+    expect(f.native).toHaveLength(beforeReplay);
+    await rejected(
+      f.service().launch(f.caller, { ...body, repos: [{ ...body.repos[0], branch: "other" }] }),
+      "conflict",
+    );
+    const before = f.native.length;
+    const fresh = { ...body, requestId: randomUUID() };
+    for (const repos of [
+      [],
+      [{ ...body.repos[0], dir: "../escape" }],
+      [{ ...body.repos[0], branch: "--upload-pack=evil" }],
+    ]) {
+      await rejected(f.service().launch(f.caller, { ...fresh, repos }), "invalid_request");
+    }
+    expect(f.native).toHaveLength(before);
+    const capability = (f.native[1] as { configuration: { capability: string } }).configuration.capability;
+    const acquire = async (repository: string) =>
+      f.github.route(
+        new Request("https://armada.example/api/runtime/github/credentials", {
+          method: "POST",
+          headers: { authorization: `Bearer ${capability}` },
+          body: JSON.stringify({ version: 1, repository, operation: "git" }),
+        }),
+      );
+    expect((await acquire("example/project"))?.status).toBe(200);
+    expect((await acquire("example/other"))?.status).toBe(403);
+    await hosts.revoke(f.admin, f.hostId);
+    expect((await acquire("example/project"))?.status).toBe(403);
+  });
 
 async function defaultRemote(f: Awaited<ReturnType<typeof fixture>>) {
   const registry = createSqlMcpRegistry(sql, key);

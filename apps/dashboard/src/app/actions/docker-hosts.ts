@@ -1,5 +1,6 @@
 "use server";
 
+import type { Harness } from "@armada/core";
 import { revalidatePath } from "next/cache";
 import { type ActionResult, done, fail, formString, isUuid } from "@/lib/action";
 import { ControlError, controlPost } from "@/lib/control";
@@ -9,12 +10,14 @@ import { isSelectedOrganization, selectedOrganization } from "@/lib/data/selecte
 import { requireViewer } from "@/lib/data/viewer";
 import { connectedHostName, HOSTS_PATH, hostNameInput } from "@/lib/docker-hosts";
 import {
+  dockerHarnesses,
   dockerLaunchBlocker,
   dockerLaunchBody,
   launchedDockerSandbox,
   UNKNOWN_DOCKER_LAUNCH,
 } from "@/lib/docker-launch";
 import { mcpUrl } from "@/lib/env";
+import { HARNESS_LABELS } from "@/lib/labels";
 import { LAUNCH_PATH, LAUNCH_TIMEOUT_MS } from "@/lib/launch";
 import { LAUNCH_KEY_FIELD } from "@/lib/launch-key";
 import { checkAccountChoice } from "@/lib/model-accounts";
@@ -98,7 +101,7 @@ export async function revokeDockerHost(_previous: ActionResult | null, data: For
 }
 
 /**
- * Launches Codex in the official Armada environment on one of the organization's Docker hosts, as the signed-in viewer, then
+ * Launches the chosen agent from Armada's image on one of the organization's Docker hosts, as the signed-in viewer, then
  * answers the new sandbox's id for the dialog to follow. The form's request key is the server's `requestId`: a retry of the same form
  * (same choices) after an unanswered launch reuses it, so the server reconciles it instead of starting another.
  */
@@ -111,13 +114,6 @@ export async function launchOnDockerHost(
   const requestId = formString(data, LAUNCH_KEY_FIELD);
   if (!isUuid(org) || !isUuid(hostId) || !isUuid(requestId)) return fail("That request is not valid.");
   if (!(await isSelectedOrganization(org))) return fail("Switch to that organization first.");
-  const choice = modelChoice("codex", {
-    model: formString(data, "model"),
-    otherModel: formString(data, "other_model"),
-    reasoningEffort: formString(data, "reasoning_effort"),
-  });
-  if (!choice.ok) return fail(choice.error);
-
   const [hosts, option, accounts] = await Promise.all([
     readSelectedDockerHosts(),
     readDockerLaunchOption(),
@@ -128,9 +124,19 @@ export async function launchOnDockerHost(
   if (!host) return fail("That host is not in this organization.");
   const blocker = dockerLaunchBlocker(option, hosts.list.placement, host);
   if (blocker) return fail(blocker);
-  const account = checkAccountChoice(accounts, "codex", formString(data, "credential"), Date.now());
+  // A form without an agent is one from before the choice existed: it launched Codex.
+  const harness = (formString(data, "harness") || "codex") as Harness;
+  if (!dockerHarnesses(option).offered.includes(harness))
+    return fail("This Armada server does not launch that agent on Docker hosts.");
+  const choice = modelChoice(harness, {
+    model: formString(data, "model"),
+    otherModel: formString(data, "other_model"),
+    reasoningEffort: formString(data, "reasoning_effort"),
+  });
+  if (!choice.ok) return fail(choice.error);
+  const account = checkAccountChoice(accounts, harness, formString(data, "credential"), Date.now());
   if (!account.ok) return fail(account.error);
-  if (!account.id) return fail("Choose which Codex account the agent runs on.");
+  if (!account.id) return fail(`Choose which ${HARNESS_LABELS[harness]} account the agent runs on.`);
 
   const viewer = await requireViewer();
   const serverUrl = mcpUrl();
@@ -145,6 +151,7 @@ export async function launchOnDockerHost(
         dockerLaunchBody({
           org,
           hostId,
+          harness,
           credentialId: account.id,
           requestId,
           model: choice.args.model,
