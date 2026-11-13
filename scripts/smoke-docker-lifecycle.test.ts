@@ -16,9 +16,11 @@ test.each([
   "github-no-proof",
   "github-no-broker",
   "variable",
+  "variable-mcp",
   "variable-no-proof",
   "variable-whitespace",
   "secret",
+  "secret-mcp",
   "secret-no-proof",
   "secret-wrong-digest",
   "snapshot",
@@ -80,7 +82,10 @@ class Opener:
             assert lifecycle and body["conversation_id"] == conversation
             assert marker not in body["prompt"]
             sends += 1
-            prompt, answer = "prompt-" + str(sends), marker
+            mcp_turn = "selected MCP tool lookup" in body["prompt"]
+            if mcp_turn and mode == "variable-mcp": assert "printenv APP_REGION" in body["prompt"]
+            if mcp_turn and mode == "secret-mcp": assert "hashlib.sha256" in body["prompt"]
+            prompt, answer = "prompt-" + str(sends), "DOCKER_MCP_OK" if mcp_turn else marker
             value = {"promptId": prompt, "conversationId": conversation}
         elif path == "github/refresh":
             assert mode.startswith("github")
@@ -101,9 +106,9 @@ class Opener:
                    "result": {"isError": False, "output": "a" * 40}}] +
                  ([{"name": "commandExecution", "input": {"command": "gh api repos/example/project --jq .full_name"},
                    "result": {"isError": False, "output": "example/project"}}] if mode != "github-no-proof" else []) if mode.startswith("github") else
-                 [{"name": "commandExecution", "input": {"command": "printenv APP_REGION"}, "result": {"isError": False, "output": "offline-region\\n"}}] if mode in ("variable", "variable-whitespace") else
+                 [{"name": "commandExecution", "input": {"command": "printenv APP_REGION"}, "result": {"isError": False, "output": "offline-region\\n"}}] if mode in ("variable", "variable-whitespace", "variable-mcp") else
                  [{"name": "commandExecution", "input": {"command": "python3 -c hashlib.sha256(os.environ['APP_TOKEN'].encode())"},
-                   "result": {"isError": False, "output": ("a" if mode == "secret" else "b") * 64 + "\\n"}}] if mode in ("secret", "secret-wrong-digest") else
+                   "result": {"isError": False, "output": ("b" if mode == "secret-wrong-digest" else "a") * 64 + "\\n"}}] if mode in ("secret", "secret-wrong-digest", "secret-mcp") else
 
                  [{"name": "commandExecution", "input": {"command": "git -C /home/user/project log -1 --format=%H"}, "result": {"isError": False, "output": "a" * 40}}] +
                  [{"name": "commandExecution", "input": {"command": "gh api repos/example/project --jq .full_name"}, "result": {"isError": False, "output": "example/project"}}] +
@@ -122,6 +127,8 @@ class Opener:
             value = {"status": "stopped" if path.endswith("stop") else "deleted"}
         else:
             raise AssertionError("Private or unexpected route: " + path)
+        if path == "logs/read" and mode.endswith("-mcp"):
+            value["events"][0]["tools"].append({"id":"selected-call","name":"lookup","server":"armada_11111111_1111_4111_8111_111111111111","result":{"isError":False}})
         return contextlib.closing(io.BytesIO(json.dumps(value).encode()))
 def command(argv, **kwargs):
     ssh.append((argv, kwargs))
@@ -141,6 +148,8 @@ if mode.startswith("secret"):
 if mode.startswith("snapshot"):
     argv = [arg for i, arg in enumerate(argv) if arg != "--image" and argv[i-1] != "--image"]
     argv += ["--snapshot", "--config", "snapshot.json"]
+if mode.endswith("-mcp"):
+    argv += ["--mcp", "11111111-1111-4111-8111-111111111111", "--mcp-tool", "lookup"]
 if lifecycle:
     argv.append("--normal-lifecycle")
 if mode in ("cost", "bad-cost"):
@@ -161,7 +170,7 @@ with patch.dict(os.environ, {"ARMADA_TOKEN": "offline-only", "ARMADA_DOCKER_SECR
     assert mode not in ("bad-cost", "repository-no-proof", "github-no-proof", "github-no-broker", "variable-no-proof", "variable-whitespace", "secret-no-proof", "secret-wrong-digest", "snapshot-no-init", "snapshot-wrong-version", "snapshot-build-failed"), "Missing proof was accepted"
 assert len(ssh) == 1 and " run --state-dir " in ssh[0][0][-1]
 assert "nohup setsid" in ssh[0][0][-1] and "daemon.lock" in ssh[0][0][-1]
-assert (not lifecycle or (sends == 2 and stops == 2))
+assert (not lifecycle or (sends == (3 if mode.endswith("-mcp") else 2) and stops == 2))
 assert lifecycle or [path for path, _ in calls] == ["launch/options", "sandbox/launch", "sandbox/list", "logs/read", "sandbox/detail", "sandbox/stop", "sandbox/delete"]
 assert "PASS: normal Docker launch route created" in output.getvalue()
 assert "offline-only" not in output.getvalue()

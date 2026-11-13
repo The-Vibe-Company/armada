@@ -54,7 +54,7 @@ claims/configuration ACKs alone cannot pass. Current evidence matching is
 Codex-only; Claude/OpenCode combinations are explicitly refused by the script.
 This is a procedure, not evidence of a real-host run.
 
-Requires the preceding Docker repository/GitHub slices and matching server/runtime
-release. No new migration or manual artifact publication. Secret bindings and
-host-local environment image builds remain separate #1464 slices; Boat/Modal
-images remain provider-specific, not reusable Docker snapshots.
+Readable bindings, GitHub setup and [host-local snapshots](docker-snapshots.md)
+ship together through the normal runtime paths. Application-secret references
+use the same shared policy; see [raw-delivery limits](templates-cli.md#secret-bindings-and-security-limits).
+Boat/Modal images remain provider-specific, not reusable Docker snapshots.

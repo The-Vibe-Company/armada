@@ -135,8 +135,8 @@ function fail(status: number, error: string): Response {
 }
 
 /** Bound raw streamed bytes before decoding/forwarding, including absent/chunked length. */
-async function boundedBody(request: Request): Promise<ArrayBuffer | null> {
-  if (Number(request.headers.get("content-length") ?? 0) > MAX_BODY_BYTES) throw Error("too_large");
+async function boundedBody(request: Request, maxBytes: number): Promise<ArrayBuffer | null> {
+  if (Number(request.headers.get("content-length") ?? 0) > maxBytes) throw Error("too_large");
   if (!request.body) return null;
   const reader = request.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -146,7 +146,7 @@ async function boundedBody(request: Request): Promise<ArrayBuffer | null> {
       const next = await reader.read();
       if (next.done) break;
       length += next.value.byteLength;
-      if (length > MAX_BODY_BYTES) {
+      if (length > maxBytes) {
         void reader.cancel().catch(() => {});
         throw Error("too_large");
       }
@@ -185,7 +185,8 @@ export async function forwardControl(
   if (!isPublic && !authorization) return fail(401, "Unauthorized.");
   let body: ArrayBuffer | null = null;
   try {
-    if (method === "POST") body = await boundedBody(request);
+    if (method === "POST")
+      body = await boundedBody(request, relative === "docker/snapshots/create" ? 1024 * 1024 : MAX_BODY_BYTES);
   } catch (error) {
     return error instanceof Error && error.message === "too_large"
       ? fail(413, "Request too large.")

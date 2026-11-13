@@ -59,7 +59,8 @@ for a digest, never plaintext, but raw native access is not a general leakage
 defence. The evidence matcher currently requires Codex, explicitly refusing
 Claude/OpenCode combinations. This is a procedure, not a real-host pass.
 
-Stacked on the readable-variable slice. No migration, deployment, production
-access, real-host action or manual runtime publication is performed by this PR.
-Host-local Docker environment image builds remain the next #1464 slice;
+Readable bindings and [host-local snapshots](docker-snapshots.md) ship with this
+normal runtime delivery path. Snapshot builders never receive application
+secrets. See [the shared raw-delivery limits](templates-cli.md#secret-bindings-and-security-limits).
 Boat/Modal goldens stay provider-specific and are not Docker-reusable snapshots.
+No deployment or real-host acceptance is performed by a worker.

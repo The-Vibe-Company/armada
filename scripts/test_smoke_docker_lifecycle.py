@@ -9,6 +9,21 @@ successful_mcp_tool = module.successful_mcp_tool
 
 
 class McpReceiptTest(unittest.TestCase):
+    def test_snapshot_refuses_repository_overrides_before_config_or_host_work(self):
+        import contextlib
+        import io
+        import sys
+        from unittest.mock import patch
+        error = io.StringIO()
+        argv = ["smoke", "--server", "https://armada.test", "--org", "org", "--credential", "account",
+                "--host-id", "retained-host", "--snapshot", "--config", "never-read.json",
+                "--repository", "example/project", "--github"]
+        with patch.object(sys, "argv", argv), patch("builtins.open", side_effect=AssertionError("No config or host work")), contextlib.redirect_stderr(error):
+            with self.assertRaises(SystemExit) as refused:
+                module.main()
+        self.assertEqual(refused.exception.code, 2)
+        self.assertIn("--snapshot cannot combine with --repository or --github", error.getvalue())
+
     def test_each_harness_requires_its_selected_tool_and_matching_successful_completion(self):
         connection = "11111111-1111-4111-8111-111111111111"
         server = "armada_" + connection.replace("-", "_")

@@ -242,6 +242,8 @@ def main():
     harness = "claude" if args.claude else "opencode" if args.opencode else "codex"
     snapshot_config = None
     if args.snapshot:
+        if args.repository or args.github:
+            parser.error("--snapshot cannot combine with --repository or --github; repositories come from --config")
         if not args.config or args.image or args.template or args.routine or args.claude or args.opencode:
             parser.error("--snapshot requires --config and Codex, without --image/template/routine")
         try:
@@ -532,8 +534,9 @@ def main():
 
         def turn(text, expected_answer, conversation=None, receipt=None, require_mcp=False, prove_github=False):
             nonlocal cursor
+            prove_environment = receipt is None or receipt is launch_receipt
             if receipt is None:
-                text = snapshot_proof_task + text
+                text = secret_task + variable_task + snapshot_proof_task + (github_task if prove_github else "") + text
                 prompt_id = str(uuid.uuid4())
                 print("PROMPT_REQUEST_ID=" + prompt_id, flush=True)
                 body = {"sandboxId": sandbox_id, "requestId": prompt_id, "text": text}
@@ -551,11 +554,11 @@ def main():
             deadline = time.monotonic() + args.timeout
             answer, finished, used_mcp = False, False, False
             matching_mcp_calls = set()
-            repository_proven = not (args.snapshot or (args.repository and receipt is launch_receipt))
-            snapshot_proven = not args.snapshot
-            snapshot_github = not args.snapshot
-            secret_proven = secret_binding is None
-            variable_proven = variable_binding is None
+            repository_proven = not ((args.snapshot and prove_environment) or (args.repository and receipt is launch_receipt))
+            snapshot_proven = not (args.snapshot and prove_environment)
+            snapshot_github = not (args.snapshot and prove_environment)
+            secret_proven = not (prove_environment and secret_binding)
+            variable_proven = not (prove_environment and variable_binding)
             github_proven = not prove_github
             while True:
                 if args.normal_controls:
@@ -578,7 +581,7 @@ def main():
                         continue
                     if event.get("kind") == "message" and expected_answer in event.get("text", ""):
                         answer = True
-                    if args.snapshot and event.get("kind") == "message":
+                    if args.snapshot and prove_environment and event.get("kind") == "message":
                         for tool in event.get("tools", []):
                             command = (tool.get("input") or {}).get("command", "")
                             result = tool.get("result") or {}
@@ -594,7 +597,7 @@ def main():
                                     snapshot_proven = proof.get("id") == snapshot_id and proof.get("hostId") == host_id and proof.get("definitionHash") == definition_hash and proof.get("initSteps") == len(actual_config.get("init", [])) and proof.get("armadaVersion") == built_on_version
                                 except (ValueError, TypeError, AttributeError):
                                     pass
-                    if secret_binding and event.get("kind") == "message":
+                    if secret_binding and prove_environment and event.get("kind") == "message":
                         for tool in event.get("tools", []):
                             command = (tool.get("input") or {}).get("command", "")
                             result = tool.get("result") or {}
@@ -603,7 +606,7 @@ def main():
                                     and result.get("isError") is False
                                     and str(result.get("output", "")) == secret_sha256 + "\n"):
                                 secret_proven = True
-                    if variable_binding and event.get("kind") == "message":
+                    if variable_binding and prove_environment and event.get("kind") == "message":
                         for tool in event.get("tools", []):
                             command = (tool.get("input") or {}).get("command", "")
                             result = tool.get("result") or {}
@@ -639,7 +642,7 @@ def main():
                               and isinstance(t.get("inputTokens"), int)
                               and isinstance(t.get("outputTokens"), int)), None)
                 if answer and finished and usage and repository_proven and snapshot_proven and snapshot_github and github_proven and variable_proven and secret_proven and (not require_mcp or used_mcp):
-                    if args.snapshot:
+                    if args.snapshot and prove_environment:
                         github_status = api("github/runtime-status", {"id": sandbox_id}, normal=True)
                         if not github_status.get("configured") or github_status.get("credentialRequests", 0) < 1:
                             raise RuntimeError("Snapshot GitHub proof requires current-epoch credential delivery")
