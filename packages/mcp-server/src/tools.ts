@@ -1,4 +1,5 @@
 import {
+  dedupeEvents,
   GitHubHydrationError,
   goldenForSettings,
   MACHINE_SIZES,
@@ -2023,13 +2024,6 @@ function goldenJson(row: GoldenRecord) {
   };
 }
 
-/** A streaming answer is rewritten in place: within a page the newest body of each id wins. */
-function dedupe<T extends { id: string }>(events: readonly T[]): T[] {
-  const byId = new Map<string, T>();
-  for (const item of events) byId.set(item.id, item);
-  return [...byId.values()];
-}
-
 async function readLogs(
   provider: Provider,
   sandboxId: string,
@@ -2075,7 +2069,7 @@ async function readLogs(
   }
   return {
     ...(olderCursor ? { olderCursor } : {}),
-    events: dedupe(events).filter((event) => !isPrivateModelEvent(event)),
+    events: dedupeEvents(events).filter((event) => !isPrivateModelEvent(event)),
     cursor: cursor ?? null,
     hasMore,
   };
