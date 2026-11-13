@@ -35,7 +35,7 @@ import { HARNESS_LABELS } from "@/lib/labels";
 import { type LifecycleView, lifecycleView, readLifecycle } from "@/lib/lifecycle";
 import { preservationView, settledOutcome } from "@/lib/outcome";
 import { CLOUD_PROVIDERS_PATH } from "@/lib/provider-setup";
-import { machineSizeLabel, sandboxName, skippedRowsNote } from "@/lib/sandbox-access";
+import { machineSizeLabel, skippedRowsNote } from "@/lib/sandbox-access";
 import { costFigure } from "@/lib/sandbox-cost";
 import {
   FACETS,
@@ -47,6 +47,7 @@ import {
   parseSandboxFilters,
   SANDBOX_STATUSES,
 } from "@/lib/sandbox-filters";
+import { sandboxListName } from "@/lib/sandbox-list-name";
 import { createClient } from "@/lib/supabase/server";
 
 export const metadata: Metadata = { title: "Sandboxes" };
@@ -259,7 +260,7 @@ async function SandboxesContent({ searchParams }: Props) {
                     <CostCell cost={costs.get(sandbox.id)} />
                   </TableCell>
                   <TableCell className="relative z-10 max-sm:col-start-2 max-sm:row-start-2 max-sm:p-0">
-                    <SandboxRowMenu id={sandbox.id} name={sandboxName(sandbox)} canOpen={sandbox.canOpen} />
+                    <SandboxRowMenu id={sandbox.id} name={sandboxListName(sandbox)} canOpen={sandbox.canOpen} />
                   </TableCell>
                   <TableCell className="relative z-10 col-span-2 block p-0 text-xs text-muted-foreground sm:hidden">
                     {displayUser(directory, sandbox.ownerId, viewer.id)} · Created{" "}
@@ -306,21 +307,18 @@ function SandboxName({ sandbox }: { sandbox: SandboxListMetadata }) {
       <Link
         href={`/sandboxes/${sandbox.id}`}
         // The link covers its whole row (the row is the target), and its focus ring is drawn around the row.
-        className="inline-flex max-w-full items-center gap-1.5 font-mono text-[13px] font-medium underline-offset-4 outline-none after:absolute after:inset-0 after:content-[''] hover:underline focus-visible:after:ring-2 focus-visible:after:ring-ring focus-visible:after:ring-inset"
+        className="inline-flex max-w-full items-center gap-1.5 text-[13px] font-medium underline-offset-4 outline-none after:absolute after:inset-0 after:content-[''] hover:underline focus-visible:after:ring-2 focus-visible:after:ring-ring focus-visible:after:ring-inset"
       >
-        <span className="break-all whitespace-normal sm:truncate" title={sandboxName(sandbox)}>
-          {sandboxName(sandbox)}
+        <span className="min-w-0 break-words whitespace-normal" title={sandboxListName(sandbox)}>
+          {sandboxListName(sandbox)}
         </span>
         <LinkPendingIcon />
       </Link>
     );
   return (
-    <span
-      className="inline-flex max-w-full items-center gap-1.5 font-mono text-sm text-muted-foreground"
-      data-restricted
-    >
-      <span className="break-all whitespace-normal sm:truncate" title={sandboxName(sandbox)}>
-        {sandboxName(sandbox)}
+    <span className="inline-flex max-w-full items-center gap-1.5 text-sm text-muted-foreground" data-restricted>
+      <span className="min-w-0 break-words whitespace-normal" title={sandboxListName(sandbox)}>
+        {sandboxListName(sandbox)}
       </span>
       <LockIcon aria-hidden="true" className="size-3.5 shrink-0" />
       <span className="sr-only">Only its owner and organization admins can open it</span>
