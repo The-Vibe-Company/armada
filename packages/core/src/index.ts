@@ -9,6 +9,19 @@ export {
 export { CLAUDE_ENDPOINT_ENV, type ClaudeEndpoint, parseClaudeEndpoint } from "./claude-endpoint.ts";
 export { CLIENT_CONFIG_PATH, type ClientConfig } from "./client-config.ts";
 export { CODEX_ENDPOINT_ENV, type CodexEndpoint, parseCodexEndpoint } from "./codex-endpoint.ts";
+export {
+  type CatalogModel,
+  CONNECTION_CATALOG_FETCHED_AT,
+  CONNECTION_PRESETS,
+  type ConnectionPreset,
+  type ConnectionPresetId,
+  connectionModelList,
+  connectionPreset,
+  type PresetConnectionInput,
+  presetConnectionValue,
+  presetModels,
+  presetPrices,
+} from "./connection-presets.ts";
 export * from "./connections.ts";
 export { HARNESSES, type Harness, type Visibility } from "./contract.ts";
 export type { CredentialBinding } from "./credentials.ts";
@@ -226,7 +239,14 @@ export {
   type ModelOption,
   resolveModelChoice,
 } from "./models.ts";
-export { OPENCODE_ENDPOINT_ENV, type OpenCodeEndpoint, parseOpenCodeEndpoint } from "./opencode-endpoint.ts";
+export {
+  CONNECTION_MODEL_ID,
+  MAX_CONNECTION_MODELS,
+  OPENCODE_ENDPOINT_ENV,
+  type OpenCodeEndpoint,
+  parseConnectionModels,
+  parseOpenCodeEndpoint,
+} from "./opencode-endpoint.ts";
 export type {
   OttoCompleteness,
   OttoFact,

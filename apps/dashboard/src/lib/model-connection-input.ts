@@ -1,4 +1,13 @@
-import { parseClaudeEndpoint, parseCodexEndpoint, parseCredentialValue, parseModelPriceOverrides } from "@armada/core";
+import {
+  connectionModelList,
+  connectionPreset,
+  parseClaudeEndpoint,
+  parseCodexEndpoint,
+  parseCredentialValue,
+  parseModelPriceOverrides,
+  presetConnectionValue,
+  VaultError,
+} from "@armada/core";
 import type { AccountKind } from "./model-accounts";
 
 /** Blank pricing is absent; decimal strings retain the server pricing contract's precision. */
@@ -91,5 +100,36 @@ export function replacementClaudeAccountValue(
     return { ok: true, value: parseCredentialValue("anthropic", raw) };
   } catch {
     return { ok: false, error: "Paste a valid Anthropic API key." };
+  }
+}
+
+/**
+ * A provider-preset connection (#1483): address, key and ticked or typed models from the form, prices only from the
+ * catalog. Composed on the server; the key never enters client state.
+ */
+export function presetAccountValue(
+  data: FormData,
+): { ok: true; kind: AccountKind; value: string } | { ok: false; error: string } {
+  const preset = connectionPreset(data.get("preset"));
+  if (preset?.models !== "choose") return { ok: false, error: "Choose a provider." };
+  const field = (name: string) => {
+    const raw = data.get(name);
+    return typeof raw === "string" ? raw : "";
+  };
+  const ticked = data.getAll("model").filter((value): value is string => typeof value === "string");
+  try {
+    return {
+      ok: true,
+      kind: preset.kind,
+      value: presetConnectionValue(preset, {
+        baseUrl: field("baseUrl"),
+        apiKey: field("value"),
+        models: connectionModelList(ticked, field("customModels")),
+        ...(preset.apiVersion ? { apiVersion: field("apiVersion") } : {}),
+      }),
+    };
+  } catch (error) {
+    if (error instanceof VaultError) return { ok: false, error: error.message };
+    throw error;
   }
 }

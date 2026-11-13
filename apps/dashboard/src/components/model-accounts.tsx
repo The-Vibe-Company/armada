@@ -1,6 +1,6 @@
 "use client";
 
-import type { Harness } from "@armada/core";
+import { CONNECTION_PRESETS, type ConnectionPresetId, connectionPreset, type Harness } from "@armada/core";
 import {
   CircleAlertIcon,
   CircleCheckIcon,
@@ -26,6 +26,7 @@ import {
   testAccountConnection,
 } from "@/app/actions/model-accounts";
 import { SubmitButton } from "@/components/action-form";
+import { PresetConnectionFields } from "@/components/connection-preset-fields";
 import { ChoiceCard, ResultLine } from "@/components/connections";
 import { Disclosure } from "@/components/disclosure";
 import { Empty } from "@/components/page-header";
@@ -1045,6 +1046,11 @@ function CustomEndpointFields({
 
 /* ---------------------------------------------------------------- add an account */
 
+/** Subscriptions sign in; every other connection starts from a provider preset (#1483). */
+const SUBSCRIPTION_KINDS = ACCOUNT_KINDS.filter((value) => KIND_INFO[value].billing === "subscription");
+/** A subscription kind, or a provider preset; a plain-key kind's id is also its preset's id. */
+type AddChoice = AccountKind | ConnectionPresetId;
+
 /** Adds subscriptions and API keys in one short form, with equal-weight connection choices. */
 export function AddAccountDialog({
   orgId,
@@ -1069,7 +1075,9 @@ export function AddAccountDialog({
   const [open, setOpen] = useState(false);
   const [generation, setGeneration] = useState(0);
   const [state, formAction] = useActionState(addAccount, null);
-  const [kind, setKind] = useState<AccountKind>(initialKind);
+  const [choice, setChoice] = useState<AddChoice>(initialKind);
+  const preset = connectionPreset(choice);
+  const kind: AccountKind = preset ? preset.kind : (choice as AccountKind);
   const [scope, setScope] = useState<"user" | "org">("user");
   const [name, setName] = useState("");
   const router = useRouter();
@@ -1089,7 +1097,7 @@ export function AddAccountDialog({
   useEffect(() => {
     if (state?.ok) {
       setName("");
-      setKind(initialKind);
+      setChoice(initialKind);
       setScope("user");
       setOpen(false);
       setGeneration((value) => value + 1);
@@ -1108,7 +1116,7 @@ export function AddAccountDialog({
         onOpenChange={(next) => {
           setOpen(next);
           if (next) return;
-          setKind(initialKind);
+          setChoice(initialKind);
           setScope("user");
           setGeneration((value) => value + 1);
         }}
@@ -1122,8 +1130,8 @@ export function AddAccountDialog({
           <DialogHeader>
             <DialogTitle>Add a model account</DialogTitle>
             <DialogDescription>
-              {kind === "opencode"
-                ? "Use an OpenCode plan/provider key. Create custom endpoint accounts with the Armada CLI."
+              {preset?.models === "choose"
+                ? "Paste the key and tick the models you want. Billed per token by the provider."
                 : subscription
                   ? "Sign in with the plan you already pay for. Add as many as you have; each launch names the one it bills."
                   : "Billed per token by the provider. Add as many as you have; each launch names the one it bills."}
@@ -1132,28 +1140,32 @@ export function AddAccountDialog({
           <form ref={formRef} key={generation} action={formAction} className="min-w-0 space-y-5">
             <input type="hidden" name="org" value={orgId} />
             <input type="hidden" name="kind" value={kind} />
+            {preset?.models === "choose" && <input type="hidden" name="preset" value={preset.id} />}
             <input type="hidden" name="scope" value={scope} />
             <fieldset className="space-y-2">
               <legend className="text-sm font-medium">Connection</legend>
               <RadioGroup
-                value={kind}
-                onValueChange={(value) => setKind(value as AccountKind)}
+                value={choice}
+                onValueChange={(value) => setChoice(value as AddChoice)}
                 aria-label="Connection"
                 className="sm:grid-cols-2"
               >
-                {ACCOUNT_KINDS.toSorted((a, b) =>
-                  KIND_INFO[a].billing === KIND_INFO[b].billing ? 0 : KIND_INFO[a].billing === "subscription" ? -1 : 1,
-                ).map((value) => (
+                {SUBSCRIPTION_KINDS.map((value) => (
                   <ChoiceCard
                     key={value}
                     value={value}
-                    icon={KIND_INFO[value].billing === "subscription" ? <StarIcon /> : <KeyRoundIcon />}
+                    icon={<StarIcon />}
                     title={KIND_INFO[value].label}
-                    hint={
-                      value === "opencode"
-                        ? "OpenCode plan key or custom endpoint"
-                        : `${KIND_INFO[value].harnessLabel}${KIND_INFO[value].billing === "subscription" ? "" : ", billed per token"}`
-                    }
+                    hint={`For ${KIND_INFO[value].harnessLabel}`}
+                  />
+                ))}
+                {CONNECTION_PRESETS.map((option) => (
+                  <ChoiceCard
+                    key={option.id}
+                    value={option.id}
+                    icon={<KeyRoundIcon />}
+                    title={option.label}
+                    hint={`For ${KIND_INFO[option.kind].harnessLabel} · ${option.hint}`}
                   />
                 ))}
               </RadioGroup>
@@ -1217,14 +1229,22 @@ export function AddAccountDialog({
                   <p className="text-sm">
                     <span className="font-medium">{subscription ? "Sign in on your machine" : "Paste the key"}.</span>{" "}
                     <span className="text-muted-foreground">
-                      {kind === "openai"
-                        ? "From OpenAI or your gateway. Billed per token."
-                        : kind === "anthropic"
-                          ? "From Anthropic or your gateway. Billed per token."
-                          : info.hint}
+                      {preset?.models === "choose"
+                        ? preset.keyHint
+                        : kind === "openai"
+                          ? "From OpenAI or your gateway. Billed per token."
+                          : kind === "anthropic"
+                            ? "From Anthropic or your gateway. Billed per token."
+                            : info.hint}
                     </span>
                   </p>
-                  {kind === "openai" || kind === "anthropic" ? (
+                  {preset?.models === "choose" ? (
+                    <PresetConnectionFields
+                      key={preset.id}
+                      preset={preset}
+                      secretField={<SecretField idPrefix={id} kind={kind} />}
+                    />
+                  ) : kind === "openai" || kind === "anthropic" ? (
                     <CustomEndpointFields key={kind} idPrefix={id} kind={kind} />
                   ) : (
                     <SecretField idPrefix={id} kind={kind} />
@@ -1232,7 +1252,9 @@ export function AddAccountDialog({
                 </div>
                 {defaultBox}
                 {state && !state.ok && <ResultLine result={state} />}
-                <SubmitButton>{subscription ? "Add subscription" : "Add API key"}</SubmitButton>
+                <SubmitButton>
+                  {subscription ? "Add subscription" : preset?.models === "choose" ? "Add connection" : "Add API key"}
+                </SubmitButton>
               </>
             )}
           </form>

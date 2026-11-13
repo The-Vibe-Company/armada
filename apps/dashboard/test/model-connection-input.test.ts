@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
+import { catalogPriceLabel, visibleCatalogModels } from "../src/lib/connection-presets";
 import {
   customAccountValue,
+  presetAccountValue,
   replacementClaudeAccountValue,
   replacementCodexAccountValue,
 } from "../src/lib/model-connection-input";
@@ -154,4 +156,56 @@ test("invalid dashboard price fields refuse the connection without reflecting su
     expect(JSON.stringify(result)).not.toContain(key);
     expect(!result.ok && result.error).toContain("USD per million");
   }
+});
+
+test("a provider preset decides the kind and merges ticked and typed models; the browser cannot send prices", () => {
+  const key = randomUUID();
+  const form = new FormData();
+  form.set("preset", "openrouter");
+  form.set("kind", "anthropic");
+  form.set("value", key);
+  form.append("model", "x-ai/first");
+  form.set("customModels", "x-ai/second, x-ai/first");
+  form.set("priceInput", "0");
+  const result = presetAccountValue(form);
+  if (!result.ok) throw Error(result.error);
+  expect(result.kind).toBe("opencode");
+  const value = JSON.parse(result.value);
+  expect(value.endpoint).toEqual({
+    version: 1,
+    baseUrl: "https://openrouter.ai/api/v1",
+    models: ["x-ai/first", "x-ai/second"],
+  });
+  expect(value.prices).toBeUndefined();
+
+  const plain = new FormData();
+  plain.set("preset", "openai");
+  plain.set("value", key);
+  expect(presetAccountValue(plain)).toEqual({ ok: false, error: "Choose a provider." });
+  const empty = new FormData();
+  empty.set("preset", "openai-compatible");
+  empty.set("baseUrl", "https://api.example.com/v1");
+  empty.set("value", key);
+  const refused = presetAccountValue(empty);
+  expect(refused).toEqual({ ok: false, error: "Choose at least one model." });
+});
+
+test("the model list keeps ticked models visible through any search and caps the rest", () => {
+  const models = ["alpha-one", "beta-two", "alpha-three"].map((id) => ({
+    id,
+    name: id.toUpperCase(),
+    input: "1",
+    output: null,
+    cacheRead: null,
+  }));
+  expect(visibleCatalogModels(models, "ALPHA", new Set()).map((model) => model.id)).toEqual([
+    "alpha-one",
+    "alpha-three",
+  ]);
+  expect(visibleCatalogModels(models, "alpha", new Set(["beta-two"]), 2).map((model) => model.id)).toEqual([
+    "beta-two",
+    "alpha-one",
+  ]);
+  expect(catalogPriceLabel(models[0] ?? { input: null, output: null })).toBeNull();
+  expect(catalogPriceLabel({ input: "0.15", output: "0.6" })).toBe("$0.15 in · $0.6 out per M tokens");
 });
