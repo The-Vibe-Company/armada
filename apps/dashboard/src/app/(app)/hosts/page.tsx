@@ -55,11 +55,14 @@ export default async function HostsPage({ searchParams }: Props) {
   const isAdmin = selected.role === "admin";
   const orgId = selected.org.id;
   const now = Date.now();
-  // The launch's own reads only when some host could take one: today's servers never pay for them.
+  // The launch options say why a launch is unavailable, so they are read whenever a host is listed that is not
+  // revoked; the accounts only when some host could take a launch now.
+  const live = hosts.list.hosts.some((host) => host.state !== "revoked");
   const launchable = hosts.list.placement && hosts.list.hosts.some((host) => host.state === "online");
-  const [option, accountList] = launchable
-    ? await Promise.all([readDockerLaunchOption(), listSelectedAccounts()])
-    : [null, null];
+  const [option, accountList] = await Promise.all([
+    live ? readDockerLaunchOption() : null,
+    launchable ? listSelectedAccounts() : null,
+  ]);
   const launch: Launch = {
     option,
     placement: hosts.list.placement,

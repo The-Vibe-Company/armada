@@ -89,14 +89,15 @@ function DockerLaunchForm({
       event.preventDefault();
       event.stopPropagation();
     };
-    // The request key is the server's `requestId`. It is reused only after a launch nobody knows the outcome of,
-    // and only with the same choices, even if the dialog was closed in between: the server then reconciles it
-    // instead of starting a second sandbox. Any other answer makes the next launch a new request.
+    // The request key is the server's `requestId`. It is reused only after a launch with no definite answer, only
+    // with the same choices and within KEY_TTL_MS, even if the dialog was closed in between: the server then
+    // reconciles it instead of starting a second sandbox. A refusal makes the next launch a new request.
     const keyed = (event: Event) => {
       if (!(event instanceof FormDataEvent)) return;
       const key = launchKeyFor(readKey(storage), event.formData.entries());
       sent.current = key;
-      writeKey(storage, null);
+      // Kept from now until a definite answer: a reload, a lost connection or a closed tab mid-launch keeps it too.
+      writeKey(storage, key);
       event.formData.set(LAUNCH_KEY_FIELD, key.key);
     };
     node.addEventListener("reset", keep, true);
@@ -109,8 +110,10 @@ function DockerLaunchForm({
 
   const launch = useCallback(
     async (previous: ActionResult | null, data: FormData) => {
+      // A thrown call (connection lost) is no answer: the stored key stays for the retry.
       const result = await launchOnDockerHost(previous, data);
-      if (!result.ok && result.error === UNKNOWN_DOCKER_LAUNCH) writeKey(storage, sent.current);
+      // A definite refusal: the next launch is a new request. A success navigates away; its key expires.
+      if (result.ok || result.error !== UNKNOWN_DOCKER_LAUNCH) writeKey(storage, null);
       return result;
     },
     [storage],
@@ -192,6 +195,9 @@ function DockerLaunchForm({
   );
 }
 
+/** Longer than a launch's own deadline; after it, the same choices start a new sandbox. */
+const KEY_TTL_MS = 15 * 60_000;
+
 function readKey(name: string): LaunchKey | null {
   try {
     const value: unknown = JSON.parse(sessionStorage.getItem(name) ?? "null");
@@ -200,8 +206,11 @@ function readKey(name: string): LaunchKey | null {
       value !== null &&
       "key" in value &&
       "fingerprint" in value &&
+      "at" in value &&
       typeof value.key === "string" &&
-      typeof value.fingerprint === "string"
+      typeof value.fingerprint === "string" &&
+      typeof value.at === "number" &&
+      Date.now() - value.at < KEY_TTL_MS
     )
       return { key: value.key, fingerprint: value.fingerprint };
   } catch {
@@ -212,7 +221,7 @@ function readKey(name: string): LaunchKey | null {
 
 function writeKey(name: string, key: LaunchKey | null): void {
   try {
-    if (key) sessionStorage.setItem(name, JSON.stringify(key));
+    if (key) sessionStorage.setItem(name, JSON.stringify({ ...key, at: Date.now() }));
     else sessionStorage.removeItem(name);
   } catch {
     // Storage refused: a later retry is a new request, as without this dialog's memory.

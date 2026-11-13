@@ -57,6 +57,7 @@ test("a host takes a launch only when the server launches Codex from an image on
   ).toContain("Codex from an image");
   expect(dockerLaunchBlocker(ready, true, { state: "offline" })).toBe("The host must be online to launch on it.");
   expect(dockerLaunchBlocker(ready, true, { state: "revoked" })).toBe("This host is revoked.");
+  expect(dockerLaunchBlocker(null, false, { state: "revoked" })).toBe("This host is revoked.");
 });
 
 test("what Docker cannot do yet is listed with the server's reason, or a plain default", () => {

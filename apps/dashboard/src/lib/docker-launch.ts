@@ -97,13 +97,13 @@ export function dockerLaunchBlocker(
   placement: boolean,
   host: Pick<DockerHost, "state">,
 ): string | null {
+  if (host.state === "revoked") return "This host is revoked.";
   if (!option?.enabled) return "This Armada server does not launch on Docker hosts yet.";
   if (!option.capabilities.launch)
     return option.unsupportedReasons.launch ?? "This Armada server does not launch on Docker hosts yet.";
   if (!placement) return "This Armada server does not launch on Docker hosts yet.";
   if (!option.launchSources.includes("image") || !option.harnesses.includes("codex"))
     return "This Armada server does not launch Codex from an image on Docker hosts.";
-  if (host.state === "revoked") return "This host is revoked.";
   if (host.state !== "online") return "The host must be online to launch on it.";
   return null;
 }
