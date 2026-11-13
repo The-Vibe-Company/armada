@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { DOCKER_DEFAULT_IMAGE } from "@armada/core";
 import { run } from "../src/run.ts";
 import { memorySessionStore } from "../src/session.ts";
 
@@ -90,6 +91,21 @@ test.each(["codex", "claude", "opencode"] as const)(
   },
 );
 
+test("Docker launch without --image sends Armada's default image", async () => {
+  const calls: Request[] = [];
+  const withoutImage = args.filter((arg, index) => arg !== "--image" && args[index - 1] !== "--image");
+  const result = await capture(withoutImage, async (request) => {
+    calls.push(request);
+    return Response.json({
+      sandbox: { id: requestId, provider: "docker", status: "running" },
+      golden: null,
+      runtime: { epoch: "1" },
+    });
+  });
+  expect(result.code).toBe(0);
+  expect(await calls[0]?.json()).toMatchObject({ image: DOCKER_DEFAULT_IMAGE });
+});
+
 test("Docker incompatible or malformed options fail before HTTP", async () => {
   const calls: Request[] = [];
   for (const flags of [
@@ -100,7 +116,7 @@ test("Docker incompatible or malformed options fail before HTTP", async () => {
     ["--repo", "acme/web"],
     ["--connections", "a"],
     ["--credential-version", "0"],
-    ["--host", "not-a-host"],
+    ["--host", "x".repeat(65)],
     ["one", "two"],
   ]) {
     const result = await capture([...args, ...flags], async (request) => {
@@ -125,6 +141,19 @@ test("unknown Docker launch outcome retains a stable request UUID for exact retr
   }
 });
 
+test.each([{ flags: ["--skill", "team/notes@1.2.3", "--connections", host] }, { flags: ["--no-connections"] }])(
+  "Docker forwards existing skill/MCP flags %j",
+  async ({ flags }: { flags: readonly string[] }) => {
+    let body: Record<string, unknown> = {};
+    const result = await capture([...args, ...flags], async (request) => {
+      body = (await request.json()) as Record<string, unknown>;
+      return Response.json({ sandbox: { id: requestId, provider: "docker" }, golden: null, runtime: { epoch: "1" } });
+    });
+    expect(result.code).toBe(0);
+    expect(body.connections).toEqual(flags.includes("--no-connections") ? [] : [host]);
+    if (flags.includes("--skill")) expect(body.skills).toEqual(["team/notes@1.2.3"]);
+  },
+);
 test("Docker launch resolves an exact unique non-revoked host name and refuses missing/ambiguous names", async () => {
   const receipt = {
     sandbox: { id: requestId, provider: "docker", status: "running" },

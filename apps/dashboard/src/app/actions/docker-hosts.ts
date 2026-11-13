@@ -9,7 +9,7 @@ import { isSelectedOrganization, selectedOrganization } from "@/lib/data/selecte
 import { requireViewer } from "@/lib/data/viewer";
 import { connectedHostName, HOSTS_PATH, hostNameInput } from "@/lib/docker-hosts";
 import {
-  checkImage,
+  chosenImage,
   dockerLaunchBlocker,
   dockerLaunchBody,
   launchedDockerSandbox,
@@ -112,7 +112,7 @@ export async function launchOnDockerHost(
   const requestId = formString(data, LAUNCH_KEY_FIELD);
   if (!isUuid(org) || !isUuid(hostId) || !isUuid(requestId)) return fail("That request is not valid.");
   if (!(await isSelectedOrganization(org))) return fail("Switch to that organization first.");
-  const image = checkImage(formString(data, "image"));
+  const image = chosenImage(formString(data, "image_choice"), formString(data, "image"));
   if (!image.ok) return fail(image.error);
   const choice = modelChoice("codex", {
     model: formString(data, "model"),
