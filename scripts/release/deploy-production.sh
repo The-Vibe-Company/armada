@@ -26,6 +26,14 @@ fi
 source_dir=$(mktemp -d)
 trap 'rm -rf "$source_dir"' EXIT
 git archive "$RELEASE_SHA" | tar -x -C "$source_dir"
+# git archive intentionally omits generated release metadata. Carry only the
+# validated public pin into the source-built server, never the tooling checkout.
+pin=packages/core/src/official-sandbox-image.json
+if [[ -f "$pin" ]] && jq -e 'type == "object"' "$pin" >/dev/null; then
+  jq -e --arg version "$RELEASE_VERSION" '.version == $version and (.image | test("^ghcr[.]io/the-vibe-company/armada-sandbox@sha256:[a-f0-9]{64}$"))' "$pin" >/dev/null \
+    || fail 'Official sandbox image pin does not match this release.'
+  cp "$pin" "$source_dir/$pin"
+fi
 cd "$source_dir"
 
 supabase link --project-ref "$SUPABASE_PROJECT_ID"

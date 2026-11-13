@@ -11,6 +11,11 @@ on:
         required: true
         type: string
 
+      official_image:
+        description: Consume the official image pin from the calling release
+        type: boolean
+        default: false
+
 permissions:
   contents: read
   actions: read
@@ -71,6 +76,11 @@ jobs:
         with:
           ref: ${{ inputs.source_sha || github.sha }}
           persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: inputs.official_image == true
+        with:
+          name: official-sandbox-image
+          path: packages/core/src
       - name: Validate configuration before any mutation
         run: |
           for key in SUPABASE_ACCESS_TOKEN SUPABASE_DB_PASSWORD SUPABASE_PROJECT_ID RAILWAY_TOKEN RAILWAY_PROJECT_ID RAILWAY_ENVIRONMENT_ID RAILWAY_SERVICE_ID VERCEL_TOKEN VERCEL_ORG_ID VERCEL_PROJECT_ID ARMADA_SERVER_URL ARMADA_URL ARMADA_TOKEN ARMADA_SMOKE_CASES; do

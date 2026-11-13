@@ -3,7 +3,6 @@ import { createHash, randomUUID } from "node:crypto";
 import { createSqlAuthStore } from "@armada/auth";
 import {
   type AgentEvent,
-  DOCKER_DEFAULT_IMAGE,
   DOCKER_IMAGE_UNAVAILABLE_MESSAGE,
   type DockerLaunchResult,
   type DockerSandboxStatus,
@@ -45,6 +44,7 @@ const sql: Sql = {
   query: (q, v) => db.query(q, v),
   transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
 };
+const officialImage = `ghcr.io/the-vibe-company/armada-sandbox@sha256:${"a".repeat(64)}`;
 const key = Buffer.alloc(32, 19).toString("base64");
 const hosts = createDockerHostStore(sql, key);
 const authority = createRuntimeEnrolments(sql, key);
@@ -74,12 +74,7 @@ afterAll(async () => {
 // The real migrated boundary owns normal-launch sequencing and durable retries.
 // Existing private-lane tests own the individual host/runtime protocol matrices.
 async function fixture(
-  options: {
-    lifecycleGenerationAfterCreate?: number;
-    harness?: Harness;
-    checkoutExitCode?: number;
-    image?: string;
-  } = {},
+  options: { lifecycleGenerationAfterCreate?: number; harness?: Harness; checkoutExitCode?: number } = {},
 ) {
   const orgId = randomUUID(),
     userId = randomUUID(),
@@ -121,7 +116,6 @@ async function fixture(
     org: orgId,
     provider: "docker",
     hostId: host.hostId,
-    image: options.image ?? `worker@sha256:${"a".repeat(64)}`,
     harness: options.harness ?? "codex",
     credentialId,
     requestId: randomUUID(),
@@ -240,9 +234,10 @@ async function fixture(
     });
     return createRuntimeMcp({ sql: target, key, origin: "https://armada.example", commands: bridge });
   }
-  function service(target = sql, enabled = true, timeoutMs = 10_000) {
+  function service(target = sql, enabled = true, timeoutMs = 10_000, releaseImage = officialImage) {
     return createDockerNormalLaunch(target, key, {
       enabled,
+      officialImage: releaseImage,
       credentials: resolver,
       bootstrap,
       clock,
@@ -318,7 +313,7 @@ test("normal launch drives create, bootstrap, health and one first prompt, seals
       ownerId: f.actor.userId,
       orgId: f.actor.orgId,
       hostId: f.hostId,
-      image: f.body.image,
+      image: officialImage,
       status: "running",
       credentialId: f.body.credentialId,
       credentialVersion: 2,
@@ -364,7 +359,6 @@ test("normal launch drives create, bootstrap, health and one first prompt, seals
   });
   for (const change of [
     { prompt: "Changed task" },
-    { image: `other@sha256:${"b".repeat(64)}` },
     { model: "different-model" },
     { credentialId: randomUUID() },
     { credentialVersion: 2 },
@@ -464,7 +458,7 @@ test("normal admission rejects unsupported input before resolution, scopes owner
   await createDockerSandboxService(sql, key, { enabled: true }).reserve(f.actor, {
     requestId: f.body.requestId,
     hostId: f.hostId,
-    image: f.body.image,
+    image: officialImage,
     credentialId: f.body.credentialId,
     credentialVersion: 2,
   });
@@ -547,7 +541,7 @@ test("a launch whose host could not fetch the image says so in plain words, at l
 
 test("prompt-free, image-free launch normalizes UUIDs, uses the default image, honors TTL and stops at runtime readiness", async () => {
   const f = await fixture();
-  const { prompt: _prompt, image: _image, ...base } = f.body;
+  const { prompt: _prompt, ...base } = f.body;
   const body = {
     ...base,
     org: base.org.toUpperCase(),
@@ -563,16 +557,17 @@ test("prompt-free, image-free launch normalizes UUIDs, uses the default image, h
     conversationIds: [],
     credentialVersion: 2,
     requestedTtlSeconds: 3600,
-    image: DOCKER_DEFAULT_IMAGE,
+    image: officialImage,
   });
   expect(result.ttlSeconds).toBe(3600);
   expect(result.promptId).toBeUndefined();
   expect(result.conversationId).toBeUndefined();
+  expect(
+    await f
+      .service(sql, true, 10_000, `ghcr.io/the-vibe-company/armada-sandbox@sha256:${"b".repeat(64)}`)
+      .launch(f.caller, body),
+  ).toEqual(result);
   expect(await counts(f)).toEqual({ sandboxes: 1, claims: 1, jobs: 2, commands: 1 });
-  // The explicit default is the same request as an omitted image.
-  expect(await f.service().launch(f.caller, { ...base, image: DOCKER_DEFAULT_IMAGE, ttlSeconds: 3600 })).toEqual(
-    result,
-  );
 });
 
 test("normal publication uses the runtime epoch rather than the independent lifecycle generation", async () => {
@@ -596,7 +591,6 @@ test("the normal HTTP route accepts the dashboard body and returns a launched sa
   const body = dockerLaunchBody({
     org: f.actor.orgId,
     hostId: f.hostId,
-    image: f.body.image,
     harness: "codex",
     credentialId: f.body.credentialId,
     requestId: f.body.requestId,
@@ -660,7 +654,7 @@ test("the normal HTTP route accepts the dashboard body and returns a launched sa
       provider: "docker",
       goldenId: null,
       hostId: f.hostId,
-      image: f.body.image,
+      image: officialImage,
       model: "normal-http-model",
       reasoningEffort: "high",
       credentialVersion: 2,
@@ -790,9 +784,15 @@ test.each(["claude", "opencode"] as const)("normal Docker launch selects and boo
   );
 });
 
+test("normal Docker launch refuses caller-selected images before allocation", async () => {
+  const f = await fixture();
+  await rejected(f.service().launch(f.caller, { ...f.body, image: officialImage }), "invalid_request");
+  expect(f.jobs).toHaveLength(0);
+});
+
 for (const checkoutExitCode of [0, 1])
   test(`Docker checkout exit ${checkoutExitCode} gates its first prompt and scopes GitHub access`, async () => {
-    const f = await fixture({ checkoutExitCode, image: `sha256:${"b".repeat(64)}` });
+    const f = await fixture({ checkoutExitCode });
     await db.query(
       `insert into public.github_connections(user_id,github_id,login,name,refresh_token_enc,access_token_enc,access_expires_at)
     values($1,123,'owner','Owner',$2,$3,now()+interval '1 hour')`,
@@ -857,17 +857,6 @@ for (const checkoutExitCode of [0, 1])
     await hosts.revoke(f.admin, f.hostId);
     expect((await acquire("example/project"))?.status).toBe(403);
   });
-test("normal Docker launch persists and dispatches a full local image ID without rewriting it as a registry digest", async () => {
-  const image = `sha256:${"b".repeat(64)}`;
-  const f = await fixture({ image });
-  const { prompt: _, ...body } = f.body;
-  const result = await f.service().launch(f.caller, body);
-  expect(result.sandbox.image).toBe(image);
-  expect(f.jobs[0]).toMatchObject({ operation: "create", request: { image } });
-  expect((await f.service().launch(f.caller, body)).sandbox.image).toBe(image);
-  expect(f.jobs).toHaveLength(2);
-  await rejected(f.service().launch(f.caller, { ...body, image: `sha256:${"c".repeat(64)}` }), "conflict");
-});
 
 async function defaultRemote(f: Awaited<ReturnType<typeof fixture>>) {
   const registry = createSqlMcpRegistry(sql, key);
@@ -1063,7 +1052,6 @@ test("Docker templates freeze admission pins, use normal launch, and replay one 
     definition: {
       provider: "docker",
       hostId: f.hostId,
-      image: f.body.image,
       harness: "codex",
       modelAccount: { id: f.body.credentialId, version: 2 },
     },
@@ -1123,7 +1111,7 @@ test("Docker template placement refuses inaccessible, revoked and replaced host 
     const f = await fixture();
     const templates = createTemplateService(sql, key);
     const stores = createSqlData(sql)(f.caller);
-    const definition = { provider: "docker", hostId: f.hostId, image: f.body.image, harness: "codex" };
+    const definition = { provider: "docker", hostId: f.hostId, harness: "codex" };
     await expect(
       templates.command(f.caller, "create", {
         org: f.actor.orgId,
@@ -1178,7 +1166,7 @@ test("a lost Docker template response retains one reconciling claim and never re
     org: f.actor.orgId,
     scope: "personal",
     name: "lost-response",
-    definition: { provider: "docker", hostId: f.hostId, image: f.body.image, harness: "codex" },
+    definition: { provider: "docker", hostId: f.hostId, harness: "codex" },
   });
   let dispatches = 0;
   const runtime: TemplateRuntime = {

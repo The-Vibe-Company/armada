@@ -107,13 +107,12 @@ describe("template DTOs", () => {
     expect(parseRevision({ ...revision, definition: { ...definition, harness: "other" } })).toBeNull();
   });
 
-  test("Docker revisions retain host/image placement and do not require a golden lookup", () => {
+  test("Docker revisions retain host placement and do not require a golden lookup", () => {
     const docker = {
       ...definition,
       provider: "docker",
       goldenId: null,
       hostId: SHARED,
-      image: `ubuntu@sha256:${"a".repeat(64)}`,
       variables: [],
     };
     const parsed = parseRevision({ ...revision, definition: docker });
@@ -121,11 +120,10 @@ describe("template DTOs", () => {
       provider: "docker",
       goldenId: null,
       hostId: SHARED,
-      image: docker.image,
     });
     expect(templateState({ revision: parsed }, lookups).label).toBe("Ready");
     expect(parseRevision({ ...revision, definition: { ...docker, hostId: null } })).toBeNull();
-    expect(parseRevision({ ...revision, definition: { ...docker, image: "ubuntu:latest" } })).toBeNull();
+    expect(parseRevision({ ...revision, definition: { ...docker, image: "legacy:ignored" } })).toEqual(parsed);
   });
 
   test("a launch answer is a sandbox, a definite refusal, or an outcome not known yet", () => {
