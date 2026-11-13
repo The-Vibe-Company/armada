@@ -160,3 +160,40 @@ export async function launchFromDockerSnapshot(_previous: ActionResult | null, d
   revalidatePath("/sandboxes");
   redirect(`/sandboxes/${id}`);
 }
+
+/** Reuse only the saved server-side snapshot configuration; the browser cannot change its build inputs. */
+export async function rebuildDockerSnapshot(
+  _previous: SnapshotCreateResult | null,
+  data: FormData,
+): Promise<SnapshotCreateResult> {
+  const selected = await selectedOrganization();
+  if (!selected || formString(data, "org") !== selected.org.id) return createFail("Switch to that organization first.");
+  const id = formString(data, "snapshotId"),
+    requestId = formString(data, "requestId");
+  if (!isUuid(id) || !isUuid(requestId)) return createFail("That rebuild request is not valid.");
+  const viewer = await requireViewer(),
+    serverUrl = mcpUrl();
+  if (!viewer.token || !serverUrl) return createFail("The Armada server is not configured.");
+  try {
+    const row = parseDockerSnapshotRecord(
+      (
+        await controlPost(
+          { serverUrl, token: viewer.token },
+          "/api/v1/docker/snapshots/rebuild",
+          { org: selected.org.id, id, requestId },
+          "rebuilding a host snapshot",
+        )
+      ).snapshot,
+    );
+    if (row.id !== requestId)
+      return createFail("Rebuild outcome unknown. Retry this same rebuild; do not start another request.");
+    revalidatePath("/environments");
+    return { ok: true, message: "Snapshot rebuild started.", snapshotId: row.id };
+  } catch (error) {
+    return createFail(
+      error instanceof ControlError && !error.outcomeUnknown && error.code !== "outcome_unknown"
+        ? error.message
+        : "Rebuild outcome unknown. Retry this same rebuild; do not start another request.",
+    );
+  }
+}

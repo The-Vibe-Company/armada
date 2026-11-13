@@ -20,6 +20,7 @@ export function createDockerSnapshots(
   options: { enabled: boolean; github: GitHubResolveDeps; installationApp: GitHubInstallationApp | null },
 ) {
   async function command(caller: Caller, operation: string, body: Record<string, unknown>) {
+    let rebuildOf: string | undefined;
     const org = body.org;
     if (typeof org !== "string" || !uuid.test(org) || !caller.orgs.some((m) => m.orgId === org)) throw invalid();
     const membership = (
@@ -40,7 +41,7 @@ export function createDockerSnapshots(
       ).rows;
     if (operation === "list") {
       if (Object.keys(body).some((k) => !["org"].includes(k))) throw invalid();
-      return { snapshots: (await read()).map(snapshotRecord) };
+      return { snapshots: (await read()).map(snapshotRecord), currentVersion: VERSION };
     }
     if (operation === "get") {
       if (
@@ -51,7 +52,34 @@ export function createDockerSnapshots(
         throw invalid();
       const row = (await read(body.id))[0];
       if (!row) throw new VaultError("not_found", "Snapshot not found.");
-      return { snapshot: snapshotRecord(row) };
+      return { snapshot: snapshotRecord(row), currentVersion: VERSION };
+    }
+    if (operation === "rebuild") {
+      if (
+        Object.keys(body).some((k) => !["org", "id", "requestId"].includes(k)) ||
+        typeof body.id !== "string" ||
+        !uuid.test(body.id) ||
+        typeof body.requestId !== "string" ||
+        !uuid.test(body.requestId) ||
+        body.id === body.requestId
+      )
+        throw invalid();
+      const source = (await read(body.id))[0];
+      if (!source) throw new VaultError("not_found", "Snapshot not found.");
+      if (source.status !== "ready" || (!snapshotRecord(source).hostAvailable && !(await read(body.requestId)).length))
+        throw new VaultError("conflict", "Rebuild needs a ready snapshot on its original available host.");
+      // Reuse all authorization, current GitHub access, secret scan and publication fences.
+      // A new immutable snapshot is published; the original remains usable throughout.
+      rebuildOf = source.id;
+      body = {
+        org,
+        hostId: source.host_id,
+        requestId: body.requestId,
+        name: source.name,
+        visibility: source.visibility,
+        config: source.config,
+      };
+      operation = "create";
     }
     if (operation === "create" && options.enabled !== true)
       throw new VaultError("unavailable", "Docker snapshot building is disabled.");
@@ -77,7 +105,9 @@ export function createDockerSnapshots(
       id = body.requestId,
       hostId = body.hostId,
       name = body.name;
-    const digest = createHash("sha256").update(JSON.stringify({ org, hostId, name, visibility, config })).digest("hex");
+    const digest = createHash("sha256")
+      .update(JSON.stringify({ org, hostId, name, visibility, config, ...(rebuildOf ? { rebuildOf } : {}) }))
+      .digest("hex");
     const known = (await read(id))[0];
     if (known) {
       if (known.owner_id !== caller.userId || known.request_hash !== digest)
@@ -201,7 +231,7 @@ export function createDockerSnapshots(
     });
     const row = (await read(id))[0];
     if (!row) throw new VaultError("unavailable", "Snapshot outcome unknown; retry the same request ID.");
-    return { snapshot: snapshotRecord(row) };
+    return { snapshot: snapshotRecord(row), currentVersion: VERSION };
   }
   return { command };
 }
