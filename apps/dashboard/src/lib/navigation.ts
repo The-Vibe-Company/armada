@@ -35,7 +35,7 @@ export const NAV_GROUPS: readonly NavGroup[] = [
   {
     label: "Library",
     links: [
-      { href: "/environments", label: "Environments", icon: "environments" },
+      { href: "/environments", label: "Snapshots", icon: "environments" },
       { href: "/skills", label: "Skills", icon: "skills" },
       { href: "/tools", label: "Tools", icon: "tools" },
       { href: "/variables", label: "Variables", icon: "variables" },

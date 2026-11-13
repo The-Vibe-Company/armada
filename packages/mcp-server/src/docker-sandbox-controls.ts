@@ -24,6 +24,7 @@ import { createRuntimeAgent } from "./runtime-agent.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import { createRuntimeHistory } from "./runtime-history.ts";
+import type { RuntimeMcp } from "./runtime-mcp.ts";
 import { withServerCost } from "./turn-pricing.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -89,6 +90,7 @@ export function createDockerSandboxControls(
   options: {
     clock?: Clock;
     timeoutMs?: number;
+    prepareMcp?: RuntimeMcp["prepare"];
     send?: ReturnType<typeof createDockerNormalSend>;
     resume?: Pick<ReturnType<typeof createDockerBootstrapService>, "resume">;
   } = {},
@@ -401,7 +403,10 @@ export function createDockerSandboxControls(
       if (state?.outcome === "failed") throw failure("conflict", "Docker resume failed.");
       if (state?.outcome === "completed") {
         const ready = await runtime.ready(actor, row.id, requestId);
-        if (ready.state === "ready") return { id: row.id, status: "ready" as const };
+        if (ready.state === "ready") {
+          await options.prepareMcp?.(caller, row.id);
+          return { id: row.id, status: "ready" as const };
+        }
       }
       if (clock.now() >= deadline) throw failure("conflict", "Docker resume is pending. Retry the same request_id.");
       await clock.wait(Math.min(250, deadline - clock.now()));

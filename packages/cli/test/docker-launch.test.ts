@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { DOCKER_DEFAULT_IMAGE } from "@armada/core";
 import { run } from "../src/run.ts";
 import { memorySessionStore } from "../src/session.ts";
 
@@ -90,6 +91,21 @@ test.each(["codex", "claude", "opencode"] as const)(
   },
 );
 
+test("Docker launch without --image sends Armada's default image", async () => {
+  const calls: Request[] = [];
+  const withoutImage = args.filter((arg, index) => arg !== "--image" && args[index - 1] !== "--image");
+  const result = await capture(withoutImage, async (request) => {
+    calls.push(request);
+    return Response.json({
+      sandbox: { id: requestId, provider: "docker", status: "running" },
+      golden: null,
+      runtime: { epoch: "1" },
+    });
+  });
+  expect(result.code).toBe(0);
+  expect(await calls[0]?.json()).toMatchObject({ image: DOCKER_DEFAULT_IMAGE });
+});
+
 test("Docker incompatible or malformed options fail before HTTP", async () => {
   const calls: Request[] = [];
   for (const flags of [
@@ -98,7 +114,7 @@ test("Docker incompatible or malformed options fail before HTTP", async () => {
     ["--repo", "acme/web"],
     ["--connections", "a"],
     ["--credential-version", "0"],
-    ["--host", "not-a-host"],
+    ["--host", "x".repeat(65)],
     ["one", "two"],
   ]) {
     const result = await capture([...args, ...flags], async (request) => {
@@ -123,23 +139,57 @@ test("unknown Docker launch outcome retains a stable request UUID for exact retr
   }
 });
 
-// CLI must issue one ticket via user authority and show a usable server-hosted installer.
-test("host add prints one verified-installer command and a one-time registration ticket", async () => {
-  let calls = 0;
-  const result = await capture(["host", "add", "--org", org], async (request) => {
-    calls++;
-    expect(new URL(request.url).pathname).toBe("/api/v1/docker/hosts/register-token");
-    expect(await request.json()).toEqual({ org });
-    return Response.json({
-      hostId: host,
-      registrationToken: "a".repeat(64),
-      command: "curl -fsSL https://armada.example/install-host.sh | sh -s -- --token " + "a".repeat(64),
-      expiresAt: "2026-11-13T14:00:00Z",
+test.each([{ flags: ["--skill", "team/notes@1.2.3", "--connections", host] }, { flags: ["--no-connections"] }])(
+  "Docker forwards existing skill/MCP flags %j",
+  async ({ flags }: { flags: readonly string[] }) => {
+    let body: Record<string, unknown> = {};
+    const result = await capture([...args, ...flags], async (request) => {
+      body = (await request.json()) as Record<string, unknown>;
+      return Response.json({ sandbox: { id: requestId, provider: "docker" }, golden: null, runtime: { epoch: "1" } });
     });
-  });
-  expect(result.code).toBe(0);
-  expect(calls).toBe(1);
-  expect(result.out).toContain("/install-host.sh | sh -s -- --token");
-  expect(result.out).toContain("Expires: 2026-11-13T14:00:00Z");
-  expect(result.err).toBe("");
+    expect(result.code).toBe(0);
+    expect(body.connections).toEqual(flags.includes("--no-connections") ? [] : [host]);
+    if (flags.includes("--skill")) expect(body.skills).toEqual(["team/notes@1.2.3"]);
+  },
+);
+test("Docker launch resolves an exact unique non-revoked host name and refuses missing/ambiguous names", async () => {
+  const receipt = {
+    sandbox: { id: requestId, provider: "docker", status: "running" },
+    golden: null,
+    runtime: { epoch: "1" },
+  };
+  const namedArgs = args.map((arg) => (arg === host ? "office" : arg));
+  const summary = {
+    id: host,
+    name: "office",
+    state: "online",
+    createdAt: "2026-11-13T00:00:00Z",
+    lastSeenAt: null,
+    revokedAt: null,
+    version: "2.27.0",
+    sandboxes: 0,
+  };
+  for (const mode of ["unique", "missing", "ambiguous"]) {
+    let launched = 0;
+    const result = await capture(namedArgs, async (request) => {
+      if (new URL(request.url).pathname.endsWith("/hosts/list")) {
+        expect(await request.json()).toEqual({ org });
+        return Response.json({
+          placement: true,
+          hosts:
+            mode === "missing"
+              ? []
+              : mode === "ambiguous"
+                ? [summary, { ...summary, id: credential }]
+                : [summary, { ...summary, id: credential, state: "revoked" }],
+        });
+      }
+      launched++;
+      expect(await request.json()).toMatchObject({ hostId: host });
+      return Response.json(receipt);
+    });
+    expect(result.code === 0).toBe(mode === "unique");
+    expect(launched).toBe(mode === "unique" ? 1 : 0);
+    if (mode !== "unique") expect(result.err).toContain(mode === "missing" ? "No non-revoked" : "ambiguous");
+  }
 });

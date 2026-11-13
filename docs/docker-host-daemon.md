@@ -112,7 +112,14 @@ The request and receipt are encrypted in a service-only ledger; no model secret
 is copied into it. A completed retry returns its original admission receipt with
 current sandbox metadata (even after stop/delete), never restarts the sandbox.
 
-The API-only CLI uses the same normal route, not the private preview:
+The API-only CLI uses the same normal route, not the private preview. `image` is
+optional everywhere (API, CLI, dashboard): without it the launch uses
+`DOCKER_DEFAULT_IMAGE` from `@armada/core`, a digest-pinned Debian
+`buildpack-deps` image (#1507). The resolved image is part of the request's
+identity: the CLI and dashboard send it explicitly, so a retry with the same
+`requestId` stays identical even if a later release changes the default. A raw API
+caller that omits `image` should do the same when it retries across an upgrade.
+`--image` overrides the default:
 
 ```sh
 bun run armada launch --provider docker --org "$ARMADA_ORG" \
@@ -528,8 +535,9 @@ operator release process before using it. No deployment or remote migration was
 performed here.
 
 Use **Add a host** in the dashboard or `armada host add --org ORG_UUID`.
-Paste its one command on the Linux Docker machine. The one-use token is included
-under the owner-approved short-lived installer exception; never share or persist it. Requires curl, sha256sum, util-linux flock/loginctl
+Paste its one command on the Linux Docker machine; the one-use token is included
+under the owner-approved five-minute registration-token exception. Never share
+or persist the command. Requires curl, sha256sum, util-linux flock/loginctl
 and a working systemd user session. The binary is verified before execution,
 registered over stdin and installed as a user service with linger. If the user
 cannot enable linger or use Docker, an administrator must configure linger and
@@ -561,6 +569,34 @@ with server/org/credential/SSH/image arguments plus
 proves a normal launch/answer/stop/delete and uninstalls; compare inventories with
 the baseline. No reboot, prune, shared-image removal or worker host access.
 This procedure has not been run here.
+
+
+### One-click command contract (owner clarification)
+
+`POST /api/v1/docker/hosts/register-token` accepts `{org,name?}` and returns
+`{hostId,registrationToken,command,expiresAt}`. `command` is server-generated using
+the configured public origin and includes the single-use token:
+`curl -fsSL --proto '=https' --proto-redir '=https' '<origin>/install-host.sh' | sh -s -- --token <one-time>`.
+Expiry is the actual database expiry in ISO UTC. Show/copy once, no persistence
+or telemetry. This is the sole token-in-argv exception in AGENTS.md; the exchanged
+host credential still travels only in private state and authenticated requests.
+The POSIX script verifies the architecture's digest, installs the existing user
+service and prints `connected` after the daemon has successfully polled. A timeout
+reports pending, not failed registration or permission to replay a token.
+
+CLI: `armada host add [--name NAME] [--org UUID]` prints that command and waits
+boundedly for the exact host. `armada host list [--json]` shows safe metadata;
+`armada host revoke UUID` revokes through the admin API. Selected organization is
+reused. `armada launch --provider docker --host UUID_OR_NAME [--image DIGEST_REF]`
+resolves names exactly among nonrevoked hosts in the selected org and refuses
+ambiguous names. Names are optional, nonempty trimmed display strings up to64
+characters, never identity or authority.
+
+Additional prerequisite: `20261113160000_docker_host_names.sql` after the prior
+host-version migration, deployed by the authorized coordinator only. Same single
+real-host smoke `--service-install` applies; use the one-click command instead of
+manual binary installation or a second token prompt. Dashboard contract posted on
+#1380; dialog redesign belongs to that agent.
 
 ### Harness and cost acceptance (#1454)
 

@@ -5,7 +5,7 @@ describe("sidebar navigation", () => {
   test("lists the owner's groups and destinations in order, without Organizations", () => {
     expect(NAV_GROUPS.map((group) => [group.label, group.links.map((link) => link.label)])).toEqual([
       ["Run", ["Sandboxes", "Otto", "Routines", "Templates"]],
-      ["Library", ["Environments", "Skills", "Tools", "Variables"]],
+      ["Library", ["Snapshots", "Skills", "Tools", "Variables"]],
       ["Providers", ["Self-hosted", "Cloud"]],
       ["Account", ["Models", "Settings"]],
     ]);

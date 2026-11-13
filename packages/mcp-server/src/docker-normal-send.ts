@@ -2,6 +2,7 @@ import { ProviderError } from "@armada/core";
 import { decryptSecret, type Sql } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
+import type { RuntimeMcp } from "./runtime-mcp.ts";
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 /** Normal send shares the preview's fenced, idempotent native admission boundary. */
@@ -12,6 +13,7 @@ export function createDockerNormalSend(
     enabled?: boolean;
     clock?: { now(): number; wait(ms: number): Promise<void> };
     timeoutMs?: number;
+    prepareMcp?: RuntimeMcp["prepare"];
   } = {},
 ) {
   const runtime = createDockerRuntimeLifecycle(sql, key, { enabled: options.enabled === true });
@@ -43,6 +45,12 @@ export function createDockerNormalSend(
         throw failure("invalid_request", "Docker send requires request_id and prompt; model and effort remain pinned.");
       if (!["ready", "running"].includes(row.status))
         throw failure("conflict", "Docker sandbox must be running before send.");
+      const pendingLaunch = await sql.query(
+        `select sandbox_id from public.docker_launch_requests where sandbox_id=$1 and result_enc is null`,
+        [row.id],
+      );
+      if (pendingLaunch.rows.length) throw failure("conflict", "Docker launch preparation is still pending.");
+      await options.prepareMcp?.(caller, row.id);
       let conversationId = args.conversation_id ?? row.conversation_ids.at(-1);
       // Omitted conversation selection must remain stable on retries of the first send.
       if (args.conversation_id === undefined) {
