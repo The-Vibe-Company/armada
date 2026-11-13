@@ -1,13 +1,23 @@
-import { expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createSqlData } from "../src/data.ts";
 import { createRuntimeFollowup } from "../src/runtime-followup.ts";
 import { callSharedTool } from "../src/tool-api.ts";
 import { runtimeFixture as fixture } from "./runtime-fixture.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
 
-test("shared send preserves the Runner session and epoch; replay cannot duplicate turns or overwrite a newer task", async () => {
-  const f = await fixture();
-  try {
+describe("shared runtime send", () => {
+  let f: Awaited<ReturnType<typeof fixture>>;
+  // Cold PGlite WASM startup, all migrations, fixture seeding and the initial
+  // Runner turn are setup, not send/replay behavior. Keep them out of the test's
+  // 5s budget; the real SQL/Runner/epoch assertions below remain unchanged.
+  beforeAll(async () => {
+    f = await fixture();
+  }, 20_000);
+  afterAll(async () => {
+    await f?.close();
+  });
+
+  test("shared send preserves the Runner session and epoch; replay cannot duplicate turns or overwrite a newer task", async () => {
     const originalGeneration = (await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))!.lifecycleGeneration!;
     const input = f.input();
     const receipt = (await callSharedTool(f.context, "send", input)) as Awaited<ReturnType<typeof f.send>>;
@@ -25,9 +35,7 @@ test("shared send preserves the Runner session and epoch; replay cannot duplicat
     expect(row.lifecycleGeneration).toBe(originalGeneration + 4);
     expect(f.starts).toHaveLength(3);
     expect(await f.authority.withSession(f.active.runtimeToken, f.active.epoch, async () => true)).toBe(true);
-  } finally {
-    await f.close();
-  }
+  });
 });
 
 test("uncertain send reconciles the same durable identity/lease; changed input and unauthorized/stopped targets never start work", async () => {
