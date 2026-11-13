@@ -9,6 +9,9 @@ for (const mode of [
   "accounts",
   "accounts_unknown",
   "accounts_invalid",
+  "accounts_stop_unsupported",
+  "accounts_unknown_bad",
+  "accounts_price_lost",
   "offline",
   "unsupported",
   "delete_failure",
@@ -104,11 +107,14 @@ for (const mode of [
                     followupPrompts: true,
                     status: true,
                     logs: true,
-                    stop: true,
+                    stop: mode !== "accounts_stop_unsupported",
                     resume: !(id === "docker" && mode === "unsupported"),
                     delete: true,
                   },
-                  unsupportedReasons: { resume: "Server resume disabled." },
+                  unsupportedReasons: {
+                    stop: "Stop unavailable (#1579)",
+                    resume: "Server resume disabled.",
+                  },
                 })),
               };
               break;
@@ -116,6 +122,7 @@ for (const mode of [
               result = { hosts: [{ id: "owned-host", state: mode === "offline" ? "offline" : "online" }] };
               break;
             case "sandbox/launch":
+              if (mode.startsWith("accounts")) turns.set(p, []);
               if (p === "docker") expect(body).not.toHaveProperty("image");
               if (p === "boat" && (mode === "quota" || mode === "server_failure"))
                 return Response.json(
@@ -177,23 +184,40 @@ for (const mode of [
                     inputTokens: mode === "usage_missing" ? null : 10,
                     outputTokens: 5,
                     pricing: {
-                      unknown: null,
+                      unknown:
+                        mode === "accounts_unknown" ||
+                        (mode === "accounts_price_lost" && (turns.get(p)?.length ?? 0) > 1)
+                          ? "price"
+                          : null,
                       usd:
-                        mode === "price_changed" && (turns.get(p)?.length ?? 0) > 1
-                          ? i === 0
-                            ? "0.2"
-                            : i === 1
-                              ? "0.0"
-                              : "0.1"
-                          : "0.1",
+                        mode === "accounts_unknown" ||
+                        (mode === "accounts_price_lost" && (turns.get(p)?.length ?? 0) > 1)
+                          ? null
+                          : mode === "price_changed" && (turns.get(p)?.length ?? 0) > 1
+                            ? i === 0
+                              ? "0.2"
+                              : i === 1
+                                ? "0.0"
+                                : "0.1"
+                            : "0.1",
                     },
                   })),
                   cost: {
                     currency: "USD",
-                    unknown: mode === "accounts_unknown" ? "subscription" : null,
-                    unpricedTurns: mode === "accounts_unknown" ? turns.get(p)?.length : 0,
+                    basis: "estimated",
+                    unknown:
+                      mode.startsWith("accounts_unknown") ||
+                      (mode === "accounts_price_lost" && (turns.get(p)?.length ?? 0) > 1)
+                        ? "price"
+                        : null,
+                    unpricedTurns:
+                      mode.startsWith("accounts_unknown") ||
+                      (mode === "accounts_price_lost" && (turns.get(p)?.length ?? 0) > 1)
+                        ? turns.get(p)?.length
+                        : 0,
                     usd:
-                      mode === "accounts_unknown"
+                      mode.startsWith("accounts_unknown") ||
+                      (mode === "accounts_price_lost" && (turns.get(p)?.length ?? 0) > 1)
                         ? null
                         : mode === "cost_mismatch"
                           ? "99"
@@ -246,15 +270,15 @@ for (const mode of [
         expect(lines[0]).toContain("invalid_accounts_configuration");
         return;
       }
-      expect(passed).toBe(true);
+      const badCost = mode === "accounts_unknown_bad" || mode === "accounts_price_lost";
+      expect(passed).toBe(!badCost);
       const report = JSON.parse(lines.find((line) => line.startsWith('{"step":"accounts_parity"'))!);
       for (const account of ["codex-openai", "codex-azure"]) {
         for (const provider of ["modal", "docker"]) {
           const cell = report.accounts[account][provider];
-          expect(cell.status).toBe("pass");
+          expect(cell.status).toBe(badCost ? "fail" : mode === "accounts_stop_unsupported" ? "not-run" : "pass");
           expect(cell.features["resume-recall"][provider].status).toBe("pass");
-          if (mode === "accounts_unknown")
-            expect(cell.features["exact-cost"][provider].reason).toBe("unknown: subscription");
+          if (mode === "accounts_unknown") expect(cell.features["exact-cost"][provider].reason).toBe("unknown: price");
         }
       }
       expect(report.accounts["codex-subscription"].modal).toEqual({

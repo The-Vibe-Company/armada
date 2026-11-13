@@ -287,11 +287,21 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         return;
       }
       if (feature === "usage") return;
-      // Account probes accept honestly unpriced turns, never a fabricated zero.
-      if (io.accountProbe && usage.cost?.unknown && usage.cost.usd === null) {
-        observe("exact-cost", "pass", `unknown: ${usage.cost.unknown}`);
-        return;
-      }
+      if (io.accountProbe)
+        io.out(
+          JSON.stringify({
+            step: "account_usage",
+            provider: c.provider,
+            afterResume,
+            turns: usage.turns.map((turn) => ({
+              promptId: turn.promptId,
+              model: turn.model,
+              inputTokens: turn.inputTokens,
+              outputTokens: turn.outputTokens,
+            })),
+            cost: usage.cost,
+          }),
+        );
       try {
         // Compare fixed-point integers, never binary floating point or current
         // catalog prices. These are the service's persisted USD quotes.
@@ -301,6 +311,33 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           const [whole, fraction = ""] = value.split(".");
           return BigInt(whole!) * 10n ** 18n + BigInt(fraction.padEnd(18, "0"));
         };
+        if (io.accountProbe && usage.cost?.unknown && usage.cost.usd === null) {
+          const current = new Map<string, string>();
+          let unpriced = 0;
+          const seen = new Set<string>();
+          for (const turn of usage.turns) {
+            const key = JSON.stringify([turn.promptId, turn.model]);
+            if (seen.has(key)) throw new Error("invalid_cost_receipt");
+            seen.add(key);
+            if (!turn.pricing || turn.pricing.unknown !== null) {
+              if (turn.pricing && turn.pricing.usd !== null) throw new Error("invalid_cost_receipt");
+              unpriced++;
+              continue;
+            }
+            units(turn.pricing.usd);
+            current.set(key, JSON.stringify(turn.pricing));
+          }
+          if (
+            usage.cost.currency !== "USD" ||
+            unpriced === 0 ||
+            usage.cost.unpricedTurns !== unpriced ||
+            [...retainedPrices].some(([key, value]) => current.get(key) !== value)
+          )
+            throw new Error("invalid_cost_receipt");
+          for (const [key, value] of current) retainedPrices.set(key, value);
+          observe("exact-cost", "pass", `unknown: ${usage.cost.unknown}`);
+          return;
+        }
         if (usage.cost?.currency !== "USD" || usage.cost.unknown !== null || usage.cost.unpricedTurns !== 0)
           throw new Error("invalid_cost_receipt");
         const current = new Map<string, string>();
@@ -315,7 +352,12 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         if (sum !== units(usage.cost.usd) || [...retainedPrices].some(([key, value]) => current.get(key) !== value))
           throw new Error("invalid_cost_receipt");
         for (const [key, value] of current) retainedPrices.set(key, value);
-        if (report["exact-cost"]?.[c.provider]?.status !== "fail") observe("exact-cost", "pass");
+        if (report["exact-cost"]?.[c.provider]?.status !== "fail")
+          observe(
+            "exact-cost",
+            "pass",
+            io.accountProbe ? `${usage.cost.basis ?? "unknown basis"}: USD ${usage.cost.usd}` : null,
+          );
       } catch (error) {
         const detail = diagnostic(error);
         observe("exact-cost", "fail", detail.code, detail);
@@ -682,7 +724,7 @@ async function accountsParity(env: NodeJS.ProcessEnv, io: Io, args: string[]): P
           ["--only", provider],
         );
         passed &&= ok;
-        const required = ["launch", "send", "resume-recall", "usage", "exact-cost", "cleanup"];
+        const required = ["launch", "send", "stop", "resume", "resume-recall", "usage", "exact-cost", "cleanup"];
         const complete = required.every((name) => receipt?.[name]?.[provider]?.status === "pass");
         const outcome = !ok ? "fail" : complete ? "pass" : "not-run";
         result = { status: outcome, features: receipt };
