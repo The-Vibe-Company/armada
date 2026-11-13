@@ -1,8 +1,5 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { AUTH_HEADER, type Driver, type DriverContext, Journal, Runner } from "../src/index.ts";
 
 const token1 = `armada_epoch_${"a".repeat(64)}`,
@@ -29,10 +26,10 @@ const install = (epoch: string, token = token1, generation = grant.generation) =
 });
 
 // Owns private RPC admission/ACK, reordered delivery, immutable active client snapshot
-// and durable scrub boundary. This is NOT provider/native-client conformance proof.
+// and scrub admission boundary. Filesystem durability belongs to
+// checkpoint-retry.test.ts; this is NOT provider/native-client conformance proof.
 test("private epoch ACK is generation/monotonic fenced; stale scrub preserves newer authority and checkpoint requires scrub", async () => {
-  const root = await mkdtemp(join(tmpdir(), "armada-epoch-"));
-  const journal = new Journal(join(root, "journal.sqlite"), (s) => s);
+  const journal = new Journal(":memory:", (s) => s);
   const contexts: DriverContext[] = [];
   let finish: () => void = () => {};
   const driver: Driver = {
@@ -137,6 +134,5 @@ test("private epoch ACK is generation/monotonic fenced; stale scrub preserves ne
   } finally {
     finish();
     journal.close();
-    await rm(root, { recursive: true, force: true });
   }
 });
