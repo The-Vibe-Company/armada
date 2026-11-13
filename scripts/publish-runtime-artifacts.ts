@@ -4,6 +4,7 @@ import { chmod, copyFile, mkdir } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { OPENCODE_ARTIFACT } from "../packages/agent-runtime/src/opencode-artifact.ts";
+import { publishedRuntimeArchitectures } from "../packages/agent-runtime/src/publication.ts";
 
 type FilePin = { path: string; sha256: string; bytes: number };
 export type PublicationManifest = {
@@ -40,7 +41,7 @@ if (import.meta.main) {
   await mkdir(manifests, { recursive: true });
   const require = createRequire(join(root, "packages/agent-runtime/package.json"));
   const opencodeRequire = createRequire(require.resolve("opencode-ai/package.json"));
-  for (const architecture of ["x64", "arm64"] as const) {
+  for (const architecture of publishedRuntimeArchitectures) {
     const source = join(root, "dist/runtime-build", architecture);
     const build = Bun.spawnSync(
       [

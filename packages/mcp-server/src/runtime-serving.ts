@@ -46,14 +46,61 @@ export function createRuntimeServing(sql: Sql, key: string) {
       !sandbox.reasoningEffort
     )
       throw new VaultError("not_found", "No authorized runtime sandbox.");
-    const agent = createRuntimeAgent(commands, {
-      harness: sandbox.harness,
-      ownerId: sandbox.ownerId,
-      sandboxId: sandbox.id,
-      providerSandboxId: sandbox.providerSandboxId,
-      cwd: sandbox.repositoryDir ? `/home/user/${sandbox.repositoryDir}` : "/home/user",
-      defaults: { model: sandbox.model, reasoningEffort: sandbox.reasoningEffort },
-    });
+    const agent = createRuntimeAgent(
+      {
+        async call(ownerId, request, options) {
+          if (request.op === "steer") {
+            if (!sql.transaction) throw new VaultError("unavailable", "Transactional runtime control unavailable.");
+            await sql.transaction(async (tx) => {
+              const member = (
+                await tx.query("select user_id from public.members where user_id=$1 and org_id=$2 for update", [
+                  actor.userId,
+                  sandbox.orgId,
+                ])
+              ).rows[0];
+              if (!member || actor.userId !== sandbox.ownerId)
+                throw new ProviderError({
+                  provider: "boat",
+                  code: "forbidden",
+                  message: "Runtime owner membership required.",
+                  retryable: false,
+                });
+              const account = (
+                await tx.query(
+                  `select id from public.credentials where id=$1 and version=$2 and status='active'
+               and (expires_at is null or expires_at>now())
+               and ((scope='user' and owner_id=$3) or (scope='org' and owner_id=$4))
+               for update`,
+                  [sandbox.credentialId, sandbox.credentialVersion, actor.userId, sandbox.orgId],
+                )
+              ).rows[0];
+              if (!account)
+                throw new ProviderError({
+                  provider: "boat",
+                  code: "forbidden",
+                  message: "Pinned runtime account is no longer authorized.",
+                  retryable: false,
+                });
+              const local = {
+                ...tx,
+                query: tx.query.bind(tx),
+                transaction: async <T>(work: (tx: Sql) => Promise<T>) => work(tx),
+              };
+              await createRuntimeCommands(createRuntimeEnrolments(local, key), key).enqueue(ownerId, request);
+            });
+          }
+          return commands.call(ownerId, request, options);
+        },
+      },
+      {
+        harness: sandbox.harness,
+        ownerId: sandbox.ownerId,
+        sandboxId: sandbox.id,
+        providerSandboxId: sandbox.providerSandboxId,
+        cwd: sandbox.repositoryDir ? `/home/user/${sandbox.repositoryDir}` : "/home/user",
+        defaults: { model: sandbox.model, reasoningEffort: sandbox.reasoningEffort },
+      },
+    );
     const host = typeof apiKey === "string" ? createBoatProvider({ apiKey }) : apiKey;
     // Native Modal stop expects its private listener. This lane may retain disk
     // only after the common journal checkpoint committed, never on a host ACK.
@@ -101,38 +148,64 @@ export function createRuntimeServing(sql: Sql, key: string) {
               };
             },
           });
-    return createRuntimeProvider(compute, sandbox.providerSandboxId, {
-      async getPrompt(request) {
-        if (!["failed", "stopped", "deleted"].includes(sandbox.status)) return agent.getPrompt(request);
-        const page = await history(caller, sandbox.id, { direction: "backward", limit: 1000 });
-        const last = page.events
-          .toReversed()
-          .find((event) => event.kind === "prompt" && event.promptId === request.promptId);
-        if (
-          (!last || last.kind !== "prompt") &&
-          sandbox.status === "failed" &&
-          sandbox.taskPromptId === request.promptId
-        )
-          return { promptId: request.promptId, status: "failed" as const, done: true };
-        if (!last || last.kind !== "prompt")
-          throw new ProviderError({
-            provider: "boat",
-            code: "not_found",
-            message: "No archived runtime prompt.",
-            retryable: false,
-          });
-        return {
-          promptId: request.promptId,
-          ...(last.conversationId ? { conversationId: last.conversationId } : {}),
-          status: isFinalPromptStatus(last.status)
-            ? last.status
-            : sandbox.status === "failed"
-              ? "failed"
-              : "interrupted",
-          done: true,
-        };
+    const authorize = () => {
+      if (actor.userId !== sandbox.ownerId)
+        throw new VaultError("forbidden", "Only the runtime owner may control this sandbox.");
+    };
+    return createRuntimeProvider(
+      compute,
+      sandbox.providerSandboxId,
+      {
+        async getPrompt(request) {
+          if (!["failed", "stopped", "deleted"].includes(sandbox.status)) return agent.getPrompt(request);
+          const page = await history(caller, sandbox.id, { direction: "backward", limit: 1000 });
+          const last = page.events
+            .toReversed()
+            .find((event) => event.kind === "prompt" && event.promptId === request.promptId);
+          if (
+            (!last || last.kind !== "prompt") &&
+            sandbox.status === "failed" &&
+            sandbox.taskPromptId === request.promptId
+          )
+            return { promptId: request.promptId, status: "failed" as const, done: true };
+          if (!last || last.kind !== "prompt")
+            throw new ProviderError({
+              provider: "boat",
+              code: "not_found",
+              message: "No archived runtime prompt.",
+              retryable: false,
+            });
+          return {
+            promptId: request.promptId,
+            ...(last.conversationId ? { conversationId: last.conversationId } : {}),
+            status: isFinalPromptStatus(last.status)
+              ? last.status
+              : sandbox.status === "failed"
+                ? "failed"
+                : "interrupted",
+            done: true,
+          };
+        },
+        events: ({ sandboxId: _physical, ...pagination }) => history(caller, sandbox.id, pagination),
       },
-      events: ({ sandboxId: _physical, ...pagination }) => history(caller, sandbox.id, pagination),
-    });
+      sandbox.boatRuntime
+        ? {
+            interrupt(request) {
+              authorize();
+              return agent.interrupt(request);
+            },
+            steer(request) {
+              authorize();
+              const conversationId = request.conversationId ?? sandbox.conversationIds.at(-1);
+              if (!conversationId) throw new VaultError("invalid", "No runtime conversation.");
+              return agent.steer({ ...request, conversationId });
+            },
+            exec(request) {
+              authorize();
+              return agent.exec(request);
+            },
+          }
+        : undefined,
+    );
   };
 }

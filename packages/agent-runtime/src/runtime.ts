@@ -588,7 +588,7 @@ export class Runner {
     }
     if (r.op === "exec") {
       this.refreshNativeSecrets?.();
-      const work = this.exec(r.input);
+      const work = this.exec(r.input, signal);
       this.commands.add(work);
       try {
         return await work;
@@ -749,7 +749,8 @@ export class Runner {
       this.journal.ack = result.acknowledgedSequence;
     }
   }
-  private async exec(r: ExecRequest): Promise<ExecResult> {
+  private async exec(r: ExecRequest, signal?: AbortSignal): Promise<ExecResult> {
+    signal?.throwIfAborted();
     if (r.sandboxId !== this.grant.sandboxId || typeof r.command !== "string") throw Error("invalid_request");
     const child = spawn("/bin/bash", ["-s"], {
       cwd: r.cwd ?? process.cwd(),
@@ -786,6 +787,13 @@ export class Runner {
       child.once("error", reject);
     });
     const pid = child.pid as number;
+    const terminate = () => {
+      try {
+        process.kill(-pid, "SIGKILL");
+      } catch {}
+    };
+    signal?.addEventListener("abort", terminate, { once: true });
+    if (signal?.aborted) terminate();
     const save = (value: unknown) =>
       this.journal.db
         .query("INSERT OR REPLACE INTO processes VALUES(?,?)")
@@ -804,6 +812,9 @@ export class Runner {
     const done = new Promise<ExecResult>((resolve) =>
       child.once("close", (exitCode) => {
         clearTimeout(timer);
+        // Synchronous commands own their whole process group, including background descendants.
+        terminate();
+        signal?.removeEventListener("abort", terminate);
         try {
           this.refreshNativeSecrets?.();
         } catch {

@@ -45,6 +45,8 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup-bun
         if: steps.config.outputs.enabled == 'true'
+      - run: bun install --frozen-lockfile
+        if: steps.config.outputs.enabled == 'true'
       - name: Restore staging smoke receipts across branches and tags
         if: steps.config.outputs.enabled == 'true'
         env:
@@ -79,17 +81,9 @@ jobs:
           ARMADA_SMOKE_CASES: ${{ secrets.ARMADA_SMOKE_CASES }}
           ARMADA_SMOKE: create_real_compute
           ARMADA_SMOKE_JOURNAL: .smoke/sandboxes.json
-          ARMADA_SMOKE_DASHBOARD_URL: ${{ vars.ARMADA_SMOKE_DASHBOARD_URL }}
-          ARMADA_SMOKE_SUPABASE_URL: ${{ vars.ARMADA_SMOKE_SUPABASE_URL }}
-          ARMADA_SMOKE_SUPABASE_ANON_KEY: ${{ vars.ARMADA_SMOKE_SUPABASE_ANON_KEY }}
-          ARMADA_SMOKE_DASHBOARD_USER_ID: ${{ vars.ARMADA_SMOKE_DASHBOARD_USER_ID }}
-          ARMADA_SMOKE_DASHBOARD_ORG_ID: ${{ vars.ARMADA_SMOKE_DASHBOARD_ORG_ID }}
-          ARMADA_SMOKE_DASHBOARD_OTTO: ${{ vars.ARMADA_SMOKE_DASHBOARD_OTTO }}
-          ARMADA_SMOKE_DASHBOARD_EMAIL: ${{ secrets.ARMADA_SMOKE_DASHBOARD_EMAIL }}
-          ARMADA_SMOKE_DASHBOARD_PASSWORD: ${{ secrets.ARMADA_SMOKE_DASHBOARD_PASSWORD }}
         run: |
           args=(--work-preservation --templates-skills --lifecycle --vault --default-skills --scoped-access --github-refresh --golden-runtime --expiry)
-          # Read-only SSR checks overlap compute; both verdicts must succeed.
+          # Read-only API checks overlap compute; both verdicts must succeed.
           bun scripts/dashboard-read-smoke.ts &
           dashboard_pid=$!
           status=0

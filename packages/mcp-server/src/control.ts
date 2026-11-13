@@ -798,6 +798,7 @@ async function dispatch(
         githubVersion: options.runtimeGitHub ? 1 : 0,
         mcpVersion: options.runtimeMcp ? 2 : 0,
         skillsVersion: options.boatRuntimeLaunch ? 1 : 0,
+        controlsVersion: options.runtimeHostFor ? 1 : 0,
         enabled: Boolean(options.boatRuntimeLaunch && options.runtimeHostFor),
       },
     } satisfies import("@armada/core").LaunchOptionsResponse;
@@ -1187,7 +1188,7 @@ async function dispatch(
         body.boatRuntime !== undefined ||
         body.armadaAccess ||
         body.skipSkillDefaults !== true ||
-        !Array.isArray(body.connections) ||
+        (body.connections !== undefined && !Array.isArray(body.connections)) ||
         (body.skills !== undefined && (!Array.isArray(body.skills) || body.skills.length)) ||
         (body.helperCapabilities !== undefined &&
           (!Array.isArray(body.helperCapabilities) || body.helperCapabilities.length))
