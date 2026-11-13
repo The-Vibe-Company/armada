@@ -23,18 +23,17 @@ test("a settled model mismatch keeps requested and observed visible without retr
     });
   });
   await signIn(page, "alice@example.com", `/sandboxes/${IDS.running}`);
+  const disclosure = page.getByText("The agent used a different model", { exact: true });
+  await expect(disclosure).toBeVisible();
+  await expect(page.getByText("Requested model: claude-fable-5-2", { exact: true })).toBeHidden();
+  await disclosure.click();
+  await expect(page.getByText("Requested model: claude-fable-5-2", { exact: true })).toBeVisible();
+  await expect(page.getByText("Reported model: claude-sonnet-5", { exact: true })).toBeVisible();
   await expect(
-    page.getByText("Requested: claude-fable-5-2 · Observed: claude-sonnet-5", { exact: true }),
-  ).toBeVisible();
-  await expect(
-    page.getByText("Model selection changed: Work may already have occurred. Do not retry automatically.", {
-      exact: true,
-    }),
+    page.getByText("Work may already have occurred. Do not retry automatically.", { exact: true }),
   ).toBeVisible();
   await page.setViewportSize({ width: 390, height: 844 });
-  await expect(
-    page.getByText("Requested: claude-fable-5-2 · Observed: claude-sonnet-5", { exact: true }),
-  ).toBeVisible();
+  await expect(disclosure).toBeVisible();
   await page.screenshot({ path: "test-results/model-selection-mobile.png", fullPage: true });
 });
 
@@ -55,9 +54,12 @@ test("unknown observed model is neutral, never a failure banner", async ({ page 
     }),
   );
   await signIn(page, "alice@example.com", `/sandboxes/${IDS.running}`);
-  const label = page.getByText("Model not verified: Model evidence is unavailable.", { exact: true });
+  const label = page.getByText("The model could not be verified", { exact: true });
   await expect(label).toBeVisible();
   await expect(label).not.toHaveClass(/text-destructive/);
+  await expect(page.getByText(/Requested: unknown/)).toHaveCount(0);
+  await label.click();
+  await expect(page.getByText("Model evidence is unavailable.", { exact: true })).toBeVisible();
 });
 
 test("status telemetry failure leaves the successfully read conversation visible", async ({ page }) => {
