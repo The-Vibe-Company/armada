@@ -123,7 +123,9 @@ export async function startServer(
   });
   const store = createSqlVaultStore(sql);
   const authStore = createSqlAuthStore(sql);
-  const otto = createOttoRuntime(sql, env);
+  // Isolate and cancel Otto queries: timed-out reads must not exhaust the control API pool.
+  const ottoSql = env.ARMADA_OTTO_ORG_ID ? bunSql(config.databaseUrl, 2, 1_500) : undefined;
+  const otto = createOttoRuntime(ottoSql ?? sql, env);
   const githubApp = githubAppFromEnv(env);
   const runtimeGitHub = githubApp
     ? createRuntimeGitHub({
@@ -164,7 +166,7 @@ export async function startServer(
     }, options.logError ?? console.error);
   } catch (error) {
     await mcp.close();
-    await sql.close();
+    await Promise.all([sql.close(), ottoSql?.close()]);
     throw error;
   }
   const providerFor = (apiKey: string, caller?: { userId: string; orgId: string }) => {
@@ -449,7 +451,7 @@ export async function startServer(
         ? [
             otto.route,
             createOttoApi(
-              sql,
+              ottoSql ?? sql,
               otto.scope,
               (request) =>
                 authenticateCaller(request.headers.get("authorization"), {
@@ -666,7 +668,8 @@ export async function startServer(
     ])
       .then(() => mcp.close())
       .then(() => stopped)
-      .then(() => sql.close());
+      .then(() => Promise.all([sql.close(), ottoSql?.close()]))
+      .then(() => {});
     server.workerDone = shutdown;
     return shutdown;
   };

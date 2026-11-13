@@ -57,3 +57,32 @@ test("API scopes membership and private workers; incomplete listings never retir
     401,
   );
 });
+
+test("every Otto view has a deadline and logs only view and elapsed time", async () => {
+  const { spyOn } = await import("bun:test");
+  const schedule = spyOn(globalThis, "setTimeout").mockImplementation(((callback: () => void) => {
+    queueMicrotask(callback);
+    return 0;
+  }) as unknown as typeof setTimeout);
+  const log = spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    const api = createOttoApi(
+      { query: () => new Promise(() => {}) },
+      { orgId: "org", repository: "example/web" },
+      async () => ({
+        ok: true,
+        caller: { userId: "user", orgs: [{ orgId: "org", role: "admin" }], via: "service" },
+      }),
+    );
+    for (const view of ["summary", "tasks", "resources", "orphans", "facts"]) {
+      const response = await api(new Request(`https://armada.example/api/v1/otto/${view}?org_id=org`));
+      expect(response?.status).toBe(503);
+      expect(await response?.json()).toEqual({ error: "unavailable" });
+      expect(log.mock.calls.at(-1)?.[0]).toMatch(new RegExp(`^Otto read unavailable view=${view} elapsed_ms=\\d+$`));
+    }
+    expect(log).toHaveBeenCalledTimes(5);
+  } finally {
+    schedule.mockRestore();
+    log.mockRestore();
+  }
+});

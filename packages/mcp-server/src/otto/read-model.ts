@@ -51,11 +51,6 @@ export async function readOttoModel(sql: Sql, scope: OttoScope, caller: Caller, 
         factId: issueFact?.id ?? pr.id,
       };
       tasks.set(issue, task);
-      await sql.query(
-        `insert into public.otto_tasks(org_id,repository,issue_number,title,state,fact_id,observed_at) values($1,$2,$3,$4,$5,$6,$7)
-       on conflict(org_id,repository,issue_number) do update set title=excluded.title,state=excluded.state,fact_id=excluded.fact_id,observed_at=excluded.observed_at`,
-        [...params, issue, task.title, task.state, task.factId, pr.observed_at],
-      );
     }
     const attribution = ownership(pr, sandboxes, scope.repository, fleet.restricted, now, facts);
     const work = needsWork(pr, facts, now);
@@ -141,26 +136,6 @@ export async function readOttoModel(sql: Sql, scope: OttoScope, caller: Caller, 
         branchIsCurrent: false,
       },
     });
-  }
-  for (const r of resources) {
-    const s = r.kind === "sandbox" ? sandboxes.find((s) => s.id === r.externalId) : undefined;
-    await sql.query(
-      `insert into public.otto_resources(org_id,repository,kind,external_id,task_issue,owner_state,owner_id,access_owner_id,reason,observed_at,evidence)
-    values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)
-    on conflict(org_id,repository,kind,external_id) do update set task_issue=excluded.task_issue,owner_state=excluded.owner_state,owner_id=excluded.owner_id,access_owner_id=excluded.access_owner_id,reason=excluded.reason,observed_at=excluded.observed_at,evidence=excluded.evidence`,
-      [
-        ...params,
-        r.kind,
-        r.externalId,
-        r.taskIssue,
-        r.owner.state === "candidate" ? "unknown" : r.owner.state,
-        r.owner.userId,
-        s?.visibility === "private" ? s.access_owner_id : null,
-        r.reason,
-        r.observedAt,
-        JSON.stringify(r.evidence),
-      ],
-    );
   }
   return {
     resources,

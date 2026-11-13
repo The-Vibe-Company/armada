@@ -63,6 +63,25 @@ export async function readFleet(sql: Sql, scope: OttoScope, caller: Caller, now:
         [scope.orgId, caller.userId],
       )
     ).rows.length > 0;
+  // Batch journals across the visible fleet instead of one database round trip per sandbox.
+  const boatIds = key ? rows.filter((s) => s.provider === "boat").map((s) => s.id) : [];
+  const boatEvents = boatIds.length
+    ? (
+        await sql.query<{ sandbox_id: string; event_enc: Uint8Array | null }>(
+          `select s.id as sandbox_id,e.event_enc from public.sandboxes s cross join lateral
+      (select sequence,case when octet_length(event_enc)<=65536 then event_enc else null end as event_enc
+       from public.runtime_events where sandbox_id=s.id order by sequence desc limit 128) e
+     where s.id=any($1::uuid[]) order by s.id,e.sequence desc`,
+          [boatIds],
+        )
+      ).rows
+    : [];
+  const encryptedBySandbox = new Map<string, { event_enc: Uint8Array | null }[]>();
+  for (const event of boatEvents) {
+    const list = encryptedBySandbox.get(event.sandbox_id) ?? [];
+    list.push(event);
+    encryptedBySandbox.set(event.sandbox_id, list);
+  }
   for (const s of rows) {
     if (s.last_observed_at) s.last_observed_at = new Date(s.last_observed_at).toISOString();
     let events: AgentEvent[] = [];
@@ -81,12 +100,7 @@ export async function readFleet(sql: Sql, scope: OttoScope, caller: Caller, now:
       ).rows;
       events = stored.some((r) => r.event === null) ? [] : stored.flatMap((r) => (r.event ? [r.event] : []));
     } else if (s.provider === "boat" && key) {
-      const encrypted = (
-        await sql.query<{ event_enc: Uint8Array | null }>(
-          `select case when octet_length(event_enc)<=65536 then event_enc else null end as event_enc from public.runtime_events where sandbox_id=$1 order by sequence desc limit 128`,
-          [s.id],
-        )
-      ).rows;
+      const encrypted = encryptedBySandbox.get(s.id) ?? [];
       let bytes = 0;
       for (const row of encrypted) {
         bytes += row.event_enc?.byteLength ?? 1048577;
