@@ -81,10 +81,9 @@ export function planShards(
 function shareSqlWorker(file: string, source: string): boolean {
   return (
     /^(packages\/(core|mcp-server)\/test\/)/.test(file) &&
-    (/\b(migratedDatabase|openMigratedDatabase|rowOnlyDatabase|rowOnlyConnection|runtimeFixture)\s*\(/.test(source) ||
-      /import\s*\{[^}]*\b(database|harness)\b[^}]*\}\s*from "\.\/support\.ts"/.test(source) ||
-      /import\s*\{[^}]*\bruntimeFixture\b[^}]*\}\s*from "\.\/runtime-fixture\.ts"/.test(source)) &&
-    !/Bun\.(spawn|serve|env)|captureGitHubAuditLogs|mock\.(module|restore)|\b(CodexDriver|ClaudeDriver|OpencodeDriver)\b|globalThis\.|process\.(env|on|once|chdir)|spyOn\(|child_process|test\.concurrent|setSystemTime|Date\.now\s*=/.test(
+    (/\b(migratedDatabase|openMigratedDatabase|rowOnlyDatabase|rowOnlyConnection)\s*\(/.test(source) ||
+      /import\s*\{[^}]*\b(database|harness)\b[^}]*\}\s*from "\.\/support\.ts"/.test(source)) &&
+    !/Bun\.(spawn|serve|env)|runtimeFixture|runtime-fixture|\b(Journal|Runner)\b|captureGitHubAuditLogs|mock\.(module|restore)|\b(CodexDriver|ClaudeDriver|OpencodeDriver)\b|globalThis\.|process\.(env|on|once|chdir)|spyOn\(|child_process|test\.concurrent|setSystemTime|Date\.now\s*=/.test(
       source,
     )
   );
@@ -131,26 +130,31 @@ if (import.meta.main) {
     let failed = false;
     const files = shards[index - 1]!;
     const batches = workerBatches(files, sources, durations.workers);
+    const run = async (batch: string[]) => {
+      const started = performance.now();
+      const child = Bun.spawn([process.execPath, "test", "--no-orphans", ...batch.map((path) => `./${path}`)], {
+        cwd: root,
+        stdin: "inherit",
+        stdout: "inherit",
+        stderr: "inherit",
+      });
+      const code = await child.exited;
+      if (code !== 0) failed = true;
+      const elapsed = ((performance.now() - started) / 1000).toFixed(3);
+      if (batch.length === 1) console.log(`Completed ${batch[0]} in ${elapsed}s`);
+      else console.log(`Completed SQL worker in ${elapsed}s: ${batch.join(", ")}`);
+    };
+    // This existing test rebuilds a repository artifact read by other suites.
+    // Keep its write exclusive; new artifact fixtures must use temporary paths.
+    const writer = "packages/mcp-server/test/github-boat.test.ts";
+    for (const batch of batches.filter((batch) => batch.includes(writer))) await run(batch);
+    const parallel = batches.filter((batch) => !batch.includes(writer));
     let next = 0;
     // Two isolated processes fit the measured SQL-worker memory envelope; never
     // fan out every file. This uses runner cores without requesting more jobs.
     await Promise.all(
       Array.from({ length: 2 }, async () => {
-        while (next < batches.length) {
-          const batch = batches[next++]!;
-          const started = performance.now();
-          const child = Bun.spawn([process.execPath, "test", "--no-orphans", ...batch.map((path) => `./${path}`)], {
-            cwd: root,
-            stdin: "inherit",
-            stdout: "inherit",
-            stderr: "inherit",
-          });
-          const code = await child.exited;
-          if (code !== 0) failed = true;
-          const elapsed = ((performance.now() - started) / 1000).toFixed(3);
-          if (batch.length === 1) console.log(`Completed ${batch[0]} in ${elapsed}s`);
-          else console.log(`Completed SQL worker in ${elapsed}s: ${batch.join(", ")}`);
-        }
+        while (next < parallel.length) await run(parallel[next++]!);
       }),
     );
     process.exit(failed ? 1 : 0);

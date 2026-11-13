@@ -47,6 +47,8 @@ test("SQL worker merging keeps every file once and leaves native or global-mock 
     "globalThis.fetch",
     "test.concurrent",
     "CodexDriver",
+    "runtimeFixture",
+    "Runner",
   ];
   const files = [
     ...sql,
@@ -56,7 +58,7 @@ test("SQL worker merging keeps every file once and leaves native or global-mock 
   const owners = [
     "const db = await migratedDatabase();",
     'import { database, harness } from "./support.ts"; await database();',
-    'import { runtimeFixture as fixture } from "./runtime-fixture.ts"; await fixture();',
+    'import { harness as fixture } from "./support.ts"; await fixture();',
   ];
   const sources = Object.fromEntries(
     files.map((file, i) => [

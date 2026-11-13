@@ -15,7 +15,9 @@ with `--no-orphans`. Database-only core/MCP suites can share bounded workers of 
 12 files. This reuses the existing immutable migrated schema Blob, never a live
 connection between suites. The measured largest bounded SQL worker used 1.57 GB
 RSS locally; two fit the hosted runner's memory envelope without unbounded
-parallel test discovery. Fixture APIs and row/schema/role isolation are unchanged.
+parallel test discovery. The existing `github-boat.test.ts` repository-artifact
+writer runs exclusively before its shard's pool; other artifact fixtures use
+temporary directories. Fixture APIs and row/schema/role isolation are unchanged.
 Files using explicit process/server/driver/global-mock/environment manipulation
 are conservatively left isolated, as are callers of the audit helper that installs
 global console spies. Imported helpers must obey the same isolation rule; this
@@ -33,7 +35,8 @@ New/unmeasured SQL cohorts use cold-file sums minus a conservative 1.5-second
 startup credit for each file after the first; estimates are never logged as measurements.
 A source change requiring isolation invalidates the entire old cohort automatically.
 Reviewed SQL owners include the direct migrated/row-only helpers and the existing
-`database`, `harness`, and aliased `runtimeFixture` wrappers. Imported helpers must
+`database` and `harness` wrappers. Runtime fixtures/Runner/Journal suites retain
+process isolation, not SQL-worker sharing. Imported helpers must
 remain free of global hooks/mocks. Shared-worker savings require hosted measurements.
 
 ## Runner demand and cancellation
