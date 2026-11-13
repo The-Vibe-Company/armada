@@ -74,7 +74,21 @@ export async function readOttoModel(sql: Sql, scope: OttoScope, caller: Caller, 
       ...(owner
         ? { activity: { state: owner.activity, observedAt: owner.activityObservedAt, since: owner.activityAt } }
         : {}),
-      evidence: { factId: pr.id, head: head ?? null, title: e.title, ownerSource: attribution.reason },
+      evidence: {
+        factId: pr.id,
+        head: head ?? null,
+        title: e.title,
+        ownerSource: attribution.reason,
+        workFacts: facts
+          .filter(
+            (f) =>
+              f.kind.startsWith("pr.work.") &&
+              f.subject === pr.subject &&
+              f.evidence.headSha === head?.sha &&
+              fresh(f.observed_at, now),
+          )
+          .map((f) => ({ id: f.id, kind: f.kind, value: f.value, observedAt: f.observed_at })),
+      },
     });
   }
   for (const s of sandboxes) {

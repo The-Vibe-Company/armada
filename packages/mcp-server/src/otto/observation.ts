@@ -2,6 +2,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { readBoundedText } from "@armada/auth";
 import type { Sql } from "@armada/core/server";
 import type { Route } from "../http.ts";
+import { observeQueue, observeWork } from "./work-evidence.ts";
 
 export interface OttoScope {
   orgId: string;
@@ -12,6 +13,7 @@ interface Item {
   title: string;
   state: string;
   head?: { ref: string; sha: string; repo: string };
+  updatedAt?: string;
 }
 const object = (v: unknown): Record<string, unknown> =>
   v !== null && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
@@ -32,6 +34,9 @@ function item(value: unknown, pull: boolean): Item {
     number: Number(v.number),
     title: v.title.slice(0, 256),
     state: String(v.state),
+    ...(typeof v.updated_at === "string" && Number.isFinite(Date.parse(v.updated_at))
+      ? { updatedAt: v.updated_at }
+      : {}),
     ...(pull ? { head: { ref: String(head.ref), sha: String(head.sha), repo: String(repo.full_name) } } : {}),
   };
 }
@@ -44,11 +49,23 @@ export function createOttoObserver(sql: Sql, scope: OttoScope) {
     sourceId: string,
     completeness: string,
     evidence: unknown,
+    observedAt?: Date,
   ) {
     await sql.query(
-      `insert into public.otto_facts(org_id,repository,subject,kind,value,source,source_id,completeness,evidence)
-      values($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb) on conflict do nothing`,
-      [scope.orgId, scope.repository, subject, kind, value, source, sourceId, completeness, JSON.stringify(evidence)],
+      `insert into public.otto_facts(org_id,repository,subject,kind,value,source,source_id,completeness,evidence,observed_at)
+      values($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,coalesce($10::timestamptz,clock_timestamp())) on conflict do nothing`,
+      [
+        scope.orgId,
+        scope.repository,
+        subject,
+        kind,
+        value,
+        source,
+        sourceId,
+        completeness,
+        JSON.stringify(evidence),
+        observedAt ?? null,
+      ],
     );
   }
   const webhook =
@@ -80,6 +97,9 @@ export function createOttoObserver(sql: Sql, scope: OttoScope) {
       try {
         if (event === "pull_request" || event === "issues") {
           const observed = item(body[event === "issues" ? "issue" : "pull_request"], event === "pull_request");
+          if (event === "pull_request" && (!observed.updatedAt || Date.parse(observed.updatedAt) > Date.now()))
+            return new Response(null, { status: 400 });
+          const sourceAt = event === "pull_request" && observed.updatedAt ? new Date(observed.updatedAt) : undefined;
           await fact(
             `${event === "issues" ? "issue" : "pr"}:${observed.number}`,
             event === "issues" ? "issue" : "pr.open",
@@ -88,7 +108,22 @@ export function createOttoObserver(sql: Sql, scope: OttoScope) {
             delivery,
             "partial",
             observed,
+            sourceAt,
           );
+          if (event === "pull_request" && observed.head) {
+            const pull = object(body.pull_request);
+            await fact(
+              `pr:${observed.number}`,
+              "pr.work.conflict",
+              pull.mergeable === false ? "true" : pull.mergeable === true ? "false" : "unknown",
+              "github.webhook",
+              delivery,
+              typeof pull.mergeable === "boolean" ? "complete" : "partial",
+              { headSha: observed.head.sha },
+              sourceAt,
+            );
+            await observeQueue(sql, scope, observed.number, observed.head.sha, body.action, delivery, fact, sourceAt);
+          }
         } else if (["check_run", "check_suite", "merge_group"].includes(event)) {
           const v = object(body[event]);
           if (typeof v.head_sha !== "string") return new Response(null, { status: 400 });
@@ -115,7 +150,7 @@ export function createOttoObserver(sql: Sql, scope: OttoScope) {
       const prefix = `/repos/${scope.repository}/${type}?state=open&per_page=100`;
       let path: string | null = prefix;
       const seen = new Set<string>();
-      const observed: Item[] = [];
+      const observed: (Item & { observedAt: Date })[] = [];
       let complete = false;
       try {
         while (path && seen.size < 100) {
@@ -168,7 +203,8 @@ export function createOttoObserver(sql: Sql, scope: OttoScope) {
               [scope.orgId, scope.repository, path, response.headers.get("etag"), JSON.stringify(items), next],
             );
           }
-          observed.push(...items);
+          const observedAt = new Date();
+          observed.push(...items.map((value) => ({ ...value, observedAt })));
           path = next;
         }
         complete = path === null;
@@ -184,6 +220,7 @@ export function createOttoObserver(sql: Sql, scope: OttoScope) {
           run,
           "partial",
           v,
+          v.observedAt,
         );
       await fact(
         "repository",
@@ -194,6 +231,7 @@ export function createOttoObserver(sql: Sql, scope: OttoScope) {
         complete ? "complete" : "partial",
         { numbers: observed.map((v) => v.number) },
       );
+      if (type === "pulls") await observeWork(sql, scope, observed, token, run, fact, signal, fetcher);
     }
   }
   return { fact, webhook, reconcile };
