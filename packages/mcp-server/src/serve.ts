@@ -547,7 +547,7 @@ export async function startServer(
                   supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
                   now: new Date(),
                 }),
-              { placement: dockerLaunchEnabled },
+              { placement: dockerLaunchEnabled, publicUrl: config.publicUrl },
             ),
           ]
         : []),

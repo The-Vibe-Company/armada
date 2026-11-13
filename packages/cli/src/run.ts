@@ -400,15 +400,17 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
       const org = single(args, "--org");
       if (!org) throw new GoldenError("invalid_config", "--org is required.");
       const client = await createArmadaApiClient(authOf(io, deps));
-      const ticket = await client.request<{ hostId: string; registrationToken: string }>(
+      const ticket = await client.request<{ hostId: string; command: string; expiresAt: string }>(
         "/api/v1/docker/hosts/register-token",
         { method: "POST", body: JSON.stringify({ org }) },
       );
-      const server = new URL(armadaApiUrl(authOf(io, deps).env.ARMADA_URL));
-      if (server.protocol !== "https:")
-        throw new GoldenError("invalid_config", "Host installation requires an HTTPS server.");
+      if (!ticket.command || !ticket.expiresAt)
+        throw new GoldenError(
+          "invalid_config",
+          "Invalid host registration response; reconcile the issued host before retrying.",
+        );
       io.out(
-        `Run on the Docker machine (paste the token at its private prompt):\ncurl --fail --silent --show-error --proto '=https' '${server.origin}/api/docker-host/install' | bash\nRegistration token (shown once): ${ticket.registrationToken}\nHost: ${ticket.hostId}\n`,
+        `Run on the Docker machine (one-use registration):\n${ticket.command}\nHost: ${ticket.hostId}\nExpires: ${ticket.expiresAt}\n`,
       );
       return 0;
     }

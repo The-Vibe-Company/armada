@@ -130,11 +130,16 @@ test("host add prints one verified-installer command and a one-time registration
     calls++;
     expect(new URL(request.url).pathname).toBe("/api/v1/docker/hosts/register-token");
     expect(await request.json()).toEqual({ org });
-    return Response.json({ hostId: host, registrationToken: "a".repeat(64) });
+    return Response.json({
+      hostId: host,
+      registrationToken: "a".repeat(64),
+      command: "curl -fsSL https://armada.example/install-host.sh | sh -s -- --token " + "a".repeat(64),
+      expiresAt: "2026-11-13T14:00:00Z",
+    });
   });
   expect(result.code).toBe(0);
   expect(calls).toBe(1);
-  expect(result.out).toContain("/api/docker-host/install' | bash");
-  expect(result.out).toContain("Registration token (shown once): " + "a".repeat(64));
+  expect(result.out).toContain("/install-host.sh | sh -s -- --token");
+  expect(result.out).toContain("Expires: 2026-11-13T14:00:00Z");
   expect(result.err).toBe("");
 });

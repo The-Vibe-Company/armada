@@ -521,15 +521,15 @@ real-host run.
 ## Managed owner installation (#1453)
 
 The server image publishes Linux x64/arm64 host executables by SHA-256 alongside
-runtime artifacts. `/api/docker-host/install` serves a script pinned to those
+runtime artifacts. `/install-host.sh` serves a script pinned to those
 build digests and the configured public server URL. Deploy all replicas from this
 revision and apply `20261113150000_docker_host_version.sql` through the normal
 operator release process before using it. No deployment or remote migration was
 performed here.
 
 Use **Add a host** in the dashboard or `armada host add --org ORG_UUID`.
-Paste its one command on the Linux Docker machine; paste the one-use token at
-the private terminal prompt. Requires curl, sha256sum, util-linux flock/loginctl
+Paste its one command on the Linux Docker machine. The one-use token is included
+under the owner-approved short-lived installer exception; never share or persist it. Requires curl, sha256sum, util-linux flock/loginctl
 and a working systemd user session. The binary is verified before execution,
 registered over stdin and installed as a user service with linger. If the user
 cannot enable linger or use Docker, an administrator must configure linger and
@@ -578,3 +578,18 @@ Armada bearer privately through `ARMADA_TOKEN`, never argv.
 Each flag uses normal launch/status/logs/send/stop/resume routes, and cleans up
 with normal stop/delete. These are coordinator acceptance procedures, not claims
 that the real-host runs passed. No worker needs staging or host access.
+
+
+### Dashboard server contract (#1380 / #1481)
+
+`POST /api/v1/docker/hosts/register-token` accepts `{org,name?}` and returns
+`{hostId,registrationToken,command,expiresAt}`. The dashboard consumes
+`{hostId,command,expiresAt}` and discards the extra bare registration token.
+`command` uses the configured public origin and POSIX `/install-host.sh` with
+`--token` containing only the five-minute single-use registration capability.
+`expiresAt` is the database expiry, ISO UTC. Optional names are trimmed visible
+strings up to64 characters. The host credential is never in command/argv/public
+responses. Additional migration: `20261113160000_docker_host_names.sql`, applied
+only by the authorized coordinator after the host-version migration. This server
+contract is included here so the merged dashboard does not wait on the stacked
+CLI follow-up. Existing `--service-install` real-host acceptance remains pending.

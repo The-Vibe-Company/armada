@@ -292,6 +292,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
           revoked_at: Date | string | null;
           sandboxes: number;
           daemon_version: string | null;
+          name: string | null;
         }>(
           `select h.id,
             case when h.revoked_at is not null then 'revoked'
@@ -300,7 +301,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
                 and exists(select 1 from public.members m where m.org_id=h.org_id and m.user_id=h.owner_id)
                 and h.last_seen_at>=now()-interval '60 seconds' then 'online'
               else 'offline' end as state,
-            h.created_at,h.last_seen_at,h.revoked_at,h.daemon_version,
+            h.created_at,h.last_seen_at,h.revoked_at,h.daemon_version,h.name,
             (select count(*)::integer from public.sandboxes s
               where s.org_id=h.org_id and s.docker_host_id=h.id
                 and s.provider='docker' and s.status<>'deleted') as sandboxes
@@ -309,7 +310,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
         );
         return hosts.rows.map((host) => ({
           id: host.id,
-          name: null,
+          name: host.name,
           state: host.state,
           createdAt: new Date(host.created_at).toISOString(),
           lastSeenAt: host.last_seen_at === null ? null : new Date(host.last_seen_at).toISOString(),
@@ -319,17 +320,26 @@ export function createDockerHostStore(sql: Sql, key: string) {
         }));
       });
     },
-    issueRegistration(actor: Actor) {
+    issueRegistration(actor: Actor, name?: string) {
+      if (
+        name !== undefined &&
+        (typeof name !== "string" || name !== name.trim() || !name || name.length > 64 || /[\p{C}]/u.test(name))
+      )
+        deny();
       return transaction(async (tx) => {
         await admin(tx, actor);
         const hostId = randomUUID(),
           registrationToken = randomBytes(32).toString("hex");
-        await tx.query(
-          `insert into public.docker_hosts(id,org_id,owner_id,registration_hash,registration_expires_at)
-          values($1,$2,$3,$4,now()+interval '5 minutes')`,
-          [hostId, actor.orgId, actor.userId, hash(registrationToken)],
+        const issued = await tx.query<{ registration_expires_at: Date | string }>(
+          `insert into public.docker_hosts(id,org_id,owner_id,registration_hash,registration_expires_at,name)
+          values($1,$2,$3,$4,now()+interval '5 minutes',$5) returning registration_expires_at`,
+          [hostId, actor.orgId, actor.userId, hash(registrationToken), name ?? null],
         );
-        return { hostId, registrationToken };
+        return {
+          hostId,
+          registrationToken,
+          expiresAt: new Date(issued.rows[0]!.registration_expires_at).toISOString(),
+        };
       });
     },
     exchangeRegistration(registrationToken: string, installationId: string) {
