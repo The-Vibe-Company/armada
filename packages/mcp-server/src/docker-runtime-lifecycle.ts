@@ -127,7 +127,7 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
     });
   }
   return {
-    ready(actor: Actor, sandboxId: string, requestId: string) {
+    ready(actor: Actor, sandboxId: string, requestId: string, activate = true) {
       if (!uuid.test(requestId)) return Promise.reject(new DockerRuntimeDenied());
       return admitted(
         actor,
@@ -168,9 +168,10 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
           return authority.withOwner(sandboxId, actor.userId, async (fenced, scope) => {
             if (scope.epoch !== queued.epoch) deny();
             // Private lane status transitions must not revoke their own live epoch.
-            await fenced.query(`update public.sandboxes set status='ready' where id=$1 and status='starting'`, [
-              sandboxId,
-            ]);
+            if (activate)
+              await fenced.query(`update public.sandboxes set status='ready' where id=$1 and status='starting'`, [
+                sandboxId,
+              ]);
             return { state: "ready" as const, epoch: scope.epoch };
           });
         },

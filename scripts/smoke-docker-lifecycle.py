@@ -34,6 +34,26 @@ def successful_mcp_tool(tools, matching_calls, harness, connection, name):
     return success
 
 
+def normal_launch_receipt(api, launch, timeout):
+    """Replay one admitted request until preparation yields its original first-prompt receipt."""
+    deadline = time.monotonic() + timeout
+    while True:
+        result = api("sandbox/launch", launch, normal=True)
+        sandbox = result.get("sandbox", {})
+        if sandbox.get("id") != launch["requestId"] or sandbox.get("provider") != "docker":
+            raise RuntimeError("Normal launch outcome unknown; retain sandbox/request ID")
+        if sandbox.get("status") == "failed":
+            raise RuntimeError(sandbox.get("statusReason") or
+                               "Normal Docker launch preparation failed; retain printed sandbox ID")
+        if result.get("promptId") and result.get("conversationId"):
+            return result
+        if sandbox.get("status") not in ("starting", "ready", "running") or result.get("runtime") is not None:
+            raise RuntimeError("Normal launch outcome unknown; retain sandbox/request ID")
+        if time.monotonic() >= deadline:
+            raise RuntimeError("Normal launch preparation timed out; retain sandbox/request ID for reconciliation")
+        time.sleep(2)
+
+
 def placement_smoke(api, args, host_id, harness):
     """Real coordinator proof only: no synthetic prompt/receipt or manual routine dispatch."""
     from datetime import datetime, timedelta, timezone
@@ -473,7 +493,7 @@ def main():
                 raise RuntimeError("Requested Docker harness is not advertised by launch/options")
             launch.update({"provider": "docker", "harness": harness, "visibility": "private",
                            "prompt": initial_task})
-            launched = api("sandbox/launch", launch, normal=True)
+            launched = normal_launch_receipt(api, launch, args.timeout)
             if (launched.get("sandbox", {}).get("id") != sandbox_id
                     or launched.get("sandbox", {}).get("provider") != "docker"
                     or launched.get("sandbox", {}).get("image") != expected_image
