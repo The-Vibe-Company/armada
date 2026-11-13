@@ -108,7 +108,20 @@ createInterface({ input: process.stdin }).on("line", (line) => {
               webSearchRequests: 2,
             },
           },
-          ...(m.message.content === "usage-recorded" ? recording.resumed : {}),
+          ...(m.message.content === "usage-recorded"
+            ? {
+                ...recording.resumed,
+                ...(process.env.ARMADA_USAGE_CASE === "reset" ? { total_cost_usd: 0 } : {}),
+                ...(process.env.ARMADA_USAGE_CASE === "new-model"
+                  ? {
+                      modelUsage: {
+                        ...recording.resumed.modelUsage,
+                        "claude-new": recording.resumed.modelUsage["claude-sonnet-5"],
+                      },
+                    }
+                  : {}),
+              }
+            : {}),
           permission_denials: [],
           user_message_uuid: m.uuid,
           user_message_uuids: consumed,

@@ -28,8 +28,8 @@ export class ClaudeDriver implements Driver {
     let latest = crypto.randomUUID();
     let steered = false;
     let privateUsage = false;
-    // The SDK restores cumulative modelUsage from resumed transcripts. No verified pre-prompt
-    // snapshot is available here; treating the first returned totals as deltas would count history.
+    // The SDK restores cost-state into its cumulative query ledger. Recover that
+    // exact pre-query baseline, never infer it from the first resumed result.
     const baseline = c.sessionId ? claudeResumeUsage(c.sessionId, this.options.env, cwd) : null;
     let usageBaselineUnknown = Boolean(c.sessionId) && !baseline;
     let nativeSession: string | undefined;
@@ -229,10 +229,10 @@ export class ClaudeDriver implements Driver {
             const consumed = event.user_message_uuids ?? (event.user_message_uuid ? [event.user_message_uuid] : []);
             const intermediate = !interrupted && !consumed.includes(latest) && (steered || consumed.length > 0);
             const measured =
-              baseline && !usageBaselineUnknown && !intermediate && !privateUsage
+              baseline && !usageBaselineUnknown && !privateUsage
                 ? claudeUsageDelta(event.modelUsage, event.total_cost_usd, baseline)
                 : null;
-            if (baseline && !intermediate && !privateUsage && !measured) usageBaselineUnknown = true;
+            if (baseline && !privateUsage && !measured) usageBaselineUnknown = true;
             c.emit({
               kind: "other",
               type: "result",

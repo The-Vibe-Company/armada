@@ -77,12 +77,16 @@ export function claudeResumeUsage(
     const stat = lstatSync(path);
     if (stat.size > 32 * 1024 * 1024) return null;
     const raw = readFileSync(path, "utf8");
-    if (!raw.endsWith("\n")) return null;
     let baseline: ClaudeUsageBaseline | null = null;
     for (const line of raw.split("\n")) {
       if (!line) continue;
-      const row = JSON.parse(line);
-      if (row.type === "cost-state" && row.sessionId === session) baseline = costState(row) ?? baseline;
+      // Native fBo ignores malformed rows and strips leading NUL padding.
+      try {
+        const row = JSON.parse(line.replace(/^\0+/, ""));
+        if (row?.type === "cost-state" && row.sessionId === session) baseline = costState(row) ?? baseline;
+      } catch {
+        /* Same tolerant row parser as the pinned native loader. */
+      }
     }
     return baseline;
   } catch {
@@ -108,7 +112,7 @@ export function claudeUsageDelta(
     for (const key of metrics) {
       if (usage[key] === undefined && prior?.[key] === undefined) continue;
       const value = usage[key],
-        before = prior ? prior[key] : 0;
+        before = prior ? (prior[key] ?? (optional.some((k) => k === key) ? 0 : undefined)) : 0;
       if (!finite(value) || !finite(before) || value < before) return null;
       delta[key] = value - before;
     }
