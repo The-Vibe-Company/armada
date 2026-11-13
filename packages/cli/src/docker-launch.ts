@@ -6,8 +6,9 @@ import {
   HARNESSES,
   type Harness,
   resolveModelChoice,
+  validateSkillPins,
 } from "@armada/core";
-import { type Args, single, values } from "./args.ts";
+import { type Args, flag, single, values } from "./args.ts";
 import { createArmadaApiClient } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
 import { resolveHost } from "./host-commands.ts";
@@ -30,12 +31,12 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
     "--reasoning-effort",
     "--ttl",
     "--json",
+    "--skill",
+    "--connections",
+    "--no-connections",
   ]);
   if ([...args.options.keys()].some((key) => !allowed.has(key)) || args.positionals.length > 1)
-    throw new GoldenError(
-      "invalid_config",
-      "Docker launch takes at most one prompt and no golden, size, connections or skills.",
-    );
+    throw new GoldenError("invalid_config", "Docker launch takes at most one prompt and no golden or size.");
   const harness = (single(args, "--agent") ?? "codex") as Harness;
   if (!HARNESSES.includes(harness)) throw new GoldenError("invalid_config", "Unknown Docker harness.");
   const requiredId = (flag: string) => {
@@ -61,6 +62,18 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
     throw new GoldenError("invalid_config", "--credential-version must be a positive integer.");
   const ttl = single(args, "--ttl");
   const repos = values(args, "--repo");
+  const skills = values(args, "--skill");
+  try {
+    validateSkillPins(skills);
+  } catch {
+    throw new GoldenError("invalid_config", "Skills require exact pins.");
+  }
+  const connections = single(args, "--connections");
+  if (flag(args, "--no-connections") && connections !== undefined)
+    throw new GoldenError("invalid_config", "Use --connections or --no-connections, not both.");
+  const selected = connections?.split(",").map((id) => id.trim());
+  if (selected && (selected.length > 32 || selected.some((id) => !uuid.test(id))))
+    throw new GoldenError("invalid_config", "Connections require 1–32 comma-separated UUIDs.");
   const client = await createArmadaApiClient(auth);
   const hostId = await resolveHost(client, org, selector);
   const body: DockerLaunchRequest = {
@@ -85,6 +98,8 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
       model: single(args, "--model"),
       reasoningEffort: single(args, "--reasoning-effort"),
     }),
+    ...(skills.length ? { skills } : {}),
+    ...(flag(args, "--no-connections") ? { connections: [] } : selected ? { connections: selected } : {}),
     ...(version === undefined ? {} : { credentialVersion: Number(version) }),
     ...(ttl === undefined ? {} : { ttlSeconds: parseTtl(ttl) }),
     ...(args.positionals[0] === undefined ? {} : { prompt: args.positionals[0] }),

@@ -98,7 +98,7 @@ test("Docker incompatible or malformed options fail before HTTP", async () => {
     ["--repo", "https://user:secret@example.test/web"],
     ["--connections", "a"],
     ["--credential-version", "0"],
-    ["--host", "not-a-host"],
+    ["--host", "x".repeat(65)],
     ["one", "two"],
   ]) {
     const result = await capture([...args, ...flags], async (request) => {
@@ -123,6 +123,19 @@ test("unknown Docker launch outcome retains a stable request UUID for exact retr
   }
 });
 
+test.each([{ flags: ["--skill", "team/notes@1.2.3", "--connections", host] }, { flags: ["--no-connections"] }])(
+  "Docker forwards existing skill/MCP flags %j",
+  async ({ flags }: { flags: readonly string[] }) => {
+    let body: Record<string, unknown> = {};
+    const result = await capture([...args, ...flags], async (request) => {
+      body = (await request.json()) as Record<string, unknown>;
+      return Response.json({ sandbox: { id: requestId, provider: "docker" }, golden: null, runtime: { epoch: "1" } });
+    });
+    expect(result.code).toBe(0);
+    expect(body.connections).toEqual(flags.includes("--no-connections") ? [] : [host]);
+    if (flags.includes("--skill")) expect(body.skills).toEqual(["team/notes@1.2.3"]);
+  },
+);
 test("Docker launch resolves an exact unique non-revoked host name and refuses missing/ambiguous names", async () => {
   const receipt = {
     sandbox: { id: requestId, provider: "docker", status: "running" },
@@ -171,7 +184,17 @@ test("Docker launch resolves an exact unique non-revoked host name and refuses m
 test("Docker CLI translates repeated repository flags with golden branch and directory rules", async () => {
   let body: unknown;
   const result = await capture(
-    [...args, "--repo", "acme/web@feature/work", "--repo", "acme/api@main"],
+    [
+      ...args,
+      "--repo",
+      "acme/web@feature/work",
+      "--repo",
+      "acme/api@main",
+      "--skill",
+      "catalog/notes@1.0.0",
+      "--connections",
+      credential,
+    ],
     async (request) => {
       body = await request.json();
       return Response.json({
@@ -183,6 +206,8 @@ test("Docker CLI translates repeated repository flags with golden branch and dir
   );
   expect(result.code).toBe(0);
   expect(body).toMatchObject({
+    skills: ["catalog/notes@1.0.0"],
+    connections: [credential],
     repos: [
       { url: "https://github.com/acme/web", branch: "feature/work", dir: "web" },
       { url: "https://github.com/acme/api", branch: "main", dir: "api" },

@@ -110,21 +110,21 @@ export function createSkillDefaultsService(sql: Sql) {
       });
     },
     /** Trusted server callers must already own the supplied SQL transaction. */
-    resolveInTransaction: (actor: GoldenActor, golden: GoldenRecord) => resolveInTransaction(sql, actor, golden),
+    resolveInTransaction: (actor: GoldenActor, golden: GoldenRecord | null) => resolveInTransaction(sql, actor, golden),
     async resolve(
       actor: GoldenActor,
-      golden: GoldenRecord,
+      golden: GoldenRecord | null,
     ): Promise<{ environment: string[]; org: string[]; personal: string[] }> {
       return transaction((tx) => resolveInTransaction(tx, actor, golden));
     },
   };
-  async function resolveInTransaction(tx: Sql, actor: GoldenActor, golden: GoldenRecord) {
-    if (actor.orgId !== golden.orgId) throw new VaultError("not_found", "Golden unavailable.");
+  async function resolveInTransaction(tx: Sql, actor: GoldenActor, golden: GoldenRecord | null) {
+    if (golden && actor.orgId !== golden.orgId) throw new VaultError("not_found", "Golden unavailable.");
     try {
       await membership(tx, actor.userId, actor.orgId);
-      await goldenAccess(tx, actor.userId, actor.orgId, golden.id);
+      if (golden) await goldenAccess(tx, actor.userId, actor.orgId, golden.id);
       return {
-        environment: await read(tx, "golden", golden.id),
+        environment: golden ? await read(tx, "golden", golden.id) : [],
         org: await read(tx, "org", actor.orgId),
         personal: await read(tx, "personal", actor.userId),
       };
