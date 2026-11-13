@@ -2002,8 +2002,8 @@ test("Modal smoke refuses a finished turn whose status never reports usage and s
   expect(fake.calls.some((call) => call.path === "sandbox/stop")).toBe(true);
 });
 
-// Status is the public boundary: unknown counters must be present for the resumed
-// prompt, not supplied by the fixture's default numeric usage or an old prompt.
+// The staging acceptance check requires measured counters for this resumed prompt,
+// not an unknown receipt or totals belonging to an earlier turn.
 test.each(["unknown", "missing", "old", "partial", "measured", "null-totals", "complete-marker"])(
   "Modal resumed Codex usage contract: %s",
   async (mode) => {
@@ -2037,7 +2037,7 @@ test.each(["unknown", "missing", "old", "partial", "measured", "null-totals", "c
         },
       });
     });
-    const accepted = mode === "unknown" || mode === "measured";
+    const accepted = mode === "measured";
     expect(await fake.run([{ ...selected, provider: "modal" }])).toBe(accepted);
     expect(fake.receipts()).toContainEqual(
       accepted

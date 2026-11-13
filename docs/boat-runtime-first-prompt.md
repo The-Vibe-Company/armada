@@ -125,8 +125,8 @@ Startup errors retain a phase-specific safe `statusReason`. `logs/read` returns
 `runtimeFailure:{status:"failed",reason:...}` even when no guest event could be
 uploaded; following that failure does not query dead compute. This diagnostic is
 **server metadata, not a fabricated journal event**. If a prompt had already been
-admitted but has no archived terminal status, its status reads failed; pre-admission failure returns a failed launch,
-not an invented prompt receipt. The one-launch check fails immediately on this
+admitted but has no archived terminal status, its status reads failed;
+pre-admission failure returns a failed launch, not an invented prompt receipt. The one-launch check fails immediately on this
 metadata, then attempts stop once. The no-retry rule still applies.
 
 Expected success is unchanged: exact nonce assistant answer plus finished event

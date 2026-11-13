@@ -1,6 +1,7 @@
 import { createInterface } from "node:readline";
 import { codexPlanLimit, planLimitFromMessage, planLimitMessage } from "@armada/core";
 import { ChildOwner } from "./children.ts";
+import { codexResumeUsage } from "./codex-resume-usage.ts";
 import type { ReasoningEffort } from "./codex-schema/ReasoningEffort.ts";
 import type { LoginAccountParams } from "./codex-schema/v2/LoginAccountParams.ts";
 import type { LoginAccountResponse } from "./codex-schema/v2/LoginAccountResponse.ts";
@@ -451,6 +452,12 @@ export class CodexDriver implements Driver {
       c.session(threadId);
       resumeUsage.verified = true;
       adoptResumeUsage();
+      if (c.sessionId && !baseline && !resumeUsage.invalid) {
+        const persisted = await codexResumeUsage(result.thread.path, threadId);
+        // Notifications can arrive while disk I/O is pending. They retain precedence,
+        // including an invalidated candidate; never resurrect an invalid baseline.
+        if (!resumeUsage.seen && !resumeUsage.invalid) baseline = persisted;
+      }
       if (!this.options.env.OPENAI_API_KEY && this.options.env.CODEX_HOME) {
         // Existing native ChatGPT session only: this documented RPC never starts inference.
         // Optional quota failure cannot turn a normal coding request into a harness failure.
