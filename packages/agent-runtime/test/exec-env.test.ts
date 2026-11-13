@@ -152,8 +152,7 @@ test("exec bootstrap rejects model/provider/unknown variables and credential-fre
   ])
     expect(() => validateExecEnvironment(env)).toThrow("invalid_exec_environment");
   expect(() => validateExecEnvironment(githubEnv(gitCredential), true)).toThrow("builder_credentials_forbidden");
-  const root = await mkdtemp(join(tmpdir(), "armada-exec-builder-"));
-  const journal = new Journal(join(root, "journal.sqlite"), (s) => s);
+  const journal = new Journal(":memory:", (s) => s);
   try {
     const builder = new Runner(journal, grant, { claude: unused, codex: unused }, undefined, undefined, undefined, {
       credentialFreeBuilder: true,
@@ -173,7 +172,6 @@ test("exec bootstrap rejects model/provider/unknown variables and credential-fre
     expect(journal.prompts()).toHaveLength(0);
   } finally {
     journal.close();
-    await rm(root, { recursive: true, force: true });
   }
 });
 
