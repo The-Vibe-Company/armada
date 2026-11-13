@@ -1,13 +1,13 @@
-import type { SandboxProviderId } from "@armada/core";
 import { ContainerIcon } from "lucide-react";
 import { LISTED_PROVIDER_LABELS, type ListedProvider } from "@/lib/sandbox-access";
 import { cn } from "@/lib/utils";
 
 /**
  * The provider's own mark, traced from its official icon (boat.dev/icon.svg, modal.com/assets/favicon.svg) with
- * solid fills so a table of them repeats no gradient id. Decorative: the name always sits beside it.
+ * solid fills so a table of them repeats no gradient id; an owned Docker host has a generic container icon.
+ * Decorative: the name always sits beside it.
  */
-export function ProviderMark({ provider }: { provider: SandboxProviderId | ListedProvider }) {
+export function ProviderMark({ provider }: { provider: ListedProvider }) {
   if (provider === "docker")
     return <ContainerIcon aria-hidden="true" className="size-3.5 shrink-0" data-provider-mark />;
   if (provider === "boat")

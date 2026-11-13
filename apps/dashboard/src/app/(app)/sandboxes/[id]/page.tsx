@@ -216,8 +216,9 @@ export default async function SandboxPage({ params }: Props) {
 }
 
 /**
- * What a member who may not open a sandbox sees at its address: the metadata every member already has on the list,
- * and why the rest is closed. Its conversation, files and connections are never read for this page.
+ * A sandbox's address shown from its listed metadata only, and why the rest is not shown: either the viewer may not
+ * open it (its conversation, files and connections are then never read for this page), or it runs on a Docker host,
+ * whose conversation and actions the dashboard does not offer yet.
  */
 function RestrictedSandbox({
   sandbox,

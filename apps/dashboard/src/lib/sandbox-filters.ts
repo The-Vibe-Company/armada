@@ -1,19 +1,6 @@
-import { HARNESSES, MACHINE_SIZES, SANDBOX_PROVIDERS } from "@armada/core";
+import { HARNESSES, MACHINE_SIZES } from "@armada/core";
+import { LISTED_PROVIDERS } from "./listed-provider.ts";
 import type { ListedSandbox } from "./sandbox-access.ts";
-
-/**
- * Where a listed sandbox runs. The database's `sandbox_provider` also has `docker` (#1165): a sandbox on an owned
- * Docker host. `SANDBOX_PROVIDERS` stays Boat and Modal, the providers of goldens and of the golden launch, so the
- * list widens it here rather than in the shared contract, until the server exports its placement provider type.
- */
-export const LISTED_PROVIDERS = [...SANDBOX_PROVIDERS, "docker"] as const;
-export type ListedProvider = (typeof LISTED_PROVIDERS)[number];
-
-export const LISTED_PROVIDER_LABELS: Record<ListedProvider, string> = {
-  boat: "Boat",
-  modal: "Modal",
-  docker: "Docker",
-};
 
 export const SANDBOX_STATUSES = ["starting", "ready", "running", "stopping", "stopped", "failed", "deleted"] as const;
 export const PAGE_SIZE = 25;

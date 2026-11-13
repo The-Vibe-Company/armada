@@ -24,7 +24,13 @@ import { HARNESS_LABELS } from "@/lib/labels";
 import { type LifecycleView, lifecycleView, readLifecycle } from "@/lib/lifecycle";
 import { preservationView, settledOutcome } from "@/lib/outcome";
 import { PROVIDER_SETTINGS_PATH } from "@/lib/provider-setup";
-import { type ListedSandbox, machineSizeLabel, sandboxName } from "@/lib/sandbox-access";
+import {
+  LISTED_PROVIDER_LABELS,
+  type ListedProvider,
+  type ListedSandbox,
+  machineSizeLabel,
+  sandboxName,
+} from "@/lib/sandbox-access";
 import { costFigure } from "@/lib/sandbox-cost";
 import {
   FACETS,
@@ -122,11 +128,13 @@ async function SandboxesContent({ searchParams }: Props) {
                       ? value === "unknown"
                         ? "Not recorded"
                         : machineSizeLabel(value as (typeof MACHINE_SIZES)[number])
-                      : key === "model"
-                        ? value === "unknown"
-                          ? "Not recorded"
-                          : value
-                        : capitalize(value);
+                      : key === "provider"
+                        ? (LISTED_PROVIDER_LABELS[value as ListedProvider] ?? capitalize(value))
+                        : key === "model"
+                          ? value === "unknown"
+                            ? "Not recorded"
+                            : value
+                          : capitalize(value);
               const options = values
                 .filter(
                   (value) =>
