@@ -8,6 +8,9 @@ import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { createArmadaServer } from "../src/tools.ts";
 import { migratedDatabase } from "./migrated-database.ts";
+import { rowOnlyConnection } from "./row-only-database.ts";
+
+const sharedDatabase = rowOnlyConnection();
 
 const KEY = randomBytes(32).toString("base64");
 // Ephemeral canaries only: neither fixtures nor failure diagnostics contain plaintext.
@@ -25,8 +28,7 @@ function expectNoCanary(output: unknown, canary = CANARY): void {
   }
 }
 
-async function fixture() {
-  const db = await migratedDatabase();
+async function fixture(db: Awaited<ReturnType<typeof migratedDatabase>>) {
   const owner = crypto.randomUUID(),
     peer = crypto.randomUUID(),
     admin = crypto.randomUUID();
@@ -120,12 +122,12 @@ async function fixture() {
   return { db, sql, vault, options, owner, peer, admin, org, other, api, mcp, actor };
 }
 type Fixture = Awaited<ReturnType<typeof fixture>>;
-async function withVault(work: (f: Fixture) => Promise<void>) {
-  const f = await fixture();
+async function withVault(work: (f: Fixture) => Promise<void>, { isolated = false } = {}) {
+  const db = await (isolated ? migratedDatabase() : sharedDatabase());
   try {
-    await work(f);
+    await work(await fixture(db));
   } finally {
-    await f.db.close();
+    if (isolated) await db.close();
   }
 }
 
@@ -482,171 +484,182 @@ describe("application vault control API and MCP", () => {
   });
 
   test("validation and backend failures never echo inputs; values are UTF-8 bounded, reserved keys denied and body-only", async () => {
-    await withVault(async (f) => {
-      for (const [name, value] of [
-        ["ARMADA_TOKEN", CANARY],
-        ["BOAT_KEY", CANARY],
-        ["MODAL_TOKEN", CANARY],
-        ["ANTHROPIC_API_KEY", CANARY],
-        ["OPENAI_API_KEY", CANARY],
-        ["CLAUDE_CODE_OAUTH_TOKEN", CANARY],
-        ["CODEX_HOME", CANARY],
-        ["GH_TOKEN", CANARY],
-        ["GITHUB_TOKEN", CANARY],
-        ["MCP_TOKEN", CANARY],
-        ["PATH", CANARY],
-        ["HOME", CANARY],
-        ["SHELL", CANARY],
-        ["ENV", CANARY],
-        ["BASH_ENV", CANARY],
-        ["LD_PRELOAD", CANARY],
-        ["DYLD_INSERT_LIBRARIES", CANARY],
-        ["NODE_OPTIONS", CANARY],
-        ["PYTHONPATH", CANARY],
-        ["SSL_CERT_FILE", CANARY],
-        ["HTTP_PROXY", CANARY],
-        ["HTTPS_PROXY", CANARY],
-        ["ALL_PROXY", CANARY],
-        ["NO_PROXY", CANARY],
-        ["NEXT_PUBLIC_TOKEN", CANARY],
-        ["VITE_TOKEN", CANARY],
-        ["PUBLIC_TOKEN", CANARY],
-        ["lower_case", CANARY],
-        ["VALID_TOKEN", ""],
-        ["VALID_TOKEN", "a\0b"],
-        ["VALID_TOKEN", "\ud800"],
-        ["VALID_TOKEN", "🦊".repeat(2049)],
-      ]) {
-        const r = await f.api(f.owner, "secrets/set", { org: f.org, scope: "personal", name, value });
-        expect(r.status).toBe(400);
-        expectNoCanary(r.text);
-      }
-      expect(
-        (
-          await f.api(f.owner, "variables/set", {
-            org: f.org,
-            scope: "personal",
-            name: "NEXT_PUBLIC_OK",
-            value: "🦊".repeat(2048),
-          })
-        ).status,
-      ).toBe(200);
-      expect(
-        (
-          await f.api(
-            f.owner,
-            "secrets/set",
-            { org: f.org, scope: "personal", name: "BODY_ONLY", value: CANARY },
-            "?value=synthetic",
-          )
-        ).status,
-      ).toBe(400);
-      expect(
-        (
-          await f.api(f.owner, "secrets/set", {
-            org: f.org,
-            scope: "personal",
-            name: "UNKNOWN",
-            value: CANARY,
-            unknown: CANARY,
-          })
-        ).status,
-      ).toBe(400);
+    await withVault(
+      async (f) => {
+        for (const [name, value] of [
+          ["ARMADA_TOKEN", CANARY],
+          ["BOAT_KEY", CANARY],
+          ["MODAL_TOKEN", CANARY],
+          ["ANTHROPIC_API_KEY", CANARY],
+          ["OPENAI_API_KEY", CANARY],
+          ["CLAUDE_CODE_OAUTH_TOKEN", CANARY],
+          ["CODEX_HOME", CANARY],
+          ["GH_TOKEN", CANARY],
+          ["GITHUB_TOKEN", CANARY],
+          ["MCP_TOKEN", CANARY],
+          ["PATH", CANARY],
+          ["HOME", CANARY],
+          ["SHELL", CANARY],
+          ["ENV", CANARY],
+          ["BASH_ENV", CANARY],
+          ["LD_PRELOAD", CANARY],
+          ["DYLD_INSERT_LIBRARIES", CANARY],
+          ["NODE_OPTIONS", CANARY],
+          ["PYTHONPATH", CANARY],
+          ["SSL_CERT_FILE", CANARY],
+          ["HTTP_PROXY", CANARY],
+          ["HTTPS_PROXY", CANARY],
+          ["ALL_PROXY", CANARY],
+          ["NO_PROXY", CANARY],
+          ["NEXT_PUBLIC_TOKEN", CANARY],
+          ["VITE_TOKEN", CANARY],
+          ["PUBLIC_TOKEN", CANARY],
+          ["lower_case", CANARY],
+          ["VALID_TOKEN", ""],
+          ["VALID_TOKEN", "a\0b"],
+          ["VALID_TOKEN", "\ud800"],
+          ["VALID_TOKEN", "🦊".repeat(2049)],
+        ]) {
+          const r = await f.api(f.owner, "secrets/set", { org: f.org, scope: "personal", name, value });
+          expect(r.status).toBe(400);
+          expectNoCanary(r.text);
+        }
+        expect(
+          (
+            await f.api(f.owner, "variables/set", {
+              org: f.org,
+              scope: "personal",
+              name: "NEXT_PUBLIC_OK",
+              value: "🦊".repeat(2048),
+            })
+          ).status,
+        ).toBe(200);
+        expect(
+          (
+            await f.api(
+              f.owner,
+              "secrets/set",
+              { org: f.org, scope: "personal", name: "BODY_ONLY", value: CANARY },
+              "?value=synthetic",
+            )
+          ).status,
+        ).toBe(400);
+        expect(
+          (
+            await f.api(f.owner, "secrets/set", {
+              org: f.org,
+              scope: "personal",
+              name: "UNKNOWN",
+              value: CANARY,
+              unknown: CANARY,
+            })
+          ).status,
+        ).toBe(400);
 
-      for (const route of ["secrets/toString", "secrets/__proto__", "secrets/set/ignored"]) {
-        expect((await f.api(f.owner, route, { org: f.org })).status).toBe(400);
-      }
-      const bearer = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: f.owner })).replace(/=+$/, "")}.sig`;
-      for (const body of [new Uint8Array([0xff]), new Uint8Array(65537).fill(32)]) {
-        const response = await handleControlRequest(
-          new Request("https://armada.test/api/v1/secrets/set", {
-            method: "POST",
-            headers: { authorization: `Bearer ${bearer}` },
-            body,
-          }),
-          f.options,
+        for (const route of ["secrets/toString", "secrets/__proto__", "secrets/set/ignored"]) {
+          expect((await f.api(f.owner, route, { org: f.org })).status).toBe(400);
+        }
+        const bearer = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: f.owner })).replace(/=+$/, "")}.sig`;
+        for (const body of [new Uint8Array([0xff]), new Uint8Array(65537).fill(32)]) {
+          const response = await handleControlRequest(
+            new Request("https://armada.test/api/v1/secrets/set", {
+              method: "POST",
+              headers: { authorization: `Bearer ${bearer}` },
+              body,
+            }),
+            f.options,
+          );
+          expect(response?.status).toBe(400);
+          expectNoCanary(await response?.text());
+        }
+        const duplicate = { org: f.org, scope: "personal", name: "DUPLICATE", value: CANARY };
+        expect((await f.api(f.owner, "secrets/set", duplicate)).status).toBe(200);
+        const r = await f.api(f.owner, "secrets/set", duplicate);
+        expect(r.status).toBe(409);
+        expectNoCanary(r.text);
+        await f.db.query("select set_config('armada.test_canary',$1,false)", [CANARY]);
+        await f.db.exec(
+          "create function reject_vault_write() returns trigger language plpgsql as $$ begin raise exception using message = current_setting('armada.test_canary'); end $$; create trigger reject_vault_write before insert on application_vault_audit for each row execute function reject_vault_write();",
         );
-        expect(response?.status).toBe(400);
-        expectNoCanary(await response?.text());
-      }
-      const duplicate = { org: f.org, scope: "personal", name: "DUPLICATE", value: CANARY };
-      expect((await f.api(f.owner, "secrets/set", duplicate)).status).toBe(200);
-      const r = await f.api(f.owner, "secrets/set", duplicate);
-      expect(r.status).toBe(409);
-      expectNoCanary(r.text);
-      await f.db.query("select set_config('armada.test_canary',$1,false)", [CANARY]);
-      await f.db.exec(
-        "create function reject_vault_write() returns trigger language plpgsql as $$ begin raise exception using message = current_setting('armada.test_canary'); end $$; create trigger reject_vault_write before insert on application_vault_audit for each row execute function reject_vault_write();",
-      );
-      const failure = await f.api(f.owner, "secrets/set", { ...duplicate, name: "BACKEND" });
-      expect(failure.status).toBe(503);
-      expectNoCanary(failure.text);
-      expect((await f.db.query("select id from application_secrets where name='BACKEND'")).rows).toEqual([]);
-      const upload = await f.api(f.owner, "secrets/upload", {
-        org: f.org,
-        operation: "set",
-        scope: "personal",
-        name: "APP_BACKEND",
-        value: CANARY,
-      });
-      expect(upload.status).toBe(200);
-      const mcp = await f.mcp(f.owner);
-      try {
-        const rejected = await mcp.client.callTool({
-          name: "secret_commit",
-          arguments: { org: f.org, uploadReference: upload.body.uploadReference },
+        const failure = await f.api(f.owner, "secrets/set", { ...duplicate, name: "BACKEND" });
+        expect(failure.status).toBe(503);
+        expectNoCanary(failure.text);
+        expect((await f.db.query("select id from application_secrets where name='BACKEND'")).rows).toEqual([]);
+        const upload = await f.api(f.owner, "secrets/upload", {
+          org: f.org,
+          operation: "set",
+          scope: "personal",
+          name: "APP_BACKEND",
+          value: CANARY,
         });
-        expect(rejected.isError).toBe(true);
-        expectNoCanary(rejected);
-        expectNoCanary(mcp.logs);
-        expect(mcp.logs).toEqual([]);
-        expect((await f.db.query("select id from application_secrets where name='APP_BACKEND'")).rows).toEqual([]);
-        expect((await f.db.query("select hash from application_secret_uploads")).rows).toHaveLength(1);
-      } finally {
-        await mcp.close();
-      }
-    });
+        expect(upload.status).toBe(200);
+        const mcp = await f.mcp(f.owner);
+        try {
+          const rejected = await mcp.client.callTool({
+            name: "secret_commit",
+            arguments: { org: f.org, uploadReference: upload.body.uploadReference },
+          });
+          expect(rejected.isError).toBe(true);
+          expectNoCanary(rejected);
+          expectNoCanary(mcp.logs);
+          expect(mcp.logs).toEqual([]);
+          expect((await f.db.query("select id from application_secrets where name='APP_BACKEND'")).rows).toEqual([]);
+          expect((await f.db.query("select hash from application_secret_uploads")).rows).toHaveLength(1);
+        } finally {
+          await mcp.close();
+        }
+      },
+      { isolated: true },
+    );
   });
 
   test("real JWT RLS permits safe reads only, denies all ciphertext/upload access and direct mutations even for owner/admin", async () => {
-    await withVault(async (f) => {
-      const personal = await f.api(f.owner, "secrets/set", {
-        org: f.org,
-        scope: "personal",
-        name: "PRIVATE",
-        value: CANARY,
-      });
-      await f.api(f.admin, "secrets/set", { org: f.org, scope: "org", name: "SHARED", value: CANARY });
-      await f.api(f.owner, "variables/set", { org: f.org, scope: "personal", name: "PRIVATE_VAR", value: "readable" });
-      await f.api(f.admin, "variables/set", { org: f.org, scope: "org", name: "SHARED_VAR", value: "readable" });
-      for (const user of [f.owner, f.peer, f.admin]) {
-        await f.db.exec("set role authenticated");
-        await f.db.query("select set_config('request.jwt.claim.sub',$1,false)", [user]);
-        const rows = (await f.db.query<{ id: string }>("select id from application_secrets order by name")).rows;
-        expect(rows.some((r) => r.id === personal.body.item.id)).toBe(user === f.owner);
-        const variables = (await f.db.query<{ name: string }>("select name,value from readable_variables")).rows;
-        expect(variables.map((v) => v.name).sort()).toEqual(
-          user === f.owner ? ["PRIVATE_VAR", "SHARED_VAR"] : ["SHARED_VAR"],
-        );
-        for (const query of [
-          "update readable_variables set value='unauthorized'",
-          "delete from readable_variables",
-          "select value_enc from application_secrets",
-          "select * from application_secrets",
-          "select * from application_secret_uploads",
-          "update application_secrets set status='deleted'",
-          "delete from application_secrets",
-          "update application_vault_audit set outcome='succeeded'",
-        ]) {
-          await expect(f.db.query(query)).rejects.toThrow("permission denied");
+    await withVault(
+      async (f) => {
+        const personal = await f.api(f.owner, "secrets/set", {
+          org: f.org,
+          scope: "personal",
+          name: "PRIVATE",
+          value: CANARY,
+        });
+        await f.api(f.admin, "secrets/set", { org: f.org, scope: "org", name: "SHARED", value: CANARY });
+        await f.api(f.owner, "variables/set", {
+          org: f.org,
+          scope: "personal",
+          name: "PRIVATE_VAR",
+          value: "readable",
+        });
+        await f.api(f.admin, "variables/set", { org: f.org, scope: "org", name: "SHARED_VAR", value: "readable" });
+        for (const user of [f.owner, f.peer, f.admin]) {
+          await f.db.exec("set role authenticated");
+          await f.db.query("select set_config('request.jwt.claim.sub',$1,false)", [user]);
+          const rows = (await f.db.query<{ id: string }>("select id from application_secrets order by name")).rows;
+          expect(rows.some((r) => r.id === personal.body.item.id)).toBe(user === f.owner);
+          const variables = (await f.db.query<{ name: string }>("select name,value from readable_variables")).rows;
+          expect(variables.map((v) => v.name).sort()).toEqual(
+            user === f.owner ? ["PRIVATE_VAR", "SHARED_VAR"] : ["SHARED_VAR"],
+          );
+          for (const query of [
+            "update readable_variables set value='unauthorized'",
+            "delete from readable_variables",
+            "select value_enc from application_secrets",
+            "select * from application_secrets",
+            "select * from application_secret_uploads",
+            "update application_secrets set status='deleted'",
+            "delete from application_secrets",
+            "update application_vault_audit set outcome='succeeded'",
+          ]) {
+            await expect(f.db.query(query)).rejects.toThrow("permission denied");
+          }
+          const audit = (await f.db.query("select resource_id from application_vault_audit")).rows;
+          expect(audit).toHaveLength(user === f.peer ? 0 : 2);
+          await f.db.exec("reset role");
         }
-        const audit = (await f.db.query("select resource_id from application_vault_audit")).rows;
-        expect(audit).toHaveLength(user === f.peer ? 0 : 2);
+        await f.db.exec("set role anon");
+        await expect(f.db.query("select id from application_secrets")).rejects.toThrow("permission denied");
         await f.db.exec("reset role");
-      }
-      await f.db.exec("set role anon");
-      await expect(f.db.query("select id from application_secrets")).rejects.toThrow("permission denied");
-      await f.db.exec("reset role");
-    });
+      },
+      { isolated: true },
+    );
   });
 });
