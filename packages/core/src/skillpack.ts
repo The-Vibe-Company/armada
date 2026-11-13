@@ -1,5 +1,6 @@
 import type { SkillReceipt } from "./delegated-access.ts";
 import { HARNESS_CATALOG, isHarness } from "./harnesses.ts";
+import { shellQuote as quote } from "./shell-quote.ts";
 import { skillRefusalMessage } from "./skill-diagnostics.ts";
 import { validateSkillPins } from "./skill-pins.ts";
 
@@ -101,9 +102,6 @@ export async function installSkill(
   if (reason === "skillpack_cli_unavailable" && buildWarnings.includes("skillpack_download_unavailable"))
     reason = "skillpack_download_unavailable";
   throw new Error(skillRefusalMessage(reason));
-}
-function quote(value: string): string {
-  return "'" + value.replaceAll("'", "'\\''") + "'";
 }
 
 export function skillInstallCommand(skill: string, projectDir: string, harness: string): string {
