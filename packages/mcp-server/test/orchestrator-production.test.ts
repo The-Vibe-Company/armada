@@ -7,6 +7,7 @@ import { launchCredentials } from "../src/launch-credentials.ts";
 import { callOrchestrator } from "../src/orchestrator-api.ts";
 import { createProductionOrchestrators } from "../src/orchestrator-production.ts";
 import { orchestratorScopedMcpUrl } from "../src/orchestrator-scoped-gateway.ts";
+import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
 import { preserveBeforeStop } from "../src/work-preservation.ts";
 import { catalogLock, catalogReceipt, catalogReference } from "./fixtures/skillpack-catalog.ts";
 import { database, ENCRYPTION_KEY, fakeBoat } from "./support.ts";
@@ -33,6 +34,8 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
   let throwLogger = false;
   let stopUnconfirmed = false;
   let deletePending = false;
+  let observeChildInitialization = false;
+  const initializationObservations: boolean[] = [];
   const lines: string[] = [];
   const childPreparation: string[] = [];
   const privateText = "synthetic-provider-credential-do-not-log";
@@ -54,6 +57,10 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
       return placement.provider.fork(request);
     },
     async exec(request) {
+      if (observeChildInitialization) {
+        observeChildInitialization = false;
+        initializationObservations.push(await createSandboxLifecycle(sql, async () => provider).reconcileOne());
+      }
       const result = await placement.provider.exec(request);
       if (request.command.includes("skillpack install ")) {
         childPreparation.push("install");
@@ -301,7 +308,12 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
       model: "gpt-6.1-sol",
       skills: [catalogReference],
     };
+    // Schedule the actual lifecycle lane while an idle child is initializing.
+    // Its initialization lease must prevent the observer from treating it as an
+    // abandoned starting sandbox and stopping it before the first message.
+    observeChildInitialization = true;
     const childResponse = await scoped("launch", { selection: childSelection }, "production-child");
+    expect(initializationObservations).toEqual([false]);
     expect(childResponse?.status).toBe(200);
     const childReceipt = (await childResponse?.json()) as { result: { state: string; sandboxId: string } };
     expect(childReceipt.result.state).toBe("succeeded");
