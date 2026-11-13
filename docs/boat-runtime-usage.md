@@ -75,3 +75,38 @@ cache writes retain null / unknown cost. The existing archive/projection rollbac
 test still proves ACK follows atomic commit. Canonical smoke cases reject absent
 usage/admission, wrong counters and resumed repricing, and explicitly distinguish
 unknown cost from zero. No real provider/model call is made by these tests.
+
+## One strict usage + cost + ChatGPT subscription check (#1420)
+
+Use the existing staging environment and an authorized ChatGPT account UUID in
+`ARMADA_RUNTIME_CREDENTIAL_ID`; no new variables, credentials or product options.
+Run this **instead of**, not in addition to, the lifecycle command above:
+
+```sh
+ARMADA_RUNTIME_SMOKE=one_real_boat_launch \
+  bun scripts/check-boat-subscription.ts
+```
+
+It reads the existing account inventory and refuses an absent, expired, inactive
+or API-key account **before allocation**. It then invokes the canonical
+`check-boat-runtime.ts --usage --resume` exactly once: one allocation, one same-VM
+activation, three prompts, two stops; no allocation/activation retries. The
+canonical check owns archived answers, memory, own per-turn usage, frozen quotes,
+checkpoints and cleanup. This narrow check does not also claim MCP/skills parity.
+
+Success requires matching runtime-source/epoch receipts, positive measured input
+and output, positive `api_equivalent` session USD before and after resume, and an
+increase in both turns and USD after resume. A stopped-status read additionally
+requires positive first/resumed turn quotes pinned to that account/version and
+an exact per-turn sum matching the session. Unknown/zero/API-key cost, missing
+resume, stale historical cost or child failure exits nonzero. It prints only an
+allowlisted receipt; raw child output, account metadata and tokens are not
+forwarded; failed cleanup retains only validated recovery sandbox UUIDs.
+Any failed/uncertain lifecycle must be inspected before another run;
+the entrypoint never retries it. A successful `subscriptionAnswer:verified`
+proves subscription-backed access, not a forced refresh: `refresh:not_claimed` is
+explicit. Native-requested shared refresh is covered offline in #1440; real
+refresh acceptance needs non-secret server revision evidence, never raw tokens.
+
+Normal server/runtime deployment only; no migration or manual artifact publishing
+for this check. Workers do not run it against staging or claim real inference.
