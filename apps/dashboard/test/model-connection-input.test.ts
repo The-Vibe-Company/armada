@@ -6,6 +6,7 @@ import {
   presetAccountValue,
   replacementClaudeAccountValue,
   replacementCodexAccountValue,
+  replacementOpenCodeAccountValue,
 } from "../src/lib/model-connection-input";
 
 function data(baseUrl: string, key: string, apiVersion = "") {
@@ -208,4 +209,20 @@ test("the model list keeps ticked models visible through any search and caps the
   ]);
   expect(catalogPriceLabel(models[0] ?? { input: null, output: null })).toBeNull();
   expect(catalogPriceLabel({ input: "0.15", output: "0.6" })).toBe("$0.15 in · $0.6 out per M tokens");
+});
+
+test("OpenCode replacement names its destination: a plan key never silently replaces a provider connection", () => {
+  const key = randomUUID();
+  const form = new FormData();
+  form.set("value", key);
+  expect(replacementOpenCodeAccountValue(form)).toEqual({
+    ok: false,
+    error: "Choose the replacement connection type.",
+  });
+  form.set("connectionMode", "opencode");
+  expect(replacementOpenCodeAccountValue(form)).toEqual({ ok: true, value: key });
+  form.set("value", JSON.stringify({ apiKey: key }));
+  const refused = replacementOpenCodeAccountValue(form);
+  expect(refused.ok).toBe(false);
+  expect(JSON.stringify(refused)).not.toContain(key);
 });

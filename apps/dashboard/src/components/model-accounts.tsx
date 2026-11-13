@@ -1,6 +1,12 @@
 "use client";
 
-import { CONNECTION_PRESETS, type ConnectionPresetId, connectionPreset, type Harness } from "@armada/core";
+import {
+  CONNECTION_PRESETS,
+  type ConnectionPreset,
+  type ConnectionPresetId,
+  connectionPreset,
+  type Harness,
+} from "@armada/core";
 import {
   CircleAlertIcon,
   CircleCheckIcon,
@@ -718,6 +724,12 @@ function ReplaceDialog({
                   re-enter its URL and key. Choosing OpenAI default changes routing to OpenAI.
                 </p>
               )}
+              {account.kind === "opencode" && (
+                <p>
+                  Choose the destination again: an existing provider address and models are not returned. To keep a
+                  DeepSeek, OpenRouter or other connection, choose it and tick its models again.
+                </p>
+              )}
               {account.kind === "anthropic" && (
                 <p>
                   Choose the destination again: existing gateway details are not returned. To keep a custom gateway,
@@ -740,6 +752,8 @@ function ReplaceDialog({
             <CustomEndpointFields idPrefix={id} kind="openai" requireChoice />
           ) : account.kind === "anthropic" ? (
             <ClaudeReplacementFields idPrefix={id} />
+          ) : account.kind === "opencode" ? (
+            <OpenCodeReplacementFields idPrefix={id} />
           ) : (
             <SecretField idPrefix={id} kind={account.kind} />
           )}
@@ -959,6 +973,8 @@ function CustomEndpointFields({
   const codex = kind === "openai";
   const [custom, setCustom] = useState(false);
   const [chosen, setChosen] = useState(!requireChoice);
+  // Replacement may re-enter a provider-preset connection with its models (#1483).
+  const [preset, setPreset] = useState<ConnectionPreset | null>(null);
   return (
     <div className="space-y-4">
       {requireChoice ? (
@@ -968,10 +984,11 @@ function CustomEndpointFields({
             id={`${idPrefix}-mode`}
             name="connectionMode"
             required
-            value={chosen ? (custom ? "custom" : "openai") : ""}
+            value={chosen ? (preset ? preset.id : custom ? "custom" : "openai") : ""}
             onChange={(event) => {
               setChosen(Boolean(event.target.value));
               setCustom(event.target.value === "custom");
+              setPreset(replacementPreset(kind, event.target.value));
             }}
           >
             <option value="" disabled>
@@ -979,6 +996,11 @@ function CustomEndpointFields({
             </option>
             <option value="openai">OpenAI default endpoint</option>
             <option value="custom">Custom endpoint (Modal)</option>
+            {replacementPresets(kind).map((option) => (
+              <option key={option.id} value={option.id}>
+                {option.label}
+              </option>
+            ))}
           </NativeSelect>
         </div>
       ) : (
@@ -1039,7 +1061,69 @@ function CustomEndpointFields({
           <ModelPriceFields idPrefix={idPrefix} />
         </fieldset>
       )}
-      {chosen && <SecretField key={`${kind}:${custom}`} idPrefix={idPrefix} kind={kind} />}
+      {preset ? (
+        <>
+          <input type="hidden" name="preset" value={preset.id} />
+          <PresetConnectionFields
+            key={preset.id}
+            preset={preset}
+            secretField={<SecretField idPrefix={idPrefix} kind={kind} />}
+          />
+        </>
+      ) : (
+        chosen && <SecretField key={`${kind}:${custom}`} idPrefix={idPrefix} kind={kind} />
+      )}
+    </div>
+  );
+}
+
+/** The provider presets that save this kind with chosen models: what a replacement may re-enter. */
+function replacementPresets(kind: AccountKind): ConnectionPreset[] {
+  return CONNECTION_PRESETS.filter((option) => option.kind === kind && option.models === "choose");
+}
+
+function replacementPreset(kind: AccountKind, value: string): ConnectionPreset | null {
+  return replacementPresets(kind).find((option) => option.id === value) ?? null;
+}
+
+/** OpenCode rotation names its destination: a plan key, or a provider connection re-entered with its models. */
+function OpenCodeReplacementFields({ idPrefix }: { idPrefix: string }) {
+  const [mode, setMode] = useState("");
+  const preset = replacementPreset("opencode", mode);
+  return (
+    <div className="space-y-4">
+      <div className="space-y-2">
+        <Label htmlFor={`${idPrefix}-connection-mode`}>Connection type</Label>
+        <NativeSelect
+          id={`${idPrefix}-connection-mode`}
+          name="connectionMode"
+          required
+          value={mode}
+          onChange={(event) => setMode(event.target.value)}
+        >
+          <option value="" disabled>
+            Choose a destination
+          </option>
+          <option value="opencode">OpenCode plan key</option>
+          {replacementPresets("opencode").map((option) => (
+            <option key={option.id} value={option.id}>
+              {option.label}
+            </option>
+          ))}
+        </NativeSelect>
+      </div>
+      {preset ? (
+        <>
+          <input type="hidden" name="preset" value={preset.id} />
+          <PresetConnectionFields
+            key={preset.id}
+            preset={preset}
+            secretField={<SecretField idPrefix={idPrefix} kind="opencode" />}
+          />
+        </>
+      ) : (
+        mode && <SecretField idPrefix={idPrefix} kind="opencode" />
+      )}
     </div>
   );
 }

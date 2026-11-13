@@ -5,6 +5,11 @@ export interface OpenCodeEndpoint {
   models: string[];
 }
 export const OPENCODE_ENDPOINT_ENV = "ARMADA_OPENCODE_ENDPOINT";
+/**
+ * The provider ID the runtime gives a custom OpenCode connection; OpenCode reports its models, and so prices are
+ * keyed, as `armada/<model>` (packages/agent-runtime/src/opencode-endpoint.ts).
+ */
+export const OPENCODE_CONNECTION_PROVIDER = "armada";
 export function parseOpenCodeEndpoint(value: unknown): OpenCodeEndpoint {
   const fail = (): never => {
     throw new Error("Invalid OpenCode endpoint: HTTPS baseUrl and 1-32 model IDs required.");

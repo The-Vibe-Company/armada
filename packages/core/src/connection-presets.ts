@@ -6,7 +6,7 @@
  */
 import { parseCredentialValue } from "./credentials.ts";
 import type { ModelPriceOverrides } from "./model-price-overrides.ts";
-import { CONNECTION_MODEL_ID, MAX_CONNECTION_MODELS } from "./opencode-endpoint.ts";
+import { CONNECTION_MODEL_ID, MAX_CONNECTION_MODELS, OPENCODE_CONNECTION_PROVIDER } from "./opencode-endpoint.ts";
 import catalog from "./pricing/connection-catalog.json";
 import { validRate } from "./pricing/rates.ts";
 import { VaultError } from "./vault-error.ts";
@@ -141,14 +141,23 @@ export function presetModels(preset: ConnectionPreset): readonly CatalogModel[] 
 
 export const CONNECTION_CATALOG_FETCHED_AT: string = catalog.fetchedAt;
 
-/** The catalog's public prices for the chosen models; a model without both input and output prices is left out. */
+/**
+ * The catalog's public prices for the chosen models, keyed by the model ID the agent reports: `armada/<id>` for an
+ * OpenCode connection, the bare deployment ID for Codex. A model without both input and output prices is left out.
+ */
 export function presetPrices(preset: ConnectionPreset, models: readonly string[]): ModelPriceOverrides | undefined {
+  const reported = (id: string) => (preset.kind === "opencode" ? `${OPENCODE_CONNECTION_PROVIDER}/${id}` : id);
   const known = new Map(presetModels(preset).map((model) => [model.id, model]));
   const entries = models.flatMap((id) => {
     const model = known.get(id);
     if (!model || !validRate(model.input) || !validRate(model.output)) return [];
     const cacheRead = validRate(model.cacheRead) ? model.cacheRead : null;
-    return [[id, { input: model.input, output: model.output, cacheRead, cacheWrite: null, reasoning: null }] as const];
+    return [
+      [
+        reported(id),
+        { input: model.input, output: model.output, cacheRead, cacheWrite: null, reasoning: null },
+      ] as const,
+    ];
   });
   return entries.length ? Object.fromEntries(entries) : undefined;
 }

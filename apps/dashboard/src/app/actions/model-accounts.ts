@@ -23,6 +23,7 @@ import {
   presetAccountValue,
   replacementClaudeAccountValue,
   replacementCodexAccountValue,
+  replacementOpenCodeAccountValue,
 } from "@/lib/model-connection-input";
 import { createClient } from "@/lib/supabase/server";
 
@@ -135,12 +136,18 @@ export async function replaceAccountSecret(_previous: ActionResult | null, data:
     return fail("That request is not valid.");
   const name = checkAccountName(data.get("name"));
   if (!name.ok) return fail(name.error);
+  // A provider preset re-enters the whole connection; it must keep the account's kind.
+  const fromPreset = formString(data, "preset") ? presetAccountValue(data) : null;
+  if (fromPreset?.ok && fromPreset.kind !== kind) return fail("That provider cannot replace this account.");
   const value =
-    kind === "openai"
+    fromPreset ??
+    (kind === "openai"
       ? replacementCodexAccountValue(data)
       : kind === "anthropic"
         ? replacementClaudeAccountValue(data)
-        : secret(kind as AccountKind, data.get("value"));
+        : kind === "opencode"
+          ? replacementOpenCodeAccountValue(data)
+          : secret(kind as AccountKind, data.get("value")));
   if (!value.ok) return fail(value.error);
   try {
     const saved = await context.control.set({

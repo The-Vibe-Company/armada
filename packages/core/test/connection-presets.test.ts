@@ -51,8 +51,9 @@ test("a DeepSeek connection saves an OpenCode endpoint at the fixed address with
   expect(value).toEqual({
     endpoint: { version: 1, baseUrl: "https://api.deepseek.com", models: [known.id, "hand-typed-model"] },
     apiKey: key,
+    // OpenCode reports a connection's model as armada/<id>: prices use the reported ID.
     prices: {
-      [known.id]: {
+      [`armada/${known.id}`]: {
         input: known.input,
         output: known.output,
         cacheRead: known.cacheRead,

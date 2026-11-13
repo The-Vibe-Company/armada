@@ -242,6 +242,7 @@ export {
 export {
   CONNECTION_MODEL_ID,
   MAX_CONNECTION_MODELS,
+  OPENCODE_CONNECTION_PROVIDER,
   OPENCODE_ENDPOINT_ENV,
   type OpenCodeEndpoint,
   parseConnectionModels,

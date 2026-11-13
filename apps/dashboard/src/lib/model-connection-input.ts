@@ -133,3 +133,19 @@ export function presetAccountValue(
     throw error;
   }
 }
+
+/** A sealed OpenCode connection's address and models are not returned: a plain key needs an explicit plan choice. */
+export function replacementOpenCodeAccountValue(
+  data: FormData,
+): { ok: true; value: string } | { ok: false; error: string } {
+  if (data.get("connectionMode") !== "opencode") return { ok: false, error: "Choose the replacement connection type." };
+  const raw = data.get("value");
+  if (typeof raw !== "string" || raw.trim().startsWith("{"))
+    return { ok: false, error: "Paste only the OpenCode plan key." };
+  try {
+    return { ok: true, value: parseCredentialValue("opencode", raw) };
+  } catch (error) {
+    if (error instanceof VaultError) return { ok: false, error: error.message };
+    throw error;
+  }
+}

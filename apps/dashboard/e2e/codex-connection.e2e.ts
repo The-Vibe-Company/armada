@@ -241,4 +241,18 @@ test("a DeepSeek connection is added by choosing the provider, pasting a key and
   await expect(dialog).toHaveCount(0);
   await expect(page.locator('[data-account="DeepSeek"]')).toBeVisible();
   await expect(page.locator("body")).not.toContainText(key);
+
+  // Replacing the key re-enters the provider: a plain plan key is never chosen silently.
+  await page.getByRole("button", { name: "More actions for DeepSeek" }).click();
+  await page.getByRole("menuitem", { name: "Replace key", exact: true }).click();
+  const replace = page.getByRole("dialog");
+  await expect(replace.getByLabel("Connection type")).toHaveValue("");
+  await replace.getByLabel("Connection type").selectOption("deepseek");
+  await replace.getByRole("searchbox", { name: "Search models" }).fill("flash");
+  await replace.getByRole("checkbox").first().check();
+  const next = randomUUID();
+  await replace.locator('input[name="value"]').fill(next);
+  await replace.getByRole("button", { name: /^Save/ }).click();
+  await expect(replace).toHaveCount(0);
+  await expect(page.locator("body")).not.toContainText(next);
 });

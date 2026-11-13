@@ -39,6 +39,8 @@ for (const provider of PROVIDERS) {
         typeof model.id === "string" &&
         /^[A-Za-z0-9][A-Za-z0-9._:/[\]-]{0,192}$/.test(model.id) &&
         model.tool_call === true &&
+        // Foundry serves only OpenAI models on the v1 Responses route Codex uses.
+        (provider !== "azure" || /^(gpt-|o\d)|codex/.test(model.id as string)) &&
         model.status !== "deprecated" &&
         Array.isArray(model.modalities?.output) &&
         model.modalities.output.includes("text"),

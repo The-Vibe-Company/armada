@@ -1,6 +1,6 @@
 {
   "source": "https://models.dev/api.json",
-  "fetchedAt": "2026-11-13T13:35:30.833Z",
+  "fetchedAt": "2026-11-13T13:44:29.844Z",
   "sha256": "cfb9d84e0d8d859ff22baa4161af33a9b6e4ac689542ffc9145f8def3136655a",
   "license": "MIT",
   "units": "USD per million tokens",
@@ -2062,13 +2062,6 @@
     ],
     "azure": [
       {
-        "id": "claude-fable-5-2",
-        "name": "Claude Fable 5.2",
-        "input": "8",
-        "output": "40",
-        "cacheRead": "0.2"
-      },
-      {
         "id": "gpt-6.1-terra",
         "name": "GPT-6.1 Terra",
         "input": "1",
@@ -2076,32 +2069,11 @@
         "cacheRead": "0.05"
       },
       {
-        "id": "claude-haiku-5-5",
-        "name": "Claude Haiku 5.5",
-        "input": "0.1",
-        "output": "0.5",
-        "cacheRead": "0.01"
-      },
-      {
         "id": "gpt-6.1-sol",
         "name": "GPT-6.1 Sol",
         "input": "2",
         "output": "10",
         "cacheRead": "0.1"
-      },
-      {
-        "id": "claude-sonnet-5-5",
-        "name": "Claude Sonnet 5.5",
-        "input": "2",
-        "output": "10",
-        "cacheRead": "0.2"
-      },
-      {
-        "id": "claude-opus-5-5",
-        "name": "Claude Opus 5.5",
-        "input": "4",
-        "output": "20",
-        "cacheRead": "0.2"
       },
       {
         "id": "gpt-6-luna",
@@ -2118,46 +2090,11 @@
         "cacheRead": "0.2"
       },
       {
-        "id": "grok-4.7",
-        "name": "Grok 4.7",
-        "input": null,
-        "output": null,
-        "cacheRead": null
-      },
-      {
-        "id": "deepseek-v4.1-flash",
-        "name": "DeepSeek-V4.1-Flash",
-        "input": "0.3",
-        "output": "1.2",
-        "cacheRead": "0.006"
-      },
-      {
         "id": "gpt-6-astra",
         "name": "GPT-6 Astra",
         "input": "10",
         "output": "50",
         "cacheRead": "1"
-      },
-      {
-        "id": "claude-fable-5-1",
-        "name": "Claude Fable 5.1",
-        "input": "10",
-        "output": "50",
-        "cacheRead": "0.25"
-      },
-      {
-        "id": "grok-4.6",
-        "name": "Grok 4.6",
-        "input": "2",
-        "output": "6",
-        "cacheRead": "0.5"
-      },
-      {
-        "id": "claude-opus-5",
-        "name": "Claude Opus 5",
-        "input": "5",
-        "output": "25",
-        "cacheRead": "0.5"
       },
       {
         "id": "gpt-5.6-luna",
@@ -2181,41 +2118,6 @@
         "cacheRead": "0.2"
       },
       {
-        "id": "claude-sonnet-5",
-        "name": "Claude Sonnet 5",
-        "input": "2",
-        "output": "10",
-        "cacheRead": "0.2"
-      },
-      {
-        "id": "kimi-k2.7-code",
-        "name": "Kimi K2.7 Code",
-        "input": "0.95",
-        "output": "4",
-        "cacheRead": "0.19"
-      },
-      {
-        "id": "claude-fable-5",
-        "name": "Claude Fable 5",
-        "input": "10",
-        "output": "50",
-        "cacheRead": "1"
-      },
-      {
-        "id": "claude-mythos-5",
-        "name": "Claude Mythos 5",
-        "input": "10",
-        "output": "50",
-        "cacheRead": "1"
-      },
-      {
-        "id": "claude-opus-4-8",
-        "name": "Claude Opus 4.8",
-        "input": "5",
-        "output": "25",
-        "cacheRead": "0.5"
-      },
-      {
         "id": "gpt-chat-latest",
         "name": "GPT Chat Latest",
         "input": "5",
@@ -2223,53 +2125,11 @@
         "cacheRead": "0.5"
       },
       {
-        "id": "deepseek-v4-flash",
-        "name": "DeepSeek-V4-Flash",
-        "input": "0.19",
-        "output": "0.51",
-        "cacheRead": null
-      },
-      {
-        "id": "deepseek-v4-pro",
-        "name": "DeepSeek-V4-Pro",
-        "input": "1.74",
-        "output": "3.48",
-        "cacheRead": null
-      },
-      {
         "id": "gpt-5.5",
         "name": "GPT-5.5",
         "input": "5",
         "output": "30",
         "cacheRead": "0.5"
-      },
-      {
-        "id": "kimi-k2.6",
-        "name": "Kimi K2.6",
-        "input": "0.95",
-        "output": "4",
-        "cacheRead": null
-      },
-      {
-        "id": "claude-opus-4-7",
-        "name": "Claude Opus 4.7",
-        "input": "5",
-        "output": "25",
-        "cacheRead": "0.5"
-      },
-      {
-        "id": "grok-4-20-non-reasoning",
-        "name": "Grok 4.20 (Non-Reasoning)",
-        "input": "2",
-        "output": "6",
-        "cacheRead": null
-      },
-      {
-        "id": "grok-4-20-reasoning",
-        "name": "Grok 4.20 (Reasoning)",
-        "input": "2",
-        "output": "6",
-        "cacheRead": null
       },
       {
         "id": "gpt-5.4-mini",
@@ -2307,27 +2167,6 @@
         "cacheRead": "0.175"
       },
       {
-        "id": "claude-sonnet-4-6",
-        "name": "Claude Sonnet 4.6",
-        "input": "3",
-        "output": "15",
-        "cacheRead": "0.3"
-      },
-      {
-        "id": "claude-opus-4-6",
-        "name": "Claude Opus 4.6",
-        "input": "5",
-        "output": "25",
-        "cacheRead": "0.5"
-      },
-      {
-        "id": "kimi-k2.5",
-        "name": "Kimi K2.5",
-        "input": "0.6",
-        "output": "3",
-        "cacheRead": null
-      },
-      {
         "id": "gpt-5.2-codex",
         "name": "GPT-5.2 Codex",
         "input": "1.75",
@@ -2340,34 +2179,6 @@
         "input": "1.75",
         "output": "14",
         "cacheRead": "0.175"
-      },
-      {
-        "id": "deepseek-v3.2",
-        "name": "DeepSeek-V3.2",
-        "input": "0.58",
-        "output": "1.68",
-        "cacheRead": null
-      },
-      {
-        "id": "claude-opus-4-5",
-        "name": "Claude Opus 4.5",
-        "input": "5",
-        "output": "25",
-        "cacheRead": "0.5"
-      },
-      {
-        "id": "claude-haiku-4-5",
-        "name": "Claude Haiku 4.5",
-        "input": "1",
-        "output": "5",
-        "cacheRead": "0.1"
-      },
-      {
-        "id": "claude-sonnet-4-5",
-        "name": "Claude Sonnet 4.5",
-        "input": "3",
-        "output": "15",
-        "cacheRead": "0.3"
       },
       {
         "id": "gpt-5.1",
@@ -2433,102 +2244,11 @@
         "cacheRead": "0.005"
       },
       {
-        "id": "grok-4-1-fast-non-reasoning",
-        "name": "Grok 4.1 Fast (Non-Reasoning)",
-        "input": "0.2",
-        "output": "0.5",
-        "cacheRead": "0.05"
-      },
-      {
-        "id": "grok-4-1-fast-reasoning",
-        "name": "Grok 4.1 Fast (Reasoning)",
-        "input": "0.2",
-        "output": "0.5",
-        "cacheRead": "0.05"
-      },
-      {
-        "id": "model-router",
-        "name": "Model Router",
-        "input": "0.14",
-        "output": "0",
-        "cacheRead": null
-      },
-      {
-        "id": "mistral-medium-2505",
-        "name": "Mistral Medium 3",
-        "input": "0.4",
-        "output": "2",
-        "cacheRead": null
-      },
-      {
         "id": "o3",
         "name": "o3",
         "input": "2",
         "output": "8",
         "cacheRead": "0.5"
-      },
-      {
-        "id": "llama-4-maverick-17b-128e-instruct-fp8",
-        "name": "Llama 4 Maverick 17B 128E Instruct FP8",
-        "input": "0.25",
-        "output": "1",
-        "cacheRead": null
-      },
-      {
-        "id": "llama-4-scout-17b-16e-instruct",
-        "name": "Llama 4 Scout 17B 16E Instruct",
-        "input": "0.2",
-        "output": "0.78",
-        "cacheRead": null
-      },
-      {
-        "id": "cohere-command-a",
-        "name": "Command A",
-        "input": "2.5",
-        "output": "10",
-        "cacheRead": null
-      },
-      {
-        "id": "mistral-small-2503",
-        "name": "Mistral Small 3.1",
-        "input": "0.1",
-        "output": "0.3",
-        "cacheRead": null
-      },
-      {
-        "id": "codestral-2501",
-        "name": "Codestral 25.01",
-        "input": "0.3",
-        "output": "0.9",
-        "cacheRead": null
-      },
-      {
-        "id": "phi-4-mini",
-        "name": "Phi-4-mini",
-        "input": "0.075",
-        "output": "0.3",
-        "cacheRead": null
-      },
-      {
-        "id": "phi-4-mini-reasoning",
-        "name": "Phi-4-mini-reasoning",
-        "input": "0.075",
-        "output": "0.3",
-        "cacheRead": null
-      },
-      {
-        "id": "llama-3.3-70b-instruct",
-        "name": "Llama-3.3-70B-Instruct",
-        "input": "0.71",
-        "output": "0.71",
-        "cacheRead": null
-      },
-      {
-        "id": "ministral-3b",
-        "name": "Ministral 3B",
-        "input": "0.04",
-        "output": "0.04",
-        "cacheRead": null
       }
     ]
   }
