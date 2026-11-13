@@ -5,6 +5,7 @@ import {
   checkImage,
   chosenImage,
   DOCKER_CAPABILITIES,
+  dockerImageLabel,
   dockerLaunchBlocker,
   dockerLaunchBody,
   dockerLaunchOption,
@@ -194,4 +195,11 @@ test("the server's own launch options drive the Docker sandbox page and the laun
     providers: launchProviderOptions({ hosts: true, normalApi: true, placement: true, normalLaunch: true }),
   });
   expect(dockerLaunchBlocker(launch, true, { state: "online" })).toBeNull();
+});
+
+test("a Docker sandbox's image reads as a name, with the full reference kept for its tooltip", () => {
+  expect(dockerImageLabel(DOCKER_DEFAULT_IMAGE)).toEqual({ label: "Armada default", detail: DOCKER_DEFAULT_IMAGE });
+  expect(dockerImageLabel(DIGEST)).toEqual({ label: "buildpack-deps", detail: DIGEST });
+  expect(dockerImageLabel(`sha256:${"a".repeat(64)}`)).toMatchObject({ label: "Local image" });
+  expect(dockerImageLabel(null)).toEqual({ label: "Unknown", detail: null });
 });

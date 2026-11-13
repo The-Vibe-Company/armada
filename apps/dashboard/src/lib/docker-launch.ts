@@ -232,3 +232,15 @@ export function dockerSandboxControls(option: DockerLaunchOption | null): Docker
     }),
   };
 }
+
+/**
+ * A Docker sandbox's image in its page's details (#1526): Armada's default image by name, a custom one by its
+ * repository (or "Local image" for a host-approved image ID). `detail` is the full reference with its digest, for a
+ * tooltip.
+ */
+export function dockerImageLabel(image: string | null): { label: string; detail: string | null } {
+  if (!image) return { label: "Unknown", detail: null };
+  if (image === DOCKER_DEFAULT_IMAGE) return { label: "Armada default", detail: image };
+  if (image.startsWith("sha256:")) return { label: "Local image", detail: image };
+  return { label: image.split("@")[0] || image, detail: image };
+}
