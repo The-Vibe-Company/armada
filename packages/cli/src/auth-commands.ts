@@ -20,7 +20,11 @@ export interface AuthIo {
   sleep?: (ms: number) => Promise<void>;
   /** Reads the code typed from a sign-in email. Tests set it; the terminal prompt is the default. */
   readCode?: (signal: AbortSignal) => Promise<string>;
-  readEmail?: () => Promise<string>;
+  readEmail?: (defaultEmail?: string) => Promise<string>;
+  interactive?: boolean;
+  confirmSignIn?: () => Promise<boolean>;
+  chooseMethod?: (methods: string[], defaultMethod: string) => Promise<string>;
+  emailPreferences?: Preferences;
 }
 
 export function defaultSessionPath(env: NodeJS.ProcessEnv = process.env): string {
@@ -40,16 +44,32 @@ export function productionAuthIo(
     open: openBrowser,
     session: fileSessionStore(defaultSessionPath(env)),
     preferences: filePreferences(join(env.XDG_CONFIG_HOME || join(homedir(), ".config"), "armada", "preferences.json")),
+    interactive: Boolean(process.stdin.isTTY && process.stderr.isTTY && !env.CI),
+    confirmSignIn: async () => /^(y|yes)?$/i.test(await promptLine("You are not signed in. Sign in now? [Y/n] ")),
+    chooseMethod: async (methods, defaultMethod) => {
+      const choice = await promptLine(`Sign-in method (${methods.join(", ")}) [${defaultMethod}]: `);
+      return choice || defaultMethod;
+    },
+    emailPreferences: filePreferences(
+      join(env.XDG_CONFIG_HOME || join(homedir(), ".config"), "armada", "login-email.json"),
+    ),
     readCode: promptCode,
-    readEmail: () =>
-      new Promise((resolve) => {
-        const lines = createInterface({ input: process.stdin, output: process.stderr });
-        lines.question("Email: ", (answer) => {
-          lines.close();
-          resolve(answer.trim());
-        });
-      }),
+    readEmail: (previous) => promptLine("Email: ", previous),
   };
+}
+
+/** Terminal-only prompts never consume piped command input. */
+function promptLine(question: string, initial = ""): Promise<string> {
+  if (!process.stdin.isTTY || !process.stderr.isTTY)
+    throw new AuthError("Run armada login --email <address> in an interactive terminal.", "usage");
+  return new Promise((resolve) => {
+    const lines = createInterface({ input: process.stdin, output: process.stderr });
+    lines.question(question, (answer) => {
+      lines.close();
+      resolve(answer.trim());
+    });
+    if (initial) lines.write(initial);
+  });
 }
 
 /** One line from the terminal, so a code can be typed while the link is also waiting. */
@@ -98,13 +118,21 @@ export async function loginCommand(
         "usage",
       );
     if (!how.provider) {
-      if (methods.includes("email")) {
+      // A remembered email makes code login shortest; otherwise an enabled browser method needs no typing.
+      const previous = await io.emailPreferences?.read(origin);
+      const defaultMethod =
+        previous && methods.includes("email")
+          ? "email"
+          : (methods.find((method) => method === "github" || method === "google") ?? methods[0]);
+      if (!defaultMethod) throw new AuthError("No supported sign-in methods are enabled.", "unavailable");
+      const method =
+        methods.length > 1 && io.chooseMethod ? await io.chooseMethod(methods, defaultMethod) : defaultMethod;
+      if (!methods.includes(method)) throw new AuthError("Choose one of the enabled sign-in methods.", "usage");
+      if (method === "email") {
         if (!io.readEmail) throw new AuthError("Use armada login --email <address>.", "usage");
-        how = { ...how, email: await io.readEmail() };
+        how = { ...how, email: await io.readEmail(previous) };
       } else {
-        const provider = methods.find((method) => method === "github" || method === "google") as Provider | undefined;
-        if (!provider) throw new AuthError("No supported sign-in methods are enabled.", "unavailable");
-        how = { ...how, provider };
+        how = { ...how, provider: method as Provider };
       }
     }
   }
@@ -155,6 +183,7 @@ export async function loginCommand(
         refreshToken: value.refreshToken,
         expiresAt: value.expiresAt,
       });
+      await io.emailPreferences?.write(origin, email);
       io.out("Logged in.\n");
       return;
     } finally {

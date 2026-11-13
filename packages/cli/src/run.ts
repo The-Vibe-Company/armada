@@ -261,9 +261,50 @@ For other commands and authentication settings: armada --help.
 
 /** Runs one command line and returns the process exit code. */
 export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Promise<number> {
+  let signingIn = false;
+  const sessionFailure = (error: unknown) =>
+    error instanceof AuthError &&
+    (error.code === "unauthorized" || (error instanceof ArmadaApiError && error.status === 401));
   try {
-    return await dispatch(argv, io, deps);
-  } catch (error) {
+    const auth = authOf(io, deps);
+    try {
+      if (argv.length === 0) {
+        const client = await createArmadaApiClient(auth);
+        await client.request("/api/v1/account/status", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: "{}",
+        });
+      }
+      return await dispatch(argv, io, deps);
+    } catch (error) {
+      if (
+        !sessionFailure(error) ||
+        argv[0] === "login" ||
+        argv[0] === "logout" ||
+        (argv[0] === "account" && argv[1] === "logout") ||
+        auth.env.ARMADA_TOKEN
+      )
+        throw error;
+      if (!argv.includes("--json") && auth.interactive && auth.confirmSignIn && (await auth.confirmSignIn())) {
+        signingIn = true;
+        await loginCommand(auth);
+        signingIn = false;
+        // Retry the original operation once; a failed retry never starts another login.
+        return await dispatch(argv, io, { ...deps, auth });
+      }
+      if (argv.length === 0) {
+        io.err("You are not signed in. Run armada login.\n");
+        io.out(HELP);
+        return 1;
+      }
+      throw new AuthError("You are not signed in. Run armada login.", "unauthorized");
+    }
+  } catch (caught) {
+    const error =
+      sessionFailure(caught) && argv[0] !== "login" && !signingIn
+        ? new AuthError("You are not signed in. Run armada login.", "unauthorized")
+        : caught;
     if (
       argv.includes("--json") &&
       (error instanceof GoldenError ||

@@ -126,7 +126,7 @@ describe("auth commands", () => {
   test("token commands without a session ask for login", async () => {
     const result = await capture(["token", "list"], io());
     expect(result.code).toBe(1);
-    expect(result.err).toContain("Set ARMADA_TOKEN or run armada login.");
+    expect(result.err).toContain("You are not signed in. Run armada login.");
   });
 
   test("ARMADA_TOKEN owns token requests without reading a saved session", async () => {
@@ -189,6 +189,38 @@ describe("auth commands", () => {
       ["auth/methods", "auth/email/start", "auth/email/verify"].map((path) => `${ORIGIN}/api/v1/${path}`),
     );
     expect(await auth.session.read()).toEqual(session());
+  });
+
+  test("default login offers only enabled choices and prefills the last successful email", async () => {
+    const auth = io();
+    auth.env = { ARMADA_URL: ORIGIN };
+    let remembered = "last@example.com";
+    auth.emailPreferences = {
+      read: async (origin) => {
+        expect(origin).toBe(ORIGIN);
+        return remembered;
+      },
+      write: async (_origin, email) => {
+        remembered = email ?? "";
+      },
+    };
+    auth.chooseMethod = async (methods, preferred) => {
+      expect(methods).toEqual(["email", "google"]);
+      expect(preferred).toBe("email");
+      return "email";
+    };
+    auth.readEmail = async (previous) => {
+      expect(previous).toBe("last@example.com");
+      return "new@example.com";
+    };
+    auth.readCode = async () => "123456";
+    auth.fetch = async (input) => {
+      if (String(input).endsWith("/auth/methods")) return Response.json({ methods: ["email", "google"] });
+      if (String(input).endsWith("/email/start")) return Response.json({});
+      return Response.json({ accessToken: ACCESS, refreshToken: REFRESH, expiresAt: "2099-01-01T00:00:00.000Z" });
+    };
+    expect((await capture(["login"], auth)).code).toBe(0);
+    expect(remembered).toBe("new@example.com");
   });
 
   test("disabled providers fail in the terminal before opening a browser", async () => {
