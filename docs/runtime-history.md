@@ -45,4 +45,6 @@ provider ports, no model calls or native host runner.
 
 The exact ONE-launch coordinator check will follow on #1161 when default-off
 API/CLI selection and complete startup/read/cleanup routing are wired. Rebuild
-and publish matching runtime/harness artifacts before enabling that path.
+and select the matching image build manifest before enabling that path. The
+normal Docker deploy publishes runtime/harness artifacts automatically (see
+[publication](runtime-bootstrap-cache.md)).

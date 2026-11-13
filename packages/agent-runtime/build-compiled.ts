@@ -3,13 +3,16 @@ import { createHash } from "node:crypto";
 import { chmod, mkdir, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
+import { parseArgs } from "node:util";
 import { version } from "./package.json";
 import { harnessInventory } from "./src/harness-cache.ts";
 
-if (Bun.version !== "1.4.2" || process.platform !== "linux" || !["x64", "arm64"].includes(process.arch))
-  throw Error("Compiled runtime build requires pinned Bun 1.4.2 on target Linux architecture");
+const { values } = parseArgs({ options: { arch: { type: "string" }, out: { type: "string" } } });
+const architecture = values.arch ?? process.arch;
+if (Bun.version !== "1.4.2" || process.platform !== "linux" || !["x64", "arm64"].includes(architecture))
+  throw Error("Compiled runtime build requires pinned Bun 1.4.2 on Linux for x64 or arm64");
 const root = import.meta.dir;
-const out = join(root, "dist/compiled");
+const out = values.out ?? join(root, "dist/compiled");
 await rm(out, { recursive: true, force: true });
 await mkdir(out, { recursive: true });
 const executable = join(out, "armada-runtime");
@@ -18,7 +21,7 @@ const build = Bun.spawn(
     process.execPath,
     "build",
     "--compile",
-    `--target=bun-linux-${process.arch}`,
+    `--target=bun-linux-${architecture}`,
     join(root, "src/main.ts"),
     "--outfile",
     executable,
@@ -28,8 +31,8 @@ const build = Bun.spawn(
 if (await build.exited) throw Error("Compiled runtime build failed");
 const require = createRequire(join(root, "package.json"));
 const codexRequire = createRequire(require.resolve("@openai/codex/package.json"));
-const vendor = dirname(codexRequire.resolve(`@openai/codex-linux-${process.arch}/package.json`));
-const triple = process.arch === "x64" ? "x86_64-unknown-linux-musl" : "aarch64-unknown-linux-musl";
+const vendor = dirname(codexRequire.resolve(`@openai/codex-linux-${architecture}/package.json`));
+const triple = architecture === "x64" ? "x86_64-unknown-linux-musl" : "aarch64-unknown-linux-musl";
 const pack = Bun.spawn(
   ["tar", "--hard-dereference", "-czf", join(out, "codex.tar.gz"), "-C", join(vendor, "vendor", triple), "."],
   {
@@ -54,7 +57,7 @@ await Bun.write(
       protocol: 1,
       version,
       platform: "linux",
-      architecture: process.arch,
+      architecture,
       libc: "glibc",
       bun: Bun.version,
       runtime: await file("armada-runtime"),
