@@ -12,7 +12,7 @@ for (const width of [1280, 390])
       await page.addInitScript((value) => localStorage.setItem("theme", value), theme);
       await signIn(page, "alice@example.com", "/environments");
       for (const [route, label] of [
-        ["environments", "Environments"],
+        ["environments", "Snapshots"],
         ["templates", "Templates"],
         ["tools", "Tools"],
         ["variables", "Variables and secrets"],
@@ -138,7 +138,7 @@ test("list rows share their columns, whatever the width of each row's action", a
 test("the closed panel leaves no empty gap above the list", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 844 });
   await signIn(page, "alice@example.com", "/environments");
-  const list = page.getByRole("list", { name: "Environments", exact: true });
+  const list = page.getByRole("list", { name: "Snapshots", exact: true });
   await expect(list).toBeVisible();
   // The section starts with its list: the parked, closed panel takes no grid row of its own.
   const offset = await list.evaluate((node) => {
