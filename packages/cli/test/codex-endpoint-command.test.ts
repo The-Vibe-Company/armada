@@ -407,6 +407,7 @@ test("CLI creates an OpenCode chat-compatible account with explicit upstream mod
 test("CLI connects shared provider presets without connection JSON or a user-selected credential kind", async () => {
   for (const [preset, url, models, protocol] of [
     ["opencode-anthropic", undefined, "claude-test", "anthropic"],
+    ["opencode-openai", undefined, "gpt-test", "openai"],
     ["opencode-azure", "https://resource.openai.azure.com/openai/v1/responses", "my-deployment", "azure"],
     ["deepseek", undefined, "deepseek-flash", undefined],
   ]) {

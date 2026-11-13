@@ -22,6 +22,7 @@ test("every preset names a model credential kind and offers its catalog's models
   expect(CONNECTION_PRESETS.map((entry) => entry.id)).toEqual([
     "openai",
     "anthropic",
+    "opencode-openai",
     "opencode-anthropic",
     "opencode",
     "deepseek",
@@ -220,4 +221,21 @@ test("Azure for OpenCode saves v1 deployment names and refuses legacy versioned 
     "https://resource.openai.azure.com/openai/v1?api-version=preview",
   ])
     expect(() => make(url)).toThrow(VaultError);
+});
+
+test("OpenAI for OpenCode fixes the Responses connection separately from Codex and generic endpoints", () => {
+  const value = JSON.parse(
+    presetConnectionValue(preset("opencode-openai"), {
+      apiKey: "fake-openai-key",
+      baseUrl: "https://wrong.example",
+      models: ["gpt-test"],
+    }),
+  );
+  expect(value.endpoint).toEqual({
+    version: 1,
+    protocol: "openai",
+    baseUrl: "https://api.openai.com/v1",
+    models: ["gpt-test"],
+  });
+  expect(value.apiKey).toBe("fake-openai-key");
 });
