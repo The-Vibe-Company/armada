@@ -164,6 +164,7 @@ Usage:
                                            Timeout is 0–600 seconds, default 60.
   armada report <sandbox-id> ready|blocked --prompt-id ID [--reason TEXT] [--pr-number N] [--pr-url URL] [--head-sha SHA]
   armada send|steer|exec <sandbox-id> <text-or-command> [--model ID] [--reasoning-effort LEVEL]
+                                           send accepts --request-id UUID to reuse an uncertain runtime instruction.
   armada golden retirement dry-run|reconcile <golden-id> [--limit 1-50] [--org UUID]
   armada golden remove <golden-id> [--org UUID] [--json]
                                            Remove from launch selection; retain children and provider artifacts

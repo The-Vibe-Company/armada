@@ -1433,8 +1433,8 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       if (!context.runtimeSend) throw new ToolError("unsupported", "Runtime follow-up is unavailable.");
       return context.runtimeSend(caller, args);
     }
-    if (args.request_id !== undefined)
-      throw new ToolError("invalid_request", "request_id is supported only for runtime follow-up.");
+    // One send shape across placements. Native providers do not implement a
+    // durable request-key protocol; accepting this field promises no deduplication.
     const { sandbox: found, provider } = await live(args.id, false, selected);
     if (args.prompt.trim() === "") throw new ToolError("invalid_request", "The prompt is empty.");
     if (found.credentialId)
@@ -1545,7 +1545,9 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           .string()
           .uuid()
           .optional()
-          .describe("Required for runtime follow-up; reuse with identical input after uncertain delivery."),
+          .describe(
+            "Required for runtime follow-up; reuse with identical input after uncertain delivery. Native providers accept the field for compatibility only; they do not deduplicate.",
+          ),
         prompt: z.string().min(1).describe("The instruction."),
         conversation_id: conversationId,
         model: modelInput,

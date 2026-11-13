@@ -165,7 +165,11 @@ describe("http", () => {
     expect(logs.result?.isError).toBeUndefined();
     expect(logs.result?.structuredContent).toMatchObject({ events: [expect.objectContaining({ kind: "prompt" })] });
     boat.finish("bx_1", "prompt_1", "finished");
-    const sent = await dashboard.tool("send", { id: launched.data.id, prompt: "and the tests" });
+    const sent = await dashboard.tool("send", {
+      id: launched.data.id,
+      prompt: "and the tests",
+      request_id: crypto.randomUUID(),
+    });
     expect(sent.result?.structuredContent).toMatchObject({ promptId: "prompt_2", conversationId: "conv_1" });
     const stopped = await dashboard.tool("stop", { id: launched.data.id });
     expect(stopped.result?.structuredContent).toMatchObject({ status: "stopped" });
