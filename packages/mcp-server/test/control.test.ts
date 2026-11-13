@@ -30,6 +30,7 @@ import { createModalIntegration } from "../src/modal-integration.ts";
 import { modalLaunchEnvironment } from "../src/modal-launch-environment.ts";
 import { createModelAuthOwnership } from "../src/model-auth.ts";
 import { createProviderMetadata } from "../src/provider-metadata.ts";
+import { rowOnlyConnection } from "./row-only-database.ts";
 import { fakeBoat } from "./support.ts";
 
 const KEY = Buffer.alloc(32, 5).toString("base64");
@@ -37,6 +38,7 @@ const STAN = "11111111-1111-4111-8111-111111111111";
 const ADA = "22222222-2222-4222-8222-222222222222";
 const TOKEN_SECRET = "sk-ant-oat01-do-not-leak";
 const AUTH_JSON = '{"tokens":{"access_token":"codex-do-not-leak"}}';
+const controlDatabase = rowOnlyConnection();
 
 // The HTTP contract owns classification: real SQL resolution and launch, not a mocked classifier.
 for (const failure of [
@@ -937,7 +939,8 @@ describe("control API", () => {
 
   for (const repo of [undefined, "ACME/web"]) {
     test(`sandbox/launch uses scoped credentials and forwards repo (${repo ?? "omitted"})`, async () => {
-      await withServer(async ({ db, options }) => {
+      const isolatedDb = await openMigratedDatabase();
+      const runLaunch = async ({ db, options }: Parameters<Parameters<typeof withServer>[0]>[0]) => {
         const org = (await options.store.createOrg("Launch", STAN)).id;
         options.authStore.addMembership(STAN, { orgId: org, name: "Launch", role: "admin" });
         const key = await encryptSecret("server-only-boat-key", KEY);
@@ -1024,7 +1027,12 @@ describe("control API", () => {
         );
         expect(text).not.toContain("server-only-boat-key");
         expect(text).not.toContain("server-only-model-token");
-      });
+      };
+      try {
+        await withServer(runLaunch, isolatedDb);
+      } finally {
+        await isolatedDb.close();
+      }
     });
   }
 
@@ -1323,8 +1331,12 @@ async function withServer(
     options: ControlOptions & { store: VaultStore; authStore: ReturnType<typeof createMemoryAuthStore> };
     cli: (userId: string, opts?: { session?: boolean; armadaUrl?: boolean; token?: string }) => Who;
   }) => Promise<void>,
+  callerDb?: PGlite,
 ): Promise<void> {
-  const db = await openMigratedDatabase();
+  // Ordinary control cases use one raw migrated connection. rowOnlyConnection
+  // resets its rows before each fixture and owns closing it after the suite;
+  // callers supplying an isolated connection retain ownership of its close.
+  const db = callerDb ?? (await controlDatabase());
   try {
     await db.query("insert into auth.users (id, email) values ($1, 'stan@example.com'), ($2, 'ada@example.com')", [
       STAN,
@@ -1422,7 +1434,8 @@ async function withServer(
     };
     await body({ db, options, cli });
   } finally {
-    await db.close();
+    // Restore the session role before its owner reuses or closes the connection.
+    await db.exec("reset role");
   }
 }
 
