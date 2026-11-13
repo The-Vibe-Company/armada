@@ -877,3 +877,26 @@ arrives. The older Modal runtime script **only stops**, never deletes; its succe
 does not contradict a delete failure. Because the historical run hid its error,
 we cannot assert which server refusal it received; the next staging run will
 identify it. No staging result is claimed by these code-level corrections.
+
+#### Parity cleanup receipts and failure paths
+
+Parity uses the same `post-deploy-smoke:<uuid>` journal request-key format as
+the other smoke probes. The previous callback key `parity:<uuid>` was
+incompatible with `smokeReceipts`. The normal journal wrapper records the launch
+first and deduplicates this callback, so this mismatch is not evidence of the
+historical `remainingRows:5` cause. It is now safe for receipt consumers that
+validate the callback directly. A journal-write error after a known allocation
+still requires cleanup, regardless of the callback key.
+
+Every known allocation now has an independent final cleanup attempt, including
+journal-write failure and unknown resume outcomes. Cleanup confirms stop before
+deleting, reconciles a lost stop acknowledgement by reading status (without
+replaying stop), and requires the delete receipt's ID and terminal status.
+The table includes a `cleanup` cell and `parity_cleanup` JSON reports the ID and
+whether deletion was confirmed. A failed cleanup is a failure even if another
+probe was already failed or not-run. Keep the journal for unconfirmed resources;
+a lost launch response without an ID still requires operator reconciliation.
+The parity probe's shared 35-minute polling deadline still applies; exhausted
+budget can leave cleanup unconfirmed. The journal-enabled wrapper additionally
+runs its own reserved cleanup phase. This slice does not prove the cause of the
+historical five remaining rows or guarantee deletion after provider refusal.
