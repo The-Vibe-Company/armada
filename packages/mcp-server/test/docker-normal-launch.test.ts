@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { createSqlAuthStore } from "@armada/auth";
 import {
   type AgentEvent,
+  DOCKER_DEFAULT_IMAGE,
   DOCKER_IMAGE_UNAVAILABLE_MESSAGE,
   type DockerLaunchResult,
   type DockerSandboxStatus,
@@ -16,8 +17,10 @@ import {
   createSqlMcpLeasePort,
   createSqlMcpRegistry,
   createSqlVaultStore,
+  createTemplateService,
   decryptSecret,
   encryptSecret,
+  type TemplateRuntime,
 } from "@armada/core/server";
 import { dockerLaunchBody, launchedDockerSandbox } from "../../../apps/dashboard/src/lib/docker-launch.ts";
 import type { Caller } from "../src/caller.ts";
@@ -501,9 +504,9 @@ test("a launch whose host could not fetch the image says so in plain words, at l
   expect(status).toMatchObject({ result: { status: "failed", statusReason: DOCKER_IMAGE_UNAVAILABLE_MESSAGE } });
 });
 
-test("prompt-free launch normalizes UUIDs, honors TTL and stops at runtime readiness", async () => {
+test("prompt-free, image-free launch normalizes UUIDs, uses the default image, honors TTL and stops at runtime readiness", async () => {
   const f = await fixture();
-  const { prompt: _prompt, ...base } = f.body;
+  const { prompt: _prompt, image: _image, ...base } = f.body;
   const body = {
     ...base,
     org: base.org.toUpperCase(),
@@ -519,12 +522,16 @@ test("prompt-free launch normalizes UUIDs, honors TTL and stops at runtime readi
     conversationIds: [],
     credentialVersion: 2,
     requestedTtlSeconds: 3600,
+    image: DOCKER_DEFAULT_IMAGE,
   });
   expect(result.ttlSeconds).toBe(3600);
   expect(result.promptId).toBeUndefined();
   expect(result.conversationId).toBeUndefined();
   expect(await counts(f)).toEqual({ sandboxes: 1, claims: 1, jobs: 2, commands: 1 });
-  expect(await f.service().launch(f.caller, { ...base, ttlSeconds: 3600 })).toEqual(result);
+  // The explicit default is the same request as an omitted image.
+  expect(await f.service().launch(f.caller, { ...base, image: DOCKER_DEFAULT_IMAGE, ttlSeconds: 3600 })).toEqual(
+    result,
+  );
 });
 
 test("normal publication uses the runtime epoch rather than the independent lifecycle generation", async () => {
@@ -916,4 +923,167 @@ test("Docker honors frozen launch pins without re-merging later skill defaults",
       explicit.length ? 1 : 0,
     );
   }
+});
+
+// Template placement owner: real admission + normal Docker reservation/commands; fake host/runtime
+// replies exercise transport only. Actual native execution remains the coordinator smoke's proof.
+test("Docker templates freeze admission pins, use normal launch, and replay one durable allocation", async () => {
+  const f = await fixture();
+  const templates = createTemplateService(sql, key);
+  const stores = createSqlData(sql)(f.caller);
+  await db.query("insert into public.personal_skill_defaults(user_id,skills) values($1,$2::text::jsonb)", [
+    f.actor.userId,
+    JSON.stringify(["catalog/frozen@1.0.0"]),
+  ]);
+  const created = await templates.command(f.caller, "create", {
+    org: f.actor.orgId,
+    scope: "personal",
+    name: "docker-template",
+    definition: {
+      provider: "docker",
+      hostId: f.hostId,
+      image: f.body.image,
+      harness: "codex",
+      modelAccount: { id: f.body.credentialId, version: 2 },
+    },
+  });
+  const id = (created.item as { id: string }).id;
+  let dispatches = 0,
+    allocations = 0,
+    starts = 0;
+  const runtime: TemplateRuntime = {
+    stores: { goldens: stores.goldens, sandboxes: stores.sandboxes, credentials },
+    provider: async () => {
+      throw Error("Docker cannot resolve a golden provider");
+    },
+    beforeDockerReserve: async (tx, sandboxId) => {
+      allocations++;
+      expect((await tx.query("select id from sandboxes where id=$1", [sandboxId])).rows).toHaveLength(0);
+    },
+    beforeDockerStart: async () => {
+      starts++;
+    },
+    launchDocker: async (body, admission) => {
+      dispatches++;
+      await db.query("update public.personal_skill_defaults set skills=$2::text::jsonb where user_id=$1", [
+        f.actor.userId,
+        JSON.stringify(["catalog/changed@2.0.0"]),
+      ]);
+      f.body.requestId = body.requestId as typeof f.body.requestId;
+      return f.service().launch(f.caller, body, admission);
+    },
+  };
+  const input = { org: f.actor.orgId, id, requestKey: "frozen-docker", prompt: f.body.prompt };
+  const result = await templates.command(f.caller, "launch", input, runtime);
+  expect(result).toMatchObject({
+    state: "succeeded",
+    provider: "docker",
+    promptId: f.receipt.promptId,
+    manifest: {
+      golden: null,
+      host: { installationId: f.installationId, ownerId: f.admin.userId },
+      resolvedSkills: ["catalog/frozen@1.0.0"],
+      skillReceipts: [{ reference: "catalog/frozen@1.0.0" }],
+    },
+  });
+  expect(
+    (await db.query("select golden_operation_fence_id from template_launch_requests where id=$1", [result.requestId]))
+      .rows,
+  ).toEqual([{ golden_operation_fence_id: null }]);
+  expect(allocations).toBe(1);
+  expect(starts).toBeGreaterThan(0);
+  expect(await counts(f)).toMatchObject({ sandboxes: 1, claims: 1, jobs: 2 });
+  expect(await templates.command(f.caller, "launch", input, runtime)).toEqual(result);
+  expect(dispatches).toBe(1);
+});
+
+test("Docker template placement refuses inaccessible, revoked and replaced host identities before reservation", async () => {
+  for (const change of ["revoked", "replaced", "issuer_removed"] as const) {
+    const f = await fixture();
+    const templates = createTemplateService(sql, key);
+    const stores = createSqlData(sql)(f.caller);
+    const definition = { provider: "docker", hostId: f.hostId, image: f.body.image, harness: "codex" };
+    await expect(
+      templates.command(f.caller, "create", {
+        org: f.actor.orgId,
+        scope: "personal",
+        name: "inaccessible",
+        definition: { ...definition, hostId: randomUUID() },
+      }),
+    ).rejects.toThrow("environment_unavailable");
+    const created = await templates.command(f.caller, "create", {
+      org: f.actor.orgId,
+      scope: "personal",
+      name: "host-identity",
+      definition,
+    });
+    const runtime: TemplateRuntime = {
+      stores: { goldens: stores.goldens, sandboxes: stores.sandboxes, credentials },
+      provider: async () => {
+        throw Error("Docker cannot resolve a golden provider");
+      },
+      launchDocker: async (body, admission) => {
+        if (change === "revoked") await db.query("update docker_hosts set revoked_at=now() where id=$1", [f.hostId]);
+        if (change === "replaced")
+          await db.query("update docker_hosts set installation_id=$2 where id=$1", [f.hostId, randomUUID()]);
+        if (change === "issuer_removed")
+          await db.query("delete from members where org_id=$1 and user_id=$2", [f.actor.orgId, f.admin.userId]);
+        f.body.requestId = body.requestId as typeof f.body.requestId;
+        return f.service().launch(f.caller, body, admission);
+      },
+    };
+    const result = await templates.command(
+      f.caller,
+      "launch",
+      {
+        org: f.actor.orgId,
+        id: (created.item as { id: string }).id,
+        requestKey: change,
+        prompt: f.body.prompt,
+      },
+      runtime,
+    );
+    expect(result.state).toBe("failed");
+    expect(await counts(f)).toEqual({ sandboxes: 0, claims: 0, jobs: 0, commands: 0 });
+    if (change === "replaced") expect(result.reason).toBe("environment_binding_changed");
+  }
+});
+
+test("a lost Docker template response retains one reconciling claim and never redispatches its key", async () => {
+  const f = await fixture();
+  const templates = createTemplateService(sql, key);
+  const stores = createSqlData(sql)(f.caller);
+  const created = await templates.command(f.caller, "create", {
+    org: f.actor.orgId,
+    scope: "personal",
+    name: "lost-response",
+    definition: { provider: "docker", hostId: f.hostId, image: f.body.image, harness: "codex" },
+  });
+  let dispatches = 0;
+  const runtime: TemplateRuntime = {
+    stores: { goldens: stores.goldens, sandboxes: stores.sandboxes, credentials },
+    provider: async () => {
+      throw Error("Docker cannot resolve a golden provider");
+    },
+    launchDocker: async (body, admission) => {
+      dispatches++;
+      f.body.requestId = body.requestId as typeof f.body.requestId;
+      await f.service().launch(f.caller, body, admission);
+      throw Error("response lost after actual normal launch committed");
+    },
+  };
+  const input = {
+    org: f.actor.orgId,
+    id: (created.item as { id: string }).id,
+    requestKey: "lost-response",
+    prompt: f.body.prompt,
+  };
+  const result = await templates.command(f.caller, "launch", input, runtime);
+  expect(result).toMatchObject({ state: "reconciling", id: f.body.requestId });
+  expect(await templates.command(f.caller, "launch", input, runtime)).toMatchObject({
+    state: "reconciling",
+    id: f.body.requestId,
+  });
+  expect(dispatches).toBe(1);
+  expect(await counts(f)).toMatchObject({ sandboxes: 1, claims: 1, jobs: 2 });
 });

@@ -1,8 +1,10 @@
 import {
+  type TemplateDefinition as CoreTemplateDefinition,
   type Harness,
   isHarness,
   MODEL_CATALOG,
   PROVIDER_LIMITS,
+  type SandboxPlacementProviderId,
   type SandboxProviderId,
   skillRefusalMessage,
   validateSkillPins,
@@ -33,19 +35,9 @@ export type TemplateHeader = {
 
 export type TemplateVariableBinding = { key: string; variableId: string; version: number };
 
-export type TemplateDefinition = {
-  goldenId: string;
-  provider: SandboxProviderId;
-  harness: Harness;
-  model: string;
-  reasoningEffort: string;
-  connections: string[];
-  variables: TemplateVariableBinding[];
-  secrets?: { key: string; secretId: string; version: number }[];
-  skills: string[];
-  /** A pinned model account; absent, each launch resolves the launcher's own. */
-  modelAccount?: { id: string; version: number };
-};
+/** The display parser omits the server-only golden binding, retaining the shared placement union. */
+type DisplayDefinition<T> = T extends CoreTemplateDefinition ? Omit<T, "goldenBinding"> : never;
+export type TemplateDefinition = DisplayDefinition<CoreTemplateDefinition>;
 
 export type TemplateRevision = { id: string; revision: number; definition: TemplateDefinition };
 
@@ -92,8 +84,12 @@ export function parseRevision(value: unknown): TemplateRevision | null {
   if (!isRecord(value) || !isId(value.id) || !isCount(value.revision) || !isRecord(value.definition)) return null;
   const d = value.definition;
   if (
-    !isId(d.goldenId) ||
-    (d.provider !== "boat" && d.provider !== "modal") ||
+    (d.provider === "docker"
+      ? d.goldenId !== null ||
+        !isId(d.hostId) ||
+        typeof d.image !== "string" ||
+        !/^[a-z0-9][a-z0-9./:_-]*@sha256:[0-9a-f]{64}$/.test(d.image)
+      : !isId(d.goldenId) || (d.provider !== "boat" && d.provider !== "modal")) ||
     !isHarness(d.harness) ||
     typeof d.model !== "string" ||
     typeof d.reasoningEffort !== "string" ||
@@ -122,8 +118,9 @@ export function parseRevision(value: unknown): TemplateRevision | null {
     id: value.id,
     revision: value.revision,
     definition: {
-      goldenId: d.goldenId,
-      provider: d.provider,
+      ...(d.provider === "docker"
+        ? { provider: "docker" as const, goldenId: null, hostId: d.hostId as string, image: d.image as string }
+        : { goldenId: d.goldenId as string, provider: d.provider as SandboxProviderId }),
       harness: d.harness,
       model: d.model,
       reasoningEffort: d.reasoningEffort,
@@ -169,9 +166,10 @@ export type TemplateProblem = { kind: "environment" | "tool" | "variable" | "sec
 export function templateProblems(definition: TemplateDefinition, lookups: TemplateLookups): TemplateProblem[] {
   const problems: TemplateProblem[] = [];
   const golden = lookups.goldens.find((row) => row.id === definition.goldenId);
-  if (!golden || golden.provider !== definition.provider)
+  if (definition.provider !== "docker" && (!golden || golden.provider !== definition.provider))
     problems.push({ kind: "environment", text: "Its environment was removed or is no longer visible to you." });
-  else if (!golden.ready) problems.push({ kind: "environment", text: `${golden.name} has no snapshot yet.` });
+  else if (definition.provider !== "docker" && golden && !golden.ready)
+    problems.push({ kind: "environment", text: `${golden.name} has no snapshot yet.` });
   if (lookups.connections)
     for (const id of definition.connections) {
       const tool = lookups.connections.find((row) => row.id === id);
@@ -508,21 +506,32 @@ export const REQUEST_KEY = /^dashboard:[0-9a-f-]{36}$/;
 export const newRequestKey = () => `dashboard:${crypto.randomUUID()}`;
 
 /** The lifetimes offered at launch, within the provider's limit. Empty: the server's default. */
-export function ttlOptions(provider: SandboxProviderId): { value: string; label: string }[] {
+export function ttlOptions(provider: SandboxPlacementProviderId): { value: string; label: string }[] {
   return [
     { value: "", label: "Default (4 hours)" },
     { value: "3600", label: "1 hour" },
     { value: "28800", label: "8 hours" },
     { value: "86400", label: "24 hours" },
     { value: "604800", label: "7 days" },
-  ].filter((option) => !option.value || Number(option.value) <= PROVIDER_LIMITS[provider].maxTtlSeconds);
+  ].filter(
+    (option) =>
+      !option.value ||
+      Number(option.value) <= (provider === "docker" ? 86400 : PROVIDER_LIMITS[provider].maxTtlSeconds),
+  );
 }
 
 /** The launch form's lifetime, checked against the provider's limit; undefined is the server's default. */
-export function ttlChoice(value: string, provider: SandboxProviderId): Parsed<number | undefined> {
+export function ttlChoice(value: string, provider: SandboxPlacementProviderId): Parsed<number | undefined> {
   if (!value) return { ok: true, value: undefined };
   const seconds = Number(value);
-  if (!Number.isSafeInteger(seconds) || seconds < 1 || seconds > PROVIDER_LIMITS[provider].maxTtlSeconds)
-    return { ok: false, error: `Choose how long it runs, up to ${PROVIDER_LIMITS[provider].maxTtlLabel}.` };
+  if (
+    !Number.isSafeInteger(seconds) ||
+    seconds < 1 ||
+    seconds > (provider === "docker" ? 86400 : PROVIDER_LIMITS[provider].maxTtlSeconds)
+  )
+    return {
+      ok: false,
+      error: `Choose how long it runs, up to ${provider === "docker" ? "24 hours" : PROVIDER_LIMITS[provider].maxTtlLabel}.`,
+    };
   return { ok: true, value: seconds };
 }

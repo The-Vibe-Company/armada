@@ -102,6 +102,7 @@ export type {
   SandboxPlacementProviderId,
 } from "./docker-api.ts";
 export {
+  DOCKER_DEFAULT_IMAGE,
   DOCKER_IMAGE_UNAVAILABLE_MESSAGE,
   DOCKER_JOB_FAILURE_REASONS,
   type DockerJobFailureReason,
