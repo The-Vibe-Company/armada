@@ -16,7 +16,6 @@ export interface DockerHostListRequest {
 }
 export interface DockerHostSummary {
   id: string;
-  /** No host naming write exists yet. */
   name: string | null;
   /** Online means a recent heartbeat, not a launch/readiness guarantee. */
   state: "pending" | "online" | "offline" | "revoked";
@@ -35,11 +34,15 @@ export interface DockerHostListResponse {
 }
 export interface DockerHostRegistrationRequest {
   org: string;
+  name?: string;
 }
 export interface DockerHostRegistrationResponse {
   hostId: string;
   /** Single-use, five-minute capability. Show once, never persist or log it. */
   registrationToken: string;
+  /** One-click shell command containing only the short-lived registration capability. */
+  command: string;
+  expiresAt: string;
 }
 export interface DockerHostRevokeRequest {
   org: string;
@@ -100,6 +103,7 @@ export interface LaunchOptionsResponse {
     githubVersion: number;
     mcpVersion: number;
     skillsVersion?: number;
+    workspaceVersion?: number;
     controlsVersion?: number;
     enabled: boolean;
   };
@@ -120,6 +124,9 @@ export interface DockerLaunchRequest {
   reasoningEffort?: string;
   ttlSeconds?: number;
   visibility?: "private";
+  skills?: string[];
+  connections?: string[];
+  skipSkillDefaults?: boolean;
 }
 export interface DockerSandboxRecord extends Omit<SandboxRecord, "provider" | "goldenId" | "harness"> {
   provider: "docker";

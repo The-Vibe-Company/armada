@@ -1,9 +1,13 @@
 import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
+import { catalogPriceLabel, visibleCatalogModels } from "../src/lib/connection-presets";
 import {
   customAccountValue,
+  presetAccountValue,
+  presetReplacementValue,
   replacementClaudeAccountValue,
   replacementCodexAccountValue,
+  replacementOpenCodeAccountValue,
 } from "../src/lib/model-connection-input";
 
 function data(baseUrl: string, key: string, apiVersion = "") {
@@ -154,4 +158,85 @@ test("invalid dashboard price fields refuse the connection without reflecting su
     expect(JSON.stringify(result)).not.toContain(key);
     expect(!result.ok && result.error).toContain("USD per million");
   }
+});
+
+test("a provider preset decides the kind and merges ticked and typed models; the browser cannot send prices", () => {
+  const key = randomUUID();
+  const form = new FormData();
+  form.set("preset", "openrouter");
+  form.set("kind", "anthropic");
+  form.set("value", key);
+  form.append("model", "x-ai/first");
+  form.set("customModels", "x-ai/second, x-ai/first");
+  form.set("priceInput", "0");
+  const result = presetAccountValue(form);
+  if (!result.ok) throw Error(result.error);
+  expect(result.kind).toBe("opencode");
+  const value = JSON.parse(result.value);
+  expect(value.endpoint).toEqual({
+    version: 1,
+    baseUrl: "https://openrouter.ai/api/v1",
+    models: ["x-ai/first", "x-ai/second"],
+  });
+  expect(value.prices).toBeUndefined();
+
+  const plain = new FormData();
+  plain.set("preset", "openai");
+  plain.set("value", key);
+  expect(presetAccountValue(plain)).toEqual({ ok: false, error: "Choose a provider." });
+  const empty = new FormData();
+  empty.set("preset", "openai-compatible");
+  empty.set("baseUrl", "https://api.example.com/v1");
+  empty.set("value", key);
+  const refused = presetAccountValue(empty);
+  expect(refused).toEqual({ ok: false, error: "Choose at least one model." });
+});
+
+test("the model list keeps ticked models visible through any search and caps the rest", () => {
+  const models = ["alpha-one", "beta-two", "alpha-three"].map((id) => ({
+    id,
+    name: id.toUpperCase(),
+    input: "1",
+    output: null,
+    cacheRead: null,
+  }));
+  expect(visibleCatalogModels(models, "ALPHA", new Set()).map((model) => model.id)).toEqual([
+    "alpha-one",
+    "alpha-three",
+  ]);
+  expect(visibleCatalogModels(models, "alpha", new Set(["beta-two"]), 2).map((model) => model.id)).toEqual([
+    "beta-two",
+    "alpha-one",
+  ]);
+  expect(catalogPriceLabel(models[0] ?? { input: null, output: null })).toBeNull();
+  expect(catalogPriceLabel({ input: "0.15", output: "0.6" })).toBe("$0.15 in · $0.6 out per M tokens");
+});
+
+test("OpenCode replacement names its destination: a plan key never silently replaces a provider connection", () => {
+  const key = randomUUID();
+  const form = new FormData();
+  form.set("value", key);
+  expect(replacementOpenCodeAccountValue(form)).toEqual({
+    ok: false,
+    error: "Choose the replacement connection type.",
+  });
+  form.set("connectionMode", "opencode");
+  expect(replacementOpenCodeAccountValue(form)).toEqual({ ok: true, value: key });
+  form.set("value", JSON.stringify({ apiKey: key }));
+  const refused = replacementOpenCodeAccountValue(form);
+  expect(refused.ok).toBe(false);
+  expect(JSON.stringify(refused)).not.toContain(key);
+});
+
+test("a provider preset replaces only an account of its own kind", () => {
+  const form = new FormData();
+  form.set("preset", "azure-foundry");
+  form.set("baseUrl", "https://resource.services.ai.azure.com/openai/v1");
+  form.set("value", randomUUID());
+  form.set("customModels", "my-deployment");
+  expect(presetReplacementValue(form, "openai").ok).toBe(true);
+  expect(presetReplacementValue(form, "opencode")).toEqual({
+    ok: false,
+    error: "That provider cannot replace this account.",
+  });
 });

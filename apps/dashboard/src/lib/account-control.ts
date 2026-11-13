@@ -5,6 +5,7 @@ import {
   type AccountUsage,
   type AuthCapabilities,
   accountsFromList,
+  connectionModelsFrom,
   type ModelAccount,
   parseAccount,
   parseAuthCapabilities,
@@ -25,6 +26,8 @@ export const ACCOUNT_ROUTES = {
   remove: "creds/accounts/remove",
   /** #604's proposed read, relayed by root and not yet final: `{id, sandboxId?}` to `{accountId, version, ...}`. */
   usage: "creds/accounts/usage",
+  /** #1483: the models each visible custom connection declares; never a key or an address. */
+  models: "creds/accounts/models",
   /** #604: how accounts can be connected on this deployment. Its absence means paste only. */
   authCapabilities: "creds/accounts/auth-capabilities",
 } as const;
@@ -72,6 +75,15 @@ export function createAccountControl(options: ArmadaApiOptions) {
       const payload = await post(ACCOUNT_ROUTES.list, { org });
       if (!Array.isArray(payload.user)) throw new ControlError("The Armada server sent no credential list.");
       return accountsFromList(payload, org);
+    },
+    /** Declared connection models by account id; empty from a server without the route or on a failed read. */
+    async connectionModels(org: string) {
+      try {
+        return connectionModelsFrom(await post(ACCOUNT_ROUTES.models, { org }));
+      } catch (error) {
+        if (error instanceof ControlError) return new Map<string, never>();
+        throw error;
+      }
     },
     /** Creates an account, or with `id` rotates its secret; `expectedVersion` refuses a stale rotation. */
     set: (body: SetAccountRequest) => account(ACCOUNT_ROUTES.set, body),

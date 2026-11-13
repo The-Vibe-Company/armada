@@ -42,6 +42,7 @@ import {
   tokenRevoke,
 } from "./auth-commands.ts";
 import { launchDocker } from "./docker-launch.ts";
+import { hostCommand } from "./host-commands.ts";
 import { operation, parseTtl } from "./operations.ts";
 import { printOptionalResourceAdvice } from "./resource-advice.ts";
 import { routineCommand } from "./routine-commands.ts";
@@ -81,7 +82,10 @@ export interface Deps {
 const HELP = `armada ${VERSION}: launch coding agents in provider-scoped sandboxes
 
 Usage:
-  armada launch [prompt] --provider docker --host UUID --image digest-ref --agent claude|codex|opencode --credential-id UUID --org UUID [--request-id UUID] [--json]
+  armada host add [--name NAME] [--org UUID]
+  armada host list [--json] [--org UUID]
+  armada host revoke UUID [--org UUID]
+  armada launch [prompt] --provider docker --host UUID|NAME --image digest-ref --agent claude|codex|opencode --credential-id UUID --org UUID [--request-id UUID] [--json]
                                            Opt-in plain-image Docker launch through the normal Armada API.
   armada --version                         Print the version
   armada --help                            Show this help
@@ -346,6 +350,7 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
   const terminator = rest.indexOf("--");
   const optionArgs = terminator < 0 ? rest : rest.slice(0, terminator);
   const scoped = [
+    "host",
     "golden",
     "launch",
     "list",
@@ -392,6 +397,8 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
     case "help":
       io.out(HELP);
       return 0;
+    case "host":
+      return hostCommand(rest, { ...authOf(io, deps), ...io });
     case "golden":
       return golden(rest, io, deps);
     case "launch":

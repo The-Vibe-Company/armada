@@ -4,6 +4,7 @@ import argparse
 from decimal import Decimal, InvalidOperation, getcontext
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -12,6 +13,25 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+
+
+
+def successful_mcp_tool(tools, matching_calls, harness, connection, name):
+    """Correlate native tool identities and successful completions, including split Claude frames."""
+    server = "armada_" + connection.replace("-", "_")
+    qualified = "mcp__" + server + "__" + name if harness == "claude" else server + "_" + re.sub(r"[^a-zA-Z0-9_-]", "_", name)
+    success = False
+    for tool in tools:
+        call_id = tool.get("id")
+        if not isinstance(call_id, str) or not call_id:
+            continue
+        identified = (tool.get("name") == name and tool.get("server") == server) if harness == "codex" else tool.get("name") == qualified
+        if identified:
+            matching_calls.add(call_id)
+        if (call_id in matching_calls and isinstance(tool.get("result"), dict)
+                and tool["result"].get("isError") is False):
+            success = True
+    return success
 
 
 def main():
@@ -23,6 +43,10 @@ def main():
     parser.add_argument("--credential-version", type=int)
     parser.add_argument("--ssh", required=True, help="Existing SSH config name or user@host")
     parser.add_argument("--image", required=True, help="Pulled Linux x64 glibc image@sha256 digest")
+    parser.add_argument("--mcp", help="MCP connection UUID to deliver through the scoped runtime gateway")
+    parser.add_argument("--mcp-tool", help="Safe read-only tool name on --mcp; its successful native tool result is required")
+    parser.add_argument("--skills", action="append", default=[], help="Exact Skillpack pin to install and verify (repeatable)")
+    parser.add_argument("--skill-defaults", action="store_true", help="Require at least one receipt from existing personal/org defaults; does not modify defaults")
     parser.add_argument("--model")
     parser.add_argument("--host-id", help="Reuse an existing host registration")
     parser.add_argument("--start-host", action="store_true", help="Start that stopped host daemon; never remove its lock")
@@ -30,15 +54,34 @@ def main():
     parser.add_argument("--normal-controls", action="store_true", help="Read status/logs and stop/delete through normal sandbox API")
     parser.add_argument("--normal-launch", action="store_true", help="Launch and run the first prompt through the normal API; implies --normal-controls")
     parser.add_argument("--normal-lifecycle", action="store_true", help="Prove normal follow-up and same-host stop/resume with retained history; implies --normal-launch")
+    parser.add_argument("--service-install", action="store_true", help="Restart an installed user service, normal launch and uninstall after cleanup")
     parser.add_argument("--cost", action="store_true", help="Prove exact per-turn and total USD before/after resume; implies --normal-lifecycle")
+    parser.add_argument("--exec", action="store_true", help="Prove normal runtime exec and stable request replay")
+    parser.add_argument("--steer", action="store_true", help="Redirect an active native turn through normal control")
+    parser.add_argument("--interrupt", action="store_true", help="Interrupt an active native turn through normal control")
     harnesses = parser.add_mutually_exclusive_group()
     harnesses.add_argument("--claude", action="store_true", help="Prove Claude launch/follow-up/stop/resume via normal routes")
     harnesses.add_argument("--opencode", action="store_true", help="Prove OpenCode with the supplied custom OpenAI-compatible connection via normal routes")
     parser.add_argument("--timeout", type=int, default=600, help="Seconds per bounded stage")
     args = parser.parse_args()
+    if args.mcp or args.skills or args.skill_defaults:
+        args.normal_launch = True
+    if bool(args.mcp) != bool(args.mcp_tool):
+        parser.error("--mcp and --mcp-tool must be supplied together")
+    if args.mcp:
+        try:
+            args.mcp = str(uuid.UUID(args.mcp))
+        except ValueError:
+            parser.error("--mcp requires a connection UUID")
     harness = "claude" if args.claude else "opencode" if args.opencode else "codex"
+    if args.exec or args.steer or args.interrupt:
+        args.normal_launch = True
     if args.cost or args.claude or args.opencode:
         args.normal_lifecycle = True
+    if args.service_install:
+        if not args.host_id or args.start_host:
+            parser.error("--service-install requires --host-id for the new managed installation, without --start-host")
+        args.normal_launch = True
     if args.normal_lifecycle:
         args.normal_launch = True
         args.follow_up = True
@@ -87,14 +130,16 @@ def main():
                 raise RuntimeError(f"{operation}: timeout; outcome still unknown")
             time.sleep(2)
 
-    def ssh(command, private_input=None):
+    def ssh(command, private_input=None, timeout=60):
         # Do not forward the user's API bearer via an SSH SendEnv configuration.
         env = {k: v for k, v in os.environ.items() if k != "ARMADA_TOKEN"}
         result = subprocess.run(["ssh", "--", args.ssh, command], input=private_input,
-                                env=env, check=False, timeout=60)
+                                env=env, check=False, timeout=timeout)
         if result.returncode:
             raise RuntimeError("SSH host setup failed; inspect private host state")
 
+    if args.service_install:
+        ssh('systemctl --user restart armada-docker-host.service && "$HOME/.local/bin/armada-docker-host" status')
     host_id = args.host_id
     if not host_id:
         registration = api("hosts/register-token", {})
@@ -120,6 +165,10 @@ def main():
         launch["credentialVersion"] = args.credential_version if args.credential_version is not None else 1
     if args.model:
         launch["model"] = args.model
+    if args.mcp:
+        launch["connections"] = [args.mcp]
+    if args.skills:
+        launch["skills"] = args.skills
     marker = "DOCKER_MEMORY_" + uuid.uuid4().hex
     first = (f"Remember this marker for my next message: {marker}. " if args.follow_up else "")
     cleanup_needed = True
@@ -140,6 +189,13 @@ def main():
                     or not launched.get("promptId") or not launched.get("conversationId")):
                 raise RuntimeError("Normal launch outcome unknown; retain sandbox/request ID")
             launch_receipt = {"promptId": launched["promptId"], "conversationId": launched["conversationId"]}
+            if args.skills or args.skill_defaults:
+                receipts = launched.get("sandbox", {}).get("skills", [])
+                if (not receipts or not set(args.skills).issubset({r.get("reference") for r in receipts})
+                        or any(not isinstance(r.get("checksum"), str) or not r["checksum"].startswith("sha256:")
+                               or len(r["checksum"]) != 71 or r.get("origin") != "https://skillpack.app/v1" for r in receipts)):
+                    raise RuntimeError("Verified Skillpack receipts were not returned before the first prompt")
+                print("PASS: explicit/default skills returned verified receipts before first prompt.")
             listed = api("sandbox/list", {"owner": "me", "limit": 100}, normal=True)
             if not any(row.get("id") == sandbox_id and row.get("provider") == "docker"
                        for row in listed.get("sandboxes", [])):
@@ -184,7 +240,7 @@ def main():
             except (KeyError, TypeError, ValueError, InvalidOperation):
                 raise RuntimeError("Docker cost proof failed: expected stable priced turns and exact session total") from None
 
-        def turn(text, expected_answer, conversation=None, receipt=None):
+        def turn(text, expected_answer, conversation=None, receipt=None, require_mcp=False):
             nonlocal cursor
             if receipt is None:
                 prompt_id = str(uuid.uuid4())
@@ -202,7 +258,8 @@ def main():
                 raise RuntimeError("Follow-up changed conversation identity")
             native_prompt = receipt["promptId"]
             deadline = time.monotonic() + args.timeout
-            answer, finished = False, False
+            answer, finished, used_mcp = False, False, False
+            matching_mcp_calls = set()
             while True:
                 if args.normal_controls:
                     page = api("logs/read", {"id": sandbox_id, **({"cursor": cursor} if cursor else {})}, normal=True)
@@ -215,6 +272,9 @@ def main():
                 cursor = page["cursor"]
                 for item in page["events"]:
                     event = item if args.normal_controls else item["event"]
+                    if require_mcp and event.get("promptId") == native_prompt:
+                        used_mcp = successful_mcp_tool(event.get("tools", []), matching_mcp_calls,
+                                                       harness, args.mcp, args.mcp_tool) or used_mcp
                     if event.get("promptId") != native_prompt:
                         continue
                     if event.get("kind") == "message" and expected_answer in event.get("text", ""):
@@ -227,7 +287,7 @@ def main():
                 usage = next((t for t in turns if t.get("promptId") == native_prompt
                               and isinstance(t.get("inputTokens"), int)
                               and isinstance(t.get("outputTokens"), int)), None)
-                if answer and finished and usage:
+                if answer and finished and usage and (not require_mcp or used_mcp):
                     if args.cost:
                         check_cost(page["usage"], native_prompt)
                     print(json.dumps({"answer": expected_answer, "promptId": native_prompt,
@@ -242,9 +302,47 @@ def main():
 
         # Only the first prompt contains the public random marker. Recall proves thread continuity.
         conversation = turn(first + "Reply with exactly DOCKER_OK. Do not run tools or modify files.", "DOCKER_OK", receipt=launch_receipt)
+        if args.mcp:
+            turn("Call the selected MCP tool " + args.mcp_tool + " once using safe read-only arguments, then reply exactly DOCKER_MCP_OK.",
+                 "DOCKER_MCP_OK", conversation, require_mcp=True)
+            print("PASS: selected MCP gateway tool delivered a successful native tool result.")
         if args.follow_up:
             turn("Reply with exactly the marker I gave you in my previous message. Do not run tools or modify files.",
                  marker, conversation)
+        if args.exec:
+            command = {"id": sandbox_id, "request_id": str(uuid.uuid4()), "command": "printf DOCKER_EXEC_OK", "timeout_seconds": 10}
+            result = api("sandbox/exec", command, normal=True)
+            replay = api("sandbox/exec", command, normal=True)
+            if (result.get("exitCode") != 0 or result.get("stdout") != "DOCKER_EXEC_OK"
+                    or result.get("timedOut") or result != replay):
+                raise RuntimeError("Normal Docker exec or stable replay failed")
+            print("PASS: runtime exec returned expected output; identical request replay matched.")
+        for operation, enabled in (("steer", args.steer), ("interrupt", args.interrupt)):
+            if not enabled:
+                continue
+            receipt = api("sandbox/send", {"id": sandbox_id, "request_id": str(uuid.uuid4()),
+                "conversation_id": conversation,
+                "prompt": "Run the shell command sleep 120, then reply DOCKER_NOT_REDIRECTED. Wait for the command to finish."}, normal=True)
+            control = {"id": sandbox_id, "request_id": str(uuid.uuid4()), "conversation_id": conversation}
+            if operation == "steer":
+                control["text"] = "Stop waiting. Reply with exactly DOCKER_STEER_OK. Do not run more tools."
+            redirected = api("sandbox/" + operation, control, normal=True)
+            if operation == "steer":
+                if (redirected.get("conversationId") != conversation or redirected.get("promptId") != receipt["promptId"]):
+                    raise RuntimeError("Steering changed turn identity")
+                turn("", "DOCKER_STEER_OK", conversation, receipt)
+            else:
+                if redirected.get("interrupted") is not True:
+                    raise RuntimeError("Interrupt was not acknowledged")
+                deadline = time.monotonic() + args.timeout
+                while True:
+                    summary = api("sandbox/detail", {"id": sandbox_id, "prompt_id": receipt["promptId"]}, normal=True)
+                    if summary.get("prompt", {}).get("state") == "interrupted":
+                        break
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError("Interrupted native turn was not confirmed in retained history")
+                    time.sleep(2)
+            print("PASS: normal Docker " + operation + " acknowledged by the native turn.")
         if args.normal_lifecycle:
             stopped = api("sandbox/stop", {"id": sandbox_id, "request_id": str(uuid.uuid4())}, normal=True)
             if stopped.get("status") != "stopped":
@@ -284,7 +382,11 @@ def main():
         print("PASS: exact per-turn/session USD and immutable prior quotes survived follow-up and resume.")
     if args.claude or args.opencode:
         print("PASS: " + harness + " normal launch/follow-up/stop/resume confirmed.")
-    print("Host remains registered/running for inspection. See docs/docker-host-daemon.md for uninstall.")
+    if args.service_install:
+        ssh('"$HOME/.local/bin/armada-docker-host" uninstall', timeout=660)
+        print("PASS: managed service restarted, normal launch and cleanup confirmed, installation uninstalled; compare Docker inventory with baseline.")
+    else:
+        print("Host remains registered/running for inspection. See docs/docker-host-daemon.md for uninstall.")
 
 
 if __name__ == "__main__":

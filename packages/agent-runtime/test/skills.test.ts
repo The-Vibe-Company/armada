@@ -3,7 +3,9 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { SKILLPACK_RUNTIME } from "../../core/src/skillpack-runtime.ts";
 import { Journal, Runner, type RunnerRequest } from "../src/index.ts";
+import { installRuntimeSkills } from "../src/skills.ts";
 
 const key = `cmp_pat_${"a".repeat(48)}`,
   workspace = "11111111-1111-4111-8111-111111111111";
@@ -198,3 +200,33 @@ setInterval(()=>{},10000);
     await f.close();
   }
 });
+
+test.skipIf(process.platform !== "linux" || !["x64", "arm64"].includes(process.arch))(
+  "missing Skillpack CLI enters pinned credential-free preparation and refuses corrupted release bytes",
+  async () => {
+    const f = await fixture();
+    let fetched = 0;
+    try {
+      await expect(
+        installRuntimeSkills(
+          { harness: "codex", references: ["catalog/public-skill@1.2.3"], cwd: f.repo, key },
+          f.journal,
+          { HOME: f.root, PATH: join(f.root, "absent") },
+          new AbortController().signal,
+          async (url, options) => {
+            fetched++;
+            expect(url.origin).toBe("https://github.com");
+            expect(url.pathname).toContain("/The-Vibe-Company/skillpack/releases/download/runtime-v");
+            expect(options.credentials).toBe("omit");
+            expect(JSON.stringify(options)).not.toContain(key);
+            return new Response(new Uint8Array(SKILLPACK_RUNTIME.archives[process.arch as "x64" | "arm64"].bytes));
+          },
+        ),
+      ).rejects.toThrow("skillpack_download_unavailable");
+      expect(fetched).toBe(1);
+      expect(f.starts()).toBe(0);
+    } finally {
+      await f.close();
+    }
+  },
+);

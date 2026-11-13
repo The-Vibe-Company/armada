@@ -8,7 +8,7 @@ export function PageHeader({
   children,
 }: {
   title: string;
-  description?: string;
+  description?: ReactNode;
   /** A quiet fact beside the title, such as how many items the page holds. */
   meta?: ReactNode;
   children?: ReactNode;

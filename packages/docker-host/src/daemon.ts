@@ -22,6 +22,7 @@ export type State = {
   hostId: string;
   hostToken: string;
   receipts: Receipt[];
+  lastPollAt?: string;
   /** Fair bounded retries across retained confirmations and process restarts. */
   expiryReportAfter?: string;
 };
@@ -137,7 +138,11 @@ export async function tick(store: Store, api: Api, executor: Executor): Promise<
     await store.save(state);
   }
   const polled = await api.poll(state);
-  if (!polled.job) return;
+  state.lastPollAt = new Date().toISOString();
+  if (!polled.job) {
+    await store.save(state);
+    return;
+  }
   const job = parseDockerHostJob(polled.job);
   if ((job.operation === "bootstrap" || job.operation === "resume") && job.bootstrap.serverUrl !== state.server)
     throw new Error("Wrong bootstrap origin");

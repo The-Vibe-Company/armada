@@ -12,7 +12,6 @@ import { database, ENCRYPTION_KEY } from "./support.ts";
 
 test("HTTP and MCP read Modal capacity before any App exists without provisioning; token scope precedes secret reads", async () => {
   const { db, people } = await database();
-  let server: ReturnType<typeof Bun.serve> | undefined;
   let client: Client | undefined;
   try {
     const pair = { token_id: "ak-orgcapability1", token_secret: "as-orgcapability1" };
@@ -111,19 +110,21 @@ test("HTTP and MCP read Modal capacity before any App exists without provisionin
       routes: [(request) => handleControlRequest(request, control)],
       log: () => {},
     });
-    server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: handler });
     const request = (body: object) =>
-      fetch(new URL("/api/v1/golden/capabilities", server!.url), {
-        method: "POST",
-        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      handler(
+        new Request("https://armada.test/api/v1/golden/capabilities", {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+          body: JSON.stringify(body),
+        }),
+      );
     const api = await request({ provider: "modal", org: people.org });
     expect(api.status).toBe(200);
     expect(await api.json()).toEqual({ provider: "modal", maxGoldens: null });
     client = new Client({ name: "capability-http-regression", version: "1" });
     await client.connect(
-      new StreamableHTTPClientTransport(new URL("/mcp", server.url), {
+      new StreamableHTTPClientTransport(new URL("https://armada.test/mcp"), {
+        fetch: (input, init) => handler(new Request(String(input), init)),
         requestInit: { headers: { authorization: `Bearer ${token}` } },
       }),
     );
@@ -172,7 +173,6 @@ test("HTTP and MCP read Modal capacity before any App exists without provisionin
     expect(JSON.stringify(result)).not.toContain(pair.token_secret);
   } finally {
     await client?.close();
-    await server?.stop(true);
     await db.close();
   }
 });

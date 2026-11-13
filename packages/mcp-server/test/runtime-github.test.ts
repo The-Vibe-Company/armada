@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { beforeAll, describe, expect, test } from "bun:test";
 import { createMemoryAuthStore } from "@armada/auth";
 import { createSqlVaultStore, encryptSecret, type GitHubRuntimeConfiguration } from "@armada/core/server";
 import { GitHubBroker } from "../../agent-runtime/src/github-broker.ts";
@@ -189,7 +189,8 @@ test.each(["boat", "modal"] as const)(
   },
 );
 
-test.each(["boat", "modal"] as const)(
+// Shared reissue runs on Modal; runtime-checkpoint.test.ts owns the broader Boat checkpoint matrix.
+test.each(["modal"] as const)(
   "checkpoint revokes acquisition immediately and a fresh epoch requires a new GitHub configuration (%s)",
   async (provider) => {
     const x = await fixture(provider),
@@ -203,6 +204,12 @@ test.each(["boat", "modal"] as const)(
         ENCRYPTION_KEY,
         f.bridge,
       )(f.caller, { id: f.row.id, request_id: crypto.randomUUID(), runtimeVersion: 1 });
+      expect(cp).toMatchObject({
+        runtime: { kind: "armada", epoch: f.active.epoch },
+        checkpoint: { state: "complete" },
+      });
+      expect(cp.checkpoint.watermark).toBe(cp.checkpoint.acknowledgedSequence);
+      expect(cp.checkpoint.watermark).toBeGreaterThan(0);
       await expect(x.broker.acquire("example/web", "git")).rejects.toThrow();
       await expect(service.prepare(f.caller, f.row.id)).rejects.toThrow();
       await f.db.query("update sandboxes set status='starting' where id=$1", [f.row.id]);
@@ -247,3 +254,36 @@ test("GitHub preflight rejects a cross-provider ambiguous golden name before req
     await f.close();
   }
 });
+
+function runtimeCase(name: string, action: (x: Awaited<ReturnType<typeof fixture>>) => Promise<void>) {
+  describe("launch GitHub fixture", () => {
+    let prepared: Awaited<ReturnType<typeof fixture>>;
+    beforeAll(async () => {
+      prepared = await fixture();
+    }, 20000);
+    test(name, () => action(prepared));
+  });
+}
+runtimeCase(
+  "launch GitHub authority works only in an actively leased starting sandbox before private repository setup",
+  async (x) => {
+    const { f, service } = x;
+    try {
+      await f.db.query(
+        "update sandboxes set status='starting',activity_lease_id=null,activity_until=null where id=$1",
+        [f.row.id],
+      );
+      await expect(service.prepareLaunch(f.caller, f.row.id)).rejects.toThrow();
+      await f.db.query(
+        "update sandboxes set activity_lease_id=$2,activity_until=now()+interval '1 minute' where id=$1",
+        [f.row.id, crypto.randomUUID()],
+      );
+      expect(await service.prepareLaunch(f.caller, f.row.id)).toMatchObject({ status: "connected", login: "owner" });
+      expect(await x.broker.acquire("example/web", "git")).toBe(x.access);
+      await f.db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [f.row.id]);
+      await expect(x.broker.acquire("example/web", "git")).rejects.toThrow();
+    } finally {
+      await f.close();
+    }
+  },
+);
