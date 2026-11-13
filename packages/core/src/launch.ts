@@ -256,7 +256,6 @@ export async function launchSandbox(
         `Boat runtime default cannot launch ${feature}; no native fallback. Set ARMADA_BOAT_AGENT_PATH=native for rollback.`,
       );
     };
-    if (!request.prompt?.trim()) refuse("an idle sandbox without an initial prompt");
     if (options.nativeEnvironmentBindings) refuse("template readable-variable or application-secret bindings");
     provider = await defaultRuntime.provider(actor, golden);
     stores = { ...stores, credentials: defaultRuntime.credentials, connections: defaultRuntime.connections };
