@@ -62,6 +62,7 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
       tx: Sql,
       authority: ReturnType<typeof createRuntimeEnrolments>,
       sandbox: Awaited<ReturnType<ReturnType<typeof createDockerSandboxService>["get"]>>,
+      epoch: string,
     ) => Promise<T>,
     allowPending = false,
   ) {
@@ -118,10 +119,10 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
         );
         if (pending.rows.length) return { state: "pending" as const };
       }
-      return authority.withOwner(sandboxId, actor.userId, async () => {
+      return authority.withOwner(sandboxId, actor.userId, async (_fenced, scope) => {
         const current = await createDockerSandboxService(scoped, key).get(actor, sandboxId);
         if (JSON.stringify(current) !== JSON.stringify(snapshot)) deny();
-        return work(scoped, authority, current);
+        return work(scoped, authority, current, scope.epoch);
       });
     });
   }
@@ -154,7 +155,7 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
       );
     },
     prompt(actor: Actor, sandboxId: string, input: { requestId: string; text: string; conversationId?: string }) {
-      return admitted(actor, sandboxId, async (tx, authority, sandbox) => {
+      return admitted(actor, sandboxId, async (tx, authority, sandbox, epoch) => {
         if (
           !object(input) ||
           Object.keys(input).some((field) => !["requestId", "text", "conversationId"].includes(field)) ||
@@ -187,8 +188,8 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
           const blocked = await tx.query(
             `select 1 from public.runtime_commands where sandbox_id=$1
              and starts_with(request_id,'docker_prompt_')
-             and (result_enc is null or $2::boolean) limit 1`,
-            [sandboxId, saved.length === 0],
+             and ((epoch=$3::bigint and result_enc is null) or $2::boolean) limit 1`,
+            [sandboxId, saved.length === 0, epoch],
           );
           // An unresolved RPC has not established native admission yet. Once it
           // replies, the runner alone owns busy/refusal; no journal scheduler here.

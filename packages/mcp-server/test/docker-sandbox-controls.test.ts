@@ -9,7 +9,12 @@ import {
   type SandboxListMetadata,
   type Sql,
 } from "@armada/core";
-import { createSqlVaultStore, encryptSecret } from "@armada/core/server";
+import {
+  createSqlSandboxStore,
+  createSqlVaultStore,
+  createUsagePricingContext,
+  encryptSecret,
+} from "@armada/core/server";
 import { parseSandboxListMetadata } from "../../../apps/dashboard/src/lib/sandbox-access.ts";
 import { sandboxListText } from "../../cli/src/sandbox-list.ts";
 import type { Caller } from "../src/caller.ts";
@@ -183,6 +188,16 @@ test("normal Docker reads authorize owner/admin with live membership, preserve n
     prompt: { promptId, conversationId, state: "running" },
     settled: false,
   });
+  await createSqlSandboxStore(sql, { turnModels: true }).recordUsagePricingContext?.(
+    f.sandbox.id,
+    createUsagePricingContext({
+      harness: "codex",
+      credentialKind: "openai",
+      customEndpoint: false,
+      credentialId: f.sandbox.credentialId,
+      credentialVersion: f.sandbox.credentialVersion,
+    }),
+  );
   await publish(f, session, [
     { id: "p-start", at: 1, kind: "prompt", promptId, conversationId, text: "begin", status: "running" },
     { id: "p-done", at: 2, kind: "prompt", promptId, conversationId, text: "begin", status: "finished" },
@@ -192,7 +207,14 @@ test("normal Docker reads authorize owner/admin with live membership, preserve n
       kind: "other",
       promptId,
       type: "armada/turnUsage",
-      data: { model: f.sandbox.model, inputTokens: 50, outputTokens: 8, cachedTokens: 5 },
+      data: {
+        model: f.sandbox.model,
+        inputTokens: 50,
+        outputTokens: 8,
+        cachedTokens: 5,
+        cacheWriteTokens: 0,
+        reasoningTokens: 0,
+      },
     },
   ]);
   const settled = await invoke<DockerSandboxStatus>(admin, "status", { id: f.sandbox.id, prompt_id: promptId });
@@ -207,7 +229,7 @@ test("normal Docker reads authorize owner/admin with live membership, preserve n
       tokenTotals: { inputTokens: 50, outputTokens: 8 },
     },
   });
-  expect(settled.usage?.cost).toMatchObject({ usd: null, unpricedTurns: 1 });
+  expect(settled.usage?.cost).toMatchObject({ usd: expect.any(String), unknown: null, unpricedTurns: 0 });
   const busy = { requestId: randomUUID(), text: "busy", conversationId };
   await service.prompt(f.actor, f.sandbox.id, busy);
   const busyCommand = (await commands.next(session.runtimeToken, session.epoch)).command;

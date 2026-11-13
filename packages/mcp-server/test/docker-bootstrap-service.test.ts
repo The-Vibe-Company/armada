@@ -4,8 +4,10 @@ import type { Sql } from "@armada/core";
 import { createSqlVaultStore, decryptSecret, encryptSecret } from "@armada/core/server";
 import { createDockerBootstrapService, DockerBootstrapDenied } from "../src/docker-bootstrap-service.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
+import { createDockerRuntimeLifecycle } from "../src/docker-runtime-lifecycle.ts";
 import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
+import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { migratedDatabase } from "./migrated-database.ts";
 
@@ -328,6 +330,16 @@ test("resume retains allocation and conversation, fences the old epoch and issue
     f.sandbox.id,
     conversationId,
   ]);
+  const runtime = createDockerRuntimeLifecycle(sql, key, { enabled: true });
+  const commands = createRuntimeCommands(authority, key);
+  const oldPromptRequest = randomUUID();
+  expect(
+    await runtime.prompt(f.actor, f.sandbox.id, {
+      requestId: oldPromptRequest,
+      text: "Interrupted follow-up",
+      conversationId,
+    }),
+  ).toEqual({ state: "pending" });
   const stopId = randomUUID();
   await reservations.stop(f.actor, f.sandbox.id, stopId);
   await hosts.complete(f.hostToken, f.installationId, { requestId: stopId, outcome: "completed" });
@@ -359,4 +371,33 @@ test("resume retains allocation and conversation, fences the old epoch and issue
     state: "completed",
   });
   expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("starting");
+  const healthId = randomUUID();
+  expect(await runtime.ready(f.actor, f.sandbox.id, healthId)).toEqual({ state: "pending" });
+  const health = await commands.next(enrolled.runtimeToken, enrolled.epoch);
+  if (health.command?.op !== "health") throw Error("missing resumed health command");
+  await commands.complete(enrolled.runtimeToken, enrolled.epoch, {
+    epoch: enrolled.epoch,
+    requestId: health.command.requestId,
+    status: 200,
+    body: { version: 1, requestId: health.command.requestId, result: { ready: true, generation: enrolled.epoch } },
+  });
+  expect(await runtime.ready(f.actor, f.sandbox.id, healthId)).toEqual({ state: "ready", epoch: enrolled.epoch });
+  const newPromptRequest = randomUUID();
+  expect(
+    await runtime.prompt(f.actor, f.sandbox.id, {
+      requestId: newPromptRequest,
+      text: "Continue the conversation after resume",
+      conversationId,
+    }),
+  ).toEqual({ state: "pending" });
+  const next = await commands.next(enrolled.runtimeToken, enrolled.epoch);
+  expect(next.command?.requestId).toBe(`docker_prompt_${newPromptRequest}`);
+  await expect(
+    commands.complete(initial.runtimeToken, initial.epoch, {
+      epoch: initial.epoch,
+      requestId: `docker_prompt_${oldPromptRequest}`,
+      status: 200,
+      body: { version: 1, requestId: `docker_prompt_${oldPromptRequest}`, result: {} },
+    }),
+  ).rejects.toThrow();
 });
