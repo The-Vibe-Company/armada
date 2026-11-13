@@ -262,11 +262,12 @@ For other commands and authentication settings: armada --help.
 /** Runs one command line and returns the process exit code. */
 export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Promise<number> {
   let signingIn = false;
+  let auth: AuthIo | undefined;
   const sessionFailure = (error: unknown) =>
     error instanceof AuthError &&
     (error.code === "unauthorized" || (error instanceof ArmadaApiError && error.status === 401));
   try {
-    const auth = authOf(io, deps);
+    auth = authOf(io, deps);
     try {
       if (argv.length === 0) {
         const client = await createArmadaApiClient(auth);
@@ -302,7 +303,7 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
     }
   } catch (caught) {
     const error =
-      sessionFailure(caught) && argv[0] !== "login" && !signingIn
+      sessionFailure(caught) && argv[0] !== "login" && !signingIn && !auth?.env.ARMADA_TOKEN
         ? new AuthError("You are not signed in. Run armada login.", "unauthorized")
         : caught;
     if (
