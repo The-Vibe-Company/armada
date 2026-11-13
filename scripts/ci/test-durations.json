@@ -62,7 +62,6 @@
   "apps/dashboard/test/variables.test.ts": 0.023,
   "packages/agent-runtime/test/acp.test.ts": 0.419,
   "packages/agent-runtime/test/checkpoint-clone.test.ts": 5.001,
-  "packages/agent-runtime/test/checkpoint-retry.test.ts": 0.179,
   "packages/agent-runtime/test/claude-endpoint.test.ts": 0.024,
   "packages/agent-runtime/test/claude.test.ts": 0.837,
   "packages/agent-runtime/test/codex-endpoint.test.ts": 0.013,

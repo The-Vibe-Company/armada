@@ -11,7 +11,7 @@ Eight shards are the owner-approved immediate response to merge-queue verdicts
 exceeding two minutes (#1458). Weights were refreshed from completed merge-queue
 run 43457010784 (per-file `Completed ... in ...s` lines). That run's six shard
 jobs took 85, 69, 111, 94, 85 and 116 seconds respectively, including setup.
-The eight-way refreshed plan predicts about 58.2 seconds of measured file work
+The eight-way refreshed plan predicts about 58.1 seconds of measured file work
 per shard, before setup and aggregate overhead. This is a projection, not an
 observed eight-shard result: the coordinator measures after merge, targeting
 shards under 75 seconds and verdict under 110 seconds. Keep deleting slow tests
