@@ -22,6 +22,7 @@ export interface FleetSandbox {
   modal_app_id: string | null;
   branch: string | null;
   branchComplete: boolean;
+  reportedHeads: { number: number; sha: string }[];
   runningWindows: { start: number; end: number | null; branch: string | null }[];
   activity: "live" | "idle" | "not_live" | "unknown";
   activityAt: string | null;
@@ -72,27 +73,56 @@ export async function readFleet(sql: Sql, scope: OttoScope, caller: Caller, now:
         visibility: s.visibility,
         binding: { workspace: s.modal_workspace, environment: s.modal_environment, appId: s.modal_app_id },
       });
-      events = (
-        await sql.query<{ event: AgentEvent }>(
-          `select event from public.modal_events where scope=$1 and sandbox_id=$2 and event->>'kind'='prompt' order by cursor desc limit 32`,
+      const stored = (
+        await sql.query<{ event: AgentEvent | null }>(
+          `select case when octet_length(event::text)<=65536 then event else null end as event from public.modal_events where scope=$1 and sandbox_id=$2 and event->>'kind' in ('prompt','message') order by cursor desc limit 128`,
           [scopeId, s.provider_sandbox_id],
         )
-      ).rows.map((r) => r.event);
+      ).rows;
+      events = stored.some((r) => r.event === null) ? [] : stored.flatMap((r) => (r.event ? [r.event] : []));
     } else if (s.provider === "boat" && key) {
       const encrypted = (
-        await sql.query<{ event_enc: Uint8Array }>(
-          `select event_enc from public.runtime_events where sandbox_id=$1 order by sequence desc limit 128`,
+        await sql.query<{ event_enc: Uint8Array | null }>(
+          `select case when octet_length(event_enc)<=65536 then event_enc else null end as event_enc from public.runtime_events where sandbox_id=$1 order by sequence desc limit 128`,
           [s.id],
         )
       ).rows;
+      let bytes = 0;
       for (const row of encrypted) {
+        bytes += row.event_enc?.byteLength ?? 1048577;
+        if (!row.event_enc || bytes > 1048576) {
+          events = [];
+          break;
+        }
         try {
           const event = JSON.parse(await decryptSecret(new Uint8Array(row.event_enc), key)) as AgentEvent;
-          if (event.kind === "prompt") events.push(event);
+          if (event.kind === "prompt" || event.kind === "message") events.push(event);
         } catch {
           events = [];
           break;
         } // Corrupt/missing evidence is not idle.
+      }
+    }
+    s.reportedHeads = [];
+    const seenMessages = new Set<string>();
+    for (const event of events) {
+      if (event.kind !== "message") continue;
+      const identity = JSON.stringify([event.promptId, event.messageId ?? event.id]);
+      if (seenMessages.has(identity)) continue;
+      seenMessages.add(identity);
+      if (
+        event.kind !== "message" ||
+        event.partial ||
+        event.textMode === "delta" ||
+        event.retracted ||
+        event.parentToolUseId ||
+        event.responseKind === "tool_result"
+      )
+        continue;
+      if (!/^READY TO MERGE: PR #[1-9]\d* head [a-f0-9]{40}(?:\s|$)/i.test(event.text.trimStart())) continue;
+      for (const match of event.text.matchAll(/^READY TO MERGE: PR #([1-9]\d*) head ([a-f0-9]{40})\s*$/gim)) {
+        if (Number.isSafeInteger(Number(match[1])) && match[2])
+          s.reportedHeads.push({ number: Number(match[1]), sha: match[2] });
       }
     }
     const prompts = events.filter(
