@@ -1,5 +1,6 @@
 import { redact } from "./credentials.ts";
 import { decryptSecret, EncryptionKeyError, encryptSecret } from "./crypto.ts";
+import { shellQuote as shQuote } from "./shell-quote.ts";
 
 /**
  * GitHub user-to-server access for a launch. The person authorizes the Armada GitHub App once (the
@@ -584,10 +585,6 @@ export function gitSetupCommand(identity: GitIdentity): string {
 
 export const GH_MISSING_NOTE =
   "gh is not installed in this golden: git push works as you, but the gh command does not. Add an init command that installs the GitHub CLI.";
-
-function shQuote(value: string): string {
-  return `'${value.replaceAll("'", "'\\''")}'`;
-}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);

@@ -23,6 +23,7 @@ import {
   type ModalBinding,
   type SandboxProviderId,
 } from "./sandbox-provider.ts";
+import { shellQuote } from "./shell-quote.ts";
 
 const MAX_REPOS = 16;
 
@@ -598,9 +599,6 @@ export function goldenScript(
     `if grep -rIlE --exclude-dir=proc --exclude-dir=sys --exclude-dir=dev '${GITHUB_TOKEN_PATTERN}' ${GOLDEN_ROOT} >/dev/null 2>/dev/null; then exit 97; fi`,
   ];
   return `${lines.filter(Boolean).join("\n")}\n`;
-}
-function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
 function safe(v: string) {

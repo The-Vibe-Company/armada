@@ -1,6 +1,6 @@
 {
   "name": "armada",
-  "version": "2.28.0",
+  "version": "2.29.0",
   "private": true,
   "type": "module",
   "packageManager": "bun@1.4.2",
@@ -20,7 +20,9 @@
     "db:types": "bun scripts/db/render.ts",
     "dashboard": "bun run --filter @armada/dashboard dev",
     "dashboard:build": "bun run --filter @armada/dashboard build",
-    "e2e": "bun run --filter @armada/dashboard e2e"
+    "e2e": "bun run --filter @armada/dashboard e2e",
+    "verify:changed": "bun scripts/verify-changed.ts",
+    "dev": "bun scripts/dev.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.15",

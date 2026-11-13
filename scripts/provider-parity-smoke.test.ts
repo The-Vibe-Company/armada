@@ -2,10 +2,19 @@ import { expect, test } from "bun:test";
 import { postDeploySmoke } from "./post-deploy-smoke.ts";
 import { smokeReceipts } from "./smoke-sandbox-cleanup.ts";
 
+const boatNotice = "boat: not part of the release gate";
+const boatNotRun = { status: "not-run", reason: "not_part_of_release_gate" };
+
 // The CLI boundary owns parity reporting: independent fake HTTP receipts catch
 // route/receipt regressions without provider compute, credentials, or sleeps.
 for (const mode of [
   "online",
+  "accounts",
+  "accounts_unknown",
+  "accounts_invalid",
+  "accounts_stop_unsupported",
+  "accounts_unknown_bad",
+  "accounts_price_lost",
   "offline",
   "unsupported",
   "delete_failure",
@@ -42,40 +51,48 @@ for (const mode of [
     const turns = new Map<string, string[]>();
     const prompts = new Map<string, string>();
     const states = new Map<string, string>();
-    const providers = ["boat", "modal", "docker"];
+    const providers = ["modal", "docker"];
     const passed = await postDeploySmoke(
       {
         ARMADA_URL: "https://armada-mcp-staging.up.railway.app",
         ARMADA_TOKEN: "fake",
         ARMADA_SMOKE: "create_real_compute",
-        ARMADA_SMOKE_CASES: JSON.stringify(
-          providers.map((provider) => ({
-            provider,
-            org: provider,
-            harness: "codex",
-            model: "fake-model",
-            modelAccountId: "fake-account",
-            golden: "fake-golden",
-            hostId: "owned-host",
-          })),
-        ),
+        ARMADA_SMOKE_CASES: JSON.stringify([
+          { provider: "boat", org: null },
+          ...(mode.startsWith("accounts") ? ["modal", "docker"] : providers).flatMap((provider) =>
+            (mode.startsWith("accounts") ? ["codex-openai", "codex-azure"] : [undefined]).map((account) => ({
+              ...(account ? { account: mode === "accounts_invalid" ? "unknown-account" : account } : {}),
+              provider,
+              org: provider,
+              harness: "codex",
+              model: "fake-model",
+              modelAccountId: "fake-account",
+              golden: "fake-golden",
+              hostId: "owned-host",
+            })),
+          ),
+          { provider: "boat", harness: "invalid" },
+        ]),
       },
-      mode === "usage_filter"
-        ? ["--parity", "--only", "docker", "--feature", "exact-cost"]
-        : mode === "filtered"
-          ? ["--parity", "--only", "docker", "--feature", "exec"]
-          : debtFeature
-            ? ["--parity", "--feature", debtFeature]
-            : mode === "invalid_filter"
-              ? ["--parity", "--feature", "typo"]
-              : ["--parity"],
+      mode.startsWith("accounts")
+        ? ["--parity", "--accounts"]
+        : mode === "usage_filter"
+          ? ["--parity", "--only", "docker", "--feature", "exact-cost"]
+          : mode === "filtered"
+            ? ["--parity", "--only", "docker", "--feature", "exec"]
+            : debtFeature
+              ? ["--parity", "--feature", debtFeature]
+              : mode === "invalid_filter"
+                ? ["--parity", "--feature", "typo"]
+                : ["--parity"],
       {
         now: () => 0,
         sleep: async () => {},
         out: (line) => lines.push(line),
-        recordSandbox: async (org, _id, requestKey) => {
+        recordSandbox: async (org, _id, requestKey, provider) => {
           // Exercise the real journal validator, not a permissive callback.
-          smokeReceipts([{ org, id: "12345678-1234-1234-1234-123456789abc", requestKey }]);
+          expect(String(provider)).toBe(org);
+          smokeReceipts([{ org, id: "12345678-1234-1234-1234-123456789abc", requestKey, provider }]);
           if (mode === "journal_failure") throw new Error("journal_unwritable");
         },
         fetch: async (url, init) => {
@@ -96,11 +113,14 @@ for (const mode of [
                     followupPrompts: true,
                     status: true,
                     logs: true,
-                    stop: true,
+                    stop: mode !== "accounts_stop_unsupported",
                     resume: !(id === "docker" && mode === "unsupported"),
                     delete: true,
                   },
-                  unsupportedReasons: { resume: "Server resume disabled." },
+                  unsupportedReasons: {
+                    stop: "Stop unavailable (#1579)",
+                    resume: "Server resume disabled.",
+                  },
                 })),
               };
               break;
@@ -108,15 +128,16 @@ for (const mode of [
               result = { hosts: [{ id: "owned-host", state: mode === "offline" ? "offline" : "online" }] };
               break;
             case "sandbox/launch":
+              if (mode.startsWith("accounts")) turns.set(p, []);
               if (p === "docker") expect(body).not.toHaveProperty("image");
-              if (p === "boat" && (mode === "quota" || mode === "server_failure"))
+              if (p === "modal" && (mode === "quota" || mode === "server_failure"))
                 return Response.json(
                   {
                     error: {
                       code: mode === "quota" ? "rate_limited" : "forbidden",
                       message:
                         mode === "quota"
-                          ? "The Boat plan start limit per day has been reached."
+                          ? "The Modal plan start limit per day has been reached."
                           : "Access denied. token=do-not-print ghp_abcdefghijklmnopqrstuvwxyz0123456789 sk-abcdefghijklmnopqrstuvwxyz eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.c2lnbmF0dXJl",
                       details: { secret: "do-not-print-details" },
                     },
@@ -169,22 +190,44 @@ for (const mode of [
                     inputTokens: mode === "usage_missing" ? null : 10,
                     outputTokens: 5,
                     pricing: {
-                      unknown: null,
+                      unknown:
+                        mode === "accounts_unknown" ||
+                        (mode === "accounts_price_lost" && (turns.get(p)?.length ?? 0) > 1)
+                          ? "price"
+                          : null,
                       usd:
-                        mode === "price_changed" && (turns.get(p)?.length ?? 0) > 1
-                          ? i === 0
-                            ? "0.2"
-                            : i === 1
-                              ? "0.0"
-                              : "0.1"
-                          : "0.1",
+                        mode === "accounts_unknown" ||
+                        (mode === "accounts_price_lost" && (turns.get(p)?.length ?? 0) > 1)
+                          ? null
+                          : mode === "price_changed" && (turns.get(p)?.length ?? 0) > 1
+                            ? i === 0
+                              ? "0.2"
+                              : i === 1
+                                ? "0.0"
+                                : "0.1"
+                            : "0.1",
                     },
                   })),
                   cost: {
                     currency: "USD",
-                    unknown: null,
-                    unpricedTurns: 0,
-                    usd: mode === "cost_mismatch" ? "99" : `0.${turns.get(p)?.length ?? 0}`,
+                    basis: "estimated",
+                    unknown:
+                      mode.startsWith("accounts_unknown") ||
+                      (mode === "accounts_price_lost" && (turns.get(p)?.length ?? 0) > 1)
+                        ? "price"
+                        : null,
+                    unpricedTurns:
+                      mode.startsWith("accounts_unknown") ||
+                      (mode === "accounts_price_lost" && (turns.get(p)?.length ?? 0) > 1)
+                        ? turns.get(p)?.length
+                        : 0,
+                    usd:
+                      mode.startsWith("accounts_unknown") ||
+                      (mode === "accounts_price_lost" && (turns.get(p)?.length ?? 0) > 1)
+                        ? null
+                        : mode === "cost_mismatch"
+                          ? "99"
+                          : `0.${turns.get(p)?.length ?? 0}`,
                   },
                 },
               };
@@ -226,13 +269,44 @@ for (const mode of [
         },
       },
     );
+    expect(lines.filter((line) => line === boatNotice)).toHaveLength(1);
+    expect(calls.some((call) => call.startsWith("boat:"))).toBe(false);
+    if (mode.startsWith("accounts")) {
+      if (mode === "accounts_invalid") {
+        expect(passed).toBe(false);
+        expect(calls).toHaveLength(0);
+        expect(lines.find((line) => line.startsWith("{"))).toContain("invalid_accounts_configuration");
+        return;
+      }
+      const badCost = mode === "accounts_unknown_bad" || mode === "accounts_price_lost";
+      expect(passed).toBe(!badCost);
+      const report = JSON.parse(lines.find((line) => line.startsWith('{"step":"accounts_parity"'))!);
+      for (const account of ["codex-openai", "codex-azure"]) {
+        for (const provider of ["modal", "docker"]) {
+          const cell = report.accounts[account][provider];
+          expect(cell.status).toBe(badCost ? "fail" : mode === "accounts_stop_unsupported" ? "not-run" : "pass");
+          expect(cell.features["resume-recall"][provider].status).toBe("pass");
+          if (mode === "accounts_unknown") expect(cell.features["exact-cost"][provider].reason).toBe("unknown: price");
+        }
+      }
+      expect(report.accounts["codex-subscription"].modal).toEqual({
+        status: "not-run",
+        reason: "no account on staging",
+      });
+      expect(calls.filter((call) => call.endsWith(":sandbox/launch"))).toHaveLength(4);
+      expect(calls.filter((call) => call.endsWith(":sandbox/delete"))).toHaveLength(4);
+      expect(calls.some((call) => call.startsWith("boat:"))).toBe(false);
+      return;
+    }
     if (mode === "invalid_filter") {
       expect(passed).toBe(false);
       expect(calls).toHaveLength(0);
-      expect(lines[0]).toContain("invalid_parity_filter");
+      expect(lines.some((line) => line.includes("invalid_parity_filter"))).toBe(true);
       return;
     }
     const report = JSON.parse(lines.find((line) => line.startsWith('{"step":"provider_parity"'))!);
+    for (const cells of Object.values(report.features) as Record<string, unknown>[])
+      expect(cells.boat).toEqual(boatNotRun);
     if (mode === "filtered" || debtFeature) {
       expect(passed).toBe(true);
       if (debtFeature) {
@@ -245,7 +319,7 @@ for (const mode of [
           });
       } else {
         expect(report.features.exec.docker.status).toBe("pass");
-        expect(report.features.exec.boat.reason).toBe("provider_filtered");
+        expect(report.features.exec.boat).toEqual(boatNotRun);
         expect(calls.filter((call) => call.endsWith(":sandbox/launch"))).toEqual(["docker:sandbox/launch"]);
         expect(calls).not.toContain("docker:sandbox/send");
         expect(calls).toContain("docker:sandbox/delete");
@@ -300,13 +374,13 @@ for (const mode of [
       ).toBe(true);
       return;
     }
-    expect(report.starts).toBe(mode === "offline" ? 2 : 3);
+    expect(report.starts).toBe(mode === "offline" ? 1 : 2);
     if (mode === "quota" || mode === "server_failure") {
-      const cell = report.features.launch.boat;
+      const cell = report.features.launch.modal;
       expect(cell.status).toBe(mode === "quota" ? "not-run" : "fail");
       expect(cell.diagnostic.httpStatus).toBe(mode === "quota" ? 429 : 403);
       expect(cell.diagnostic.code).toBe(mode === "quota" ? "rate_limited" : "forbidden");
-      expect(report.features.send.boat.status).toBe(cell.status);
+      expect(report.features.send.modal.status).toBe(cell.status);
       expect(passed).toBe(mode === "quota");
       expect(lines.join("\n")).not.toContain("do-not-print");
       expect(lines.join("\n")).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz");
@@ -324,7 +398,7 @@ for (const mode of [
       return;
     }
     if (mode === "delete_retry") expect(deletes.get("modal")).toBe(2);
-    expect(report.features.launch.boat.status).toBe("pass");
+    expect(report.features.launch.modal.status).toBe("pass");
     expect(report.features.delete.modal.status).toBe("pass");
     expect(passed).toBe(mode === "online" || mode === "unsupported" || mode === "delete_retry");
     expect(lines.at(-1)).toContain("| Feature | Boat | Modal | Docker |");
@@ -340,3 +414,269 @@ for (const mode of [
     else expect(report.features.resume.docker.status).toBe("pass");
   });
 }
+
+test("parity --only boat is an owner-decision not-run report, never allocation or proof", async () => {
+  const lines: string[] = [];
+  const calls: string[] = [];
+  const passed = await postDeploySmoke(
+    {
+      ARMADA_URL: "https://armada-mcp-staging.up.railway.app",
+      ARMADA_TOKEN: "fake",
+      ARMADA_SMOKE: "create_real_compute",
+      ARMADA_SMOKE_CASES: JSON.stringify([{ provider: "boat", org: null, harness: "invalid" }]),
+    },
+    ["--parity", "--only", "boat"],
+    {
+      now: () => 0,
+      sleep: async () => {},
+      out: (line) => lines.push(line),
+      fetch: async (url) => {
+        calls.push(url);
+        throw new Error("Boat staging must never call an API");
+      },
+    },
+  );
+  expect(passed).toBe(false);
+  expect(calls).toHaveLength(0);
+  expect(lines.filter((line) => line === boatNotice)).toHaveLength(1);
+  const report = JSON.parse(lines.find((line) => line.startsWith('{"step":"provider_parity"')) ?? "{}");
+  expect(report.starts).toBe(0);
+  for (const cells of Object.values(report.features) as Record<string, unknown>[])
+    expect(cells.boat).toEqual(boatNotRun);
+});
+
+const productionBoatCase = {
+  provider: "boat",
+  org: "production-org",
+  harness: "codex",
+  model: "selected-model",
+  modelAccountId: "selected-account",
+  golden: "selected-golden",
+};
+const productionBoatEnv = {
+  ARMADA_URL: "https://production.invalid",
+  ARMADA_TOKEN: "fake",
+  ARMADA_SMOKE: "create_real_compute",
+  ARMADA_SMOKE_CASES: JSON.stringify([productionBoatCase]),
+};
+const productionBoatArgs = ["--production-boat", "--only", "boat"];
+
+function productionBoatFixture(fault?: "foreign_provider" | "ambiguous_launch" | "delete_failed") {
+  const calls: { path: string; body: Record<string, unknown> }[] = [];
+  const lines: string[] = [];
+  let status = "ready";
+  let memory = "";
+  const turns: string[] = [];
+  let journalWrites = 0;
+  const io = {
+    now: () => 0,
+    sleep: async () => {},
+    out: (line: string) => lines.push(line),
+    recordSandbox: async () => {
+      journalWrites++;
+    },
+    fetch: async (url: string, init: RequestInit) => {
+      expect(new URL(url).origin).toBe(productionBoatEnv.ARMADA_URL);
+      expect(new Headers(init.headers).get("authorization")).toBe("Bearer fake");
+      expect(init.redirect).toBe("error");
+      const path = new URL(url).pathname.slice("/api/v1/".length);
+      const body = JSON.parse(String(init.body));
+      calls.push({ path, body });
+      if (body.id !== undefined) expect(body.id).toBe("new-production-boat");
+      switch (path) {
+        case "launch/options":
+          return Response.json({
+            providers: [
+              {
+                id: "boat",
+                harnesses: ["codex"],
+                capabilities: {
+                  launch: true,
+                  followupPrompts: true,
+                  status: true,
+                  logs: true,
+                  exec: true,
+                  stop: true,
+                  resume: true,
+                  delete: true,
+                },
+                unsupportedReasons: {},
+              },
+            ],
+          });
+        case "sandbox/launch":
+          expect(body.provider).toBe("boat");
+          if (fault === "ambiguous_launch") throw new Error("lost launch acknowledgement");
+          return Response.json({
+            sandbox: { id: "new-production-boat", provider: fault === "foreign_provider" ? "modal" : "boat" },
+          });
+        case "sandbox/send":
+          status = "ready";
+          if (String(body.prompt).includes("Remember this token"))
+            memory = String(body.prompt).match(/PARITY_[a-z0-9]+/)?.[0] ?? "";
+          turns.push(`turn-${turns.length + 1}`);
+          return Response.json({ promptId: turns.at(-1) });
+        case "logs/read":
+          return Response.json({
+            events: [
+              { kind: "prompt", promptId: turns.at(-1), status: "finished" },
+              { kind: "message", promptId: turns.at(-1), text: `SMOKE_OK ${memory}` },
+            ],
+          });
+        case "sandbox/detail":
+          return Response.json({
+            usage: {
+              turnCount: turns.length,
+              turns: turns.map((promptId) => ({
+                promptId,
+                model: "selected-model",
+                inputTokens: 10,
+                outputTokens: 2,
+                pricing: { unknown: null, usd: "0.1" },
+              })),
+              cost: { currency: "USD", unknown: null, unpricedTurns: 0, usd: `0.${turns.length}` },
+            },
+          });
+        case "sandbox/status":
+          return Response.json({ id: "new-production-boat", status });
+        case "sandbox/exec":
+          return Response.json({ exitCode: 0, timedOut: false, stdout: "PARITY_EXEC_OK" });
+        case "sandbox/stop":
+          status = "stopped";
+          return Response.json({ status });
+        case "sandbox/delete":
+          if (fault === "delete_failed") return Response.json({ error: { code: "forbidden" } }, { status: 403 });
+          status = "deleted";
+          return Response.json({ id: "new-production-boat", status });
+        default:
+          throw new Error(`Unexpected production route ${path}`);
+      }
+    },
+  };
+  return { io, calls, lines, journalWrites: () => journalWrites };
+}
+
+function runProductionBoat(env: NodeJS.ProcessEnv, io: ReturnType<typeof productionBoatFixture>["io"], args: string[]) {
+  return postDeploySmoke(env, ["--parity", ...args], io);
+}
+
+test("production Boat verification requires coordinator opt-in and rejects unsafe configuration before traffic", async () => {
+  const cases = [
+    { args: ["--only", "boat"] },
+    { args: ["--production-boat"] },
+    { args: ["--production-boat", "--only", "modal"] },
+    { args: ["--production-boat", "--only", "docker"] },
+    { args: [...productionBoatArgs, "--production-boat"] },
+    { args: [...productionBoatArgs, "--only", "boat"] },
+    { args: [...productionBoatArgs, "--unknown"] },
+    { args: [...productionBoatArgs, "--feature", "exec", "--feature", "exec"] },
+    { args: [...productionBoatArgs, "--accounts"] },
+    ...[
+      { ARMADA_URL: "https://armada-mcp-staging.up.railway.app" },
+      { ARMADA_URL: "http://production.invalid" },
+      { ARMADA_URL: "https://user@production.invalid" },
+      { ARMADA_URL: "https://production.invalid/api" },
+      { ARMADA_URL: "https://production.invalid/?key=value" },
+      { ARMADA_URL: "https://production.invalid/#fragment" },
+      { ARMADA_URL: "" },
+      { ARMADA_TOKEN: "" },
+      { ARMADA_SMOKE: "" },
+      { CI: "false" },
+      { GITHUB_ACTIONS: "false" },
+      { ARMADA_SMOKE_JOURNAL: "/tmp/preexisting-journal" },
+      { ARMADA_SMOKE_CASES: JSON.stringify([{ ...productionBoatCase, provider: "modal" }]) },
+      { ARMADA_SMOKE_CASES: JSON.stringify([{ ...productionBoatCase, provider: "docker" }]) },
+      { ARMADA_SMOKE_CASES: JSON.stringify([productionBoatCase, productionBoatCase]) },
+      { ARMADA_SMOKE_CASES: JSON.stringify([{ ...productionBoatCase, harness: "unknown" }]) },
+      { ARMADA_SMOKE_CASES: JSON.stringify([{ ...productionBoatCase, golden: "" }]) },
+    ].map((env) => ({ env })),
+  ];
+  for (const scenario of cases) {
+    const fake = productionBoatFixture();
+    expect(
+      await runProductionBoat(
+        { ...productionBoatEnv, ...("env" in scenario ? scenario.env : {}) },
+        fake.io,
+        "args" in scenario ? scenario.args : productionBoatArgs,
+      ),
+    ).toBe(false);
+    expect(fake.calls).toHaveLength(0);
+    expect(fake.journalWrites()).toBe(0);
+  }
+});
+
+for (const fault of [undefined, "foreign_provider", "ambiguous_launch", "delete_failed"] as const) {
+  test(`production Boat verifies only its new allocation and never stage journals: ${fault ?? "happy"}`, async () => {
+    const fake = productionBoatFixture(fault);
+    expect(
+      await runProductionBoat(
+        {
+          ...productionBoatEnv,
+          ARMADA_SMOKE_CASES: JSON.stringify([
+            { provider: "modal", harness: null },
+            productionBoatCase,
+            { provider: "docker" },
+          ]),
+        },
+        fake.io,
+        productionBoatArgs,
+      ),
+    ).toBe(fault === undefined);
+    expect(fake.lines.filter((line) => line === "boat: production verification (coordinator opt-in)")).toHaveLength(1);
+    expect(fake.lines).not.toContain(boatNotice);
+    expect(fake.calls.filter((call) => call.path === "sandbox/launch")).toHaveLength(1);
+    expect(fake.journalWrites()).toBe(0);
+    const report = JSON.parse(fake.lines.find((line) => line.startsWith('{"step":"provider_parity"')) ?? "{}");
+    if (fault === "foreign_provider" || fault === "ambiguous_launch") {
+      expect(fake.calls.map((call) => call.path)).toEqual(["launch/options", "sandbox/launch"]);
+      expect(report.features.launch.boat.status).toBe("fail");
+      expect(fake.lines.some((line) => line.includes('"step":"parity_cleanup"'))).toBe(false);
+    } else {
+      expect(fake.calls.filter((call) => call.path === "sandbox/stop")).toHaveLength(2);
+      expect(fake.calls.some((call) => call.path === "sandbox/delete")).toBe(true);
+      const cleanup = JSON.parse(fake.lines.find((line) => line.startsWith('{"step":"parity_cleanup"')) ?? "{}");
+      expect(cleanup).toMatchObject({ provider: "boat", id: "new-production-boat", deleted: fault === undefined });
+      expect(report.features.cleanup.boat.status).toBe(fault ? "fail" : "pass");
+      for (const step of [
+        "launch",
+        "send",
+        "status",
+        "logs",
+        "exec",
+        "stop",
+        "resume",
+        "resume-recall",
+        "usage",
+        "exact-cost",
+      ])
+        expect(report.features[step].boat.status).toBe("pass");
+      expect(report.features.mcp.boat).toEqual({ status: "not-run", reason: "probe_not_implemented" });
+      expect(report.features.launch.modal.reason).toBe("provider_filtered");
+      expect(report.features.launch.docker.reason).toBe("provider_filtered");
+    }
+  });
+}
+
+test("production Boat preserves capability discovery and feature-filtered probes", async () => {
+  const refused = productionBoatFixture();
+  expect(
+    await runProductionBoat(
+      {
+        ...productionBoatEnv,
+        ARMADA_SMOKE_CASES: JSON.stringify([{ ...productionBoatCase, harness: "claude" }]),
+      },
+      refused.io,
+      productionBoatArgs,
+    ),
+  ).toBe(false);
+  expect(refused.calls.map((call) => call.path)).toEqual(["launch/options"]);
+
+  const filtered = productionBoatFixture();
+  expect(await runProductionBoat(productionBoatEnv, filtered.io, [...productionBoatArgs, "--feature", "exec"])).toBe(
+    true,
+  );
+  expect(filtered.calls.map((call) => call.path)).not.toContain("sandbox/send");
+  expect(filtered.calls.map((call) => call.path)).toContain("sandbox/exec");
+  expect(filtered.calls.map((call) => call.path)).toContain("sandbox/delete");
+  expect(filtered.journalWrites()).toBe(0);
+});

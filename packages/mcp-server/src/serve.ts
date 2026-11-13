@@ -378,6 +378,7 @@ export async function startServer(
         }
       : undefined,
     runtimeMcp.prepare,
+    runtimeGitHub?.prepareLaunch,
   );
   const runtimeSend = createRuntimeFollowup(
     sql,

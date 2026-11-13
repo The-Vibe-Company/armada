@@ -24,14 +24,19 @@ import {
   CODEX_ENDPOINT_ENV,
   dedupeEvents,
   GitHubHydrationError,
+  goldenCompatibilityIds,
   goldenForSettings,
+  goldenResponse,
   isHarness,
   isModelConnectionTestResult,
+  launchGitHubResponse,
   MAX_SANDBOX_EXTENSION_TTL_SECONDS,
   parseMachineSize,
   parseMachineSizePolicy,
   providerRateLimitDetails,
   providerRateLimitMessage,
+  sandboxIdentity,
+  VERSION,
 } from "@armada/core";
 import {
   type ApplicationVault,
@@ -844,7 +849,8 @@ async function dispatch(
     const logs = options.logs;
     return options.modelUsage.read(caller, id, sandboxId, (boundSandbox) => logs(caller, boundSandbox));
   }
-  if (route === "account/status") return { userId: caller.userId, orgs: caller.orgs, authentication: caller.via };
+  if (route === "account/status")
+    return { userId: caller.userId, orgs: caller.orgs, authentication: caller.via, version: VERSION };
   if (route.startsWith("github/") && route !== "github/refresh" && route !== "github/runtime-status") {
     if (!options.githubAccount) throw new VaultError("unavailable", "GitHub account authorization is not configured.");
     return options.githubAccount.command(route.slice("github/".length), caller, body);
@@ -872,7 +878,7 @@ async function dispatch(
         : caller.orgs.find((org) => org.orgId === selected);
     if (!member) throw new VaultError("forbidden", "Name an org in this caller's scope.");
     const backend = optional(body, "provider") ?? "boat";
-    if (backend !== "boat" && backend !== "modal") throw new VaultError("invalid", "Provider is boat or modal.");
+    if (!isSandboxProvider(backend)) throw new VaultError("invalid", "Provider is boat or modal.");
     if (!options.providerMetadata)
       throw new VaultError("unavailable", "Read-only provider metadata is not configured.");
     return options.providerMetadata({ orgId: member.orgId, provider: backend }, caller);
@@ -1388,40 +1394,10 @@ async function listGoldens(options: ControlOptions, caller: Caller): Promise<{ g
   return { goldens: goldens.map(goldenJson) };
 }
 
-export interface GoldenJson {
-  id: string;
-  name: string;
-  provider: GoldenRecord["provider"];
-  modal: GoldenRecord["modal"];
-  orgId: string;
-  visibility: Visibility;
-  ownerId: string;
-  providerSnapshotId: string | null;
-  providerSandboxId: string | null;
-  boatSnapshotId: string | null;
-  boatSandboxId: string | null;
-  repos: number;
-  buildWarnings: string[];
-  config: { repos: { url: string; branch: string; dir: string }[]; init: string[] };
-}
+export type GoldenJson = ReturnType<typeof goldenResponse> & { buildWarnings: string[] };
 
-function goldenJson(row: import("@armada/core/server").GoldenRecord): GoldenJson {
-  return {
-    id: row.id,
-    name: row.name,
-    provider: row.provider,
-    modal: row.modal,
-    orgId: row.orgId,
-    visibility: row.visibility,
-    ownerId: row.ownerId,
-    providerSnapshotId: row.providerSnapshotId,
-    providerSandboxId: row.providerSandboxId,
-    boatSnapshotId: row.provider === "boat" ? row.providerSnapshotId : null,
-    boatSandboxId: row.provider === "boat" ? row.providerSandboxId : null,
-    repos: row.config.repos.length,
-    config: row.config,
-    buildWarnings: row.buildWarnings ?? [],
-  };
+function goldenJson(row: GoldenRecord): GoldenJson {
+  return { ...goldenResponse(row), buildWarnings: row.buildWarnings ?? [] };
 }
 
 /**
@@ -1436,7 +1412,7 @@ async function createGoldenRoute(options: ControlOptions, caller: Caller, body: 
   required(body, "idempotencyKey");
   const org = await resolveOrg(options.store, caller.userId, scopedOrg(caller, optional(body, "org")));
   const visibility: Visibility = requiredBoolean(body, "private", false) ? "private" : "org";
-  if (body.provider !== undefined && body.provider !== "boat" && body.provider !== "modal")
+  if (body.provider !== undefined && !isSandboxProvider(body.provider))
     throw new VaultError("invalid", "Provider is boat or modal.");
   if (visibility === "org" && org.role !== "admin")
     throw new VaultError("forbidden", "Only an admin can create an org golden.");
@@ -1876,23 +1852,17 @@ function launchJson(result: LaunchResult) {
     helper: result.helper,
     sandbox: {
       ...result.sandbox,
-      boatId: result.sandbox.provider === "boat" ? result.sandbox.providerSandboxId : null,
+      ...sandboxIdentity(result.sandbox),
     },
     golden: {
       ...result.golden,
-      boatSnapshotId: result.golden.provider === "boat" ? result.golden.providerSnapshotId : null,
-      boatSandboxId: result.golden.provider === "boat" ? result.golden.providerSandboxId : null,
+      ...goldenCompatibilityIds(result.golden),
     },
     promptId: result.promptId ?? null,
     conversationId: result.conversationId ?? null,
     ttlSeconds: result.ttlSeconds,
     expiresAt: result.expiresAt?.toISOString() ?? null,
-    github: {
-      status: result.github.status,
-      login: result.github.login ?? null,
-      tokenExpiresAt: result.github.tokenExpiresAt ?? null,
-      message: result.github.message ?? null,
-    },
+    github: launchGitHubResponse(result.github),
   };
 }
 
@@ -2114,7 +2084,7 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
 
 function selectGolden(rows: GoldenRecord[], body: Record<string, unknown>): GoldenRecord | undefined {
   const provider = optional(body, "provider");
-  if (provider !== undefined && provider !== "boat" && provider !== "modal")
+  if (provider !== undefined && !isSandboxProvider(provider))
     throw new VaultError("invalid", "Provider is boat or modal.");
   const selected = rows.filter((row) => provider === undefined || row.provider === provider);
   if (selected.length > 1)

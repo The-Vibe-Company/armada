@@ -54,6 +54,7 @@ describe.each([
     const old = f.active;
     let activations = 0;
     let preparations = 0;
+    let githubPreparations = 0;
     const resume = createRuntimeResume(
       f.sql,
       ENCRYPTION_KEY,
@@ -73,6 +74,13 @@ describe.each([
             return undefined;
           }
         : undefined,
+      async (caller, id) => {
+        expect(caller.userId).toBe(f.caller.userId);
+        expect(id).toBe(f.row.id);
+        expect(f.starts).toHaveLength(1);
+        githubPreparations++;
+        return { status: "connected" as const, login: "owner" };
+      },
     );
     const request = { id: f.row.id, request_id: crypto.randomUUID(), prompt: "continue the previous conversation" };
     const before = await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id);
@@ -90,6 +98,7 @@ describe.each([
     await expect(f.authority.withSession(old.runtimeToken, old.epoch, async () => true)).rejects.toThrow();
     expect(await send(f.caller, request)).toEqual(result);
     expect(activations).toBe(1);
+    expect(githubPreparations).toBe(provider === "boat" ? 1 : 0);
     if (provider === "modal") expect(preparations).toBe(1);
     expect(f.starts).toEqual([undefined, "native-thread"]);
     const row = (await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))!;
@@ -183,6 +192,43 @@ test("activation uncertainty never dispatches again under another key or on retr
     expect(starts).toBe(1);
     expect(stops).toBe(1);
     expect(f.starts).toHaveLength(1);
+  } finally {
+    await f.close();
+  }
+});
+
+test("failed GitHub reauthorization prevents resumed inference and can reconcile without reactivation", async () => {
+  const f = await stopped();
+  try {
+    let activations = 0,
+      attempts = 0;
+    const resume = createRuntimeResume(
+      f.sql,
+      ENCRYPTION_KEY,
+      f.bridge,
+      async () => ({
+        async start(_signal, restore) {
+          activations++;
+          return f.reboot(restore);
+        },
+        async stop() {},
+      }),
+      undefined,
+      async () => {
+        attempts++;
+        if (attempts === 1) throw Error("GitHub preparation failed");
+        return { status: "connected" as const, login: "owner" };
+      },
+    );
+    const request = input(f.row.id);
+    await expect(resume(f.caller, request)).rejects.toMatchObject({ code: "conflict" });
+    expect(f.starts).toHaveLength(1);
+    expect((await resume(f.caller, request)).resumed).toBe(true);
+    expect(activations).toBe(1);
+    expect(attempts).toBe(2);
+    expect(f.starts).toHaveLength(2);
+    await resume(f.caller, request);
+    expect(attempts).toBe(2);
   } finally {
     await f.close();
   }

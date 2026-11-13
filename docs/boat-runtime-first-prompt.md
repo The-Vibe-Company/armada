@@ -236,8 +236,9 @@ health/default metadata and GitHub access before allocation.
 2. Follow-up calls MCP again, performs the explicit GitHub check and recalls memory
    without receiving it again. No MCP setup action is sent by the client.
 3. Checkpoint/stop; re-read its receipt and both histories while stopped.
-4. Resume the same VM/conversation into the next epoch. The first resumed prompt
-   calls MCP and recalls memory, proving automatic new-epoch preparation.
+4. Resume the same VM/conversation into the next epoch. GitHub is automatically
+   reauthorized before inference, using the existing connected-account policy;
+   MCP is prepared and the first resumed prompt calls MCP and recalls memory.
 5. Explicit GitHub refresh/check in prompt4; MCP works without a setup call.
    Checkpoint/stop and read all four histories and the same receipt.
 
@@ -245,7 +246,9 @@ Require exact answers/finished events from `logs/read.source:"armada-runtime"`,
 complete checkpoint watermark=acknowledgedSequence, final `resume:"verified"`,
 `githubAfterResume:"verified"` and `mcpAfterResume:"verified"`. GitHub proof needs
 the current prompt's successful read-only gh command, new epoch/revision and
-positive credentialRequests; old GitHub authority must initially be unconfigured.
+positive credentialRequests. Before the explicit refresh, GitHub status must
+already be configured in the new epoch with a new revision; the check must not
+repair missing automatic preparation.
 Each MCP proof needs that prompt's `tools[].server`, exact tool/JSON arguments,
 `isError:false` and expected result substring, rechecked while stopped. Another
 server, prior prompt or assistant assertion cannot pass. Safe `mcpProof` names
@@ -336,8 +339,13 @@ Remaining refusals:
 - Pinned local stdio MCP; connected remote HTTP/SSE defaults remain supported.
 - Legacy unbound model credentials; runtime requires an authorized bound account.
 
-Other follow-on gaps include idle/first-send, automatic GitHub reauthorization on
-resume, model changes/new conversations and the remaining scoped/binding/helper
+Boat resume now automatically reauthorizes connected GitHub access after verified
+restore health and before MCP/inference, under the resume activity lease. Failed
+preparation prevents inference; identical-request reconciliation does not activate
+compute again, and an accepted prompt replay does not rotate GitHub authority.
+Modal resume behavior is unchanged. No repository/init steps rerun.
+
+Other follow-on gaps include idle/first-send, model changes/new conversations and the remaining scoped/binding/helper
 features above. Public steer/interrupt/exec controls merged separately; use their
 own acceptance gates, not this workspace check. Unsupported operations do not
 use native fallback.
@@ -458,3 +466,27 @@ archived interrupted terminal event. Combine with the existing MCP/skills/usage
 flags if accepting those in the same launch. No allocation retries. The
 coordinator records the staging result in the #1161 parity table; offline tests
 and this procedure are not evidence of a deployed pass.
+
+
+## Automatic Boat resume GitHub acceptance
+
+Coordinator only, after normal matching server/runtime deployment, using your own
+production Boat sandbox resources when staging credit is unavailable. Use the
+existing environment-only server origin, caller token, org, golden, bound model
+account and authorized golden GitHub repository; no new credentials or flags:
+
+```sh
+ARMADA_RUNTIME_SMOKE=one_real_boat_launch bun scripts/check-boat-runtime.ts --github --resume
+```
+
+One allocation + one same-VM activation, four prompts, two stops, no retries.
+Require configured GitHub status in epoch+1 with a new revision BEFORE the
+checker's explicit refresh. Then require that fourth prompt's archived successful
+read-only gh command and positive current-epoch credential requests, plus
+remembered token, checkpoints and stopped history. Missing automatic setup must
+fail, not be repaired by the checker. Optional existing MCP/skills flags share the
+same allocation only when their real resources are configured. Repeat with
+`ARMADA_RUNTIME_HARNESS=claude` for Claude acceptance, as a separately authorized
+lifecycle. No worker real check, deployment, default flip or native deletion.
+Launch-time before/after measurement remains pending coordinator evidence; this
+slice changes resumed-turn preparation, not launch.

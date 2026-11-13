@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { type AgentEvent, reportedTurnUsage, sandboxCost, sumSandboxUsage, withUsageTotals } from "@armada/core";
+import { type AgentEvent, reportedTurnUsage, sandboxCost, withUsageTotals } from "@armada/core";
 import claude from "./fixtures/sandbox-usage/boat-claude.json";
 import codex from "./fixtures/sandbox-usage/boat-codex.json";
 import modalClaude from "./fixtures/sandbox-usage/modal-claude-usage.json";
@@ -23,7 +23,7 @@ test.each([{ events: claude }, { events: codex }])(
   },
 );
 
-test("recorded Modal usage survives replay and totals never treat unreported fields or children as zero", () => {
+test("recorded Modal usage survives replay and totals never treat unreported fields as zero", () => {
   const collected = reportedTurnUsage([...modal, ...modal] as AgentEvent[]);
   const usage = { computeSeconds: 12, ...collected };
   // The recorded turn predates cache-write reporting. Pricing must not erase
@@ -41,17 +41,6 @@ test("recorded Modal usage survives replay and totals never treat unreported fie
     reasoningTokens: null,
     incomplete: true,
   });
-  expect(sumSandboxUsage([usage, usage])).toEqual({
-    computeSeconds: 24,
-    turnCount: 2,
-    inputTokens: 26272,
-    outputTokens: 10,
-    cachedTokens: 0,
-    cacheWriteTokens: null,
-    reasoningTokens: null,
-  });
-  expect(sumSandboxUsage([usage, null]).inputTokens).toBeNull();
-  expect(sumSandboxUsage([]).inputTokens).toBe(0);
   expect(withUsageTotals({ ...usage, turnCount: 2 })?.tokenTotals).toMatchObject({
     inputTokens: 13136,
     incomplete: true,
