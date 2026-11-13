@@ -407,3 +407,119 @@ test.each(["epoch", "revision", "shape"] as const)(
     expect(calls).toBe(1);
   },
 );
+
+test.skipIf(process.platform !== "linux")(
+  "dial-out executes bounded shell work and revocation kills its whole owned group before draining",
+  async () => {
+    const { watch } = await import("node:fs");
+    const { readFile } = await import("node:fs/promises");
+    const { groupState, processIdentity } = await import("../src/processes.ts");
+    const root = await mkdtemp(join(tmpdir(), "dialout-exec-"));
+    const journal = new Journal(join(root, "journal"), (value) => value);
+    const driver: Driver = {
+      start() {
+        throw Error("no model required");
+      },
+      async close() {},
+    };
+    const runner = new Runner(
+      journal,
+      {
+        token: session.runtimeToken,
+        sandboxId: session.sandboxId,
+        generation: session.epoch,
+        expiresAt: Date.now() + 60000,
+      },
+      { codex: driver },
+    );
+    const socket = new Socket(),
+      stop = new AbortController(),
+      time = clock();
+    const channel = new RuntimeDialout("https://armada.example", session, {
+      ...time,
+      socket: () => socket,
+      async fetch(url, options) {
+        if (url.pathname.endsWith("/results")) {
+          const body = JSON.parse(options.body as string) as { requestId: string };
+          return Response.json({ epoch: session.epoch, requestId: body.requestId });
+        }
+        return new Response(null, { status: 401 });
+      },
+    });
+    let completed = deferred(),
+      response: ReturnType<Response["clone"]> | undefined;
+    const work = channel.run(
+      async (request) => {
+        const result = await runner.handleDialout(request, stop.signal);
+        response = result.clone();
+        completed.resolve();
+        return result;
+      },
+      stop.signal,
+      () => runner.close(),
+    );
+    const outcome = work.catch((error: unknown) => error);
+    const command = (requestId: string, input: Record<string, unknown>) =>
+      socket.message({
+        type: "command",
+        epoch: session.epoch,
+        request: {
+          version: 1,
+          sandboxId: session.sandboxId,
+          requestId,
+          op: "exec",
+          input: { sandboxId: session.sandboxId, cwd: root, ...input },
+        },
+      });
+    let watcher: ReturnType<typeof watch> | undefined;
+    try {
+      socket.open();
+      command("sync-exec", { command: "printf DIALOUT_EXEC_OK", timeoutSeconds: 10 });
+      await completed.promise;
+      expect(await response?.json()).toMatchObject({
+        version: 1,
+        requestId: "sync-exec",
+        result: { detached: false, exitCode: 0, stdout: "DIALOUT_EXEC_OK" },
+      });
+      completed = deferred();
+      command("detached-refused", { command: "sleep 60", detached: true });
+      await completed.promise;
+      expect(response?.status).toBe(400);
+      expect(await response?.json()).toMatchObject({ error: "invalid_request" });
+      completed = deferred();
+      const started = deferred();
+      watcher = watch(root, (_event, filename) => {
+        if (filename === "started") started.resolve();
+      });
+      command("owned-exec", {
+        command: "printf '%s' $$ > pid.tmp; mv pid.tmp started; sleep 60 & wait",
+        timeoutSeconds: 60,
+      });
+      await started.promise;
+      const pid = Number(await readFile(join(root, "started"), "utf8"));
+      const identity = processIdentity(pid);
+      expect(groupState(pid, identity)).toBe("live");
+      socket.message({ type: "pong", epoch: "2" });
+      expect(await outcome).toBeInstanceOf(RuntimeChannelRevoked);
+      await completed.promise;
+      expect(groupState(pid, identity)).toBe("gone");
+      expect(response?.status).toBe(200);
+      expect(await response?.json()).toMatchObject({ result: { detached: false } });
+      const late = await runner.handleDialout({
+        version: 1,
+        sandboxId: session.sandboxId,
+        requestId: "late",
+        op: "exec",
+        input: { sandboxId: session.sandboxId, command: "printf SHOULD_NOT_RUN" },
+      });
+      expect(late.status).not.toBe(200);
+    } finally {
+      watcher?.close();
+      stop.abort();
+      await runner.close();
+      await outcome;
+      journal.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);

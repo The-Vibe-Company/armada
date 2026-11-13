@@ -6,7 +6,7 @@ import { redirect } from "next/navigation";
 import { type ActionResult, done, explainDbError, fail, formString, isUuid } from "@/lib/action";
 import { isSelectedOrganization, SELECTED_ORG_COOKIE } from "@/lib/data/selected-org";
 import { requireViewer } from "@/lib/data/viewer";
-import { PROVIDER_SETTINGS_PATH } from "@/lib/provider-setup";
+import { CLOUD_PROVIDERS_PATH } from "@/lib/provider-setup";
 import { createClient } from "@/lib/supabase/server";
 
 export async function createOrg(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
@@ -24,8 +24,8 @@ export async function createOrg(_previous: ActionResult | null, data: FormData):
     maxAge: 31536000,
   });
   revalidatePath("/", "layout");
-  // A new organization has no sandbox provider: connecting one in Settings is the next step.
-  redirect(PROVIDER_SETTINGS_PATH);
+  // A new organization has no sandbox provider: connecting one on the Cloud providers page is the next step.
+  redirect(CLOUD_PROVIDERS_PATH);
 }
 
 export async function changeMemberRole(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
