@@ -526,6 +526,7 @@ function sandbox(
 
 let state = seed();
 let dockerHosts: Row[] | null = null;
+let accountListFailure: string | null = null;
 let sequence = 100;
 const sessions = new Map<string, string>();
 
@@ -2575,6 +2576,7 @@ function accounts(route: string, body: Row, request: Request): Response {
   if (!userId) return controlFail(401, "unauthorized", "Sign in again.");
   const model = (row: Row) => String(row.kind) in MODEL_KINDS;
   if (route === "creds/list") {
+    if (accountListFailure) return controlFail(503, "unavailable", accountListFailure);
     const org = state.orgs.find((row) => row.id === body.org && isMember(row.id, userId));
     // As the server: every kind of the scope, the Skillpack key (#957) as kind and dates only.
     const listed = (row: Row) => model(row) || row.kind === "skillpack";
@@ -2673,6 +2675,7 @@ function control(url: URL, body: Row): Response {
   if (url.pathname === "/__test/reset") {
     for (const release of state.routineCreateWaiters) release();
     state = seed();
+    accountListFailure = null;
     dockerHosts = Array.isArray(body.dockerHosts) ? body.dockerHosts : null;
     // Keep a visible header but make its current revision unreadable, as a partial control API read can be.
     if (body.missingTemplateRevision)
@@ -2956,6 +2959,8 @@ function control(url: URL, body: Row): Response {
     return json({ ok: true });
   }
   if (url.pathname === "/__test/accounts") {
+    if (body.listFailure !== undefined)
+      accountListFailure = typeof body.listFailure === "string" ? body.listFailure : null;
     if (body.legacy !== undefined) state.legacyAccounts = body.legacy === true;
     Object.assign(state.usage, (body.usage as Record<string, Row> | undefined) ?? {});
     if (body.authCapabilities !== undefined) state.authCapabilities = body.authCapabilities as Row | null;
