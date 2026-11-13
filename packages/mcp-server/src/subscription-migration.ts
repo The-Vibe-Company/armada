@@ -36,7 +36,9 @@ export interface SubscriptionMigrationAuthority {
     verifySource: (tx: Sql) => Promise<void>,
   ): Promise<unknown>;
 }
-/** Upgrade observable native writers, never reserve an account or require historical cleanup. */
+/** Upgrade observable native writers, never reserve an account or require historical cleanup.
+ * Armada runtime guests already use epoch-fenced access-only auth; never run native
+ * SSH inspection, drain or stable-capability installation against those guests. */
 export function createSubscriptionMigration(
   sql: Sql,
   resolveStoredSandbox: (sql: Sql, id: string) => Promise<Target>,
@@ -59,7 +61,7 @@ export function createSubscriptionMigration(
       `select s.id from public.sandboxes s join public.credentials c on c.id=s.credential_id
        where s.id=$1 and s.org_id=$2 and s.owner_id=$3 and s.credential_id=$4
        and s.credential_version is not distinct from $5::integer and s.lifecycle_generation=$6
-       and s.provider::text=$7 and s.provider_sandbox_id=$8 and s.deleted_at is null
+       and not s.boat_runtime and s.provider::text=$7 and s.provider_sandbox_id=$8 and s.deleted_at is null
        and ((c.scope='user' and c.owner_id=s.owner_id) or (c.scope='org' and c.owner_id=s.org_id))
        and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id) for update of s`,
       [
@@ -196,7 +198,7 @@ export function createSubscriptionMigration(
       const sources = await sql.query<Source>(
         `select s.id,s.org_id,s.owner_id,s.credential_id,s.credential_version,s.lifecycle_generation,s.provider::text,s.provider_sandbox_id
          from public.sandboxes s join public.credentials c on c.id=s.credential_id where c.id=$1
-         and s.harness='codex' and s.deleted_at is null and s.status not in ('failed','stopped','deleted')
+         and s.harness='codex' and not s.boat_runtime and s.deleted_at is null and s.status not in ('failed','stopped','deleted')
          and ((c.scope='user' and s.owner_id=c.owner_id) or (c.scope='org' and s.org_id=c.owner_id)) order by s.id`,
         [id],
       );
@@ -214,7 +216,7 @@ export function createSubscriptionMigration(
       const sources = await sql.query<Source>(
         `select s.id,s.org_id,s.owner_id,s.credential_id,s.credential_version,s.lifecycle_generation,s.provider::text,s.provider_sandbox_id
          from public.sandboxes s join public.credentials c on c.id=s.credential_id and c.version=s.credential_version
-         where s.harness='codex' and s.provider='boat' and s.provider_sandbox_id=$1 and s.org_id=$2 and s.deleted_at is null
+         where s.harness='codex' and not s.boat_runtime and s.provider='boat' and s.provider_sandbox_id=$1 and s.org_id=$2 and s.deleted_at is null
          and c.kind='codex_auth' and c.status='active' and (c.expires_at is null or c.expires_at>now())
          and ((c.scope='user' and c.owner_id=s.owner_id) or (c.scope='org' and c.owner_id=s.org_id))
          and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$3)

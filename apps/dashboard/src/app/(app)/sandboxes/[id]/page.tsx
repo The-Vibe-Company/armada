@@ -1,4 +1,4 @@
-import { isSandboxProvider, MODEL_CATALOG } from "@armada/core";
+import { isSandboxProvider, MODEL_CATALOG, SANDBOX_PLACEMENT_LABELS, type SandboxListMetadata } from "@armada/core";
 import { ArrowLeftIcon, ClockAlertIcon, ContainerIcon, LockIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
@@ -34,7 +34,7 @@ import { formatDuration, lifecycleView, readLifecycle } from "@/lib/lifecycle";
 import { describeEvidence } from "@/lib/machine-size";
 import { parseTaskOutcome, preservationView, settledOutcome } from "@/lib/outcome";
 import { sandboxRepositoryDir } from "@/lib/repository-context";
-import { LISTED_PROVIDER_LABELS, type ListedSandbox, machineSizeLabel, sandboxName } from "@/lib/sandbox-access";
+import { machineSizeLabel, sandboxName } from "@/lib/sandbox-access";
 import { costOfRow } from "@/lib/sandbox-cost";
 import { createClient } from "@/lib/supabase/server";
 import { usageRevision } from "@/lib/usage-revision";
@@ -225,14 +225,14 @@ function RestrictedSandbox({
   owner,
   reason = "access",
 }: {
-  sandbox: ListedSandbox;
+  sandbox: SandboxListMetadata;
   owner: string;
   /** Why the interior is not shown: the viewer may not open it, or it runs on a Docker host. */
   reason?: "access" | "docker";
 }) {
   const life = lifecycleView(sandbox.status, readLifecycle(sandbox), new Date());
   const facts: [string, string][] = [
-    ["Provider", LISTED_PROVIDER_LABELS[sandbox.provider]],
+    ["Provider", SANDBOX_PLACEMENT_LABELS[sandbox.provider]],
     ["Harness", HARNESS_LABELS[sandbox.harness] ?? sandbox.harness],
     ["Model", sandbox.model ?? "Provider default"],
     ["Reasoning effort", sandbox.reasoningEffort ?? "Provider default"],

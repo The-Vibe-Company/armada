@@ -1,12 +1,13 @@
-import { HARNESSES, MACHINE_SIZES, type MachineSize, type SandboxListMetadata } from "@armada/core";
-import { LISTED_PROVIDERS } from "./listed-provider.ts";
+import {
+  HARNESSES,
+  MACHINE_SIZES,
+  type MachineSize,
+  SANDBOX_PLACEMENT_PROVIDERS,
+  type SandboxListMetadata,
+} from "@armada/core";
 import { MACHINE_SIZE_LABELS } from "./machine-size.ts";
 import { parseTaskOutcome } from "./outcome.ts";
 import { SANDBOX_STATUSES } from "./sandbox-filters.ts";
-
-export { LISTED_PROVIDER_LABELS, LISTED_PROVIDERS, type ListedProvider } from "./listed-provider.ts";
-
-export type ListedSandbox = SandboxListMetadata;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -19,9 +20,12 @@ export type SkippedSandboxRow = { id: string | null; reason: string };
  * does not match the contract is left out, never guessed, and reported in `skipped` (#1398): one unexpected row must
  * not make the whole organization's list unreadable. A response that is not a list still fails the read.
  */
-export function parseSandboxListMetadata(value: unknown): { rows: ListedSandbox[]; skipped: SkippedSandboxRow[] } {
+export function parseSandboxListMetadata(value: unknown): {
+  rows: SandboxListMetadata[];
+  skipped: SkippedSandboxRow[];
+} {
   if (!Array.isArray(value)) throw new Error("The sandbox list did not match its contract.");
-  const rows: ListedSandbox[] = [];
+  const rows: SandboxListMetadata[] = [];
   const skipped: SkippedSandboxRow[] = [];
   for (const item of value) {
     const parsed = parseRow(item);
@@ -41,13 +45,13 @@ export function skippedRowsNote(skipped: number): string | null {
 }
 
 /** The row, or the name of the first contract check it failed. */
-function parseRow(value: unknown): ListedSandbox | string {
+function parseRow(value: unknown): SandboxListMetadata | string {
   if (!value || typeof value !== "object" || Array.isArray(value)) return "not an object";
   const row = value as Record<string, unknown>;
   const { id, orgId, ownerId, provider, harness, status, createdAt, displayLabel, canOpen, canManage } = row;
   const created = instant(createdAt);
   if (!text(id) || !text(orgId) || !text(ownerId) || !created || !text(displayLabel)) return "identity";
-  if (!oneOf(LISTED_PROVIDERS, provider)) return "provider";
+  if (!oneOf(SANDBOX_PLACEMENT_PROVIDERS, provider)) return "provider";
   if (!oneOf(HARNESSES, harness)) return "harness";
   if (!oneOf(SANDBOX_STATUSES, status)) return "status";
   if (typeof canOpen !== "boolean" || typeof canManage !== "boolean") return "permissions";
@@ -98,7 +102,7 @@ function parseRow(value: unknown): ListedSandbox | string {
 }
 
 /** How a listed sandbox is named: its provider's display ID (bx_ on Boat) when there is one, else its logical label. */
-export function sandboxName(sandbox: Pick<ListedSandbox, "providerSandboxId" | "displayLabel">): string {
+export function sandboxName(sandbox: Pick<SandboxListMetadata, "providerSandboxId" | "displayLabel">): string {
   return sandbox.providerSandboxId ?? sandbox.displayLabel;
 }
 

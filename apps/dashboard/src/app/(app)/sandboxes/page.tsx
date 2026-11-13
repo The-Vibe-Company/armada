@@ -1,4 +1,12 @@
-import { HARNESSES, MACHINE_SIZES, SANDBOX_PLACEMENT_PROVIDERS, type SandboxCost } from "@armada/core";
+import {
+  HARNESSES,
+  MACHINE_SIZES,
+  SANDBOX_PLACEMENT_LABELS,
+  SANDBOX_PLACEMENT_PROVIDERS,
+  type SandboxCost,
+  type SandboxListMetadata,
+  type SandboxPlacementProviderId,
+} from "@armada/core";
 import { BoxesIcon, LockIcon, RocketIcon, SearchXIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
@@ -24,14 +32,7 @@ import { HARNESS_LABELS } from "@/lib/labels";
 import { type LifecycleView, lifecycleView, readLifecycle } from "@/lib/lifecycle";
 import { preservationView, settledOutcome } from "@/lib/outcome";
 import { PROVIDER_SETTINGS_PATH } from "@/lib/provider-setup";
-import {
-  LISTED_PROVIDER_LABELS,
-  type ListedProvider,
-  type ListedSandbox,
-  machineSizeLabel,
-  sandboxName,
-  skippedRowsNote,
-} from "@/lib/sandbox-access";
+import { machineSizeLabel, sandboxName, skippedRowsNote } from "@/lib/sandbox-access";
 import { costFigure } from "@/lib/sandbox-cost";
 import {
   FACETS,
@@ -130,7 +131,7 @@ async function SandboxesContent({ searchParams }: Props) {
                         ? "Not recorded"
                         : machineSizeLabel(value as (typeof MACHINE_SIZES)[number])
                       : key === "provider"
-                        ? (LISTED_PROVIDER_LABELS[value as ListedProvider] ?? capitalize(value))
+                        ? (SANDBOX_PLACEMENT_LABELS[value as SandboxPlacementProviderId] ?? capitalize(value))
                         : key === "model"
                           ? value === "unknown"
                             ? "Not recorded"
@@ -285,7 +286,7 @@ async function SandboxesContent({ searchParams }: Props) {
  * The sandbox's listed name. Its owner and the organization's admins open it; any other member sees the same metadata
  * without a link into its conversation, files or connections (#680). The server enforces that again on every read.
  */
-function SandboxName({ sandbox }: { sandbox: ListedSandbox }) {
+function SandboxName({ sandbox }: { sandbox: SandboxListMetadata }) {
   if (sandbox.canOpen)
     return (
       <Link
@@ -360,7 +361,7 @@ function LifecycleHint({ view }: { view: LifecycleView }) {
  * Under the status: what the agent reported for its latest finished turn (owner and admins only; the metadata hides it
  * from other members), and a stopped sandbox's work-preservation receipt. The recovery command is on its page.
  */
-function OutcomeHint({ sandbox }: { sandbox: ListedSandbox }) {
+function OutcomeHint({ sandbox }: { sandbox: SandboxListMetadata }) {
   const outcome = settledOutcome(sandbox.status, sandbox.taskOutcome);
   const preservation = preservationView(sandbox.preservationNote, sandbox.status, sandbox.id, sandbox.canOpen);
   if (!outcome && !preservation) return null;

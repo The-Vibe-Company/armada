@@ -1,5 +1,6 @@
+import { SANDBOX_PLACEMENT_LABELS, type SandboxPlacementProviderId } from "@armada/core";
 import { ContainerIcon } from "lucide-react";
-import { LISTED_PROVIDER_LABELS, type ListedProvider } from "@/lib/sandbox-access";
+
 import { cn } from "@/lib/utils";
 
 /**
@@ -7,7 +8,7 @@ import { cn } from "@/lib/utils";
  * solid fills so a table of them repeats no gradient id; an owned Docker host has a generic container icon.
  * Decorative: the name always sits beside it.
  */
-export function ProviderMark({ provider }: { provider: ListedProvider }) {
+export function ProviderMark({ provider }: { provider: SandboxPlacementProviderId }) {
   if (provider === "docker")
     return <ContainerIcon aria-hidden="true" className="size-3.5 shrink-0" data-provider-mark />;
   if (provider === "boat")
@@ -35,11 +36,11 @@ export function ProviderMark({ provider }: { provider: ListedProvider }) {
 }
 
 /** A sandbox's provider as persisted on its row: the mark, then the same name the detail page shows. */
-export function ProviderName({ provider, className }: { provider: ListedProvider; className?: string }) {
+export function ProviderName({ provider, className }: { provider: SandboxPlacementProviderId; className?: string }) {
   return (
     <span className={cn("inline-flex items-center gap-1.5", className)}>
       <ProviderMark provider={provider} />
-      {LISTED_PROVIDER_LABELS[provider]}
+      {SANDBOX_PLACEMENT_LABELS[provider]}
     </span>
   );
 }
