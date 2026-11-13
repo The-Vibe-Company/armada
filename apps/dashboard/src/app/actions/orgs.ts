@@ -24,7 +24,7 @@ export async function createOrg(_previous: ActionResult | null, data: FormData):
     maxAge: 31536000,
   });
   revalidatePath("/", "layout");
-  // A new organization has no sandbox provider: connecting one in Settings is the next step.
+  // A new organization has no sandbox provider: connecting one on the Cloud providers page is the next step.
   redirect(CLOUD_PROVIDERS_PATH);
 }
 

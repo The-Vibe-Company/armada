@@ -80,7 +80,7 @@ async function SandboxesContent({ searchParams }: Props) {
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const now = new Date();
   const filtered = hasSandboxFilters(filters);
-  // An organization without a sandbox provider goes to Settings to connect one; one with sandboxes to manage stays here.
+  // An organization without a sandbox provider goes to the Cloud providers page to connect one; one with sandboxes to manage stays here.
   const setupPending = selected !== null && setup?.state === "pending";
   if (setupPending && !filtered && inventoryTotal === 0 && skipped === 0) redirect(CLOUD_PROVIDERS_PATH);
 
