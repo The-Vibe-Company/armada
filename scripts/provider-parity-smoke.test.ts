@@ -45,7 +45,6 @@ for (const mode of [
             modelAccountId: "fake-account",
             golden: "fake-golden",
             hostId: "owned-host",
-            image: "fake-image@sha256:abc",
           })),
         ),
       },
@@ -95,6 +94,7 @@ for (const mode of [
               result = { hosts: [{ id: "owned-host", state: mode === "offline" ? "offline" : "online" }] };
               break;
             case "sandbox/launch":
+              if (p === "docker") expect(body).not.toHaveProperty("image");
               if (p === "boat" && (mode === "quota" || mode === "server_failure"))
                 return Response.json(
                   {
