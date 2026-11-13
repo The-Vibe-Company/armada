@@ -1,4 +1,9 @@
-import { type DockerHostListResponse, type DockerHostRegistrationResponse, GoldenError } from "@armada/core";
+import {
+  type DockerHostListResponse,
+  type DockerHostRegistrationResponse,
+  GoldenError,
+  isRecord as record,
+} from "@armada/core";
 import { parseArgs, single } from "./args.ts";
 import { type ArmadaApiClient, createArmadaApiClient } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
@@ -9,8 +14,6 @@ const HELP =
 const invalid = (message: string): never => {
   throw new GoldenError("invalid_config", message);
 };
-const record = (value: unknown): value is Record<string, unknown> =>
-  !!value && typeof value === "object" && !Array.isArray(value);
 
 export async function listHosts(client: ArmadaApiClient, org: string): Promise<DockerHostListResponse> {
   const value = await client.request<unknown>("/api/v1/docker/hosts/list", {

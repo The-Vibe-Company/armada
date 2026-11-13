@@ -1,4 +1,4 @@
-import { ROUTINE_REASON_HELP, type Routine, routineReasonHelp } from "@armada/core";
+import { ROUTINE_REASON_HELP, type Routine, isRecord as record, routineReasonHelp } from "@armada/core";
 import type { TemplateHeader } from "./templates.ts";
 
 export type RoutineItem = Omit<Routine, "createdAt" | "updatedAt" | "nextDueAt"> & {
@@ -18,7 +18,7 @@ export type RoutineRun = {
   missedIntervals: number;
 };
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const record = (x: unknown): x is Record<string, unknown> => !!x && typeof x === "object" && !Array.isArray(x);
+
 const text = (x: unknown): x is string => typeof x === "string";
 const id = (x: unknown): x is string => text(x) && uuid.test(x);
 const int = (x: unknown, min = 1, max = Number.MAX_SAFE_INTEGER): x is number =>

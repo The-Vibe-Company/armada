@@ -29,6 +29,7 @@ export async function connectProvider(_previous: ActionResult | null, data: Form
   const checked = await adminRequest(data);
   if (!checked.ok) return checked.result;
   const { viewer, org, provider } = checked;
+  const info = SETUP_PROVIDER_INFO[provider];
   const replacing = formString(data, "mode") === "replace";
   const fields = {
     boatKey: data.get("boat_key"),
@@ -51,14 +52,13 @@ export async function connectProvider(_previous: ActionResult | null, data: Form
     if (!(error instanceof ControlError)) throw error;
     const typed = [value.value, ...Object.values(fields).map((item) => (typeof item === "string" ? item.trim() : ""))];
     const message = safeConnectMessage(explainSetupError(error), typed);
-    return fail(replacing ? `${message} The connected ${keyNoun(provider)} is unchanged.` : message);
+    return fail(replacing ? `${message} The connected ${info.credentialNoun} is unchanged.` : message);
   }
   const status = parseProviderStatus(result, org);
   if (!status?.ready || !isConfigured(status, provider))
     return fail("The Armada server did not confirm the connection. Reload this page to check before trying again.");
   revalidatePath("/", "layout");
-  const label = SETUP_PROVIDER_INFO[provider].label;
-  return done(replacing ? `${label} ${keyNoun(provider)} replaced.` : `${label} connected.`);
+  return done(replacing ? `${info.label} ${info.credentialNoun} replaced.` : `${info.label} connected.`);
 }
 
 /**
@@ -104,8 +104,4 @@ async function adminRequest(
   if (membership?.role !== "admin")
     return { ok: false, result: fail("Only an admin of this organization manages its sandbox providers.") };
   return { ok: true, viewer, org, provider };
-}
-
-function keyNoun(provider: SandboxProviderId): string {
-  return provider === "boat" ? "key" : "token";
 }

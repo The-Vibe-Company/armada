@@ -1061,3 +1061,44 @@ No script can guarantee remote deletion during a permanent outage/refusal:
 unconfirmed cleanup remains an explicit failure with diagnostics and the known
 sandbox ID, never a success. Production Boat execution and reconciliation remain
 coordinator-only; fixture tests are not production evidence.
+
+#### GitHub clone and push authorization
+
+Set `githubRepository: "owner/private-fixture"` on each selected
+`ARMADA_SMOKE_CASES` entry to opt into the `github` row. Use an existing,
+populated **private test repository** to which the sandbox owner's connected
+GitHub account has push access; the runner does not create repositories or
+request local/provider credentials. The fixture must have a populated `main`
+branch. Docker declares this repository in its ordinary launch `repos` manifest
+so its runtime grant is bound to it; Boat/Modal require the fixture in the selected
+golden's frozen repository configuration. A read-only `golden/size-policy`
+preflight verifies that binding before compute is allocated (the coordinator
+must be authorized to read the golden settings). Invalid owner/repository syntax fails
+configuration before traffic. Missing configuration is
+`not-run: github_repository_not_configured`; `--feature github` then allocates
+no compute. Example recheck:
+`bun scripts/post-deploy-smoke.ts --parity --only modal --feature github`.
+The production Boat coordinator can select the same row with
+`--only boat --production-boat --feature github` and its existing production
+guards/environment. The probe is identical on all providers.
+
+The row uses the existing sandbox after an ordinary first turn has prepared its
+GitHub access. Inside that sandbox it verifies private-repository/push permission
+with `gh api`, clones to a fresh temporary directory using the delivered Git
+credentials, and performs `git push --dry-run` of the cloned HEAD to a unique
+scratch ref. This checks clone access and push authorization/receive-pack
+admission, **not an actual ref update**, branch-protection acceptance, or
+repository refresh after resume. No remote branch or commit is created, and a
+trap removes the local clone on command exit; inherited Git hooks/template
+hooks are disabled for clone/push. The server-owned Docker workspace clone is
+removed with the sandbox. Sandbox cleanup still runs on
+failure. Only fixed auth/clone/push result markers are inspected. Raw tool
+output, token values and repository contents are never printed.
+
+A filtered run reuses one sandbox and executes launch/send/stop/delete/cleanup
+prerequisites. Full runs reuse their existing allocation. GitHub access refused
+by the server's capability discovery is unsupported with its reason, never a
+Boat-specific exemption. Missing `gh`/Git tooling, revoked access, failed clone,
+or refused dry-run fails the cell; only a coordinator execution is proof that
+the selected account/provider passes. Older scripts remain until their other
+checks (including real write/refresh lifecycle checks) are migrated.

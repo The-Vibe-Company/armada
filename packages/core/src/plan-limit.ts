@@ -1,10 +1,10 @@
+import { isRecord as record } from "./record.ts";
 /** Public allowlisted quota exhaustion evidence; never a vendor response body. */
 export interface PlanLimit {
   code: "usage_limit_exceeded" | "rate_limited";
   resetsAt?: string;
 }
-const record = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
+
 function reset(value: unknown): string | undefined {
   if (typeof value !== "string" || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.000Z$/.test(value)) return undefined;
   const date = new Date(value);
