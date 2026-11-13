@@ -95,7 +95,7 @@ test("Docker incompatible or malformed options fail before HTTP", async () => {
   for (const flags of [
     ["--agent", "unknown"],
     ["--skill", "foo@1"],
-    ["--repo", "acme/web"],
+    ["--repo", "https://user:secret@example.test/web"],
     ["--connections", "a"],
     ["--credential-version", "0"],
     ["--host", "not-a-host"],
