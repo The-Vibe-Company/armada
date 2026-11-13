@@ -374,6 +374,7 @@ export type Database = {
           created_at: string;
           daemon_version: string | null;
           draining_at: string | null;
+          name: string | null;
         };
         Insert: {
           id: string;
@@ -388,6 +389,7 @@ export type Database = {
           created_at?: string;
           daemon_version?: string | null;
           draining_at?: string | null;
+          name?: string | null;
         };
         Update: {
           id?: string;
@@ -402,6 +404,7 @@ export type Database = {
           created_at?: string;
           daemon_version?: string | null;
           draining_at?: string | null;
+          name?: string | null;
         };
         Relationships: [
           {

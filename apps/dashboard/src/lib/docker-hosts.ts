@@ -83,10 +83,11 @@ export type HostRegistration = DockerHostRegistrationResponse;
 
 export function parseHostRegistration(value: unknown): HostRegistration | null {
   if (!isRecord(value)) return null;
-  const { hostId, registrationToken } = value;
+  const { hostId, registrationToken, command, expiresAt } = value;
   if (typeof hostId !== "string" || !UUID.test(hostId)) return null;
   if (typeof registrationToken !== "string" || !/^[0-9a-f]{64}$/.test(registrationToken)) return null;
-  return { hostId, registrationToken };
+  if (typeof command !== "string" || !command || !isDate(expiresAt)) return null;
+  return { hostId, registrationToken, command, expiresAt };
 }
 
 /**
@@ -161,24 +162,6 @@ export function sandboxCount(count: number): string {
 export function hasCheckedIn(list: DockerHostList, hostId: string): boolean {
   const host = list.hosts.find((candidate) => candidate.id === hostId);
   return host !== undefined && host.state !== "pending" && host.state !== "revoked";
-}
-
-/**
- * The command run on the machine: it asks for the one-use token without echoing it, so the token never lands in
- * argv, the shell history or the terminal scrollback, passes it on stdin, then runs the daemon in the foreground.
- * Bash or zsh. Null when the server address is not an http(s) origin.
- */
-export function hostRegistrationCommand(serverUrl: string): string | null {
-  let origin: string;
-  try {
-    const url = new URL(serverUrl);
-    if ((url.protocol !== "https:" && url.protocol !== "http:") || url.username || url.password) return null;
-    origin = url.origin;
-  } catch {
-    return null;
-  }
-  if (!origin.startsWith("https://")) return null;
-  return `curl --fail --silent --show-error --proto '=https' '${origin}/api/docker-host/install' | bash`;
 }
 
 /** What revoking a host does, said before it happens. */

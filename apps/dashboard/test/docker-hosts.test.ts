@@ -3,7 +3,6 @@ import {
   type DockerHost,
   hasCheckedIn,
   hostName,
-  hostRegistrationCommand,
   hostState,
   isRouteAbsent,
   parseDockerHostList,
@@ -51,25 +50,16 @@ test("one malformed host is left out and counted; a bad envelope or a duplicated
 
 test("a registration is a host ID and a 64-hex one-use token, nothing else", () => {
   const token = "a".repeat(64);
-  expect(parseHostRegistration({ hostId: ID, registrationToken: token })).toEqual({
+  const command = "curl -fsSL https://armada.example/install-host.sh | sh -s -- --token " + token;
+  const expiresAt = "2026-11-13T13:30:00Z";
+  expect(parseHostRegistration({ hostId: ID, registrationToken: token, command, expiresAt })).toEqual({
     hostId: ID,
     registrationToken: token,
+    command,
+    expiresAt,
   });
   expect(parseHostRegistration({ hostId: ID, registrationToken: "short" })).toBeNull();
   expect(parseHostRegistration({ hostId: "x", registrationToken: token })).toBeNull();
-});
-
-test("the command fetches the HTTPS installer, leaving private registration to the host", () => {
-  expect(hostRegistrationCommand("https://armada.example.com/mcp?x=1")).toBe(
-    "curl --fail --silent --show-error --proto '=https' 'https://armada.example.com/api/docker-host/install' | bash",
-  );
-  for (const url of [
-    "http://armada.example.com",
-    "ftp://armada.example.com",
-    "https://user:pass@armada.example.com",
-    "not a url",
-  ])
-    expect(hostRegistrationCommand(url)).toBeNull();
 });
 
 test("a host's state reads in plain words and an offline or unregistered host sorts first", () => {

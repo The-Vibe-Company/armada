@@ -120,18 +120,44 @@ test("unknown Docker launch outcome retains a stable request UUID for exact retr
   }
 });
 
-// CLI must issue one ticket via user authority and show a usable server-hosted installer.
-test("host add prints one verified-installer command and a one-time registration ticket", async () => {
-  let calls = 0;
-  const result = await capture(["host", "add", "--org", org], async (request) => {
-    calls++;
-    expect(new URL(request.url).pathname).toBe("/api/v1/docker/hosts/register-token");
-    expect(await request.json()).toEqual({ org });
-    return Response.json({ hostId: host, registrationToken: "a".repeat(64) });
-  });
-  expect(result.code).toBe(0);
-  expect(calls).toBe(1);
-  expect(result.out).toContain("/api/docker-host/install' | bash");
-  expect(result.out).toContain("Registration token (shown once): " + "a".repeat(64));
-  expect(result.err).toBe("");
+test("Docker launch resolves an exact unique non-revoked host name and refuses missing/ambiguous names", async () => {
+  const receipt = {
+    sandbox: { id: requestId, provider: "docker", status: "running" },
+    golden: null,
+    runtime: { epoch: "1" },
+  };
+  const namedArgs = args.map((arg) => (arg === host ? "office" : arg));
+  const summary = {
+    id: host,
+    name: "office",
+    state: "online",
+    createdAt: "2026-11-13T00:00:00Z",
+    lastSeenAt: null,
+    revokedAt: null,
+    version: "2.27.0",
+    sandboxes: 0,
+  };
+  for (const mode of ["unique", "missing", "ambiguous"]) {
+    let launched = 0;
+    const result = await capture(namedArgs, async (request) => {
+      if (new URL(request.url).pathname.endsWith("/hosts/list")) {
+        expect(await request.json()).toEqual({ org });
+        return Response.json({
+          placement: true,
+          hosts:
+            mode === "missing"
+              ? []
+              : mode === "ambiguous"
+                ? [summary, { ...summary, id: credential }]
+                : [summary, { ...summary, id: credential, state: "revoked" }],
+        });
+      }
+      launched++;
+      expect(await request.json()).toMatchObject({ hostId: host });
+      return Response.json(receipt);
+    });
+    expect(result.code === 0).toBe(mode === "unique");
+    expect(launched).toBe(mode === "unique" ? 1 : 0);
+    if (mode !== "unique") expect(result.err).toContain(mode === "missing" ? "No non-revoked" : "ambiguous");
+  }
 });

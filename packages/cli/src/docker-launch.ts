@@ -2,6 +2,7 @@ import { type DockerLaunchRequest, type DockerLaunchResult, GoldenError, resolve
 import { type Args, single } from "./args.ts";
 import { createArmadaApiClient } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
+import { resolveHost } from "./host-commands.ts";
 import { parseTtl } from "./operations.ts";
 
 const uuid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
@@ -35,8 +36,10 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
     return value.toLowerCase();
   };
   const org = requiredId("--org"),
-    hostId = requiredId("--host"),
     credentialId = requiredId("--credential-id");
+  const selector = single(args, "--host");
+  if (!selector || selector.length > 64 || /[\p{C}]/u.test(selector))
+    throw new GoldenError("invalid_config", "--host requires a UUID or exact host name.");
   const image = single(args, "--image")?.trim();
   if (!image)
     throw new GoldenError("invalid_config", "Docker launch requires --image with a digest-pinned image reference.");
@@ -48,6 +51,8 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
   if (version !== undefined && (!/^[1-9][0-9]*$/.test(version) || !Number.isSafeInteger(Number(version))))
     throw new GoldenError("invalid_config", "--credential-version must be a positive integer.");
   const ttl = single(args, "--ttl");
+  const client = await createArmadaApiClient(auth);
+  const hostId = await resolveHost(client, org, selector);
   const body: DockerLaunchRequest = {
     org,
     provider: "docker",
@@ -64,7 +69,6 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
     ...(ttl === undefined ? {} : { ttlSeconds: parseTtl(ttl) }),
     ...(args.positionals[0] === undefined ? {} : { prompt: args.positionals[0] }),
   };
-  const client = await createArmadaApiClient(auth);
   try {
     const result = await client.request<DockerLaunchResult>("/api/v1/sandbox/launch", {
       method: "POST",

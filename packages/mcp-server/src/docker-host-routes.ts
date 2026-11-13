@@ -26,7 +26,7 @@ function string(value: unknown): string {
 export function createDockerHostRoutes(
   store: ReturnType<typeof createDockerHostStore>,
   authenticate: (request: Request) => Promise<CallerResult>,
-  options: { placement?: boolean } = {},
+  options: { placement?: boolean; publicUrl?: string } = {},
 ): Route {
   return async (request) => {
     const path = new URL(request.url).pathname;
@@ -43,7 +43,14 @@ export function createDockerHostRoutes(
         if (!result.ok) return Response.json({ error: "unauthorized" }, { status: 401, headers });
         const body: unknown = JSON.parse(await readBoundedText(request, 4096));
         if (!object(body)) throw new InvalidInput();
-        fields(body, path.endsWith("/revoke") ? ["org", "hostId"] : ["org"]);
+        fields(
+          body,
+          path.endsWith("/revoke")
+            ? ["org", "hostId"]
+            : path.endsWith("/register-token") && "name" in body
+              ? ["org", "name"]
+              : ["org"],
+        );
         const orgId = string(body.org);
         const listing = path.endsWith("/list");
         if (
@@ -54,7 +61,14 @@ export function createDockerHostRoutes(
         actor = { userId: result.caller.userId, orgId };
         if (listing)
           return Response.json({ placement: options.placement === true, hosts: await store.list(actor) }, { headers });
-        if (path.endsWith("/register-token")) return Response.json(await store.issueRegistration(actor), { headers });
+        if (path.endsWith("/register-token")) {
+          const origin = new URL(options.publicUrl ?? request.url).origin;
+          if (!origin.startsWith("https://")) throw new InvalidInput();
+          const ticket = await store.issueRegistration(actor, "name" in body ? string(body.name) : undefined);
+          const scriptUrl = `${origin}/install-host.sh`.replaceAll("'", "'\\''");
+          const command = `curl -fsSL --proto '=https' --proto-redir '=https' '${scriptUrl}' | sh -s -- --token ${ticket.registrationToken}`;
+          return Response.json({ ...ticket, command }, { headers });
+        }
         await store.revoke(actor, string(body.hostId));
         return Response.json({ revoked: true }, { headers });
       }

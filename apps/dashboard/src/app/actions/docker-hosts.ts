@@ -7,7 +7,7 @@ import { readDockerLaunchOption, readSelectedDockerHosts, viewerDockerHosts } fr
 import { listSelectedAccounts } from "@/lib/data/model-accounts";
 import { isSelectedOrganization, selectedOrganization } from "@/lib/data/selected-org";
 import { requireViewer } from "@/lib/data/viewer";
-import { HOSTS_PATH, hasCheckedIn, hostRegistrationCommand } from "@/lib/docker-hosts";
+import { HOSTS_PATH, hasCheckedIn } from "@/lib/docker-hosts";
 import {
   checkImage,
   dockerLaunchBlocker,
@@ -49,12 +49,10 @@ export async function registerDockerHost(
 ): Promise<HostRegistrationResult> {
   const control = await adminControl(formString(data, "org"));
   if ("ok" in control) return control as { ok: false; error: string };
-  const command = hostRegistrationCommand(control.serverUrl);
-  if (!command) return { ok: false, error: "The Armada server address is not valid for a host to reach." };
   try {
     const registration = await control.register(formString(data, "org"));
     revalidatePath(HOSTS_PATH);
-    return { ok: true, ...registration, command };
+    return { ok: true, ...registration };
   } catch (error) {
     if (!(error instanceof ControlError)) throw error;
     return { ok: false, error: error.message };
