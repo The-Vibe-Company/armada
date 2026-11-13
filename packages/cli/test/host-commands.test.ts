@@ -84,6 +84,9 @@ test("host add prints the server command once, submits its name and waits for th
   expect(result.slept).toBe(2000);
   expect(result.out.split(command)).toHaveLength(2);
   expect(result.out).toContain(`${hostId} is online`);
+  expect(result.out).toContain(
+    "Waiting for the machine to connect… (Ctrl-C to stop waiting; the command stays valid until 00:05 UTC)",
+  );
   expect(result.out).toContain("Expires: 2026-11-13T00:05:00.000Z");
   expect(result.out).not.toContain("a".repeat(64));
   expect(result.err).toBe("");
