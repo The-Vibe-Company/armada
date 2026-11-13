@@ -1726,3 +1726,30 @@ test.each(["private", "org"] as const)(
     ).toHaveLength(1);
   },
 );
+
+test("failed snapshot machine facts persist a safe reason in get and list responses", async () => {
+  const f = await snapshotFixture(),
+    id = randomUUID();
+  await f.snapshots.command(f.caller, "create", {
+    org: f.actor.orgId,
+    hostId: f.hostId,
+    requestId: id,
+    name: "failed-build",
+    visibility: "private",
+    config: f.config,
+  });
+  expect((await hosts.poll(f.hostToken, f.installationId))?.operation).toBe("buildSnapshot");
+  await hosts.complete(f.hostToken, f.installationId, {
+    requestId: id,
+    outcome: "failed",
+    reason: "snapshot_build_failed",
+  });
+  const failureReason =
+    "Snapshot image build failed. Check registry access, repository access, init commands and the secret scan; build output is suppressed to protect secrets.";
+  expect(await f.snapshots.command(f.caller, "get", { org: f.actor.orgId, id })).toMatchObject({
+    snapshot: { id, status: "failed", image: null, failureReason },
+  });
+  expect(await f.snapshots.command(f.caller, "list", { org: f.actor.orgId })).toMatchObject({
+    snapshots: [expect.objectContaining({ id, status: "failed", failureReason })],
+  });
+});

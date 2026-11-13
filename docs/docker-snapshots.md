@@ -72,6 +72,13 @@ after successful build/scan and exact immutable provenance verification. Known
 pattern scanning is not a proof against arbitrary encoded/user-supplied secrets:
 never put credentials in repository/config/init content.
 
+Failed builds expose a safe `failureReason` in `armada golden get`,
+`armada golden list` and the dashboard snapshot details. The host daemon logs
+the snapshot ID and a fixed failure message. Raw Docker/build/init output is
+not returned or logged because it can contain credentials. A failed build, an
+expired build and invalidated build authorization have distinct messages;
+older failed snapshots retain a generic diagnostic.
+
 There is one active build per host and a one-hour deadline. While building, the
 daemon continues ordinary mailbox work and physical TTL sweeps. Recovery adopts
 only a matching already-built image; an unknown unfinished build is not replayed.
@@ -145,3 +152,13 @@ offline or the server version changes. The rebuild endpoint accepts only
 `org`, source `id` and a new `requestId`, never caller image/config/version fields.
 Existing scan, unprivileged initialization, publication and epoch checks apply.
 A failed new build does not retire the original snapshot.
+
+### Repository history and secret scanning
+
+Docker snapshot builds clone only the selected branch head (`--depth=1`). Init
+commands can fetch additional history if needed, but the secret scan checks all
+materialized files and Git objects before publishing the image, including that
+extra history. This avoids importing unrelated historical credentials into a
+snapshot. Token-shaped test fixtures must be assembled at runtime rather than
+stored literally in source; the scan does not exempt test files. Boat and Modal
+checkout behavior is unchanged.

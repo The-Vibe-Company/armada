@@ -69,7 +69,7 @@ export async function buildDockerSnapshot(
     const config = normalizeGitHubGoldenConfig(job.build.config);
     await writeFile(
       join(directory, "public", "checkout.sh"),
-      `set +x\nset -euo pipefail\nexport ARMADA_GIT_TOKEN="$(cat /run/secrets/github)"\n${goldenCheckoutScript(config.repos)}\n`,
+      `set +x\nset -euo pipefail\nexport ARMADA_GIT_TOKEN="$(cat /run/secrets/github)"\n${goldenCheckoutScript(config.repos, { shallow: true })}\n`,
       { mode: 0o600, flag: "wx" },
     );
     for (const [index, command] of config.init.entries())

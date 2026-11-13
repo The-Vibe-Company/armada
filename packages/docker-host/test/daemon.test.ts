@@ -744,3 +744,40 @@ test("HTTP reuse authenticates only with the fresh ticket and validates public i
   ).rejects.toThrow("Host request denied");
   expect(JSON.stringify(state)).toBe(before);
 });
+
+test("snapshot failures durably report a bounded reason and log no exception output", async () => {
+  const f = fixture();
+  const id = f.job.request.sandboxId;
+  const job: Job = {
+    ...f.job,
+    operation: "buildSnapshot",
+    request: { ...f.job.request, ttlSeconds: 3600, expiresAt: Date.now() + 3600000 },
+    build: {
+      id,
+      armadaVersion: "2.29.0",
+      ownerId: crypto.randomUUID(),
+      visibility: "private",
+      token: "offline-snapshot-access",
+      config: { repos: [{ url: "https://github.com/example/project.git", branch: "main", dir: "project" }], init: [] },
+    },
+  };
+  f.api.poll = async () => ({ job });
+  f.executor.buildSnapshot = async () => {
+    throw Error("private-command-output");
+  };
+  const original = console.error,
+    messages: string[] = [];
+  console.error = (...args: unknown[]) => {
+    messages.push(args.join(" "));
+  };
+  try {
+    await tick(f.store, f.api, f.executor);
+    expect(f.state().receipts[0]).toMatchObject({ outcome: "failed", reason: "snapshot_build_failed" });
+    expect(messages.join(" ")).toContain(id);
+    expect(messages.join(" ")).toContain("Snapshot image build failed");
+    expect(messages.join(" ")).not.toContain("private-command-output");
+    expect(JSON.stringify(f.state())).not.toContain("private-command-output");
+  } finally {
+    console.error = original;
+  }
+});
