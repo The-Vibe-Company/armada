@@ -19,9 +19,12 @@ const turn = (model: string | null, input: number | null, cached: number | null,
 });
 
 describe("model prices", () => {
-  test("every model Armada offers at launch, and Fable 5.2, has a price", () => {
+  test("public launch suggestions and Fable have prices; custom connection model IDs remain unpriced", () => {
     const offered = Object.values(MODEL_CATALOG).flatMap((harness) => harness.models.map((model) => model.id));
-    for (const id of [...offered, "claude-fable-5-2"]) expect(modelPrice(id)).not.toBeNull();
+    for (const id of [...offered, "claude-fable-5-2"]) {
+      if (id.startsWith("armada/")) expect(modelPrice(id)).toBeNull();
+      else expect(modelPrice(id)).not.toBeNull();
+    }
   });
 
   test("a context-window suffix or a dated snapshot resolves to the model; anything else is unknown", () => {
