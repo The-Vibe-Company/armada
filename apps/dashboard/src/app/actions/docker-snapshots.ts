@@ -40,7 +40,8 @@ export async function buildDockerSnapshot(
   if (
     hosts.state !== "ready" ||
     !hosts.list.placement ||
-    !option?.capabilities.goldens ||
+    !option?.enabled ||
+    !option.capabilities.goldens ||
     !hosts.list.hosts.some((host) => host.id === hostId && host.state === "online")
   )
     return createFail("Choose an online host with snapshot support.");

@@ -17,3 +17,18 @@ export function snapshotState(
 export function hasDockerHost(hosts: readonly { state: string }[]): boolean {
   return hosts.some((host) => host.state !== "revoked");
 }
+
+/** Initial affordances follow discovery; actions leave exact retry authority to the server. */
+export function snapshotLaunchEnabled(
+  option: import("./docker-launch").DockerLaunchOption | null,
+  placement: boolean,
+): boolean {
+  return Boolean(
+    placement &&
+      option?.enabled &&
+      option.capabilities.launch &&
+      option.capabilities.goldens &&
+      option.launchSources.includes("golden") &&
+      option.harnesses.length,
+  );
+}

@@ -55,7 +55,7 @@ import { selectedOrganization } from "@/lib/data/selected-org";
 import { listSelectedTemplates, lookupsFrom, type TemplateList } from "@/lib/data/templates";
 import { listSelectedVault } from "@/lib/data/variables";
 import { displayUser, listMemberships, type Membership, memberDirectory, requireViewer } from "@/lib/data/viewer";
-import { hasDockerHost, snapshotState } from "@/lib/docker-snapshots";
+import { hasDockerHost, snapshotLaunchEnabled, snapshotState } from "@/lib/docker-snapshots";
 import { mcpUrl } from "@/lib/env";
 import {
   boatFull,
@@ -206,7 +206,7 @@ export default async function GoldensPage({ searchParams }: Props) {
       dockerSnapshotRow(
         snapshot,
         context,
-        Boolean(dockerOption?.capabilities.launch && dockerOption.capabilities.goldens),
+        snapshotLaunchEnabled(dockerOption, hostRead.state === "ready" && hostRead.list.placement),
       ),
     ),
   ]);
@@ -225,7 +225,9 @@ export default async function GoldensPage({ searchParams }: Props) {
           isAdmin={selected.role === "admin"}
           hosts={hosts}
           canBuild={
-            hostRead.state === "ready" && hostRead.list.placement && Boolean(dockerOption?.capabilities.goldens)
+            hostRead.state === "ready" &&
+            hostRead.list.placement &&
+            Boolean(dockerOption?.enabled && dockerOption.capabilities.goldens)
           }
           cloudForms={Object.fromEntries(
             (connected ?? []).map((provider) => [
