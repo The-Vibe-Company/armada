@@ -8,6 +8,7 @@ export function createRuntimeProvider(
   host: Provider,
   providerSandboxId: string,
   reads: Pick<Provider, "getPrompt" | "events">,
+  operations?: Pick<Provider, "interrupt" | "steer" | "exec">,
 ): Provider {
   if (host.id !== "boat" && host.id !== "modal") throw Error("boat_runtime_host_required");
   const unsupported = async (): Promise<never> => {
@@ -31,15 +32,15 @@ export function createRuntimeProvider(
     ...HARNESS_CAPABILITIES,
     codex: {
       ...HARNESS_CAPABILITIES.codex,
-      steer: "none" as const,
-      interrupt: false,
+      steer: operations ? HARNESS_CAPABILITIES.codex.steer : ("none" as const),
+      interrupt: Boolean(operations),
       resume: false,
       parallelConversations: false,
     },
     claude: {
       ...HARNESS_CAPABILITIES.claude,
-      steer: "none" as const,
-      interrupt: false,
+      steer: operations ? HARNESS_CAPABILITIES.claude.steer : ("none" as const),
+      interrupt: Boolean(operations),
       resume: false,
       parallelConversations: false,
     },
@@ -73,9 +74,24 @@ export function createRuntimeProvider(
     // No quiescence/checkpoint/work-preservation/resume guarantee in this lane.
     quiesce: unsupported,
     prompt: unsupported,
-    steer: unsupported,
-    interrupt: unsupported,
-    exec: unsupported,
+    steer: operations
+      ? async (request) => {
+          target(request.sandboxId);
+          return operations.steer(request);
+        }
+      : unsupported,
+    interrupt: operations
+      ? async (request) => {
+          target(request.sandboxId);
+          return operations.interrupt(request);
+        }
+      : unsupported,
+    exec: operations
+      ? async (request) => {
+          target(request.sandboxId);
+          return operations.exec(request);
+        }
+      : unsupported,
     sshKey: unsupported,
     createGolden: unsupported,
     snapshot: unsupported,

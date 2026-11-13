@@ -3,8 +3,11 @@ import type { RunnerRequest } from "@armada/agent-runtime";
 import {
   type EventPage,
   type EventsRequest,
+  type ExecRequest,
+  type ExecResult,
   type GitHubRuntimeConfiguration,
   type Harness,
+  type InterruptRequest,
   type ModelChoice,
   type PromptReceipt,
   type PromptRequest,
@@ -13,12 +16,15 @@ import {
   type ProviderErrorCode,
   resolveModelChoice,
   type SkillReceipt,
+  type SteerReceipt,
+  type SteerRequest,
 } from "@armada/core";
 import { PRIVATE_SKILL_FAILURES, PrivateSkillError } from "../../core/src/private-skill-error.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
 
 const errors: Record<string, ProviderErrorCode> = {
   not_found: "not_found",
+  no_running_turn: "no_running_turn",
   invalid_request: "invalid_request",
   invalid_cursor: "invalid_request",
   invalid_cwd: "invalid_request",
@@ -59,14 +65,21 @@ export function createRuntimeAgent(
   function target(id: string) {
     if (id !== providerSandboxId) throw refusal("invalid_request");
   }
-  async function invoke<T>(command: RunnerRequest, signal?: AbortSignal, expectedEpoch?: string): Promise<T> {
+  async function invoke<T>(
+    command: RunnerRequest,
+    signal?: AbortSignal,
+    expectedEpoch?: string,
+    timeoutMs?: number,
+  ): Promise<T> {
     let reply: Awaited<ReturnType<typeof commands.call>>;
     try {
       reply = await commands.call(ownerId, command, {
         ...(signal ? { signal } : {}),
+        ...(timeoutMs ? { timeoutMs } : {}),
         ...(expectedEpoch !== undefined ? { expectedEpoch } : {}),
       });
-    } catch {
+    } catch (error) {
+      if (error instanceof ProviderError) throw error;
       // A lost wait is not proof of non-execution. Preserve the exact identity for
       // reconciliation; never include transport errors or private payloads.
       throw refusal("conflict", command.requestId);
@@ -86,6 +99,30 @@ export function createRuntimeAgent(
   }
   const identity = (requestId: string = randomUUID()) => ({ version: 1 as const, sandboxId, requestId });
   return {
+    async interrupt(request: InterruptRequest): Promise<void> {
+      target(request.sandboxId);
+      await invoke({
+        ...identity(),
+        op: "interrupt",
+        ...(request.conversationId ? { conversationId: request.conversationId } : {}),
+      });
+    },
+    async steer(request: SteerRequest): Promise<SteerReceipt> {
+      target(request.sandboxId);
+      if (!request.conversationId || !request.text.trim()) throw refusal("invalid_request");
+      return invoke({ ...identity(), op: "steer", conversationId: request.conversationId, text: request.text });
+    },
+    async exec(request: ExecRequest): Promise<ExecResult> {
+      target(request.sandboxId);
+      if (request.detached) throw refusal("invalid_request");
+      const { signal, ...input } = request;
+      return invoke(
+        { ...identity(), op: "exec", input: { ...input, sandboxId } },
+        signal,
+        undefined,
+        ((request.timeoutSeconds ?? 120) + 30) * 1000,
+      );
+    },
     /** The launcher must first await enrolment; no native readiness/resume is implied. */
     async health(
       signal?: AbortSignal,
