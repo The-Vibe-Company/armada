@@ -19,6 +19,7 @@ import {
   accountsFor,
   HARNESS_ORDER,
   HARNESS_PATH,
+  KIND_INFO,
   kindFor,
   launchDefault,
   orderAccounts,
@@ -44,7 +45,7 @@ export default async function HarnessPage() {
     <>
       <PageHeader
         title="Models"
-        description="The subscriptions Claude Code and Codex run on. Each launch bills the one it names."
+        description="Subscriptions, API keys and model connections for your coding agents. Each launch names its account."
       >
         {selected && accounts.state === "ready" && (
           <AddAccountDialog
@@ -135,7 +136,11 @@ async function HarnessSections({
               isAdmin={selected.role === "admin"}
               capabilities={capabilities}
               initialKind={kindFor(harness)}
-              triggerLabel={`Add a ${HARNESS_LABELS[harness]} subscription`}
+              triggerLabel={
+                KIND_INFO[kindFor(harness)].billing === "subscription"
+                  ? `Add a ${HARNESS_LABELS[harness]} subscription`
+                  : `Add an ${HARNESS_LABELS[harness]} key`
+              }
               triggerVariant="outline"
             />
           }

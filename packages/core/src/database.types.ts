@@ -1748,7 +1748,7 @@ export type Database = {
           scope: string;
           machine_id: string;
           github_enabled: boolean;
-          harness: string;
+          harness: Database["public"]["Enums"]["harness"];
           credential_id: string | null;
           credential_version: number | null;
         };
@@ -1756,7 +1756,7 @@ export type Database = {
           scope: string;
           machine_id: string;
           github_enabled?: boolean;
-          harness: string;
+          harness: Database["public"]["Enums"]["harness"];
           credential_id?: string | null;
           credential_version?: number | null;
         };
@@ -1764,7 +1764,7 @@ export type Database = {
           scope?: string;
           machine_id?: string;
           github_enabled?: boolean;
-          harness?: string;
+          harness?: Database["public"]["Enums"]["harness"];
           credential_id?: string | null;
           credential_version?: number | null;
         };
@@ -3552,6 +3552,7 @@ export type Database = {
           stop_generation: number;
           preservation_stop_generation: number | null;
           application_secret_tainted: boolean;
+          boat_runtime: boolean;
         };
         Insert: {
           id?: string;
@@ -3605,6 +3606,7 @@ export type Database = {
           stop_generation?: number;
           preservation_stop_generation?: number | null;
           application_secret_tainted?: boolean;
+          boat_runtime?: boolean;
         };
         Update: {
           id?: string;
@@ -3658,6 +3660,7 @@ export type Database = {
           stop_generation?: number;
           preservation_stop_generation?: number | null;
           application_secret_tainted?: boolean;
+          boat_runtime?: boolean;
         };
         Relationships: [
           {
@@ -3827,9 +3830,17 @@ export type Database = {
       can_open_sandbox: { Args: { target_org: string; target_owner: string }; Returns: boolean };
     };
     Enums: {
-      credential_kind: "anthropic" | "openai" | "claude_oauth" | "boat" | "codex_auth" | "modal" | "skillpack";
+      credential_kind:
+        | "anthropic"
+        | "openai"
+        | "claude_oauth"
+        | "boat"
+        | "codex_auth"
+        | "modal"
+        | "skillpack"
+        | "opencode";
       credential_scope: "user" | "org";
-      harness: "claude" | "codex";
+      harness: "claude" | "codex" | "opencode";
       member_role: "admin" | "member";
       notify_status: "finished" | "failed";
       sandbox_provider: "boat" | "modal";

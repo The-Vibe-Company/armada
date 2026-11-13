@@ -648,6 +648,11 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
   };
   const live = async (sandboxId: string, allowUnbound = false) => {
     const found = await visible(sandboxId);
+    if (found.boatRuntime && !allowUnbound)
+      throw new ToolError(
+        "unsupported",
+        "Experimental runtime supports initial launch, reads and compute stop/delete only.",
+      );
     if (found.status === "deleted") throw new ToolError("conflict", `Sandbox '${sandboxId}' is deleted.`);
     if (!allowUnbound && found.provider === "modal" && !found.credentialId)
       throw new VaultError("credential_binding_required", CREDENTIAL_BINDING_GUIDANCE);
@@ -1463,7 +1468,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     },
     async (args) => {
       const { sandbox: found, provider } = await live(args.id);
-      const delivery = provider.capabilities[found.harness].steer;
+      const delivery = provider.capabilities[found.harness]?.steer ?? "none";
       if (delivery === "none") throw new ToolError("unsupported", `${found.harness} cannot be steered here.`);
       if (delivery === "restart" && found.credentialId)
         await context.launchCredentials.resolve(
@@ -1546,7 +1551,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     },
     async (args) => {
       const { sandbox: found, provider } = await live(args.id);
-      if (!provider.capabilities[found.harness].interrupt) {
+      if (!provider.capabilities[found.harness]?.interrupt) {
         throw new ToolError("unsupported", `${found.harness} cannot be interrupted here.`);
       }
       await provider

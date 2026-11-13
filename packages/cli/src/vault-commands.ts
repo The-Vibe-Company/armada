@@ -10,6 +10,7 @@ import {
   parseCredentialKind,
   parseCredentialValue,
   parseModelPriceOverrides,
+  parseOpenCodeEndpoint,
   parseRole,
   VaultError,
 } from "@armada/core";
@@ -167,6 +168,7 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
     "--id",
     "--expected-version",
     "--base-url",
+    "--models",
     "--api-version",
     "--endpoint-auth",
     ...priceOptions,
@@ -176,11 +178,12 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
   if (
     sub !== "set" &&
     (args.options.has("--base-url") ||
+      args.options.has("--models") ||
       args.options.has("--api-version") ||
       args.options.has("--endpoint-auth") ||
       priceOptions.some((name) => args.options.has(name)))
   )
-    throw usage("Endpoint options are only supported by creds set openai or anthropic.");
+    throw usage("Endpoint options are only supported by creds set openai, anthropic or opencode.");
   switch (sub) {
     case "login":
     case "import": {
@@ -287,33 +290,49 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
       const kind = parseCredentialKind(name ?? "");
       const baseUrl = single(args, "--base-url");
       const apiVersion = single(args, "--api-version");
+      if (kind === "opencode" && baseUrl !== undefined && !single(args, "--models"))
+        throw usage("OpenCode custom endpoints require --models with upstream model IDs.");
+      if (single(args, "--models") !== undefined && (kind !== "opencode" || baseUrl === undefined))
+        throw usage("--models requires creds set opencode --base-url.");
       const endpointAuth = single(args, "--endpoint-auth");
       if (apiVersion !== undefined && baseUrl === undefined) throw usage("--api-version requires --base-url.");
       if (endpointAuth !== undefined && (baseUrl === undefined || kind !== "anthropic"))
         throw usage("--endpoint-auth requires creds set anthropic --base-url.");
       if (apiVersion !== undefined && kind !== "openai") throw usage("--api-version supports openai (Codex) only.");
-      if (baseUrl !== undefined && kind !== "openai" && kind !== "anthropic")
-        throw usage("--base-url supports openai (Codex) or anthropic (Claude Code) only.");
+      if (baseUrl !== undefined && kind !== "openai" && kind !== "anthropic" && kind !== "opencode")
+        throw usage("--base-url supports openai (Codex), anthropic (Claude Code) or opencode.");
       if (baseUrl !== undefined && !single(args, "--name") && !single(args, "--id"))
         throw usage("A custom endpoint requires --name to create an account or --id to replace one.");
-      let endpoint: ReturnType<typeof parseCodexEndpoint> | ReturnType<typeof parseClaudeEndpoint> | undefined;
+      let endpoint:
+        | ReturnType<typeof parseCodexEndpoint>
+        | ReturnType<typeof parseClaudeEndpoint>
+        | ReturnType<typeof parseOpenCodeEndpoint>
+        | undefined;
       if (baseUrl !== undefined) {
         try {
           endpoint =
-            kind === "anthropic"
-              ? parseClaudeEndpoint({ version: 1, baseUrl, auth: endpointAuth ?? "bearer" })
-              : parseCodexEndpoint({ version: 1, baseUrl, ...(apiVersion !== undefined ? { apiVersion } : {}) });
+            kind === "opencode"
+              ? parseOpenCodeEndpoint({
+                  version: 1,
+                  baseUrl,
+                  models: (single(args, "--models") ?? "").split(",").map((id) => id.trim()),
+                })
+              : kind === "anthropic"
+                ? parseClaudeEndpoint({ version: 1, baseUrl, auth: endpointAuth ?? "bearer" })
+                : parseCodexEndpoint({ version: 1, baseUrl, ...(apiVersion !== undefined ? { apiVersion } : {}) });
         } catch {
           throw usage(
-            kind === "anthropic"
-              ? "Invalid Claude gateway. Use an HTTPS base URL without URL credentials, query or fragment, and --endpoint-auth bearer or api-key."
-              : "Invalid Codex endpoint. Use an HTTPS Responses base URL without URL credentials, query or fragment.",
+            kind === "opencode"
+              ? "Invalid OpenCode endpoint. Use an HTTPS base URL and comma-separated --models upstream model IDs."
+              : kind === "anthropic"
+                ? "Invalid Claude gateway. Use an HTTPS base URL without URL credentials, query or fragment, and --endpoint-auth bearer or api-key."
+                : "Invalid Codex endpoint. Use an HTTPS Responses base URL without URL credentials, query or fragment.",
           );
         }
       }
       let prices: ReturnType<typeof parseModelPriceOverrides> | undefined;
       if (priceOptions.some((name) => args.options.has(name))) {
-        if (!endpoint) throw usage("Price options require creds set openai or anthropic --base-url.");
+        if (!endpoint) throw usage("Price options require creds set openai, anthropic or opencode --base-url.");
         const model = single(args, "--price-model");
         const input = single(args, "--price-input");
         const output = single(args, "--price-output");
@@ -353,9 +372,11 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
       }
       if (endpoint)
         io.auth.out(
-          kind === "anthropic"
-            ? "Custom Claude gateway: Modal only; supports Claude models only and requires Anthropic Messages with streaming/tool use.\n"
-            : "Custom Codex endpoint: Modal only; requires the Responses API (not chat completions).\n",
+          kind === "opencode"
+            ? "Custom OpenCode endpoint: Modal only; use --model armada/<upstream-model>.\n"
+            : kind === "anthropic"
+              ? "Custom Claude gateway: Modal only; supports Claude models only and requires Anthropic Messages with streaming/tool use.\n"
+              : "Custom Codex endpoint: Modal only; requires the Responses API (not chat completions).\n",
         );
       io.auth.out(
         `Stored ${credentialName(kind)} for ${scope === "org" ? `org ${org}` : "you"}, encrypted. It is never shown again.\n`,

@@ -25,6 +25,8 @@ test("native buckets are disjoint for Codex; reasoning is not charged twice; dec
   expect(priceTurn(turn, "codex", override(), "30m").usd).toBe("0.00467");
   // Explicit connection rates are flat across cache lifetimes; no vendor TTL is guessed.
   expect(priceTurn(turn, "codex", override()).usd).toBe("0.00467");
+  // OpenCode exports uncached input, unlike Codex's inclusive native input count.
+  expect(priceTurn(turn, "opencode", override()).usd).toBe("0.00527");
   const claude = { ...turn, model: "claude-sonnet-5-5" };
   const snapshot = resolvePrice({ provider: "anthropic", model: claude.model, customEndpoint: false });
   // Claude input excludes reads/writes: 1000*2 + 200*.1 + 100*2.5 + 300*10.
@@ -118,6 +120,13 @@ test("admission books freeze exact provider rates and basis without guessing cus
   if (!rate) throw Error("Missing public price fixture");
   rate.rates.input = "999";
   expect(createUsagePricingContext(input).prices["claude-sonnet-5-5"]?.rates.input).toBe("2");
+  const opencode = createUsagePricingContext({
+    harness: "opencode",
+    credentialKind: "opencode",
+    customEndpoint: false,
+  });
+  expect(opencode.prices).toEqual({});
+  expect(opencode.basis).toBe("api_equivalent");
   const custom = createUsagePricingContext({
     harness: "codex",
     credentialKind: "openai",

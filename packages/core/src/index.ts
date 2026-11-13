@@ -144,7 +144,14 @@ export {
   splitRepoArg,
 } from "./golden-config.ts";
 export { createSqlGoldenStore, GOLDEN_SELECT, type GoldenRow, mapGoldenRow, type Sql } from "./golden-store.ts";
-export { HARNESS_CAPABILITIES, HARNESS_CATALOG, isHarness, mapHarnesses } from "./harnesses.ts";
+export {
+  HARNESS_CAPABILITIES,
+  HARNESS_CATALOG,
+  harnessForCredential,
+  isHarness,
+  MODEL_CREDENTIAL_KINDS,
+  mapHarnesses,
+} from "./harnesses.ts";
 export { type HelperNegotiation, type HelperReceipt, type HelperRefusal, negotiateHelper } from "./helper.ts";
 export * from "./invitations.ts";
 export {
@@ -201,6 +208,7 @@ export {
   type ModelOption,
   resolveModelChoice,
 } from "./models.ts";
+export { OPENCODE_ENDPOINT_ENV, type OpenCodeEndpoint, parseOpenCodeEndpoint } from "./opencode-endpoint.ts";
 export * from "./orchestrator.ts";
 export type {
   OttoCompleteness,

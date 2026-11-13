@@ -852,7 +852,7 @@ async function dispatch(
       async () => {
         const result = await provider.testModelConnection!({
           sandboxId: found.providerSandboxId,
-          harness: found.harness,
+          harness,
           model,
         });
         if (!isModelConnectionTestResult(result))
@@ -1382,6 +1382,7 @@ async function readLogs(
   cursor: string | null;
   hasMore: boolean;
   settled: boolean;
+  source?: "armada-runtime";
   olderCursor?: string;
 }> {
   if (!options.logs) throw new VaultError("unavailable", "Sandbox logs are not configured on the server.");
@@ -1401,6 +1402,7 @@ async function readLogs(
   const maxPages = 100;
   let cursor = optional(body, "cursor");
   let hasMore = false;
+  let source: "armada-runtime" | undefined;
   const events: Awaited<ReturnType<Provider["events"]>>["events"] = [];
   for (let pageNumber = 0; pageNumber < (all ? maxPages : 1); pageNumber += 1) {
     const page = await measured(options, "events", () =>
@@ -1414,6 +1416,7 @@ async function readLogs(
         ...(optional(body, "conversationId") ? { conversationId: optional(body, "conversationId")! } : {}),
       }),
     );
+    if (page.source) source = page.source;
     olderCursor = page.olderCursor;
     events.push(...page.events);
     hasMore = page.hasMore;
@@ -1436,6 +1439,7 @@ async function readLogs(
         )
       : null;
   return {
+    ...(source ? { source } : {}),
     ...(olderCursor ? { olderCursor } : {}),
     events: dedupe(events).filter((event) => !isPrivateModelEvent(event)),
     cursor: cursor ?? null,

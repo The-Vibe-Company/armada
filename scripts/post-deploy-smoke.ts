@@ -1,3 +1,4 @@
+import { HARNESS_CATALOG, type Harness, isHarness } from "../packages/core/src/harnesses.ts";
 /** API-only smoke; ARMADA_SMOKE=create_real_compute explicitly authorizes compute.
  * ARMADA_URL must be an HTTPS origin; ARMADA_TOKEN is the only credential.
  * ARMADA_SMOKE_CASES is a JSON array of {provider, harness, org, golden, model,
@@ -79,7 +80,7 @@ function fail(code: Code): never {
 }
 interface SmokeCase {
   provider: "boat" | "modal";
-  harness: "claude" | "codex";
+  harness: Harness;
   org: string;
   golden: string;
   model: string;
@@ -263,7 +264,8 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
         !item ||
         typeof item !== "object" ||
         (item.provider !== "boat" && item.provider !== "modal") ||
-        (item.harness !== "claude" && item.harness !== "codex") ||
+        !isHarness(item.harness) ||
+        (item.provider === "boat" && HARNESS_CATALOG[item.harness as Harness].boatProvider === null) ||
         ["org", "golden", "model", "modelAccountId", "repo"].some(
           (key) => typeof item[key] !== "string" || !item[key].trim(),
         ) ||

@@ -6,7 +6,8 @@ import type { HarnessCapabilities } from "./provider.ts";
 interface HarnessDescriptor extends HarnessModels {
   credentialKinds: readonly CredentialKind[];
   label: string;
-  boatProvider: string;
+  boatProvider: string | null;
+  skillpackTool: string;
   capabilities: HarnessCapabilities;
 }
 
@@ -27,6 +28,7 @@ const CODEX_EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultra"] as cons
 export const HARNESS_CATALOG = {
   claude: {
     label: "Claude Code",
+    skillpackTool: "claude-code",
     credentialKinds: ["claude_oauth", "anthropic"],
     boatProvider: "claude-code",
     capabilities: { ...COMMON_CAPABILITIES, steer: "native" },
@@ -40,6 +42,7 @@ export const HARNESS_CATALOG = {
   },
   codex: {
     label: "Codex",
+    skillpackTool: "codex",
     credentialKinds: ["openai", "codex_auth"],
     boatProvider: "codex",
     capabilities: { ...COMMON_CAPABILITIES, steer: "restart" },
@@ -53,6 +56,17 @@ export const HARNESS_CATALOG = {
       { id: "gpt-6-sol", label: "GPT-6 Sol", reasoningEfforts: CODEX_EFFORTS },
       { id: "gpt-6-luna", label: "GPT-6 Luna", reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
     ],
+  },
+  opencode: {
+    label: "OpenCode",
+    skillpackTool: "opencode",
+    credentialKinds: ["opencode"],
+    boatProvider: null,
+    capabilities: { ...COMMON_CAPABILITIES, steer: "restart", fast: false },
+    defaultModel: "armada/deepseek-flash",
+    defaultReasoningEffort: "default",
+    reasoningEfforts: ["default"],
+    models: [{ id: "armada/deepseek-flash", label: "DeepSeek Flash (custom endpoint)", reasoningEfforts: ["default"] }],
   },
 } as const satisfies Record<string, HarnessDescriptor>;
 
@@ -75,4 +89,13 @@ export const HARNESS_CAPABILITIES: Readonly<Record<Harness, HarnessCapabilities>
 /** Validate untrusted harness identifiers while retaining the shared Harness type. */
 export function isHarness(value: unknown): value is Harness {
   return typeof value === "string" && (HARNESSES as readonly string[]).includes(value);
+}
+
+/** Model account classification is derived from the harness catalog, not another credential mapping. */
+export type ModelCredentialKind = (typeof HARNESS_CATALOG)[Harness]["credentialKinds"][number];
+export const MODEL_CREDENTIAL_KINDS: readonly ModelCredentialKind[] = HARNESSES.flatMap((id) => [
+  ...HARNESS_CATALOG[id].credentialKinds,
+]);
+export function harnessForCredential(kind: CredentialKind): Harness | undefined {
+  return HARNESSES.find((id) => (HARNESS_CATALOG[id].credentialKinds as readonly CredentialKind[]).includes(kind));
 }
