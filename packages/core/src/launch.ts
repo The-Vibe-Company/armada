@@ -26,7 +26,7 @@ import { type HelperNegotiation, negotiateHelper } from "./helper.ts";
 import { LaunchError, type LaunchInitializationStage } from "./launch-error.ts";
 import { type MachineSize, resolveMachineSize } from "./machine-size.ts";
 import { type ModelChoice, resolveModelChoice } from "./models.ts";
-import { OPENCODE_ENDPOINT_ENV, parseOpenCodeEndpoint } from "./opencode-endpoint.ts";
+import { OPENCODE_CONNECTION_PROVIDER, OPENCODE_ENDPOINT_ENV, parseOpenCodeEndpoint } from "./opencode-endpoint.ts";
 import { PrivateSkillError } from "./private-skill-error.ts";
 import { isNonMutatingProviderRefusal, type Provider, ProviderError } from "./provider.ts";
 import { resolveRepositoryDir } from "./repository-context.ts";
@@ -360,8 +360,11 @@ export async function launchSandbox(
     if (configured) {
       const endpoint = parseOpenCodeEndpoint(JSON.parse(configured));
       const wanted = choice.model;
-      if (!endpoint.models.some((id) => wanted === `armada/${id}`))
-        throw new LaunchError("invalid_request", "Choose an armada/<model> configured on the OpenCode connection.");
+      if (!endpoint.models.some((id) => wanted === `${OPENCODE_CONNECTION_PROVIDER}/${id}`))
+        throw new LaunchError(
+          "invalid_request",
+          `Choose an ${OPENCODE_CONNECTION_PROVIDER}/<model> configured on the OpenCode connection.`,
+        );
     } else if (!choice.model.startsWith("opencode/") && !choice.model.startsWith("opencode-go/")) {
       throw new LaunchError(
         "invalid_request",

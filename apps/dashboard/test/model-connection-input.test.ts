@@ -4,6 +4,7 @@ import { catalogPriceLabel, visibleCatalogModels } from "../src/lib/connection-p
 import {
   customAccountValue,
   presetAccountValue,
+  presetReplacementValue,
   replacementClaudeAccountValue,
   replacementCodexAccountValue,
   replacementOpenCodeAccountValue,
@@ -225,4 +226,17 @@ test("OpenCode replacement names its destination: a plan key never silently repl
   const refused = replacementOpenCodeAccountValue(form);
   expect(refused.ok).toBe(false);
   expect(JSON.stringify(refused)).not.toContain(key);
+});
+
+test("a provider preset replaces only an account of its own kind", () => {
+  const form = new FormData();
+  form.set("preset", "azure-foundry");
+  form.set("baseUrl", "https://resource.services.ai.azure.com/openai/v1");
+  form.set("value", randomUUID());
+  form.set("customModels", "my-deployment");
+  expect(presetReplacementValue(form, "openai").ok).toBe(true);
+  expect(presetReplacementValue(form, "opencode")).toEqual({
+    ok: false,
+    error: "That provider cannot replace this account.",
+  });
 });

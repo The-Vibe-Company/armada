@@ -1313,8 +1313,8 @@ export function AddAccountDialog({
                   <p className="text-sm">
                     <span className="font-medium">{subscription ? "Sign in on your machine" : "Paste the key"}.</span>{" "}
                     <span className="text-muted-foreground">
-                      {preset?.models === "choose"
-                        ? preset.keyHint
+                      {preset?.models === "choose" || kind === "opencode"
+                        ? (preset?.keyHint ?? info.hint)
                         : kind === "openai"
                           ? "From OpenAI or your gateway. Billed per token."
                           : kind === "anthropic"

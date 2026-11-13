@@ -134,6 +134,17 @@ export function presetAccountValue(
   }
 }
 
+/** A replacement re-entered from a provider preset must keep the account's kind: a client cannot change it. */
+export function presetReplacementValue(
+  data: FormData,
+  kind: AccountKind,
+): { ok: true; value: string } | { ok: false; error: string } {
+  const result = presetAccountValue(data);
+  if (!result.ok) return result;
+  if (result.kind !== kind) return { ok: false, error: "That provider cannot replace this account." };
+  return { ok: true, value: result.value };
+}
+
 /** A sealed OpenCode connection's address and models are not returned: a plain key needs an explicit plan choice. */
 export function replacementOpenCodeAccountValue(
   data: FormData,

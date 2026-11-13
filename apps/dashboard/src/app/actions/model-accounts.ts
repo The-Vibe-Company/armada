@@ -21,6 +21,7 @@ import { connectionTestOutcome, matchesConnectionTestSandbox } from "@/lib/model
 import {
   customAccountValue,
   presetAccountValue,
+  presetReplacementValue,
   replacementClaudeAccountValue,
   replacementCodexAccountValue,
   replacementOpenCodeAccountValue,
@@ -137,8 +138,7 @@ export async function replaceAccountSecret(_previous: ActionResult | null, data:
   const name = checkAccountName(data.get("name"));
   if (!name.ok) return fail(name.error);
   // A provider preset re-enters the whole connection; it must keep the account's kind.
-  const fromPreset = formString(data, "preset") ? presetAccountValue(data) : null;
-  if (fromPreset?.ok && fromPreset.kind !== kind) return fail("That provider cannot replace this account.");
+  const fromPreset = formString(data, "preset") ? presetReplacementValue(data, kind as AccountKind) : null;
   const value =
     fromPreset ??
     (kind === "openai"
