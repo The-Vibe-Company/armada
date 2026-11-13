@@ -461,16 +461,31 @@ const productionBoatEnv = {
 };
 const productionBoatArgs = ["--production-boat", "--only", "boat"];
 
-function productionBoatFixture(fault?: "foreign_provider" | "ambiguous_launch" | "delete_failed") {
+function productionBoatFixture(
+  fault?:
+    | "foreign_provider"
+    | "ambiguous_launch"
+    | "delete_failed"
+    | "slow_turn"
+    | "turn_timeout"
+    | "stop_settling"
+    | "late_success"
+    | "deadline_exhausted",
+) {
   const calls: { path: string; body: Record<string, unknown> }[] = [];
   const lines: string[] = [];
   let status = "ready";
   let memory = "";
   const turns: string[] = [];
   let journalWrites = 0;
+  let clock = 0;
+  let reads = 0;
+  let deleteAttempts = 0;
   const io = {
-    now: () => 0,
-    sleep: async () => {},
+    now: () => clock,
+    sleep: async (ms: number) => {
+      clock += ms;
+    },
     out: (line: string) => lines.push(line),
     recordSandbox: async () => {
       journalWrites++;
@@ -505,6 +520,7 @@ function productionBoatFixture(fault?: "foreign_provider" | "ambiguous_launch" |
             ],
           });
         case "sandbox/launch":
+          if (fault === "deadline_exhausted") clock += 35 * 60_000;
           expect(body.provider).toBe("boat");
           if (fault === "ambiguous_launch") throw new Error("lost launch acknowledgement");
           return Response.json({
@@ -517,9 +533,19 @@ function productionBoatFixture(fault?: "foreign_provider" | "ambiguous_launch" |
           turns.push(`turn-${turns.length + 1}`);
           return Response.json({ promptId: turns.at(-1) });
         case "logs/read":
+          if (fault === "late_success") clock += 601_000;
+          if (fault === "slow_turn" || fault === "turn_timeout") {
+            clock += 2000;
+            reads++;
+            if (fault === "turn_timeout" || reads <= 130)
+              return Response.json({
+                events: [{ kind: "prompt", promptId: turns.at(-1), status: "running", at: 1_000_000 }],
+              });
+          }
           return Response.json({
             events: [
-              { kind: "prompt", promptId: turns.at(-1), status: "finished" },
+              { kind: "prompt", promptId: turns.at(-1), status: "running", at: 1_000_000 },
+              { kind: "prompt", promptId: turns.at(-1), status: "finished", at: 1_180_000 },
               { kind: "message", promptId: turns.at(-1), text: `SMOKE_OK ${memory}` },
             ],
           });
@@ -545,6 +571,12 @@ function productionBoatFixture(fault?: "foreign_provider" | "ambiguous_launch" |
           status = "stopped";
           return Response.json({ status });
         case "sandbox/delete":
+          deleteAttempts++;
+          if (fault === "stop_settling" && deleteAttempts <= 2)
+            return Response.json(
+              { error: { code: "sandbox_not_ready", message: "Stop is still settling." } },
+              { status: 409 },
+            );
           if (fault === "delete_failed") return Response.json({ error: { code: "forbidden" } }, { status: 403 });
           status = "deleted";
           return Response.json({ id: "new-production-boat", status });
@@ -680,3 +712,42 @@ test("production Boat preserves capability discovery and feature-filtered probes
   expect(filtered.calls.map((call) => call.path)).toContain("sandbox/delete");
   expect(filtered.journalWrites()).toBe(0);
 });
+
+// Fake time crosses the old 120-read ceiling without sleeping or real compute.
+for (const fault of ["slow_turn", "turn_timeout", "stop_settling", "late_success", "deadline_exhausted"] as const) {
+  test(`parity turn observation and terminal cleanup: ${fault}`, async () => {
+    const fake = productionBoatFixture(fault);
+    const passed = await runProductionBoat(productionBoatEnv, fake.io, [...productionBoatArgs, "--feature", "send"]);
+    expect(passed).toBe(!["turn_timeout", "late_success", "deadline_exhausted"].includes(fault));
+    const report = JSON.parse(fake.lines.find((line) => line.startsWith('{"step":"provider_parity"')) ?? "{}");
+    expect(report.features.cleanup.boat.status).toBe("pass");
+    const cleanup = JSON.parse(fake.lines.find((line) => line.startsWith('{"step":"parity_cleanup"')) ?? "{}");
+    expect(cleanup.deleted).toBe(true);
+    if (fault === "slow_turn") {
+      const timing = JSON.parse(fake.lines.find((line) => line.startsWith('{"step":"parity_turn"')) ?? "{}");
+      expect(timing.polls).toBe(131);
+      expect(timing.serverElapsedMs).toBe(180_000);
+      expect(timing.elapsedMs).toBeGreaterThan(180_000);
+    } else if (fault === "turn_timeout") {
+      expect(report.features.send.boat.diagnostic).toMatchObject({
+        code: "poll_limit_exceeded",
+        polls: 200,
+        elapsedMs: 600_000,
+        serverElapsedMs: null,
+      });
+      expect(fake.lines.at(-1)).toContain("polls=200");
+      expect(fake.lines.at(-1)).toContain("elapsedMs=600000");
+    } else if (fault === "late_success" || fault === "deadline_exhausted") {
+      expect(report.features.send.boat.diagnostic.code).toBe("poll_limit_exceeded");
+      expect(report.features.send.boat.diagnostic.polls).toBe(fault === "late_success" ? 1 : 0);
+    } else {
+      const paths = fake.calls.map((call) => call.path);
+      const firstDelete = paths.indexOf("sandbox/delete");
+      expect(paths[firstDelete - 1]).toBe("sandbox/status");
+      expect(paths.filter((path) => path === "sandbox/delete")).toHaveLength(3);
+      expect(paths.filter((path) => path === "sandbox/stop")).toHaveLength(1);
+      const requests = fake.calls.filter((call) => call.path === "sandbox/delete").map((call) => call.body.request_id);
+      expect(new Set(requests).size).toBe(1);
+    }
+  });
+}
