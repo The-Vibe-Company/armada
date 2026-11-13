@@ -115,7 +115,7 @@ export interface LaunchOptionsResponse {
 }
 
 /** Why a host reports a failed machine operation, when the person can act on it (#1507). */
-export const DOCKER_JOB_FAILURE_REASONS = ["image_unavailable"] as const;
+export const DOCKER_JOB_FAILURE_REASONS = ["image_unavailable", "snapshot_build_failed"] as const;
 export type DockerJobFailureReason = (typeof DOCKER_JOB_FAILURE_REASONS)[number];
 /** What a sandbox and its launch say when its host could not fetch the image. */
 export const DOCKER_IMAGE_UNAVAILABLE_MESSAGE =
@@ -212,6 +212,8 @@ export interface DockerSnapshotRecord {
   definitionHash: string;
   status: (typeof DOCKER_SNAPSHOT_STATUSES)[number];
   image: string | null;
+  /** Safe build diagnostic; absent on older servers. Never contains command output. */
+  failureReason?: string | null;
   config: import("./golden-config.ts").GoldenConfig;
   createdAt: string;
 }
