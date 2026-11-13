@@ -1,13 +1,84 @@
 import { expect, test } from "bun:test";
+import type { Sql } from "@armada/core";
 import { createBoatProvider } from "@armada/provider-boat";
 import { sandbox } from "../../provider-boat/test/support.ts";
 import { createSqlData } from "../src/data.ts";
+import { createDockerHostStore } from "../src/docker-host-store.ts";
+import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
 import { sandboxActivity } from "../src/sandbox-activity.ts";
 import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
-import { bunLikeSql } from "./support.ts";
+import { bunLikeSql, ENCRYPTION_KEY } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
+
+// Private Docker reservations have their own mailbox/local TTL owner, not a full
+// Provider adapter. The generic worker must neither claim nor diagnose them.
+test("private Docker reservations remain untouched while the generic lifecycle reconciles a coexisting Boat candidate", async () => {
+  const { db, people } = await sharedDatabase();
+  const sql: Sql = {
+    query: (q, v) => db.query(q, v),
+    transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
+  };
+  const actor = { userId: people.owner, orgId: people.org };
+  const hosts = createDockerHostStore(sql, ENCRYPTION_KEY);
+  const registration = await hosts.issueRegistration({ userId: people.admin, orgId: people.org });
+  const host = await hosts.exchangeRegistration(registration.registrationToken, crypto.randomUUID());
+  const credential = (
+    await db.query<{ id: string }>(
+      `select id from public.credentials where scope='org' and owner_id=$1 and kind='openai'`,
+      [people.org],
+    )
+  ).rows[0];
+  if (!credential) throw Error("missing model account");
+  const docker = await createDockerSandboxService(sql, ENCRYPTION_KEY, { enabled: true }).reserve(actor, {
+    requestId: crypto.randomUUID(),
+    hostId: host.hostId,
+    image: `worker@sha256:${"a".repeat(64)}`,
+    credentialId: credential.id,
+    credentialVersion: 1,
+  });
+  const golden = (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0];
+  if (!golden) throw Error("missing golden");
+  const boatId = crypto.randomUUID();
+  await db.query(
+    `insert into public.sandboxes(id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status)
+     values($1,'boat','bx_23456789',$2,$3,$4,'claude','running')`,
+    [boatId, golden.id, people.org, people.owner],
+  );
+  // Docker is the oldest due candidate: omitting the exclusion really claims it.
+  await db.query(`update public.sandboxes set reconcile_after=now()-interval '2 minutes' where id=$1`, [docker.id]);
+  await db.query(`update public.sandboxes set reconcile_after=now()-interval '1 minute' where id=$1`, [boatId]);
+  const readDocker = async () =>
+    (
+      await db.query(
+        `select status,reconcile_lease,reconcile_lease_until,reconcile_after,lifecycle_generation,
+     stop_requested_at,last_observed_at,lifecycle_error from public.sandboxes where id=$1`,
+        [docker.id],
+      )
+    ).rows[0];
+  const before = await readDocker(),
+    resolutions: string[] = [];
+  const provider = createBoatProvider({
+    apiKey: "test-key",
+    fetch: (async (_input: Request | string | URL) =>
+      Response.json({ ok: true, sandbox: sandbox({ state: "archived" }) })) as typeof fetch,
+  });
+  const worker = createSandboxLifecycle(sql, async (id) => {
+    resolutions.push(id);
+    if (id === docker.id) throw Error("Private Docker has no generic golden-backed provider");
+    return provider;
+  });
+  expect(await worker.reconcileOne()).toBe(true);
+  expect(resolutions).toEqual([boatId]);
+  expect((await db.query(`select status from public.sandboxes where id=$1`, [boatId])).rows[0]).toEqual({
+    status: "stopped",
+  });
+  expect(await readDocker()).toEqual(before);
+  expect(await worker.reconcileOne()).toBe(false);
+  expect(await readDocker()).toEqual(before);
+  await worker.drain();
+});
 
 test("an expired observation lease cannot publish a delayed terminal result", async () => {
   const { db, people } = await sharedDatabase();

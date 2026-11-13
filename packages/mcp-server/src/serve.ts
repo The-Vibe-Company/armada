@@ -26,8 +26,12 @@ import { createSqlData } from "./data.ts";
 import { retryDatabaseBoot } from "./database-boot.ts";
 import { createDatabaseReadiness } from "./database-readiness.ts";
 import { requireDatabaseSchema } from "./database-schema.ts";
+import { createDockerBootstrapService } from "./docker-bootstrap-service.ts";
 import { createDockerHostRoutes } from "./docker-host-routes.ts";
 import { createDockerHostStore } from "./docker-host-store.ts";
+import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
+import { createDockerSandboxRoutes } from "./docker-sandbox-routes.ts";
+import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import { createGitHubAccountApi } from "./github-account.ts";
 import { configureBoatGitHub } from "./github-boat.ts";
 import { createHandler, providerRegistry, type Route } from "./http.ts";
@@ -295,6 +299,34 @@ export async function startServer(
       modelAuth,
     });
   }
+  // Docker placement is a separate, explicit API preview. Host polling remains
+  // enabled independently so disabling new placement does not strand cleanup.
+  const dockerEnabled = env.ARMADA_DOCKER_HOSTS === "1" && env.ARMADA_DOCKER_PLACEMENT === "1";
+  let dockerBootstrap: ReturnType<typeof createDockerBootstrapService> | undefined;
+  if (dockerEnabled) {
+    try {
+      if (!env.ARMADA_DOCKER_RUNTIME_MANIFEST) throw Error();
+      const dockerManifest = await Bun.file(env.ARMADA_DOCKER_RUNTIME_MANIFEST).json();
+      if (
+        dockerManifest?.protocol !== 1 ||
+        dockerManifest.platform !== "linux" ||
+        dockerManifest.libc !== "glibc" ||
+        !["x64", "arm64"].includes(dockerManifest.architecture)
+      )
+        throw Error();
+      dockerBootstrap = createDockerBootstrapService(sql, config.encryptionKey, {
+        enabled: true,
+        serverUrl: config.publicUrl,
+        manifest: dockerManifest,
+        architecture: dockerManifest.architecture,
+        // Plain-image launches resolve only the model account, not GitHub or host credentials.
+        credentials: launchCredentials(store, config.encryptionKey, undefined, modelAuth),
+        modelAuth,
+      });
+    } catch {
+      throw Error("Invalid Docker runtime deployment manifest.");
+    }
+  }
   const runtimeResume = createRuntimeResume(
     sql,
     config.encryptionKey,
@@ -438,6 +470,19 @@ export async function startServer(
     routes: [
       ...(env.ARMADA_DOCKER_HOSTS === "1"
         ? [
+            createDockerSandboxRoutes(
+              {
+                sandboxes: createDockerSandboxService(sql, config.encryptionKey, { enabled: dockerEnabled }),
+                ...(dockerBootstrap ? { bootstrap: dockerBootstrap } : {}),
+                runtime: createDockerRuntimeLifecycle(sql, config.encryptionKey, { enabled: dockerEnabled }),
+              },
+              (request) =>
+                authenticateCaller(request.headers.get("authorization"), {
+                  store: authStore,
+                  supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
+                  now: new Date(),
+                }),
+            ),
             createDockerHostRoutes(createDockerHostStore(sql, config.encryptionKey), (request) =>
               authenticateCaller(request.headers.get("authorization"), {
                 store: authStore,

@@ -47,7 +47,7 @@ export function createSandboxLifecycle(sql: Sql, providerFor: (id: string) => Pr
           `update public.sandboxes s set reconcile_lease=$1::uuid,
           reconcile_lease_until=now()+interval '2 minutes'
         where s.id=(select candidate.id from public.sandboxes candidate
-          where candidate.status not in ('stopped','deleted')
+          where candidate.provider <> 'docker' and candidate.status not in ('stopped','deleted')
           and not exists(select 1 from public.orchestrators parent where parent.sandbox_id=candidate.id)
           and not (candidate.status='failed' and candidate.stopped_at is not null)
           and candidate.reconcile_after<=now()
