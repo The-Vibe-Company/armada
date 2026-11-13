@@ -25,19 +25,26 @@ const host = (overrides: Partial<DockerHost> = {}): DockerHost => ({
   ...overrides,
 });
 
-test("the host list is read whole, and one malformed or duplicated host refuses the answer", () => {
-  expect(parseDockerHostList({ placement: true, hosts: [host()] })).toEqual({ placement: true, hosts: [host()] });
-  expect(parseDockerHostList({ placement: false, hosts: [] })).toEqual({ placement: false, hosts: [] });
-  for (const bad of [
-    null,
-    { hosts: [] },
-    { placement: true, hosts: [host({ state: "unknown" as DockerHost["state"] })] },
-    { placement: true, hosts: [host({ id: "not-a-uuid" })] },
-    { placement: true, hosts: [host({ sandboxes: -1 })] },
-    { placement: true, hosts: [host({ state: "revoked" })] },
-    { placement: true, hosts: [host({ revokedAt: "2026-11-13T09:00:00Z" })] },
-    { placement: true, hosts: [host(), host()] },
+test("one malformed host is left out and counted; a bad envelope or a duplicated host refuses the answer", () => {
+  expect(parseDockerHostList({ placement: true, hosts: [host()] })).toEqual({
+    placement: true,
+    hosts: [host()],
+    skipped: 0,
+  });
+  expect(parseDockerHostList({ placement: false, hosts: [] })).toEqual({ placement: false, hosts: [], skipped: 0 });
+  for (const broken of [
+    host({ state: "unknown" as DockerHost["state"] }),
+    host({ id: "not-a-uuid" }),
+    host({ sandboxes: -1 }),
+    host({ state: "revoked" }),
+    host({ revokedAt: "2026-11-13T09:00:00Z" }),
   ])
+    expect(parseDockerHostList({ placement: true, hosts: [broken, host()] })).toEqual({
+      placement: true,
+      hosts: [host()],
+      skipped: 1,
+    });
+  for (const bad of [null, { hosts: [] }, { placement: true, hosts: [host(), host()] }])
     expect(parseDockerHostList(bad)).toBeNull();
 });
 

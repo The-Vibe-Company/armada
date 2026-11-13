@@ -62,6 +62,13 @@ export default async function HostsPage({ searchParams }: Props) {
       label="Docker hosts"
       rows={rows}
       blockers={[]}
+      notices={
+        hosts.list.skipped > 0 ? (
+          <p role="status" className="text-sm text-muted-foreground">
+            {hosts.list.skipped} {hosts.list.skipped === 1 ? "host" : "hosts"} could not be shown.
+          </p>
+        ) : undefined
+      }
       initial={requested}
       actions={isAdmin ? <AddHostDialog orgId={orgId} /> : undefined}
       footer={

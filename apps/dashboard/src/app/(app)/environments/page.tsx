@@ -175,11 +175,12 @@ export default async function GoldensPage({ searchParams }: Props) {
 
   const now = Date.now();
   // A golden on a provider this page does not know is left out and counted, never a failed page (#1398).
-  const shown = goldens.filter((golden) => isSandboxProvider(golden.provider));
+  const shown = goldens.filter((golden) => {
+    if (isSandboxProvider(golden.provider)) return true;
+    console.error(`Environment row left out: provider does not match the contract (id ${golden.id}).`);
+    return false;
+  });
   const skipped = goldens.length - shown.length;
-  for (const golden of goldens)
-    if (!isSandboxProvider(golden.provider))
-      console.error(`Environment row left out: provider does not match the contract (id ${golden.id}).`);
   const rows = sortResources(shown.map((golden) => environmentRow(golden, context, now)));
   const providerPending = setupPending && selected !== null;
   const blockers = environmentBlockers({ providerPending, rows: rows.map((row) => ({ ...row, state: row.status })) });

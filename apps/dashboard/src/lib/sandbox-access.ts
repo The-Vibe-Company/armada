@@ -8,7 +8,9 @@ export { LISTED_PROVIDER_LABELS, LISTED_PROVIDERS, type ListedProvider } from ".
 
 export type ListedSandbox = Omit<SandboxListMetadata, "provider"> & { provider: ListedProvider };
 
-/** A listed row left out of the page: its id when it has one, and the first contract check it failed. No value. */
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** A listed row left out of the page: its id when it is a UUID, and the first contract check it failed. No value. */
 export type SkippedSandboxRow = { id: string | null; reason: string };
 
 /**
@@ -26,7 +28,7 @@ export function parseSandboxListMetadata(value: unknown): { rows: ListedSandbox[
     if (typeof parsed !== "string") rows.push(parsed);
     else {
       const id = item && typeof item === "object" ? (item as Record<string, unknown>).id : undefined;
-      skipped.push({ id: text(id) && id.length <= 64 ? id : null, reason: parsed });
+      skipped.push({ id: typeof id === "string" && UUID.test(id) ? id : null, reason: parsed });
     }
   }
   return { rows, skipped };
