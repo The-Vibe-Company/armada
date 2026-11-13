@@ -65,6 +65,7 @@ import { useToast } from "@/components/ui/toast";
 import { usePreservedActionForm } from "@/components/use-preserved-action-form";
 import type { ActionResult } from "@/lib/action";
 import {
+  ACCOUNT_KINDS,
   type AccountKind,
   type AccountUsage,
   type AuthCapabilities,
@@ -1130,9 +1131,11 @@ export function AddAccountDialog({
           <DialogHeader>
             <DialogTitle>Add a model account</DialogTitle>
             <DialogDescription>
-              {subscription
-                ? "Sign in with the plan you already pay for. Add as many as you have; each launch names the one it bills."
-                : "Billed per token by the provider. Add as many as you have; each launch names the one it bills."}
+              {kind === "opencode"
+                ? "Use an OpenCode plan/provider key. Create custom endpoint accounts with the Armada CLI."
+                : subscription
+                  ? "Sign in with the plan you already pay for. Add as many as you have; each launch names the one it bills."
+                  : "Billed per token by the provider. Add as many as you have; each launch names the one it bills."}
             </DialogDescription>
           </DialogHeader>
           <form ref={formRef} key={generation} action={formAction} className="min-w-0 space-y-5">
@@ -1147,13 +1150,19 @@ export function AddAccountDialog({
                 aria-label="Connection"
                 className="sm:grid-cols-2"
               >
-                {(["claude_oauth", "codex_auth", "anthropic", "openai"] as const).map((value) => (
+                {ACCOUNT_KINDS.toSorted((a, b) =>
+                  KIND_INFO[a].billing === KIND_INFO[b].billing ? 0 : KIND_INFO[a].billing === "subscription" ? -1 : 1,
+                ).map((value) => (
                   <ChoiceCard
                     key={value}
                     value={value}
                     icon={KIND_INFO[value].billing === "subscription" ? <StarIcon /> : <KeyRoundIcon />}
                     title={KIND_INFO[value].label}
-                    hint={`${KIND_INFO[value].harnessLabel}${KIND_INFO[value].billing === "subscription" ? "" : ", billed per token"}`}
+                    hint={
+                      value === "opencode"
+                        ? "OpenCode plan key or custom endpoint"
+                        : `${KIND_INFO[value].harnessLabel}${KIND_INFO[value].billing === "subscription" ? "" : ", billed per token"}`
+                    }
                   />
                 ))}
               </RadioGroup>
@@ -1315,6 +1324,9 @@ export function HarnessAccounts({
   now: number;
 }) {
   const headingId = `accounts-${harness}`;
+  const subscriptionAvailable = ACCOUNT_KINDS.some(
+    (kind) => KIND_INFO[kind].harness === harness && KIND_INFO[kind].billing === "subscription",
+  );
   return (
     <section className="space-y-3" aria-labelledby={headingId} data-harness={harness}>
       <div className="space-y-0.5">
@@ -1325,8 +1337,16 @@ export function HarnessAccounts({
       </div>
       {accounts.length === 0 && (
         <div data-launch-uses="none">
-          <Empty icon={<KeyRoundIcon />} title={`No ${harnessLabel} subscription yet`} action={emptyAction}>
-            Add one to launch {harnessLabel}. An API key works too.
+          <Empty
+            icon={<KeyRoundIcon />}
+            title={`No ${harnessLabel} ${subscriptionAvailable ? "subscription" : "account"} yet`}
+            action={emptyAction}
+          >
+            {subscriptionAvailable ? (
+              <>Add one to launch {harnessLabel}. An API key works too.</>
+            ) : (
+              <>Add an OpenCode key, or create a custom endpoint account with the Armada CLI. Modal only.</>
+            )}
           </Empty>
         </div>
       )}

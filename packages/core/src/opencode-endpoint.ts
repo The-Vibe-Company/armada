@@ -14,6 +14,7 @@ export function parseOpenCodeEndpoint(value: unknown): OpenCodeEndpoint {
   if (
     row.version !== 1 ||
     typeof row.baseUrl !== "string" ||
+    row.baseUrl.length > 4096 ||
     Object.keys(row).some((key) => !["version", "baseUrl", "models"].includes(key))
   )
     return fail();
@@ -28,7 +29,7 @@ export function parseOpenCodeEndpoint(value: unknown): OpenCodeEndpoint {
     !Array.isArray(row.models) ||
     row.models.length < 1 ||
     row.models.length > 32 ||
-    row.models.some((id) => typeof id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(id))
+    row.models.some((id) => typeof id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:/[\]-]{0,192}$/.test(id))
   )
     return fail();
   return { version: 1, baseUrl: url.toString().replace(/\/+$/, ""), models: [...new Set(row.models as string[])] };

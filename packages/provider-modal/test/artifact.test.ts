@@ -34,6 +34,7 @@ const skipReason =
     for (const [name, version] of [
       ["claude", "2.1.322"],
       ["codex", "0.167.0"],
+      ["opencode", "1.19.5"],
     ]) {
       const native = Bun.spawn([join(dist, name ?? ""), "--version"], {
         stdout: "pipe",

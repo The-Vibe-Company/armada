@@ -28,7 +28,7 @@ describe("launch command", () => {
       }) as unknown as typeof fetch,
     };
     expect((await capture(["launch", "web"], base)).err).toContain("Pass --agent claude or codex");
-    expect((await capture(["launch", "web", "--agent", "opencode"], base)).code).toBe(2);
+    expect((await capture(["launch", "web", "--agent", "not-a-harness"], base)).code).toBe(2);
     expect((await capture(["launch", "web", "--agent", "claude", "--ttl", "soon"], base)).err).toContain(
       "is not a duration",
     );

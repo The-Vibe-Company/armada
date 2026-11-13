@@ -166,7 +166,7 @@ export interface RunnerTransport {
 export interface RunnerDistribution {
   /** Credential-free, reproducibly built tools + dist/main.js. Must not include auth, sessions or SSH host keys. */
   image(client: ModalClient): Promise<Image>;
-  readonly capabilities: Readonly<Record<Harness, HarnessCapabilities>>;
+  readonly capabilities: Readonly<Partial<Record<Harness, HarnessCapabilities>>>;
   /** Starts runner with PRIVATE stdin bootstrap, explicit allowlisted model env, fresh expiring grants.
    * Re-resolve credentials on restore; never persist env/bootstrap in registry or Image layers. */
   /** Freshly allocated golden master or NEW logical fork only, before first bootstrap. Purge inherited

@@ -215,6 +215,54 @@ describe("launch", () => {
     ).rejects.toMatchObject({ code: "invalid_request" });
     expect(forks).toBe(0);
   });
+  test("OpenCode admits only a configured Modal model before allocating compute", async () => {
+    const g = {
+      ...golden("org"),
+      provider: "modal" as const,
+      boatSnapshotId: null,
+      modal: { workspace: "ws", environment: "main", appId: "ap" },
+    };
+    const world = setup({ golden: g });
+    const provider = {
+      ...world.provider,
+      id: "modal" as const,
+      harnesses: ["opencode" as const],
+      capabilities: { opencode: { reasoningEffort: true } },
+    } as unknown as Provider;
+    world.stores.credentials.resolve = async () => ({
+      env: {
+        OPENCODE_API_KEY: "fake-opencode-key",
+        ARMADA_OPENCODE_ENDPOINT: JSON.stringify({
+          version: 1,
+          baseUrl: "https://api.deepseek.com/v1",
+          models: ["deepseek-flash"],
+        }),
+      },
+      secrets: ["fake-opencode-key"],
+      codexAuthJson: false,
+    });
+    await expect(
+      launchSandbox(provider, world.stores, owner, { golden: "web", harness: "opencode", model: "armada/other" }),
+    ).rejects.toMatchObject({ code: "invalid_request" });
+    expect(world.forks).toHaveLength(0);
+    const launched = await launchSandbox(provider, world.stores, owner, {
+      golden: "web",
+      harness: "opencode",
+      model: "armada/deepseek-flash",
+      prompt: "hello",
+    });
+    expect(launched.sandbox.harness).toBe("opencode");
+    expect(world.forks).toHaveLength(1);
+    expect(world.prompts).toContainEqual(
+      expect.objectContaining({
+        harness: "opencode",
+        model: "armada/deepseek-flash",
+        reasoningEffort: "default",
+        text: "hello",
+      }),
+    );
+    expect(JSON.stringify(launched.sandbox)).not.toContain("fake-opencode-key");
+  });
   test("size precedence is override, selected repository, golden, then unchanged legacy fork", async () => {
     for (const [size, repo, policy, effective, source] of [
       ["small", "web", { version: 1, golden: "large", repositories: { web: "xlarge" } }, "small", "override"],

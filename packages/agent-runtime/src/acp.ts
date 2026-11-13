@@ -1,5 +1,7 @@
+import { VERSION } from "@armada/core";
 import { ChildOwner } from "./children.ts";
 import { validateHarnessCwd } from "./cwd.ts";
+import { bounded } from "./deadline.ts";
 import { HarnessError } from "./errors.ts";
 import type { Driver, DriverContext, DriverResumeContext, Turn } from "./protocol.ts";
 
@@ -36,6 +38,9 @@ export class AcpDriver implements Driver {
   }
   private open(c: DriverContext, resumeOnly: boolean): Turn {
     c.signal.throwIfAborted();
+    if (c.request.fast) throw new HarnessError("invalid_harness_protocol");
+    if (c.request.reasoningEffort !== undefined && c.request.reasoningEffort !== "default")
+      throw new HarnessError("invalid_harness_protocol");
     const cwd = validateHarnessCwd(c.request.cwd ?? this.options.cwd);
     const child = this.children.spawn(this.options.executable, this.options.args ?? ["acp"], {
       cwd,
@@ -148,9 +153,15 @@ export class AcpDriver implements Driver {
                 tools: [
                   {
                     id: u.toolCallId,
-                    name: typeof u.title === "string" ? u.title : "tool",
+                    name:
+                      typeof u.title === "string"
+                        ? u.title
+                        : u.sessionUpdate === "tool_call_update"
+                          ? "tool_result"
+                          : "tool",
+                    ...(u.rawInput === undefined ? {} : { input: u.rawInput }),
                     ...(u.status === "completed" || u.status === "failed"
-                      ? { result: { output: u.content ?? null, isError: u.status === "failed" } }
+                      ? { result: { output: u.rawOutput ?? u.content ?? null, isError: u.status === "failed" } }
                       : {}),
                   },
                 ],
@@ -198,7 +209,7 @@ export class AcpDriver implements Driver {
       const initialized = await rpc("initialize", {
         protocolVersion: 1,
         clientCapabilities: {},
-        clientInfo: { name: "armada", version: "1" },
+        clientInfo: { name: "armada", version: VERSION },
       });
       if (initialized.protocolVersion !== 1) throw new HarnessError("invalid_harness_protocol");
       const mcpServers = Object.entries(c.mcp?.servers ?? {}).map(([name, server]) =>
@@ -248,7 +259,7 @@ export class AcpDriver implements Driver {
         }
       } catch (error) {
         for (const key of Object.keys(totals)) totals[key] = null;
-        if (c.signal.aborted) return "interrupted";
+        if (c.signal.aborted || interrupted) return "interrupted";
         throw error;
       } finally {
         if (usageSeen)
@@ -265,6 +276,12 @@ export class AcpDriver implements Driver {
         interrupted = true;
         await ready;
         await cancel();
+        try {
+          await bounded(done, 10_000);
+        } catch {
+          child.kill("SIGKILL");
+          await done;
+        }
       },
       steer: async (text) => {
         await ready;
@@ -279,7 +296,13 @@ export class AcpDriver implements Driver {
             reject = no;
           });
           await cancel();
-          usage(await previous);
+          try {
+            usage(await bounded(previous, 10_000));
+          } catch (error) {
+            failure();
+            child.kill("SIGKILL");
+            throw error;
+          }
           begin(text).then(resolve, reject);
         } finally {
           steering = false;

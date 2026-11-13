@@ -74,6 +74,7 @@ export class HarnessState {
     private redact: (text: string) => string,
   ) {}
   private allowed(harness: string, path: string) {
+    if (harness === "opencode") return /^sessions\/[A-Za-z0-9_-]+\.json$/.test(path);
     return harness === "codex"
       ? /^(?:sessions|archived_sessions)\/.*\.jsonl$/.test(path)
       : /^projects\/.*(?:\.jsonl|\/tool-results\/[^/]+\.txt)$/.test(path);
@@ -86,6 +87,8 @@ export class HarnessState {
       })) {
         const path = join(dir, entry.name);
         const rel = relative(source, path);
+        if (harness === "opencode" && /^sessions\/.*\.pending$/.test(rel))
+          throw Error("checkpoint_opencode_session_unverified");
         if (entry.isSymbolicLink()) throw Error("checkpoint_session_symlink");
         if (entry.isDirectory()) {
           // Do not descend into auth/cache/config directories at all.
@@ -142,12 +145,10 @@ export class HarnessState {
         if (
           manifest ||
           (await this.hasNativeData([
-            "claude",
-            "codex",
+            ...HARNESSES,
             "session-state",
             "exec-transient",
-            "claude.restore",
-            "codex.restore",
+            ...HARNESSES.map((harness) => `${harness}.restore`),
             "session-state.next",
             "session-state.previous",
           ]))
@@ -165,11 +166,9 @@ export class HarnessState {
           if (manifest && Object.keys(manifest.files).length) throw Error("golden_native_history_not_empty");
           if (
             (await this.hasNativeData([
-              "claude",
-              "codex",
+              ...HARNESSES,
               "exec-transient",
-              "claude.restore",
-              "codex.restore",
+              ...HARNESSES.map((harness) => `${harness}.restore`),
               "session-state.next",
               "session-state.previous",
             ])) ||

@@ -15,7 +15,7 @@ export const COST_BASIS_LABELS: Readonly<Record<CostBasis, string>> = {
   estimated: "Estimated cost",
 };
 
-const API_KEY_KINDS: readonly CredentialKind[] = ["anthropic", "openai"];
+const API_KEY_KINDS: readonly CredentialKind[] = ["anthropic", "openai", "opencode"];
 
 /**
  * The basis of a sandbox's figure from the kind of account it ran on. Only a known API key is "estimated": an account

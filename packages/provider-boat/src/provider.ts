@@ -28,6 +28,7 @@ import {
   buildEventPage,
   eventPageOptions,
   HARNESS_CAPABILITIES,
+  HARNESS_CATALOG,
   HARNESSES,
   MACHINE_SIZE_CATALOG,
   mapHarnesses,
@@ -56,7 +57,7 @@ import {
 } from "../../core/src/vm-resource-reading.ts";
 import { invalidRequest, PROVIDER_ID, toProviderError, unexpectedAnswer } from "./errors.ts";
 import { eventCursor, normalizeEvent, promptStatus } from "./events.ts";
-import { installNativeCwdWrapper } from "./native-cwd.ts";
+import { installNativeCwdWrapper, type NATIVE_HARNESS_PATHS } from "./native-cwd.ts";
 import { admitNativeUsage, bindNativeUsage, collectNativeUsage } from "./native-usage.ts";
 
 export const DEFAULT_BASE_URL = "https://boat.dev/api/v1";
@@ -66,8 +67,10 @@ export const DEFAULT_TTL_SECONDS = 3600;
 export const MAX_TTL_SECONDS = 2_592_000;
 
 /** Native Boat and the runtime currently expose the same harness capabilities. */
-export const BOAT_CAPABILITIES = HARNESS_CAPABILITIES;
-const BOAT_PROVIDER_NAME = mapHarnesses<PromptRequestProviderEnum>((descriptor) => descriptor.boatProvider);
+export const BOAT_CAPABILITIES = Object.fromEntries(
+  HARNESSES.filter((id) => HARNESS_CATALOG[id].boatProvider !== null).map((id) => [id, HARNESS_CAPABILITIES[id]]),
+) as Pick<typeof HARNESS_CAPABILITIES, keyof typeof NATIVE_HARNESS_PATHS>;
+const BOAT_PROVIDER_NAME = mapHarnesses<PromptRequestProviderEnum | null>((descriptor) => descriptor.boatProvider);
 
 const BOAT_STATES: Record<SandboxState, readonly string[]> = {
   starting: ["init", "provisioning", "provisioned", "cloning"],
@@ -295,7 +298,7 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
 
   const provider: BoatProvider = {
     id: PROVIDER_ID,
-    harnesses: HARNESSES,
+    harnesses: HARNESSES.filter((id) => HARNESS_CATALOG[id].boatProvider !== null),
     capabilities: BOAT_CAPABILITIES,
     maxGoldens: 1,
     async backendIdentity() {
@@ -319,6 +322,8 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
     },
 
     async prepareNativeHarnessCwd(request: PrepareNativeHarnessCwdRequest): Promise<void> {
+      if (request.harness !== "claude" && request.harness !== "codex")
+        throw invalidRequest("This harness is not supported on Boat.");
       await installNativeCwdWrapper(
         async (execRequest) => {
           const response = await call(() =>
@@ -531,6 +536,8 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
       await sshReadableVariables(provider, sandboxId, harness, variables);
     },
     async prompt(request: PromptRequest): Promise<PromptReceipt> {
+      if (request.harness !== "claude" && request.harness !== "codex")
+        throw invalidRequest("This harness is not supported on Boat.");
       // Boat accepted Fable but selected Sonnet before the first main API request (#1019).
       // Refuse before resume/bootstrap/dispatch, including later turns; never substitute.
       if (request.harness === "claude" && request.model === "claude-fable-5-2") {
@@ -597,7 +604,11 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
           {
             sandboxId: request.sandboxId,
             promptRequest: {
-              provider: BOAT_PROVIDER_NAME[request.harness],
+              provider:
+                BOAT_PROVIDER_NAME[request.harness] ??
+                (() => {
+                  throw invalidRequest("This harness is not supported on Boat.");
+                })(),
               prompt: request.text,
               ...(request.conversationId ? { conversationId: request.conversationId } : { _new: true }),
               ...(request.model ? { model: request.model } : {}),
