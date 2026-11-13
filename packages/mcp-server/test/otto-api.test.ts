@@ -76,8 +76,8 @@ test("every Otto view has a deadline and logs only view and elapsed time", async
     );
     for (const view of ["summary", "tasks", "resources", "orphans", "facts"]) {
       const response = await api(new Request(`https://armada.example/api/v1/otto/${view}?org_id=org`));
-      expect(response?.status).toBe(503);
-      expect(await response?.json()).toEqual({ error: "unavailable" });
+      expect(response?.status).toBe(200);
+      expect(await response?.json()).toMatchObject({ completeness: "unknown", fleetCompleteness: "unknown" });
       expect(log.mock.calls.at(-1)?.[0]).toMatch(new RegExp(`^Otto read unavailable view=${view} elapsed_ms=\\d+$`));
     }
     expect(log).toHaveBeenCalledTimes(5);

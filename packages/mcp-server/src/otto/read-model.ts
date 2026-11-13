@@ -3,24 +3,28 @@ import type { Sql } from "@armada/core/server";
 import type { Caller } from "../caller.ts";
 import { fresh, issueFromBranch, readFleet, repositoryOf } from "./fleet.ts";
 import type { OttoScope } from "./observation.ts";
-import { needsWork, type OwnershipFact, ownership } from "./ownership.ts";
+import { needsWork, ownership } from "./ownership.ts";
+import { type OttoSnapshot, readOttoSnapshot } from "./snapshot.ts";
 
 /** No prompt execution, provider queries or task commands. */
-export async function readOttoModel(sql: Sql, scope: OttoScope, caller: Caller, now: Date, key?: string) {
-  const params = [scope.orgId, scope.repository];
-  const facts = (
-    await sql.query<OwnershipFact>(
-      `select * from (select f.*,row_number() over(partition by subject,kind order by observed_at desc,id desc) as rank from (select distinct on(subject,kind,coalesce(evidence->'head'->>'sha','')) *,min(observed_at) over(partition by subject,kind,coalesce(evidence->'head'->>'sha','')) as head_first_seen_at from public.otto_facts where org_id=$1 and repository=$2 order by subject,kind,coalesce(evidence->'head'->>'sha',''),observed_at desc,id desc) f) ranked where rank<=2 order by subject,kind,observed_at desc,id desc`,
-      params,
-    )
-  ).rows.map((f) => ({
+export async function readOttoModel(
+  sql: Sql,
+  scope: OttoScope,
+  caller: Caller,
+  now: Date,
+  key?: string,
+  supplied?: OttoSnapshot,
+) {
+  const snapshot = supplied ?? (await readOttoSnapshot(sql, scope, caller, now.toISOString().slice(0, 10), key));
+  const facts = snapshot.facts.map((f) => ({
     ...f,
     observed_at: new Date(f.observed_at).toISOString(),
     ...(f.head_first_seen_at ? { head_first_seen_at: new Date(f.head_first_seen_at).toISOString() } : {}),
   }));
   const inventory = facts.find((f) => f.kind === "repository.open_prs");
   const inventoryFresh = inventory && fresh(inventory.observed_at, now);
-  const completeness = inventoryFresh && inventory.completeness === "complete" ? "complete" : "unknown";
+  const completeness =
+    !snapshot.capped && inventoryFresh && inventory.completeness === "complete" ? "complete" : "unknown";
   const listed = new Set(Array.isArray(inventory?.evidence.numbers) ? inventory.evidence.numbers : []);
   const latest = [...new Map([...facts].reverse().map((f) => [`${f.subject}:${f.kind}`, f])).values()];
   const prs = latest.filter(
@@ -33,7 +37,7 @@ export async function readOttoModel(sql: Sql, scope: OttoScope, caller: Caller, 
         !listed.has(f.evidence.number)
       ),
   );
-  const fleet = await readFleet(sql, scope, caller, now, key);
+  const fleet = await readFleet(sql, scope, caller, now, key, snapshot);
   const sandboxes = fleet.sandboxes;
   const resources: OttoResource[] = [],
     tasks = new Map<number, OttoTask>();
@@ -144,6 +148,7 @@ export async function readOttoModel(sql: Sql, scope: OttoScope, caller: Caller, 
     observedAt: inventory?.observed_at ?? null,
     orphanCompleteness:
       completeness === "complete" &&
+      !snapshot.historyCapped &&
       !fleet.restricted &&
       resources.every(
         (r) =>
@@ -154,7 +159,7 @@ export async function readOttoModel(sql: Sql, scope: OttoScope, caller: Caller, 
       )
         ? "complete"
         : "unknown",
-    fleetCompleteness: "complete",
+    fleetCompleteness: snapshot.capped ? "partial" : "complete",
     ownershipCompleteness:
       !fleet.restricted &&
       resources

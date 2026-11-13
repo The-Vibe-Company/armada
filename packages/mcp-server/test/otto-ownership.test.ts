@@ -160,6 +160,10 @@ test("complete DB fleet detects an unowned PR and a live sandbox without a task,
   await f.prompt(id, "running", new Date(NOW.getTime() - 1000), 1, "maintenance");
   const orphans = (await f.get<OttoOrphan>("orphans")).items;
   expect(orphans.some((o) => o.reason === "live_sandbox_without_task_or_pr" && o.state === "orphan")).toBe(true);
+  await f.observe(NOW);
+  await f.db.query("update sandboxes set status='stopped',stopped_at=$2 where id=$1", [id, NOW]);
+  const stopped = (await f.get<OttoOrphan>("orphans")).items.find((o) => o.resource.externalId === id);
+  expect(stopped).toMatchObject({ reason: "live_sandbox_without_task_or_pr", current: false });
   const summary = await f.get<{ fleetCoverage: string; notObservable: string[] }>("summary");
   expect(summary.items[0]).toMatchObject({
     fleetCoverage: "armada_database",
