@@ -5,7 +5,8 @@ describe("sidebar navigation", () => {
   test("lists the owner's groups and destinations in order, without Organizations", () => {
     expect(NAV_GROUPS.map((group) => [group.label, group.links.map((link) => link.label)])).toEqual([
       ["Run", ["Sandboxes", "Otto", "Routines", "Templates"]],
-      ["Library", ["Environments", "Hosts", "Skills", "Tools", "Variables"]],
+      ["Library", ["Snapshots", "Skills", "Tools", "Variables"]],
+      ["Providers", ["Self-hosted", "Cloud"]],
       ["Account", ["Models", "Settings"]],
     ]);
   });
@@ -14,6 +15,12 @@ describe("sidebar navigation", () => {
     expect(isActiveLink("/routines", "/routines")).toBe(true);
     expect(isActiveLink("/routines/abc", "/routines")).toBe(true);
     expect(isActiveLink("/routinesx", "/routines")).toBe(false);
+  });
+
+  test("hides Self-hosted behind the Docker hosts opt-in, but never Cloud", () => {
+    const providers = NAV_GROUPS.find((group) => group.label === "Providers");
+    expect(providers?.links.find((link) => link.label === "Self-hosted")?.optIn).toBe("dockerHosts");
+    expect(providers?.links.find((link) => link.label === "Cloud")?.optIn).toBeUndefined();
   });
 
   test("shows organizations only to a member of several, or to someone with none", () => {

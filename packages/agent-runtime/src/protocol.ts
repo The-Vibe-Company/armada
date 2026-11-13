@@ -57,6 +57,7 @@ export interface ExecEnvironment {
   GIT_TERMINAL_PROMPT?: "0";
 }
 export interface RunnerExecutionOptions {
+  prepareWorkspace?: () => Promise<void>;
   /** Set by enrolled main only after required checkpoint/native restore verification. */
   restoredFrom?: { epoch: string; watermark: number; conversationId: string };
   /** Only runtime bootstrap supplies this callback; RPC cannot supply credentials or destinations. */
@@ -118,6 +119,7 @@ export type RunnerRequest = { version: 1; requestId: string; sandboxId: string }
       input: Omit<RuntimePromptRequest, "text">;
     }
   | { op: "configureReadableVariables"; harness: Harness; variables: Record<string, string> }
+  | { op: "workspaceExec"; input: import("./workspace-exec.ts").WorkspaceExec }
   | { op: "installSkills"; input: import("./skills.ts").SkillInstallInput }
   | { op: "configureGitHub"; configuration: GitHubBrokerConfiguration | null }
   | { op: "resourceObservation" }

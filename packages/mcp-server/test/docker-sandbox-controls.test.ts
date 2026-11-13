@@ -721,3 +721,115 @@ test("normal Docker send continues the saved native conversation and retries exa
   await rejected(invoke(caller(f.actor), "send", { ...args, model: "different" }, controller), "invalid_request");
   await rejected(invoke(caller(f.admin, "admin"), "send", args, controller), "conflict");
 });
+
+test("Docker mutations reuse the fenced runtime mailbox and reconcile identical request IDs", async () => {
+  const f = await fixture();
+  const session = await ready(f);
+  const conversationId = randomUUID(),
+    promptId = randomUUID();
+  await db.query("update public.sandboxes set conversation_ids=array[$2]::text[] where id=$1", [
+    f.sandbox.id,
+    conversationId,
+  ]);
+  let now = 0,
+    delivered = 0;
+  const controller = createDockerSandboxControls(sql, key, {
+    clock: {
+      now: () => now,
+      async wait(ms) {
+        now += ms;
+        const next = await commands.next(session.runtimeToken, session.epoch);
+        if (!next.command) throw Error("missing runtime command");
+        delivered++;
+        const command = next.command;
+        const result =
+          command.op === "steer"
+            ? { conversationId, promptId }
+            : command.op === "exec"
+              ? {
+                  detached: false,
+                  exitCode: 0,
+                  stdout: "runtime-output",
+                  stderr: "",
+                  timedOut: false,
+                  truncated: false,
+                }
+              : {};
+        expect(["steer", "interrupt", "exec"]).toContain(command.op);
+        if (command.op === "exec")
+          expect(command.input).toEqual({
+            sandboxId: f.sandbox.id,
+            command: "printf runtime-output",
+            cwd: "/home/user",
+            timeoutSeconds: 120,
+          });
+        await complete(session, result);
+      },
+    },
+  });
+  for (const [name, input, expected] of [
+    ["steer", { text: "redirect" }, { id: f.sandbox.id, promptId, conversationId, delivery: "restart", mode: null }],
+    ["interrupt", {}, { id: f.sandbox.id, interrupted: true }],
+    [
+      "exec",
+      { command: "printf runtime-output" },
+      {
+        id: f.sandbox.id,
+        exitCode: 0,
+        stdout: "runtime-output",
+        stderr: "",
+        timedOut: false,
+        truncated: false,
+      },
+    ],
+  ] as const) {
+    const args = { id: f.sandbox.id, request_id: randomUUID(), ...input };
+    expect(await invoke(caller(f.actor), name, args, controller)).toEqual(expected);
+    expect(await invoke(caller(f.actor), name, args, controller)).toEqual(expected);
+  }
+  expect(delivered).toBe(3);
+  expect(await invoke(caller(f.actor), "interrupt", { id: f.sandbox.id }, controller)).toEqual({
+    id: f.sandbox.id,
+    interrupted: true,
+  });
+  expect(delivered).toBe(4);
+  await expect(
+    invoke(
+      caller(f.actor),
+      "exec",
+      { id: f.sandbox.id, request_id: randomUUID(), command: "true", timeout_seconds: 601 },
+      controller,
+    ),
+  ).rejects.toMatchObject({ code: "invalid_request" });
+  await expect(
+    invoke(caller(f.admin, "admin"), "interrupt", { id: f.sandbox.id, request_id: randomUUID() }, controller),
+  ).rejects.toMatchObject({ code: "not_found" });
+  const refusing = createDockerSandboxControls(sql, key, {
+    clock: {
+      now: () => now,
+      async wait(ms) {
+        now += ms;
+        const next = await commands.next(session.runtimeToken, session.epoch);
+        if (!next.command) throw Error("missing steer request");
+        await commands.complete(session.runtimeToken, session.epoch, {
+          epoch: session.epoch,
+          requestId: next.command.requestId,
+          status: 400,
+          body: { version: 1, requestId: next.command.requestId, error: "no_running_turn" },
+        });
+      },
+    },
+  });
+  await expect(
+    invoke(caller(f.actor), "steer", { id: f.sandbox.id, request_id: randomUUID(), text: "late" }, refusing),
+  ).rejects.toMatchObject({ provider: "docker", code: "no_running_turn" });
+  await db.query("update public.sandboxes set application_secret_tainted=true where id=$1", [f.sandbox.id]);
+  await expect(
+    invoke(caller(f.actor), "exec", { id: f.sandbox.id, request_id: randomUUID(), command: "true" }, controller),
+  ).rejects.toMatchObject({ code: "conflict" });
+  await db.query("update public.credentials set status='revoked' where id=$1", [f.credentialId]);
+  await expect(
+    invoke(caller(f.actor), "interrupt", { id: f.sandbox.id, request_id: randomUUID() }, controller),
+  ).rejects.toMatchObject({ code: "conflict" });
+  expect(delivered).toBe(4);
+});

@@ -98,7 +98,7 @@ test("Docker incompatible or malformed options fail before HTTP", async () => {
     ["--repo", "acme/web"],
     ["--connections", "a"],
     ["--credential-version", "0"],
-    ["--host", "not-a-host"],
+    ["--host", "x".repeat(65)],
     ["one", "two"],
   ]) {
     const result = await capture([...args, ...flags], async (request) => {
@@ -136,3 +136,44 @@ test.each([{ flags: ["--skill", "team/notes@1.2.3", "--connections", host] }, { 
     if (flags.includes("--skill")) expect(body.skills).toEqual(["team/notes@1.2.3"]);
   },
 );
+test("Docker launch resolves an exact unique non-revoked host name and refuses missing/ambiguous names", async () => {
+  const receipt = {
+    sandbox: { id: requestId, provider: "docker", status: "running" },
+    golden: null,
+    runtime: { epoch: "1" },
+  };
+  const namedArgs = args.map((arg) => (arg === host ? "office" : arg));
+  const summary = {
+    id: host,
+    name: "office",
+    state: "online",
+    createdAt: "2026-11-13T00:00:00Z",
+    lastSeenAt: null,
+    revokedAt: null,
+    version: "2.27.0",
+    sandboxes: 0,
+  };
+  for (const mode of ["unique", "missing", "ambiguous"]) {
+    let launched = 0;
+    const result = await capture(namedArgs, async (request) => {
+      if (new URL(request.url).pathname.endsWith("/hosts/list")) {
+        expect(await request.json()).toEqual({ org });
+        return Response.json({
+          placement: true,
+          hosts:
+            mode === "missing"
+              ? []
+              : mode === "ambiguous"
+                ? [summary, { ...summary, id: credential }]
+                : [summary, { ...summary, id: credential, state: "revoked" }],
+        });
+      }
+      launched++;
+      expect(await request.json()).toMatchObject({ hostId: host });
+      return Response.json(receipt);
+    });
+    expect(result.code === 0).toBe(mode === "unique");
+    expect(launched).toBe(mode === "unique" ? 1 : 0);
+    if (mode !== "unique") expect(result.err).toContain(mode === "missing" ? "No non-revoked" : "ambiguous");
+  }
+});
