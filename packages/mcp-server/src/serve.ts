@@ -38,6 +38,7 @@ import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
 import { createDockerSandboxControls } from "./docker-sandbox-controls.ts";
 import { createDockerSandboxRoutes } from "./docker-sandbox-routes.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
+import { createDockerSnapshots } from "./docker-snapshots.ts";
 import { createGitHubAccountApi } from "./github-account.ts";
 import { configureBoatGitHub } from "./github-boat.ts";
 import { createHandler, providerRegistry, type Route } from "./http.ts";
@@ -385,10 +386,14 @@ export async function startServer(
     env.ARMADA_DOCKER_HOSTS === "1"
       ? createDockerSandboxControls(sql, config.encryptionKey, {
           prepareMcp: runtimeMcp.prepare,
+          ...(runtimeGitHub ? { prepareSnapshotGitHub: runtimeGitHub.prepareLaunch } : {}),
           ...(dockerBootstrap ? { resume: dockerBootstrap } : {}),
+          ...(runtimeGitHub ? { github: runtimeGitHub } : {}),
           send: createDockerNormalSend(sql, config.encryptionKey, {
             prepareMcp: runtimeMcp.prepare,
+            ...(runtimeGitHub ? { prepareSnapshotGitHub: runtimeGitHub.prepareLaunch } : {}),
             enabled: dockerEnabled && Boolean(dockerBootstrap),
+            ...(runtimeGitHub ? { github: runtimeGitHub } : {}),
           }),
         })
       : undefined;
@@ -561,7 +566,15 @@ export async function startServer(
                   supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
                   now: new Date(),
                 }),
-              { placement: dockerLaunchEnabled, publicUrl: config.publicUrl },
+              {
+                placement: dockerLaunchEnabled,
+                publicUrl: config.publicUrl,
+                snapshots: createDockerSnapshots(sql, config.encryptionKey, {
+                  enabled: dockerLaunchEnabled,
+                  github: { store, app: githubApp, encryptionKey: config.encryptionKey },
+                  installationApp: githubInstallationAppFromEnv(env),
+                }),
+              },
             ),
           ]
         : []),

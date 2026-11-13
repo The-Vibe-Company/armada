@@ -1,66 +1,34 @@
 # Immutable host-local Docker images
 
-Normal Docker launches accept either a registry manifest reference
-`repository@sha256:<64 lowercase hex>` or a full host-local image ID
-`sha256:<64 lowercase hex>`. Docker's [content-addressable image store](https://docs.docker.com/reference/cli/docker/image/pull/)
-uses image IDs separately from registry manifest digests. Short IDs, mutable tags,
-uppercase/noncanonical hashes and inferred registry aliases remain refused.
+Normal Docker launches do not accept caller-selected image strings. The server
+selects its official environment, or resolves an authorized host-local snapshot
+selected by `--golden SNAPSHOT_UUID`. The product builds snapshots from the
+versionable golden file and creates all provenance labels automatically. See
+[host-local snapshots](docker-snapshots.md) for commands, private/org authorization
+and the single coordinator check on host
+`1bd0db41-6429-430b-99e2-06d60ddf1aa3`. No hand-written labels are required.
 
-The shared core validator is used by normal/private server admission, the host
-mailbox parser and machine executor, CLI and dashboard image parsing. The database
-binding constraint accepts both immutable forms while preserving all existing
-private-owner, host, harness and lifetime restrictions. Image strings returned by
-normal launch/status stay unchanged; no new provider/status/source enum appears.
+Internally the machine/mailbox and database binding accept registry manifest
+references `repository@sha256:<64 lowercase hex>` and full local image IDs
+`sha256:<64 lowercase hex>`. These are distinct Docker content-addressed identities,
+not mutable tags, short IDs or inferred registry aliases. This is a machine
+primitive, not permission to choose an arbitrary cached image through normal launch.
 
-## Host approval, not arbitrary cache access
+Before allocating from a local image, the daemon inspects its exact ID and
+requires this installation and host's immutable provenance. A private snapshot
+also requires the signed server-authorized source ID, owner and visibility binding.
+An image ID alone cannot bypass the snapshot catalog's authorization. Missing
+images, foreign provenance or an inspect ID mismatch fail closed without pull/tag
+fallback. Lifecycle operations on an already-owned allocation do not require its
+source image to remain cached. A trusted host operator still controls its own
+machine's images and workloads.
 
-A full local ID alone is not permission to run any image cached on the machine.
-Before allocating a new volume/container, the daemon inspects that exact ID and
-requires these immutable image configuration labels:
+`capabilities.goldens` is true when normal Docker placement/snapshot builds are
+enabled. This is not a Boat/Modal alias: build the same config separately for each
+provider or host installation.
 
-- `dev.armada.environment.installation`: this daemon's installation UUID;
-- `dev.armada.environment.host`: this registered host's UUID;
-- `dev.armada.environment.scope`: `org` (explicit host-operator approval for org-shared use).
-
-Missing images, foreign host/installation labels, private/unapproved images or an
-inspect ID mismatch fail closed before allocation. There is no pull/tag fallback.
-Existing registry-digest behavior is unchanged. Stop/delete/resume of an already
-owned allocation does not depend on the shared image cache still being present.
-These checks do not replace host trust: a Docker daemon operator already controls
-all local images and workloads. Do not mark private images as org-shared.
-
-This is the runnable image-reference prerequisite for #1464's host-local
-Docker environments, **not** the golden-file builder/publication feature.
-`capabilities.goldens` remains false. Future builders must produce approved,
-secret-free host-local images; no Boat/Modal snapshot alias is introduced.
-Private Docker environment authorization and versionable repos/branches/init
-build/publication remain later work.
-
-## Deployment and the coordinator's one check
-
-The new append-only constraint migration is
-`20261113170001_docker_local_image_ids.sql`. Apply it through the normal operator
-procedure before server traffic uses local IDs; deploy matching host daemon,
-server and clients. Old daemons must be upgraded before sending them the new
-reference form. No remote migration/deployment is performed by this PR.
-
-On host `70bde9cd-36c9-40af-b15e-65b2f9d3c2a2`, use an existing dedicated,
-secret-free Linux x64/glibc local image with Git/gh/Python3 and suitable UID1000
-workspace permissions. Its labels must explicitly approve this host and its
-current installation for org-shared use. Obtain its full image ID privately on
-that host; never substitute a mutable tag or mark a private workload image as
-shared. With the existing server/org/account/SSH inputs and ARMADA_TOKEN only in
-the environment:
-
-```sh
-python3 scripts/smoke-docker-lifecycle.py \
-  --server "$ARMADA_URL" --org "$ARMADA_ORG" --credential "$ARMADA_CREDENTIAL_ID" \
-  --ssh "$ARMADA_DOCKER_SSH" --host-id 70bde9cd-36c9-40af-b15e-65b2f9d3c2a2 \
-  --image "$ARMADA_DOCKER_LOCAL_IMAGE_ID" --normal-lifecycle
-```
-
-`ARMADA_DOCKER_LOCAL_IMAGE_ID` is exactly `sha256:<64 lowercase hex>`. The script
-uses one allocation through normal launch, requires the exact image echoed in
-its receipt, proves retained conversation through follow-up and same-host resume,
-and stops/deletes once. This procedure is not evidence of a real-host pass and
-does not claim the later config-file environment builder is implemented.
+Migration `20261113170001_docker_local_image_ids.sql` introduces local image IDs;
+`20261113190000_docker_snapshots.sql` adds their scoped catalog/publication.
+Apply through operator procedures before matching binaries. Update old daemons
+before sending build jobs. No compatibility fallback or remote deployment is
+performed by a worker.

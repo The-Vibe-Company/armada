@@ -6,6 +6,7 @@ export {
   type GitHubHydrationPhase,
   githubHydrationPhase,
 } from "./api-failure.ts";
+export { type ApplicationSecretBinding, parseApplicationSecretBindings } from "./application-secret-bindings.ts";
 export { CLAUDE_ENDPOINT_ENV, type ClaudeEndpoint, parseClaudeEndpoint } from "./claude-endpoint.ts";
 export { CLIENT_CONFIG_PATH, type ClientConfig } from "./client-config.ts";
 export { CODEX_ENDPOINT_ENV, type CodexEndpoint, parseCodexEndpoint } from "./codex-endpoint.ts";
@@ -105,9 +106,17 @@ export {
   DOCKER_DEFAULT_IMAGE,
   DOCKER_IMAGE_UNAVAILABLE_MESSAGE,
   DOCKER_JOB_FAILURE_REASONS,
+  DOCKER_SNAPSHOT_STATUSES,
   type DockerJobFailureReason,
+  type DockerSnapshotRecord,
 } from "./docker-api.ts";
-export { DOCKER_LOCAL_IMAGE_LABELS, isDockerImageReference } from "./docker-image.ts";
+export {
+  DOCKER_LOCAL_IMAGE_LABELS,
+  type DockerSnapshotBinding,
+  isDockerImageReference,
+  parseDockerSnapshotBinding,
+} from "./docker-image.ts";
+export { parseDockerSnapshotRecord } from "./docker-snapshot.ts";
 export {
   boundEventEntries,
   buildEventPage,
@@ -313,7 +322,11 @@ export {
   type ToolCall,
 } from "./provider.ts";
 export { providerRateLimitDetails, providerRateLimitMessage } from "./provider-limit.ts";
-export { validateReadableVariables } from "./readable-variables.ts";
+export {
+  parseReadableVariableBindings,
+  type ReadableVariableBinding,
+  validateReadableVariables,
+} from "./readable-variables.ts";
 export { resolveRepositoryDir } from "./repository-context.ts";
 export {
   RESOURCE_ADVICE_VERSION,

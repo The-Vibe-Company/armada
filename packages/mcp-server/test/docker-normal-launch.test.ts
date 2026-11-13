@@ -9,11 +9,14 @@ import {
   type DockerSandboxStatus,
   type Harness,
   type LaunchCredentialResolver,
+  officialSandboxImage,
   ProviderError,
   type SandboxListMetadata,
   type Sql,
+  VERSION,
 } from "@armada/core";
 import {
+  createApplicationVault,
   createSqlMcpLeasePort,
   createSqlMcpRegistry,
   createSqlVaultStore,
@@ -32,6 +35,7 @@ import { createDockerNormalLaunch } from "../src/docker-normal-launch.ts";
 import { createDockerNormalSend } from "../src/docker-normal-send.ts";
 import { createDockerSandboxControls } from "../src/docker-sandbox-controls.ts";
 import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
+import { createDockerSnapshots } from "../src/docker-snapshots.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
@@ -171,7 +175,7 @@ async function fixture(
             result:
               command.op === "health"
                 ? { ready: true, generation: session.epoch, mcpVersion: 1, skillsVersion: 1 }
-                : command.op === "configureGitHub"
+                : command.op === "configureGitHub" || command.op === "configureReadableVariables"
                   ? { acknowledged: true }
                   : command.op === "exec"
                     ? {
@@ -791,6 +795,296 @@ test.each(["claude", "opencode"] as const)("normal Docker launch selects and boo
   );
 });
 
+for (const checkoutExitCode of [0, 1])
+  test(`Docker checkout exit ${checkoutExitCode} gates its first prompt and scopes GitHub access`, async () => {
+    const f = await fixture({ checkoutExitCode });
+    await db.query(
+      `insert into public.github_connections(user_id,github_id,login,name,refresh_token_enc,access_token_enc,access_expires_at)
+    values($1,123,'owner','Owner',$2,$3,now()+interval '1 hour')`,
+      [f.actor.userId, await encryptSecret("offline-refresh", key), await encryptSecret("offline-github-token", key)],
+    );
+    const remote = await defaultRemote(f);
+    const body = {
+      ...f.body,
+      skills: ["catalog/repository@1.0.0"],
+      connections: [remote.id],
+      repos: [{ url: "https://github.com/example/project.git", branch: "feature/work", dir: "project" }],
+    };
+    if (checkoutExitCode !== 0) {
+      await rejected(f.service().launch(f.caller, body), "sandbox_not_ready");
+      expect((f.native as { op: string }[]).map((c) => c.op)).toEqual(["health", "configureGitHub", "exec"]);
+      return;
+    }
+    const launched = await f.service().launch(f.caller, body);
+    expect(launched.github).toMatchObject({ status: "connected", login: "owner" });
+    const native = f.native as { op: string; input?: { command?: string } }[];
+    expect(native.filter((c) => c.op !== "health").map((c) => c.op)).toEqual([
+      "configureGitHub",
+      "exec",
+      "installSkills",
+      "configureMcp",
+      "prompt",
+    ]);
+    expect(launched.sandbox.skills?.map((receipt) => receipt.reference)).toEqual(["catalog/repository@1.0.0"]);
+    expect(native[2]?.input?.command).toContain("--branch 'feature/work'");
+    expect(native[2]?.input?.command).toContain("'/home/user/project'");
+    expect(JSON.stringify(native)).not.toContain("offline-github-token");
+    expect(JSON.stringify(f.jobs)).not.toContain("offline-github-token");
+    expect(launched.promptId).toBe(f.receipt.promptId);
+    const beforeReplay = f.native.length;
+    await f.service().launch(f.caller, body);
+    expect(f.native).toHaveLength(beforeReplay);
+    await rejected(
+      f.service().launch(f.caller, { ...body, repos: [{ ...body.repos[0], branch: "other" }] }),
+      "conflict",
+    );
+    const before = f.native.length;
+    const fresh = { ...body, requestId: randomUUID() };
+    for (const repos of [
+      [],
+      [{ ...body.repos[0], dir: "../escape" }],
+      [{ ...body.repos[0], branch: "--upload-pack=evil" }],
+    ]) {
+      await rejected(f.service().launch(f.caller, { ...fresh, repos }), "invalid_request");
+    }
+    expect(f.native).toHaveLength(before);
+    const controls = createDockerSandboxControls(sql, key, { clock: f.clock, resume: bootstrap, github: f.github });
+    const oldCapability = (f.native[1] as { configuration: { capability: string } }).configuration.capability;
+    const refreshed = await controls.invoke(f.caller, "github_refresh", { id: f.body.requestId });
+    expect(refreshed).toMatchObject({
+      handled: true,
+      result: { status: "connected", login: "owner", runtime: { epoch: f.session()?.epoch } },
+    });
+    await expect(f.github.status({ ...f.caller, orgs: [] }, f.body.requestId)).rejects.toThrow();
+    const row = (
+      await db.query<{ id: string; org_id: string; owner_id: string; status: string; conversation_ids: string[] }>(
+        "select id,org_id,owner_id,status,conversation_ids from public.sandboxes where id=$1",
+        [f.body.requestId],
+      )
+    ).rows[0];
+    if (!row) throw Error("missing sandbox");
+    const beforeSend = f.native.length;
+    const sendArgs = { request_id: randomUUID(), prompt: "Continue" };
+    const sent = await createDockerNormalSend(sql, key, { enabled: true, clock: f.clock, github: f.github }).send(
+      f.caller,
+      sendArgs,
+      row,
+    );
+    const noGitHub = createDockerNormalSend(sql, key, {
+      enabled: true,
+      clock: f.clock,
+      github: {
+        prepareTurn: async () => {
+          throw Error("GitHub unavailable");
+        },
+      },
+    });
+    expect(await noGitHub.send(f.caller, sendArgs, row)).toEqual(sent);
+    await expect(noGitHub.send(f.caller, { ...sendArgs, prompt: "Changed" }, row)).rejects.toThrow();
+    expect((f.native.slice(beforeSend) as { op: string }[]).map((command) => command.op)).toEqual([
+      "configureGitHub",
+      "prompt",
+    ]);
+    const configured = (f.native as { op: string; configuration: { capability: string } }[]).findLast(
+      (command) => command.op === "configureGitHub",
+    );
+    if (!configured) throw Error("missing GitHub configuration");
+    let capability = configured.configuration.capability;
+    const acquire = async (repository: string) =>
+      f.github.route(
+        new Request("https://armada.example/api/runtime/github/credentials", {
+          method: "POST",
+          headers: { authorization: `Bearer ${capability}` },
+          body: JSON.stringify({ version: 1, repository, operation: "git" }),
+        }),
+      );
+    expect((await acquire("example/project"))?.status).toBe(200);
+    expect(
+      (
+        await f.github.route(
+          new Request("https://armada.example/api/runtime/github/credentials", {
+            method: "POST",
+            headers: { authorization: `Bearer ${oldCapability}` },
+            body: JSON.stringify({ version: 1, repository: "example/project", operation: "gh" }),
+          }),
+        )
+      )?.status,
+    ).toBe(403);
+    expect((await acquire("example/other"))?.status).toBe(403);
+    await controls.invoke(f.caller, "stop", { id: f.body.requestId });
+    await controls.invoke(f.caller, "resume", { id: f.body.requestId, request_id: randomUUID() });
+    expect((await f.github.status(f.caller, f.body.requestId)).configured).toBe(true);
+    expect((await acquire("example/project"))?.status).toBe(403);
+    const resumed = (f.native as { op: string; configuration: { capability: string } }[]).findLast(
+      (command) => command.op === "configureGitHub",
+    );
+    if (!resumed) throw Error("missing resumed GitHub configuration");
+    capability = resumed.configuration.capability;
+    expect((await acquire("example/project"))?.status).toBe(200);
+    await hosts.revoke(f.admin, f.hostId);
+    expect((await acquire("example/project"))?.status).toBe(403);
+  });
+
+test("Docker freezes versioned readable bindings and re-delivers them before the first resumed prompt", async () => {
+  const f = await fixture();
+  const vault = createApplicationVault(sql, undefined);
+  const value = "europe\n$(not-a-command)";
+  const variable = await vault.command(f.caller, "variable", "set", {
+    org: f.actor.orgId,
+    scope: "personal",
+    name: "APP_REGION",
+    value,
+  });
+  const variableId = (variable.item as { id: string }).id;
+  const body = { ...f.body, variables: [{ key: "APP_REGION", variableId, version: 1 }] };
+  const launched = await f.service().launch(f.caller, body);
+  expect((f.native as { op: string }[]).map((command) => command.op)).toEqual([
+    "health",
+    "configureReadableVariables",
+    "prompt",
+  ]);
+  expect(JSON.stringify(launched)).not.toContain(value);
+  expect(JSON.stringify(f.jobs)).not.toContain(value);
+  await vault.command(f.caller, "variable", "update", {
+    org: f.actor.orgId,
+    id: variableId,
+    expectedVersion: 1,
+    value: "changed",
+  });
+  expect(await f.service().launch(f.caller, body)).toMatchObject({ promptId: launched.promptId });
+  const controls = createDockerSandboxControls(sql, key, { clock: f.clock, resume: bootstrap });
+  await controls.invoke(f.caller, "stop", { id: f.body.requestId });
+  await controls.invoke(f.caller, "resume", { id: f.body.requestId, request_id: randomUUID() });
+  const configurations = (f.native as { op: string; variables: Record<string, string> }[]).filter(
+    (command) => command.op === "configureReadableVariables",
+  );
+  expect(configurations.map((command) => command.variables)).toEqual([{ APP_REGION: value }, { APP_REGION: value }]);
+  const row = (
+    await db.query<{ id: string; org_id: string; owner_id: string; status: string; conversation_ids: string[] }>(
+      "select id,org_id,owner_id,status,conversation_ids from public.sandboxes where id=$1",
+      [f.body.requestId],
+    )
+  ).rows[0];
+  if (!row) throw Error("missing sandbox");
+  await createDockerNormalSend(sql, key, { enabled: true, clock: f.clock }).send(
+    f.caller,
+    { request_id: randomUUID(), prompt: "Read the variable again" },
+    row,
+  );
+  expect((f.native as { op: string }[]).filter((command) => command.op === "configureReadableVariables")).toHaveLength(
+    2,
+  );
+  const fresh = { ...body, requestId: randomUUID() };
+  await rejected(f.service().launch(f.caller, fresh), "unavailable");
+  expect((await db.query("select id from public.sandboxes where id=$1", [fresh.requestId])).rows).toHaveLength(0);
+});
+
+test("Docker variable admission rejects unsafe names and inaccessible personal references without allocating", async () => {
+  const f = await fixture();
+  const vault = createApplicationVault(sql, undefined);
+  const other = await vault.command({ ...f.caller, userId: f.otherId }, "variable", "set", {
+    org: f.actor.orgId,
+    scope: "personal",
+    name: "PRIVATE_REGION",
+    value: "private",
+  });
+  const variableId = (other.item as { id: string }).id;
+  await rejected(
+    f.service().launch(f.caller, { ...f.body, variables: [{ key: "APP_REGION", variableId, version: 1 }] }),
+    "unavailable",
+  );
+  for (const variables of [
+    [{ key: "PATH", variableId, version: 1 }],
+    [{ key: "APP_REGION", variableId, version: 0 }],
+    [
+      { key: "APP_REGION", variableId, version: 1 },
+      { key: "APP_REGION", variableId, version: 1 },
+    ],
+  ])
+    await rejected(f.service().launch(f.caller, { ...f.body, variables }), "invalid_request");
+  expect(await counts(f)).toEqual({ sandboxes: 0, claims: 0, jobs: 0, commands: 0 });
+});
+
+test("Docker delivers value-free secret references through native environment and refuses new delivery after revocation", async () => {
+  const f = await fixture();
+  const canary = `offline-application-secret-${randomUUID()}`;
+  const secretId = randomUUID();
+  await db.query(
+    `insert into public.application_secrets(id,org_id,owner_id,scope,name,value_enc) values($1,$2,$3,'personal','APP_TOKEN',$4)`,
+    [secretId, f.actor.orgId, f.actor.userId, await encryptSecret(canary, key)],
+  );
+  const body = { ...f.body, secrets: [{ key: "APP_TOKEN", secretId, version: 1 }] };
+  const launched = await f.service().launch(f.caller, body);
+  expect((f.native as { op: string }[]).map((command) => command.op)).toEqual([
+    "health",
+    "configureReadableVariables",
+    "prompt",
+  ]);
+  expect(f.native[1]).toMatchObject({ variables: { APP_TOKEN: canary } });
+  expect(JSON.stringify(launched)).not.toContain(canary);
+  expect(JSON.stringify(f.jobs)).not.toContain(canary);
+  const claim = (
+    await db.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
+      "select request_enc from public.docker_launch_requests where sandbox_id=$1",
+      [f.body.requestId],
+    )
+  ).rows[0];
+  if (!claim) throw Error("missing manifest");
+  const manifest = JSON.parse(await decryptSecret(claim.request_enc, key));
+  expect(manifest.request.secrets).toEqual(body.secrets);
+  expect(JSON.stringify(manifest)).not.toContain(canary);
+  const controls = createDockerSandboxControls(sql, key, { clock: f.clock, resume: bootstrap });
+  await controls.invoke(f.caller, "stop", { id: f.body.requestId });
+  await controls.invoke(f.caller, "resume", { id: f.body.requestId, request_id: randomUUID() });
+  expect((f.native as { op: string }[]).filter((command) => command.op === "configureReadableVariables")).toHaveLength(
+    2,
+  );
+  const row = (
+    await db.query<{ id: string; org_id: string; owner_id: string; status: string; conversation_ids: string[] }>(
+      "select id,org_id,owner_id,status,conversation_ids from public.sandboxes where id=$1",
+      [f.body.requestId],
+    )
+  ).rows[0];
+  if (!row) throw Error("missing sandbox");
+  const send = createDockerNormalSend(sql, key, { enabled: true, clock: f.clock });
+  const args = { request_id: randomUUID(), prompt: "Continue" };
+  const sent = await send.send(f.caller, args, row);
+  await db.query("update public.application_secrets set status='revoked',value_enc=null where id=$1", [secretId]);
+  expect(await send.send(f.caller, args, row)).toEqual(sent);
+  const before = f.native.length;
+  await expect(send.send(f.caller, { request_id: randomUUID(), prompt: "New turn" }, row)).rejects.toThrow();
+  expect(f.native).toHaveLength(before);
+});
+
+test("Docker secret admission rolls back inaccessible, stale, expired and oversized environments", async () => {
+  const f = await fixture();
+  const secretId = randomUUID();
+  await db.query(
+    `insert into public.application_secrets(id,org_id,owner_id,scope,name,value_enc) values($1,$2,$3,'personal','APP_TOKEN',$4)`,
+    [secretId, f.actor.orgId, f.otherId, await encryptSecret("x".repeat(8192), key)],
+  );
+  const binding = { key: "APP_TOKEN", secretId, version: 1 };
+  const launch = (secrets: unknown) => f.service().launch(f.caller, { ...f.body, secrets });
+  await rejected(launch([binding]), "unavailable");
+  await db.query("update public.application_secrets set owner_id=$2 where id=$1", [secretId, f.actor.userId]);
+  await rejected(launch([{ ...binding, version: 2 }]), "unavailable");
+  await db.query("update public.application_secrets set expires_at=now()-interval '1 second' where id=$1", [secretId]);
+  await rejected(launch([binding]), "unavailable");
+  await db.query("update public.application_secrets set expires_at=null where id=$1", [secretId]);
+  await rejected(launch(Array.from({ length: 9 }, (_, i) => ({ ...binding, key: `APP_TOKEN_${i}` }))), "unavailable");
+  for (const key of ["PATH", "OPENAI_API_KEY", "PUBLIC_TOKEN"])
+    await rejected(launch([{ ...binding, key }]), "invalid_request");
+  await rejected(
+    f.service().launch(f.caller, {
+      ...f.body,
+      variables: [{ key: "APP_TOKEN", variableId: secretId, version: 1 }],
+      secrets: [binding],
+    }),
+    "invalid_request",
+  );
+  expect(await counts(f)).toEqual({ sandboxes: 0, claims: 0, jobs: 0, commands: 0 });
+});
+
 test("normal Docker launch refuses caller-selected images before allocation", async () => {
   const f = await fixture();
   await expect(f.service().launch(f.caller, { ...f.body, image: officialImage })).rejects.toMatchObject({
@@ -1050,6 +1344,19 @@ test("Docker honors frozen launch pins without re-merging later skill defaults",
 test("Docker templates freeze admission pins, use normal launch, and replay one durable allocation", async () => {
   const f = await fixture();
   const templates = createTemplateService(sql, key);
+  const variable = await createApplicationVault(sql, undefined).command(f.caller, "variable", "set", {
+    org: f.actor.orgId,
+    scope: "personal",
+    name: "APP_REGION",
+    value: "offline-template-region",
+  });
+  const variableId = (variable.item as { id: string }).id;
+  const secretId = randomUUID(),
+    canary = "offline-template-secret";
+  await db.query(
+    "insert into public.application_secrets(id,org_id,owner_id,scope,name,value_enc) values($1,$2,$3,'personal','APP_TOKEN',$4)",
+    [secretId, f.actor.orgId, f.actor.userId, await encryptSecret(canary, key)],
+  );
   const stores = createSqlData(sql)(f.caller);
   await db.query("insert into public.personal_skill_defaults(user_id,skills) values($1,$2::text::jsonb)", [
     f.actor.userId,
@@ -1064,6 +1371,8 @@ test("Docker templates freeze admission pins, use normal launch, and replay one 
       hostId: f.hostId,
       harness: "codex",
       modelAccount: { id: f.body.credentialId, version: 2 },
+      variables: [{ key: "APP_REGION", variableId, version: 1 }],
+      secrets: [{ key: "APP_TOKEN", secretId, version: 1 }],
     },
   });
   const id = (created.item as { id: string }).id;
@@ -1109,6 +1418,13 @@ test("Docker templates freeze admission pins, use normal launch, and replay one 
     (await db.query("select golden_operation_fence_id from template_launch_requests where id=$1", [result.requestId]))
       .rows,
   ).toEqual([{ golden_operation_fence_id: null }]);
+  expect(f.native).toContainEqual(
+    expect.objectContaining({
+      op: "configureReadableVariables",
+      variables: { APP_REGION: "offline-template-region", APP_TOKEN: canary },
+    }),
+  );
+  expect(JSON.stringify(result)).not.toContain(canary);
   expect(allocations).toBe(1);
   expect(starts).toBeGreaterThan(0);
   expect(await counts(f)).toMatchObject({ sandboxes: 1, claims: 1, jobs: 2 });
@@ -1205,6 +1521,206 @@ test("a lost Docker template response retains one reconciling claim and never re
   });
   expect(dispatches).toBe(1);
   expect(await counts(f)).toMatchObject({ sandboxes: 1, claims: 1, jobs: 2 });
+});
+
+async function snapshotFixture(enabled = true) {
+  const f = await fixture();
+  for (const [userId, githubId, access] of [
+    [f.actor.userId, 123, "offline-snapshot-access"],
+    [f.admin.userId, 124, "offline-admin-access"],
+  ] as const)
+    await db.query(
+      `insert into public.github_connections(user_id,github_id,login,name,refresh_token_enc,access_token_enc,access_expires_at) values($1,$2,'owner','Owner',$3,$4,now()+interval '2 hours')`,
+      [userId, githubId, await encryptSecret("offline-refresh", key), await encryptSecret(access, key)],
+    );
+  const githubFetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    const path = String(url),
+      admin = new Headers(init?.headers).get("authorization")?.includes("admin");
+    return path.includes("/user/installations")
+      ? Response.json({ installations: [] })
+      : path.includes("/repos/")
+        ? Response.json({
+            id: 1234,
+            name: "project",
+            owner: { login: "example" },
+            private: false,
+            default_branch: "main",
+          })
+        : Response.json({ id: admin ? 124 : 123, login: "owner", name: "Owner" });
+  }) as unknown as typeof fetch;
+  const snapshots = createDockerSnapshots(sql, key, {
+    enabled,
+    github: {
+      store: createSqlVaultStore(sql),
+      app: { clientId: "offline-app", clientSecret: "offline-app-secret" },
+      encryptionKey: key,
+      fetch: githubFetch,
+    },
+    installationApp: null,
+  });
+  const adminCaller = { ...f.caller, userId: f.admin.userId, orgs: [{ orgId: f.actor.orgId, role: "admin" as const }] };
+  const config = {
+    repos: [{ url: "https://github.com/example/project.git", branch: "main", dir: "project" }],
+    init: ["printf built > /home/user/proof"],
+  };
+  return { ...f, snapshots, adminCaller, config };
+}
+
+test.each(["private", "org"] as const)(
+  "host snapshot %s publication enforces visibility and launches the baked image without cloning again",
+  async (visibility) => {
+    const f = await snapshotFixture(),
+      id = randomUUID();
+    const creator = visibility === "private" ? f.caller : f.adminCaller;
+    const input = {
+      org: f.actor.orgId,
+      hostId: f.hostId,
+      requestId: id,
+      name: "local-snapshot",
+      visibility,
+      config: f.config,
+    };
+    const created = await f.snapshots.command(creator, "create", input);
+    expect(created).toMatchObject({ snapshot: { id, status: "building", visibility, builtOnVersion: VERSION } });
+    expect(
+      (await db.query("select base_image,built_on_version from public.docker_snapshots where id=$1", [id])).rows[0],
+    ).toEqual({ base_image: officialSandboxImage(), built_on_version: VERSION });
+    await expect(
+      db.query("update public.docker_snapshots set built_on_version='0.0.1' where id=$1", [id]),
+    ).rejects.toThrow("Snapshot base is immutable");
+    await expect(
+      db.query("update public.docker_snapshots set base_image=$2 where id=$1", [
+        id,
+        `ghcr.io/the-vibe-company/armada-sandbox@sha256:${"e".repeat(64)}`,
+      ]),
+    ).rejects.toThrow("Snapshot base is immutable");
+    expect(JSON.stringify(created)).not.toContain("offline-snapshot-access");
+    expect(await f.snapshots.command(creator, "create", input)).toMatchObject({ snapshot: { id } });
+    const build = await hosts.poll(f.hostToken, f.installationId);
+    if (build?.operation !== "buildSnapshot") throw Error("missing snapshot build");
+    expect(build.build.config).toEqual(input.config);
+    expect(build.request.image).toBe(officialSandboxImage());
+    expect(build.build).toMatchObject({ armadaVersion: VERSION });
+    for (const fields of [{ image: officialImage }, { baseImage: officialImage }, { builtOnVersion: "0.0.1" }])
+      await expect(
+        f.snapshots.command(creator, "create", { ...input, requestId: randomUUID(), ...fields }),
+      ).rejects.toMatchObject({ code: "invalid" });
+    expect(build.build.token).toBe(visibility === "private" ? "offline-snapshot-access" : "offline-admin-access");
+    const image = `sha256:${"d".repeat(64)}`;
+    await hosts.complete(f.hostToken, f.installationId, { requestId: id, outcome: "completed", imageId: image });
+    await hosts.complete(f.hostToken, f.installationId, { requestId: id, outcome: "completed", imageId: image });
+    expect(await f.snapshots.command(f.caller, "get", { org: f.actor.orgId, id })).toMatchObject({
+      snapshot: { id, status: "ready", image, hostAvailable: true },
+    });
+    if (visibility === "private") {
+      await expect(f.snapshots.command(f.adminCaller, "get", { org: f.actor.orgId, id })).rejects.toMatchObject({
+        code: "not_found",
+      });
+      const resolutions = f.resolutions();
+      await expect(f.service().launch(f.adminCaller, { ...f.body, snapshotId: id })).rejects.toThrow();
+      expect(f.resolutions()).toBe(resolutions);
+    }
+    const { hostId: _, ...body } = f.body;
+    const launched = await f.service().launch(f.caller, { ...body, snapshotId: id });
+    expect(launched.sandbox).toMatchObject({ image, snapshotId: id, hostId: f.hostId });
+    expect(f.jobs[0]).toMatchObject({ request: { image, snapshot: { id, ownerId: creator.userId, visibility } } });
+    expect((f.native as { op: string }[]).map((cmd) => cmd.op)).toEqual(["health", "configureGitHub", "prompt"]);
+    const controls = createDockerSandboxControls(sql, key, {
+      clock: f.clock,
+      resume: bootstrap,
+      prepareSnapshotGitHub: f.github.prepareLaunch,
+    });
+    const firstEpoch = f.session()?.epoch;
+    await controls.invoke(f.caller, "stop", { id: f.body.requestId });
+    await controls.invoke(f.caller, "resume", { id: f.body.requestId, request_id: randomUUID() });
+    expect(f.session()?.epoch).not.toBe(firstEpoch);
+    expect(await f.github.status(f.caller, f.body.requestId)).toMatchObject({
+      configured: true,
+      runtime: { epoch: f.session()?.epoch },
+    });
+
+    await expect(
+      f.snapshots.command(f.caller, "create", { ...input, requestId: randomUUID(), visibility: "org" }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    const beforeReplay = f.native.length;
+    await db.query("update public.docker_hosts set last_seen_at=now()-interval '5 minutes' where id=$1", [f.hostId]);
+    expect((await f.service().launch(f.caller, { ...body, snapshotId: id })).sandbox.id).toBe(launched.sandbox.id);
+    expect(f.native).toHaveLength(beforeReplay);
+    await hosts.revoke(f.admin, f.hostId);
+    expect((await f.service().launch(f.caller, { ...body, snapshotId: id })).sandbox.id).toBe(launched.sandbox.id);
+    expect(f.native).toHaveLength(beforeReplay);
+    await db.transaction(async (tx) => {
+      await tx.query("select set_config('request.jwt.claim.sub',$1,true)", [
+        visibility === "private" ? f.admin.userId : f.otherId,
+      ]);
+      await tx.exec("set local role authenticated");
+      expect((await tx.query("select id from public.docker_snapshots where id=$1", [id])).rows).toHaveLength(
+        visibility === "private" ? 0 : 1,
+      );
+      expect(
+        (
+          await tx.query(
+            "select has_table_privilege(current_user,'public.docker_snapshots','INSERT,UPDATE,DELETE') as write",
+          )
+        ).rows[0],
+      ).toEqual({ write: false });
+    });
+  },
+);
+
+test.each([
+  ["owner-rejoined", false],
+  ["issuer-rejoined", false],
+  ["owner-rejoined", true],
+] as const)("snapshot authorization fences %s (already delivered: %s)", async (reason, delivered) => {
+  const f = await snapshotFixture(),
+    id = randomUUID();
+  await f.snapshots.command(f.caller, "create", {
+    org: f.actor.orgId,
+    hostId: f.hostId,
+    requestId: id,
+    name: "revoked-build",
+    visibility: "private",
+    config: f.config,
+  });
+  if (reason === "issuer-rejoined")
+    await db.query("update public.members set role='admin' where org_id=$1 and user_id=$2", [f.actor.orgId, f.otherId]);
+  if (delivered) expect((await hosts.poll(f.hostToken, f.installationId))?.operation).toBe("buildSnapshot");
+  const userId = reason === "owner-rejoined" ? f.actor.userId : f.admin.userId;
+  await db.query("delete from public.members where org_id=$1 and user_id=$2", [f.actor.orgId, userId]);
+  await db.query("insert into public.members(org_id,user_id,role) values($1,$2,$3)", [
+    f.actor.orgId,
+    userId,
+    reason === "issuer-rejoined" ? "admin" : "member",
+  ]);
+  if (delivered)
+    await hosts.complete(f.hostToken, f.installationId, {
+      requestId: id,
+      outcome: "completed",
+      imageId: `sha256:${"e".repeat(64)}`,
+    });
+  else expect(await hosts.poll(f.hostToken, f.installationId)).toBeNull();
+  expect((await db.query("select status,image_id from public.docker_snapshots where id=$1", [id])).rows[0]).toEqual({
+    status: "failed",
+    image_id: null,
+  });
+});
+
+test("snapshot building respects the existing Docker placement switch", async () => {
+  const f = await snapshotFixture(false);
+  await expect(
+    f.snapshots.command(f.caller, "create", {
+      org: f.actor.orgId,
+      hostId: f.hostId,
+      requestId: randomUUID(),
+      name: "disabled",
+      visibility: "private",
+      config: f.config,
+    }),
+  ).rejects.toMatchObject({ code: "unavailable" });
+  expect((await db.query("select id from public.docker_snapshots where org_id=$1", [f.actor.orgId])).rows).toHaveLength(
+    0,
+  );
 });
 
 test("old or unreported Docker daemons get an actionable resume refusal before any job is queued", async () => {

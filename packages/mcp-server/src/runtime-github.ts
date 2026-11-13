@@ -81,8 +81,8 @@ export function createRuntimeGitHub(options: {
           orgId:
             (
               await sql.query<{ org_id: string }>(
-                "select org_id from public.sandboxes where id=$1 and owner_id=$2 and provider='docker'",
-                [id, caller.userId],
+                "select org_id from public.sandboxes where id=$1 and owner_id=$2 and provider='docker' and org_id=any($3::uuid[])",
+                [id, caller.userId, caller.orgs.map((org) => org.orgId)],
               )
             ).rows[0]?.org_id ?? denied(),
         },
@@ -116,10 +116,10 @@ export function createRuntimeGitHub(options: {
       const manifest = JSON.parse(await decryptSecret(docker.request_enc, key));
       if (
         !matchesDockerLaunchRequestHash(manifest.request, docker.request_hash) ||
-        !Array.isArray(manifest.request.repos)
+        !Array.isArray(manifest.request.repos ?? manifest.snapshotConfig?.repos)
       )
         return denied();
-      row.binding.repositories = manifest.request.repos;
+      row.binding.repositories = manifest.request.repos ?? manifest.snapshotConfig.repos;
       Object.assign(row.binding, { launchHash: docker.request_hash, launchActorEpoch: docker.actor_epoch });
       // Match the JSONB representation persisted with the capability, including nested key order.
       row.binding =
@@ -314,6 +314,18 @@ export function createRuntimeGitHub(options: {
       revision: issuedCap.revision,
     };
   }
+  async function prepareTurn(caller: Caller, id: string) {
+    const launch = (
+      await sql.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
+        `select d.request_enc from public.docker_launch_requests d join public.sandboxes s on s.id=d.sandbox_id
+       where s.id=$1 and s.provider='docker' and s.owner_id=$2 and s.org_id=any($3::uuid[])`,
+        [id, caller.userId, caller.orgs.map((org) => org.orgId)],
+      )
+    ).rows[0];
+    if (!launch) return;
+    const manifest = JSON.parse(await decryptSecret(launch.request_enc, key));
+    if (manifest.request?.repos) await prepare(caller, id);
+  }
   const route: Route = async (request) => {
     if (new URL(request.url).pathname !== path) return null;
     const headers = { "cache-control": "no-store" };
@@ -374,5 +386,5 @@ export function createRuntimeGitHub(options: {
       ...(access.expiresAt ? { tokenExpiresAt: access.expiresAt.toISOString() } : {}),
     };
   }
-  return { prepare, prepareLaunch, status, preflight, preflightRepositories, route };
+  return { prepare, prepareTurn, prepareLaunch, status, preflight, preflightRepositories, route };
 }

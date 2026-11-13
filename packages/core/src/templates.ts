@@ -16,9 +16,9 @@ export type TemplateDefinition = TemplatePlacement & {
   modelAccount?: { id: string; version: number };
   /** Stable connection identities; live connected grant versions resolve only at launch admission. */
   connections: string[];
-  variables: { key: string; variableId: string; version: number }[];
+  variables: import("./readable-variables.ts").ReadableVariableBinding[];
   /** Value-free references; optional for revisions published before secret bindings. */
-  secrets?: { key: string; secretId: string; version: number }[];
+  secrets?: import("./application-secret-bindings.ts").ApplicationSecretBinding[];
   skills: string[];
 };
 export interface LaunchTemplate {

@@ -226,10 +226,11 @@ export function httpApi(request: typeof fetch = fetch): Api & {
     async register(server, token, installationId) {
       return (await post(server, "register", token, { installationId })) as { hostId: string; hostToken: string };
     },
-    async poll(state) {
+    async poll(state, options) {
       return (await post(state.server, "poll", state.hostToken, {
         installationId: state.installationId,
         version: VERSION,
+        ...(options?.skipSnapshots ? { skipSnapshots: true } : {}),
       })) as {
         job: Job | null;
       };
@@ -239,6 +240,7 @@ export function httpApi(request: typeof fetch = fetch): Api & {
         installationId: state.installationId,
         requestId: receipt.requestId,
         ...(expired ? { expired: true } : { outcome: receipt.outcome }),
+        ...(receipt.operation === "buildSnapshot" && receipt.imageId ? { imageId: receipt.imageId } : {}),
       };
       if (expired || !receipt.reason) return void (await post(state.server, "results", state.hostToken, body));
       try {

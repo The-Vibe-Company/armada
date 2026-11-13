@@ -1,4 +1,11 @@
-import { DOCKER_LOCAL_IMAGE_LABELS, isDockerImageReference } from "./docker-image.ts";
+import type { DockerHostJob } from "./docker-host-job.ts";
+import {
+  DOCKER_LOCAL_IMAGE_LABELS,
+  type DockerSnapshotBinding,
+  isDockerImageReference,
+  parseDockerSnapshotBinding,
+} from "./docker-image.ts";
+import { buildDockerSnapshot } from "./docker-snapshot-build.ts";
 
 /** Direct argv execution only; adapters must never invoke a shell or log stdin/output. */
 export interface DockerMachineCli {
@@ -24,6 +31,7 @@ export interface DockerMachineRequest {
   ttlSeconds: number;
   /** Frozen absolute UTC deadline; omitted requests retain relative TTL behavior. */
   expiresAt?: number;
+  snapshot?: DockerSnapshotBinding;
 }
 
 export class DockerMachineError extends Error {
@@ -100,6 +108,10 @@ export function createDockerMachineExecutor(options: {
           request.expiresAt > 8_640_000_000_000_000))
     )
       fail("invalid_request");
+    if (request.snapshot !== undefined) {
+      parseDockerSnapshotBinding(request.snapshot);
+      if (request.image.includes("@")) fail("invalid_request");
+    }
     const name = `armada-${options.installationId}-${options.hostId}-${request.sandboxId}-${request.generation}`;
     return {
       containerName: name,
@@ -111,6 +123,13 @@ export function createDockerMachineExecutor(options: {
         [`${prefix}generation`]: request.generation,
         [`${prefix}image`]: request.image,
         [`${prefix}ttl-seconds`]: String(request.ttlSeconds),
+        ...(request.snapshot
+          ? {
+              [`${prefix}snapshot`]: request.snapshot.id,
+              [`${prefix}snapshot-owner`]: request.snapshot.ownerId,
+              [`${prefix}snapshot-visibility`]: request.snapshot.visibility,
+            }
+          : {}),
         ...(request.expiresAt === undefined ? {} : { [`${prefix}absolute-expiry`]: String(request.expiresAt) }),
       },
     };
@@ -210,7 +229,7 @@ export function createDockerMachineExecutor(options: {
     return value;
   }
 
-  async function approveLocalImage(image: string) {
+  async function approveLocalImage(image: string, snapshot?: DockerSnapshotBinding) {
     if (!isLocalImage(image)) return;
     const raw = await checked(["image", "inspect", image]);
     try {
@@ -222,7 +241,11 @@ export function createDockerMachineExecutor(options: {
         row.Id !== image ||
         labels[DOCKER_LOCAL_IMAGE_LABELS.installation] !== options.installationId ||
         labels[DOCKER_LOCAL_IMAGE_LABELS.host] !== options.hostId ||
-        labels[DOCKER_LOCAL_IMAGE_LABELS.scope] !== "org"
+        (snapshot
+          ? labels[DOCKER_LOCAL_IMAGE_LABELS.scope] !== snapshot.visibility ||
+            labels[DOCKER_LOCAL_IMAGE_LABELS.owner] !== snapshot.ownerId ||
+            labels[DOCKER_LOCAL_IMAGE_LABELS.snapshot] !== snapshot.id
+          : labels[DOCKER_LOCAL_IMAGE_LABELS.scope] !== "org")
       )
         fail("ownership_mismatch");
     } catch {
@@ -241,7 +264,7 @@ export function createDockerMachineExecutor(options: {
       fail("expired");
     // An immutable local ID alone is not authorization to consume another host's cache.
     // Approval is checked before any new allocation, never required for retained cleanup/resume.
-    if (!state.container) await approveLocalImage(request.image);
+    if (!state.container) await approveLocalImage(request.image, request.snapshot);
     if (!state.volume) {
       const created = absoluteCreationTime ?? now();
       const labels = {
@@ -375,7 +398,20 @@ export function createDockerMachineExecutor(options: {
     return true;
   }
 
-  return { resume, create, bootstrap, installRuntime, stop, delete: remove, stopIfExpired };
+  return {
+    resume,
+    create,
+    bootstrap,
+    installRuntime,
+    stop,
+    delete: remove,
+    stopIfExpired,
+    async buildSnapshot(job: Extract<DockerHostJob, { operation: "buildSnapshot" }>, recoverOnly = false) {
+      context(job.request);
+      await approveLocalImage(job.request.image);
+      return buildDockerSnapshot(options, job, recoverOnly);
+    },
+  };
 }
 
 function labelArgs(labels: Row): string[] {

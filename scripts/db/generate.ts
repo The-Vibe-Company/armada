@@ -30,6 +30,7 @@ const ROW_ALIASES: Record<string, string> = {
   runtime_github_capabilities: "RuntimeGitHubCapabilityRow",
   runtime_resumes: "RuntimeResumeRow",
   runtime_checkpoints: "RuntimeCheckpointRow",
+  docker_snapshots: "DockerSnapshotRow",
   docker_hosts: "DockerHostRow",
   docker_host_jobs: "DockerHostJobRow",
   docker_launch_requests: "DockerLaunchRequestRow",

@@ -42,6 +42,7 @@ import {
   tokenRevoke,
 } from "./auth-commands.ts";
 import { launchDocker } from "./docker-launch.ts";
+import { dockerSnapshotCommand } from "./docker-snapshots.ts";
 import { hostCommand } from "./host-commands.ts";
 import { type LocalHostIo, localHostCommand, productionLocalHostIo } from "./local-host.ts";
 import { operation, parseTtl } from "./operations.ts";
@@ -90,7 +91,7 @@ Usage:
   armada host add [--name NAME] [--org UUID]
   armada host list [--json] [--org UUID]
   armada host revoke UUID [--org UUID]
-  armada launch [prompt] --provider docker --host UUID|NAME --agent claude|codex|opencode --credential-id UUID --org UUID [--repo owner/repo[@branch] ...] [--request-id UUID] [--json]
+  armada launch [prompt] --provider docker [--host UUID|NAME | --golden snapshot-UUID] --agent claude|codex|opencode --credential-id UUID --org UUID [--repo owner/repo[@branch] ...] [--variable KEY:UUID:VERSION ...] [--secret KEY:UUID:VERSION ...] [--request-id UUID] [--json]
                                            Docker launch through the normal Armada API using the official Armada environment.
   armada --version                         Print the version
   armada --help                            Show this help
@@ -528,7 +529,17 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
     return sizePolicyCommand(rest, authOf(io, deps), (path) =>
       path ? (deps.readFile ?? ((p) => Bun.file(p).text()))(path) : (deps.readStdin ?? (() => Bun.stdin.text()))(),
     );
-  const args = parseArgs(rest, subcommand === "retirement" ? ["--limit"] : []);
+  const args = parseArgs(rest, subcommand === "retirement" ? ["--limit"] : ["--host", "--request-id"]);
+  if (single(args, "--provider") === "docker") {
+    const auth = authOf(io, deps);
+    return dockerSnapshotCommand(
+      subcommand,
+      args,
+      io,
+      { ...auth, fetch: deps.fetch ?? auth.fetch },
+      subcommand === "create" ? await readConfig(args, deps) : undefined,
+    );
+  }
   providerFlag(args);
   const limits = {
     ...(deps.sleep ? { sleep: deps.sleep } : {}),
@@ -919,14 +930,29 @@ function decodeLaunchResult(result: LaunchWireResult): LaunchResult {
 async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<number> {
   const args = parseArgs(
     argv,
-    ["--size", "--skill", "--max-active-children", "--host", "--image", "--request-id", "--credential-version"],
+    [
+      "--size",
+      "--skill",
+      "--max-active-children",
+      "--host",
+      "--image",
+      "--request-id",
+      "--credential-version",
+      "--variable",
+      "--secret",
+      "--golden",
+    ],
     ["--sized", "--armada-access"],
   );
   if (single(args, "--provider") === "docker") {
     const auth = authOf(io, deps);
     return launchDocker(args, io, { ...auth, fetch: deps.fetch ?? auth.fetch });
   }
-  if (["--host", "--image", "--request-id", "--credential-version"].some((key) => single(args, key) !== undefined))
+  if (
+    ["--host", "--image", "--request-id", "--credential-version", "--golden", "--variable", "--secret"].some(
+      (key) => single(args, key) !== undefined,
+    )
+  )
     throw new GoldenError("invalid_config", "Docker placement flags require --provider docker.");
   const maxActiveChildren = single(args, "--max-active-children");
   if (

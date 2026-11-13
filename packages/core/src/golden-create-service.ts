@@ -476,7 +476,7 @@ const CLEANUP_TRAP = [
  * missing: boat.dev's golden-builder image is expected to carry them, but a
  * build must not silently proceed without them if it does not.
  */
-function baselineSetup(repos: readonly PreparedRepo[]): string {
+function baselineSetup(repos: readonly Pick<PreparedRepo, "dir">[]): string {
   const dirs = repos.map((r) => safe(r.dir)).join(" ");
   if (!dirs) return "";
   return [
@@ -528,7 +528,7 @@ const CREDENTIAL_CLEANUP = [
 
 /** Root golden SSH must leave only known build outputs user-owned. Never recurse through
  * symlinks into /opt or managed runner state; worker SSH/exec remains the ordinary user. */
-function ownershipSetup(repos: readonly PreparedRepo[]): string {
+function ownershipSetup(repos: readonly Pick<PreparedRepo, "dir">[]): string {
   const paths = [
     ...repos.map((repo) => `/home/user/${safe(repo.dir)}`),
     "/home/user/.cache",
@@ -549,15 +549,11 @@ function ownershipSetup(repos: readonly PreparedRepo[]): string {
   ].join("\n");
 }
 
-export function goldenScript(repos: readonly PreparedRepo[], setup: readonly string[] = []): string {
-  const lines = [
-    "set -euo pipefail",
-    CLEANUP_TRAP,
-    ownershipSetup(repos),
-    "armada_phase=checkout",
-    `trap 'armada_status=$?; printf "ARMADA_BUILD_FAILURE %s %s\\n" "$armada_phase" "$armada_status" >&2' ERR`,
-    // Keep credentials process-local.  The helper accepts only Git's HTTPS credential
-    // protocol for github.com, and no global/system configuration can leak into a clone.
+/** Shared credential-safe checkout frame. Runtime/image transports supply the token only in memory. */
+export function goldenCheckoutScript(
+  repos: readonly Pick<PreparedRepo, "owner" | "repo" | "branch" | "dir">[],
+): string {
+  return [
     "export GIT_CONFIG_NOSYSTEM=1",
     "export GIT_CONFIG_GLOBAL=/dev/null",
     "export GIT_TERMINAL_PROMPT=0",
@@ -571,6 +567,22 @@ export function goldenScript(repos: readonly PreparedRepo[], setup: readonly str
     ),
     "unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_CONFIG_NOSYSTEM GIT_CONFIG_GLOBAL GIT_TERMINAL_PROMPT GIT_ASKPASS",
     "unset ARMADA_GIT_TOKEN",
+  ].join("\n");
+}
+
+export function goldenScript(
+  repos: readonly Pick<PreparedRepo, "owner" | "repo" | "branch" | "dir">[],
+  setup: readonly string[] = [],
+): string {
+  const lines = [
+    "set -euo pipefail",
+    CLEANUP_TRAP,
+    ownershipSetup(repos),
+    "armada_phase=checkout",
+    `trap 'armada_status=$?; printf "ARMADA_BUILD_FAILURE %s %s\\n" "$armada_phase" "$armada_status" >&2' ERR`,
+    // Keep credentials process-local.  The helper accepts only Git's HTTPS credential
+    // protocol for github.com, and no global/system configuration can leak into a clone.
+    goldenCheckoutScript(repos),
     baselineSetup(repos),
     "armada_phase=init",
     ...setup,

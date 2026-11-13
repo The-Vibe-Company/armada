@@ -28,6 +28,8 @@ const CAPABILITY_LABELS: Record<DockerCapability, string> = {
   resume: "Resume",
   goldens: "Environments (goldens)",
   repositories: "Repositories",
+  variables: "Readable variables",
+  secrets: "Application secret bindings",
   github: "GitHub",
   mcp: "MCP tools",
   skills: "Skills",

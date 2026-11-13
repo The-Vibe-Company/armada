@@ -5,6 +5,8 @@ import {
   GoldenError,
   HARNESSES,
   type Harness,
+  parseApplicationSecretBindings,
+  parseReadableVariableBindings,
   resolveModelChoice,
   validateSkillPins,
 } from "@armada/core";
@@ -19,8 +21,11 @@ const uuid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
 export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, auth: AuthIo): Promise<number> {
   const allowed = new Set([
     "--repo",
+    "--variable",
+    "--secret",
     "--provider",
     "--host",
+    "--golden",
     "--credential-id",
     "--credential-version",
     "--request-id",
@@ -46,9 +51,14 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
   };
   const org = requiredId("--org"),
     credentialId = requiredId("--credential-id");
+  const snapshotId = single(args, "--golden");
+  if (snapshotId !== undefined && !uuid.test(snapshotId))
+    throw new GoldenError("invalid_config", "--golden requires a Docker snapshot UUID.");
   const selector = single(args, "--host");
-  if (!selector || selector.length > 64 || /[\p{C}]/u.test(selector))
+  if ((!snapshotId && !selector) || (selector !== undefined && (selector.length > 64 || /[\p{C}]/u.test(selector))))
     throw new GoldenError("invalid_config", "--host requires a UUID or exact host name.");
+  if (snapshotId && values(args, "--repo").length)
+    throw new GoldenError("invalid_config", "A snapshot cannot be combined with --repo.");
   const supplied = single(args, "--request-id");
   if (supplied !== undefined && !uuid.test(supplied))
     throw new GoldenError("invalid_config", "--request-id requires a UUID.");
@@ -58,6 +68,35 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
     throw new GoldenError("invalid_config", "--credential-version must be a positive integer.");
   const ttl = single(args, "--ttl");
   const repos = values(args, "--repo");
+  const variables = values(args, "--variable").map((binding) => {
+    const [key, variableId, version, extra] = binding.split(":");
+    if (extra !== undefined || !version || !/^[1-9][0-9]*$/.test(version))
+      throw new GoldenError("invalid_config", "Use --variable KEY:UUID:VERSION.");
+    return { key, variableId, version: Number(version) };
+  });
+  let variableBindings: ReturnType<typeof parseReadableVariableBindings>;
+  try {
+    variableBindings = parseReadableVariableBindings(variables);
+  } catch {
+    throw new GoldenError("invalid_config", "Invalid readable variable bindings.");
+  }
+  let secretBindings: ReturnType<typeof parseApplicationSecretBindings>;
+  try {
+    secretBindings = parseApplicationSecretBindings(
+      values(args, "--secret").map((binding) => {
+        const [key, secretId, version, extra] = binding.split(":");
+        if (extra !== undefined || !version || !/^[1-9][0-9]*$/.test(version)) throw Error("Invalid secret binding.");
+        return { key, secretId, version: Number(version) };
+      }),
+    );
+    if (
+      variableBindings.length + secretBindings.length > 64 ||
+      secretBindings.some((secret) => variableBindings.some((variable) => secret.key === variable.key))
+    )
+      throw Error("Invalid environment bindings.");
+  } catch {
+    throw new GoldenError("invalid_config", "Invalid application secret bindings. Use --secret KEY:UUID:VERSION.");
+  }
   const skills = values(args, "--skill");
   try {
     validateSkillPins(skills);
@@ -71,8 +110,10 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
   if (selected && (selected.length > 32 || selected.some((id) => !uuid.test(id))))
     throw new GoldenError("invalid_config", "Connections require 1–32 comma-separated UUIDs.");
   const client = await createArmadaApiClient(auth);
-  const hostId = await resolveHost(client, org, selector);
+  const hostId = selector ? await resolveHost(client, org, selector) : undefined;
   const body: DockerLaunchRequest = {
+    ...(secretBindings.length ? { secrets: secretBindings } : {}),
+    ...(variableBindings.length ? { variables: variableBindings } : {}),
     ...(repos.length
       ? {
           repos: configFromFlags(
@@ -85,7 +126,8 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
       : {}),
     org,
     provider: "docker",
-    hostId,
+    ...(hostId ? { hostId } : {}),
+    ...(snapshotId ? { snapshotId } : {}),
     harness,
     credentialId,
     requestId,

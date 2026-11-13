@@ -14,12 +14,14 @@ import {
   parseDockerHostJob,
 } from "../../core/src/docker-host-job.ts";
 
+import { authorizeSnapshotBuild, resolveDockerSnapshot } from "./docker-snapshot-data.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 
 type Actor = { userId: string; orgId: string };
 type Job = DockerHostJob;
 type Host = { id: string; org_id: string; owner_id: string };
 type Bound = {
+  snapshot_id?: string | null;
   bound_sandbox_id: string | null;
   bound_actor_id: string | null;
   bound_actor_epoch: string | null;
@@ -30,6 +32,7 @@ type StoredJob = Bound & {
   host_id: string;
   input_enc: Uint8Array<ArrayBuffer>;
   outcome: string | null;
+  result_image_id?: string | null;
 };
 type Sandbox = {
   id: string;
@@ -41,6 +44,7 @@ type Sandbox = {
   docker_installation_id: string;
   docker_generation: string;
   docker_image: string;
+  docker_snapshot_id?: string | null;
   effective_ttl_seconds: number;
   expires_at: Date | string;
   status: string;
@@ -85,7 +89,7 @@ function input(job: Job): string {
 
 /** Internal service-role store, deliberately not mounted as a route or wired into placement.
  * Poll is at-least-once; a host must serialize execution and deduplicate request IDs durably.
- * Only trusted internal bootstrap tickets enter this mailbox; no model credentials or arbitrary execution payloads.
+ * Only trusted bootstrap tickets and authorized snapshot definitions enter this mailbox; Docker argv is generated on the host, and model credentials never enter build jobs.
  */
 export function createDockerHostStore(sql: Sql, key: string) {
   async function transaction<T>(work: (tx: Sql) => Promise<T>): Promise<T> {
@@ -142,15 +146,18 @@ export function createDockerHostStore(sql: Sql, key: string) {
     // Deliberately incompatible with old strict mailbox readers: a mixed-version
     // server must fail closed, never deliver bound work without actor admission.
     const serialized = bound ? JSON.stringify({ bound: 1, job: JSON.parse(canonical) }) : canonical;
-    const metadata = bound ?? {
-      bound_sandbox_id: null,
-      bound_actor_id: null,
-      bound_actor_epoch: null,
-      bound_operation: null,
+    const metadata: Bound = {
+      snapshot_id: null,
+      ...(bound ?? {
+        bound_sandbox_id: null,
+        bound_actor_id: null,
+        bound_actor_epoch: null,
+        bound_operation: null,
+      }),
     };
     await tx.query(
-      `insert into public.docker_host_jobs(request_id,host_id,input_enc,bound_sandbox_id,bound_actor_id,bound_actor_epoch,bound_operation)
-       values($1,$2,$3,$4,$5,$6,$7) on conflict(request_id) do nothing`,
+      `insert into public.docker_host_jobs(request_id,host_id,input_enc,bound_sandbox_id,bound_actor_id,bound_actor_epoch,bound_operation,snapshot_id)
+       values($1,$2,$3,$4,$5,$6,$7,$8) on conflict(request_id) do nothing`,
       [
         job.requestId,
         hostId,
@@ -159,6 +166,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
         metadata.bound_actor_id,
         metadata.bound_actor_epoch,
         metadata.bound_operation,
+        metadata.snapshot_id ?? null,
       ],
     );
     const existing =
@@ -176,7 +184,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
   }
   async function readJob(row: StoredJob): Promise<Job> {
     let stored: unknown = JSON.parse(await decryptSecret(row.input_enc, key));
-    if (row.bound_sandbox_id !== null) {
+    if (row.bound_sandbox_id !== null || row.snapshot_id) {
       exact(stored, ["bound", "job"]);
       if (stored.bound !== 1) deny();
       stored = stored.job;
@@ -186,6 +194,13 @@ export function createDockerHostStore(sql: Sql, key: string) {
     if (
       row.bound_sandbox_id !== null &&
       (job.request.sandboxId !== row.bound_sandbox_id || job.operation !== row.bound_operation)
+    )
+      deny();
+    if (
+      row.snapshot_id &&
+      (job.operation !== "buildSnapshot" ||
+        job.build.id !== row.snapshot_id ||
+        job.build.ownerId !== row.bound_actor_id)
     )
       deny();
     return job;
@@ -243,7 +258,18 @@ export function createDockerHostStore(sql: Sql, key: string) {
     ).rows[0];
     if (!original) {
       if (operation !== "create") deny();
+      const source = row.docker_snapshot_id
+        ? await resolveDockerSnapshot(tx, { userId: row.owner_id, orgId: row.org_id }, row.docker_snapshot_id)
+        : undefined;
+      if (
+        source &&
+        (source.image_id !== row.docker_image ||
+          source.host_id !== row.docker_host_id ||
+          source.installation_id !== row.docker_installation_id)
+      )
+        deny();
       return {
+        ...(source ? { snapshot: { id: source.id, ownerId: source.owner_id, visibility: source.visibility } } : {}),
         sandboxId: row.id,
         generation: row.docker_generation,
         image: row.docker_image,
@@ -258,6 +284,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
       saved.request.sandboxId !== row.id ||
       saved.request.generation !== row.docker_generation ||
       saved.request.image !== row.docker_image ||
+      (saved.request.snapshot?.id ?? null) !== (row.docker_snapshot_id ?? null) ||
       saved.request.expiresAt === undefined
     )
       deny();
@@ -433,6 +460,42 @@ export function createDockerHostStore(sql: Sql, key: string) {
         return insert(tx, hostId, job);
       });
     },
+    enqueueSnapshot(actor: Actor, hostId: string, job: Extract<Job, { operation: "buildSnapshot" }>) {
+      return transaction(async (tx) => {
+        exact(actor, ["userId", "orgId"]);
+        id(actor.userId);
+        id(actor.orgId);
+        id(hostId);
+        input(job);
+        const hint =
+          (
+            await tx.query<Host>("select id,org_id,owner_id from public.docker_hosts where id=$1 and org_id=$2", [
+              hostId,
+              actor.orgId,
+            ])
+          ).rows[0] ?? deny();
+        await tx.query(
+          "select user_id from public.members where org_id=$1 and user_id in ($2,$3) order by user_id for update",
+          [actor.orgId, actor.userId, hint.owner_id],
+        );
+        const host =
+          (
+            await tx.query<Host & { installation_id: string }>(
+              "select id,org_id,owner_id,installation_id from public.docker_hosts where id=$1 and org_id=$2 and hash is not null and revoked_at is null and draining_at is null for update",
+              [hostId, actor.orgId],
+            )
+          ).rows[0] ?? deny();
+        const snapshot = await authorizeSnapshotBuild(tx, host.id, host.installation_id, job);
+        if (snapshot.owner_id !== actor.userId) deny();
+        return insert(tx, host.id, job, {
+          snapshot_id: snapshot.id,
+          bound_sandbox_id: null,
+          bound_actor_id: actor.userId,
+          bound_actor_epoch: String(snapshot.actor_epoch),
+          bound_operation: "buildSnapshot",
+        });
+      });
+    },
     enqueueSandbox(actor: Actor, sandboxId: string, selection: Selection) {
       return transaction(async (tx) => {
         exact(actor, ["userId", "orgId"]);
@@ -573,14 +636,14 @@ export function createDockerHostStore(sql: Sql, key: string) {
       }
       return false;
     },
-    poll(hostToken: string, installationId: string, version?: string): Promise<Job | null> {
+    poll(hostToken: string, installationId: string, version?: string, skipSnapshots = false): Promise<Job | null> {
       return transaction(async (tx) => {
         // Peek before member/host locks: never acquire a late actor lock behind the host.
         const hint = (
           await tx.query<StoredJob>(
             `select j.* from public.docker_host_jobs j join public.docker_hosts h on h.id=j.host_id
-           where h.hash=$1 and h.installation_id=$2 and h.revoked_at is null and j.outcome is null order by j.position limit 1`,
-            [hash(hostToken), installationId],
+           where h.hash=$1 and h.installation_id=$2 and h.revoked_at is null and j.outcome is null and (not $3::boolean or j.snapshot_id is null) order by (j.snapshot_id is not null),j.position limit 1`,
+            [hash(hostToken), installationId, skipSnapshots],
           )
         ).rows[0];
         const host = await authenticate(tx, hostToken, installationId, hint?.bound_actor_id ?? undefined);
@@ -588,6 +651,14 @@ export function createDockerHostStore(sql: Sql, key: string) {
           host.id,
           version ?? null,
         ]);
+        await tx.query(
+          "update public.docker_snapshots set status='failed',image_id=null where host_id=$1 and status='building' and build_expires_at<=now()",
+          [host.id],
+        );
+        await tx.query(
+          "update public.docker_host_jobs j set outcome='failed',completed_at=now() from public.docker_snapshots s where j.snapshot_id=s.id and j.host_id=$1 and j.outcome is null and s.status='failed'",
+          [host.id],
+        );
         // Older servers acknowledged failed startup without terminalizing the
         // logical row. Reconcile that saved fact without replaying the machine.
         const histories = (
@@ -614,11 +685,28 @@ export function createDockerHostStore(sql: Sql, key: string) {
         }
         const row = (
           await tx.query<StoredJob>(
-            `select * from public.docker_host_jobs where host_id=$1 and outcome is null order by position limit 1`,
-            [host.id],
+            `select * from public.docker_host_jobs where host_id=$1 and outcome is null and (not $2::boolean or snapshot_id is null) order by (snapshot_id is not null),position limit 1`,
+            [host.id, skipSnapshots],
           )
         ).rows[0];
         if (!row || row.request_id !== hint?.request_id) return null;
+        if (row.snapshot_id) {
+          try {
+            const job = await readJob(row);
+            if (job.operation !== "buildSnapshot") deny();
+            await authorizeSnapshotBuild(tx, host.id, installationId, job);
+          } catch {
+            await tx.query(
+              "update public.docker_snapshots set status='failed',image_id=null where id=$1 and status='building'",
+              [row.snapshot_id],
+            );
+            await tx.query(
+              "update public.docker_host_jobs set outcome='failed',completed_at=now() where request_id=$1 and outcome is null",
+              [row.request_id],
+            );
+            return null;
+          }
+        }
         if (row.bound_sandbox_id) {
           let verified: Sandbox | undefined;
           try {
@@ -677,10 +765,15 @@ export function createDockerHostStore(sql: Sql, key: string) {
     complete(
       hostToken: string,
       installationId: string,
-      result: { requestId: string; outcome: "completed" | "failed"; reason?: DockerJobFailureReason },
+      result: { requestId: string; outcome: "completed" | "failed"; reason?: DockerJobFailureReason; imageId?: string },
     ) {
       return transaction(async (tx) => {
-        exact(result, "reason" in result ? ["requestId", "outcome", "reason"] : ["requestId", "outcome"]);
+        exact(result, [
+          "requestId",
+          "outcome",
+          ...(result.reason !== undefined ? ["reason"] : []),
+          ...(result.imageId !== undefined ? ["imageId"] : []),
+        ]);
         if (
           result.reason !== undefined &&
           (result.outcome !== "failed" || !DOCKER_JOB_FAILURE_REASONS.includes(result.reason))
@@ -688,7 +781,18 @@ export function createDockerHostStore(sql: Sql, key: string) {
           deny();
         id(result.requestId);
         if (result.outcome !== "completed" && result.outcome !== "failed") deny();
-        const host = await authenticate(tx, hostToken, installationId);
+        const peek = (
+          await tx.query<StoredJob>(
+            `select j.* from public.docker_host_jobs j join public.docker_hosts h on h.id=j.host_id where j.request_id=$1 and h.hash=$2 and h.installation_id=$3`,
+            [result.requestId, hash(hostToken), installationId],
+          )
+        ).rows[0];
+        const host = await authenticate(
+          tx,
+          hostToken,
+          installationId,
+          peek?.snapshot_id ? (peek.bound_actor_id ?? undefined) : undefined,
+        );
         const hint =
           (
             await tx.query<StoredJob>(`select * from public.docker_host_jobs where host_id=$1 and request_id=$2`, [
@@ -702,7 +806,34 @@ export function createDockerHostStore(sql: Sql, key: string) {
           [host.id, result.requestId],
         );
         const job = jobs.rows[0] ?? deny();
-        if (job.outcome !== null && job.outcome !== result.outcome) deny();
+        if (
+          job.outcome !== null &&
+          (job.outcome !== result.outcome || (job.result_image_id ?? null) !== (result.imageId ?? null))
+        )
+          deny();
+        if (job.snapshot_id) {
+          const parsed = await readJob(job);
+          if (
+            parsed.operation !== "buildSnapshot" ||
+            (result.outcome === "completed"
+              ? !/^sha256:[0-9a-f]{64}$/.test(result.imageId ?? "")
+              : result.imageId !== undefined)
+          )
+            deny();
+          if (job.outcome === null) {
+            let eligible = false;
+            if (result.outcome === "completed") {
+              try {
+                await authorizeSnapshotBuild(tx, host.id, installationId, parsed);
+                eligible = true;
+              } catch {}
+            }
+            await tx.query(
+              "update public.docker_snapshots set status=$2,image_id=$3 where id=$1 and status='building'",
+              [job.snapshot_id, eligible ? "ready" : "failed", eligible ? result.imageId : null],
+            );
+          }
+        } else if (result.imageId !== undefined) deny();
         // A repeated same-outcome machine fact also repairs a logical transition
         // missed by an earlier server; conflicting facts still fail above.
         if (result.outcome === "failed" && logical)
@@ -722,10 +853,10 @@ export function createDockerHostStore(sql: Sql, key: string) {
             );
         }
         if (job.outcome === null) {
-          await tx.query(`update public.docker_host_jobs set outcome=$2,completed_at=now() where request_id=$1`, [
-            result.requestId,
-            result.outcome,
-          ]);
+          await tx.query(
+            `update public.docker_host_jobs set outcome=$2,completed_at=now(),result_image_id=$3 where request_id=$1`,
+            [result.requestId, result.outcome, result.imageId ?? null],
+          );
         }
       });
     },

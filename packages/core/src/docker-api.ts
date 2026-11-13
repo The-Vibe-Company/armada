@@ -63,6 +63,9 @@ export interface LaunchProviderCapabilities {
   resume: boolean;
   goldens: boolean;
   repositories: boolean;
+  /** Absent on older servers: no readable-variable delivery support. */
+  variables?: boolean;
+  secrets?: boolean;
   machineSizes: boolean;
   github: boolean;
   mcp: boolean;
@@ -123,11 +126,14 @@ export const DOCKER_DEFAULT_IMAGE =
 
 /** Normal API/CLI contract. Discover capabilities.launch before offering this source. */
 export interface DockerLaunchRequest {
+  secrets?: import("./application-secret-bindings.ts").ApplicationSecretBinding[];
+  variables?: import("./readable-variables.ts").ReadableVariableBinding[];
   /** GitHub checkouts, using the same single-segment directory rules as goldens. */
   repos?: import("./golden-config.ts").GoldenRepo[];
   org: string;
   provider: "docker";
-  hostId: string;
+  hostId?: string;
+  snapshotId?: string;
   harness: Harness;
   credentialId: string;
   credentialVersion?: number;
@@ -144,6 +150,7 @@ export interface DockerLaunchRequest {
 export interface DockerSandboxRecord extends Omit<SandboxRecord, "provider" | "goldenId" | "harness"> {
   provider: "docker";
   goldenId: null;
+  snapshotId?: string | null;
   harness: Harness;
   hostId: string;
   image: string;
@@ -184,4 +191,25 @@ export interface DockerSandboxStatus {
     reason: string | null;
   } | null;
   settled: boolean;
+}
+
+export const DOCKER_SNAPSHOT_STATUSES = ["building", "ready", "failed"] as const;
+export interface DockerSnapshotRecord {
+  /** Frozen server release version; null only for snapshots created before version recording. */
+  builtOnVersion: string | null;
+  id: string;
+  orgId: string;
+  ownerId: string;
+  name: string;
+  provider: "docker";
+  visibility: "private" | "org";
+  hostId: string;
+  installationId: string;
+  hostName: string | null;
+  hostAvailable: boolean;
+  definitionHash: string;
+  status: (typeof DOCKER_SNAPSHOT_STATUSES)[number];
+  image: string | null;
+  config: import("./golden-config.ts").GoldenConfig;
+  createdAt: string;
 }

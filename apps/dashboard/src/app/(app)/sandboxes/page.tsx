@@ -24,10 +24,12 @@ import { StatusBadge } from "@/components/status-badge";
 import { OutcomeBadge, OutcomeDetail } from "@/components/task-outcome";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { readSelectedDockerHosts } from "@/lib/data/docker-hosts";
 import { readProviderSetup } from "@/lib/data/provider-setup";
 import { listSandboxCosts, listSandboxes } from "@/lib/data/sandboxes";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { displayUser, listMemberships, memberDirectory, requireViewer } from "@/lib/data/viewer";
+import { hasDockerHost } from "@/lib/docker-snapshots";
 import { HARNESS_LABELS } from "@/lib/labels";
 import { type LifecycleView, lifecycleView, readLifecycle } from "@/lib/lifecycle";
 import { preservationView, settledOutcome } from "@/lib/outcome";
@@ -64,7 +66,7 @@ async function SandboxesContent({ searchParams }: Props) {
   const filters = parseSandboxFilters(await searchParams);
   const supabase = await createClient();
   const selected = await selectedOrganization();
-  const [{ rows, total, inventoryTotal, skipped, facets }, directory, setup] = await Promise.all([
+  const [{ rows, total, inventoryTotal, skipped, facets }, directory, setup, hostRead] = await Promise.all([
     listSandboxes(supabase, filters, viewer.id),
     listMemberships(supabase, viewer.id)
       .then((items) => items.filter((item) => item.org.id === selected?.org.id))
@@ -75,13 +77,15 @@ async function SandboxesContent({ searchParams }: Props) {
         ),
       ),
     selected ? readProviderSetup(selected.org.id) : null,
+    readSelectedDockerHosts(),
   ]);
   const costs = await listSandboxCosts(supabase, rows);
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const now = new Date();
   const filtered = hasSandboxFilters(filters);
   // An organization without a sandbox provider goes to the Cloud providers page to connect one; one with sandboxes to manage stays here.
-  const setupPending = selected !== null && setup?.state === "pending";
+  const hasDocker = hostRead.state === "ready" && hasDockerHost(hostRead.list.hosts);
+  const setupPending = selected !== null && setup?.state === "pending" && !hasDocker;
   if (setupPending && !filtered && inventoryTotal === 0 && skipped === 0) redirect(CLOUD_PROVIDERS_PATH);
 
   const launchAction = setupPending ? (
