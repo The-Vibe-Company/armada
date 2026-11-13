@@ -371,12 +371,40 @@ async function refresh(
   timeoutMs: number,
   signal?: AbortSignal,
 ): Promise<NonNullable<Awaited<ReturnType<SessionStore["read"]>>>> {
+  const operation = async (store: SessionStore) => {
+    // The caller may have loaded this token before another process rotated it.
+    // Read again only after acquiring the shared lock, and reuse that winner.
+    const current = await store.read();
+    if (
+      !current ||
+      current.loginId !== saved.loginId ||
+      armadaApiUrl(current.armadaUrl ?? origin) !== armadaApiUrl(saved.armadaUrl ?? origin)
+    )
+      throw new AuthError("The saved login changed; retry this command with the intended Armada URL.", "unauthorized");
+    if (
+      (current.refreshToken !== refreshToken || current.accessToken !== saved.accessToken) &&
+      Date.parse(current.expiresAt) - Date.now() > 60_000
+    )
+      return current;
+    return refreshLocked(origin, io, store, current, timeoutMs, signal);
+  };
+  return io.session.withLock ? io.session.withLock(operation) : operation(io.session);
+}
+
+async function refreshLocked(
+  origin: string,
+  io: ArmadaApiIo,
+  store: SessionStore,
+  saved: NonNullable<Awaited<ReturnType<SessionStore["read"]>>>,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<NonNullable<Awaited<ReturnType<SessionStore["read"]>>>> {
   let response: Response;
   try {
     response = await io.fetch(apiUrl(origin, "/api/v1/auth/refresh"), {
       method: "POST",
       headers: { "content-type": "application/json", accept: "application/json" },
-      body: JSON.stringify({ refreshToken }),
+      body: JSON.stringify({ refreshToken: saved.refreshToken }),
       redirect: "error",
       signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
     });
@@ -402,7 +430,7 @@ async function refresh(
     refreshToken: value.refreshToken,
     expiresAt: value.expiresAt,
   };
-  await io.session.write(updated);
+  await store.write(updated);
   return updated;
 }
 
