@@ -27,12 +27,14 @@ def main():
     parser.add_argument("--follow-up", action="store_true", help="Prove a second prompt recalls the same conversation")
     parser.add_argument("--normal-controls", action="store_true", help="Read status/logs and stop/delete through normal sandbox API")
     parser.add_argument("--normal-launch", action="store_true", help="Launch and run the first prompt through the normal API; implies --normal-controls")
+    parser.add_argument("--normal-lifecycle", action="store_true", help="Prove normal follow-up and same-host stop/resume with retained history; implies --normal-launch")
     parser.add_argument("--timeout", type=int, default=600, help="Seconds per bounded stage")
     args = parser.parse_args()
+    if args.normal_lifecycle:
+        args.normal_launch = True
+        args.follow_up = True
     if args.normal_launch:
         args.normal_controls = True
-        if args.follow_up:
-            parser.error("--normal-launch currently checks the first prompt; normal send is the next slice")
     if args.start_host and not args.host_id:
         parser.error("--start-host requires --host-id")
     origin = urllib.parse.urlsplit(args.server)
@@ -56,7 +58,7 @@ def main():
             data=json.dumps({"org": args.org, **body}).encode(), method="POST",
             headers={"authorization": "Bearer " + token, "content-type": "application/json"})
         try:
-            with opener.open(request, timeout=600 if normal and path == "sandbox/launch" else 120 if normal and path in ("sandbox/stop", "sandbox/delete") else 30) as response:
+            with opener.open(request, timeout=600 if normal and path == "sandbox/launch" else 120 if normal and path in ("sandbox/stop", "sandbox/delete", "sandbox/resume") else 30) as response:
                 return json.load(response)
         except urllib.error.HTTPError as error:
             # Do not print response bodies, request headers or private capabilities.
@@ -109,6 +111,8 @@ def main():
         launch["credentialVersion"] = args.credential_version if args.credential_version is not None else 1
     if args.model:
         launch["model"] = args.model
+    marker = "DOCKER_MEMORY_" + uuid.uuid4().hex
+    first = (f"Remember this marker for my next message: {marker}. " if args.follow_up else "")
     cleanup_needed = True
     try:
         launch_receipt = None
@@ -118,7 +122,7 @@ def main():
             if docker.get("capabilities", {}).get("launch") is not True:
                 raise RuntimeError("Normal Docker launch is not enabled; check server opt-ins and installed runtime manifest")
             launch.update({"provider": "docker", "harness": "codex", "visibility": "private",
-                           "prompt": "Reply with exactly DOCKER_OK. Do not run tools or modify files."})
+                           "prompt": first + "Reply with exactly DOCKER_OK. Do not run tools or modify files."})
             launched = api("sandbox/launch", launch, normal=True)
             if (launched.get("sandbox", {}).get("id") != sandbox_id
                     or launched.get("sandbox", {}).get("provider") != "docker"
@@ -146,8 +150,12 @@ def main():
                 body = {"sandboxId": sandbox_id, "requestId": prompt_id, "text": text}
                 if conversation is not None:
                     body["conversationId"] = conversation
-                admission = wait_for("prompt", body, "admitted")
-                receipt = admission["receipt"]
+                if args.normal_controls:
+                    receipt = api("sandbox/send", {"id": sandbox_id, "request_id": prompt_id,
+                                  "prompt": text, **({"conversation_id": conversation} if conversation else {})}, normal=True)
+                else:
+                    admission = wait_for("prompt", body, "admitted")
+                    receipt = admission["receipt"]
             if conversation is not None and receipt["conversationId"] != conversation:
                 raise RuntimeError("Follow-up changed conversation identity")
             native_prompt = receipt["promptId"]
@@ -189,12 +197,21 @@ def main():
                     time.sleep(2)
 
         # Only the first prompt contains the public random marker. Recall proves thread continuity.
-        marker = "DOCKER_MEMORY_" + uuid.uuid4().hex
-        first = (f"Remember this marker for my next message: {marker}. " if args.follow_up else "")
         conversation = turn(first + "Reply with exactly DOCKER_OK. Do not run tools or modify files.", "DOCKER_OK", receipt=launch_receipt)
         if args.follow_up:
             turn("Reply with exactly the marker I gave you in my previous message. Do not run tools or modify files.",
                  marker, conversation)
+        if args.normal_lifecycle:
+            stopped = api("sandbox/stop", {"id": sandbox_id, "request_id": str(uuid.uuid4())}, normal=True)
+            if stopped.get("status") != "stopped":
+                raise RuntimeError("Normal stop was not confirmed")
+            resumed = api("sandbox/resume", {"id": sandbox_id, "request_id": str(uuid.uuid4())}, normal=True)
+            if resumed.get("status") != "ready":
+                raise RuntimeError("Normal resume readiness was not confirmed")
+            summary = api("sandbox/detail", {"id": sandbox_id}, normal=True)
+            if summary.get("hostId") != host_id or conversation not in summary.get("conversationIds", []):
+                raise RuntimeError("Resume changed host or conversation identity")
+            turn("Reply with exactly the marker I asked you to remember. Do not run tools or modify files.", marker, conversation)
     finally:
         if cleanup_needed:
             # Never delete an unconfirmed running allocation. Offline cleanup remains honest/pending.

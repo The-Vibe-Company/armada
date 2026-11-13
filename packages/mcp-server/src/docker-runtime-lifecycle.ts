@@ -103,7 +103,7 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
          where j.bound_sandbox_id=$1 and j.bound_actor_id=$2 and j.host_id=$4
          and j.bound_operation='create' and j.outcome='completed'
          and exists(select 1 from public.docker_host_jobs b where b.bound_sandbox_id=$1
-           and b.bound_operation='bootstrap' and b.bound_actor_id=$2 and b.host_id=$4
+           and b.bound_operation in ('bootstrap','resume') and b.bound_actor_id=$2 and b.host_id=$4
            and b.bound_actor_epoch=e.epoch and b.outcome is distinct from 'failed')`,
         [sandboxId, actor.userId, actor.orgId, snapshot.hostId],
       );

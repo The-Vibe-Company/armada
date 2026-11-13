@@ -314,3 +314,49 @@ test("new issuance rechecks current pin, lifecycle, host authority and original 
   await denied(service.bootstrap(occupied.actor, occupied.sandbox.id, occupied.requestId));
   expect(await pending(occupied.sandbox.id)).toEqual(original);
 });
+
+test("resume retains allocation and conversation, fences the old epoch and issues a fresh single-use enrolment", async () => {
+  const f = await fixture();
+  await service.bootstrap(f.actor, f.sandbox.id, f.requestId);
+  const first = await hosts.poll(f.hostToken, f.installationId);
+  if (first?.operation !== "bootstrap") throw Error("missing initial bootstrap");
+  const authority = createRuntimeEnrolments(sql, key);
+  const initial = await authority.enrol(first.bootstrap.enrolmentToken);
+  await hosts.complete(f.hostToken, f.installationId, { requestId: f.requestId, outcome: "completed" });
+  const conversationId = randomUUID();
+  await db.query(`update public.sandboxes set status='ready',conversation_ids=array[$2]::text[] where id=$1`, [
+    f.sandbox.id,
+    conversationId,
+  ]);
+  const stopId = randomUUID();
+  await reservations.stop(f.actor, f.sandbox.id, stopId);
+  await hosts.complete(f.hostToken, f.installationId, { requestId: stopId, outcome: "completed" });
+  const resumeId = randomUUID();
+  await denied(service.resume(f.admin, f.sandbox.id, resumeId));
+  expect(await service.resume(f.actor, f.sandbox.id, resumeId)).toEqual({
+    requestId: resumeId,
+    operation: "resume",
+    state: "pending",
+  });
+  const resumed = await hosts.poll(f.hostToken, f.installationId);
+  if (resumed?.operation !== "resume") throw Error("missing resumed bootstrap");
+  expect(resumed.request).toEqual(first.request);
+  expect(resumed.bootstrap.enrolmentToken).not.toBe(first.bootstrap.enrolmentToken);
+  await expect(authority.withSession(initial.runtimeToken, initial.epoch, async () => true)).rejects.toThrow();
+  const enrolled = await authority.enrol(resumed.bootstrap.enrolmentToken);
+  expect(BigInt(enrolled.epoch)).toBeGreaterThan(BigInt(initial.epoch));
+  expect(
+    (
+      await db.query<{ conversation_ids: string[] }>(`select conversation_ids from public.sandboxes where id=$1`, [
+        f.sandbox.id,
+      ])
+    ).rows[0]?.conversation_ids,
+  ).toEqual([conversationId]);
+  await hosts.complete(f.hostToken, f.installationId, { requestId: resumeId, outcome: "completed" });
+  expect(await service.resume(f.actor, f.sandbox.id, resumeId)).toEqual({
+    requestId: resumeId,
+    operation: "resume",
+    state: "completed",
+  });
+  expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("starting");
+});

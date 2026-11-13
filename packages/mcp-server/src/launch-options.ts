@@ -39,7 +39,14 @@ export const launchOptions = {
  * normal operations remain dark until their handler is actually supplied.
  */
 export function launchProviderOptions(
-  docker: { hosts?: boolean; placement?: boolean; normalApi?: boolean; normalLaunch?: boolean } = {},
+  docker: {
+    hosts?: boolean;
+    placement?: boolean;
+    normalApi?: boolean;
+    normalLaunch?: boolean;
+    normalSend?: boolean;
+    normalResume?: boolean;
+  } = {},
 ): LaunchProviderOption[] {
   const supported: LaunchProviderCapabilities = {
     launch: true,
@@ -65,10 +72,10 @@ export function launchProviderOptions(
     launch: normal && docker.normalLaunch === true && docker.placement === true,
     status: normal,
     logs: normal,
-    followupPrompts: false,
+    followupPrompts: normal && docker.normalSend === true && docker.placement === true,
     stop: normal,
     delete: normal,
-    resume: false,
+    resume: normal && docker.normalResume === true && docker.placement === true,
     goldens: false,
     repositories: false,
     machineSizes: false,
