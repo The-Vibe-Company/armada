@@ -19,20 +19,17 @@ export function boatRuntimeLaunch(
     async start(input) {
       const { host, actor, sandbox, credentials, signal } = input;
       if (sandbox.boatRuntime !== true || host.id !== "boat") throw Error("runtime_selection_required");
-      const { model, reasoningEffort } = sandbox;
-      if (!model || !reasoningEffort) throw Error("runtime_model_required");
-      const plan = await boatRuntimeConfiguration({
-        actor,
-        sandbox,
-        credentials,
-        manifest,
-        architecture,
-        ...(modelAuth ? { modelAuth } : {}),
-      });
       return startRuntime({
         input,
-        plan,
-        defaults: { model, reasoningEffort },
+        configure: () =>
+          boatRuntimeConfiguration({
+            actor,
+            sandbox,
+            credentials,
+            manifest,
+            architecture,
+            ...(modelAuth ? { modelAuth } : {}),
+          }),
         bootstrap: () => (request) => startBoatRuntime(host, request),
         extensions: (agent, epoch) => ({
           prepareWorkspace: async (golden, progress, sleep) => {
