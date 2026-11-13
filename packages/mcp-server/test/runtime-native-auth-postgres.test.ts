@@ -34,6 +34,7 @@ test.skipIf(!url)(
     const locked = Promise.withResolvers<void>(),
       replace = Promise.withResolvers<void>();
     let changing: Promise<unknown> | undefined, publishing: Promise<unknown> | undefined;
+    let publicationSettled = false;
     try {
       await admin.unsafe("insert into auth.users(id) values($1)", [owner]);
       await admin.unsafe("insert into orgs(id,name) values($1,'native-publication-race')", [org]);
@@ -75,15 +76,24 @@ test.skipIf(!url)(
         authJson: auth(1),
         expectedRevision: 0,
       }).then(
-        (value) => value,
-        (error: unknown) => error,
+        (value) => {
+          publicationSettled = true;
+          return value;
+        },
+        (error: unknown) => {
+          publicationSettled = true;
+          return error;
+        },
       );
       let blocked = false;
-      for (let attempt = 0; attempt < 1000; attempt++)
-        if ((await admin.unsafe("select cardinality(pg_blocking_pids($1))>0 as blocked", [pid]))[0].blocked) {
-          blocked = true;
-          break;
-        }
+      // The credential lock persists until replace resolves. Wait for PostgreSQL's
+      // actual lock-wait state, not an arbitrary number of fast observer queries:
+      // scheduling/crypto work can delay publication beyond 1,000 round trips.
+      // The test deadline still bounds a publisher that never reaches the lock.
+      while (!blocked) {
+        blocked = (await admin.unsafe("select cardinality(pg_blocking_pids($1))>0 as blocked", [pid]))[0].blocked;
+        if (!blocked && publicationSettled) throw Error("Publication settled before waiting for the credential lock");
+      }
       expect(blocked).toBe(true);
       replace.resolve();
       await changing;
