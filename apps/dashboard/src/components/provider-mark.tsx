@@ -1,12 +1,15 @@
 import type { SandboxProviderId } from "@armada/core";
-import { PROVIDER_LABELS } from "@/lib/golden-form";
+import { ContainerIcon } from "lucide-react";
+import { LISTED_PROVIDER_LABELS, type ListedProvider } from "@/lib/sandbox-access";
 import { cn } from "@/lib/utils";
 
 /**
  * The provider's own mark, traced from its official icon (boat.dev/icon.svg, modal.com/assets/favicon.svg) with
  * solid fills so a table of them repeats no gradient id. Decorative: the name always sits beside it.
  */
-export function ProviderMark({ provider }: { provider: SandboxProviderId }) {
+export function ProviderMark({ provider }: { provider: SandboxProviderId | ListedProvider }) {
+  if (provider === "docker")
+    return <ContainerIcon aria-hidden="true" className="size-3.5 shrink-0" data-provider-mark />;
   if (provider === "boat")
     return (
       <svg viewBox="0 0 498 463" aria-hidden="true" className="size-3.5 shrink-0" data-provider-mark>
@@ -32,11 +35,11 @@ export function ProviderMark({ provider }: { provider: SandboxProviderId }) {
 }
 
 /** A sandbox's provider as persisted on its row: the mark, then the same name the detail page shows. */
-export function ProviderName({ provider, className }: { provider: SandboxProviderId; className?: string }) {
+export function ProviderName({ provider, className }: { provider: ListedProvider; className?: string }) {
   return (
     <span className={cn("inline-flex items-center gap-1.5", className)}>
       <ProviderMark provider={provider} />
-      {PROVIDER_LABELS[provider] ?? provider}
+      {LISTED_PROVIDER_LABELS[provider]}
     </span>
   );
 }

@@ -1,14 +1,18 @@
-import { HARNESSES, MACHINE_SIZES, type MachineSize, SANDBOX_PROVIDERS, type SandboxListMetadata } from "@armada/core";
+import { HARNESSES, MACHINE_SIZES, type MachineSize, type SandboxListMetadata } from "@armada/core";
 import { MACHINE_SIZE_LABELS } from "./machine-size.ts";
 import { parseTaskOutcome } from "./outcome.ts";
-import { SANDBOX_STATUSES } from "./sandbox-filters.ts";
+import { LISTED_PROVIDERS, type ListedProvider, SANDBOX_STATUSES } from "./sandbox-filters.ts";
+
+export { LISTED_PROVIDER_LABELS, LISTED_PROVIDERS, type ListedProvider } from "./sandbox-filters.ts";
+
+export type ListedSandbox = Omit<SandboxListMetadata, "provider"> & { provider: ListedProvider };
 
 /**
  * Reads the rows of `public.sandbox_list_metadata()` (#680, `docs/contracts/sandbox-access-v1.md`). Only the
  * contract's allowlisted fields are kept, so an interior field a producer might add never reaches a page. A row that
  * does not match the contract fails the whole read: the list is never shown from a guess.
  */
-export function parseSandboxListMetadata(value: unknown): SandboxListMetadata[] {
+export function parseSandboxListMetadata(value: unknown): ListedSandbox[] {
   if (!Array.isArray(value)) throw new Error("The sandbox list did not match its contract.");
   return value.map((row) => {
     const parsed = parseRow(row);
@@ -17,14 +21,13 @@ export function parseSandboxListMetadata(value: unknown): SandboxListMetadata[] 
   });
 }
 
-function parseRow(value: unknown): SandboxListMetadata | null {
+function parseRow(value: unknown): ListedSandbox | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const row = value as Record<string, unknown>;
   const { id, orgId, ownerId, provider, harness, status, createdAt, displayLabel, canOpen, canManage } = row;
   const created = instant(createdAt);
   if (!text(id) || !text(orgId) || !text(ownerId) || !created || !text(displayLabel)) return null;
-  if (!oneOf(SANDBOX_PROVIDERS, provider) || !oneOf(HARNESSES, harness) || !oneOf(SANDBOX_STATUSES, status))
-    return null;
+  if (!oneOf(LISTED_PROVIDERS, provider) || !oneOf(HARNESSES, harness) || !oneOf(SANDBOX_STATUSES, status)) return null;
   if (typeof canOpen !== "boolean" || typeof canManage !== "boolean") return null;
   const providerSandboxId = nullable(row.providerSandboxId, text);
   const boatId = nullable(row.boatId, text);
@@ -73,7 +76,7 @@ function parseRow(value: unknown): SandboxListMetadata | null {
 }
 
 /** How a listed sandbox is named: its provider's display ID (bx_ on Boat) when there is one, else its logical label. */
-export function sandboxName(sandbox: Pick<SandboxListMetadata, "providerSandboxId" | "displayLabel">): string {
+export function sandboxName(sandbox: Pick<ListedSandbox, "providerSandboxId" | "displayLabel">): string {
   return sandbox.providerSandboxId ?? sandbox.displayLabel;
 }
 
