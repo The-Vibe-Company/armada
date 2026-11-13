@@ -496,7 +496,11 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       invalid();
     }
     const size = input.size === undefined ? undefined : parseMachineSize(input.size);
-    const bodyDigest = digest(input);
+    // An explicit enrolled-runtime request must not adopt a native template
+    // request key (or vice versa). Preserve historical/native digests unchanged.
+    const bodyDigest = digest(
+      runtime.options?.runtime || runtime.options?.boatRuntime ? { input, runtime: "armada" } : input,
+    );
     // Resolve a model account before the claim, then revalidate that binding inside admission.
     const existing = await transaction(async (tx) => {
       await member(tx, actor, org);
@@ -700,17 +704,23 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
           beforeStart: async (p, s) => {
             await revalidate(actor, org, m);
             await runtime.options?.beforeStart?.(p, s);
-            if (def.variables.length || def.secrets?.length)
-              await p.configureReadableVariables!({
-                sandboxId: s.providerSandboxId,
-                harness: def.harness,
-                variables: await resolveEnvironment(selection.a, m),
-              });
+            if (def.variables.length || def.secrets?.length) {
+              const variables = await resolveEnvironment(selection.a, m);
+              // Enrolled runtimes receive the frozen manifest via private enrolment.
+              // Keep final reference validation, but never call the native host port.
+              if (s.runtimeTransport !== "dialout")
+                await p.configureReadableVariables!({
+                  sandboxId: s.providerSandboxId,
+                  harness: def.harness,
+                  variables,
+                });
+            }
           },
         },
       );
       const output = {
         requestId: request.id,
+        ...(result.runtime ? { runtime: result.runtime } : {}),
         state: "succeeded",
         id: result.sandbox.id,
         provider: result.sandbox.provider,

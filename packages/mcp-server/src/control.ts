@@ -96,6 +96,7 @@ import {
   setCredential,
   setMemberRole,
   snapshotGolden,
+  type TemplateDefinition,
   type TemplateService,
   VaultError,
   type VaultErrorCode,
@@ -788,6 +789,7 @@ async function dispatch(
         resumeVersion: options.runtimeResume && options.modalRuntimeLaunch ? 1 : 0,
         mcpVersion: options.runtimeMcp ? 2 : 0,
         skillsVersion: options.modalRuntimeLaunch ? 1 : 0,
+        variablesVersion: options.templates && options.modalRuntimeLaunch && options.modalRuntimeHostFor ? 1 : 0,
       },
       boatRuntime: {
         defaultPath: options.launch?.boatRuntimeDefault ? "runtime" : "native",
@@ -1196,6 +1198,67 @@ async function dispatch(
       if (!options.modalRuntimeLaunch || !options.modalRuntimeHostFor)
         throw new VaultError("unavailable", "Modal runtime staging opt-in is disabled.");
       required(body, "prompt");
+      if (body.id !== undefined) {
+        const standard = [
+          "org",
+          "id",
+          "revision",
+          "requestKey",
+          "prompt",
+          "ttlSeconds",
+          "size",
+          "repo",
+          "skills",
+          "skipSkillDefaults",
+        ];
+        if (
+          Object.keys(body).some(
+            (key) => ![...standard, "runtimeVersion", "runtimeTransport", "provider", "harness"].includes(key),
+          ) ||
+          typeof body.id !== "string" ||
+          !UUID.test(body.id) ||
+          typeof body.org !== "string" ||
+          !UUID.test(body.org) ||
+          !Number.isSafeInteger(body.revision) ||
+          Number(body.revision) < 1
+        )
+          throw new VaultError(
+            "invalid",
+            "Modal runtime templates require a pinned revision, organization UUID and unambiguous template fields.",
+          );
+        if (!options.templates) throw new VaultError("unavailable", "Templates unavailable.");
+        const selected = await options.templates.command(caller, "get", {
+          org: body.org,
+          id: body.id,
+          revision: body.revision,
+        });
+        const definition = (selected.revision as { definition?: TemplateDefinition } | undefined)?.definition;
+        if (
+          !definition ||
+          definition.provider !== "modal" ||
+          definition.harness !== "codex" ||
+          definition.secrets?.length
+        )
+          throw new VaultError(
+            "invalid",
+            "Modal runtime templates require Modal Codex without application-secret bindings.",
+          );
+        const base = templateRuntime(options, caller);
+        if (!base) throw new VaultError("unavailable", "Template launching unavailable.");
+        const input = Object.fromEntries(
+          standard.filter((key) => body[key] !== undefined).map((key) => [key, body[key]]),
+        );
+        return options.templates.command(caller, "launch", input, {
+          stores: {
+            goldens: base.stores.goldens,
+            sandboxes: base.stores.sandboxes,
+            credentials: launchCredentials(options.store, options.encryptionKey, undefined, options.modelAuth),
+            ...(options.runtimeMcp ? { connections: options.runtimeMcp.connections } : {}),
+          },
+          provider: (golden) => options.modalRuntimeHostFor!({ ...golden, runtimeTransport: "dialout" }, caller),
+          options: { ...base.options, runtime: options.modalRuntimeLaunch },
+        });
+      }
       return launchRoute(options, caller, body, "modal");
     case "sandbox/launch-runtime-v1":
       if (

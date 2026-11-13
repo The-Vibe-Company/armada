@@ -89,6 +89,7 @@ export interface LaunchOptionsResponse {
     resumeVersion?: number;
     mcpVersion?: number;
     skillsVersion?: number;
+    variablesVersion?: number;
   };
   boatRuntime: {
     defaultPath?: "native" | "runtime";
