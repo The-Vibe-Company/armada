@@ -76,6 +76,17 @@ export function createRuntimeCommands(
     const sealed = await encryptSecret(serialized, key);
     return authority.withOwner(request.sandboxId, ownerId, async (tx, scope) => {
       if (expectedEpoch !== undefined && scope.epoch !== expectedEpoch) throw new RuntimeCommandConflict();
+      // Checkpoint intent fences every mutation entry point, including Docker.
+      if (
+        !["checkpoint", "events", "health", "getPrompt", "getExec", "observeOrchestrator"].includes(request.op) &&
+        (
+          await tx.query("select 1 from public.runtime_checkpoints where sandbox_id=$1 and epoch=$2", [
+            scope.sandboxId,
+            scope.epoch,
+          ])
+        ).rows.length
+      )
+        throw new RuntimeCommandConflict();
       // Include BOTH published wire envelopes, not merely the inner RunnerRequest.
       // A head-of-line command must always fit the client's 1 MiB JSON/frame cap.
       const overhead =
