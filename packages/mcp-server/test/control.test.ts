@@ -2371,3 +2371,96 @@ test("CLI/API connection checks require the owner and current bound revision, ex
     expect(calls).toBe(before);
   });
 });
+
+test("versioned runtime launch is explicit/default-off and never selects native fork credentials or prompt", async () => {
+  await withServer(async ({ db, options }) => {
+    const org = await options.store.createOrg("Runtime", STAN);
+    options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
+    await db.query("update orgs set boat_api_key_enc=$1 where id=$2", [
+      await encryptSecret("fixture-boat-key", KEY),
+      org.id,
+    ]);
+    await db.query("insert into credentials(scope,owner_id,kind,value_enc) values('user',$1,'openai',$2)", [
+      STAN,
+      await encryptSecret("fixture-model-key", KEY),
+    ]);
+    await db.query(
+      "insert into goldens(org_id,name,visibility,owner_id,boat_snapshot_id,config) values($1,'runtime-golden','org',$2,$3,$4::jsonb)",
+      [
+        org.id,
+        STAN,
+        `a${"b".repeat(62)}`,
+        JSON.stringify({
+          repos: [{ url: "https://github.com/example/web.git", branch: "main", dir: "web" }],
+          init: ["must not run"],
+        }),
+      ],
+    );
+    const host = fakeBoat();
+    let native = 0,
+      starts = 0;
+    options.providerFor = () => {
+      native++;
+      return host.provider;
+    };
+    const bearer = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`;
+    const request = (route: string, body: object) =>
+      handleControlRequest(
+        new Request(`https://armada.test/api/v1/${route}`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${bearer}` },
+          body: JSON.stringify(body),
+        }),
+        options,
+      );
+    const body = {
+      golden: "runtime-golden",
+      org: org.id,
+      provider: "boat",
+      harness: "codex",
+      prompt: "reply",
+      boatRuntime: true,
+      runtimeVersion: 1,
+    };
+    expect((await request("sandbox/launch-runtime-v1", body))?.status).toBe(503);
+    expect(host.forks).toHaveLength(0);
+    options.runtimeHostFor = () => host.provider;
+    options.boatRuntimeLaunch = {
+      async start(input) {
+        starts++;
+        expect(input.sandbox.boatRuntime).toBe(true);
+        expect(input.credentials.env.OPENAI_API_KEY).toBe("fixture-model-key");
+        return {
+          epoch: "1",
+          async prompt() {
+            return { promptId: "runtime-initial", conversationId: "runtime-conversation", status: "queued" };
+          },
+        };
+      },
+    };
+    for (const bad of [
+      { ...body, runtimeVersion: 0 },
+      { ...body, boatRuntime: false },
+      { ...body, harness: "claude" },
+      { ...body, provider: "modal" },
+      { ...body, connections: "invalid" },
+      { ...body, skills: ["example/tool@1.0.0"] },
+    ])
+      expect((await request("sandbox/launch-runtime-v1", bad))?.status).toBe(400);
+    expect((await request("sandbox/launch", body))?.status).toBe(400);
+    expect(host.forks).toHaveLength(0);
+    const response = await request("sandbox/launch-runtime-v1", body);
+    expect(response?.status).toBe(200);
+    expect(await response?.json()).toMatchObject({
+      runtime: { kind: "armada", epoch: "1" },
+      sandbox: { boatRuntime: true },
+      promptId: "runtime-initial",
+    });
+    expect(starts).toBe(1);
+    expect(native).toBe(0);
+    expect(host.forks).toHaveLength(1);
+    expect(host.forks[0]?.env).toEqual({});
+    expect(host.prompts).toHaveLength(0);
+    expect(host.execs).toHaveLength(0);
+  });
+});

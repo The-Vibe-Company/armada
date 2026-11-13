@@ -556,3 +556,65 @@ test("timed-out provider observations stay bounded until their raw work settles"
     await db.close();
   }
 });
+
+test("runtime lifecycle stops compute with explicit no-checkpoint note, without native quiescence or capture", async () => {
+  const { db, people } = await database();
+  try {
+    const sql = bunLikeSql(db);
+    const store = createSqlData(sql)({
+      userId: people.owner,
+      orgs: [{ orgId: people.org, role: "member" }],
+      via: "service",
+    }).sandboxes;
+    const golden = (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0];
+    if (!golden) throw Error("missing golden");
+    const row = await store.insert({
+      id: crypto.randomUUID(),
+      provider: "boat",
+      providerSandboxId: "runtime-compute",
+      goldenId: golden.id,
+      orgId: people.org,
+      ownerId: people.owner,
+      harness: "codex",
+      status: "ready",
+      model: "gpt-5.4",
+      reasoningEffort: "high",
+      boatRuntime: true,
+    });
+    await db.query("update sandboxes set stop_requested_at=now(),reconcile_after=now() where id=$1", [row.id]);
+    let stopped = false;
+    const calls: string[] = [];
+    const provider = {
+      id: "boat",
+      async get() {
+        return {
+          id: "runtime-compute",
+          name: "x",
+          labels: {},
+          state: stopped ? "stopped" : "ready",
+          providerState: "x",
+          ...(stopped ? { stoppedAt: new Date() } : {}),
+        };
+      },
+      async stop() {
+        calls.push("stop");
+        stopped = true;
+      },
+      async quiesce() {
+        throw Error("must not claim native quiescence");
+      },
+      async exec() {
+        throw Error("must not capture native work");
+      },
+    };
+    const lifecycle = createSandboxLifecycle(sql, async () => provider as unknown as import("@armada/core").Provider);
+    expect(await lifecycle.reconcileOne()).toBe(true);
+    expect(calls).toEqual(["stop"]);
+    const final = await store.get(row.id);
+    expect(final?.status).toBe("stopped");
+    expect(final?.preservationNote).toContain("work preservation and resumable checkpoint are unavailable");
+    await lifecycle.drain();
+  } finally {
+    await db.close();
+  }
+});
