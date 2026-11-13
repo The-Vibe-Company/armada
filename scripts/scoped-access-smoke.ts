@@ -132,13 +132,35 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
     let cursor: string | undefined;
     const cursors = new Set<string>();
     for (let page = 0; page < 20; page++) {
-      const result = await api<{ events: Row[]; cursor: string | null; hasMore: boolean }>("logs/read", {
+      const options = {
         id,
         coalesce: true,
         maxBytes: 1_048_576,
         limit: 500,
         ...(cursor ? { cursor } : {}),
-      });
+      };
+      let result: { events: Row[]; cursor: string | null; hasMore: boolean };
+      try {
+        result = await api("logs/read", options);
+      } catch (error) {
+        // Never serialize errors, cursor values, provider responses or tool text.
+        const status = row(error).status;
+        io.out(
+          JSON.stringify({
+            step: "scoped_logs_diagnostic",
+            provider: item.provider,
+            route: "logs/read",
+            page,
+            cursorPresent: cursor !== undefined,
+            coalesce: options.coalesce,
+            maxBytes: options.maxBytes,
+            limit: options.limit,
+            status:
+              typeof status === "number" && Number.isInteger(status) && status >= 100 && status <= 599 ? status : null,
+          }),
+        );
+        throw error;
+      }
       if (!Array.isArray(result?.events) || typeof result.hasMore !== "boolean") fail("scoped_invalid_logs");
       for (const event of result.events) {
         if (typeof event.id !== "string") fail("scoped_invalid_logs");
@@ -353,8 +375,30 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
             call.input.sandboxId !== childId ||
             call.result.sandboxId !== childId ||
             !successful(call)
-          )
+          ) {
+            // A closed projection, not a redacted dump: native arguments/results
+            // can contain credentials, arbitrary error text and prompt echoes.
+            io.out(
+              JSON.stringify({
+                step: "scoped_message_diagnostic",
+                provider: item.provider,
+                messageCount: messages.length,
+                readCount: reads.length,
+                stopCount: stops.length,
+                keyMatches: call?.input.idempotencyKey === messageKey,
+                textMatches: call?.input.text === childPrompt,
+                targetMatches: call?.input.sandboxId === childId,
+                receiptTargetMatches: call?.result.sandboxId === childId,
+                receiptIdValid: uuid(call?.result.id),
+                receiptState: ["pending", "uncertain", "failed", "succeeded"].includes(String(call?.result.state))
+                  ? call!.result.state
+                  : "unrecognized",
+                toolError: call?.error ?? null,
+                authorityDenied: call?.denied ?? null,
+              }),
+            );
             fail("scoped_message_unproven");
+          }
           return call;
         });
         const boundRead = (call: Call) =>
