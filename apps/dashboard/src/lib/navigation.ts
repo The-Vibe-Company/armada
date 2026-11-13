@@ -8,10 +8,11 @@ export type NavIcon =
   | "routines"
   | "templates"
   | "environments"
-  | "hosts"
   | "skills"
   | "tools"
   | "variables"
+  | "selfHosted"
+  | "cloud"
   | "models"
   | "settings";
 
@@ -35,10 +36,17 @@ export const NAV_GROUPS: readonly NavGroup[] = [
     label: "Library",
     links: [
       { href: "/environments", label: "Environments", icon: "environments" },
-      { href: "/hosts", label: "Hosts", icon: "hosts", optIn: "dockerHosts" },
       { href: "/skills", label: "Skills", icon: "skills" },
       { href: "/tools", label: "Tools", icon: "tools" },
       { href: "/variables", label: "Variables", icon: "variables" },
+    ],
+  },
+  {
+    label: "Providers",
+    links: [
+      // Self-hosted shows only when the server enables Docker hosts; Cloud always leads to the Boat and Modal accounts.
+      { href: "/hosts", label: "Self-hosted", icon: "selfHosted", optIn: "dockerHosts" },
+      { href: "/providers/cloud", label: "Cloud", icon: "cloud" },
     ],
   },
   {

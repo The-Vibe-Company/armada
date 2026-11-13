@@ -121,7 +121,7 @@ export async function hostCommand(argv: readonly string[], auth: AuthIo): Promis
   )
     return invalid("The server returned an invalid host registration. Do not reissue until its outcome is reconciled.");
   auth.out(
-    `Run this command on the Docker machine (one-use registration):\n${ticket.command}\nHost: ${ticket.hostId}\n`,
+    `Run this command on the Docker machine (one-use registration):\n${ticket.command}\nHost: ${ticket.hostId}\nExpires: ${ticket.expiresAt}\n`,
   );
   const deadline = Math.min(auth.now().getTime() + 300_000, Date.parse(ticket.expiresAt));
   let slept = 0;
