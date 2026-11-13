@@ -28,71 +28,26 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Bootstrap the Actions dashboard path before the owner disables Git builds.
-  # In gated mode the existing staging job owns this same deployment instead.
-  dashboard:
-    name: Build and deploy staging dashboard
-    if: vars.STAGING_GATED_DEPLOYS != 'true' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    environment: staging
-    env:
-      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-      SOURCE_SHA: ${{ github.sha }}
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 24
-      - uses: ./.github/actions/setup-bun
-      - name: Validate staging dashboard configuration
-        run: |
-          for key in VERCEL_TOKEN VERCEL_ORG_ID VERCEL_PROJECT_ID; do
-            [[ -n "${!key:-}" ]] || { echo "::error::Missing staging configuration: $key"; exit 1; }
-          done
-      - name: Install pinned Vercel client
-        run: npm install --global vercel@65.14.0
-      # --prod targets the staging PROJECT's domain and production env values.
-      # The token is read from the environment, never passed in argv.
-      - name: Build in Actions and upload only prebuilt output
-        run: |
-          vercel pull --yes --environment=production
-          vercel build --prod
-          vercel deploy --prebuilt --prod --yes --meta "githubCommitSha=$SOURCE_SHA"
-
   configuration:
     runs-on: ubuntu-latest
     steps:
-      - name: Report opt-in state
+      - name: Validate deployment source
         env:
-          ENABLED: ${{ vars.STAGING_GATED_DEPLOYS }}
-          RELEASE_SYNCED: ${{ vars.RELEASE_SYNCED_DEPLOYS }}
-          RELEASE_CALL_SHA: ${{ inputs.source_sha }}
           SOURCE_REF: ${{ github.ref }}
+          RELEASE_CALL_SHA: ${{ inputs.source_sha }}
         run: |
-          if [[ -n "$RELEASE_CALL_SHA" && "$ENABLED" != true ]]; then
-            echo "::error::Release staging smoke cannot be a disabled/no-op run."
+          if [[ "$SOURCE_REF" != refs/heads/main && "$SOURCE_REF" != refs/tags/v* ]]; then
+            echo "::error::Pinned staging deployment requires main or a validated release call."
             exit 1
           fi
-          if [[ "$ENABLED" == true && "$SOURCE_REF" != refs/heads/main && "$SOURCE_REF" != refs/tags/v* ]]; then
-            echo "::error::Pinned staging smoke requires main or a version tag."
-            exit 1
-          fi
-          if [[ "$ENABLED" != true ]]; then
-            echo "::notice::Staging-gated deployments disabled; existing deployment behavior unchanged. See docs/releasing.md."
-          elif [[ "$RELEASE_SYNCED" != true ]]; then
-            echo "::error::STAGING_GATED_DEPLOYS requires RELEASE_SYNCED_DEPLOYS=true; production is release-only."
+          if [[ "$SOURCE_REF" == refs/tags/v* && -z "$RELEASE_CALL_SHA" ]]; then
+            echo "::error::Tag staging deployment requires the validated release SHA."
             exit 1
           fi
 
   staging:
     needs: configuration
-    if: vars.STAGING_GATED_DEPLOYS == 'true' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    if: github.ref == 'refs/heads/main' || (startsWith(github.ref, 'refs/tags/v') && inputs.source_sha != '')
     runs-on: ubuntu-latest
     timeout-minutes: 85
     environment: staging
@@ -112,7 +67,7 @@ jobs:
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
       ARMADA_SERVER_URL: ${{ secrets.ARMADA_SERVER_URL }}
       RELEASE_SHA: ${{ inputs.source_sha || github.sha }}
-      PREBUILT_DASHBOARD: "true"
+      STAGING_LATEST_ONLY: ${{ inputs.source_sha == '' && 'true' || 'false' }}
       ARMADA_URL: ${{ vars.ARMADA_ORIGIN }}
       ARMADA_TOKEN: ${{ secrets.ARMADA_SMOKE_TOKEN }}
       ARMADA_SMOKE_CASES: ${{ secrets.ARMADA_SMOKE_CASES }}
@@ -154,9 +109,12 @@ jobs:
         run: npm install --global @railway/cli@5.71.0 vercel@65.14.0
       - uses: ./.github/actions/setup-bun
       - name: Migrate then deploy pinned server and dashboard
+        id: deployment
         run: bash .release-tools/scripts/release/deploy-production.sh
       - run: bun install --frozen-lockfile
+        if: steps.deployment.outputs.superseded != 'true'
       - name: Restore staging smoke receipts across branches and tags
+        if: steps.deployment.outputs.superseded != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -182,6 +140,7 @@ jobs:
             unzip -p "$RUNNER_TEMP/smoke-journal.zip" sandboxes.json > .smoke/sandboxes.json
           fi
       - name: Smoke pinned staging
+        if: steps.deployment.outputs.superseded != 'true'
         env:
           ARMADA_SMOKE: create_real_compute
           ARMADA_SMOKE_JOURNAL: .smoke/sandboxes.json

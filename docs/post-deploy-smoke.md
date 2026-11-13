@@ -1,17 +1,8 @@
 # Deployed checks
 
-> **Release-only production gate:** With repository variables
-> RELEASE_SYNCED_DEPLOYS=true and STAGING_GATED_DEPLOYS=true,
-> [Staging-gated releases](releasing.md#staging-gated-releases-owner-opt-in)
-> continuously deploy/migrate/smoke main on staging. Release calls that same staging
-> workflow for its exact validated SHA before production migrations/server/dashboard/npm.
-> Independent automatic migration applies and deployment-event smoke below are disabled.
-> Manual diagnostic smoke/history/repair/preview remain available. Missing gate config
-> blocks promotion. Owner cutover, emergency bypass and rollback are in the runbook.
-> Manual diagnostic smoke has a separate lock: wait for pinned staging deployment/
-> smoke to finish and ensure no next deployment is queued before running it.
-> It can otherwise observe staging mid-deploy and never authorizes a release.
-> With both variables absent/false, legacy behavior below is unchanged.
+> **Mandatory deployment gate:** Main staging deployments and exact-SHA publishing
+> release calls own smoke. No opt-in or deployment-event fallback exists. Release
+> requires its staging smoke before production. See [deployment policy](releasing.md#deployment-policy-1547).
 
 `scripts/post-deploy-smoke.ts` allocates **real, billable compute**. It uses only
 an Armada bearer token and the deployed server's `/api/v1/` API. It does not
@@ -102,19 +93,21 @@ Use a separate staging Boat account/key shared by its Claude/Codex cases; Boat's
 one-golden account limit does not justify pair-specific extra goldens. Provider/model
 keys remain in Armada's vault, never cases or workflow arguments.
 
-The **Post-deploy smoke** workflow can be dispatched on main. It also runs after
-a successful GitHub `deployment_status` for environment exactly `armada / staging`
-(Railway's GitHub deployment name, not the GitHub secrets environment). To
-override the accepted name, set the repository variable
-`ARMADA_SMOKE_DEPLOYMENT_ENVIRONMENT` to the exact staging deployment name.
-Leave it unset or empty to use the default; never set it to a production name.
-Use repository scope: environment-scoped variables are unavailable when GitHub
-evaluates the job's `if` condition, before the `staging` environment is attached.
-Your deployment system must publish that GitHub status; a Railway/Vercel deploy
-alone is not assumed to produce it. It uses reviewed main code, not arbitrary
-deployment refs. Missing any required secret produces a notice and makes no
-API calls. Production/preview deployment events are ignored. Runs are serialized
-and not cancelled by a newer deploy, allowing cleanup to finish.
+The **Post-deploy smoke** workflow is a manual **main-only** entry point to the
+same pinned staging deployment-and-smoke workflow used after main merges. It
+first deploys the dispatch's main SHA, then smokes that deployment; it no longer
+accepts `deployment_status` events. PR, merge-queue (`gh-readonly-queue/*`) and
+release-please branch deployments cannot trigger smoke or attach its slow check
+to those branches. Dispatch from any other ref is skipped. The publishing Release
+workflow remains the only slow gated path: exact release commit staging deploy
+and smoke, then production. Main post-merge smoke is not a PR/merge-queue gate.
+
+The manual alias requires all staging deployment secrets and smoke cases; missing
+configuration fails before smoke rather than producing a successful no-op
+attestation. The old deployment opt-in variables are ignored. Set ARMADA_ORIGIN, ARMADA_SMOKE_TOKEN and ARMADA_SMOKE_CASES
+in staging as documented above. Do not restore deployment-event smoke as a
+fallback. The pinned deployment and smoke stay serialized together and are not
+cancelled by a newer deploy, allowing cleanup to finish.
 
 Each step emits a fixed diagnostic line; failures exit nonzero. API bodies,
 command output, tokens and provider error messages are never printed. Requests
