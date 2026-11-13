@@ -242,3 +242,54 @@ test.each([false, true])(
     }
   },
 );
+
+// The Modal preparation adapter must resolve fresh credentials before activation
+// and recheck the admitted SQL fence, not merely trust a retained host receipt.
+test.each([false, true])(
+  "Modal activation uses the source checkpoint only while disk remains untainted (%s)",
+  async (taint) => {
+    const f = await stopped("codex", "modal");
+    const { modalRuntimeResume } = await import("../src/modal-runtime-resume.ts");
+    try {
+      const activations: unknown[] = [];
+      const host = {
+        id: "modal",
+        get: async () => ({ id: "physical", state: "stopped" }),
+        resumeRuntime: async (input: unknown) => {
+          activations.push(input);
+        },
+        stop: async () => {},
+      } as unknown as import("@armada/provider-modal").ModalProvider;
+      const prepare = modalRuntimeResume({
+        sql: f.sql,
+        vault: createSqlVaultStore(f.sql),
+        key: ENCRYPTION_KEY,
+        hostFor: async () => host,
+        policy: {
+          async start(value) {
+            if (taint) await f.db.query("update sandboxes set application_secret_tainted=true where id=$1", [f.row.id]);
+            await value.activate?.(value.signal);
+            throw Error("Fixture ends after Modal activation boundary");
+          },
+        },
+      });
+      await expect(
+        createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, prepare)(f.caller, input(f.row.id)),
+      ).rejects.toThrow();
+      expect(activations).toEqual(
+        taint
+          ? []
+          : [
+              {
+                sandboxId: "physical",
+                ttlSeconds: (f.row.effectiveTtlSeconds ?? 14400) + 300,
+                checkpoint: { epoch: "1", watermark: f.cp.checkpoint.watermark },
+              },
+            ],
+      );
+      expect(f.starts).toHaveLength(1);
+    } finally {
+      await f.close();
+    }
+  },
+);

@@ -791,6 +791,30 @@ test("retained enrolled Modal stop snapshots only after quiescence and resumes i
   await expect(f.provider.resumeRuntime(request)).rejects.toMatchObject({ code: "conflict" });
 });
 
+test("cleanup reconciles an unknown enrolled Modal resume create without activating or allocating again", async () => {
+  const f = fixture(scope, db, undefined, undefined, true);
+  const worker = await runningFork(f);
+  await f.provider.stopRuntime({ sandboxId: worker.id, physicalGeneration: "1", epoch: "1", watermark: 2 });
+  f.failCreate(true);
+  await expect(
+    f.provider.resumeRuntime({ sandboxId: worker.id, ttlSeconds: 900, checkpoint: { epoch: "1", watermark: 2 } }),
+  ).rejects.toThrow();
+  expect(await f.store.get(worker.id)).toMatchObject({ phase: "creating", generation: 2 });
+  expect((await f.store.get(worker.id)).physicalId).toBeUndefined();
+  expect(f.creates).toBe(3);
+  const beforeCleanup = f.log.length;
+  // Production failure cleanup calls stop, not another resume/admission attempt.
+  await f.provider.stop({ sandboxId: worker.id });
+  expect(f.log.slice(beforeCleanup)).toEqual(["terminate"]);
+  expect(f.creates).toBe(3);
+  const stopped = await f.store.get(worker.id);
+  expect(stopped.phase).toBe("stopped");
+  expect(stopped.physicalId).toBeDefined();
+  expect(stopped.runtimeCheckpoint).toBeUndefined();
+  expect(stopped.recoveryImageId).toBeUndefined();
+  expect(await f.provider.get(worker.id)).toMatchObject({ state: "stopped" });
+});
+
 test("uncertain enrolled Modal snapshot refuses retry or resume and compute fallback drops retention", async () => {
   const f = fixture(scope, db, undefined, undefined, true);
   const worker = await runningFork(f);

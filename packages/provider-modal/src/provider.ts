@@ -591,8 +591,15 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
   }
   async function stopLeased(row: Machine, save: (row: Machine) => Promise<void>): Promise<void> {
     if (row.phase === "stopped") return;
-    const sb = await physical(row);
     if (row.commonRuntime) {
+      assertMachineSource(row);
+      // An SDK create may have succeeded before its response was lost. Cleanup
+      // resolves only the persisted, ownership-tagged name; it never creates or boots.
+      if (!row.physicalId && row.phase !== "reserved") {
+        const reconciled = await namedOwned(row);
+        row.physicalId = reconciled.sandboxId;
+        await save(row);
+      }
       // Explicit compute-only fallback must never retain an earlier recovery claim.
       if (row.recoveryImageId) row.retainedRecoveryIds = [...(row.retainedRecoveryIds ?? []), row.recoveryImageId];
       delete row.recoveryImageId;
@@ -600,8 +607,11 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       row.phase = "terminate";
       row.info.state = "stopping";
       await save(row);
-      await sb.terminate({ wait: true });
-      if ((await sb.poll()) === null) throw refusal("unavailable", "Termination has not completed.");
+      if (row.physicalId) {
+        const sb = await physical(row);
+        await sb.terminate({ wait: true });
+        if ((await sb.poll()) === null) throw refusal("unavailable", "Termination has not completed.");
+      }
       row.phase = "stopped";
       row.info.state = "stopped";
       row.info.providerState = "stopped";
@@ -609,6 +619,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       await save(row);
       return;
     }
+    const sb = await physical(row);
     if (row.phase !== "terminate") {
       if (!["active", "checkpoint"].includes(row.phase))
         throw refusal("conflict", "Snapshot outcome unknown; source retained for reconciliation.");

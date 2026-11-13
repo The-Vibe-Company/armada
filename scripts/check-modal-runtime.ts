@@ -13,12 +13,14 @@ const credentialId = process.env.ARMADA_RUNTIME_CREDENTIAL_ID;
 if (!token || !golden || !org || !credentialId) throw Error("Missing coordinator staging inputs.");
 
 interface Reply {
-  modalRuntime?: { version?: number; enabled?: boolean; followupVersion?: number };
+  modalRuntime?: { version?: number; enabled?: boolean; followupVersion?: number; resumeVersion?: number };
   sandbox?: { id?: string; provider?: string; runtimeTransport?: string };
   runtime?: { kind?: string; epoch?: string };
   promptId?: string;
   conversationId?: string;
   requestId?: string;
+  resumed?: boolean;
+  sourceCheckpoint?: { epoch?: string; watermark?: number };
   checkpoint?: { state?: string; watermark?: number; acknowledgedSequence?: number };
   source?: string;
   cursor?: string | null;
@@ -53,12 +55,72 @@ if (
   options.modalRuntime.followupVersion !== 1
 )
   throw Error("Modal dial-out v1 with same-conversation follow-up is unavailable; no launch attempted.");
+const resumeMode = process.argv.includes("--resume");
+if (resumeMode && options.modalRuntime.resumeVersion !== 1)
+  throw Error("Modal retained resume v1 is unavailable; no launch attempted.");
 const answer = `ARMADA_MODAL_${crypto.randomUUID().replaceAll("-", "")}`;
 const memory = `ARMADA_MEMORY_${crypto.randomUUID().replaceAll("-", "")}`;
 let id: string | undefined;
 let epoch: string | undefined;
 let promptId: string | undefined;
 let failure: unknown;
+let conversationId: string | undefined;
+let followupPromptId: string | undefined;
+let checkpointRequestId: string | undefined;
+let checkpointReceipt: Reply | undefined;
+let shouldStop = false;
+const verifyPrompt = async (expectedPromptId: string, expectedAnswer: string) => {
+  let cursor: string | undefined;
+  let foundAnswer = false;
+  let finished = false;
+  const deadline = Date.now() + 300000;
+  while (Date.now() < deadline && (!foundAnswer || !finished)) {
+    const page = await api("logs/read", { id, limit: 1000, ...(cursor ? { cursor } : {}) });
+    if (page.source !== "armada-runtime") throw Error("Modal answer was not read from the common runtime archive.");
+    if (page.runtimeFailure) throw Error("Modal enrolled runtime failed; inspect server diagnostics.");
+    for (const event of page.events ?? []) {
+      if (event.promptId !== expectedPromptId) continue;
+      if (
+        event.kind === "message" &&
+        event.partial === false &&
+        event.responseKind !== "tool_result" &&
+        !event.parentToolUseId &&
+        !event.retracted &&
+        event.text.trim() === expectedAnswer
+      )
+        foundAnswer = true;
+      if (event.kind === "prompt" && event.status === "finished") finished = true;
+      if (event.kind === "prompt" && ["failed", "interrupted"].includes(event.status))
+        throw Error("Modal runtime prompt did not finish successfully.");
+    }
+    cursor = page.cursor ?? cursor;
+    if (!foundAnswer || !finished) await Bun.sleep(1000);
+  }
+  if (!foundAnswer || !finished)
+    throw Error("Timed out waiting for this Modal prompt's archived answer and finished event.");
+};
+
+const validateCheckpoint = (receipt: Reply, expectedEpoch: string, requestId: string, watermark?: number) => {
+  const proof = receipt.checkpoint;
+  if (
+    receipt.requestId !== requestId ||
+    receipt.runtime?.kind !== "armada" ||
+    receipt.runtime.epoch !== expectedEpoch ||
+    proof?.state !== "complete" ||
+    !Number.isSafeInteger(proof.watermark) ||
+    (proof.watermark ?? -1) < 0 ||
+    proof.acknowledgedSequence !== proof.watermark ||
+    (watermark !== undefined && proof.watermark !== watermark)
+  )
+    throw Error("Modal checkpoint lacks the current epoch and durable journal ACK.");
+};
+const checkpoint = async (expectedEpoch: string) => {
+  const requestId = crypto.randomUUID();
+  console.log(JSON.stringify({ operation: "runtime_checkpoint", sandboxId: id, requestId }));
+  const receipt = await api("sandbox/checkpoint-runtime-v1", { id, runtimeVersion: 1, request_id: requestId });
+  validateCheckpoint(receipt, expectedEpoch, requestId);
+  return { requestId, receipt };
+};
 try {
   const launched = await api("sandbox/launch-modal-runtime-v1", {
     runtimeVersion: 1,
@@ -76,6 +138,8 @@ try {
     prompt: `Remember token ${memory}. Reply exactly ${answer}. Do not use tools or change files.`,
   });
   id = launched.sandbox?.id;
+  shouldStop = Boolean(id);
+  conversationId = launched.conversationId;
   epoch = launched.runtime?.epoch;
   promptId = launched.promptId;
   if (
@@ -88,36 +152,6 @@ try {
     !launched.conversationId
   )
     throw Error("Missing Modal enrolled launch acknowledgement; reconcile existing allocation, never launch again.");
-  const verifyPrompt = async (expectedPromptId: string, expectedAnswer: string) => {
-    let cursor: string | undefined;
-    let foundAnswer = false;
-    let finished = false;
-    const deadline = Date.now() + 300000;
-    while (Date.now() < deadline && (!foundAnswer || !finished)) {
-      const page = await api("logs/read", { id, limit: 1000, ...(cursor ? { cursor } : {}) });
-      if (page.source !== "armada-runtime") throw Error("Modal answer was not read from the common runtime archive.");
-      if (page.runtimeFailure) throw Error("Modal enrolled runtime failed; inspect server diagnostics.");
-      for (const event of page.events ?? []) {
-        if (event.promptId !== expectedPromptId) continue;
-        if (
-          event.kind === "message" &&
-          event.partial === false &&
-          event.responseKind !== "tool_result" &&
-          !event.parentToolUseId &&
-          !event.retracted &&
-          event.text.trim() === expectedAnswer
-        )
-          foundAnswer = true;
-        if (event.kind === "prompt" && event.status === "finished") finished = true;
-        if (event.kind === "prompt" && ["failed", "interrupted"].includes(event.status))
-          throw Error("Modal runtime prompt did not finish successfully.");
-      }
-      cursor = page.cursor ?? cursor;
-      if (!foundAnswer || !finished) await Bun.sleep(1000);
-    }
-    if (!foundAnswer || !finished)
-      throw Error("Timed out waiting for this Modal prompt's archived answer and finished event.");
-  };
   await verifyPrompt(promptId, answer);
   const followupRequestId = crypto.randomUUID();
   console.log(
@@ -146,19 +180,10 @@ try {
       "Missing same-conversation/current-epoch Modal follow-up acknowledgement; reconcile request_id, never send again.",
     );
   await verifyPrompt(followed.promptId, memory);
-  const requestId = crypto.randomUUID();
-  const checkpoint = await api("sandbox/checkpoint-runtime-v1", { id, runtimeVersion: 1, request_id: requestId });
-  const proof = checkpoint.checkpoint;
-  if (
-    checkpoint.requestId !== requestId ||
-    checkpoint.runtime?.kind !== "armada" ||
-    checkpoint.runtime.epoch !== epoch ||
-    proof?.state !== "complete" ||
-    !Number.isSafeInteger(proof.watermark) ||
-    (proof.watermark ?? -1) < 0 ||
-    proof.acknowledgedSequence !== proof.watermark
-  )
-    throw Error("Modal checkpoint lacks the current epoch and durable journal ACK.");
+  followupPromptId = followed.promptId;
+  const firstCheckpoint = await checkpoint(epoch ?? "");
+  checkpointRequestId = firstCheckpoint.requestId;
+  checkpointReceipt = firstCheckpoint.receipt;
   console.log(
     JSON.stringify({
       sandboxId: id,
@@ -175,29 +200,112 @@ try {
 } catch (error) {
   failure = error;
 }
-if (id) {
-  try {
-    await api("sandbox/stop", { id }); // Exactly one stop dispatch, including inference/checkpoint failure.
-    let stopped = false;
-    const deadline = Date.now() + 180000;
-    while (Date.now() < deadline && !stopped) {
-      const listed = await api("sandbox/list", { owner: "me", org, limit: 200 });
-      stopped =
-        listed.sandboxes?.some(
-          (row) =>
-            row.id === id &&
-            (row.status === "stopped" ||
-              (row.status === "failed" &&
-                typeof row.stoppedAt === "string" &&
-                Number.isFinite(Date.parse(row.stoppedAt)))),
-        ) === true;
-      if (!stopped) await Bun.sleep(1000);
+const stopKnown = async () => {
+  if (id && shouldStop) {
+    shouldStop = false; // Dispatch once even when its transport outcome is unknown.
+    try {
+      await api("sandbox/stop", { id }); // Exactly one stop dispatch, including inference/checkpoint failure.
+      let stopped = false;
+      const deadline = Date.now() + 180000;
+      while (Date.now() < deadline && !stopped) {
+        const listed = await api("sandbox/list", { owner: "me", org, limit: 200 });
+        stopped =
+          listed.sandboxes?.some(
+            (row) =>
+              row.id === id &&
+              (row.status === "stopped" ||
+                (row.status === "failed" &&
+                  typeof row.stoppedAt === "string" &&
+                  Number.isFinite(Date.parse(row.stoppedAt)))),
+          ) === true;
+        if (!stopped) await Bun.sleep(1000);
+      }
+      if (!stopped) throw Error(`Stop unconfirmed for ${id}; coordinator must inspect it, never launch again.`);
+      console.log("Modal runtime compute stopped; no resume is claimed by this stop alone.");
+    } catch {
+      // Cleanup uncertainty is never hidden behind an earlier inference failure.
+      throw Error(`Modal cleanup unconfirmed for ${id}; coordinator must inspect it, never launch again.`);
     }
-    if (!stopped) throw Error(`Stop unconfirmed for ${id}; coordinator must inspect it, never launch again.`);
-    console.log("Modal runtime compute stopped; resume and disk preservation are not supported by this check.");
-  } catch {
-    // Cleanup uncertainty is never hidden behind an earlier inference failure.
-    throw Error(`Modal cleanup unconfirmed for ${id}; coordinator must inspect it, never launch again.`);
   }
+};
+try {
+  await stopKnown();
+} catch (error) {
+  failure = error;
+}
+if (
+  resumeMode &&
+  !failure &&
+  id &&
+  epoch &&
+  promptId &&
+  followupPromptId &&
+  conversationId &&
+  checkpointReceipt &&
+  checkpointRequestId
+) {
+  const sourceEpoch = epoch;
+  const sourceWatermark = checkpointReceipt.checkpoint?.watermark ?? -1;
+  let resumedReceipt: Reply | undefined;
+  try {
+    const stoppedCheckpoint = await api("sandbox/checkpoint-runtime-v1", {
+      id,
+      runtimeVersion: 1,
+      request_id: checkpointRequestId,
+    });
+    validateCheckpoint(stoppedCheckpoint, sourceEpoch, checkpointRequestId, sourceWatermark);
+    await verifyPrompt(promptId, answer);
+    await verifyPrompt(followupPromptId, memory);
+    const requestId = crypto.randomUUID();
+    console.log(JSON.stringify({ operation: "runtime_resume", sandboxId: id, conversationId, requestId }));
+    shouldStop = true; // The known sandbox may activate even if the response is lost.
+    const resumed = await api("sandbox/resume-runtime-v1", {
+      id,
+      runtimeVersion: 1,
+      request_id: requestId,
+      conversation_id: conversationId,
+      prompt:
+        "Again reply exactly with the token I originally asked you to remember. Do not use tools or change files.",
+    });
+    if (
+      resumed.requestId !== requestId ||
+      resumed.resumed !== true ||
+      resumed.conversationId !== conversationId ||
+      !resumed.promptId ||
+      [promptId, followupPromptId].includes(resumed.promptId) ||
+      resumed.runtime?.kind !== "armada" ||
+      !/^[1-9][0-9]{0,18}$/.test(resumed.runtime.epoch ?? "") ||
+      BigInt(resumed.runtime.epoch ?? "0") !== BigInt(sourceEpoch) + 1n ||
+      resumed.sourceCheckpoint?.epoch !== sourceEpoch ||
+      resumed.sourceCheckpoint.watermark !== sourceWatermark
+    )
+      throw Error(
+        "Modal resume lacks same-conversation/new-epoch/restored-checkpoint acknowledgement; reconcile request_id, never activate again.",
+      );
+    await verifyPrompt(resumed.promptId, memory);
+    await verifyPrompt(promptId, answer);
+    await verifyPrompt(followupPromptId, memory);
+    await checkpoint(resumed.runtime.epoch ?? "");
+    resumedReceipt = resumed;
+  } catch (error) {
+    failure ??= error;
+  }
+  try {
+    await stopKnown();
+  } catch (error) {
+    failure = error;
+  }
+  if (!failure && resumedReceipt)
+    console.log(
+      JSON.stringify({
+        sandboxId: id,
+        conversationId,
+        promptId: resumedReceipt.promptId,
+        previousEpoch: sourceEpoch,
+        epoch: resumedReceipt.runtime?.epoch,
+        source: "armada-runtime",
+        resume: "verified",
+      }),
+    );
 }
 if (failure) throw failure;
