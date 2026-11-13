@@ -221,9 +221,6 @@ test("epoch replacement before RPC enqueue cannot install old configuration; old
   const x = await fixture(),
     { f } = x;
   try {
-    await x.service.refresh(f.caller, x.input);
-    await f.send(f.caller, f.input());
-    const old = x.configuration();
     const raced = createRuntimeMcp({
       sql: f.sql,
       key: ENCRYPTION_KEY,
@@ -231,10 +228,14 @@ test("epoch replacement before RPC enqueue cannot install old configuration; old
       commands: {
         ...f.bridge,
         async call(owner, command, options) {
-          await f.authority.enrol(
-            (await f.authority.issue({ sandboxId: f.row.id, ownerId: f.people.owner, configuration: {} }))
-              .enrolmentToken,
-          );
+          if (command.op === "configureMcp") {
+            // First delivery, not an already-recorded request whose replay guard
+            // could mask a missing expected-epoch admission fence.
+            await f.authority.enrol(
+              (await f.authority.issue({ sandboxId: f.row.id, ownerId: f.people.owner, configuration: {} }))
+                .enrolmentToken,
+            );
+          }
           return f.bridge.call(owner, command, options);
         },
       },
@@ -243,8 +244,8 @@ test("epoch replacement before RPC enqueue cannot install old configuration; old
     expect(
       (
         await f.db.query<{ revoked: boolean }>(
-          "select revoked_at is not null as revoked from mcp_leases where hash=$1",
-          [old.hash],
+          "select revoked_at is not null as revoked from mcp_leases where sandbox_id=$1",
+          [f.row.id],
         )
       ).rows[0]?.revoked,
     ).toBe(true);
