@@ -112,7 +112,7 @@ import type { GitHubAccountApi } from "./github-account.ts";
 import { providerRegistry } from "./http.ts";
 import { InvitationError, type Invitations, invitationsFromEnv } from "./invitations.ts";
 import { exposedSecrets, launchCredentials } from "./launch-credentials.ts";
-import { launchOptions } from "./launch-options.ts";
+import { launchOptions, launchProviderOptions } from "./launch-options.ts";
 import { catalogAuthenticationFromEnv } from "./mcp-catalog-client.ts";
 import { createMcpLifecycle } from "./mcp-lifecycle.ts";
 import { createHistoricalSandboxProviderResolver } from "./mcp-sandbox-provider.ts";
@@ -147,6 +147,8 @@ import { orchestratorHttp } from "./orchestrator-api.ts";
 import type { OrchestratorRuntime } from "./orchestrator-runtime.ts";
 
 export interface ControlOptions {
+  /** Trusted installed-route discovery, never taken from request JSON. */
+  docker?: { hosts?: boolean; placement?: boolean; normalApi?: boolean };
   runtimeGitHub?: RuntimeGitHub;
   runtimeResume?: RuntimeResume;
   runtimeCheckpoint?: RuntimeCheckpoint;
@@ -776,6 +778,7 @@ async function dispatch(
   if (route === "launch/options")
     return {
       ...launchOptions,
+      providers: launchProviderOptions(options.docker),
       boatRuntime: {
         version: 1,
         diagnosticsVersion: 1,
@@ -785,7 +788,7 @@ async function dispatch(
         githubVersion: options.runtimeGitHub ? 1 : 0,
         enabled: Boolean(options.boatRuntimeLaunch && options.runtimeHostFor),
       },
-    };
+    } satisfies import("@armada/core").LaunchOptionsResponse;
   if (route === "creds/accounts/usage") {
     if (!options.modelUsage || !options.logs) throw new VaultError("unavailable", "Model usage is not configured.");
     const id = required(body, "id"),

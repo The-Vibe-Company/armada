@@ -66,6 +66,24 @@ export type {
   SandboxStatus,
   ServiceToken,
 } from "./database.types.ts";
+export type {
+  DockerHostListRequest,
+  DockerHostListResponse,
+  DockerHostRegistrationRequest,
+  DockerHostRegistrationResponse,
+  DockerHostRevokeRequest,
+  DockerHostRevokeResponse,
+  DockerHostSummary,
+  DockerLaunchRequest,
+  DockerLaunchResult,
+  DockerSandboxRecord,
+  DockerSandboxStatus,
+  LaunchCapabilityName,
+  LaunchOptionsResponse,
+  LaunchProviderCapabilities,
+  LaunchProviderOption,
+  SandboxPlacementProviderId,
+} from "./docker-api.ts";
 export {
   boundEventEntries,
   buildEventPage,
