@@ -3552,6 +3552,7 @@ export type Database = {
           stop_generation: number;
           preservation_stop_generation: number | null;
           application_secret_tainted: boolean;
+          boat_runtime: boolean;
         };
         Insert: {
           id?: string;
@@ -3605,6 +3606,7 @@ export type Database = {
           stop_generation?: number;
           preservation_stop_generation?: number | null;
           application_secret_tainted?: boolean;
+          boat_runtime?: boolean;
         };
         Update: {
           id?: string;
@@ -3658,6 +3660,7 @@ export type Database = {
           stop_generation?: number;
           preservation_stop_generation?: number | null;
           application_secret_tainted?: boolean;
+          boat_runtime?: boolean;
         };
         Relationships: [
           {

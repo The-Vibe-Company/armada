@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import type { AgentEvent, Sql } from "@armada/core";
 import { decryptSecret } from "@armada/core/server";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
@@ -9,8 +9,8 @@ async function fixture() {
   const { db, people } = await database();
   const id = crypto.randomUUID();
   await db.query(
-    `insert into sandboxes(id,golden_id,org_id,owner_id,boat_id,harness,status)
-    select $1,id,org_id,owner_id,'event-native','codex','ready' from goldens where owner_id=$2 and visibility='private' limit 1`,
+    `insert into sandboxes(id,golden_id,org_id,owner_id,boat_id,harness,status,boat_runtime)
+    select $1,id,org_id,owner_id,'event-native','codex','ready',true from goldens where owner_id=$2 and visibility='private' limit 1`,
     [id, people.owner],
   );
   const sql: Sql = {
@@ -69,7 +69,7 @@ async function fixture() {
   const aggregate = async () =>
     (await db.query<{ usage_turns: unknown }>("select usage_turns from sandboxes where id=$1", [id])).rows[0]
       ?.usage_turns;
-  return { db, people, id, authority, enrol, route, publish, other, usage, rows, aggregate };
+  return { db, sql, people, id, authority, enrol, route, publish, other, usage, rows, aggregate };
 }
 
 test("ACK follows contiguous encrypted persistence and shared usage projection; replay is immutable and atomic", async () => {
@@ -310,6 +310,122 @@ test("unmeasured prompt-only turns accumulate across batches without claiming co
       turnCount: 3,
       turns: [{ promptId: "prompt-a", inputTokens: 100, outputTokens: 20 }],
     });
+  } finally {
+    await f.db.close();
+  }
+});
+
+test("durable runtime history paginates the authenticated archive after stop without native or live runtime access", async () => {
+  const { createRuntimeHistory } = await import("../src/runtime-history.ts");
+  const f = await fixture();
+  try {
+    const active = await f.enrol();
+    const message = (id: string, text: string, conversationId = "conversation"): AgentEvent => ({
+      id,
+      at: 3,
+      kind: "message",
+      text,
+      partial: false,
+      tools: [],
+      conversationId,
+      messageId: "answer",
+      textMode: "snapshot",
+    });
+    expect(
+      (
+        await f.publish(active, [
+          { sequence: 1, event: message("first", "Hello") },
+          { sequence: 2, event: message("second", "Hello runtime") },
+          { sequence: 3, event: message("other", "Unrelated", "another") },
+          { sequence: 4, event: { ...f.other("end"), conversationId: "conversation" } },
+        ])
+      ).status,
+    ).toBe(200);
+    await f.db.query("update sandboxes set status='stopped',stopped_at=now(),stop_requested_at=now() where id=$1", [
+      f.id,
+    ]);
+    const read = createRuntimeHistory(f.sql, ENCRYPTION_KEY);
+    const caller = {
+      userId: f.people.owner,
+      orgs: [{ orgId: f.people.org, role: "member" as const }],
+      via: "service" as const,
+    };
+    const first = await read(caller, f.id, { limit: 2, coalesce: true });
+    expect(first).toMatchObject({
+      source: "armada-runtime",
+      events: [{ kind: "message", text: "Hello runtime" }],
+      hasMore: true,
+    });
+    expect(first.events).toHaveLength(1);
+    const next = await read(caller, f.id, { cursor: first.cursor ?? "", limit: 1, conversationId: "conversation" });
+    expect(next.events).toEqual([]);
+    expect(next.cursor).not.toBe(first.cursor);
+    const end = await read(caller, f.id, { cursor: next.cursor ?? "" });
+    expect(end.events.map((event) => event.id)).toEqual(["end"]);
+    expect(end.hasMore).toBe(false);
+    const tail = await read(caller, f.id, { direction: "backward", limit: 2 });
+    expect(tail.events.map((event) => event.id)).toEqual(["other", "end"]);
+    const older = await read(caller, f.id, { direction: "backward", cursor: tail.olderCursor ?? "", limit: 2 });
+    expect(older.events.map((event) => event.id)).toEqual(["first", "second"]);
+    await expect(read(caller, f.id, { cursor: `ar1_${crypto.randomUUID()}_1` })).rejects.toMatchObject({
+      code: "invalid_request",
+    });
+    await expect(read(caller, f.id, { cursor: "native-boat-cursor" })).rejects.toMatchObject({
+      code: "invalid_request",
+    });
+    await expect(read({ ...caller, userId: f.people.member }, f.id, {})).rejects.toMatchObject({ code: "not_found" });
+    const other = { ...caller, orgs: [{ orgId: f.people.otherOrg, role: "admin" as const }] };
+    await expect(read(other, f.id, {})).rejects.toMatchObject({ code: "not_found" });
+    const bounded = await read(caller, f.id, { maxBytes: 256 });
+    expect(bounded.hasMore).toBe(true);
+    expect(bounded.cursor).toBeDefined();
+    const nativeId = crypto.randomUUID();
+    await f.db.query(
+      `insert into sandboxes(id,golden_id,org_id,owner_id,boat_id,harness,status)
+       select $2,golden_id,org_id,owner_id,'history-native','codex','ready' from sandboxes where id=$1`,
+      [f.id, nativeId],
+    );
+    await expect(read(caller, nativeId, {})).rejects.toMatchObject({ code: "not_found" });
+    await f.db.query("update runtime_events set event_enc=$2 where sandbox_id=$1 and sequence=1", [
+      f.id,
+      new Uint8Array([1, 2, 3]),
+    ]);
+    await expect(read(caller, f.id, {})).rejects.toMatchObject({
+      code: "unavailable",
+      message: "Runtime history is unavailable.",
+    });
+  } finally {
+    await f.db.close();
+  }
+});
+
+test("runtime archive rechecks membership after decryption before returning history", async () => {
+  const { createRuntimeHistory } = await import("../src/runtime-history.ts");
+  const f = await fixture();
+  try {
+    const active = await f.enrol();
+    await f.publish(active, [{ sequence: 1, event: f.other("private") }]);
+    const decrypt = crypto.subtle.decrypt.bind(crypto.subtle);
+    const observed = spyOn(crypto.subtle, "decrypt").mockImplementation(async (...args) => {
+      const plaintext = await decrypt(...args);
+      await f.db.query("delete from members where org_id=$1 and user_id=$2", [f.people.org, f.people.owner]);
+      return plaintext;
+    });
+    try {
+      await expect(
+        createRuntimeHistory(f.sql, ENCRYPTION_KEY)(
+          {
+            userId: f.people.owner,
+            orgs: [{ orgId: f.people.org, role: "member" }],
+            via: "service",
+          },
+          f.id,
+          {},
+        ),
+      ).rejects.toMatchObject({ code: "not_found" });
+    } finally {
+      observed.mockRestore();
+    }
   } finally {
     await f.db.close();
   }

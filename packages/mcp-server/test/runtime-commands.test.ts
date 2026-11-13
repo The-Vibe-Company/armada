@@ -529,3 +529,176 @@ test.each(["wrong-id", "unknown-error", "prototype-error", "stale-health"] as co
       expect(failure).toMatchObject({ details: { runtimeRequestId: "known-request", runtimeOutcome: "unknown" } });
   },
 );
+
+test("runtime startup privately issues configuration, awaits enrolment and fences actual Runner health", async () => {
+  const { createRuntimeStartup } = await import("../src/runtime-startup.ts");
+  const { createRuntimeAgent } = await import("../src/runtime-agent.ts");
+  const { Journal, Runner } = await import("../../agent-runtime/src/index.ts");
+  const { mkdtemp, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const f = await fixture();
+  const root = await mkdtemp(join(tmpdir(), "runtime-startup-"));
+  const journal = new Journal(join(root, "journal"), (value) => value);
+  try {
+    const previous = await f.enrol();
+    const agent = createRuntimeAgent(f.bridge(), {
+      ownerId: f.people.owner,
+      sandboxId: f.id,
+      providerSandboxId: "physical",
+      cwd: root,
+      defaults: { model: "gpt-5.4", reasoningEffort: "high" },
+    });
+    let token: string | undefined;
+    let now = 0;
+    const configuration = { selectedHarness: "codex", privateMarker: "startup-private-configuration" };
+    const start = createRuntimeStartup(
+      f.authority,
+      {
+        async bootstrap(input) {
+          token = input.enrolmentToken;
+          expect(Object.keys(input).sort()).toEqual([
+            "artifact",
+            "cacheDir",
+            "enrolmentToken",
+            "sandboxId",
+            "serverUrl",
+          ]);
+          expect(input.sandboxId).toBe("physical");
+          await expect(f.authority.withSession(previous.runtimeToken, previous.epoch, async () => {})).rejects.toThrow(
+            "runtime_enrolment_denied",
+          );
+          const row = (
+            await f.db.query<{ configuration_enc: Uint8Array }>("select configuration_enc from runtime_enrolments")
+          ).rows[0];
+          expect(Buffer.from(row?.configuration_enc ?? []).includes(Buffer.from(configuration.privateMarker))).toBe(
+            false,
+          );
+        },
+        health: (signal) => agent.health(signal),
+      },
+      {
+        now: () => now,
+        async wait() {
+          now += 250;
+          if (!token) throw Error("bootstrap did not hand off ticket");
+          const enrolled = await f.authority.enrol(token);
+          expect(enrolled.configuration).toEqual(configuration);
+          const unused = {
+            start() {
+              throw Error("startup cannot start a turn");
+            },
+            async close() {},
+          };
+          const runner = new Runner(
+            journal,
+            {
+              token: enrolled.runtimeToken,
+              sandboxId: f.id,
+              generation: enrolled.epoch,
+              expiresAt: Date.now() + 60000,
+            },
+            { codex: unused, claude: unused },
+          );
+          f.onWait(async () => {
+            const command = (await f.bridge().next(enrolled.runtimeToken, enrolled.epoch)).command;
+            expect(command?.op).toBe("health");
+            const response = await runner.handle(
+              new Request("http://runtime/v1", {
+                method: "POST",
+                headers: { "x-armada-runner-grant": enrolled.runtimeToken },
+                body: JSON.stringify(command),
+              }),
+            );
+            await f.bridge().complete(enrolled.runtimeToken, enrolled.epoch, {
+              epoch: enrolled.epoch,
+              requestId: command?.requestId,
+              status: response.status,
+              body: await response.json(),
+            });
+          });
+        },
+      },
+    );
+    expect(
+      await start({
+        ownerId: f.people.owner,
+        sandboxId: f.id,
+        providerSandboxId: "physical",
+        serverUrl: "https://armada.invalid",
+        cacheDir: "/home/user/.armada-bootstrap",
+        artifact: { sha256: "a".repeat(64), bytes: 10 },
+        configuration,
+      }),
+    ).toEqual({ runtime: "armada", epoch: "2" });
+    expect(journal.prompts()).toEqual([]);
+  } finally {
+    journal.close();
+    await f.db.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test.each(["selection", "pre-abort", "timeout", "bootstrap", "replacement", "lifecycle", "stop"] as const)(
+  "startup never publishes readiness after %s and never repeats host bootstrap",
+  async (scenario) => {
+    const { createRuntimeStartup } = await import("../src/runtime-startup.ts");
+    const f = await fixture();
+    try {
+      let starts = 0,
+        now = 0;
+      const abort = new AbortController();
+      if (scenario === "pre-abort") abort.abort();
+      let epoch = "";
+      const start = createRuntimeStartup(
+        f.authority,
+        {
+          async bootstrap(input) {
+            starts++;
+            if (scenario === "bootstrap") throw Error("private-bootstrap-diagnostic");
+            if (scenario !== "timeout" && scenario !== "lifecycle")
+              epoch = (await f.authority.enrol(input.enrolmentToken)).epoch;
+          },
+          async health() {
+            if (scenario === "replacement") await f.enrol();
+            if (scenario === "stop")
+              await f.db.query("update sandboxes set stop_requested_at=now() where id=$1", [f.id]);
+            return { runtime: "armada", epoch };
+          },
+        },
+        {
+          now: () => now,
+          async wait() {
+            if (scenario === "lifecycle" && now === 0) {
+              await f.db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [f.id]);
+              epoch = (await f.enrol()).epoch;
+            }
+            now += 250;
+          },
+        },
+      );
+      const pending = start({
+        ownerId: f.people.owner,
+        sandboxId: f.id,
+        providerSandboxId: "physical",
+        serverUrl: "https://armada.invalid",
+        cacheDir: "/cache",
+        artifact: { sha256: "a".repeat(64), bytes: 10 },
+        configuration: { selectedHarness: scenario === "selection" ? "claude" : "codex" },
+        signal: abort.signal,
+        readinessTimeoutMs: 1000,
+      });
+      await expect(pending).rejects.toMatchObject({
+        provider: "boat",
+        code: scenario === "selection" ? "invalid_request" : "sandbox_not_ready",
+        retryable: false,
+        message: scenario === "selection" ? "Invalid runtime startup selection." : "Armada runtime startup failed.",
+      });
+      expect(starts).toBe(scenario === "pre-abort" || scenario === "selection" ? 0 : 1);
+      if (scenario === "pre-abort" || scenario === "selection")
+        expect((await f.db.query("select sandbox_id from runtime_enrolments")).rows).toEqual([]);
+    } finally {
+      await f.db.close();
+    }
+  },
+);
