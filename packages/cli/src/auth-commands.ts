@@ -73,8 +73,42 @@ export async function loginCommand(
   io: AuthIo,
   how: { provider?: Provider | undefined; email?: string | undefined; url?: string | undefined } = {},
 ): Promise<void> {
+  const origin = how.url ?? io.env.ARMADA_URL ?? DEFAULT_ARMADA_API_URL;
+  if (how.email === undefined) {
+    let methods: string[];
+    try {
+      const response = await io.fetch(new URL("/api/v1/auth/methods", origin), {
+        method: "GET",
+        signal: AbortSignal.timeout(10_000),
+      });
+      const value = (await response.json()) as { methods?: unknown };
+      if (
+        !response.ok ||
+        !Array.isArray(value.methods) ||
+        !value.methods.every((method) => ["email", "github", "google"].includes(method))
+      )
+        throw new Error();
+      methods = value.methods;
+    } catch {
+      throw new AuthError("Could not discover enabled sign-in methods; try again later.", "unavailable");
+    }
+    if (how.provider && !methods.includes(how.provider))
+      throw new AuthError(
+        `${how.provider} sign-in is not enabled; enabled methods: ${methods.join(", ") || "none"}.`,
+        "usage",
+      );
+    if (!how.provider) {
+      if (methods.includes("email")) {
+        if (!io.readEmail) throw new AuthError("Use armada login --email <address>.", "usage");
+        how = { ...how, email: await io.readEmail() };
+      } else {
+        const provider = methods.find((method) => method === "github" || method === "google") as Provider | undefined;
+        if (!provider) throw new AuthError("No supported sign-in methods are enabled.", "unavailable");
+        how = { ...how, provider };
+      }
+    }
+  }
   if (how.email !== undefined) {
-    const origin = how.url ?? io.env.ARMADA_URL ?? DEFAULT_ARMADA_API_URL;
     const email = assertEmail(how.email);
     const pkce = await createPkce();
     const state = crypto.randomUUID().replaceAll("-", "");
@@ -129,8 +163,7 @@ export async function loginCommand(
   }
   // Browser login is Armada-hosted: the CLI never contacts a native provider.
   if (how.email === undefined) {
-    const provider = how.provider ?? "github";
-    const origin = how.url ?? io.env.ARMADA_URL ?? DEFAULT_ARMADA_API_URL;
+    const provider = how.provider as Provider;
     try {
       const result = await browserLogin({
         origin,

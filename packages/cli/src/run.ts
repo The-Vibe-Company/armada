@@ -169,7 +169,8 @@ Usage:
   armada logs <sandbox-id> [--tail [n]] [--all] [--follow] [--json]
                                            Read agent events; --all drains available pages, --follow waits for new pages until settled
   armada login [--url <url>] [--provider github|google | --email <address>]
-                                           --email sends a sign-in link; click it, or type the code it contains
+                                           Discovers enabled methods; prompts for email when available.
+                                           --email sends a sign-in code; type it here without opening the email link
   armada logout
   armada token create [--org <name>] [--label <label>]
   armada token list
