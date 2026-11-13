@@ -7,6 +7,7 @@ import {
   resolveModelChoice,
   type SandboxRecord,
   type Sql,
+  VaultError,
 } from "@armada/core";
 import { createDockerHostStore } from "./docker-host-store.ts";
 
@@ -139,7 +140,9 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
     try {
       if (!sql.transaction) deny();
       return await sql.transaction(work);
-    } catch {
+    } catch (error) {
+      // Only trusted transaction-local placement policy raises public VaultError refusals.
+      if (error instanceof VaultError) throw error;
       return deny();
     }
   }
@@ -164,7 +167,7 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
     });
   }
   return {
-    reserve(actor: Actor, input: Reservation) {
+    reserve(actor: Actor, input: Reservation, authorize?: (tx: Sql) => Promise<void>) {
       return transaction(async (tx) => {
         if (options.enabled !== true) deny();
         actorInput(actor);
@@ -202,6 +205,7 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
           );
           if (!credential.rows.length) deny();
         }
+        await authorize?.(tx);
         const host =
           (
             await tx.query<{ installation_id: string }>(

@@ -35,5 +35,62 @@ class McpReceiptTest(unittest.TestCase):
             ], set(), harness, "connection", "read"))
 
 
+class PlacementCleanupTest(unittest.TestCase):
+    def test_unknown_template_launch_retains_context_and_prints_the_original_replay_key(self):
+        from contextlib import redirect_stdout
+        from io import StringIO
+        from types import SimpleNamespace
+        args = SimpleNamespace(timeout=1, image="worker@sha256:" + "a" * 64, credential="account",
+                               credential_version=2, model=None, mcp=None, skills=[], routine=False)
+        calls, launch_keys = [], []
+        def api(path, body, normal=False):
+            self.assertTrue(normal)
+            calls.append(path)
+            if path == "templates/create":
+                return {"item": {"id": "retained-template"}, "revision": {"revision": 1}}
+            if path == "templates/launch":
+                launch_keys.append(body["requestKey"])
+                raise RuntimeError("response unknown after server dispatch")
+            if path == "templates/delete":
+                return {}
+            self.fail("Unexpected mutation: " + path)
+        output = StringIO()
+        with redirect_stdout(output), self.assertRaisesRegex(RuntimeError, "response unknown"):
+            module.placement_smoke(api, args, "host", "codex")
+        self.assertEqual(calls, ["templates/create", "templates/launch"])
+        self.assertEqual(len(launch_keys), 1)
+        self.assertIn("PLACEMENT_UNRESOLVED_TEMPLATE_ID=retained-template", output.getvalue())
+        self.assertIn("PLACEMENT_UNRESOLVED_TEMPLATE_REQUEST_KEY=" + launch_keys[0], output.getvalue())
+
+    def test_native_failure_cleans_the_actual_template_child_without_sending_a_replacement(self):
+        from types import SimpleNamespace
+        args = SimpleNamespace(timeout=1, image="worker@sha256:" + "a" * 64, credential="account",
+                               credential_version=2, model=None, mcp=None, skills=[], routine=False)
+        calls = []
+        def api(path, body, normal=False):
+            self.assertTrue(normal)
+            calls.append((path, body))
+            if path == "templates/create":
+                return {"item": {"id": "template"}, "revision": {"revision": 1}}
+            if path == "templates/launch":
+                return {"state": "succeeded", "id": "actual-child", "promptId": "initial"}
+            if path == "sandbox/detail":
+                return {"provider": "docker", "hostId": "host", "prompt": {"promptId": "initial"}}
+            if path == "logs/read":
+                return {"events": [{"kind": "prompt", "promptId": "initial", "status": "failed"}]}
+            if path in ("sandbox/stop", "sandbox/delete"):
+                self.assertEqual(body["id"], "actual-child")
+                return {"status": "stopped" if path.endswith("stop") else "deleted"}
+            if path == "templates/delete":
+                self.assertEqual(body, {"id": "template", "expectedRevision": 1})
+                return {}
+            self.fail("Unexpected mutation: " + path)
+        with self.assertRaisesRegex(RuntimeError, "Placement native prompt failed"):
+            module.placement_smoke(api, args, "host", "codex")
+        self.assertEqual([path for path, _ in calls][-3:],
+                         ["sandbox/stop", "sandbox/delete", "templates/delete"])
+        self.assertEqual(sum(path == "templates/launch" for path, _ in calls), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

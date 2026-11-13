@@ -4064,7 +4064,7 @@ export type Database = {
           template_id: string;
           revision_id: string;
           manifest: Json;
-          golden_operation_fence_id: string;
+          golden_operation_fence_id: string | null;
           sandbox_id: string;
           state: string;
           result: Json | null;
@@ -4081,7 +4081,7 @@ export type Database = {
           template_id: string;
           revision_id: string;
           manifest: Json;
-          golden_operation_fence_id: string;
+          golden_operation_fence_id?: string | null;
           sandbox_id: string;
           state?: string;
           result?: Json | null;
@@ -4098,7 +4098,7 @@ export type Database = {
           template_id?: string;
           revision_id?: string;
           manifest?: Json;
-          golden_operation_fence_id?: string;
+          golden_operation_fence_id?: string | null;
           sandbox_id?: string;
           state?: string;
           result?: Json | null;

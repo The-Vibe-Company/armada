@@ -1,6 +1,6 @@
 "use server";
 
-import { MACHINE_SIZES, type MachineSize, type SandboxProviderId } from "@armada/core";
+import { MACHINE_SIZES, type MachineSize, type SandboxPlacementProviderId } from "@armada/core";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { type ActionResult, done, fail, formString, isUuid } from "@/lib/action";
@@ -167,15 +167,16 @@ export async function launchFromTemplate(
   if (size && !(MACHINE_SIZES as readonly string[]).includes(size)) return fail("Choose a machine size from the list.");
 
   let outcome: Awaited<ReturnType<Templates["launch"]>>;
-  let provider: SandboxProviderId;
+  let provider: SandboxPlacementProviderId;
   try {
     const { revision: saved } = await templates.get({ org, id, revision });
     provider = saved.definition.provider;
-    const blocker = await newWorkBlocker(org, provider);
+    const blocker = provider === "docker" ? null : await newWorkBlocker(org, provider);
     if (blocker) return fail(blocker);
     const golden = (await listGoldens(await createClient())).find((row) => row.id === saved.definition.goldenId);
-    if (!golden) return fail("No such golden.");
-    const repository = repositoryChoice(formString(data, "repo"), goldenRepositoryDirs(golden.config));
+    if (!golden && provider !== "docker") return fail("No such golden.");
+    if (provider === "docker" && size) return fail("Docker templates use their host machine size.");
+    const repository = repositoryChoice(formString(data, "repo"), golden ? goldenRepositoryDirs(golden.config) : []);
     if (!repository.ok) return fail(repository.error);
     const ttl = ttlChoice(formString(data, "ttl"), provider);
     if (!ttl.ok) return fail(ttl.error);
@@ -234,7 +235,7 @@ export async function launchFromTemplate(
     };
   if (size && outcome.reason === "launch_unavailable")
     return fail(
-      `${launchReason(outcome.reason)} If ${PROVIDER_LABELS[provider]} refused ${MACHINE_SIZE_LABELS[size as MachineSize]}, choose another size or the default.`,
+      `${launchReason(outcome.reason)} If ${provider === "docker" ? "Docker" : PROVIDER_LABELS[provider]} refused ${MACHINE_SIZE_LABELS[size as MachineSize]}, choose another size or the default.`,
     );
   return {
     ...fail(outcome.message ?? launchReason(outcome.reason)),
