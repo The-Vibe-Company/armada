@@ -24,3 +24,11 @@
   `recorded-resume.ts` replays that resume segment at the JSONL driver boundary.
   This is native evidence, **not a Modal capture**; the staging run below only
   exposes smoke receipts, not native JSONL.
+
+- claude-resume-recorded.json: accounting-only output from pinned Claude Code
+  2.1.322 on 2026-11-13 against a loopback Anthropic protocol fixture, fresh then
+  process-restart/resume. Native result and cost-state fields retained; session
+  ID replaced. Model responses simulated, not authenticated inference. A separate
+  real SDK/ClaudeDriver restart probe with the same endpoint verified 12/3 for
+  each prompt after recovery. This recording drives the fast SDK/child regression;
+  it adds no network or native-binary dependency to required CI.

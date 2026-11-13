@@ -1,9 +1,7 @@
 name: Dashboard browser measurements
 
 on:
-  pull_request:
-  merge_group:
-    types: [checks_requested]
+  # Informational shards must not compete with PR or merge-queue verdicts.
   push:
     branches: [main]
   workflow_dispatch:
@@ -12,8 +10,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: dashboard-measure-${{ github.event_name }}-${{ github.ref }}-${{ github.event_name == 'merge_group' && github.sha || 'latest' }}
-  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
+  group: dashboard-measure-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   browser-shard:

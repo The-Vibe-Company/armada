@@ -1,0 +1,188 @@
+import { afterAll, beforeAll, expect, test } from "bun:test";
+import { createHash, randomUUID } from "node:crypto";
+import type { Sql } from "@armada/core";
+import { decryptSecret } from "@armada/core/server";
+import { createDockerHostStore, DockerHostDenied } from "../src/docker-host-store.ts";
+import { migratedDatabase } from "./migrated-database.ts";
+
+let db: Awaited<ReturnType<typeof migratedDatabase>>;
+const sql: Sql = {
+  query: (query, params) => db.query(query, params),
+  transaction: (work) => db.transaction((tx) => work({ query: (query, params) => tx.query(query, params) })),
+};
+const key = Buffer.alloc(32, 7).toString("base64");
+const store = createDockerHostStore(sql, key);
+beforeAll(async () => {
+  db = await migratedDatabase();
+});
+afterAll(async () => {
+  await db.close();
+});
+async function fixture() {
+  const userId = randomUUID(),
+    memberId = randomUUID(),
+    backupAdmin = randomUUID(),
+    orgId = randomUUID();
+  await db.query(`insert into auth.users(id) values($1),($2),($3)`, [userId, memberId, backupAdmin]);
+  await db.query(`insert into public.orgs(id,name) values($1,$2)`, [orgId, `docker-${orgId}`]);
+  await db.query(
+    `insert into public.members(org_id,user_id,role) values($1,$2,'admin'),($1,$3,'member'),($1,$4,'admin')`,
+    [orgId, userId, memberId, backupAdmin],
+  );
+  const actor = { userId, orgId };
+  const ticket = await store.issueRegistration(actor);
+  const installationId = randomUUID();
+  const host = await store.exchangeRegistration(ticket.registrationToken, installationId);
+  return { actor, memberId, ticket, installationId, ...host };
+}
+function job() {
+  return {
+    requestId: randomUUID(),
+    operation: "create" as const,
+    request: {
+      sandboxId: randomUUID(),
+      generation: randomUUID(),
+      image: `example/worker@sha256:${"a".repeat(64)}`,
+      ttlSeconds: 300,
+    },
+  };
+}
+async function denied(work: Promise<unknown>) {
+  await expect(work).rejects.toBeInstanceOf(DockerHostDenied);
+  await expect(work).rejects.toThrow("Docker host denied");
+}
+
+// Each case owns an independent security/durability contract at the actual SQL boundary.
+test("current admin admission rejects members, cross-org access, and malformed job payloads", async () => {
+  const a = await fixture(),
+    b = await fixture();
+  await denied(store.issueRegistration({ ...a.actor, userId: a.memberId }));
+  await denied(store.revoke(b.actor, a.hostId));
+  await denied(store.enqueue(b.actor, a.hostId, job()));
+  await denied(
+    store.enqueue(a.actor, a.hostId, { ...job(), request: { ...job().request, apiKey: "not-allowed" } } as never),
+  );
+  await denied(store.poll("malformed", a.installationId));
+  await denied(store.complete(a.hostToken, a.installationId, { requestId: "invalid", outcome: "failed" }));
+  await db.query(`update public.members set role='member' where org_id=$1 and user_id=$2`, [
+    a.actor.orgId,
+    a.actor.userId,
+  ]);
+  await denied(store.enqueue(a.actor, a.hostId, job()));
+});
+
+test("registration is single-use, expires, and rechecks the issuing admin", async () => {
+  const a = await fixture();
+  await denied(store.exchangeRegistration(a.ticket.registrationToken, a.installationId));
+  const expired = await store.issueRegistration(a.actor);
+  const pending = await db.query<{ registration_hash: string }>(
+    `select registration_hash from public.docker_hosts where id=$1`,
+    [expired.hostId],
+  );
+  expect(pending.rows[0]?.registration_hash).toBe(createHash("sha256").update(expired.registrationToken).digest("hex"));
+  await db.query(`update public.docker_hosts set registration_expires_at=now()-interval '1 second' where id=$1`, [
+    expired.hostId,
+  ]);
+  await denied(store.exchangeRegistration(expired.registrationToken, randomUUID()));
+  const demoted = await store.issueRegistration(a.actor);
+  await db.query(`update public.members set role='member' where org_id=$1 and user_id=$2`, [
+    a.actor.orgId,
+    a.actor.userId,
+  ]);
+  await denied(store.exchangeRegistration(demoted.registrationToken, randomUUID()));
+});
+
+test("host credentials bind installation, owner membership, and revocation", async () => {
+  const a = await fixture();
+  const task = job();
+  await store.enqueue(a.actor, a.hostId, task);
+  await denied(store.poll(a.hostToken, randomUUID()));
+  await denied(store.complete(a.hostToken, randomUUID(), { requestId: task.requestId, outcome: "completed" }));
+  await db.query(`delete from public.members where org_id=$1 and user_id=$2`, [a.actor.orgId, a.actor.userId]);
+  await denied(store.poll(a.hostToken, a.installationId));
+  await denied(store.complete(a.hostToken, a.installationId, { requestId: task.requestId, outcome: "completed" }));
+  await db.query(`insert into public.members(org_id,user_id,role) values($1,$2,'admin')`, [
+    a.actor.orgId,
+    a.actor.userId,
+  ]);
+  await store.revoke(a.actor, a.hostId);
+  await denied(store.poll(a.hostToken, a.installationId));
+  await denied(store.complete(a.hostToken, a.installationId, { requestId: task.requestId, outcome: "completed" }));
+});
+
+test("durable UUID enqueue is idempotent only for the same host and payload", async () => {
+  const a = await fixture(),
+    b = await fixture(),
+    task = job();
+  await store.enqueue(a.actor, a.hostId, task);
+  // Reopen the service to prove identity is durable rather than an in-memory cache.
+  await createDockerHostStore(sql, key).enqueue(a.actor, a.hostId, task);
+  await denied(store.enqueue(a.actor, a.hostId, { ...task, operation: "delete" }));
+  await denied(store.enqueue(a.actor, a.hostId, { ...task, request: { ...task.request, ttlSeconds: 301 } }));
+  await denied(store.enqueue(b.actor, b.hostId, task));
+  expect(await store.poll(a.hostToken, a.installationId)).toEqual(task);
+  expect(await store.poll(b.hostToken, b.installationId)).toBeNull();
+});
+
+test("poll redelivers oldest unfinished job; terminal ACKs are isolated and immutable", async () => {
+  const a = await fixture(),
+    b = await fixture(),
+    first = job(),
+    second = { ...job(), operation: "stop" as const };
+  await store.enqueue(a.actor, a.hostId, first);
+  await store.enqueue(a.actor, a.hostId, second);
+  expect(await store.poll(a.hostToken, a.installationId)).toEqual(first);
+  expect(await store.poll(a.hostToken, a.installationId)).toEqual(first);
+  await denied(store.complete(b.hostToken, b.installationId, { requestId: first.requestId, outcome: "completed" }));
+  await store.complete(a.hostToken, a.installationId, { requestId: first.requestId, outcome: "completed" });
+  await store.complete(a.hostToken, a.installationId, { requestId: first.requestId, outcome: "completed" });
+  await denied(store.complete(a.hostToken, a.installationId, { requestId: first.requestId, outcome: "failed" }));
+  expect(await store.poll(a.hostToken, a.installationId)).toEqual(second);
+  await store.complete(a.hostToken, a.installationId, { requestId: second.requestId, outcome: "failed" });
+  expect(await store.poll(a.hostToken, a.installationId)).toBeNull();
+  const seen = await db.query<{ last_seen_at: unknown }>(`select last_seen_at from public.docker_hosts where id=$1`, [
+    a.hostId,
+  ]);
+  expect(seen.rows[0]?.last_seen_at).not.toBeNull();
+});
+
+test("SQL persists only token hashes and sealed input and denies user-JWT table/sequence access", async () => {
+  const a = await fixture(),
+    task = job();
+  await store.enqueue(a.actor, a.hostId, task);
+  const host = await db.query<{ hash: string; registration_hash: string | null }>(
+    `select hash,registration_hash from public.docker_hosts where id=$1`,
+    [a.hostId],
+  );
+  expect(host.rows[0]?.hash).toBe(createHash("sha256").update(a.hostToken).digest("hex"));
+  expect(host.rows[0]?.registration_hash).toBeNull();
+  const sealed = await db.query<{ input_enc: Uint8Array<ArrayBuffer> }>(
+    `select input_enc from public.docker_host_jobs where request_id=$1`,
+    [task.requestId],
+  );
+  const bytes = sealed.rows[0]?.input_enc;
+  if (!bytes) throw new Error("Missing sealed job");
+  expect(Buffer.from(bytes).includes(Buffer.from(task.request.image))).toBe(false);
+  expect(JSON.parse(await decryptSecret(bytes, key))).toEqual({ operation: task.operation, request: task.request });
+  for (const role of ["anon", "authenticated"]) {
+    await db.transaction(async (tx) => {
+      await tx.exec(`set local role ${role}`);
+      for (const relation of ["docker_hosts", "docker_host_jobs"]) {
+        const grants = await tx.query<{ allowed: boolean }>(
+          `select has_table_privilege(current_user,$1,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE') as allowed`,
+          [`public.${relation}`],
+        );
+        expect(grants.rows[0]?.allowed).toBe(false);
+        const columns = await tx.query<{ allowed: boolean }>(
+          `select has_any_column_privilege(current_user,$1,'SELECT,INSERT,UPDATE,REFERENCES') as allowed`,
+          [`public.${relation}`],
+        );
+        expect(columns.rows[0]?.allowed).toBe(false);
+      }
+      const sequence = await tx.query<{ allowed: boolean }>(
+        `select has_sequence_privilege(current_user,'public.docker_host_jobs_position_seq','USAGE,SELECT,UPDATE') as allowed`,
+      );
+      expect(sequence.rows[0]?.allowed).toBe(false);
+    });
+  }
+});
