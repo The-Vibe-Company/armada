@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
-import { createServiceToken, createSqlAuthStore, generateToken, sha256Hex } from "@armada/auth";
+import { createMemoryAuthStore, createServiceToken, createSqlAuthStore, generateToken, sha256Hex } from "@armada/auth";
 import type { McpConnectionDto } from "@armada/core";
-import { createSqlVaultStore, type Provider, type SandboxRecord } from "@armada/core/server";
+import { createSqlVaultStore, type Provider, type SandboxRecord, type Sql } from "@armada/core/server";
 import { endpoint } from "../../mcp-gateway/src/index.ts";
 import { configFromEnv } from "../src/config.ts";
 import { createMcpHttpIntegration } from "../src/mcp-http-integration.ts";
@@ -248,7 +248,11 @@ test("HTTP connection control keeps credentials private, scopes organizations, a
 });
 
 test("actual MCP integration construction preserves explicitly configured development dashboard callback origin", async () => {
-  const db = await migratedDatabase();
+  const sql: Sql = {
+    async query() {
+      throw Error("Static client metadata does not need a database.");
+    },
+  };
   let integration: ReturnType<typeof createMcpHttpIntegration> | undefined;
   try {
     const config = configFromEnv({
@@ -262,8 +266,8 @@ test("actual MCP integration construction preserves explicitly configured develo
       ARMADA_DASHBOARD_URL: "http://localhost:3000",
     });
     const options = {
-      sql: db,
-      authStore: createSqlAuthStore(db),
+      sql,
+      authStore: createMemoryAuthStore(),
       encryptionKey: config.encryptionKey,
       publicUrl: config.publicUrl,
       dashboardUrl: config.dashboardUrl,
@@ -280,6 +284,5 @@ test("actual MCP integration construction preserves explicitly configured develo
     expect(() => endpoint("http://localhost:3000/upstream")).toThrow();
   } finally {
     await integration?.close();
-    await db.close();
   }
 });

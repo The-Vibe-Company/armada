@@ -178,7 +178,7 @@ async function SandboxesContent({ searchParams }: Props) {
           </Empty>
         ) : (
           <Empty title="No sandboxes yet" action={launchAction} icon={<BoxesIcon />}>
-            A sandbox starts from a golden. Pick one on the Environments page, or run{" "}
+            A sandbox starts from a snapshot. Pick one on the Snapshots page, or run{" "}
             <code className="font-mono text-xs">armada launch &lt;golden&gt;</code> or launch through MCP.
           </Empty>
         )

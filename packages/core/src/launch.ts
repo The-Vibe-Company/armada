@@ -188,6 +188,11 @@ export interface LaunchOptions extends GoldenLimits {
     }): Promise<{
       prompt: Provider["prompt"];
       epoch: string;
+      prepareWorkspace?: (
+        golden: GoldenRecord,
+        progress: (stage: LaunchInitializationStage) => void,
+        sleep?: (ms: number) => Promise<void>,
+      ) => Promise<GitHubLaunchInfo>;
       installSkills?: (
         references: string[],
         key: string | null,
@@ -251,8 +256,6 @@ export async function launchSandbox(
         `Boat runtime default cannot launch ${feature}; no native fallback. Set ARMADA_BOAT_AGENT_PATH=native for rollback.`,
       );
     };
-    if (golden.config.repos.length || golden.config.init.length)
-      refuse("repository refresh, GitHub initialization or golden init commands");
     if (!request.prompt?.trim()) refuse("an idle sandbox without an initial prompt");
     if (options.nativeEnvironmentBindings) refuse("template readable-variable or application-secret bindings");
     provider = await defaultRuntime.provider(actor, golden);
@@ -520,7 +523,7 @@ export async function launchSandbox(
       )
         await writeCodexAuth(provider, ready.id, secrets);
       progress("initialization_github");
-      const launchGithub: GitHubLaunchInfo = runtime
+      let launchGithub: GitHubLaunchInfo = runtime
         ? {
             status: "not_connected",
             message:
@@ -531,7 +534,8 @@ export async function launchSandbox(
           : { status: github.status, message: github.message };
       if (!runtime && github.status === "connected" && github.expiresAt)
         launchGithub.tokenExpiresAt = github.expiresAt.toISOString();
-      if (!runtime) await setup(provider, ready.id, record.id, golden, secrets, progress, options.sleep);
+      if (!runtime)
+        await prepareLaunchWorkspace(provider, ready.id, record.id, golden, secrets, progress, options.sleep);
       progress("initialization_cwd");
       if (!runtime && repositoryDir !== null && prepareNativeCwd)
         await prepareNativeCwd({ sandboxId: ready.id, harness, cwd: `${GOLDEN_ROOT}/${repositoryDir}` });
@@ -575,7 +579,8 @@ export async function launchSandbox(
       if (record.expiresAt && new Date(record.expiresAt).getTime() <= Date.now())
         throw new LaunchError("invalid_request", "Provider lifetime has no remaining preservation headroom.");
       if (!runtime) await stores.connections?.prepare?.(provider, record, actor, signal);
-      await options.beforeStart?.(provider, record);
+      const runtimeWorkspace = provider.id === "boat" && Boolean(runtime);
+      if (!runtimeWorkspace) await options.beforeStart?.(provider, record);
       if (runtime && !startedRuntime)
         startedRuntime = Promise.resolve().then(() =>
           runtime.start({ host: provider, actor, sandbox: record, credentials, signal }),
@@ -583,6 +588,14 @@ export async function launchSandbox(
       const agent = startedRuntime ? await startedRuntime : undefined;
       if (runtime && (!agent || typeof agent.prompt !== "function" || !/^[1-9][0-9]{0,18}$/.test(agent.epoch)))
         throw new LaunchError("start_failed", "The runtime did not acknowledge a valid epoch.");
+      if (runtimeWorkspace) {
+        if (!agent?.prepareWorkspace)
+          throw new LaunchError(
+            "start_failed",
+            "Boat runtime workspace setup requires updated runtime artifacts; no native fallback.",
+          );
+        launchGithub = await agent.prepareWorkspace(golden, progress, options.sleep);
+      }
       if (runtime && request.skills?.length) {
         if (!agent?.installSkills) throw new PrivateSkillError("skillpack_transport_failed", "transport");
         const needsKey = request.skills.some((ref) => !ref.includes("/"));
@@ -602,6 +615,7 @@ export async function launchSandbox(
         await stores.sandboxes.recordSkills!(record.id, record.skills);
       }
       if (runtime) await stores.connections?.prepare?.(provider, record, actor, signal);
+      if (runtimeWorkspace) await options.beforeStart?.(provider, record);
       const provenance = agent ? { kind: "armada" as const, epoch: agent.epoch } : undefined;
       // Boat goldens carry the native CLI. A restored fork can be ready while its
       // executable cannot even boot; probe the installed wrapper (including its
@@ -776,18 +790,31 @@ function finish(
   };
 }
 
-async function setup(
-  provider: Provider,
+export async function prepareLaunchWorkspace(
+  provider: Pick<Provider, "id" | "exec">,
   sandboxId: string,
   armadaSandboxId: string,
   golden: GoldenRecord,
   secrets: readonly string[],
   progress: (stage: LaunchInitializationStage) => void,
   sleep: (ms: number) => Promise<void> = delay,
+  transport?: (
+    request: Parameters<Provider["exec"]>[0],
+    step: { phase: "repository" | "init"; index: number; attempt: number },
+  ) => ReturnType<Provider["exec"]>,
 ): Promise<void> {
-  for (const repo of golden.config.repos) {
+  const runner = (phase: "repository" | "init", index: number) => {
+    let attempt = 0;
+    return transport
+      ? {
+          id: provider.id,
+          exec: (request: Parameters<Provider["exec"]>[0]) => transport(request, { phase, index, attempt: attempt++ }),
+        }
+      : provider;
+  };
+  for (const [index, repo] of golden.config.repos.entries()) {
     progress("initialization_repository");
-    await run(provider, sandboxId, pullCommand(repo), `git pull of ${repo.dir}`, secrets, {
+    await run(runner("repository", index), sandboxId, pullCommand(repo), `git pull of ${repo.dir}`, secrets, {
       dir: repo.dir,
       sandboxId: armadaSandboxId,
       sleep,
@@ -795,7 +822,7 @@ async function setup(
   }
   for (const [index, command] of golden.config.init.entries()) {
     progress("initialization_commands");
-    await run(provider, sandboxId, initCommand(command), `init command ${index + 1}`, secrets);
+    await run(runner("init", index), sandboxId, initCommand(command), `init command ${index + 1}`, secrets);
   }
 }
 
@@ -839,7 +866,7 @@ async function writeCodexAuth(provider: Provider, sandboxId: string, secrets: re
 }
 
 async function run(
-  provider: Provider,
+  provider: Pick<Provider, "id" | "exec">,
   sandboxId: string,
   spec: ShellCommand,
   label: string,

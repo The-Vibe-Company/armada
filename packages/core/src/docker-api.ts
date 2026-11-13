@@ -102,6 +102,7 @@ export interface LaunchOptionsResponse {
     githubVersion: number;
     mcpVersion: number;
     skillsVersion?: number;
+    workspaceVersion?: number;
     controlsVersion?: number;
     enabled: boolean;
   };
