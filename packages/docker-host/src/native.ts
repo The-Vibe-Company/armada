@@ -194,10 +194,11 @@ export function httpApi(request: typeof fetch = fetch): Api & { unregister(state
     async register(server, token, installationId) {
       return (await post(server, "register", token, { installationId })) as { hostId: string; hostToken: string };
     },
-    async poll(state) {
+    async poll(state, options) {
       return (await post(state.server, "poll", state.hostToken, {
         installationId: state.installationId,
         version: VERSION,
+        ...(options?.skipSnapshots ? { skipSnapshots: true } : {}),
       })) as {
         job: Job | null;
       };
@@ -207,6 +208,7 @@ export function httpApi(request: typeof fetch = fetch): Api & { unregister(state
         installationId: state.installationId,
         requestId: receipt.requestId,
         ...(expired ? { expired: true } : { outcome: receipt.outcome }),
+        ...(receipt.operation === "buildSnapshot" && receipt.imageId ? { imageId: receipt.imageId } : {}),
       });
     },
   };
@@ -214,7 +216,7 @@ export function httpApi(request: typeof fetch = fetch): Api & { unregister(state
 
 /** Never a shell, never inherited output; inspect can contain secrets. */
 export const dockerCli: DockerMachineCli = {
-  run(argv, stdin) {
+  run(argv, stdin, timeoutMs = 30_000) {
     return new Promise((resolve, reject) => {
       const child = spawn("docker", [...argv], { stdio: ["pipe", "pipe", "ignore"] });
       let output = "";
@@ -224,7 +226,7 @@ export const dockerCli: DockerMachineCli = {
         failed = true;
         child.kill("SIGKILL");
       };
-      const timer = setTimeout(fail, 30_000);
+      const timer = setTimeout(fail, Math.min(3_600_000, Math.max(1, timeoutMs)));
       child.stdout.on("data", (data: Buffer) => {
         bytes += data.length;
         if (bytes > 1024 * 1024) fail();

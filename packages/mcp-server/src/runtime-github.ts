@@ -113,9 +113,12 @@ export function createRuntimeGitHub(options: {
     ).rows[0];
     if (docker) {
       const manifest = JSON.parse(await decryptSecret(docker.request_enc, key));
-      if (hash(JSON.stringify(manifest.request)) !== docker.request_hash || !Array.isArray(manifest.request.repos))
+      if (
+        hash(JSON.stringify(manifest.request)) !== docker.request_hash ||
+        !Array.isArray(manifest.request.repos ?? manifest.snapshotConfig?.repos)
+      )
         return denied();
-      row.binding.repositories = manifest.request.repos;
+      row.binding.repositories = manifest.request.repos ?? manifest.snapshotConfig.repos;
       Object.assign(row.binding, { launchHash: docker.request_hash, launchActorEpoch: docker.actor_epoch });
       // Match the JSONB representation persisted with the capability, including nested key order.
       row.binding =

@@ -9,7 +9,7 @@ import { type Api, type Executor, type Job, register, type State, type Store, ti
 import { fileStore, httpApi } from "../src/native.ts";
 
 function fixture(
-  operation: Exclude<Job["operation"], "bootstrap" | "resume"> = "create",
+  operation: Exclude<Job["operation"], "bootstrap" | "resume" | "buildSnapshot"> = "create",
   bootstrap?: BootstrapDescriptor,
 ) {
   const job: Job = {

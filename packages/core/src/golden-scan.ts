@@ -39,11 +39,7 @@ const SCAN_ROOTS = "/home/user /root /tmp";
  * and object shas are ever inspected for *presence* of a match (`grep -l`/`-q`); the matched text
  * itself is never printed, logged, or returned.
  */
-export async function scanGoldenSandbox(
-  provider: Provider,
-  sandboxId: string,
-  context?: { buildId: string },
-): Promise<void> {
+export function goldenScanScript(): string {
   const script = [
     "set -u",
     // Inert helper code is allowed; workload state and resident brokers are not.
@@ -163,6 +159,15 @@ export async function scanGoldenSandbox(
     "done",
     "exit 0",
   ].join("\n");
+  return script;
+}
+
+export async function scanGoldenSandbox(
+  provider: Provider,
+  sandboxId: string,
+  context?: { buildId: string },
+): Promise<void> {
+  const script = goldenScanScript();
   const result = await provider.exec({
     sandboxId,
     // Root-owned image files are part of the snapshot. Non-interactive sudo fails closed when

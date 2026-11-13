@@ -101,8 +101,14 @@ export type {
   LaunchProviderOption,
   SandboxPlacementProviderId,
 } from "./docker-api.ts";
-export { DOCKER_DEFAULT_IMAGE } from "./docker-api.ts";
-export { DOCKER_LOCAL_IMAGE_LABELS, isDockerImageReference } from "./docker-image.ts";
+export { DOCKER_DEFAULT_IMAGE, DOCKER_SNAPSHOT_STATUSES, type DockerSnapshotRecord } from "./docker-api.ts";
+export {
+  DOCKER_LOCAL_IMAGE_LABELS,
+  type DockerSnapshotBinding,
+  isDockerImageReference,
+  parseDockerSnapshotBinding,
+} from "./docker-image.ts";
+export { parseDockerSnapshotRecord } from "./docker-snapshot.ts";
 export {
   boundEventEntries,
   buildEventPage,

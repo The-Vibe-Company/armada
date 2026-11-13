@@ -38,6 +38,7 @@ import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
 import { createDockerSandboxControls } from "./docker-sandbox-controls.ts";
 import { createDockerSandboxRoutes } from "./docker-sandbox-routes.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
+import { createDockerSnapshots } from "./docker-snapshots.ts";
 import { createGitHubAccountApi } from "./github-account.ts";
 import { configureBoatGitHub } from "./github-boat.ts";
 import { createHandler, providerRegistry, type Route } from "./http.ts";
@@ -553,7 +554,14 @@ export async function startServer(
                   supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
                   now: new Date(),
                 }),
-              { placement: dockerLaunchEnabled, publicUrl: config.publicUrl },
+              {
+                placement: dockerLaunchEnabled,
+                publicUrl: config.publicUrl,
+                snapshots: createDockerSnapshots(sql, config.encryptionKey, {
+                  github: { store, app: githubApp, encryptionKey: config.encryptionKey },
+                  installationApp: githubInstallationAppFromEnv(env),
+                }),
+              },
             ),
           ]
         : []),

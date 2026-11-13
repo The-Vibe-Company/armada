@@ -23,6 +23,7 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
     "--repo",
     "--provider",
     "--host",
+    "--golden",
     "--image",
     "--credential-id",
     "--credential-version",
@@ -49,14 +50,19 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
   };
   const org = requiredId("--org"),
     credentialId = requiredId("--credential-id");
+  const snapshotId = single(args, "--golden");
+  if (snapshotId && !uuid.test(snapshotId))
+    throw new GoldenError("invalid_config", "--golden requires a Docker snapshot UUID.");
   const selector = single(args, "--host");
-  if (!selector || selector.length > 64 || /[\p{C}]/u.test(selector))
+  if ((!snapshotId && !selector) || (selector !== undefined && (selector.length > 64 || /[\p{C}]/u.test(selector))))
     throw new GoldenError("invalid_config", "--host requires a UUID or exact host name.");
   // Without --image the launch uses Armada's default plain image (#1507), sent explicitly so the request is the same
   // whichever server version answers it.
   const imageFlag = single(args, "--image");
-  const image = imageFlag === undefined ? DOCKER_DEFAULT_IMAGE : imageFlag.trim();
-  if (!isDockerImageReference(image))
+  if (snapshotId && (imageFlag !== undefined || values(args, "--repo").length))
+    throw new GoldenError("invalid_config", "A snapshot cannot be combined with --image or --repo.");
+  const image = snapshotId ? undefined : imageFlag === undefined ? DOCKER_DEFAULT_IMAGE : imageFlag.trim();
+  if (!snapshotId && !isDockerImageReference(image))
     throw new GoldenError(
       "invalid_config",
       "--image requires repository@sha256:<64 hex> or a host-approved local sha256:<64 hex> ID; omit it for the default.",
@@ -83,7 +89,7 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
   if (selected && (selected.length > 32 || selected.some((id) => !uuid.test(id))))
     throw new GoldenError("invalid_config", "Connections require 1–32 comma-separated UUIDs.");
   const client = await createArmadaApiClient(auth);
-  const hostId = await resolveHost(client, org, selector);
+  const hostId = selector ? await resolveHost(client, org, selector) : undefined;
   const body: DockerLaunchRequest = {
     ...(repos.length
       ? {
@@ -97,8 +103,9 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
       : {}),
     org,
     provider: "docker",
-    hostId,
-    image,
+    ...(hostId ? { hostId } : {}),
+    ...(image ? { image } : {}),
+    ...(snapshotId ? { snapshotId } : {}),
     harness,
     credentialId,
     requestId,

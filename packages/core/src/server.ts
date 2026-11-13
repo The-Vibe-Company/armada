@@ -35,12 +35,13 @@ export {
   type GoldenCreateDeps,
   GoldenCreateService,
   goldenScript,
+  goldenCheckoutScript,
   type PreparedRepo,
   withGoldenDirs,
 } from "./golden-create-service.ts";
 export { type GoldenGitHubAdapterOptions, goldenGitHubAdapter } from "./golden-github.ts";
 export { snapshotGolden } from "./golden-runtime.ts";
-export { GITHUB_TOKEN_PATTERN, scanGoldenSandbox } from "./golden-scan.ts";
+export { GITHUB_TOKEN_PATTERN, goldenScanScript, scanGoldenSandbox } from "./golden-scan.ts";
 export * from "./golden-snapshot-retirement.ts";
 export { assertSqlGoldenMutation } from "./golden-store.ts";
 export * from "./index.ts";

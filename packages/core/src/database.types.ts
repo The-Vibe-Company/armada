@@ -309,6 +309,8 @@ export type Database = {
           bound_actor_id: string | null;
           bound_actor_epoch: number | null;
           bound_operation: string | null;
+          snapshot_id: string | null;
+          result_image_id: string | null;
         };
         Insert: {
           request_id: string;
@@ -322,6 +324,8 @@ export type Database = {
           bound_actor_id?: string | null;
           bound_actor_epoch?: number | null;
           bound_operation?: string | null;
+          snapshot_id?: string | null;
+          result_image_id?: string | null;
         };
         Update: {
           request_id?: string;
@@ -335,6 +339,8 @@ export type Database = {
           bound_actor_id?: string | null;
           bound_actor_epoch?: number | null;
           bound_operation?: string | null;
+          snapshot_id?: string | null;
+          result_image_id?: string | null;
         };
         Relationships: [
           {
@@ -356,6 +362,13 @@ export type Database = {
             columns: ["host_id"];
             isOneToOne: false;
             referencedRelation: "docker_hosts";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "docker_host_jobs_snapshot_id_fkey";
+            columns: ["snapshot_id"];
+            isOneToOne: false;
+            referencedRelation: "docker_snapshots";
             referencedColumns: ["id"];
           },
         ];
@@ -454,6 +467,88 @@ export type Database = {
             columns: ["sandbox_id"];
             isOneToOne: true;
             referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      docker_snapshots: {
+        Row: {
+          id: string;
+          org_id: string;
+          owner_id: string;
+          host_id: string;
+          installation_id: string;
+          name: string;
+          visibility: Database["public"]["Enums"]["visibility"];
+          config: Json;
+          request_hash: string;
+          actor_epoch: number;
+          issuer_epoch: number;
+          generation: string;
+          base_image: string;
+          build_expires_at: string;
+          status: string;
+          image_id: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id: string;
+          org_id: string;
+          owner_id: string;
+          host_id: string;
+          installation_id: string;
+          name: string;
+          visibility: Database["public"]["Enums"]["visibility"];
+          config: Json;
+          request_hash: string;
+          actor_epoch: number;
+          issuer_epoch: number;
+          generation: string;
+          base_image: string;
+          build_expires_at: string;
+          status?: string;
+          image_id?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          org_id?: string;
+          owner_id?: string;
+          host_id?: string;
+          installation_id?: string;
+          name?: string;
+          visibility?: Database["public"]["Enums"]["visibility"];
+          config?: Json;
+          request_hash?: string;
+          actor_epoch?: number;
+          issuer_epoch?: number;
+          generation?: string;
+          base_image?: string;
+          build_expires_at?: string;
+          status?: string;
+          image_id?: string | null;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "docker_snapshots_host_id_fkey";
+            columns: ["host_id"];
+            isOneToOne: false;
+            referencedRelation: "docker_hosts";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "docker_snapshots_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "docker_snapshots_owner_id_fkey";
+            columns: ["owner_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
             referencedColumns: ["id"];
           },
         ];
@@ -3861,6 +3956,7 @@ export type Database = {
           docker_generation: string | null;
           docker_image: string | null;
           runtime_transport: string | null;
+          docker_snapshot_id: string | null;
         };
         Insert: {
           id?: string;
@@ -3920,6 +4016,7 @@ export type Database = {
           docker_generation?: string | null;
           docker_image?: string | null;
           runtime_transport?: string | null;
+          docker_snapshot_id?: string | null;
         };
         Update: {
           id?: string;
@@ -3979,6 +4076,7 @@ export type Database = {
           docker_generation?: string | null;
           docker_image?: string | null;
           runtime_transport?: string | null;
+          docker_snapshot_id?: string | null;
         };
         Relationships: [
           {
@@ -3994,6 +4092,13 @@ export type Database = {
             isOneToOne: false;
             referencedRelation: "docker_hosts";
             referencedColumns: ["id", "org_id"];
+          },
+          {
+            foreignKeyName: "sandboxes_docker_snapshot_id_fkey";
+            columns: ["docker_snapshot_id"];
+            isOneToOne: false;
+            referencedRelation: "docker_snapshots";
+            referencedColumns: ["id"];
           },
           {
             foreignKeyName: "sandboxes_golden_id_fkey";
@@ -4186,6 +4291,7 @@ export type Credential = Database["public"]["Tables"]["credentials"]["Row"];
 export type DockerHostJobRow = Database["public"]["Tables"]["docker_host_jobs"]["Row"];
 export type DockerHostRow = Database["public"]["Tables"]["docker_hosts"]["Row"];
 export type DockerLaunchRequestRow = Database["public"]["Tables"]["docker_launch_requests"]["Row"];
+export type DockerSnapshotRow = Database["public"]["Tables"]["docker_snapshots"]["Row"];
 export type GitHubAuthorization = Database["public"]["Tables"]["github_authorizations"]["Row"];
 export type GitHubConnection = Database["public"]["Tables"]["github_connections"]["Row"];
 export type GitHubRefreshFence = Database["public"]["Tables"]["github_refresh_fences"]["Row"];

@@ -122,7 +122,8 @@ export interface DockerLaunchRequest {
   repos?: import("./golden-config.ts").GoldenRepo[];
   org: string;
   provider: "docker";
-  hostId: string;
+  hostId?: string;
+  snapshotId?: string;
   /** Immutable registry digest or host-approved full local image ID; omitted means DOCKER_DEFAULT_IMAGE. */
   image?: string;
   harness: Harness;
@@ -141,6 +142,7 @@ export interface DockerLaunchRequest {
 export interface DockerSandboxRecord extends Omit<SandboxRecord, "provider" | "goldenId" | "harness"> {
   provider: "docker";
   goldenId: null;
+  snapshotId?: string | null;
   harness: Harness;
   hostId: string;
   image: string;
@@ -181,4 +183,22 @@ export interface DockerSandboxStatus {
     reason: string | null;
   } | null;
   settled: boolean;
+}
+
+export const DOCKER_SNAPSHOT_STATUSES = ["building", "ready", "failed"] as const;
+export interface DockerSnapshotRecord {
+  id: string;
+  orgId: string;
+  ownerId: string;
+  name: string;
+  provider: "docker";
+  visibility: "private" | "org";
+  hostId: string;
+  installationId: string;
+  hostName: string | null;
+  hostAvailable: boolean;
+  status: (typeof DOCKER_SNAPSHOT_STATUSES)[number];
+  image: string | null;
+  config: import("./golden-config.ts").GoldenConfig;
+  createdAt: string;
 }
