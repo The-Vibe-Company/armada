@@ -25,27 +25,16 @@ Plain-image launches without repositories do not acquire GitHub authority.
 
 ## Coordinator acceptance
 
-On registered host `70bde9cd-36c9-40af-b15e-65b2f9d3c2a2`, with the existing
-server/org/account/image and SSH inputs and `ARMADA_TOKEN` only in the environment:
+The single coordinator-owned [snapshot lifecycle check](docker-snapshots.md#coordinators-one-real-host-acceptance-check)
+uses registered host `1bd0db41-6429-430b-99e2-06d60ddf1aa3`. It requires successful
+archived Git/GitHub tool results, current-epoch broker delivery and retained
+follow-up/resume memory, not assistant claims or configuration ACKs. No image
+selection, hand-written labels or SSH preparation is required for that check.
+Unit tests additionally cover explicit owner refresh and completed-prompt retries.
+This procedure is not evidence that real-host acceptance passed.
 
-```sh
-python3 scripts/smoke-docker-lifecycle.py \
-  --server "$ARMADA_URL" --org "$ARMADA_ORG" --credential "$ARMADA_CREDENTIAL_ID" \
-  --ssh "$ARMADA_DOCKER_SSH" --host-id 70bde9cd-36c9-40af-b15e-65b2f9d3c2a2 \
-  --image "$ARMADA_DOCKER_IMAGE" --repository The-Vibe-Company/armada --branch main \
-  --github --normal-lifecycle
-```
-
-One allocation: the initial prompt proves a repository `git log -1` and successful
-`gh api repos/<repo> --jq .full_name`; explicit refresh and follow-up prove current
-credential delivery and memory; same-host resume proves re-enrolment and GitHub
-access in the retained conversation. The script requires successful archived
-command results and a nonzero current-epoch broker delivery count, not assistant
-claims or configuration ACKs alone. It stops/deletes once after verification.
-This command is a procedure, not evidence that real-host acceptance passed.
-
-The current command-evidence matcher is Codex-only and rejects repository checks
-with `--claude` or `--opencode`. No migration is required. Deploy matching server
-and runtime artifacts through the normal release. Variables, secrets and
-host-local Docker environment images remain separate slices of #1464; Boat/Modal
-goldens are built per provider and are not Docker images.
+The command-evidence matcher is Codex-only. GitHub access, readable bindings,
+raw-secret references and [host-local snapshots](docker-snapshots.md) ship together
+through the shared runtime paths. Apply the snapshot migrations and deploy
+matching server/daemon/clients through normal operator procedures. Boat/Modal
+goldens remain provider-specific and are not reusable Docker snapshots.
