@@ -7,7 +7,13 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   const m = JSON.parse(line);
   if (m.method === "initialize") send({ id: m.id, result: {} });
   if (m.method === "thread/resume")
-    send({ id: m.id, result: { thread: { id: "recorded-thread" }, model: "gpt-6.1-sol" } });
+    send({
+      id: m.id,
+      result: {
+        thread: { id: "recorded-thread", path: process.env.ARMADA_TEST_ROLLOUT ?? null },
+        model: "gpt-6.1-sol",
+      },
+    });
   if (m.method === "turn/start") {
     send({ id: m.id, result: { turn: { id: "recorded-resume" } } });
     for (const event of recording) {
