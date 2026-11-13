@@ -1450,7 +1450,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     },
     async (args) => {
       const selected = await visible(args.id);
-      if (selected.boatRuntime) {
+      if (selected.boatRuntime || selected.runtimeTransport === "dialout") {
         if (!context.runtimeSend) throw new ToolError("unsupported", "Runtime follow-up is unavailable.");
         return context.runtimeSend(caller, args);
       }

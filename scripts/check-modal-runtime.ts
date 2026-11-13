@@ -13,10 +13,11 @@ const credentialId = process.env.ARMADA_RUNTIME_CREDENTIAL_ID;
 if (!token || !golden || !org || !credentialId) throw Error("Missing coordinator staging inputs.");
 
 interface Reply {
-  modalRuntime?: { version?: number; enabled?: boolean };
+  modalRuntime?: { version?: number; enabled?: boolean; followupVersion?: number };
   sandbox?: { id?: string; provider?: string; runtimeTransport?: string };
   runtime?: { kind?: string; epoch?: string };
   promptId?: string;
+  conversationId?: string;
   requestId?: string;
   checkpoint?: { state?: string; watermark?: number; acknowledgedSequence?: number };
   source?: string;
@@ -46,9 +47,14 @@ async function api(path: string, body: object): Promise<Reply> {
   }
 }
 const options = await api("launch/options", {});
-if (options.modalRuntime?.version !== 1 || options.modalRuntime.enabled !== true)
-  throw Error("Modal dial-out v1 staging opt-in is unavailable; no launch attempted.");
+if (
+  options.modalRuntime?.version !== 1 ||
+  options.modalRuntime.enabled !== true ||
+  options.modalRuntime.followupVersion !== 1
+)
+  throw Error("Modal dial-out v1 with same-conversation follow-up is unavailable; no launch attempted.");
 const answer = `ARMADA_MODAL_${crypto.randomUUID().replaceAll("-", "")}`;
+const memory = `ARMADA_MEMORY_${crypto.randomUUID().replaceAll("-", "")}`;
 let id: string | undefined;
 let epoch: string | undefined;
 let promptId: string | undefined;
@@ -67,7 +73,7 @@ try {
     skills: [],
     skipSkillDefaults: true,
     ttlSeconds: 900,
-    prompt: `Reply exactly ${answer}. Do not use tools or change files.`,
+    prompt: `Remember token ${memory}. Reply exactly ${answer}. Do not use tools or change files.`,
   });
   id = launched.sandbox?.id;
   epoch = launched.runtime?.epoch;
@@ -78,37 +84,68 @@ try {
     launched.sandbox.runtimeTransport !== "dialout" ||
     launched.runtime?.kind !== "armada" ||
     !/^[1-9][0-9]{0,18}$/.test(epoch ?? "") ||
-    !promptId
+    !promptId ||
+    !launched.conversationId
   )
     throw Error("Missing Modal enrolled launch acknowledgement; reconcile existing allocation, never launch again.");
-  let cursor: string | undefined;
-  let foundAnswer = false;
-  let finished = false;
-  const deadline = Date.now() + 300000;
-  while (Date.now() < deadline && (!foundAnswer || !finished)) {
-    const page = await api("logs/read", { id, limit: 1000, ...(cursor ? { cursor } : {}) });
-    if (page.source !== "armada-runtime") throw Error("Modal answer was not read from the common runtime archive.");
-    if (page.runtimeFailure) throw Error("Modal enrolled runtime failed; inspect server diagnostics.");
-    for (const event of page.events ?? []) {
-      if (event.promptId !== promptId) continue;
-      if (
-        event.kind === "message" &&
-        event.partial === false &&
-        event.responseKind !== "tool_result" &&
-        !event.parentToolUseId &&
-        !event.retracted &&
-        event.text.trim() === answer
-      )
-        foundAnswer = true;
-      if (event.kind === "prompt" && event.status === "finished") finished = true;
-      if (event.kind === "prompt" && ["failed", "interrupted"].includes(event.status))
-        throw Error("Modal runtime prompt did not finish successfully.");
+  const verifyPrompt = async (expectedPromptId: string, expectedAnswer: string) => {
+    let cursor: string | undefined;
+    let foundAnswer = false;
+    let finished = false;
+    const deadline = Date.now() + 300000;
+    while (Date.now() < deadline && (!foundAnswer || !finished)) {
+      const page = await api("logs/read", { id, limit: 1000, ...(cursor ? { cursor } : {}) });
+      if (page.source !== "armada-runtime") throw Error("Modal answer was not read from the common runtime archive.");
+      if (page.runtimeFailure) throw Error("Modal enrolled runtime failed; inspect server diagnostics.");
+      for (const event of page.events ?? []) {
+        if (event.promptId !== expectedPromptId) continue;
+        if (
+          event.kind === "message" &&
+          event.partial === false &&
+          event.responseKind !== "tool_result" &&
+          !event.parentToolUseId &&
+          !event.retracted &&
+          event.text.trim() === expectedAnswer
+        )
+          foundAnswer = true;
+        if (event.kind === "prompt" && event.status === "finished") finished = true;
+        if (event.kind === "prompt" && ["failed", "interrupted"].includes(event.status))
+          throw Error("Modal runtime prompt did not finish successfully.");
+      }
+      cursor = page.cursor ?? cursor;
+      if (!foundAnswer || !finished) await Bun.sleep(1000);
     }
-    cursor = page.cursor ?? cursor;
-    if (!foundAnswer || !finished) await Bun.sleep(1000);
-  }
-  if (!foundAnswer || !finished)
-    throw Error("Timed out waiting for this Modal prompt's archived answer and finished event.");
+    if (!foundAnswer || !finished)
+      throw Error("Timed out waiting for this Modal prompt's archived answer and finished event.");
+  };
+  await verifyPrompt(promptId, answer);
+  const followupRequestId = crypto.randomUUID();
+  console.log(
+    JSON.stringify({
+      operation: "runtime_followup",
+      sandboxId: id,
+      conversationId: launched.conversationId,
+      requestId: followupRequestId,
+    }),
+  );
+  const followed = await api("sandbox/send", {
+    id,
+    prompt: "Reply exactly with the token I originally asked you to remember. Do not use tools or change files.",
+    request_id: followupRequestId,
+    conversation_id: launched.conversationId,
+  });
+  if (
+    followed.requestId !== followupRequestId ||
+    followed.runtime?.kind !== "armada" ||
+    followed.runtime.epoch !== epoch ||
+    !followed.promptId ||
+    followed.promptId === promptId ||
+    followed.conversationId !== launched.conversationId
+  )
+    throw Error(
+      "Missing same-conversation/current-epoch Modal follow-up acknowledgement; reconcile request_id, never send again.",
+    );
+  await verifyPrompt(followed.promptId, memory);
   const requestId = crypto.randomUUID();
   const checkpoint = await api("sandbox/checkpoint-runtime-v1", { id, runtimeVersion: 1, request_id: requestId });
   const proof = checkpoint.checkpoint;
@@ -126,6 +163,9 @@ try {
     JSON.stringify({
       sandboxId: id,
       promptId,
+      followupPromptId: followed.promptId,
+      conversationId: launched.conversationId,
+      followup: "verified",
       epoch,
       source: "armada-runtime",
       answer: "verified",
