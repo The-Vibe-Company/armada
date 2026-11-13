@@ -473,3 +473,38 @@ supersession. The owner still must disable Railway production/staging Git
 auto-deploy as described above. No claim is made here that these real settings
 have changed or that the full issue is complete. Dry-run releases still do not
 access production, and tag validation/recovery protections remain unchanged.
+
+
+## Production migrations are release-only (#1547, step 3b)
+
+This slice removes the legacy per-main-commit production migration writer,
+regardless of RELEASE_SYNCED_DEPLOYS or STAGING_GATED_DEPLOYS values. It supersedes
+older opt-in instructions saying unset variables retain production push applies.
+The Database migrations workflow can still run on migration changes for its
+existing **staging** job; its **production** job is now manual-only and accepts
+history, explicitly confirmed repair, or a dry-run preview. Its production
+`supabase db push --linked --yes` step is removed entirely, not merely hidden
+behind a variable. A manual migrate request with dry_run=false skips production;
+use the reviewed tagged Release workflow, not a standalone production apply.
+
+History remains read-only. Repair remains the existing explicit owner-only
+history operation with its confirmation string; it is not an application/schema
+deployment or permission for agents to touch production. Manual previews retain
+`supabase db push --linked --dry-run` and share the existing production migration
+lock. Avoid dispatching them during release. No database connection, SQL command,
+provider action or actual history repair is performed while preparing this PR.
+
+Actual tagged migration applies remain in the shared release deployment script,
+using its pinned validated SHA and protected production environment. Existing
+release opt-ins still apply until the final workflow-policy slice; this change
+does not enable production deployment, alter staging migrations, add a secret,
+or change migration files/history. Review additive/backward-compatible pending
+SQL before the next owner-authorized release. Do not bypass the release path
+when a schema-dependent main commit is waiting for a release.
+
+Railway's provider-side Git autodeploy is a separate writer: the owner must
+disable automatic Git deployments on the **production server service** (and the
+staging service when Actions owns it), retaining domains/runtime variables,
+root Dockerfile and /healthz checks. That provider cutover and mandatory exact-SHA
+staging smoke/pending-main supersession remain in the final policy slice; no
+claim is made that removing the SQL writer alone establishes release-only hosts.

@@ -52,6 +52,9 @@ Vercel Git deployments are disabled for both dashboard projects via
 working and follow the owner cutover prerequisites in `docs/releasing.md`.
 The release dashboard build also runs in Actions and uploads only prebuilt
 output; enabling the release-only policy still requires the owner cutover.
+Production SQL applies only from the validated release deployment path; the
+standalone migration workflow retains manual previews/history/owner repair,
+never per-commit production applies.
 Binaries are built by the release workflow when a version is published.
 
 What CI does not do, and must not be added back:

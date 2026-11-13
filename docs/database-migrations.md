@@ -1,4 +1,4 @@
-# Automatic production migrations
+# Production migration operations
 
 > **Release-only production gate:** With repository variables
 > RELEASE_SYNCED_DEPLOYS=true and STAGING_GATED_DEPLOYS=true,
@@ -8,22 +8,24 @@
 > Independent automatic migration applies and deployment-event smoke below are disabled.
 > Manual diagnostic smoke/history/repair/preview remain available. Missing gate config
 > blocks promotion. Owner cutover, emergency bypass and rollback are in the runbook.
-> With both variables absent/false, legacy behavior below is unchanged.
+> Regardless of these variables, standalone production applies are removed by #1547.
 
-> **Release-sync opt-in:** When repository variable `RELEASE_SYNCED_DEPLOYS=true`,
-> the push-to-main production job and manual standalone migration apply are disabled.
+> **Release apply path:** Repository variable `RELEASE_SYNCED_DEPLOYS=true`
+> enables tagged release deployment; standalone production applies are always disabled.
 > Tagged migrations run inside Release before server/dashboard/npm deployment, using
 > the validated release SHA. Manual history, guarded repair and dry-run remain available;
 > they still inspect current main and are not a tagged apply/recovery path.
 > Use [release recovery and owner cutover](releasing.md#release-synchronized-production-owner-opt-in).
-> The legacy behavior documented below applies only while the variable is absent/false.
+> Leaving variables unset never restores push-to-main production applies.
 
-The **Database migrations** workflow applies pending `supabase/migrations/*.sql`
-after a push to `main` changes that directory. It uses Supabase CLI 2.75.0,
-linked-project `db push`, and the remote migration history: re-running skips
-already recorded versions. The automatic path never resets the database, repairs history, or
-includes seeds. Manual repair is a separate guarded operation. The version tables before and after the push and the pending
-plan are in Actions logs. Any failing command fails the job and emits an error.
+The **Database migrations** workflow never applies production schema SQL. Its
+production job is manual-only: history, confirmed history repair, or dry-run
+preview. Production schema applies live only in the validated tagged Release
+workflow, using Supabase CLI 2.75.0 and the remote migration history; retrying
+skips recorded versions. Existing opt-in staging migrations remain independent
+until the final workflow-policy cutover. Never reset production, include seeds,
+or repair history to force a deployment. Missing release configuration fails
+closed rather than falling back to a main-push apply.
 
 ## Migration author checklist
 
@@ -91,9 +93,13 @@ No production operation is needed to review this PR.
 Railway GitHub autodeploy and GitHub Actions are independent: **this workflow does
 not gate or change Railway deployments**. A successful Railway build is not
 evidence that migrations finished. Before merging schema-dependent server code,
-the Railway administrator must hold/disable automatic promotion or configure an
-external deployment gate that waits for **Production migrations** to succeed.
-Release only after success, using server code compatible with the applied schema.
+the Railway administrator must disable production Git autodeploy and hold
+independent promotion. Use the validated tagged **Release migrations, server
+and dashboard** job: it applies that tag's migrations before uploading server
+code and waiting for health. Success of the standalone **Production migrations**
+job is only diagnostic/history evidence, never authorization to deploy or proof
+that pending schema SQL was applied. Release only through the tagged path, using
+server code compatible with the applied schema.
 This ticket does not modify Railway configuration or deploy the server.
 
 If Railway continues ungated autodeploy, code can go live before the schema; do
@@ -117,14 +123,14 @@ an applied migration or reset production.
   lists history and previews without applying application migrations. The CLI may
   initialize its migration-history metadata on first connection; this is not a
   read-only database credential and is never exposed to PR jobs.
-- To retry applying pending migrations, dispatch on **main** with **mode=migrate**, **dry_run=false**,
-  or rerun a failed push run. No migrations are applied on other refs.
+- To retry production applies, use the reviewed exact-tag Release recovery path.
+  Manual **mode=migrate**, **dry_run=false** skips the standalone production job;
+  it cannot apply production SQL. Do not replay old workflow revisions as a bypass.
 - Production jobs share `production-supabase-migrations` with cancellation disabled.
-  GitHub may replace queued runs; every job checks out current main, so the next
-  job includes all committed pending migrations. Manual operations outside this
-  workflow must not run concurrently.
-- Editing only workflow/docs does not trigger a production push run. Dispatch a
-  preview after setup; the next migration merge triggers application automatically.
+  Standalone operator jobs inspect current main; release applies use the validated
+  tag SHA. Manual operations outside this workflow must not run concurrently.
+- No main push triggers production applies. Dispatch a preview after setup; pending
+  migrations wait for the next reviewed owner-authorized release.
 
 See the [Supabase CLI reference](https://supabase.com/docs/reference/cli/supabase-db-push)
 for history tracking and dry-run behavior.

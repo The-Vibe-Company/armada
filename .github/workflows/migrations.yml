@@ -95,7 +95,9 @@ jobs:
 
   production:
     name: Production migrations
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && ((vars.STAGING_GATED_DEPLOYS != 'true' && vars.RELEASE_SYNCED_DEPLOYS != 'true') || inputs.mode == 'history' || inputs.mode == 'repair' || inputs.dry_run == true)
+    # Production SQL applies only in the validated release deployment workflow.
+    # Keep explicit operator history/repair and non-mutating migration previews.
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && (inputs.mode == 'history' || inputs.mode == 'repair' || inputs.dry_run == true)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: production
@@ -211,9 +213,6 @@ jobs:
       - name: Preview pending migrations
         if: inputs.mode != 'history' && inputs.mode != 'repair'
         run: supabase db push --linked --dry-run
-      - name: Apply pending migrations (forward only)
-        if: (github.event_name == 'push' || !inputs.dry_run) && inputs.mode != 'history' && inputs.mode != 'repair'
-        run: supabase db push --linked --yes
       - name: Show resulting migration versions
         if: inputs.mode != 'history' && inputs.mode != 'repair'
         run: supabase migration list --linked
