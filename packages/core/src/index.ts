@@ -107,6 +107,7 @@ export {
   DOCKER_JOB_FAILURE_REASONS,
   type DockerJobFailureReason,
 } from "./docker-api.ts";
+export { DOCKER_LOCAL_IMAGE_LABELS, isDockerImageReference } from "./docker-image.ts";
 export {
   boundEventEntries,
   buildEventPage,

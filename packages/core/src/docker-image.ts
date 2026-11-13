@@ -1,0 +1,17 @@
+/** Immutable image references shared by API clients, admission and host jobs.
+ * A local image ID is a host-local artifact, never a registry manifest digest or golden alias.
+ */
+export function isDockerImageReference(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length <= 512 &&
+    /^(?:sha256:[0-9a-f]{64}|[a-z0-9][a-z0-9./:_-]*@sha256:[0-9a-f]{64})$/.test(value)
+  );
+}
+
+/** Host operator approval for locally built org-shared images; private environments need later authorization. */
+export const DOCKER_LOCAL_IMAGE_LABELS = {
+  installation: "dev.armada.environment.installation",
+  host: "dev.armada.environment.host",
+  scope: "dev.armada.environment.scope",
+} as const;

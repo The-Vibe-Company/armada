@@ -1,3 +1,5 @@
+import { DOCKER_LOCAL_IMAGE_LABELS, isDockerImageReference } from "./docker-image.ts";
+
 /** Direct argv execution only; adapters must never invoke a shell or log stdin/output. */
 export interface DockerMachineCli {
   /** `timeoutMs` lengthens the CLI's default bound for a slow command (an image pull). */
@@ -40,9 +42,11 @@ export class DockerMachineError extends Error {
 }
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const imageDigest = /^[a-z0-9][a-z0-9./:_-]*@sha256:[0-9a-f]{64}$/;
 const prefix = "dev.armada.machine.";
 type Row = Record<string, unknown>;
+
+/** A host-local image ID (`sha256:<hex>`), as opposed to a registry reference such as `sha256:base@sha256:<hex>`. */
+const isLocalImage = (image: string) => image.startsWith("sha256:") && !image.includes("@");
 
 function fail(code: DockerMachineError["code"]): never {
   throw new DockerMachineError(code);
@@ -86,7 +90,7 @@ export function createDockerMachineExecutor(options: {
     if (
       !uuid.test(request.sandboxId) ||
       !uuid.test(request.generation) ||
-      !imageDigest.test(request.image) ||
+      !isDockerImageReference(request.image) ||
       !Number.isInteger(request.ttlSeconds) ||
       request.ttlSeconds < 1 ||
       request.ttlSeconds > 86_400 ||
@@ -206,6 +210,26 @@ export function createDockerMachineExecutor(options: {
     return value;
   }
 
+  async function approveLocalImage(image: string) {
+    if (!isLocalImage(image)) return;
+    const raw = await checked(["image", "inspect", image]);
+    try {
+      const rows: unknown = JSON.parse(raw);
+      if (!Array.isArray(rows) || rows.length !== 1) fail("ownership_mismatch");
+      const row = object(rows[0]);
+      const labels = object(object(row.Config).Labels);
+      if (
+        row.Id !== image ||
+        labels[DOCKER_LOCAL_IMAGE_LABELS.installation] !== options.installationId ||
+        labels[DOCKER_LOCAL_IMAGE_LABELS.host] !== options.hostId ||
+        labels[DOCKER_LOCAL_IMAGE_LABELS.scope] !== "org"
+      )
+        fail("ownership_mismatch");
+    } catch {
+      fail("ownership_mismatch");
+    }
+  }
+
   async function create(request: DockerMachineRequest) {
     let state = await owned(request);
     const absoluteCreationTime = request.expiresAt === undefined ? undefined : now();
@@ -215,6 +239,9 @@ export function createDockerMachineExecutor(options: {
       request.expiresAt <= absoluteCreationTime
     )
       fail("expired");
+    // An immutable local ID alone is not authorization to consume another host's cache.
+    // Approval is checked before any new allocation, never required for retained cleanup/resume.
+    if (!state.container) await approveLocalImage(request.image);
     if (!state.volume) {
       const created = absoluteCreationTime ?? now();
       const labels = {
@@ -232,8 +259,12 @@ export function createDockerMachineExecutor(options: {
     if (state.expiresAt <= now()) fail("expired");
     if (!state.container) {
       // An image the host does not have is fetched first, with a pull's own bound, so a failure says the image could
-      // not be fetched instead of a generic Docker failure (#1507).
-      if ((await run(["image", "inspect", "--format", "{{.Id}}", request.image])).exitCode !== 0) {
+      // not be fetched instead of a generic Docker failure (#1507). A local image ID is never pulled: it was approved
+      // above, and a missing one has no registry to come from (#1523).
+      if (
+        !isLocalImage(request.image) &&
+        (await run(["image", "inspect", "--format", "{{.Id}}", request.image])).exitCode !== 0
+      ) {
         let pulled = false;
         try {
           const pull = ["image", "pull", "--quiet", request.image];
