@@ -111,6 +111,19 @@ test("opt-in host HTTP routes separate user and host capabilities and never cach
       outcome: "completed",
     });
     expect(denied.status).toBe(401);
+    // A known failure reason reaches machine authorization; a reason on a success, an unknown one or on an expiry
+    // packet is refused by HTTP.
+    const unknownJob = { installationId, requestId: randomUUID(), outcome: "failed" };
+    expect(
+      (await post("/api/docker-host/results", host.hostToken, { ...unknownJob, reason: "image_unavailable" })).status,
+    ).toBe(401);
+    for (const body of [
+      { ...unknownJob, outcome: "completed", reason: "image_unavailable" },
+      { ...unknownJob, reason: "disk_full" },
+      { ...unknownJob, reason: 1 },
+      { ...expiry, reason: "image_unavailable" },
+    ])
+      expect((await post("/api/docker-host/results", host.hostToken, body)).status).toBe(400);
     const deniedText = await denied.text();
     expect(deniedText.includes(host.hostToken)).toBe(false);
     expect(deniedText.includes(ticket.registrationToken)).toBe(false);

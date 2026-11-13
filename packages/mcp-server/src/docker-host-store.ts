@@ -1,5 +1,11 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import type { DockerHostSummary, Sql } from "@armada/core";
+import {
+  DOCKER_IMAGE_UNAVAILABLE_MESSAGE,
+  DOCKER_JOB_FAILURE_REASONS,
+  type DockerHostSummary,
+  type DockerJobFailureReason,
+  type Sql,
+} from "@armada/core";
 import { decryptSecret, encryptSecret } from "@armada/core/server";
 import {
   type BootstrapDescriptor,
@@ -265,12 +271,17 @@ export function createDockerHostStore(sql: Sql, key: string) {
     if (input(delivered) !== input({ ...delivered, request: frozen })) deny();
     return logical;
   }
-  async function startupFailed(tx: Sql, row: Sandbox, operation: string | null) {
+  async function startupFailed(tx: Sql, row: Sandbox, operation: string | null, reason?: DockerJobFailureReason) {
     if (operation !== "create" && operation !== "bootstrap" && operation !== "resume") return;
     await tx.query(
-      `update public.sandboxes set status='failed',status_reason='Docker sandbox startup failed.',
+      `update public.sandboxes set status='failed',status_reason=$2,
        lifecycle_generation=lifecycle_generation+1 where id=$1 and status in ('starting','ready','running','stopping')`,
-      [row.id],
+      [
+        row.id,
+        reason === "image_unavailable" && operation === "create"
+          ? DOCKER_IMAGE_UNAVAILABLE_MESSAGE
+          : "Docker sandbox startup failed.",
+      ],
     );
   }
   return {
@@ -627,10 +638,15 @@ export function createDockerHostStore(sql: Sql, key: string) {
     complete(
       hostToken: string,
       installationId: string,
-      result: { requestId: string; outcome: "completed" | "failed" },
+      result: { requestId: string; outcome: "completed" | "failed"; reason?: DockerJobFailureReason },
     ) {
       return transaction(async (tx) => {
-        exact(result, ["requestId", "outcome"]);
+        exact(result, "reason" in result ? ["requestId", "outcome", "reason"] : ["requestId", "outcome"]);
+        if (
+          result.reason !== undefined &&
+          (result.outcome !== "failed" || !DOCKER_JOB_FAILURE_REASONS.includes(result.reason))
+        )
+          deny();
         id(result.requestId);
         if (result.outcome !== "completed" && result.outcome !== "failed") deny();
         const host = await authenticate(tx, hostToken, installationId);
@@ -650,7 +666,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
         if (job.outcome !== null && job.outcome !== result.outcome) deny();
         // A repeated same-outcome machine fact also repairs a logical transition
         // missed by an earlier server; conflicting facts still fail above.
-        if (result.outcome === "failed" && logical) await startupFailed(tx, logical, job.bound_operation);
+        if (result.outcome === "failed" && logical)
+          await startupFailed(tx, logical, job.bound_operation, result.reason);
         if (result.outcome === "completed" && job.bound_sandbox_id) {
           if (job.bound_operation === "stop")
             await tx.query(
