@@ -30,6 +30,7 @@ import { exposedSecrets, type GitHubLaunchOptions, launchCredentials } from "./l
 import { redactForLog } from "./log.ts";
 import type { ModelAuthOwnership } from "./model-auth.ts";
 import type { ProviderMetadataFor } from "./provider-metadata.ts";
+import type { RuntimeFollowup } from "./runtime-followup.ts";
 import { createArmadaServer } from "./tools.ts";
 
 export const MCP_PATH = "/mcp";
@@ -42,6 +43,7 @@ import type { OrchestratorPair } from "./orchestrator-activation.ts";
 import type { OrchestratorRuntime } from "./orchestrator-runtime.ts";
 
 export interface HandlerOptions {
+  runtimeSend?: RuntimeFollowup;
   runtimeProviderFor?: (apiKey: string, target: ProviderTarget, caller: { userId: string }) => Promise<Provider>;
   storedProviderFor?: (target: ProviderTarget, caller: { userId: string }) => Promise<Provider>;
   /** Runtime readiness of the serving database pool; no credentials in the result. */
@@ -164,6 +166,7 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
     const server = createArmadaServer(
       {
         caller,
+        ...(options.runtimeSend ? { runtimeSend: options.runtimeSend } : {}),
         ...(options.skillDefaults ? { skillDefaults: options.skillDefaults } : {}),
         ...(options.templates ? { templates: options.templates } : {}),
         ...(options.applicationVault ? { applicationVault: options.applicationVault } : {}),
