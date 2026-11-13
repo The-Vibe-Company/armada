@@ -20,11 +20,13 @@ export async function operation(
     argv,
     command === "report"
       ? ["--reason", "--pr-number", "--pr-url", "--head-sha"]
-      : command === "mcp"
-        ? ["--scope", "--service"]
-        : command === "list"
-          ? ["--status", "--harness", "--golden", "--owner", "--page", "--limit"]
-          : [],
+      : command === "send"
+        ? ["--request-id"]
+        : command === "mcp"
+          ? ["--scope", "--service"]
+          : command === "list"
+            ? ["--status", "--harness", "--golden", "--owner", "--page", "--limit"]
+            : [],
     command === "list" ? ["--page-info"] : command === "rm" ? ["--yes"] : [],
   );
   if (command === "rm") {
@@ -72,6 +74,11 @@ export async function operation(
     const minimum = command === "wait" || command === "mcp" ? 0 : 1;
     if (!Number.isSafeInteger(seconds) || seconds < minimum || seconds > 600)
       throw new GoldenError("invalid_config", `--timeout must be ${minimum}–600 seconds.`);
+  }
+  if (command === "send") {
+    const requestId = single(args, "--request-id");
+    if (requestId !== undefined) uuid(requestId, "--request-id");
+    body.request_id = requestId?.toLowerCase() ?? crypto.randomUUID();
   }
   let route: string;
   if (command === "mcp") {
@@ -293,6 +300,8 @@ export async function operation(
         `${error.message} Outcome unknown. Run armada status ${args.positionals[0]} to check before retrying.`,
         "unavailable",
       );
+    if (command === "send" && error instanceof AuthError)
+      error.message += ` Send request ID: ${body.request_id}. Keep it with the original input when investigating uncertain delivery.`;
     throw error;
   });
 

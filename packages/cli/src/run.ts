@@ -8,11 +8,13 @@ import {
   type GoldenRecord,
   type GoldenStore,
   goldenBuildFailureText,
+  goldenResponse,
   HARNESSES,
   type Harness,
   isSandboxProvider,
   LaunchError,
   type LaunchResult,
+  launchResponse,
   MODEL_CATALOG,
   type Provider,
   ProviderError,
@@ -143,9 +145,16 @@ Usage:
                                            Version 1: {"version":1,"golden":null,"repositories":{}}
                                            Repository keys are configured directories. null golden and an empty map
                                            clear defaults. Scoped to this provider golden, future launches only.
-  armada golden list [--provider boat|modal|docker] [--json]
+  armada golden create <name> --provider docker --host UUID|NAME --org UUID
+                               (--config <file> | --repo <url>[@branch] ... [--init <cmd> ...]) [--private] [--request-id UUID] [--json]
+                                           Build a host-local snapshot from the official Armada image and your repos/setup.
+                                           No image input. Reuse --request-id with identical input after an unknown outcome.
+  armada golden list [--provider boat|modal|docker] [--org UUID] [--json]
+                                           Goldens you can see; Docker requires --org.
+  armada golden get UUID --provider docker --org UUID [--json]
+                                           Read snapshot build state; launch ready snapshots with launch --provider docker --golden UUID.
   armada golden rebuild UUID --provider docker --org UUID [--request-id UUID] [--json]
-                                           Goldens you can see
+                                           Build a new snapshot from saved repos/setup on its original host; keep the old one.
   armada launch <golden> --agent ${HARNESSES.join("|")} ["prompt"] [--model <id>] [--reasoning-effort <level>]
                                            [--armada-access --credential-id <id> [--max-active-children <1..100>]]
                 [--provider boat|modal] [--repo <configured-dir|owner/repo>] [--size small|medium|large|xlarge | --sized] [--ttl 4h] [--json]
@@ -183,6 +192,7 @@ Usage:
                                            Timeout is 0–600 seconds, default 60.
   armada report <sandbox-id> ready|blocked --prompt-id ID [--reason TEXT] [--pr-number N] [--pr-url URL] [--head-sha SHA]
   armada send|steer|exec <sandbox-id> <text-or-command> [--model ID] [--reasoning-effort LEVEL]
+                                           send accepts --request-id UUID to reuse an uncertain runtime instruction.
   armada golden retirement dry-run|reconcile <golden-id> [--limit 1-50] [--org UUID]
   armada golden remove <golden-id> [--org UUID] [--json]
                                            Remove from launch selection; retain children and provider artifacts
@@ -1073,7 +1083,9 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
       },
     ),
   );
-  io.out(flag(args, "--json") ? `${JSON.stringify(jsonLaunch(result), null, 2)}\n` : launchText(result, auth.now()));
+  io.out(
+    flag(args, "--json") ? `${JSON.stringify(launchResponse(result), null, 2)}\n` : launchText(result, auth.now()),
+  );
   if (
     size !== undefined &&
     (result.sandbox.machineSize?.requested !== size ||
@@ -1229,36 +1241,6 @@ function githubLine(result: LaunchResult, now: Date): string {
   return `GitHub: not set up. ${github.message ?? ""}`.trim();
 }
 
-function jsonLaunch(result: LaunchResult) {
-  const { sandbox } = result;
-  return {
-    id: sandbox.id,
-    provider: sandbox.provider,
-    providerSandboxId: sandbox.providerSandboxId,
-    boatId: sandbox.provider === "boat" ? sandbox.providerSandboxId : null,
-    golden: result.golden.name,
-    repositoryDir: sandbox.repositoryDir ?? null,
-    harness: sandbox.harness,
-    model: sandbox.model,
-    skills: sandbox.skills ?? [],
-    reasoningEffort: sandbox.reasoningEffort,
-    credentialId: sandbox.credentialId ?? null,
-    credentialVersion: sandbox.credentialVersion ?? null,
-    status: sandbox.status,
-    conversationIds: sandbox.conversationIds,
-    promptId: result.promptId ?? null,
-    ttlSeconds: result.ttlSeconds,
-    expiresAt: result.expiresAt ? new Date(result.expiresAt).toISOString() : null,
-    machineSize: sandbox.machineSize ?? null,
-    github: {
-      status: result.github.status,
-      login: result.github.login ?? null,
-      tokenExpiresAt: result.github.tokenExpiresAt ?? null,
-      message: result.github.message ?? null,
-    },
-  };
-}
-
 function line(row: GoldenRecord): string {
   const snapshot = row.providerSnapshotId ? "snapshot" : "no snapshot";
   const repos = row.config.repos.length === 1 ? "1 repo" : `${row.config.repos.length} repos`;
@@ -1266,22 +1248,7 @@ function line(row: GoldenRecord): string {
 }
 
 function jsonGolden(row: GoldenRecord) {
-  return {
-    id: row.id,
-    orgId: row.orgId,
-    name: row.name,
-    visibility: row.visibility,
-    ownerId: row.ownerId,
-    provider: row.provider,
-    providerSnapshotId: row.providerSnapshotId,
-    providerSandboxId: row.providerSandboxId,
-    modal: row.modal,
-    boatSnapshotId: row.provider === "boat" ? row.providerSnapshotId : null,
-    boatSandboxId: row.provider === "boat" ? row.providerSandboxId : null,
-    repos: row.config.repos.length,
-    config: row.config,
-    buildWarnings: row.buildWarnings ?? [],
-  };
+  return { ...goldenResponse(row), buildWarnings: row.buildWarnings ?? [] };
 }
 
 async function readConfig(args: ReturnType<typeof parseArgs>, deps: Deps): Promise<GoldenConfig> {

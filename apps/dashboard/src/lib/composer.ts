@@ -1,3 +1,5 @@
+import { describeFailure } from "./failure.ts";
+import { type LaunchKey, launchKeyFor } from "./launch-key.ts";
 import { type ModelFields, OTHER_MODEL } from "./model-choice.ts";
 
 /**
@@ -26,7 +28,7 @@ export function chosenConversation(
 }
 
 /** On an owned Docker host the model and effort chosen at launch serve every message (#1526). */
-export const PINNED_MODEL = "On your own Docker host, the model and effort chosen at launch stay for every message.";
+export const PINNED_MODEL = "This sandbox keeps the model and effort chosen at launch for every message.";
 
 /** The form field carrying one Docker message's request key: the same on a retry of the same message. */
 export const SEND_KEY_FIELD = "send_key";
@@ -35,7 +37,7 @@ export const SEND_KEY_FIELD = "send_key";
  * A Docker send: the server admits it once per request key, so a retry of the same message never runs twice, and it
  * keeps the launch model and effort, so no override is sent.
  */
-export function dockerSend(
+export function pinnedSend(
   fields: ModelFields,
   key: string,
 ): { ok: true; requestId: string } | { ok: false; error: string } {
@@ -47,14 +49,39 @@ export function dockerSend(
 /** Lowercase, as the server checks it. */
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
-/**
- * A Docker send failure as a person reads it: a server sentence that names an API field (`request_id`) becomes plain
- * words. The composer keeps the message's request key until the text changes, so sending it again unchanged is the safe
- * retry the server asks for; a pending admission may still run, so it is never called a failure.
- */
-export function plainSendFailure(message: string): string {
-  if (!/\b[a-z]+_[a-z_]+\b/.test(message)) return message;
-  return /\bpending\b/.test(message)
-    ? "The host has not confirmed the message yet. Send it again unchanged to check, without editing it."
-    : "The message could not be delivered. Send it again.";
+export const UNCONFIRMED_ACTION = "This action could not be confirmed. Check the conversation before trying again.";
+
+/** Only curated guidance reaches the composer, never an arbitrary API/provider sentence. */
+export function drivingFailureMessage(
+  error: { message: string; code?: string | undefined; status?: number | undefined },
+  owner: boolean,
+  keyedSend = false,
+): string {
+  if (error.code === "credential_binding_required")
+    return owner
+      ? "This sandbox needs an account before it can resume. Choose one above."
+      : "This sandbox needs an account before it can resume. Only its owner can choose it.";
+  const known = describeFailure(error.code);
+  if (known) return known.hint;
+  if (error.status === 401 || error.status === 403)
+    return "This session cannot access the sandbox. Sign in again, or ask an organization admin to check your access.";
+  return keyedSend ? plainSendFailure(error.message) : UNCONFIRMED_ACTION;
+}
+
+/** A keyed Docker retry checks the same admission; never suggest editing or starting a second message. */
+function plainSendFailure(message: string): string {
+  return /\b(pending|uncertain|unknown)\b/i.test(message)
+    ? "The message has not been confirmed and may still run. Keep it unchanged and check the sandbox status before retrying."
+    : "The host could not confirm delivery. Send the same message again without editing it to check.";
+}
+
+/** Identical retry keeps its key; every submitted instruction/model choice participates. */
+export function messageKeyFor(previous: LaunchKey | null, data: FormData, fresh?: () => string): LaunchKey {
+  return launchKeyFor(
+    previous,
+    ["sandbox", "prompt", "conversation", "model", "other_model", "reasoning_effort"].map(
+      (field) => [field, String(data.get(field) ?? "")] as [string, string],
+    ),
+    fresh,
+  );
 }

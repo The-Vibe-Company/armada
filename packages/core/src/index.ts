@@ -323,10 +323,18 @@ export {
 } from "./provider.ts";
 export { providerRateLimitDetails, providerRateLimitMessage } from "./provider-limit.ts";
 export {
+  goldenCompatibilityIds,
+  goldenResponse,
+  launchGitHubResponse,
+  launchResponse,
+  sandboxIdentity,
+} from "./provider-response.ts";
+export {
   parseReadableVariableBindings,
   type ReadableVariableBinding,
   validateReadableVariables,
 } from "./readable-variables.ts";
+export { isRecord } from "./record.ts";
 export { resolveRepositoryDir } from "./repository-context.ts";
 export {
   RESOURCE_ADVICE_VERSION,

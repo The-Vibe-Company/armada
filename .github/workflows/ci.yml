@@ -4,8 +4,7 @@ on:
   pull_request:
   merge_group:
     types: [checks_requested]
-  push:
-    branches: [main]
+  # No push:main run: the merge queue already tested that exact commit.
   workflow_dispatch:
 
 permissions:
@@ -14,26 +13,35 @@ permissions:
 
 concurrency:
   group: ci-${{ github.event_name }}-${{ github.ref }}-${{ github.event_name == 'merge_group' && github.sha || 'latest' }}
-  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
 
 jobs:
-  static-checks:
-    name: Lint and typecheck
+  unit-tests:
+    name: Unit tests (${{ matrix.shard }}/6)
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          fetch-depth: 0
+          fetch-depth: ${{ matrix.shard == 1 && '0' || '1' }}
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
       - run: bun run lint
+        if: matrix.shard == 1
       - run: bun scripts/generate-ios-harness.ts --check
+        if: matrix.shard == 1
       - run: bun run typecheck
+        if: matrix.shard == 1
       - name: Check complete unit shard coverage
+        if: matrix.shard == 1
         run: bun scripts/ci/unit-shards.ts --check
 
       - name: Check migration versions against the current base
+        if: matrix.shard == 1
         env:
           BASE_BRANCH: ${{ github.base_ref || 'main' }}
           MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
@@ -54,51 +62,10 @@ jobs:
           fi
           bun scripts/db/check-migrations.ts "$base"
       - name: Test migration guard
+        if: matrix.shard == 1
         run: bun test scripts/db/check-migrations.test.ts
 
-      - run: bun packages/agent-runtime/build.ts
-      - run: bun scripts/validate-runtime-native.ts
-      - name: Native runtime artifact conformance
-        run: bun test ./packages/provider-modal/test/artifact.test.ts --reporter=junit --reporter-outfile=/tmp/native-artifact.xml
-      - name: Native Codex cwd and MCP rotation contracts
-        env:
-          CODEX_NATIVE_TEST_BINARY: ${{ github.workspace }}/packages/agent-runtime/dist/codex
-        run: |
-          bun test ./packages/provider-boat/test/native-cwd.test.ts --test-name-pattern '^real Codex app-server reports the selected thread cwd$' --reporter=junit --reporter-outfile=/tmp/native-cwd.xml
-          bun test ./packages/mcp-server/test/mcp-codex-bridge.test.ts --test-name-pattern '^real Codex SAME process and thread resumes with rotated MCP credentials without model inference$' --reporter=junit --reporter-outfile=/tmp/native-mcp.xml
-      - name: Require every relocated native contract to execute
-        run: |
-          python3 - <<'PYTHON'
-          import xml.etree.ElementTree as ET
-          expected = [
-              ("/tmp/native-artifact.xml", "actual runtime artifact accepts private bootstrap and scoped RPC, checkpoints and reopens journal"),
-              ("/tmp/native-cwd.xml", "real Codex app-server reports the selected thread cwd"),
-              ("/tmp/native-mcp.xml", "real Codex SAME process and thread resumes with rotated MCP credentials without model inference"),
-          ]
-          for path, name in expected:
-              report = ET.parse(path).getroot()
-              selected = [case for case in report.iter("testcase") if case.get("name") == name]
-              assert len(selected) == 1 and all(selected[0].find(tag) is None for tag in ["failure", "error", "skipped"]), f"Native contract did not execute exactly once without skips: {name}"
-          PYTHON
-      - name: Real checkpoint process boundary
-        run: |
-          sudo unshare --pid --fork --mount-proc "$(which bun)" packages/provider-modal/test/checkpoint-process-conformance.ts
-          sudo unshare --pid --fork --mount-proc "$(which bun)" packages/provider-modal/test/checkpoint-process-conformance.ts --native-pidfds
-
-
-  unit-tests:
-    name: Unit tests (${{ matrix.shard }}/8)
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8]
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
-      # Native-only conformance runs once in Lint and typecheck.
+      # Native/namespace conformance belongs to publishing release validation.
       - run: bun scripts/prepare-runtime.ts
       - name: Run balanced unit shard
         run: bun scripts/ci/unit-shards.ts ${{ matrix.shard }}
@@ -106,7 +73,7 @@ jobs:
   # Keep the ruleset's required name; never turn skipped/cancelled children green.
   verify:
     name: Lint, typecheck and test
-    needs: [static-checks, unit-tests]
+    needs: [unit-tests]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 1

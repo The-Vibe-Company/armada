@@ -23,8 +23,8 @@ Owner-facing orchestrators have been removed, with no compatibility route or fea
 ## Commands
 
 - `bun install`
-- `bun scripts/prepare-runtime.ts`: prepare the portable runtime before local server tests. Linux CI builds and validates the native runtime with `bun packages/agent-runtime/build.ts` and `bun scripts/validate-runtime-native.ts` instead.
-- `bun run verify`: lint (Biome), typecheck (`tsc`, strict) and tests (`bun test`). CI exposes one required aggregate, "Lint, typecheck and test", over lint/typecheck (including migration and native contract steps) and unit shards.
+- `bun scripts/prepare-runtime.ts`: prepare the portable runtime before local server tests. Publishing release validation builds and validates the native runtime with `bun packages/agent-runtime/build.ts` and `bun scripts/validate-runtime-native.ts` instead.
+- `bun run verify`: lint (Biome), typecheck (`tsc`, strict) and tests (`bun test`). CI exposes one required aggregate, "Lint, typecheck and test", over lint/typecheck (including migration guards; native/namespace contracts run in publishing release validation) and unit shards.
 - `bun run verify:changed [--base origin/main] [--dry-run]`: lint/typecheck plus unit tests in changed workspaces and their transitive consumers; includes staged, unstaged and untracked files. Root/config changes conservatively select every workspace. Root script tests remain included for executable changes. Use `--dry-run` to inspect selection without running checks; this is a local shortcut, not the CI verdict or a two-minute guarantee. Fetch the base ref first.
 - `bun run format`: apply Biome formatting and safe fixes.
 - `bun run build` (this machine), `bun run build --target <os-arch>`, `bun run build:all`: the binary in `dist/`.
@@ -37,6 +37,13 @@ Owner-facing orchestrators have been removed, with no compatibility route or fea
 ## CI: what we test and what we do not
 
 One verdict, under two minutes. A pull request has a single required check, `Lint, typecheck and test`. If it takes more than two minutes, that is a defect to fix before anything else merges.
+Owner decision 2026-11-13: Boat remains a first-class product provider, but
+staging acceptance (post-deploy, pinned and release gate) never tests Boat.
+Ignore Boat cases even if configured; print
+`boat: not part of the release gate`. Retain Modal probes and
+the owner's Docker-host parity probes; Boat omission is not a Boat pass.
+Boat production verification is coordinator-only/on-demand, never CI or workers:
+parity requires `--only boat --production-boat`, and touches only its own sandbox.
 No blocking PR or merge-queue check may exceed two minutes. The only slow gated
 path is a publishing release: release → exact-commit staging deployment/smoke →
 production. Staging smoke otherwise runs only after deploying a main commit,
@@ -52,7 +59,7 @@ What CI runs on every pull request and in the merge queue:
 What runs only when its files change: the iOS checks (`apps/ios`), the migration dry-run (`supabase/migrations`).
 
 What runs after a merge, not before: the staging dashboard build in GitHub Actions
-(`vercel pull`, `vercel build`, then `vercel deploy --prebuilt`), the deploy to staging and the post-deploy smoke, which launches real sandboxes on every enabled provider, builds goldens and exercises the whole lifecycle. Production deploys only from a publishing release after its exact-SHA staging
+(`vercel pull`, `vercel build`, then `vercel deploy --prebuilt`), the deploy to staging and the post-deploy smoke, which runs only the owner-enabled Modal/Docker staging probes, builds goldens and exercises the whole lifecycle. Production deploys only from a publishing release after its exact-SHA staging
 smoke succeeds; there is no opt-in bypass. The #1547 owner cutover in
 `docs/releasing.md` records which provider settings still need owner changes.
 Vercel Git deployments are disabled for both dashboard projects via

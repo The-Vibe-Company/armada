@@ -2,7 +2,9 @@ import {
   dedupeEvents,
   GitHubHydrationError,
   goldenForSettings,
+  goldenResponse,
   idlePauseMessage,
+  launchResponse,
   MACHINE_SIZES,
   parseMachineSizePolicy,
   SANDBOX_PLACEMENT_PROVIDERS,
@@ -720,7 +722,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     async () => {
       const goldens: GoldenRecord[] = [];
       for (const orgId of orgIds) goldens.push(...(await data.goldens.list(orgId)));
-      return { goldens: goldens.map(goldenJson) };
+      return { goldens: goldens.map(goldenResponse) };
     },
   );
 
@@ -1088,30 +1090,9 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           context.launch ?? {},
         );
         return {
-          id: result.sandbox.id,
-          ...sandboxIds(result.sandbox),
+          ...launchResponse(result),
           helper: result.helper,
-          golden: result.golden.name,
           visibility: result.sandbox.visibility ?? result.golden.visibility,
-          harness: result.sandbox.harness,
-          skills: result.sandbox.skills ?? [],
-          repositoryDir: result.sandbox.repositoryDir ?? null,
-          model: result.sandbox.model,
-          reasoningEffort: result.sandbox.reasoningEffort,
-          credentialId: result.sandbox.credentialId ?? null,
-          credentialVersion: result.sandbox.credentialVersion ?? null,
-          machineSize: result.sandbox.machineSize ?? null,
-          status: result.sandbox.status,
-          conversationIds: result.sandbox.conversationIds,
-          promptId: result.promptId ?? null,
-          ttlSeconds: result.ttlSeconds,
-          expiresAt: result.expiresAt ? result.expiresAt.toISOString() : null,
-          github: {
-            status: result.github.status,
-            login: result.github.login ?? null,
-            tokenExpiresAt: result.github.tokenExpiresAt ?? null,
-            message: result.github.message ?? null,
-          },
         };
       },
     );
@@ -1433,8 +1414,18 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       if (!context.runtimeSend) throw new ToolError("unsupported", "Runtime follow-up is unavailable.");
       return context.runtimeSend(caller, args);
     }
-    if (args.request_id !== undefined)
-      throw new ToolError("invalid_request", "request_id is supported only for runtime follow-up.");
+    // One send shape across placements. Native providers do not implement a
+    // durable request-key protocol; accepting this field promises no deduplication.
+    if (
+      selected.statusReason === "idle_paused" &&
+      (selected.status === "stopping" ||
+        !selected.expiresAt ||
+        Date.parse(selected.expiresAt) <= context.now().getTime())
+    )
+      throw new ToolError(
+        "conflict",
+        "Idle pause is still finishing or its original deadline has expired; inspect status before sending.",
+      );
     const { sandbox: found, provider } = await live(args.id, false, selected);
     if (args.prompt.trim() === "") throw new ToolError("invalid_request", "The prompt is empty.");
     if (found.credentialId)
@@ -1477,7 +1468,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       found,
       {
         clearTaskOutcome: true,
-        renewLifecycle: machine.state === "stopped",
+        renewLifecycle: machine.state === "stopped" && found.statusReason !== "idle_paused",
         stopRequested: false,
         ...(machine.state === "stopped" ? { status: "starting" as const, stoppedAt: null } : {}),
       },
@@ -1516,7 +1507,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
             statusReason: null,
             conversationIds,
             stoppedAt: null,
-            rearmDeadline: receipt.resumed === true,
+            rearmDeadline: receipt.resumed === true && found.statusReason !== "idle_paused",
           },
           result: {
             id: found.id,
@@ -1545,7 +1536,9 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           .string()
           .uuid()
           .optional()
-          .describe("Required for runtime follow-up; reuse with identical input after uncertain delivery."),
+          .describe(
+            "Required for runtime follow-up; reuse with identical input after uncertain delivery. Native providers accept the field for compatibility only; they do not deduplicate.",
+          ),
         prompt: z.string().min(1).describe("The instruction."),
         conversation_id: conversationId,
         model: modelInput,
@@ -2056,15 +2049,6 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
   return server;
 }
 
-/** A sandbox's ids, with the Boat field of earlier clients kept for Boat sandboxes only. */
-function sandboxIds(row: { provider: SandboxProviderId; providerSandboxId: string }) {
-  return {
-    provider: row.provider,
-    providerSandboxId: row.providerSandboxId,
-    boatId: row.provider === "boat" ? row.providerSandboxId : null,
-  };
-}
-
 const providerLimitsText = SANDBOX_PROVIDERS.map((provider) => {
   const limits = PROVIDER_LIMITS[provider];
   return `${limits.maxTtlSeconds} (${limits.maxTtlLabel}) on ${provider}`;
@@ -2088,24 +2072,6 @@ function resolveCreateOrg(
   if (!first) throw new ToolError("not_found", "You are not a member of any org.");
   if (orgs.length > 1) throw new ToolError("invalid_request", "You belong to more than one org. Pass org (an orgId).");
   return first;
-}
-
-function goldenJson(row: GoldenRecord) {
-  return {
-    id: row.id,
-    name: row.name,
-    orgId: row.orgId,
-    visibility: row.visibility,
-    ownerId: row.ownerId,
-    provider: row.provider,
-    providerSnapshotId: row.providerSnapshotId,
-    providerSandboxId: row.providerSandboxId,
-    modal: row.modal,
-    boatSnapshotId: row.provider === "boat" ? row.providerSnapshotId : null,
-    boatSandboxId: row.provider === "boat" ? row.providerSandboxId : null,
-    repos: row.config.repos.length,
-    config: row.config,
-  };
 }
 
 async function readLogs(

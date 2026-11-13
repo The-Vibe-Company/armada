@@ -4,9 +4,21 @@ import type { LaunchProviderOption } from "../packages/core/src/index.ts";
 import type { SandboxUsage } from "../packages/core/src/sandbox-usage.ts";
 import { redactForLog } from "../packages/mcp-server/src/log.ts";
 import { STAGING_ORIGIN } from "./smoke-sandbox-cleanup.ts";
+import { BOAT_STAGING_NOTICE, smokeReceiptProvider, stagingSmokeCases } from "./staging-smoke-policy.ts";
 
 type Provider = "boat" | "modal" | "docker";
-type Diagnostic = { code: string; httpStatus?: number; message: string; quota?: boolean };
+type Diagnostic = {
+  code: string;
+  httpStatus?: number;
+  message: string;
+  quota?: boolean;
+  elapsedMs?: number;
+  polls?: number;
+  serverElapsedMs?: number | null;
+};
+// Match the server wait tool's maximum observation window (tools.ts MAX_WAIT_SECONDS).
+// This is a bound, not an assertion about any provider's expected latency.
+const OBSERVATION_MS = 600_000;
 type Cell = { status: "pass" | "fail" | "unsupported" | "not-run"; reason: string | null; diagnostic?: Diagnostic };
 
 class ParityError extends Error {
@@ -104,39 +116,90 @@ interface Io {
   out: (line: string) => void;
   sleep: (ms: number) => Promise<void>;
   now: () => number;
-  recordSandbox?: (org: string, id: string, key: string) => Promise<void>;
+  recordSandbox?: (org: string, id: string, key: string, provider?: "modal" | "docker") => Promise<void>;
 }
 
-/** Additive staging observation: never replaces the existing deploy-gating smoke. */
+/** Observational parity; production Boat verification requires explicit coordinator opt-in. */
 export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: string[] = []): Promise<boolean> {
-  if (args.includes("--accounts")) return accountsParity(env, io, args);
+  const productionBoat = args.includes("--production-boat");
+  const notice = productionBoat ? "boat: production verification (coordinator opt-in)" : BOAT_STAGING_NOTICE;
+  io.out(notice);
+  const out = io.out;
+  io = {
+    ...io,
+    out: (line) => {
+      if (line !== notice) out(line);
+    },
+  };
+  if (args.includes("--accounts") && !productionBoat) return accountsParity(env, io, args);
   let cases: Case[];
   let only: Provider | undefined;
   let feature: string | undefined;
+  let origin = STAGING_ORIGIN;
   try {
-    for (let i = 0; i < args.length; i += 2) {
+    let productionFlagSeen = false;
+    for (let i = 0; i < args.length; i++) {
       const flag = args[i];
-      const value = args[i + 1];
+      if (flag === "--production-boat" && !productionFlagSeen) {
+        productionFlagSeen = true;
+        continue;
+      }
+      const value = args[++i];
       if (flag === "--only" && !only && ["boat", "modal", "docker"].includes(value ?? "")) only = value as Provider;
       else if (flag === "--feature" && !feature && features.includes(value ?? "")) feature = value;
       else throw new Error();
     }
+    if (productionBoat && only !== "boat") throw new Error();
   } catch {
     io.out(JSON.stringify({ step: "configure", pass: false, code: "invalid_parity_filter" }));
     return false;
   }
+  if (only === "boat" && !productionBoat) {
+    io.out(
+      JSON.stringify({
+        step: "provider_parity",
+        version: 2,
+        starts: 0,
+        features: Object.fromEntries(
+          features.map((name) => [name, { boat: { status: "not-run", reason: "not_part_of_release_gate" } }]),
+        ),
+      }),
+    );
+    return false;
+  }
   try {
-    if (env.ARMADA_URL !== STAGING_ORIGIN || !env.ARMADA_TOKEN || env.ARMADA_SMOKE !== "create_real_compute")
-      throw new Error();
-    cases = JSON.parse(env.ARMADA_SMOKE_CASES ?? "");
-    if (!Array.isArray(cases) || cases.length === 0 || new Set(cases.map((c) => c.provider)).size !== cases.length)
-      throw new Error();
-    if (only) cases = cases.filter((c) => c.provider === only);
-    else if (cases.length !== 3) throw new Error();
-    if (cases.length === 0) throw new Error();
+    if (!env.ARMADA_TOKEN || env.ARMADA_SMOKE !== "create_real_compute") throw new Error();
+    if (productionBoat) {
+      if (env.CI || env.GITHUB_ACTIONS || env.ARMADA_SMOKE_JOURNAL || !env.ARMADA_URL) throw new Error();
+      const url = new URL(env.ARMADA_URL);
+      if (
+        url.protocol !== "https:" ||
+        url.username ||
+        url.password ||
+        url.pathname !== "/" ||
+        url.search ||
+        url.hash ||
+        url.origin === STAGING_ORIGIN ||
+        ![url.origin, `${url.origin}/`].includes(env.ARMADA_URL)
+      )
+        throw new Error();
+      origin = url.origin;
+      const raw: unknown = JSON.parse(env.ARMADA_SMOKE_CASES ?? "");
+      if (!Array.isArray(raw)) throw new Error();
+      cases = raw.filter((c) => c && typeof c === "object" && c.provider === "boat");
+      if (cases.length !== 1) throw new Error();
+    } else {
+      if (env.ARMADA_URL !== STAGING_ORIGIN) throw new Error();
+      cases = stagingSmokeCases(JSON.parse(env.ARMADA_SMOKE_CASES ?? "")) as Case[];
+      if (!Array.isArray(cases) || cases.length === 0 || new Set(cases.map((c) => c.provider)).size !== cases.length)
+        throw new Error();
+      if (only) cases = cases.filter((c) => c.provider === only);
+      else if (cases.length !== 2) throw new Error();
+      if (cases.length === 0) throw new Error();
+    }
     for (const c of cases) {
       if (
-        !["boat", "modal", "docker"].includes(c.provider) ||
+        !(productionBoat ? c.provider === "boat" : ["modal", "docker"].includes(c.provider)) ||
         !isHarness(c.harness) ||
         [c.org, c.model, c.modelAccountId].some((v) => typeof v !== "string" || !v.trim()) ||
         (c.provider === "docker"
@@ -150,12 +213,15 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     return false;
   }
   const deadline = io.now() + 35 * 60_000;
+  let requestDeadline: number | undefined;
   async function request<T>(path: string, body: object): Promise<T> {
     // Never serialize the response envelope, details, or arbitrary caught errors.
-    const response = await io.fetch(`${STAGING_ORIGIN}/api/v1/${path}`, {
+    const remaining = (requestDeadline ?? Number.POSITIVE_INFINITY) - io.now();
+    if (remaining <= 0) throw new Error("poll_limit_exceeded");
+    const response = await io.fetch(`${origin}/api/v1/${path}`, {
       method: "POST",
       redirect: "error",
-      signal: AbortSignal.timeout(600_000),
+      signal: AbortSignal.timeout(Math.max(1, Math.min(600_000, remaining))),
       headers: { authorization: `Bearer ${env.ARMADA_TOKEN}`, "content-type": "application/json" },
       body: JSON.stringify(body),
     });
@@ -186,15 +252,40 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         quota: response.status === 429 || ["quota_exceeded", "rate_limited", "start_limit_exceeded"].includes(code),
       });
     }
-    return response.json() as Promise<T>;
-  }
-  async function poll<T>(read: () => Promise<T>, done: (value: T) => boolean, attempts = 120) {
-    for (let i = 0; i < attempts && io.now() < deadline; i++) {
-      const value = await read();
-      if (done(value)) return value;
-      await io.sleep(1000);
+    const result = (await response.json()) as { sandbox?: { provider?: unknown } } | null;
+    if (path === "sandbox/launch") {
+      const expected = (body as { provider?: unknown }).provider;
+      if (smokeReceiptProvider(result) !== expected)
+        throw new ParityError({ code: "invalid_launch_receipt", message: "Unexpected launch provider" });
     }
-    throw new Error("poll_limit_exceeded");
+    return result as T;
+  }
+  async function poll<T>(
+    read: () => Promise<T>,
+    done: (value: T) => boolean,
+    attempts = 600,
+    until = Math.min(deadline, io.now() + OBSERVATION_MS),
+    observed?: (elapsedMs: number, polls: number) => void,
+  ) {
+    const started = io.now();
+    const previousRequestDeadline = requestDeadline;
+    requestDeadline = until;
+    let polls = 0;
+    try {
+      while (polls < attempts && io.now() < until) {
+        polls++;
+        const value = await read();
+        if (io.now() > until) throw new Error("poll_limit_exceeded");
+        if (done(value)) return value;
+        await io.sleep(Math.min(1000, Math.max(0, until - io.now())));
+      }
+      throw new Error("poll_limit_exceeded");
+    } catch (error) {
+      throw new ParityError({ ...diagnostic(error), elapsedMs: io.now() - started, polls });
+    } finally {
+      requestDeadline = previousRequestDeadline;
+      observed?.(io.now() - started, polls);
+    }
   }
   const report: Record<string, Partial<Record<Provider, Cell>>> = {};
   const record = (
@@ -204,7 +295,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     reason: string | null = null,
     detail?: Diagnostic,
   ) => {
-    report[step] ??= {};
+    report[step] ??= productionBoat ? {} : { boat: { status: "not-run", reason: "not_part_of_release_gate" } };
     report[step][provider] = { status, reason, ...(detail ? { diagnostic: detail } : {}) };
   };
   for (const name of features)
@@ -213,11 +304,13 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         name,
         provider,
         "not-run",
-        only && provider !== only
-          ? "provider_filtered"
-          : feature && name !== feature
-            ? "feature_filtered"
-            : "probe_not_implemented",
+        provider === "boat" && !productionBoat
+          ? "not_part_of_release_gate"
+          : only && provider !== only
+            ? "provider_filtered"
+            : feature && name !== feature
+              ? "feature_filtered"
+              : "probe_not_implemented",
       );
   let starts = 0;
   for (const c of cases) {
@@ -364,6 +457,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       }
     }
     async function runTurn(recall = false) {
+      const turnStarted = io.now();
       if (!id) throw new Error("launch_not_available");
       const turn = await api<{ promptId: string }>("sandbox/send", {
         id,
@@ -378,40 +472,83 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       let cursor: string | undefined;
       let finished = false;
       let answered = false;
-      await poll(
-        () =>
-          api<{ cursor?: string; events: { kind: string; promptId?: string; status?: string; text?: string }[] }>(
-            "logs/read",
-            { id, ...(cursor ? { cursor } : {}) },
-          ),
-        (page) => {
-          if (
-            page.events.some(
-              (e) =>
-                e.promptId === turn.promptId &&
-                e.kind === "prompt" &&
-                ["failed", "interrupted"].includes(e.status ?? ""),
+      let serverStarted: number | undefined;
+      let serverFinished: number | undefined;
+      let elapsedMs = 0;
+      let polls = 0;
+      try {
+        await poll(
+          () =>
+            api<{
+              cursor?: string;
+              events: { at?: number; kind: string; promptId?: string; status?: string; text?: string }[];
+            }>("logs/read", { id, ...(cursor ? { cursor } : {}) }),
+          (page) => {
+            for (const event of page.events) {
+              if (event.promptId !== turn.promptId || event.kind !== "prompt" || !Number.isFinite(event.at)) continue;
+              if (["queued", "running"].includes(event.status ?? ""))
+                serverStarted = Math.min(serverStarted ?? event.at!, event.at!);
+              if (["finished", "failed", "interrupted"].includes(event.status ?? ""))
+                serverFinished = Math.max(serverFinished ?? event.at!, event.at!);
+            }
+            if (
+              page.events.some(
+                (e) =>
+                  e.promptId === turn.promptId &&
+                  e.kind === "prompt" &&
+                  ["failed", "interrupted"].includes(e.status ?? ""),
+              )
             )
-          )
-            throw new Error("turn_failed");
-          cursor = page.cursor;
-          finished ||= page.events.some(
-            (e) => e.promptId === turn.promptId && e.kind === "prompt" && e.status === "finished",
-          );
-          answered ||= page.events.some(
-            (e) =>
-              e.promptId === turn.promptId && e.kind === "message" && e.text?.includes(recall ? memory : "SMOKE_OK"),
-          );
-          return finished && answered;
-        },
-      );
+              throw new Error("turn_failed");
+            cursor = page.cursor;
+            finished ||= page.events.some(
+              (e) => e.promptId === turn.promptId && e.kind === "prompt" && e.status === "finished",
+            );
+            answered ||= page.events.some(
+              (e) =>
+                e.promptId === turn.promptId && e.kind === "message" && e.text?.includes(recall ? memory : "SMOKE_OK"),
+            );
+            return finished && answered;
+          },
+          600,
+          Math.min(deadline, turnStarted + OBSERVATION_MS),
+          (_elapsed, count) => {
+            elapsedMs = io.now() - turnStarted;
+            polls = count;
+          },
+        );
+      } catch (error) {
+        throw new ParityError({
+          ...diagnostic(error),
+          elapsedMs: io.now() - turnStarted,
+          serverElapsedMs:
+            serverStarted !== undefined && serverFinished !== undefined && serverFinished >= serverStarted
+              ? serverFinished - serverStarted
+              : null,
+        });
+      } finally {
+        io.out(
+          JSON.stringify({
+            step: "parity_turn",
+            provider: c.provider,
+            afterResume,
+            elapsedMs,
+            polls,
+            serverElapsedMs:
+              serverStarted !== undefined && serverFinished !== undefined && serverFinished >= serverStarted
+                ? serverFinished - serverStarted
+                : null,
+          }),
+        );
+      }
       await checkUsage(turn.promptId);
     }
     async function deleteKnown() {
       if (!id) throw new Error("launch_not_available");
-      if (!stopped) {
+      const cleanupDeadline = io.now() + OBSERVATION_MS;
+      {
         let stopError: unknown;
-        if (!stopRequested) {
+        if (!stopped && !stopRequested) {
           stopRequested = true;
           try {
             await api("sandbox/stop", { id, request_id: crypto.randomUUID() });
@@ -423,6 +560,8 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           const terminal = await poll(
             () => api<{ id: string; status: string }>("sandbox/status", { id }),
             (value) => value.id === id && ["stopped", "failed", "deleted"].includes(value.status),
+            600,
+            cleanupDeadline,
           );
           if (terminal.status === "deleted") {
             deleted = true;
@@ -430,7 +569,15 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
             return terminal;
           }
         } catch (error) {
-          throw stopError ?? error;
+          if (stopError) {
+            const observation = diagnostic(error);
+            throw new ParityError({
+              ...diagnostic(stopError),
+              elapsedMs: observation.elapsedMs ?? 0,
+              polls: observation.polls ?? 0,
+            });
+          }
+          throw error;
         }
         stopped = true;
       }
@@ -449,15 +596,23 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
             } catch (error) {
               lastDeleteError = error;
               const detail = diagnostic(error);
-              if (["conflict", "unavailable", "sandbox_busy"].includes(detail.code)) return { status: "pending" };
+              if (["conflict", "unavailable", "sandbox_busy", "sandbox_not_ready"].includes(detail.code))
+                return { status: "pending" };
               throw error;
             }
           },
           (value) => value.status === "deleted",
-          240,
+          600,
+          cleanupDeadline,
         );
       } catch (error) {
-        throw lastDeleteError ?? error;
+        if (lastDeleteError)
+          throw new ParityError({
+            ...diagnostic(lastDeleteError),
+            elapsedMs: diagnostic(error).elapsedMs ?? 0,
+            polls: diagnostic(error).polls ?? 0,
+          });
+        throw error;
       }
       if (receipt.status !== "deleted" || receipt.id !== id) throw new Error("delete_unconfirmed");
       deleted = true;
@@ -516,6 +671,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         );
         continue;
       }
+      const operationStarted = io.now();
       try {
         if (step === "launch") {
           starts++;
@@ -530,11 +686,11 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
               ? { hostId: c.hostId, requestId: crypto.randomUUID() }
               : { golden: c.golden, connections: [] }),
           });
-          if (typeof result.sandbox?.id === "string") {
-            id = result.sandbox.id;
-            await io.recordSandbox?.(c.org, id, `post-deploy-smoke:${crypto.randomUUID()}`);
-          }
-          if (!id || result.sandbox.provider !== c.provider) throw new Error("invalid_launch_receipt");
+          if (typeof result.sandbox?.id !== "string" || !result.sandbox.id || result.sandbox.provider !== c.provider)
+            throw new Error("invalid_launch_receipt");
+          id = result.sandbox.id;
+          if (c.provider !== "boat")
+            await io.recordSandbox?.(c.org, id, `post-deploy-smoke:${crypto.randomUUID()}`, c.provider);
         } else {
           if (!id) throw new Error("launch_not_available");
           if (step === "send") {
@@ -591,7 +747,12 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         }
         record(selected ? step : `prerequisite:${step}`, c.provider, "pass");
       } catch (error) {
-        const detail = diagnostic(error);
+        const caught = diagnostic(error);
+        const detail = {
+          ...caught,
+          elapsedMs: caught.elapsedMs ?? io.now() - operationStarted,
+          polls: caught.polls ?? 0,
+        };
         record(
           selected ? step : `prerequisite:${step}`,
           c.provider,
@@ -639,7 +800,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
             const cell = providers[p];
             return cell
               ? escapeCell(
-                  `${cell.status}${cell.diagnostic ? `: ${cell.reason}; HTTP ${cell.diagnostic.httpStatus ?? "n/a"}; ${cell.diagnostic.code}; ${cell.diagnostic.message}` : cell.reason ? `: ${cell.reason}` : ""}`,
+                  `${cell.status}${cell.diagnostic ? `: ${cell.reason}; HTTP ${cell.diagnostic.httpStatus ?? "n/a"}; ${cell.diagnostic.code}; ${cell.diagnostic.message}; elapsedMs=${cell.diagnostic.elapsedMs ?? "n/a"}; polls=${cell.diagnostic.polls ?? 0}; serverElapsedMs=${cell.diagnostic.serverElapsedMs ?? "unknown"}` : cell.reason ? `: ${cell.reason}` : ""}`,
                 )
               : "—";
           })
@@ -672,7 +833,7 @@ async function accountsParity(env: NodeJS.ProcessEnv, io: Io, args: string[]): P
     else if (args.length !== 1 || args[0] !== "--accounts") throw new Error();
     if (env.ARMADA_URL !== STAGING_ORIGIN || !env.ARMADA_TOKEN || env.ARMADA_SMOKE !== "create_real_compute")
       throw new Error();
-    cases = JSON.parse(env.ARMADA_SMOKE_CASES ?? "[]");
+    cases = stagingSmokeCases(JSON.parse(env.ARMADA_SMOKE_CASES ?? "[]")) as Case[];
     if (!Array.isArray(cases)) throw new Error();
     const seen = new Set<string>();
     for (const c of cases) {

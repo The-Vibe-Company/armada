@@ -13,6 +13,21 @@ not aliases for foreign provider snapshots. Snapshot builds require GitHub acces
 not a model account. The product applies host/installation, owner, visibility,
 source-definition and generation labels automatically.
 
+Create `armada.golden.json` locally (use repositories your GitHub connection can
+access; setup runs as the unprivileged sandbox user):
+
+```json
+{
+  "repos": [{ "url": "https://github.com/your-org/your-repo.git", "branch": "main", "dir": "your-repo" }],
+  "init": ["cd /home/user/your-repo && bun install"]
+}
+```
+
+Use setup commands appropriate to your repository and the official image. Never
+put credentials in this file. The same definition can build Boat/Modal goldens,
+but each provider needs its own build; their snapshots cannot be launched on a
+Docker host.
+
 ```sh
 armada golden create office --provider docker \
   --host 1bd0db41-6429-430b-99e2-06d60ddf1aa3 --org "$ARMADA_ORG" \
@@ -100,9 +115,8 @@ deployment or host operations are performed by workers.
 
 Migration `20261113190001_docker_snapshot_versions.sql` adds the immutable built-on
 version metadata; apply it before matching server/daemon/clients. No new user
-options or base-image inputs exist. The version-based rebuild offer/action belongs
-to the following #1528 update-offer slice; nothing automatically rebuilds or
-invalidates an old snapshot on upgrade. The coordinator's existing `--snapshot`
+options or base-image inputs exist. The version-based rebuild offer/action is described below; nothing automatically
+rebuilds or invalidates an old snapshot on upgrade. The coordinator's existing `--snapshot`
 check above also requires the archived build receipt's version to match catalog
 metadata; no label preparation is necessary.
 

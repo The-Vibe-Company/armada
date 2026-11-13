@@ -1,5 +1,17 @@
 # Deployed checks
 
+**Owner decision 2026-11-13: Boat is not part of the release gate.**
+Boat remains a first-class provider, not disabled or retired. Post-deploy, pinned and
+release-gate entry points ignore Boat cases before validating their unused
+credentials/model/golden fields. They print exactly once per invocation:
+`boat: not part of the release gate`. This supersedes Boat
+acceptance procedures below for automated staging/release use, not Boat product
+support. Modal full smoke and existing owner Docker-host parity probes remain.
+Boat verification belongs to the coordinator on demand against production,
+with the explicit production-only parity opt-in below. Workers
+and CI must never perform production verification.
+Boat omission is explicit not-run evidence, never a claimed pass or quota guess.
+
 > **Mandatory deployment gate:** Main staging deployments and exact-SHA publishing
 > release calls own smoke. No opt-in or deployment-event fallback exists. Release
 > requires its staging smoke before production. See [deployment policy](releasing.md#deployment-policy-1547).
@@ -36,10 +48,11 @@ Example cases (replace placeholders; account IDs are identifiers, not credential
 ```json
 [
   {
-    "provider": "boat",
+    "provider": "modal",
     "harness": "claude",
     "org": "<staging-org-id>",
-    "golden": "<boat-golden-name>",
+    "golden": "<modal-golden-name>",
+    "goldenId": "<modal-golden-id>",
     "model": "<available-model>",
     "modelAccountId": "<claude-model-account-id>",
     "repo": "/home/user/armada"
@@ -63,6 +76,78 @@ git checkout with an `origin` remote at `repo`. Configure the user's model
 accounts and GitHub connection on staging beforehand. For private repositories,
 the token's user must have access. No provider/database credentials belong in
 this workflow.
+
+
+### Legacy smoke receipts during Boat exclusion
+
+New durable receipts include the confirmed provider. Automatic cleanup accepts
+only Modal/Docker-tagged receipts; it never calls Boat or contacts an unknown
+provider to classify a historical ID. Old untagged receipts and Boat receipts
+are preserved as deferred operator reconciliation debt, not deleted and not
+claimed cleaned. They do not authorize a Boat test or block the owner-approved
+non-Boat gate. Unexpected new provider receipts still fail the attempt and are
+retained for reconciliation without contacting Boat. Existing known Modal/Docker
+handles retain ordinary cleanup guarantees.
+
+The default post-deploy lifecycle path retains Modal probes. The existing
+`--parity --only docker` path continues testing the explicitly configured owned
+Docker host; no implicit host registration or machine discovery is introduced.
+`--only boat` emits owner-decision not-run rows and no API traffic, returning no
+successful eligible-provider proof. The default lifecycle gate with only Boat cases provides no Modal/Docker
+coverage and fails closed, without Boat calls. Accounts parity retains its
+observational not-run/no-account semantics and is not a substitute release gate.
+
+
+## Coordinator-only production Boat verification
+
+Boat remains a supported, first-class provider. The coordinator may verify it
+against production **on demand**, independently of the release gate. Workers
+must never run this mode. No CI workflow calls it; CI/GitHub Actions execution
+is rejected before any API request. This is not an automatic production smoke.
+
+Use the existing parity entry point with **both** `--only boat` and
+`--production-boat`. An optional existing `--feature` filter is allowed. The
+opt-in rejects Modal/Docker selection, account-matrix mode, staging origin,
+non-HTTPS/non-origin URLs, duplicate/unknown flags and a staging cleanup journal.
+Without the opt-in, parity remains staging-only and Boat is not part of the
+gate. The flag is operator acknowledgement, not a credential or a substitute for
+the server's normal actor/org authorization.
+
+Coordinator procedure (never executed by workers):
+1. Select one existing production Boat golden and the coordinator's own model
+   account/org. Supply one valid selected Boat case via ARMADA_SMOKE_CASES.
+   These are identifiers, not credentials; no golden/host registration or
+   production deployment settings are changed.
+2. Set ARMADA_URL to the exact production Armada **API origin** (no path, query,
+   userinfo or fragment). Read the production bearer securely from stdin/env,
+   never argv or a checked-in file. Set ARMADA_SMOKE=create_real_compute to
+   acknowledge real compute explicitly.
+3. Run manually outside CI/worker execution:
+
+```sh
+# Coordinator only: replace the origin and supply an identifier-only case file.
+export ARMADA_URL='https://YOUR-PRODUCTION-ARMADA-ORIGIN'
+read -rs ARMADA_TOKEN; export ARMADA_TOKEN; echo
+export ARMADA_SMOKE_CASES="$(cat /path/outside/repo/production-boat-case.json)"
+export ARMADA_SMOKE=create_real_compute
+bun scripts/post-deploy-smoke.ts --parity --only boat --production-boat
+unset ARMADA_TOKEN
+```
+
+Case shape (identifiers/placeholders only):
+
+```json
+[{"provider":"boat","harness":"codex","org":"<production-org-id>","golden":"<existing-production-boat-golden>","model":"<configured-model>","modelAccountId":"<coordinator-model-account-id>"}]
+```
+
+Only the sandbox ID returned by this invocation's own launch may be prompted,
+resumed, stopped or deleted. The probe never sweeps a staging journal, lists
+pre-existing sandboxes for cleanup, or replays an ambiguous launch. Cleanup runs
+after failure for a confirmed owned handle. Unknown allocation or failed delete
+is explicit coordinator reconciliation debt, never permission to stop unrelated
+resources. API traffic stays on the selected origin; token redirects are rejected.
+Review pass/fail/not-run and cleanup receipts. Unsupported/unimplemented rows
+are not verified support. Mocked tests are not actual production verification.
 
 ## Run
 
@@ -89,9 +174,9 @@ All selected pairs share staging `ARMADA_ORIGIN`, `ARMADA_SMOKE_TOKEN` and
 model account for its harness, supported model, org UUID, provider-specific golden
 and checkout path with origin. `goldenId` names that same golden, not the other
 provider's. Optional effort and exact skill pins retain their documented semantics.
-Use a separate staging Boat account/key shared by its Claude/Codex cases; Boat's
-one-golden account limit does not justify pair-specific extra goldens. Provider/model
-keys remain in Armada's vault, never cases or workflow arguments.
+Boat configuration may remain in ARMADA_SMOKE_CASES during rollout, but it is
+ignored and creates no provider/model/GitHub/default/template/vault/expiry probe.
+Provider/model keys remain in Armada's vault, never cases or workflow arguments.
 
 The **Post-deploy smoke** workflow is a manual **main-only** entry point to the
 same pinned staging deployment-and-smoke workflow used after main merges. It
@@ -131,7 +216,7 @@ they require no credentials, network calls, compute or wall-clock waits.
 
 `bun scripts/post-deploy-smoke.ts --github-runtime` runs the staging-only native
 Git/push check. It additionally requires each case's `disposableRepository` field
-(an exact credential-free HTTPS GitHub `.git` origin), all four provider/harness
+(an exact credential-free HTTPS GitHub `.git` origin), both Modal harness
 pairs, gate/revision assertions and disposable push authority. See the
 [settings, manual renewal and provider-specific broker procedures](github-runtime.md#automated-first-slice-822).
 First run the default smoke above with the staging gate off for the stock baseline;
@@ -432,40 +517,11 @@ recorded immediately before the new `github_launch_access` read-only git
 probe. This proves origin access before the first model turn or explicit
 repair, so a later repair cannot mask broken launch access.
 
-After the existing initial turn and git checks, Boat runs named
-`github_refresh_first` and `github_refresh_second` API calls, requiring the
-same sandbox ID, connected status and stable owner login. Each is followed by
-a read-only `github_refresh_access_first/second` origin-access check. No token,
-login, response body, SSH exception or git output is printed. Requests are not
-retried: an uncertain repair stays failed and ordinary cleanup still stops the
-worker. This is observable idempotency/access continuity, not a claim that
-encrypted token bytes never rotate.
-
-**Existing capability limit:** explicit `armada github refresh` is shipped
-only for legacy Boat. A staging Boat with the optional managed GitHub runtime
-enabled refuses this command and will fail this legacy probe; use a legacy
-Boat staging case for it. Modal always refuses the legacy command. Its
-`github_refresh_unsupported` step requires the existing503/unavailable
-refusal; an accidental success or any other error fails. Its idempotency
-delivery proof is visibly skipped as `legacy_boat_only`, not claimed as a
-success. Positive Modal/managed-Boat explicit-refresh support would be a new
-application capability and is deliberately not implemented under the feature
-freeze. Modal still has to pass launch GitHub access and the ordinary git
-checks. The legacy refusal is not evidence of broker renewal, and managed
-renewal/fault coverage remains in the separate managed-runtime smoke.
-
-Duration/cost: two API repairs and two read-only git checks for Boat, one
-refusal for Modal, plus one pre-turn git check per pair. Expect seconds to
-roughly two minutes per pair for SSH/auth latency, no extra model usage or
-worker. Requests and60-second execs stay under the existing35-minute work /
-five-minute cleanup budget. Staging requires the smoke owner's existing GitHub
-connection with origin access. Use a private GitHub origin in the existing
-checkout to make git access an authentication proof: a public origin only
-proves connectivity and cannot demonstrate that a token is installed correctly.
-The probe does not infer repository visibility from a successful ls-remote.
-No policy/settings writes, migrations,
-deployment or production actions. The coordinator runs both providers after
-merge; offline tests do not prove real GitHub/SSH success.
+The Boat-only successful refresh/idempotency phase is deleted. Modal retains
+its existing unsupported-refusal check; its positive legacy-refresh proof is
+explicitly skipped with not_part_of_release_gate. Do not add a Boat worker to
+satisfy this phase. A new positive Modal refresh capability would require its
+own implementation/proof, not renaming the old Boat probe.
 
 ### Ordinary expiry-as-stop
 
@@ -487,7 +543,7 @@ matching the known worker ID without assuming undocumented status fields.
 
 `expiry_as_stop` polls status without sending, extending or explicitly stopping
 the worker. Success requires logical stopped, the matching physical stopped
-state (Boat archived / Modal stopped), unchanged expiry, reason exactly
+state (Modal stopped), unchanged expiry, reason exactly
 `expired`, and a stopped timestamp at or after that expiry. Failed workers,
 early/manual-looking stops, changed deadlines and provider hard exits without
 the expiry reason cannot count as proof.
@@ -804,20 +860,21 @@ remain untouched. Offline regression tests cover a late-settling stop/lease,
 bounded parent-first selection, and real-SQL child-before-parent refusal followed
 by successful parent/child deletion under current owner/org authorization.
 
-### Three-provider parity observation (#1532)
+### Modal and Docker parity observation (#1532)
 
 Run `bun scripts/post-deploy-smoke.ts --parity` against staging with the usual
 `ARMADA_TOKEN`, `ARMADA_SMOKE=create_real_compute`, and `ARMADA_URL` guards.
-`ARMADA_SMOKE_CASES` must contain exactly one Boat, Modal and Docker case for a full run.
+`ARMADA_SMOKE_CASES` must retain one Modal and one Docker case for a full parity
+run. Any Boat entries (including malformed/duplicate Boat entries) are ignored.
 Use `--parity --only docker --feature exec` to run one provider/feature;
 a provider-filtered run may supply only that provider case. Unknown or duplicate
 filters are rejected before any request. All
-cases supply `org`, `harness`, `model`, and `modelAccountId`. Boat/Modal also
-supply `golden`; Docker instead supplies `hostId` (an already registered owned
+cases supply `org`, `harness`, `model`, and `modelAccountId`. Modal also
+supplies `golden`; Docker instead supplies `hostId` (an already registered owned
 host) and `image` (the pulled immutable image digest). No SSH, registration,
 host startup, preview lifecycle endpoint or provider credentials are used.
 The configured host is checked through host discovery; an offline host produces
-one explicit `host_offline` diagnostic without preventing Boat/Modal probes.
+one explicit `host_offline` diagnostic without preventing Modal probes.
 
 This is an **additive observation**, not a replacement for any existing deploy
 gate or its flags. No workflow/deploy failure policy changes. The command fails
@@ -889,9 +946,9 @@ The table includes a `cleanup` cell and `parity_cleanup` JSON reports the ID and
 whether deletion was confirmed. A failed cleanup is a failure even if another
 probe was already failed or not-run. Keep the journal for unconfirmed resources;
 a lost launch response without an ID still requires operator reconciliation.
-The parity probe's shared 35-minute polling deadline still applies; exhausted
-budget can leave cleanup unconfirmed. The journal-enabled wrapper additionally
-runs its own reserved cleanup phase. This slice does not prove the cause of the
+The parity probes share a 35-minute run deadline, but final cleanup has a
+separate observation window. The journal-enabled wrapper additionally runs its
+own reserved cleanup phase. This slice does not prove the cause of the
 historical five remaining rows or guarantee deletion after provider refusal.
 
 #### Idle pause and wake-on-send (#1562)
@@ -911,7 +968,8 @@ configured idle delay. Then send through the dashboard's ordinary message
 request and verify a recalled token in the same conversation, with one accepted
 turn on identical request-ID replay. Record the actual times/provider evidence;
 an HTTP stop acknowledgement or a locally mocked test is not sufficient.
-Run the same sequence on Boat, Modal and the owner's Docker host. Docker idle
+Run the same sequence on Modal and the owner's Docker host; Boat is excluded
+by owner decision 2026-11-13. Docker idle
 checkpoint/pause and ordinary-send wake are not implemented by the Boat/Modal
 runtime paths; do not infer Docker support from those implementations.
 
@@ -978,3 +1036,28 @@ A successful process exit means no observed failures, not that missing accounts
 were tested. Review `not-run` rows before claiming matrix completeness. Each
 configured cell may allocate once (and resume compute); run this deliberately,
 not as an unbounded default deployment probe.
+
+#### Turn latency and stop/delete reconciliation (#1532)
+
+Parity no longer treats 120 reads as a turn timeout. Every provider uses the
+same elapsed-time observation ceiling of 600 seconds (the server wait tool's
+maximum), including HTTP/read latency, with at most 600 reads. This is a bound,
+not a measured or promised provider latency. Each `parity_turn` receipt reports
+local `elapsedMs`, `polls`, and `serverElapsedMs`: the latter is the difference
+between matching queued/running and terminal prompt events' server `at`
+timestamps. Missing timestamps remain null/unknown; the probe never substitutes
+a guess or compares unsynchronized local/server clocks. Failure cells include
+these measurements; successful receipts let the coordinator measure actual
+first/follow-up latency on the target server without printing prompts.
+
+Cleanup rechecks an ID-matched terminal stop state even after a stop probe
+passed. Stored logical stop state does not alone prove that provider termination
+has settled: delete therefore reconciles `sandbox_not_ready` (including HTTP
+409), pending/conflict and unavailable responses using the same delete request
+ID, never another launch or a replay of stop. Cleanup has its own 600-second
+observation deadline independent of the exhausted probe deadline. Confirmation
+requires the matching deleted receipt; an already-deleted status is also valid.
+No script can guarantee remote deletion during a permanent outage/refusal:
+unconfirmed cleanup remains an explicit failure with diagnostics and the known
+sandbox ID, never a success. Production Boat execution and reconciliation remain
+coordinator-only; fixture tests are not production evidence.
