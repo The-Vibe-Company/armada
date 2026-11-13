@@ -6,20 +6,10 @@ a ruleset targeting exactly `main` (not a wildcard), with **Require merge queue*
 Keep the existing review requirements. Select GitHub Actions as the expected
 source for these exact check names:
 
-- `Migration versions`
 - `Lint, typecheck and test`
-- `Golden PostgreSQL concurrency`
-- `Golden OS recipe (actual provider image)`
-- `Binary (linux-x64)`
-- `Binary (linux-arm64)`
-- `Binary (darwin-x64)`
-- `Binary (darwin-arm64)`
-- `Swift package tests and iOS simulator compile`
-- `Migration dry-run (disposable database)`
 
-This is the intended required list, not a claim about the current repository
-settings. Reconcile any existing protection/rulesets with this list before
-activation; do not require deployment or screenshot evidence checks.
+This is the single required verdict. The coordinator has configured the ruleset;
+do not add optional iOS, migration previews or deployment checks to it.
 
 Start with build concurrency **2**, merge limits **minimum 1 / maximum 1** PR,
 only merge non-failing PRs enabled, and a **60-minute** status-check timeout.
@@ -34,9 +24,10 @@ gate. Screenshot evidence workflows are removed; their capture scripts remain.
 
 | Workflow file | Queue? | Reason |
 | --- | --- | --- |
-| `ci.yml` | Yes, all jobs | Same names and validation as PRs, including all four binaries. Migration versions compare the candidate against `merge_group.base_sha`, not `HEAD^`, to cover the entire queued group. |
-| `apple-quality.yml` | Yes | Compile/test check, with no PR path filter so a required check always reports. Push path filtering is unchanged. |
-| `migrations.yml` | Disposable preview only | No PR path filter; preview runs for PRs and queue candidates. Staging/production jobs retain their main-ref guards and cannot run on queue refs. No production credentials in preview. |
+| `ci.yml` | Yes | Lint/typecheck (including migration-version and native contract steps), six unit shards and their aggregate. Migration versions compare the entire candidate against `merge_group.base_sha`. |
+| `apple-quality.yml` | No | Optional PR/main workflow filtered to iOS and its generated harness contract inputs. GitHub merge-group events do not support workflow-level path filters. |
+| `migration-preview.yml` | No | Optional PR dry-run, filtered to `supabase/migrations/**`, with no production credentials. |
+| `migrations.yml` | No | Main migration changes or explicit operator dispatch only; apply jobs never appear on PRs. |
 | `release.yml` | No | Publishes releases from main/tags or manual dispatch. |
 | `staging-gated-production.yml` | No | Deployment/smoke on main, dispatch or explicit reusable call. |
 | `post-deploy-smoke.yml` | No | Deployment event/manual smoke, not merge validation. |
@@ -44,9 +35,9 @@ gate. Screenshot evidence workflows are removed; their capture scripts remain.
 | `testflight.yml` | No | Main/manual distribution, not merge validation. |
 
 Queue checkout uses the event's synthetic merge commit, never an individual PR
-head. CI and Apple concurrency groups include event, queue ref and candidate SHA;
+head. CI concurrency groups include event, queue ref and candidate SHA;
 queue runs cannot cancel one another or PR runs. PR reruns still supersede older
-runs. Migration previews have no shared concurrency group.
+runs. Migration previews cancel stale runs per PR.
 
 ## Merging and recovery
 

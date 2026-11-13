@@ -2,7 +2,7 @@ import { LogOutIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { AppSidebar } from "@/components/app-sidebar";
 import { BrandMark } from "@/components/brand-mark";
-import { CommandMenu, CommandMenuTrigger } from "@/components/command-menu";
+import { CommandMenu } from "@/components/command-menu";
 import { NavLinks } from "@/components/nav-links";
 import { OrgSwitcher } from "@/components/org-switcher";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -12,6 +12,7 @@ import { Toaster } from "@/components/ui/toast";
 import { dockerHostsEnabled } from "@/lib/data/docker-hosts";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { listMemberships, requireViewer } from "@/lib/data/viewer";
+import { showsOrganizations } from "@/lib/navigation";
 import { createClient } from "@/lib/supabase/server";
 
 /**
@@ -31,15 +32,14 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
         </div>
         <SidebarTrigger className="hidden md:flex" aria-label="Collapse navigation" />
         <div className="flex items-center gap-1 md:hidden">
-          <CommandMenuTrigger compact />
           <ThemeToggle />
           <SignOut compact />
         </div>
       </div>
-      <OrgSwitcher memberships={memberships} selected={selected?.org.id ?? null} role={selected?.role ?? null} />
-      <div className="hidden px-3 pb-2 md:block">
-        <CommandMenuTrigger />
-      </div>
+      {/* Nothing about organizations for a member of a single one (#1474). */}
+      {showsOrganizations(memberships.length, selected !== null) && (
+        <OrgSwitcher memberships={memberships} selected={selected?.org.id ?? null} role={selected?.role ?? null} />
+      )}
     </>
   );
   return (

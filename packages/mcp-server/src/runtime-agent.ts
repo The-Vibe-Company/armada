@@ -72,14 +72,21 @@ export function createRuntimeAgent(
   function target(id: string) {
     if (id !== providerSandboxId) throw refusal("invalid_request");
   }
-  async function invoke<T>(command: RunnerRequest, signal?: AbortSignal, expectedEpoch?: string): Promise<T> {
+  async function invoke<T>(
+    command: RunnerRequest,
+    signal?: AbortSignal,
+    expectedEpoch?: string,
+    timeoutMs?: number,
+  ): Promise<T> {
     let reply: Awaited<ReturnType<typeof commands.call>>;
     try {
       reply = await commands.call(ownerId, command, {
         ...(signal ? { signal } : {}),
+        ...(timeoutMs ? { timeoutMs } : {}),
         ...(expectedEpoch !== undefined ? { expectedEpoch } : {}),
       });
-    } catch {
+    } catch (error) {
+      if (error instanceof ProviderError) throw error;
       // A lost wait is not proof of non-execution. Preserve the exact identity for
       // reconciliation; never include transport errors or private payloads.
       throw refusal("conflict", command.requestId);
@@ -277,18 +284,22 @@ export function createRuntimeAgent(
           (!Number.isInteger(request.timeoutSeconds) || request.timeoutSeconds < 1 || request.timeoutSeconds > 600))
       )
         throw refusal("invalid_request");
+      const { signal, ...input } = request;
       const result = await invoke<ExecResult>(
         {
           ...identity(requestId),
           op: "exec",
           input: {
+            ...input,
             sandboxId,
             command: request.command,
             cwd: request.cwd ?? cwd,
             timeoutSeconds: request.timeoutSeconds ?? 120,
           },
         },
-        request.signal,
+        signal,
+        undefined,
+        ((request.timeoutSeconds ?? 120) + 30) * 1000,
       );
       if (
         result?.detached !== false ||

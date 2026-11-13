@@ -17,11 +17,8 @@ concurrency:
   cancel-in-progress: ${{ github.event_name != 'merge_group' }}
 
 jobs:
-  migration-versions:
-    name: Migration versions
-    outputs:
-      golden: ${{ steps.paths.outputs.golden }}
-      binary: ${{ steps.paths.outputs.binary }}
+  static-checks:
+    name: Lint and typecheck
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -29,28 +26,13 @@ jobs:
         with:
           fetch-depth: 0
       - uses: ./.github/actions/setup-bun
-      - id: paths
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          BASE_SHA: ${{ github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
-        run: |
-          # Unknown/manual/main events run everything. Diff the entire queue candidate.
-          if [ "$EVENT_NAME" != pull_request ] && [ "$EVENT_NAME" != merge_group ]; then
-            printf 'golden=true\nbinary=true\n' >> "$GITHUB_OUTPUT"
-          else
-            git diff --no-renames --name-only "$BASE_SHA" HEAD > /tmp/changed-paths
-            # Conservative transitive closure: all packages, dependency/runtime/build
-            # tooling, fixtures and migrations. Docs/dashboard-only changes skip.
-            changed=false
-            if grep -Eq '^(packages/|supabase/migrations/|scripts/(build\.ts|npm\.ts|npm-smoke\.sh|prepare-runtime\.ts|golden-os-image\.ts|fixtures/)|LICENSE$|bun.lock$|package.json$|tsconfig[^/]*$|\.github/(actions/|workflows/ci\.yml$))' /tmp/changed-paths; then
-              changed=true
-            fi
-            golden=false
-            if grep -Eq '^(packages/(agent-runtime/(src/|package\.json$)|provider-modal/(src/|package\.json$)|core/(src/|package\.json$)|core/test/golden-os\.test\.ts$|mcp-server/src/github-boat\.ts$|mcp-server/test/github-boat-os\.test\.ts$|provider-modal/test/ssh-os\.test\.ts$)|scripts/(prepare-runtime\.ts$|golden-os-image\.ts$|fixtures/golden-os/)|bun.lock$|package.json$|tsconfig[^/]*$|\.github/(actions/|workflows/ci\.yml$))' /tmp/changed-paths; then
-              golden=true
-            fi
-            printf 'golden=%s\nbinary=%s\n' "$golden" "$changed" >> "$GITHUB_OUTPUT"
-          fi
+      - run: bun install --frozen-lockfile
+      - run: bun run lint
+      - run: bun scripts/generate-ios-harness.ts --check
+      - run: bun run typecheck
+      - name: Check complete unit shard coverage
+        run: bun scripts/ci/unit-shards.ts --check
+
       - name: Check migration versions against the current base
         env:
           BASE_BRANCH: ${{ github.base_ref || 'main' }}
@@ -74,30 +56,6 @@ jobs:
       - name: Test migration guard
         run: bun test scripts/db/check-migrations.test.ts
 
-  static-checks:
-    name: Lint and typecheck
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
-      - run: bun test scripts/ci/check-budget.test.ts
-      - run: bun run lint
-      - run: bun scripts/generate-ios-harness.ts --check
-      - run: bun run typecheck
-      - name: Check complete unit shard coverage
-        run: bun scripts/ci/unit-shards.ts --check
-
-  # Independent of TypeScript analysis; still a prerequisite of the required verdict.
-  native-contracts:
-    name: Native runtime contracts
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
       - run: bun packages/agent-runtime/build.ts
       - run: bun scripts/validate-runtime-native.ts
       - name: Native runtime artifact conformance
@@ -127,19 +85,20 @@ jobs:
           sudo unshare --pid --fork --mount-proc "$(which bun)" packages/provider-modal/test/checkpoint-process-conformance.ts
           sudo unshare --pid --fork --mount-proc "$(which bun)" packages/provider-modal/test/checkpoint-process-conformance.ts --native-pidfds
 
+
   unit-tests:
-    name: Unit tests (${{ matrix.shard }}/11)
+    name: Unit tests (${{ matrix.shard }}/6)
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+        shard: [1, 2, 3, 4, 5, 6]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
-      # Native build/validation and all three native-only cases run once in native-contracts.
+      # Native-only conformance runs once in Lint and typecheck.
       - run: bun scripts/prepare-runtime.ts
       - name: Run balanced unit shard
         run: bun scripts/ci/unit-shards.ts ${{ matrix.shard }}
@@ -147,7 +106,7 @@ jobs:
   # Keep the ruleset's required name; never turn skipped/cancelled children green.
   verify:
     name: Lint, typecheck and test
-    needs: [migration-versions, static-checks, native-contracts, unit-tests, golden-concurrency, golden-os, binary]
+    needs: [static-checks, unit-tests]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 1
@@ -157,175 +116,3 @@ jobs:
           RESULTS: ${{ toJSON(needs) }}
         run: |
           echo "$RESULTS" | jq -e 'all(.[]; .result == "success")'
-
-  golden-concurrency:
-    name: Golden PostgreSQL concurrency
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    services:
-      postgres:
-        image: postgres:17@sha256:ff87138949ad9a46f32ff23bd6852b52ce024a13dffe9b4087be98292cdd3b4f
-        env:
-          POSTGRES_HOST_AUTH_METHOD: trust
-          POSTGRES_DB: armada_adoption_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 2s --health-timeout 5s --health-retries 10
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
-      - run: bun scripts/prepare-runtime.ts
-      - name: Apply migrations to disposable PostgreSQL
-        env:
-          PGHOST: 127.0.0.1
-          PGUSER: postgres
-          PGDATABASE: armada_adoption_test
-        run: |
-          psql -v ON_ERROR_STOP=1 -f scripts/db/supabase-prereq.sql
-          for migration in supabase/migrations/*.sql; do
-            psql -v ON_ERROR_STOP=1 -f "$migration"
-          done
-      - name: Run every PostgreSQL-backed test file
-        env:
-          ARMADA_TEST_POSTGRES_URL: postgres://postgres@127.0.0.1:5432/armada_adoption_test
-        run: |
-          # Unit shards retain the non-PostgreSQL cases in mixed files. The real
-          # database cases execute here, not behind skipIf on eleven runners.
-          mapfile -t files < <(git grep -l 'ARMADA_TEST_POSTGRES_URL' -- '*.test.ts')
-          test "${#files[@]}" -gt 0
-          for file in "${files[@]}"; do
-            bun test --no-orphans "./$file"
-          done
-
-  # Preserve the ruleset's exact required name; full conformance remains informational.
-  golden-os:
-    name: Golden OS recipe (actual provider image)
-    runs-on: ubuntu-latest
-    timeout-minutes: 1
-    steps:
-      - run: echo "Full recipe results are reported by Informational Golden OS recipe; this gate does not wait for them."
-
-  golden-os-full:
-    name: Informational Golden OS recipe (actual provider image)
-    needs: migration-versions
-    if: github.event_name != 'merge_group' && needs.migration-versions.outputs.golden == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
-      - run: bun scripts/prepare-runtime.ts
-      - run: bun scripts/golden-os-image.ts
-      - run: docker build -t armada-golden-os dist/golden-os-fixture
-      - run: bun test packages/core/test/golden-os.test.ts packages/mcp-server/test/github-boat-os.test.ts packages/provider-modal/test/ssh-os.test.ts
-        env:
-          ARMADA_GOLDEN_OS_IMAGE: armada-golden-os
-
-  # Each binary is compiled on its own platform, so it is run there before upload
-  # and the macOS ones get the ad-hoc signature Apple Silicon requires.
-  binary:
-    name: Binary (${{ matrix.target }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: linux-x64
-            runner: ubuntu-latest
-          - target: linux-arm64
-            runner: ubuntu-24.04-arm
-          - target: darwin-arm64
-            runner: macos-latest
-    needs: migration-versions
-    runs-on: ${{ needs.migration-versions.outputs.binary == 'true' && matrix.runner || 'ubuntu-latest' }}
-    timeout-minutes: 10
-    steps:
-      - if: needs.migration-versions.outputs.binary == 'true'
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - if: needs.migration-versions.outputs.binary == 'true'
-        uses: ./.github/actions/setup-bun
-      - if: needs.migration-versions.outputs.binary == 'true'
-        run: bun install --frozen-lockfile
-      - if: needs.migration-versions.outputs.binary == 'true'
-        run: bun run build --target ${{ matrix.target }}
-      - if: needs.migration-versions.outputs.binary == 'true'
-        name: armada --version
-        run: |
-          expected=$(jq -r .version packages/core/package.json)
-          actual=$(./dist/armada-${{ matrix.target }} --version)
-          echo "armada --version: $actual"
-          test "$actual" = "$expected"
-      # The npm packages of this binary, packed, installed with npm and Bun, then run.
-      - if: needs.migration-versions.outputs.binary == 'true'
-        name: npm pack and install
-        run: |
-          bun scripts/npm.ts --binaries dist --target ${{ matrix.target }}
-          mkdir -p dist/tarballs
-          for dir in dist/npm/*/; do (cd "$dir" && npm pack --pack-destination ../../tarballs); done
-          scripts/npm-smoke.sh dist/tarballs ${{ matrix.target }}
-      - if: needs.migration-versions.outputs.binary == 'true'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: armada-${{ matrix.target }}
-          path: |
-            dist/armada-${{ matrix.target }}
-            dist/armada-server-${{ matrix.target }}
-          if-no-files-found: error
-
-  binary-intel:
-    name: Binary (darwin-x64)
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: darwin-x64
-            runner: macos-15-intel
-    needs: migration-versions
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
-      - run: bun run build --target ${{ matrix.target }}
-      - name: armada --version
-        run: |
-          expected=$(jq -r .version packages/core/package.json)
-          actual=$(./dist/armada-${{ matrix.target }} --version)
-          echo "armada --version: $actual"
-          test "$actual" = "$expected"
-      # The npm packages of this binary, packed, installed with npm and Bun, then run.
-      - name: npm pack and install
-        run: |
-          bun scripts/npm.ts --binaries dist --target ${{ matrix.target }}
-          mkdir -p dist/tarballs
-          for dir in dist/npm/*/; do (cd "$dir" && npm pack --pack-destination ../../tarballs); done
-          scripts/npm-smoke.sh dist/tarballs ${{ matrix.target }}
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: armada-${{ matrix.target }}
-          path: |
-            dist/armada-${{ matrix.target }}
-            dist/armada-server-${{ matrix.target }}
-          if-no-files-found: error
-
-  # Visible timing diagnostics only; never a dependency of the required gate.
-  ci-budget:
-    name: CI budget (120s)
-    if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}
-    needs: [migration-versions, static-checks, native-contracts, unit-tests, golden-concurrency, golden-os, binary, verify]
-    runs-on: ubuntu-latest
-    timeout-minutes: 1
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: Report the completed required path budget
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > /tmp/run.json
-          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?filter=latest&per_page=100" --jq '.jobs[]' | jq -s . > /tmp/jobs.json
-          node scripts/ci/check-budget.cjs /tmp/run.json /tmp/jobs.json

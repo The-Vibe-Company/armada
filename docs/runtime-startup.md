@@ -24,13 +24,16 @@ bits. Codex resources retain their native layout. Credentials are never embedded
 The separate `build.ts`/native validation path still serves Modal.
 
 The normal server Docker build runs `scripts/publish-runtime-artifacts.ts` and
-publishes both architectures plus pinned harness/OpenCode bytes. It cross-compiles
-without executing foreign binaries; native ABI validation is separate. Public
+publishes only x64 plus pinned harness/OpenCode bytes. The requestable architecture
+list lives in `packages/agent-runtime/src/publication.ts`: current Boat goldens,
+Modal apps and verified Docker hosts are x64. Launch policy composition rejects
+unpublished architectures before allocation. Standalone arm64 builds remain
+available for development, not server publication; native ABI validation is separate. Public
 files are digest-named, read-only, and contain no configuration or credentials:
 
 - `ARMADA_RUNTIME_ARTIFACT_DIR` defaults to `/opt/armada/runtime-artifacts`;
   an explicit empty value disables publication routes.
-- Matching manifests are `/opt/armada/runtime-manifests/{x64,arm64}.json`.
+- Matching manifests are `/opt/armada/runtime-manifests/x64.json`.
 - Public immutable `GET`/`HEAD /api/runtime/artifacts/<sha256>` serves those bytes.
 
 Always select a manifest from the same deployed build. After deployment, HEAD
