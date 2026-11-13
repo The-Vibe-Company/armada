@@ -1,5 +1,6 @@
 /** Coordinator-only staging check: ONE launch, no automatic allocation retry. */
 import type { AgentEvent } from "../packages/core/src/provider.ts";
+import { readDefaultPins, verifyDefaultReceipts } from "./default-skill-smoke.ts";
 
 if (process.env.ARMADA_RUNTIME_SMOKE !== "one_real_boat_launch")
   throw Error("Set ARMADA_RUNTIME_SMOKE=one_real_boat_launch explicitly.");
@@ -20,6 +21,7 @@ interface Reply {
     resumeVersion?: number;
     githubVersion?: number;
     mcpVersion?: number;
+    skillsVersion?: number;
   };
   githubReady?: boolean;
   mcpReady?: boolean;
@@ -29,7 +31,12 @@ interface Reply {
   revision?: string;
   configured?: boolean;
   credentialRequests?: number;
-  sandbox?: { id?: string; goldenId?: string; boatRuntime?: boolean };
+  sandbox?: {
+    id?: string;
+    goldenId?: string;
+    boatRuntime?: boolean;
+    skills?: { reference: string; checksum: string; workspaceId?: string }[];
+  };
   runtime?: { kind?: string; epoch?: string };
   promptId?: string;
   conversationId?: string;
@@ -43,7 +50,7 @@ interface Reply {
   events?: AgentEvent[];
   sandboxes?: { id: string; status: string; stoppedAt?: string | null }[];
 }
-async function api(path: string, body: object): Promise<Reply> {
+async function api<T = Reply>(path: string, body: object): Promise<T> {
   const response = await fetch(new URL(`/api/v1/${path}`, origin), {
     method: "POST",
     redirect: "error",
@@ -52,13 +59,32 @@ async function api(path: string, body: object): Promise<Reply> {
     signal: AbortSignal.timeout(600000),
   });
   if (!response.ok) throw Error(`Staging operation ${path} refused (${response.status}); no launch retry.`);
-  return (await response.json()) as Reply;
+  return (await response.json()) as T;
 }
 const options = await api("launch/options", {});
 if (options.boatRuntime?.enabled !== true || options.boatRuntime.diagnosticsVersion !== 1)
   throw Error(
     "Use the armada-server origin with experimental Boat runtime diagnostics v1 enabled; no launch attempted.",
   );
+const skillsMode = process.argv.includes("--skills");
+let defaultPins: string[] = [];
+let defaultGoldenId: string | undefined;
+if (skillsMode) {
+  if (options.boatRuntime.skillsVersion !== 1) throw Error("Server has no runtime skills v1; no launch attempted.");
+  const available = await api<{ goldens: { id: string; name: string; orgId: string; provider: string }[] }>(
+    "golden/list",
+    {},
+  );
+  const selected = available.goldens?.filter(
+    (row) => row.orgId === org && row.provider === "boat" && (row.name === golden || row.id === golden),
+  );
+  if (selected?.length !== 1 || !selected[0]?.id)
+    throw Error("Cannot uniquely resolve the smoke Boat golden in this organization; no launch attempted.");
+  defaultGoldenId = selected[0].id;
+  defaultPins = await readDefaultPins(org, defaultGoldenId, { request: api, step: async (_name, action) => action() });
+  if (!defaultPins.length)
+    throw Error("No default skills configured for the smoke golden/org/user; no launch attempted.");
+}
 const mcpMode = process.argv.includes("--mcp");
 const mcpConnection = (process.env.ARMADA_RUNTIME_MCP_CONNECTION_ID ?? "").toLowerCase();
 const mcpTool = process.env.ARMADA_RUNTIME_MCP_TOOL ?? "";
@@ -116,6 +142,12 @@ const memory = `ARMADA_MEMORY_${crypto.randomUUID().replaceAll("-", "")}`;
 const marker = `ARMADA_RUNTIME_${crypto.randomUUID().replaceAll("-", "")}`;
 let id: string | undefined;
 let goldenId: string | undefined;
+let launchSkills: unknown;
+async function verifySkillStatus() {
+  if (!skillsMode) return;
+  const status = await api<{ skills?: unknown }>("sandbox/status", { id, org });
+  verifyDefaultReceipts(launchSkills, status.skills, defaultPins);
+}
 let failure: unknown;
 let checkpointInput: { id: string; request_id: string; runtimeVersion: 1 } | undefined;
 let checkpointReceipt: Reply | undefined;
@@ -211,7 +243,7 @@ try {
       ? `Remember token ${memory}. ${mcpInstruction} After it succeeds, reply exactly ${marker}. Do not change files.`
       : `${followup ? `Remember token ${memory}. ` : ""}Reply exactly ${marker}. Do not use tools or change files.`,
     ...(mcpMode ? {} : { connections: [] }),
-    skipSkillDefaults: true,
+    ...(!skillsMode ? { skipSkillDefaults: true } : {}),
     ttlSeconds: 900,
   });
   id = launched.sandbox?.id;
@@ -224,6 +256,10 @@ try {
     !launched.promptId
   )
     throw Error("Missing runtime launch acknowledgement.");
+  launchSkills = launched.sandbox?.skills;
+  if (skillsMode && goldenId !== defaultGoldenId)
+    throw Error("Launch used a different golden than the defaults preflight.");
+  await verifySkillStatus();
   const verify = async (promptId: string, expected: string) => {
     const deadline = Date.now() + 300000;
     let cursor: string | undefined;
@@ -352,6 +388,7 @@ try {
       answer: "verified",
       ...(githubProof ? { github: "verified", githubProof } : {}),
       ...(mcpProof ? { mcp: "verified", mcpProof } : {}),
+      ...(skillsMode ? { skills: "verified", skillReferences: defaultPins } : {}),
       ...(checkpointReceipt ? { checkpoint: "verified", watermark: checkpointReceipt.checkpoint?.watermark } : {}),
       ...(nextPromptId
         ? { followup: "verified", followupPromptId: nextPromptId, conversationId: launched.conversationId }
@@ -384,6 +421,7 @@ const stopKnown = async () => {
       await Bun.sleep(1000);
     }
     if (!stopped) throw Error(`Stop not confirmed for ${id}; coordinator must inspect it. Do not launch again.`);
+    await verifySkillStatus();
     console.log(
       checkpointReceipt
         ? "Runtime compute stopped after acknowledged checkpoint; resume was not tested in this phase."
@@ -423,7 +461,7 @@ if (resumeMode && !failure && id && checkpointReceipt && initialConversation && 
     console.log(
       JSON.stringify({ operation: "runtime_resume", sandboxId: id, conversationId: initialConversation, requestId }),
     );
-    resumed = await api("sandbox/resume-runtime-v1", {
+    resumed = await api<Reply>("sandbox/resume-runtime-v1", {
       id,
       request_id: requestId,
       runtimeVersion: 1,
@@ -448,6 +486,7 @@ if (resumeMode && !failure && id && checkpointReceipt && initialConversation && 
       throw Error(
         "Missing restored same-conversation/new-epoch acknowledgement. Reconcile the original request_id; do not activate again.",
       );
+    await verifySkillStatus();
     await check(resumed.promptId, memory);
     if (mcpMode) mcpProof = verifyMcp(resumed.promptId, resumed.runtime.epoch ?? "");
     await priorHistory?.();
@@ -526,6 +565,7 @@ if (resumeMode && !failure && id && checkpointReceipt && initialConversation && 
         resume: "verified",
         ...(githubMode ? { githubAfterResume: "verified", githubProof } : {}),
         ...(mcpMode ? { mcpAfterResume: "verified", mcpProof } : {}),
+        ...(skillsMode ? { skillsAfterResume: "verified" } : {}),
         source: "armada-runtime",
         previousEpoch,
         epoch: resumed.runtime?.epoch,

@@ -521,11 +521,13 @@ async function main(dialout = false) {
     const stop = new AbortController();
     const shutdown = () => stop.abort();
     let closing: Promise<void> | undefined;
+    const requests = new Set<Promise<Response>>();
     const closeNative = () => {
       closing ??= Promise.resolve().then(async () => {
+        stop.abort();
         github.configure(null);
         githubSocket?.close();
-        await Promise.all(Object.values(runner.drivers).map((driver) => driver.close()));
+        await Promise.all([...Object.values(runner.drivers).map((driver) => driver.close()), ...requests]);
       });
       return closing;
     };
@@ -537,22 +539,31 @@ async function main(dialout = false) {
           const harness =
             request.op === "prompt" || request.op === "resumeNativeSession"
               ? request.input?.harness
-              : request.op === "configureReadableVariables" || request.op === "testModelConnection"
-                ? request.harness
-                : undefined;
+              : request.op === "installSkills"
+                ? request.input?.harness
+                : request.op === "configureReadableVariables" || request.op === "testModelConnection"
+                  ? request.harness
+                  : undefined;
           if (harness !== undefined && harness !== config.selectedHarness)
             return Promise.resolve(Response.json({ error: "unselected_runtime_harness" }, { status: 409 }));
           // Exec ownership/termination is a separate parity slice. Never start a detached
           // shell that could outlive this initial dial-out client on revocation.
           if (request.op === "exec")
             return Promise.resolve(Response.json({ error: "dialout_exec_not_supported" }, { status: 409 }));
-          return runner.handle(
+          const work = runner.handle(
             new Request("http://runtime/v1", {
+              signal: stop.signal,
               method: "POST",
               headers: { "x-armada-runner-grant": config.grant.token },
               body: JSON.stringify(request),
             }),
           );
+          requests.add(work);
+          void work.then(
+            () => requests.delete(work),
+            () => requests.delete(work),
+          );
+          return work;
         },
         stop.signal,
         closeNative,

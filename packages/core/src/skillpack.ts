@@ -13,16 +13,30 @@ function skillpackTool(harness: string): string {
 }
 
 export function parseSkillReceipt(output: string, skill: string, harness: string): SkillReceipt {
+  return parseReceipt(output, skill, harness);
+}
+export function parsePrivateSkillReceipt(
+  output: string,
+  skill: string,
+  harness: string,
+  workspaceId: string,
+): SkillReceipt & { workspaceId: string } {
+  validateSkillPins([skill]);
+  if (skill.includes("/") || !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(workspaceId))
+    throw Error("invalid_receipt");
+  return { ...parseReceipt(output, skill, harness, workspaceId), workspaceId };
+}
+function parseReceipt(output: string, skill: string, harness: string, workspaceId?: string): SkillReceipt {
   const [reference, version] = skill.split("@");
   let receipt: SkillReceipt;
   const lock = JSON.parse(output);
   const [org, slug] = reference!.split("/");
-  const workspace = lock.workspaces?.[`catalog:${org}`];
-  const entry = workspace?.skills?.[slug!];
+  const workspace = lock.workspaces?.[workspaceId ?? `catalog:${org}`];
+  const entry = workspace?.skills?.[workspaceId ? reference! : slug!];
   if (
     ![2, 3].includes(lock.lockfileVersion) ||
     entry?.version !== version ||
-    entry?.catalogReference !== reference ||
+    (!workspaceId && entry?.catalogReference !== reference) ||
     entry?.pinned !== version ||
     typeof entry?.skillId !== "string" ||
     !/^[a-f0-9-]{36}$/.test(entry.skillId) ||
@@ -96,4 +110,16 @@ export function skillInstallCommand(skill: string, projectDir: string, harness: 
   validateSkillPins([skill], true);
   const [reference, version] = skill.split("@");
   return `export PATH="$PATH:/home/user/.local/bin"; skillpack install ${quote(reference!)} --version ${quote(version!)} --api-url https://skillpack.app/v1 --scope project --project ${quote(projectDir)} --tools ${skillpackTool(harness)} --pin --yes --json`;
+}
+
+export function skillExclusionCommand(skills: readonly string[], harness: string): string {
+  const paths = [
+    "/.companion/skills.lock.json",
+    "/.companion/skills.lock.json.lock",
+    ...skills.flatMap((skill) => {
+      const slug = skill.split("@")[0]!.split("/").at(-1);
+      return [`/.agents/skills/${slug}/`, ...(harness === "claude" ? [`/.claude/skills/${slug}/`] : [])];
+    }),
+  ];
+  return `exclude=$(git rev-parse --git-path info/exclude) && mkdir -p "$(dirname "$exclude")" && printf '\\n%s\\n' ${paths.map(quote).join(" ")} >> "$exclude"`;
 }

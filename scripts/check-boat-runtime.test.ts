@@ -42,7 +42,14 @@ test.each([
   "mcp-no-result",
   "mcp-resume-no-tool",
   "mcp-github-resume",
+  "skills",
+  "skills-empty",
+  "skills-status",
+  "skills-golden",
+  "skills-resume",
 ] as const)("one-launch coordinator check is fail-closed (%s)", async (mode) => {
+  const skills = mode.startsWith("skills");
+  const skillResume = mode === "skills-resume";
   const combined = mode.startsWith("github-resume");
   const mcp = mode.startsWith("mcp") || mode === "old-mcp";
   const mcpResume = mcp && mode.includes("resume");
@@ -54,13 +61,17 @@ test.each([
     const preload = join(root, "api.ts");
     await writeFile(
       preload,
-      `let launches=0,stops=0,marker='',memory='',phase=1,now=0,checkpoints=0,resumes=0,githubConfigurations=0,mcpConfigurations=0;
+      `let launches=0,stops=0,marker='',memory='',phase=1,now=0,checkpoints=0,resumes=0,githubConfigurations=0,mcpConfigurations=0,defaultReads=0,skillStatuses=0;
+const receipts=["notes@2.0.0","catalog/other@1.0.0"].map(reference=>({reference,version:reference.split("@")[1],skillId:"11111111-1111-4111-8111-111111111111",checksum:"sha256:"+"a".repeat(64),origin:"https://skillpack.app/v1"}));
 Date.now=()=>now;Bun.sleep=async(ms)=>{now+=Number(ms);};
-process.on('exit',()=>{console.log('COUNTERS '+JSON.stringify({launches,stops}));console.log('CHECKPOINTS '+checkpoints);console.log('RESUMES '+resumes);console.log('GITHUB_CONFIGURATIONS '+githubConfigurations);console.log('MCP_CONFIGURATIONS '+mcpConfigurations);});
+process.on('exit',()=>{console.log('COUNTERS '+JSON.stringify({launches,stops}));console.log('CHECKPOINTS '+checkpoints);console.log('RESUMES '+resumes);console.log('GITHUB_CONFIGURATIONS '+githubConfigurations);console.log('MCP_CONFIGURATIONS '+mcpConfigurations);console.log('DEFAULT_READS '+defaultReads);console.log('SKILL_STATUSES '+skillStatuses);});
 globalThis.fetch=async(url,options)=>{
  if(new Headers(options.headers).get('authorization')!=='Bearer '+process.env.ARMADA_TOKEN)throw Error('bad auth transport');
  const path=new URL(url).pathname,body=JSON.parse(options.body);
- if(path.endsWith('/launch/options'))return Response.json({boatRuntime:{enabled:${mode !== "disabled"},diagnosticsVersion:${mode === "old-diagnostics" ? 0 : 1},followupVersion:${mode === "old-followup" ? 0 : 1},checkpointVersion:${mode === "old-checkpoint" ? 0 : 1},resumeVersion:${mode === "old-resume" ? 0 : 1},githubVersion:${mode === "old-github" ? 0 : 1},mcpVersion:${mode === "old-mcp" ? 1 : 2}}});
+ if(path.endsWith('/launch/options'))return Response.json({boatRuntime:{enabled:${mode !== "disabled"},diagnosticsVersion:${mode === "old-diagnostics" ? 0 : 1},followupVersion:${mode === "old-followup" ? 0 : 1},checkpointVersion:${mode === "old-checkpoint" ? 0 : 1},resumeVersion:${mode === "old-resume" ? 0 : 1},githubVersion:${mode === "old-github" ? 0 : 1},mcpVersion:${mode === "old-mcp" ? 1 : 2},skillsVersion:1}});
+ if(path.endsWith('/golden/list'))return Response.json({goldens:[{id:'wrong',name:'fixture',orgId:'org',provider:'modal'},{id:'golden',name:'fixture',orgId:'org',provider:'boat'}]});
+ if(path.endsWith('/skills/defaults/get')){defaultReads++;if(body.org!=='org'||(body.scope==='golden'?body.goldenId!=='golden':Object.hasOwn(body,'goldenId')))throw Error('wrong defaults scope');return Response.json({skills:${mode === "skills-empty"}?[]:({golden:['catalog/notes@1.0.0','catalog/other@1.0.0'],org:['notes@2.0.0'],personal:[]}[body.scope])});}
+ if(path.endsWith('/sandbox/status')){skillStatuses++;return Response.json({skills:${mode === "skills-status"}?receipts.slice(1):receipts});}
  if(path.endsWith('/sandbox/github-preflight-v1')){if(body.repository!=='example/web'||body.runtimeVersion!==1)throw Error('wrong GitHub preflight');return Response.json({githubReady:${mode !== "github-preflight-denied"}});}
  if(path.endsWith('/sandbox/mcp-preflight-v1'))return Response.json({mcpReady:${mode !== "mcp-preflight-denied"}});
  if(path.endsWith('/mcp/list'))return Response.json({connections:[{id:'${mcpId}',defaultForLaunch:${mode !== "mcp-no-default"}}]});
@@ -68,7 +79,8 @@ globalThis.fetch=async(url,options)=>{
  if(path.endsWith('/github/runtime-status'))return Response.json({configured:phase===3 ? ${mode === "github-resume-stale-status"} : true,revision:phase>=3?'4':'3',credentialRequests:${mode === "github-no-audit" ? 0 : 1}*(phase>=3 && ${mode === "github-resume-no-audit"} ? 0 : 1),runtime:{kind:'armada',epoch:phase>=3?'2':'1'}});
  if(path.endsWith('/sandbox/launch-runtime-v1')){if(++launches!==1)throw Error('allocation repeated');if(${mcp}){if(Object.hasOwn(body,'connections'))throw Error('MCP defaults were bypassed');mcpConfigurations=1;}
   if(body.runtimeVersion!==1||body.boatRuntime!==true||body.harness!=='codex')throw Error('missing explicit opt-in');
-  marker=body.prompt.match(/ARMADA_RUNTIME_[a-f0-9]+/)[0];memory=body.prompt.match(/ARMADA_MEMORY_[a-f0-9]+/)?.[0]??'';return Response.json({sandbox:{id:'worker',goldenId:'golden',boatRuntime:true},runtime:{kind:'armada',epoch:'1'},promptId:'prompt',conversationId:'conversation'});}
+  if(${skills}&&(defaultReads!==3||Object.hasOwn(body,'skills')||Object.hasOwn(body,'skipSkillDefaults')))throw Error('defaults bypassed');
+  marker=body.prompt.match(/ARMADA_RUNTIME_[a-f0-9]+/)[0];memory=body.prompt.match(/ARMADA_MEMORY_[a-f0-9]+/)?.[0]??'';return Response.json({sandbox:{id:'worker',goldenId:'${mode === "skills-golden" ? "wrong" : "golden"}',boatRuntime:true,...(${skills}?{skills:receipts}:{})},runtime:{kind:'armada',epoch:'1'},promptId:'prompt',conversationId:'conversation'});}
  if(path.endsWith('/sandbox/send')){if(body.id!=='worker'||body.conversation_id!=='conversation'||!body.request_id||body.prompt.includes(memory))throw Error('wrong continuation');if(${mode === "followup-lost"})throw Error('lost follow-up response');if(phase>=3){if(${combined || triple} && githubConfigurations!==2)throw Error('no new epoch GitHub setup');if(${mcp} && mcpConfigurations!==2)throw Error('no new epoch automatic MCP setup');phase=4;return Response.json({promptId:'github-resumed',conversationId:'conversation',requestId:body.request_id,runtime:{kind:'armada',epoch:'2'}});}phase=2;return Response.json({promptId:'followup',conversationId:'conversation',requestId:body.request_id,runtime:{kind:'armada',epoch:'1'}});}
  if(path.endsWith('/logs/read') && ${mode === "runtime-failed"})return Response.json({source:'armada-runtime',events:[],runtimeFailure:{status:'failed',reason:'Armada runtime process failed.'}});
  if(path.endsWith('/sandbox/resume-runtime-v1')){if(++resumes!==1||stops!==1||body.id!=='worker'||body.conversation_id!=='conversation'||!body.request_id||body.runtimeVersion!==1||body.prompt.includes(memory))throw Error('wrong resume or repeated activation');if(${mode === "resume-lost"})throw Error('lost resume');phase=3;if(${mcp})mcpConfigurations=2;return Response.json({id:'worker',requestId:body.request_id,resumed:true,runtime:{kind:'armada',epoch:'${mode === "bad-resume" ? "1" : "2"}'},sourceCheckpoint:{epoch:'1',watermark:4},promptId:'resumed',conversationId:'conversation'});}
@@ -87,6 +99,7 @@ globalThis.fetch=async(url,options)=>{
         preload,
         "scripts/check-boat-runtime.ts",
         ...(mcp ? ["--mcp"] : []),
+        ...(skills ? ["--skills"] : []),
         ...(["followup", "old-followup", "followup-lost"].includes(mode) ? ["--followup"] : []),
         ...(["checkpoint", "old-checkpoint", "bad-checkpoint", "checkpoint-lost"].includes(mode)
           ? ["--checkpoint"]
@@ -96,7 +109,7 @@ globalThis.fetch=async(url,options)=>{
         triple
           ? ["--github"]
           : []),
-        ...(["resume", "old-resume", "resume-lost", "bad-resume"].includes(mode) || combined || mcpResume
+        ...(["resume", "old-resume", "resume-lost", "bad-resume"].includes(mode) || combined || mcpResume || skillResume
           ? ["--resume"]
           : []),
       ],
@@ -133,6 +146,8 @@ globalThis.fetch=async(url,options)=>{
         "mcp",
         "mcp-resume",
         "mcp-github-resume",
+        "skills",
+        "skills-resume",
       ].includes(mode),
     );
     expect(out + err).not.toContain(token);
@@ -140,7 +155,7 @@ globalThis.fetch=async(url,options)=>{
     if (mode === "mcp-invalid-json")
       expect(out + err).toContain("MCP args must be valid non-secret JSON; no launch attempted.");
     expect(out).toContain(
-      `COUNTERS ${JSON.stringify({ launches: ["disabled", "old-diagnostics", "old-followup", "old-checkpoint", "old-resume", "old-github", "github-preflight-denied", "old-mcp", "mcp-preflight-denied", "mcp-invalid-json", "mcp-no-default"].includes(mode) ? 0 : 1, stops: ["disabled", "old-diagnostics", "old-followup", "old-checkpoint", "old-resume", "old-github", "github-preflight-denied", "old-mcp", "mcp-preflight-denied", "mcp-invalid-json", "mcp-no-default"].includes(mode) ? 0 : ["resume", "resume-lost", "bad-resume"].includes(mode) || combined || mcpResume ? 2 : 1 })}`,
+      `COUNTERS ${JSON.stringify({ launches: ["disabled", "old-diagnostics", "old-followup", "old-checkpoint", "old-resume", "old-github", "github-preflight-denied", "old-mcp", "mcp-preflight-denied", "mcp-invalid-json", "mcp-no-default", "skills-empty"].includes(mode) ? 0 : 1, stops: ["disabled", "old-diagnostics", "old-followup", "old-checkpoint", "old-resume", "old-github", "github-preflight-denied", "old-mcp", "mcp-preflight-denied", "mcp-invalid-json", "mcp-no-default", "skills-empty"].includes(mode) ? 0 : ["resume", "resume-lost", "bad-resume"].includes(mode) || combined || mcpResume || skillResume ? 2 : 1 })}`,
     );
     if (
       [
@@ -153,6 +168,8 @@ globalThis.fetch=async(url,options)=>{
         "mcp",
         "mcp-resume",
         "mcp-github-resume",
+        "skills",
+        "skills-resume",
       ].includes(mode)
     )
       expect(out).toContain('"source":"armada-runtime"');
@@ -201,6 +218,20 @@ globalThis.fetch=async(url,options)=>{
         } else expect(out).not.toContain('"mcpAfterResume":"verified"');
       }
       if (triple) expect(out).toContain('"githubAfterResume":"verified"');
+    }
+    if (skills) {
+      expect(out).toContain("DEFAULT_READS 3");
+      if (mode === "skills-empty") expect(out + err).toContain("No default skills configured");
+      if (mode === "skills") {
+        expect(out).toContain('"skills":"verified"');
+        expect(out).toContain("SKILL_STATUSES 2");
+      }
+      if (skillResume) {
+        expect(out).toContain('"skillsAfterResume":"verified"');
+        expect(out).toContain("SKILL_STATUSES 4");
+        expect(out).toContain("RESUMES 1");
+      }
+      if (["skills-status", "skills-golden"].includes(mode)) expect(out).not.toContain('"skills":"verified"');
     }
     if (mode === "old-resume") expect(out).toContain("RESUMES 0");
     if (mode === "runtime-failed") expect(out).toContain("Experimental runtime compute stopped;");
