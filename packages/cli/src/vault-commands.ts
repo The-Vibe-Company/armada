@@ -1,6 +1,9 @@
 import {
+  CONNECTION_PRESETS,
   type CredentialInfo,
+  connectionPreset,
   credentialName,
+  harnessForCredential,
   isModelConnectionTestResult,
   type MemberInfo,
   type OrgCredentials,
@@ -12,6 +15,7 @@ import {
   parseModelPriceOverrides,
   parseOpenCodeEndpoint,
   parseRole,
+  presetConnectionValue,
   VaultError,
 } from "@armada/core";
 import { flag, parseArgs, single } from "./args.ts";
@@ -177,6 +181,7 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
   const scope = org === undefined ? "user" : "org";
   if (
     sub !== "set" &&
+    sub !== "connect" &&
     (args.options.has("--base-url") ||
       args.options.has("--models") ||
       args.options.has("--api-version") ||
@@ -185,6 +190,55 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
   )
     throw usage("Endpoint options are only supported by creds set openai, anthropic or opencode.");
   switch (sub) {
+    case "presets": {
+      expect(args.positionals, 0, "armada creds presets [--json]");
+      if ([...args.options.keys()].some((key) => key !== "--json")) throw usage("Presets accepts only --json.");
+      const presets = CONNECTION_PRESETS.map((preset) => ({ ...preset, harness: harnessForCredential(preset.kind) }));
+      io.auth.out(
+        flag(args, "--json")
+          ? `${JSON.stringify({ presets })}\n`
+          : `${presets.map((p) => `${p.id}: ${p.label} (${p.harness})`).join("\n")}\n`,
+      );
+      return 0;
+    }
+    case "connect": {
+      const id = one(args.positionals, "armada creds connect <preset> --name NAME [--file PATH] [--org NAME]");
+      const preset = connectionPreset(id);
+      if (!preset) throw usage("Choose a provider from armada creds presets.");
+      const allowed = ["--name", "--org", "--file", "--json", "--models", "--base-url", "--api-version"];
+      if ([...args.options.keys()].some((key) => !allowed.includes(key)))
+        throw usage("Connect accepts a provider preset, name, key file, org, models and address options only.");
+      const name = single(args, "--name");
+      if (!name?.trim()) throw usage("Give this account a --name.");
+      const baseUrl = single(args, "--base-url");
+      const models = single(args, "--models");
+      const apiVersion = single(args, "--api-version");
+      if (preset.models === "harness" && (baseUrl !== undefined || models !== undefined || apiVersion !== undefined))
+        throw usage("This provider uses its agent's model list; omit address and model options.");
+      if (preset.baseUrl && baseUrl !== undefined) throw usage("This provider has a fixed address; omit --base-url.");
+      if (apiVersion !== undefined && !preset.apiVersion) throw usage("This provider does not take an API version.");
+      if (preset.models === "choose" && (!models?.trim() || (!preset.baseUrl && !baseUrl?.trim())))
+        throw usage("Choose --models and supply --base-url when the provider has no fixed address.");
+      const raw = (await readValue(args, io)).trim();
+      if (!raw || raw.startsWith("{"))
+        throw usage("Supply only the API key through stdin or --file, not connection JSON.");
+      const value =
+        preset.models === "choose"
+          ? presetConnectionValue(preset, {
+              apiKey: raw,
+              baseUrl: baseUrl ?? "",
+              models: (models ?? "").split(","),
+              apiVersion,
+            })
+          : parseCredentialValue(preset.kind, raw);
+      await control(io.auth, "creds/accounts/set", { scope, org, kind: credentialName(preset.kind), name, value });
+      io.auth.out(
+        flag(args, "--json")
+          ? `${JSON.stringify({ ok: true })}\n`
+          : `Stored ${preset.label} for ${harnessForCredential(preset.kind)}, encrypted. It is never shown again.\n`,
+      );
+      return 0;
+    }
     case "login":
     case "import": {
       const [harness] = expect(
@@ -419,7 +473,7 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
       return 0;
     }
     default:
-      throw usage("Run armada creds login, import, set, list, rename, default, remove or rm.");
+      throw usage("Run armada creds presets, connect, login, import, set, list, rename, default, remove or rm.");
   }
 }
 
