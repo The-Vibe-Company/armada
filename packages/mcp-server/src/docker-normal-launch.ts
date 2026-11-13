@@ -794,8 +794,9 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
             `update public.sandboxes s set status='failed',status_reason=$3
               from public.docker_launch_requests d where s.id=$1 and d.sandbox_id=s.id and d.worker_id=$2
               and d.worker_expires_at>now() and d.result_enc is null and s.status in ('starting','ready','running')
-              and s.stop_requested_at is null and s.deleted_at is null`,
-            [request.requestId, workerId, phase],
+              and s.stop_requested_at is null and s.deleted_at is null
+              and not exists(select 1 from public.runtime_commands c where c.sandbox_id=s.id and c.request_id=$4)`,
+            [request.requestId, workerId, phase, `docker_prompt_${manifest.promptId}`],
           );
         }
         throw error;
@@ -807,10 +808,10 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
   }
   let stopping = false;
   let timer: ReturnType<typeof setInterval> | undefined;
-  let working: Promise<void> | undefined;
+  const working = new Set<Promise<void>>();
   async function drain() {
-    if (stopping || working) return working;
-    working = (async () => {
+    if (stopping || working.size >= 8) return;
+    const work = (async () => {
       const workerId = randomUUID();
       const candidate = (
         await sql.query<{
@@ -866,9 +867,10 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
         );
       }
     })().finally(() => {
-      working = undefined;
+      working.delete(work);
     });
-    return working;
+    working.add(work);
+    return work;
   }
   return {
     launch: (caller: Caller, body: Record<string, unknown>, admission?: Parameters<typeof launch>[2]) =>
@@ -884,7 +886,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
     async close() {
       stopping = true;
       if (timer) clearInterval(timer);
-      await working;
+      await Promise.allSettled([...working]);
     },
   };
 }

@@ -169,9 +169,11 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
             if (scope.epoch !== queued.epoch) deny();
             // Private lane status transitions must not revoke their own live epoch.
             if (activate)
-              await fenced.query(`update public.sandboxes set status='ready' where id=$1 and status='starting'`, [
-                sandboxId,
-              ]);
+              await fenced.query(
+                `update public.sandboxes set status='ready' where id=$1 and status='starting'
+              and not exists(select 1 from public.docker_launch_requests d where d.sandbox_id=$1 and d.result_enc is null)`,
+                [sandboxId],
+              );
             return { state: "ready" as const, epoch: scope.epoch };
           });
         },
@@ -192,6 +194,22 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
           !["ready", "running"].includes(sandbox.status)
         )
           deny();
+        // An admitted normal launch owns its first prompt until its final receipt is durable.
+        const launch = (
+          await tx.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
+            "select request_enc from public.docker_launch_requests where sandbox_id=$1 and result_enc is null",
+            [sandboxId],
+          )
+        ).rows[0];
+        if (launch) {
+          const manifest = JSON.parse(await decryptSecret(launch.request_enc, key));
+          if (
+            manifest.promptId !== input.requestId ||
+            manifest.request?.prompt !== input.text ||
+            input.conversationId !== undefined
+          )
+            deny();
+        }
         const id = `docker_prompt_${input.requestId}`;
         // Exact retries keep their original canonical payload, including the first
         // request's absent conversationId, even after its receipt is reconciled.

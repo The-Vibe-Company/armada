@@ -810,6 +810,39 @@ test.each(["claude", "opencode"] as const)("normal Docker launch selects and boo
   );
 });
 
+test("deferred launch reconciles an uncertain first-prompt receipt without marking it failed or dispatching twice", async () => {
+  const f = await fixture();
+  let failed = false;
+  const interrupted: Sql = {
+    ...sql,
+    transaction: async (work) => {
+      if (!sql.transaction) throw Error("transaction required");
+      return sql.transaction((tx) =>
+        work({
+          query: (q, v) => {
+            if (!failed && q.startsWith("update public.docker_launch_requests set result_enc=")) {
+              failed = true;
+              throw Error("synthetic lost receipt publication");
+            }
+            return tx.query(q, v);
+          },
+        }),
+      );
+    },
+  };
+  const server = f.service(interrupted, true, 10000, officialImage, true);
+  await server.launch(f.caller, f.body);
+  await server.drain();
+  expect(failed).toBe(true);
+  expect((await server.launch(f.caller, f.body)).sandbox.status).toBe("starting");
+  const recovered = f.service(sql, true, 10000, officialImage, true);
+  await recovered.drain();
+  expect((await recovered.launch(f.caller, f.body)).promptId).toBe(f.receipt.promptId);
+  expect((f.native as { op: string }[]).filter((c) => c.op === "prompt")).toHaveLength(1);
+  await server.close();
+  await recovered.close();
+});
+
 for (const scenario of ["success", "checkout-failed", "missing-github"] as const)
   test(`deferred repository launch returns before host work and durably completes: ${scenario}`, async () => {
     const f = await fixture({ checkoutExitCode: scenario === "checkout-failed" ? 1 : 0 });
