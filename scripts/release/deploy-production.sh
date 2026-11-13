@@ -54,19 +54,12 @@ for _ in {1..12}; do
 done
 [[ "$healthy" == true ]] || fail 'Public server did not report the release version; dashboard/npm not released.'
 
-# Upload the repository root: Vercel project Root Directory remains apps/dashboard,
-# with workspace sources outside that directory included in its build settings.
-# deploy waits for Ready (no --no-wait), then promotes domains only on successful build.
-if [[ "${PREBUILT_DASHBOARD:-}" == true ]]; then
-  # Staging builds on the Actions runner, including the release smoke call.
-  # VERCEL_TOKEN is read from the environment, never exposed in argv.
-  vercel pull --yes --environment=production
-  vercel build --prod
-  vercel deploy --prebuilt --prod --yes \
-    --meta "githubCommitSha=$RELEASE_SHA" --meta "armadaVersion=$RELEASE_VERSION"
-else
-  # Production stays unchanged until the owner confirms staging cutover.
-  vercel deploy --prod --yes --token "$VERCEL_TOKEN" \
-    --meta "githubCommitSha=$RELEASE_SHA" --meta "armadaVersion=$RELEASE_VERSION"
-fi
+# Build the archived commit on the Actions runner for both protected environments.
+# The Vercel project Root Directory remains apps/dashboard with workspace inclusion.
+# VERCEL_TOKEN is consumed from the environment, never exposed in argv.
+vercel pull --yes --environment=production
+vercel build --prod
+# Wait for Ready; upload only the output, with no remote Vercel build.
+vercel deploy --prebuilt --prod --yes \
+  --meta "githubCommitSha=$RELEASE_SHA" --meta "armadaVersion=$RELEASE_VERSION"
 echo "Released server and dashboard $RELEASE_VERSION from $RELEASE_SHA" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"

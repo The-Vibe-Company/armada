@@ -293,7 +293,8 @@ jobs:
           node-version: 24
       - name: Install pinned deployment clients
         run: npm install --global @railway/cli@5.71.0 vercel@65.14.0
-      - name: Migrate, deploy server, wait healthy, then deploy dashboard
+      - uses: ./.github/actions/setup-bun
+      - name: Migrate, deploy server, wait healthy, then deploy prebuilt dashboard
         run: bash .release-tools/scripts/release/deploy-production.sh
       - name: Report stopped release
         if: failure()

@@ -171,8 +171,9 @@ Vercel CLI 65.14.0; deployment semantics are documented in the official
 The production job first checks all required configuration, then applies only
 pending tagged migrations (forward-only), uploads the tagged server, polls the
 **exact returned Railway deployment ID** until `SUCCESS`, and checks that the
-public `/healthz` reports the tagged version. Only then does it upload/build the
-dashboard with `vercel deploy --prod`, which waits for Ready before success.
+public `/healthz` reports the tagged version. Only then does it build the dashboard in Actions with `vercel pull` and
+`vercel build --prod`, then upload with `vercel deploy --prebuilt --prod`,
+which waits for Ready before success.
 Only after both hosts succeed can npm publish. The server health version,
 dashboard landing's version badge and `armada --version` all use the same core
 package version; compare them after the release finishes.
@@ -441,3 +442,34 @@ Never re-enable Git builds as an automated recovery. If the Actions path fails,
 fix/retry that workflow at the intended SHA; an emergency provider rollback or
 restoration of the previous config is an explicit owner decision. No deployment
 or provider-setting verification is claimed by local lint/typecheck.
+
+
+## Prebuilt production dashboard (#1547, step 3a)
+
+Both protected deployment callers now use the same unconditional prebuilt path.
+The release job installs repository-pinned Bun alongside Node 24 and Vercel CLI
+65.14.0. After migrations and exact Railway deployment/health checks, the shared
+script runs `vercel pull --environment=production`, `vercel build --prod`, and
+`vercel deploy --prebuilt --prod`. Source is still a clean archive of the
+validated release SHA, not moving main or the tooling checkout. Build output is
+created on the Actions runner; Vercel only hosts it. The unused staging-only
+`PREBUILT_DASHBOARD` toggle and remote-build fallback are removed. Authentication
+is environment-only for both callers; no Vercel token is placed in argv.
+
+Existing production project IDs, Root Directory apps/dashboard, workspace
+inclusion and production-environment build variables remain prerequisites. No
+new secret names or provider operations are introduced. Confirm public Supabase
+build values in the production project's existing environment; do not log or
+commit the pulled `.vercel` settings/env files. They live only in the disposable
+archive and are deleted with it. See the official
+[Vercel build reference](https://vercel.com/docs/cli/build) and
+[prebuilt deploy reference](https://vercel.com/docs/cli/deploy#prebuilt).
+
+This slice changes **how** the existing release deployment builds, not **when**
+it runs: RELEASE_SYNCED_DEPLOYS and STAGING_GATED_DEPLOYS opt-ins are retained.
+The final policy slice must remove legacy per-commit production migration paths,
+make the exact-commit staging gate mandatory and implement staging pending-run
+supersession. The owner still must disable Railway production/staging Git
+auto-deploy as described above. No claim is made here that these real settings
+have changed or that the full issue is complete. Dry-run releases still do not
+access production, and tag validation/recovery protections remain unchanged.

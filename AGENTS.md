@@ -50,6 +50,8 @@ What runs after a merge, not before: the staging dashboard build in GitHub Actio
 Vercel Git deployments are disabled for both dashboard projects via
 `apps/dashboard/vercel.json`; no PR previews. Keep the Actions staging path
 working and follow the owner cutover prerequisites in `docs/releasing.md`.
+The release dashboard build also runs in Actions and uploads only prebuilt
+output; enabling the release-only policy still requires the owner cutover.
 Binaries are built by the release workflow when a version is published.
 
 What CI does not do, and must not be added back:

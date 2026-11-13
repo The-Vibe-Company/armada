@@ -41,7 +41,7 @@ fi`,
       `echo curl >> "$CALLS"
 if [[ "$FAILURE" == health ]]; then echo '{"ok":true,"version":"0.0.0"}'; else echo '{"ok":true,"version":"1.2.3"}'; fi`,
     );
-    executable("vercel", 'echo "vercel $*" >> "$CALLS"; [[ "$FAILURE" != dashboard ]]');
+    executable("vercel", 'echo "vercel $*" >> "$CALLS"; [[ "$FAILURE" != "dashboard-$1" ]]');
     executable("sleep", ":");
     const env: Record<string, string> = {
       PATH: `${bin}:${process.env.PATH}`,
@@ -88,15 +88,37 @@ test("release uploads and gates providers in migration/server/health/dashboard o
       .split("\n")
       .filter(Boolean)
       .map((line) => line.split(" ")[0]),
-  ).toEqual(["supabase", "supabase", "supabase", "supabase", "supabase", "railway", "railway", "curl", "vercel"]);
+  ).toEqual([
+    "supabase",
+    "supabase",
+    "supabase",
+    "supabase",
+    "supabase",
+    "railway",
+    "railway",
+    "curl",
+    "vercel",
+    "vercel",
+    "vercel",
+  ]);
+  expect(result.calls).toContain("vercel pull --yes --environment=production");
+  expect(result.calls).toContain("vercel build --prod");
+  expect(result.calls).toContain("vercel deploy --prebuilt --prod --yes");
+  expect(result.calls).not.toContain("--token");
 });
 
-test.each(["migrations", "server", "health", "dashboard"])("%s failure stops later release stages", (failure) => {
-  const result = deploy(failure);
-  expect(result.code).not.toBe(0);
-  if (failure === "migrations") expect(result.calls).not.toContain("railway");
-  if (failure !== "dashboard") expect(result.calls).not.toContain("vercel");
-});
+test.each(["migrations", "server", "health", "dashboard-pull", "dashboard-build", "dashboard-deploy"])(
+  "%s failure stops later release stages",
+  (failure) => {
+    const result = deploy(failure);
+    expect(result.code).not.toBe(0);
+    if (failure === "migrations") expect(result.calls).not.toContain("railway");
+    if (!failure.startsWith("dashboard-")) expect(result.calls).not.toContain("vercel");
+    if (failure === "dashboard-pull") expect(result.calls).not.toContain("vercel build");
+    if (failure === "dashboard-pull" || failure === "dashboard-build")
+      expect(result.calls).not.toContain("vercel deploy");
+  },
+);
 
 test("missing deployment configuration fails before any production mutation", () => {
   const result = deploy("", "VERCEL_TOKEN");
