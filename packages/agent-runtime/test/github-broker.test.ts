@@ -62,6 +62,7 @@ test("existing native children use new GitHub material and register it before gh
       ghWrapper: join(bin, "gh"),
       gitWrapper: join(bin, "git"),
       homes: [home],
+      identity: { name: "Runtime Owner", email: "123+owner@users.noreply.github.com" },
     };
     const installer = Bun.spawn(
       ["sudo", "-n", process.execPath, join(import.meta.dir, "../dist/main.js"), "github-install"],
@@ -71,6 +72,16 @@ test("existing native children use new GitHub material and register it before gh
     installer.stdin.end();
     expect(await installer.exited).toBe(0);
     expect(await new Response(installer.stdout).text()).toBe("github_tools_installed\n");
+    const identity = Bun.spawnSync([
+      git,
+      "config",
+      "--file",
+      join(home, ".gitconfig"),
+      "--get-regexp",
+      "^user\\.(name|email)$",
+    ]);
+    expect(identity.exitCode).toBe(0);
+    expect(identity.stdout.toString()).toBe("user.name Runtime Owner\nuser.email 123+owner@users.noreply.github.com\n");
     // Default native UID cannot dump raw credentials or retired leaves from either channel.
     await expect(
       fetch("http://private/", {

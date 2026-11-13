@@ -19,6 +19,8 @@ export interface GitHubRuntimeConfiguration {
   url: string;
   capability: string;
   expiresAt: number;
+  /** Non-secret Git author identity, only on the enrolled runtime GitHub path. */
+  identity?: { name: string; email: string };
 }
 
 /** Trusted owner recovery identity, assembled from the original SQL create receipt.

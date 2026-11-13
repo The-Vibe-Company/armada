@@ -36,10 +36,17 @@ export class GitHubBroker {
         url.password ||
         url.hash ||
         url.search ||
-        url.pathname !== "/api/internal/github/credentials" ||
+        !["/api/internal/github/credentials", "/api/runtime/github/credentials"].includes(url.pathname) ||
         !/^armada_gh_[a-f0-9]{64}$/.test(value.capability) ||
         !Number.isFinite(value.expiresAt) ||
         value.expiresAt <= this.now()
+      )
+        throw Error("github_configuration_denied");
+      if (
+        value.identity &&
+        [value.identity.name, value.identity.email].some(
+          (v) => typeof v !== "string" || !v || v.length > 512 || /[\r\n\0]/.test(v),
+        )
       )
         throw Error("github_configuration_denied");
       const revision = BigInt(value.revision);

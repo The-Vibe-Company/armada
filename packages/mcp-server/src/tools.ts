@@ -62,6 +62,7 @@ import type { GoldenProviderMetadata } from "./provider-metadata.ts";
 import { summarizeResourceHistory } from "./resource-advice.ts";
 import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
+import type { RuntimeGitHub } from "./runtime-github.ts";
 import type { RuntimeResume } from "./runtime-resume.ts";
 import { sandboxActivity } from "./sandbox-activity.ts";
 import { extendSandbox } from "./sandbox-extend.ts";
@@ -77,6 +78,7 @@ import { recordStopDispatch } from "./work-preservation.ts";
 
 /** Everything a tool call may use, for one authenticated request. */
 export interface ToolContext {
+  runtimeGitHub?: RuntimeGitHub;
   runtimeResume?: RuntimeResume;
   runtimeCheckpoint?: RuntimeCheckpoint;
   runtimeSend?: RuntimeFollowup;
@@ -696,12 +698,23 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     {
       title: "Repair sandbox GitHub access",
       description:
-        "Refresh the owner's GitHub access in a running legacy Boat sandbox without relaunching. Reuses a validated unexpired token; rejection/expiry can require renewal. Only the sandbox owner may request this.",
+        "Configure or refresh the owner's GitHub access in a running Boat sandbox without relaunching. Enrolled Armada runtimes use current-epoch private RPC; native Boat keeps its existing setup. Reuses a validated unexpired token; rejection/expiry can require renewal. Only the sandbox owner may request this.",
       input: { id },
-      output: { id: z.string(), login: z.string(), status: z.literal("connected") },
+      output: {
+        id: z.string(),
+        login: z.string(),
+        status: z.literal("connected"),
+        runtime: z.object({ kind: z.literal("armada"), epoch: z.string() }).optional(),
+        revision: z.string().optional(),
+      },
     },
     async (args) => {
-      const { sandbox: found, provider } = await live(args.id);
+      const selected = await visible(args.id);
+      if (selected.boatRuntime) {
+        if (!context.runtimeGitHub) throw new ToolError("unsupported", "Runtime GitHub is unavailable.");
+        return context.runtimeGitHub.prepare(caller, args.id);
+      }
+      const { sandbox: found, provider } = await live(args.id, false, selected);
       if (found.ownerId !== caller.userId)
         throw new ToolError("forbidden", "Only the sandbox owner may repair GitHub access.");
       if (provider.id !== "boat")
@@ -1341,6 +1354,29 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       if (!data.sandboxes.reportTaskOutcome) throw new ToolError("conflict", "Task reporting is unavailable.");
       await data.sandboxes.reportTaskOutcome(args.id, found.taskPromptId!, args.outcome, found.lifecycleGeneration);
       return { id: args.id, taskOutcome: args.outcome };
+    },
+  );
+
+  tool(
+    "runtime_github_status",
+    {
+      title: "Read runtime GitHub broker status",
+      description:
+        "Owner-only non-secret current-epoch configuration and credential-request count. Does not return credentials or probe GitHub.",
+      input: { id },
+      output: {
+        id: z.string(),
+        configured: z.boolean(),
+        revision: z.string().nullable(),
+        credentialRequests: z.number().int().nonnegative(),
+        lastAccessedAt: z.string().nullable(),
+        runtime: z.object({ kind: z.literal("armada"), epoch: z.string() }).optional(),
+      },
+      readOnly: true,
+    },
+    async (args) => {
+      if (!context.runtimeGitHub) throw new ToolError("unsupported", "Runtime GitHub is unavailable.");
+      return context.runtimeGitHub.status(caller, args.id);
     },
   );
 

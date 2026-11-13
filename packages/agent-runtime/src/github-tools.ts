@@ -34,6 +34,7 @@ export async function installGitHubTools(input: {
   ghWrapper: string;
   gitWrapper: string;
   homes: readonly string[];
+  identity?: { name: string; email: string };
 }): Promise<void> {
   if (process.getuid?.() !== 0) throw Error("github_tools_privilege_required");
   await mkdir(input.root, { recursive: true, mode: 0o700 });
@@ -103,6 +104,12 @@ export async function installGitHubTools(input: {
     const env = { PATH: process.env.PATH!, HOME: home, GIT_CONFIG_NOSYSTEM: "1" };
     const helper = `!${privileged} ${q(client)} elevate git ${q(input.socket)}`;
     for (const args of [
+      ...(input.identity
+        ? [
+            ["user.name", input.identity.name],
+            ["user.email", input.identity.email],
+          ]
+        : []),
       ["--replace-all", "credential.https://github.com.helper", ""],
       ["--add", "credential.https://github.com.helper", helper],
       ["credential.https://github.com.useHttpPath", "true"],

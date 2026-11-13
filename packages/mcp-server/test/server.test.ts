@@ -363,6 +363,7 @@ describe("tools", () => {
         "send",
         "runtime_checkpoint",
         "runtime_resume",
+        "runtime_github_status",
         "status",
         "steer",
         "stop",

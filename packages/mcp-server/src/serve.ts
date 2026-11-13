@@ -57,6 +57,7 @@ import { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import { createRuntimeEvents } from "./runtime-events.ts";
 import { createRuntimeFollowup } from "./runtime-followup.ts";
+import { createRuntimeGitHub } from "./runtime-github.ts";
 import { createRuntimeModelAccess } from "./runtime-model-access.ts";
 import { createRuntimeNativeAuth } from "./runtime-native-auth.ts";
 import { createRuntimeProgress } from "./runtime-progress.ts";
@@ -124,6 +125,15 @@ export async function startServer(
   const authStore = createSqlAuthStore(sql);
   const otto = createOttoRuntime(sql, env);
   const githubApp = githubAppFromEnv(env);
+  const runtimeGitHub = githubApp
+    ? createRuntimeGitHub({
+        sql,
+        key: config.encryptionKey,
+        origin: config.publicUrl,
+        github: { store, app: githubApp, encryptionKey: config.encryptionKey },
+        commands: runtimeCommands,
+      })
+    : undefined;
   const sandboxArmadaAccess = createSandboxArmadaAccess({
     sql,
     encryptionKey: config.encryptionKey,
@@ -295,6 +305,7 @@ export async function startServer(
     runtimeSend,
     runtimeCheckpoint,
     runtimeResume,
+    ...(runtimeGitHub ? { runtimeGitHub } : {}),
     ...(runtimeLaunch
       ? { boatRuntimeLaunch: runtimeLaunch, runtimeHostFor: (apiKey: string) => createBoatProvider({ apiKey }) }
       : {}),
@@ -390,6 +401,7 @@ export async function startServer(
     runtimeSend,
     runtimeCheckpoint,
     runtimeResume,
+    ...(runtimeGitHub ? { runtimeGitHub } : {}),
     ready: createDatabaseReadiness(sql),
     runtimeProviderFor,
     launch,
@@ -456,6 +468,7 @@ export async function startServer(
       createRuntimeModelAccess(sql, config.encryptionKey, modelAuth.broker),
       runtimeEvents.route,
       runtimeCommands.route,
+      ...(runtimeGitHub ? [runtimeGitHub.route] : []),
       ...(orchestrators && "scopedToolsRoute" in orchestrators
         ? [
             orchestrators.scopedToolsRoute,

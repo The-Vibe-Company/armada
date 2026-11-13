@@ -131,6 +131,7 @@ import { createProviderMetadata } from "./provider-metadata.ts";
 import { RequestTiming, withRequestTiming } from "./request-timing.ts";
 import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
+import type { RuntimeGitHub } from "./runtime-github.ts";
 import type { RuntimeResume } from "./runtime-resume.ts";
 import { type createSandboxArmadaAccess, parseSandboxArmadaAccess } from "./sandbox-armada-access.ts";
 import { bunSql } from "./sql.ts";
@@ -146,6 +147,7 @@ import { orchestratorHttp } from "./orchestrator-api.ts";
 import type { OrchestratorRuntime } from "./orchestrator-runtime.ts";
 
 export interface ControlOptions {
+  runtimeGitHub?: RuntimeGitHub;
   runtimeResume?: RuntimeResume;
   runtimeCheckpoint?: RuntimeCheckpoint;
   runtimeSend?: RuntimeFollowup;
@@ -780,6 +782,7 @@ async function dispatch(
         followupVersion: options.runtimeSend ? 1 : 0,
         checkpointVersion: options.runtimeCheckpoint ? 1 : 0,
         resumeVersion: options.runtimeResume ? 1 : 0,
+        githubVersion: options.runtimeGitHub ? 1 : 0,
         enabled: Boolean(options.boatRuntimeLaunch && options.runtimeHostFor),
       },
     };
@@ -793,7 +796,7 @@ async function dispatch(
     return options.modelUsage.read(caller, id, sandboxId, (boundSandbox) => logs(caller, boundSandbox));
   }
   if (route === "account/status") return { userId: caller.userId, orgs: caller.orgs, authentication: caller.via };
-  if (route.startsWith("github/") && route !== "github/refresh") {
+  if (route.startsWith("github/") && route !== "github/refresh" && route !== "github/runtime-status") {
     if (!options.githubAccount) throw new VaultError("unavailable", "GitHub account authorization is not configured.");
     return options.githubAccount.command(route.slice("github/".length), caller, body);
   }
@@ -887,6 +890,7 @@ async function dispatch(
       "golden/capabilities": "golden_capabilities",
       "golden/adopt": "golden_adopt",
       "github/refresh": "github_refresh",
+      "github/runtime-status": "runtime_github_status",
       "sandbox/list": "list",
       "sandbox/detail": "status",
       "sandbox/status": "status",
@@ -943,6 +947,7 @@ async function dispatch(
         ...(options.runtimeSend ? { runtimeSend: options.runtimeSend } : {}),
         ...(options.runtimeCheckpoint ? { runtimeCheckpoint: options.runtimeCheckpoint } : {}),
         ...(options.runtimeResume ? { runtimeResume: options.runtimeResume } : {}),
+        ...(options.runtimeGitHub ? { runtimeGitHub: options.runtimeGitHub } : {}),
         ...(options.connections ? { connections: options.connections } : {}),
         data: options.data(scopedCaller),
         measure: (phase, work) => measured(options, phase, work),
@@ -1141,6 +1146,14 @@ async function dispatch(
         policy: golden.sizePolicy ?? null,
       };
     }
+    case "sandbox/github-preflight-v1":
+      if (body.runtimeVersion !== 1 || !options.runtimeGitHub)
+        throw new VaultError("unavailable", "Runtime GitHub v1 is unavailable.");
+      return options.runtimeGitHub.preflight(caller, {
+        org: required(body, "org"),
+        golden: required(body, "golden"),
+        repository: required(body, "repository"),
+      });
     case "sandbox/launch-runtime-v1":
       if (
         body.runtimeVersion !== 1 ||

@@ -60,6 +60,9 @@ export async function runtimeFixture() {
   let nextDone: Promise<"finished" | "interrupted"> | undefined;
   let checkpointFault: "generation" | "prefix" | "ack" | undefined;
   let afterProbe: (() => Promise<void>) | undefined;
+  let githubConfiguration:
+    | ((value: import("@armada/core").GitHubRuntimeConfiguration | null) => Promise<void>)
+    | undefined;
   let nextInterrupt: (() => void) | undefined;
   const driver: Driver = {
     start(context) {
@@ -109,6 +112,14 @@ export async function runtimeFixture() {
     async () => {
       await state.checkpoint(grant);
       journal.sanitize();
+    },
+    {
+      configureGitHub: (value) =>
+        githubConfiguration
+          ? githubConfiguration(value)
+          : value
+            ? Promise.reject(Error("GitHub not configured in fixture"))
+            : Promise.resolve(),
     },
   );
   const bridge = createRuntimeCommands(authority, ENCRYPTION_KEY, {
@@ -262,7 +273,15 @@ export async function runtimeFixture() {
           await state.checkpoint(next);
           journal.sanitize();
         },
-        attest ? { restoredFrom: restore } : {},
+        {
+          ...(attest ? { restoredFrom: restore } : {}),
+          configureGitHub: (value) =>
+            githubConfiguration
+              ? githubConfiguration(value)
+              : value
+                ? Promise.reject(Error("GitHub not configured in fixture"))
+                : Promise.resolve(),
+        },
       );
       if (attest) {
         const response = await runner.handle(
@@ -283,6 +302,9 @@ export async function runtimeFixture() {
         if (response.status !== 200) throw Error("native restore preflight failed");
       }
       return { epoch: active.epoch };
+    },
+    github(handler: (value: import("@armada/core").GitHubRuntimeConfiguration | null) => Promise<void>) {
+      githubConfiguration = handler;
     },
     tamper(mode: "generation" | "prefix" | "ack") {
       checkpointFault = mode;
