@@ -1315,7 +1315,7 @@ export function AddAccountDialog({
                 <Disclosure summary={`Paste ${info.valueLabel} instead`} defaultOpen={false}>
                   <div className="space-y-4">
                     {pasteSignIn ? (
-                      <PasteSignIn command={pasteSignIn.command} paste={pasteSignIn.paste} />
+                      <PasteSignIn key={kind} command={pasteSignIn.command} paste={pasteSignIn.paste} />
                     ) : (
                       <p className="text-xs text-muted-foreground">{info.hint}</p>
                     )}
@@ -1347,7 +1347,7 @@ export function AddAccountDialog({
                               : info.hint}
                     </span>
                   </p>
-                  {pasteSignIn && <PasteSignIn command={pasteSignIn.command} paste={pasteSignIn.paste} />}
+                  {pasteSignIn && <PasteSignIn key={kind} command={pasteSignIn.command} paste={pasteSignIn.paste} />}
                   {preset?.models === "choose" ? (
                     <PresetConnectionFields
                       key={preset.id}

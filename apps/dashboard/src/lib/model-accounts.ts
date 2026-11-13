@@ -759,6 +759,7 @@ export const PASTE_SIGN_IN: Partial<Record<AccountKind, { command: string; paste
   },
   codex_auth: {
     command: "codex login && cat ~/.codex/auth.json",
-    paste: "Sign in with ChatGPT when your browser opens, then paste the whole JSON it prints.",
+    paste:
+      "Sign in with ChatGPT when your browser opens, then paste the whole JSON it prints and clear your terminal. On a machine without a browser, use codex login --device-auth; with CODEX_HOME set, the file is $CODEX_HOME/auth.json.",
   },
 };
