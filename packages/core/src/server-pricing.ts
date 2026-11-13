@@ -54,7 +54,14 @@ export function resolvePrice(context: PriceContext): PriceSnapshot | null {
     source: "models.dev",
     revision: table.sha256,
     connectionId: null,
-    rates: { ...entry.rates },
+    rates: {
+      ...entry.rates,
+      // Anthropic pricing: 1h writes cost 2x base input (5m is the catalog cacheWrite rate).
+      // https://platform.claude.com/docs/en/about-claude/pricing (checked 2026-11-13).
+      ...(context.provider === "anthropic" && entry.rates.input !== null
+        ? { cacheWriteOneHour: dollars(units(entry.rates.input) * 2n * 1_000_000n) }
+        : {}),
+    },
     unsupported: entry.unsupported,
   };
 }
@@ -101,7 +108,12 @@ export function priceTurn(
   if (reasoning != null && (!count(reasoning) || reasoning > output)) return unknown("tokens");
   const uncached = harness === "codex" ? input - cached - write : input;
   if (!Number.isSafeInteger(uncached) || uncached < 0) return unknown("tokens");
+  const detail = turn.cacheWriteTokensByTtl;
+  const split = harness === "claude" && detail !== undefined && frozen.source === "models.dev";
+  if (split && (detail.conflicted || !count(detail.fiveMinute) || !count(detail.oneHour) ||
+      detail.fiveMinute + detail.oneHour !== write)) return unknown("pricing_dimensions");
   if (
+    !split &&
     write > 0 &&
     frozen.source === "models.dev" &&
     cacheWriteTtl !== null &&
@@ -113,7 +125,8 @@ export function priceTurn(
   const buckets: [number, string | null][] = [
     [uncached, rates.input],
     [cached, rates.cacheRead],
-    [write, rates.cacheWrite],
+    [split ? detail.fiveMinute! : write, rates.cacheWrite],
+    [split ? detail.oneHour! : 0, rates.cacheWriteOneHour ?? null],
     [rates.reasoning === null ? output : output - (reasoning ?? 0), rates.output],
     [rates.reasoning === null ? 0 : (reasoning ?? 0), rates.reasoning],
   ];
