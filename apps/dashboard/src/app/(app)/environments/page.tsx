@@ -299,7 +299,7 @@ export default async function GoldensPage({ searchParams }: Props) {
       }
       empty={
         selected ? (
-          <Empty title="No environments yet" icon={<LayersIcon />}>
+          <Empty title="No snapshots yet" icon={<LayersIcon />}>
             {create
               ? "Use New to build the first one: the repositories an agent starts with, saved as a snapshot."
               : "Connect a sandbox provider to build the first one."}
@@ -309,7 +309,7 @@ export default async function GoldensPage({ searchParams }: Props) {
             <Link className="underline underline-offset-4" href="/orgs">
               Create or join an organization
             </Link>{" "}
-            to build environments.
+            to build snapshots.
           </Empty>
         )
       }
