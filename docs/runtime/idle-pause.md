@@ -52,3 +52,19 @@ This PR does not claim the issue's end-to-end acceptance criteria are met.
 The coordinator must validate idle shutdown and conversation-preserving wake
 on staging for Boat, Modal and the owner's Docker host after the follow-ups.
 No provider lifecycle or staging operation was run for this implementation.
+
+## Idle-pause presentation
+
+The wire status and filter remain `stopped`. Only an idle checkpoint stop sets
+the `idle_paused` status reason; API list/status include additive wording, and
+the safe list metadata RPC exposes an `idlePaused` boolean without interior
+history or credentials. The CLI says “Paused — wakes on your next message”.
+Dashboard badges say “Paused”, with that full message as their accessible label
+and tooltip. Ordinary stops, transitions, failures and expired pauses do not
+make this promise. A wake clears the marker through normal status publication.
+
+The release migration `20261113180002_idle_pause_metadata.sql` must be present
+before running the server version that writes the marker. It extends the
+existing stop-reason constraint and metadata RPC, retaining the same membership
+and owner/admin masking rules. Type generation was rerun; the generated RPC
+uses the shared DTO alias, so no generated-file change is necessary.

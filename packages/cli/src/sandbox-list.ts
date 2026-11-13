@@ -1,4 +1,4 @@
-import { GoldenError, isSandboxPlacementProvider, SANDBOX_PLACEMENT_LABELS } from "@armada/core";
+import { GoldenError, idlePauseMessage, isSandboxPlacementProvider, SANDBOX_PLACEMENT_LABELS } from "@armada/core";
 
 /** Render the #680 sandbox-access-v1 safe DTO, never an interior/golden lookup. */
 export function sandboxListText(rows: unknown[], now: Date): string {
@@ -27,7 +27,14 @@ export function sandboxListText(rows: unknown[], now: Date): string {
       text(row.displayLabel),
       provider,
       row.providerSandboxId === null ? "—" : text(row.providerSandboxId),
-      text(row.status),
+      idlePauseMessage(
+        {
+          status: text(row.status),
+          idlePaused: row.idlePaused === true,
+          expiresAt: typeof row.expiresAt === "string" ? row.expiresAt : null,
+        },
+        now,
+      ) ?? text(row.status),
       row.taskOutcome && typeof row.taskOutcome === "object"
         ? text((row.taskOutcome as Record<string, unknown>).state)
         : "—",

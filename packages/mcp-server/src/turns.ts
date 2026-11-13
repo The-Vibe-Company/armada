@@ -44,6 +44,7 @@ export interface PromptReport {
 }
 
 export interface StatusReport {
+  statusMessage?: string | null;
   usage?: SandboxUsage | null;
   preservationNote?: string | null;
   taskOutcome?: TaskOutcome | null;
@@ -212,8 +213,8 @@ export async function readStatus(
   const reason =
     next === "failed"
       ? (failureReason(info) ?? sandbox.statusReason)
-      : (next === "stopped" || next === "stopping") && sandbox.statusReason === "expired"
-        ? "expired"
+      : (next === "stopped" || next === "stopping") && ["expired", "idle_paused"].includes(sandbox.statusReason ?? "")
+        ? sandbox.statusReason
         : null;
   // Stored projections never acquire activity/lifecycle leases or publish over a
   // concurrent admission. The existing lifecycle worker refreshes physical state.

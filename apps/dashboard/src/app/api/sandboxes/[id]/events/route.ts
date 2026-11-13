@@ -1,3 +1,4 @@
+import { idlePauseMessage } from "@armada/core";
 import { NextResponse } from "next/server";
 import { isUuid } from "@/lib/action";
 import { viewerGateway } from "@/lib/data/gateway";
@@ -20,11 +21,16 @@ export async function GET(request: Request, context: Context) {
   const sandbox = await getSandbox(supabase, id);
   if (!sandbox) return NextResponse.json({ error: "Not found." }, { status: 404 });
 
+  const persistedMessage = idlePauseMessage(
+    { status: sandbox.status, statusReason: sandbox.status_reason, expiresAt: sandbox.expires_at },
+    new Date(),
+  );
   const persistedRevision = usageRevision(sandbox.usage_turns);
   const gateway = viewerGateway(viewer);
   if (!gateway) {
     return NextResponse.json({
       status: sandbox.status,
+      statusMessage: persistedMessage,
       usageRevision: persistedRevision,
       configured: false,
       events: [],
@@ -37,9 +43,20 @@ export async function GET(request: Request, context: Context) {
   // A broken log lane must not prevent status from collecting delayed usage.
   const statusRead = gateway.status(id).catch(() => ({}));
   const metadata = async () => {
-    const detail = (await statusRead) as { status?: string; prompt?: unknown; usage?: unknown };
+    const detail = (await statusRead) as {
+      status?: string;
+      statusMessage?: string | null;
+      prompt?: unknown;
+      usage?: unknown;
+    };
     return {
       status: detail.status ?? sandbox.status,
+      statusMessage:
+        detail.statusMessage !== undefined
+          ? detail.statusMessage
+          : detail.status === undefined || detail.status === sandbox.status
+            ? persistedMessage
+            : null,
       prompt: detail.prompt ?? null,
       usageRevision: detail.usage === undefined ? persistedRevision : usageRevision(detail.usage),
     };

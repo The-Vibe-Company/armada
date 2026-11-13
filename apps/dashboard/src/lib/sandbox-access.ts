@@ -73,10 +73,12 @@ function parseRow(value: unknown): SandboxListMetadata | string {
     expiresAt === undefined ||
     effectiveTtlSeconds === undefined ||
     machineSize === undefined ||
-    (row.preservationNote !== undefined && preservationNote === undefined)
+    (row.preservationNote !== undefined && preservationNote === undefined) ||
+    (row.idlePaused !== undefined && typeof row.idlePaused !== "boolean")
   )
     return "optional fields";
   return {
+    ...(row.idlePaused === undefined ? {} : { idlePaused: row.idlePaused === true }),
     id,
     orgId,
     ownerId,
