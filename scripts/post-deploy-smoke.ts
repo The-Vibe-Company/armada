@@ -1182,6 +1182,14 @@ async function runAllowedSmoke(
 
 /** Persist handles before callers inspect receipts; cleanup also runs after failed probes. */
 export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[], io: SmokeIo): Promise<boolean> {
+  // Coordinator-only opt-in never reads or sweeps the staging cleanup journal.
+  if (args.includes("--production-boat")) {
+    if (args[0] !== "--parity") {
+      io.out(JSON.stringify({ step: "configure", pass: false, code: "production_boat_requires_parity" }));
+      return false;
+    }
+    return providerParitySmoke(env, { fetch: io.fetch, sleep: io.sleep, now: io.now, out: io.out }, args.slice(1));
+  }
   io.out(BOAT_STAGING_NOTICE);
   const out = io.out;
   io = {

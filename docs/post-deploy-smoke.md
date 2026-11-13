@@ -8,7 +8,7 @@ credentials/model/golden fields. They print exactly once per invocation:
 acceptance procedures below for automated staging/release use, not Boat product
 support. Modal full smoke and existing owner Docker-host parity probes remain.
 Boat verification belongs to the coordinator on demand against production,
-with an explicit production-only parity opt-in delivered separately. Workers
+with the explicit production-only parity opt-in below. Workers
 and CI must never perform production verification.
 Boat omission is explicit not-run evidence, never a claimed pass or quota guess.
 
@@ -96,6 +96,58 @@ Docker host; no implicit host registration or machine discovery is introduced.
 successful eligible-provider proof. The default lifecycle gate with only Boat cases provides no Modal/Docker
 coverage and fails closed, without Boat calls. Accounts parity retains its
 observational not-run/no-account semantics and is not a substitute release gate.
+
+
+## Coordinator-only production Boat verification
+
+Boat remains a supported, first-class provider. The coordinator may verify it
+against production **on demand**, independently of the release gate. Workers
+must never run this mode. No CI workflow calls it; CI/GitHub Actions execution
+is rejected before any API request. This is not an automatic production smoke.
+
+Use the existing parity entry point with **both** `--only boat` and
+`--production-boat`. An optional existing `--feature` filter is allowed. The
+opt-in rejects Modal/Docker selection, account-matrix mode, staging origin,
+non-HTTPS/non-origin URLs, duplicate/unknown flags and a staging cleanup journal.
+Without the opt-in, parity remains staging-only and Boat is not part of the
+gate. The flag is operator acknowledgement, not a credential or a substitute for
+the server's normal actor/org authorization.
+
+Coordinator procedure (never executed by workers):
+1. Select one existing production Boat golden and the coordinator's own model
+   account/org. Supply one valid selected Boat case via ARMADA_SMOKE_CASES.
+   These are identifiers, not credentials; no golden/host registration or
+   production deployment settings are changed.
+2. Set ARMADA_URL to the exact production Armada **API origin** (no path, query,
+   userinfo or fragment). Read the production bearer securely from stdin/env,
+   never argv or a checked-in file. Set ARMADA_SMOKE=create_real_compute to
+   acknowledge real compute explicitly.
+3. Run manually outside CI/worker execution:
+
+```sh
+# Coordinator only: replace the origin and supply an identifier-only case file.
+export ARMADA_URL='https://YOUR-PRODUCTION-ARMADA-ORIGIN'
+read -rs ARMADA_TOKEN; export ARMADA_TOKEN; echo
+export ARMADA_SMOKE_CASES="$(cat /path/outside/repo/production-boat-case.json)"
+export ARMADA_SMOKE=create_real_compute
+bun scripts/post-deploy-smoke.ts --parity --only boat --production-boat
+unset ARMADA_TOKEN
+```
+
+Case shape (identifiers/placeholders only):
+
+```json
+[{"provider":"boat","harness":"codex","org":"<production-org-id>","golden":"<existing-production-boat-golden>","model":"<configured-model>","modelAccountId":"<coordinator-model-account-id>"}]
+```
+
+Only the sandbox ID returned by this invocation's own launch may be prompted,
+resumed, stopped or deleted. The probe never sweeps a staging journal, lists
+pre-existing sandboxes for cleanup, or replays an ambiguous launch. Cleanup runs
+after failure for a confirmed owned handle. Unknown allocation or failed delete
+is explicit coordinator reconciliation debt, never permission to stop unrelated
+resources. API traffic stays on the selected origin; token redirects are rejected.
+Review pass/fail/not-run and cleanup receipts. Unsupported/unimplemented rows
+are not verified support. Mocked tests are not actual production verification.
 
 ## Run
 

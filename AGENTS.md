@@ -42,7 +42,8 @@ staging acceptance (post-deploy, pinned and release gate) never tests Boat.
 Ignore Boat cases even if configured; print
 `boat: not part of the release gate`. Retain Modal probes and
 the owner's Docker-host parity probes; Boat omission is not a Boat pass.
-Boat production verification is coordinator-only/on-demand, never CI or workers.
+Boat production verification is coordinator-only/on-demand, never CI or workers:
+parity requires `--only boat --production-boat`, and touches only its own sandbox.
 No blocking PR or merge-queue check may exceed two minutes. The only slow gated
 path is a publishing release: release → exact-commit staging deployment/smoke →
 production. Staging smoke otherwise runs only after deploying a main commit,

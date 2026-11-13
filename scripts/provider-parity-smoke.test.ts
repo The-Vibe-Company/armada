@@ -444,3 +444,239 @@ test("parity --only boat is an owner-decision not-run report, never allocation o
   for (const cells of Object.values(report.features) as Record<string, unknown>[])
     expect(cells.boat).toEqual(boatNotRun);
 });
+
+const productionBoatCase = {
+  provider: "boat",
+  org: "production-org",
+  harness: "codex",
+  model: "selected-model",
+  modelAccountId: "selected-account",
+  golden: "selected-golden",
+};
+const productionBoatEnv = {
+  ARMADA_URL: "https://production.invalid",
+  ARMADA_TOKEN: "fake",
+  ARMADA_SMOKE: "create_real_compute",
+  ARMADA_SMOKE_CASES: JSON.stringify([productionBoatCase]),
+};
+const productionBoatArgs = ["--production-boat", "--only", "boat"];
+
+function productionBoatFixture(fault?: "foreign_provider" | "ambiguous_launch" | "delete_failed") {
+  const calls: { path: string; body: Record<string, unknown> }[] = [];
+  const lines: string[] = [];
+  let status = "ready";
+  let memory = "";
+  const turns: string[] = [];
+  let journalWrites = 0;
+  const io = {
+    now: () => 0,
+    sleep: async () => {},
+    out: (line: string) => lines.push(line),
+    recordSandbox: async () => {
+      journalWrites++;
+    },
+    fetch: async (url: string, init: RequestInit) => {
+      expect(new URL(url).origin).toBe(productionBoatEnv.ARMADA_URL);
+      expect(new Headers(init.headers).get("authorization")).toBe("Bearer fake");
+      expect(init.redirect).toBe("error");
+      const path = new URL(url).pathname.slice("/api/v1/".length);
+      const body = JSON.parse(String(init.body));
+      calls.push({ path, body });
+      if (body.id !== undefined) expect(body.id).toBe("new-production-boat");
+      switch (path) {
+        case "launch/options":
+          return Response.json({
+            providers: [
+              {
+                id: "boat",
+                harnesses: ["codex"],
+                capabilities: {
+                  launch: true,
+                  followupPrompts: true,
+                  status: true,
+                  logs: true,
+                  exec: true,
+                  stop: true,
+                  resume: true,
+                  delete: true,
+                },
+                unsupportedReasons: {},
+              },
+            ],
+          });
+        case "sandbox/launch":
+          expect(body.provider).toBe("boat");
+          if (fault === "ambiguous_launch") throw new Error("lost launch acknowledgement");
+          return Response.json({
+            sandbox: { id: "new-production-boat", provider: fault === "foreign_provider" ? "modal" : "boat" },
+          });
+        case "sandbox/send":
+          status = "ready";
+          if (String(body.prompt).includes("Remember this token"))
+            memory = String(body.prompt).match(/PARITY_[a-z0-9]+/)?.[0] ?? "";
+          turns.push(`turn-${turns.length + 1}`);
+          return Response.json({ promptId: turns.at(-1) });
+        case "logs/read":
+          return Response.json({
+            events: [
+              { kind: "prompt", promptId: turns.at(-1), status: "finished" },
+              { kind: "message", promptId: turns.at(-1), text: `SMOKE_OK ${memory}` },
+            ],
+          });
+        case "sandbox/detail":
+          return Response.json({
+            usage: {
+              turnCount: turns.length,
+              turns: turns.map((promptId) => ({
+                promptId,
+                model: "selected-model",
+                inputTokens: 10,
+                outputTokens: 2,
+                pricing: { unknown: null, usd: "0.1" },
+              })),
+              cost: { currency: "USD", unknown: null, unpricedTurns: 0, usd: `0.${turns.length}` },
+            },
+          });
+        case "sandbox/status":
+          return Response.json({ id: "new-production-boat", status });
+        case "sandbox/exec":
+          return Response.json({ exitCode: 0, timedOut: false, stdout: "PARITY_EXEC_OK" });
+        case "sandbox/stop":
+          status = "stopped";
+          return Response.json({ status });
+        case "sandbox/delete":
+          if (fault === "delete_failed") return Response.json({ error: { code: "forbidden" } }, { status: 403 });
+          status = "deleted";
+          return Response.json({ id: "new-production-boat", status });
+        default:
+          throw new Error(`Unexpected production route ${path}`);
+      }
+    },
+  };
+  return { io, calls, lines, journalWrites: () => journalWrites };
+}
+
+function runProductionBoat(env: NodeJS.ProcessEnv, io: ReturnType<typeof productionBoatFixture>["io"], args: string[]) {
+  return postDeploySmoke(env, ["--parity", ...args], io);
+}
+
+test("production Boat verification requires coordinator opt-in and rejects unsafe configuration before traffic", async () => {
+  const cases = [
+    { args: ["--only", "boat"] },
+    { args: ["--production-boat"] },
+    { args: ["--production-boat", "--only", "modal"] },
+    { args: ["--production-boat", "--only", "docker"] },
+    { args: [...productionBoatArgs, "--production-boat"] },
+    { args: [...productionBoatArgs, "--only", "boat"] },
+    { args: [...productionBoatArgs, "--unknown"] },
+    { args: [...productionBoatArgs, "--feature", "exec", "--feature", "exec"] },
+    { args: [...productionBoatArgs, "--accounts"] },
+    ...[
+      { ARMADA_URL: "https://armada-mcp-staging.up.railway.app" },
+      { ARMADA_URL: "http://production.invalid" },
+      { ARMADA_URL: "https://user@production.invalid" },
+      { ARMADA_URL: "https://production.invalid/api" },
+      { ARMADA_URL: "https://production.invalid/?key=value" },
+      { ARMADA_URL: "https://production.invalid/#fragment" },
+      { ARMADA_URL: "" },
+      { ARMADA_TOKEN: "" },
+      { ARMADA_SMOKE: "" },
+      { CI: "false" },
+      { GITHUB_ACTIONS: "false" },
+      { ARMADA_SMOKE_JOURNAL: "/tmp/preexisting-journal" },
+      { ARMADA_SMOKE_CASES: JSON.stringify([{ ...productionBoatCase, provider: "modal" }]) },
+      { ARMADA_SMOKE_CASES: JSON.stringify([{ ...productionBoatCase, provider: "docker" }]) },
+      { ARMADA_SMOKE_CASES: JSON.stringify([productionBoatCase, productionBoatCase]) },
+      { ARMADA_SMOKE_CASES: JSON.stringify([{ ...productionBoatCase, harness: "unknown" }]) },
+      { ARMADA_SMOKE_CASES: JSON.stringify([{ ...productionBoatCase, golden: "" }]) },
+    ].map((env) => ({ env })),
+  ];
+  for (const scenario of cases) {
+    const fake = productionBoatFixture();
+    expect(
+      await runProductionBoat(
+        { ...productionBoatEnv, ...("env" in scenario ? scenario.env : {}) },
+        fake.io,
+        "args" in scenario ? scenario.args : productionBoatArgs,
+      ),
+    ).toBe(false);
+    expect(fake.calls).toHaveLength(0);
+    expect(fake.journalWrites()).toBe(0);
+  }
+});
+
+for (const fault of [undefined, "foreign_provider", "ambiguous_launch", "delete_failed"] as const) {
+  test(`production Boat verifies only its new allocation and never stage journals: ${fault ?? "happy"}`, async () => {
+    const fake = productionBoatFixture(fault);
+    expect(
+      await runProductionBoat(
+        {
+          ...productionBoatEnv,
+          ARMADA_SMOKE_CASES: JSON.stringify([
+            { provider: "modal", harness: null },
+            productionBoatCase,
+            { provider: "docker" },
+          ]),
+        },
+        fake.io,
+        productionBoatArgs,
+      ),
+    ).toBe(fault === undefined);
+    expect(fake.lines.filter((line) => line === "boat: production verification (coordinator opt-in)")).toHaveLength(1);
+    expect(fake.lines).not.toContain(boatNotice);
+    expect(fake.calls.filter((call) => call.path === "sandbox/launch")).toHaveLength(1);
+    expect(fake.journalWrites()).toBe(0);
+    const report = JSON.parse(fake.lines.find((line) => line.startsWith('{"step":"provider_parity"')) ?? "{}");
+    if (fault === "foreign_provider" || fault === "ambiguous_launch") {
+      expect(fake.calls.map((call) => call.path)).toEqual(["launch/options", "sandbox/launch"]);
+      expect(report.features.launch.boat.status).toBe("fail");
+      expect(fake.lines.some((line) => line.includes('"step":"parity_cleanup"'))).toBe(false);
+    } else {
+      expect(fake.calls.filter((call) => call.path === "sandbox/stop")).toHaveLength(2);
+      expect(fake.calls.some((call) => call.path === "sandbox/delete")).toBe(true);
+      const cleanup = JSON.parse(fake.lines.find((line) => line.startsWith('{"step":"parity_cleanup"')) ?? "{}");
+      expect(cleanup).toMatchObject({ provider: "boat", id: "new-production-boat", deleted: fault === undefined });
+      expect(report.features.cleanup.boat.status).toBe(fault ? "fail" : "pass");
+      for (const step of [
+        "launch",
+        "send",
+        "status",
+        "logs",
+        "exec",
+        "stop",
+        "resume",
+        "resume-recall",
+        "usage",
+        "exact-cost",
+      ])
+        expect(report.features[step].boat.status).toBe("pass");
+      expect(report.features.mcp.boat).toEqual({ status: "not-run", reason: "probe_not_implemented" });
+      expect(report.features.launch.modal.reason).toBe("provider_filtered");
+      expect(report.features.launch.docker.reason).toBe("provider_filtered");
+    }
+  });
+}
+
+test("production Boat preserves capability discovery and feature-filtered probes", async () => {
+  const refused = productionBoatFixture();
+  expect(
+    await runProductionBoat(
+      {
+        ...productionBoatEnv,
+        ARMADA_SMOKE_CASES: JSON.stringify([{ ...productionBoatCase, harness: "claude" }]),
+      },
+      refused.io,
+      productionBoatArgs,
+    ),
+  ).toBe(false);
+  expect(refused.calls.map((call) => call.path)).toEqual(["launch/options"]);
+
+  const filtered = productionBoatFixture();
+  expect(await runProductionBoat(productionBoatEnv, filtered.io, [...productionBoatArgs, "--feature", "exec"])).toBe(
+    true,
+  );
+  expect(filtered.calls.map((call) => call.path)).not.toContain("sandbox/send");
+  expect(filtered.calls.map((call) => call.path)).toContain("sandbox/exec");
+  expect(filtered.calls.map((call) => call.path)).toContain("sandbox/delete");
+  expect(filtered.journalWrites()).toBe(0);
+});
