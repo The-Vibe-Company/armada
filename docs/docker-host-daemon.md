@@ -523,7 +523,7 @@ real-host run.
 The server image publishes Linux x64/arm64 host executables by SHA-256 alongside
 runtime artifacts. `/api/docker-host/install` serves a script pinned to those
 build digests and the configured public server URL. Deploy all replicas from this
-revision and apply `20261113140000_docker_host_version.sql` through the normal
+revision and apply `20261113150000_docker_host_version.sql` through the normal
 operator release process before using it. No deployment or remote migration was
 performed here.
 
