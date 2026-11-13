@@ -29,11 +29,13 @@ import {
   goldenResponse,
   isHarness,
   isModelConnectionTestResult,
+  launchGitHubResponse,
   MAX_SANDBOX_EXTENSION_TTL_SECONDS,
   parseMachineSize,
   parseMachineSizePolicy,
   providerRateLimitDetails,
   providerRateLimitMessage,
+  sandboxIdentity,
   VERSION,
 } from "@armada/core";
 import {
@@ -1850,7 +1852,7 @@ function launchJson(result: LaunchResult) {
     helper: result.helper,
     sandbox: {
       ...result.sandbox,
-      boatId: result.sandbox.provider === "boat" ? result.sandbox.providerSandboxId : null,
+      ...sandboxIdentity(result.sandbox),
     },
     golden: {
       ...result.golden,
@@ -1860,12 +1862,7 @@ function launchJson(result: LaunchResult) {
     conversationId: result.conversationId ?? null,
     ttlSeconds: result.ttlSeconds,
     expiresAt: result.expiresAt?.toISOString() ?? null,
-    github: {
-      status: result.github.status,
-      login: result.github.login ?? null,
-      tokenExpiresAt: result.github.tokenExpiresAt ?? null,
-      message: result.github.message ?? null,
-    },
+    github: launchGitHubResponse(result.github),
   };
 }
 

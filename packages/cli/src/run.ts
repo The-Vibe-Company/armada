@@ -14,6 +14,7 @@ import {
   isSandboxProvider,
   LaunchError,
   type LaunchResult,
+  launchResponse,
   MODEL_CATALOG,
   type Provider,
   ProviderError,
@@ -1074,7 +1075,9 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
       },
     ),
   );
-  io.out(flag(args, "--json") ? `${JSON.stringify(jsonLaunch(result), null, 2)}\n` : launchText(result, auth.now()));
+  io.out(
+    flag(args, "--json") ? `${JSON.stringify(launchResponse(result), null, 2)}\n` : launchText(result, auth.now()),
+  );
   if (
     size !== undefined &&
     (result.sandbox.machineSize?.requested !== size ||
@@ -1228,36 +1231,6 @@ function githubLine(result: LaunchResult, now: Date): string {
     return `GitHub: git and gh act as ${github.login} (${lifetime}; shared owner refresh may invalidate it earlier). ${repair}`;
   }
   return `GitHub: not set up. ${github.message ?? ""}`.trim();
-}
-
-function jsonLaunch(result: LaunchResult) {
-  const { sandbox } = result;
-  return {
-    id: sandbox.id,
-    provider: sandbox.provider,
-    providerSandboxId: sandbox.providerSandboxId,
-    boatId: sandbox.provider === "boat" ? sandbox.providerSandboxId : null,
-    golden: result.golden.name,
-    repositoryDir: sandbox.repositoryDir ?? null,
-    harness: sandbox.harness,
-    model: sandbox.model,
-    skills: sandbox.skills ?? [],
-    reasoningEffort: sandbox.reasoningEffort,
-    credentialId: sandbox.credentialId ?? null,
-    credentialVersion: sandbox.credentialVersion ?? null,
-    status: sandbox.status,
-    conversationIds: sandbox.conversationIds,
-    promptId: result.promptId ?? null,
-    ttlSeconds: result.ttlSeconds,
-    expiresAt: result.expiresAt ? new Date(result.expiresAt).toISOString() : null,
-    machineSize: sandbox.machineSize ?? null,
-    github: {
-      status: result.github.status,
-      login: result.github.login ?? null,
-      tokenExpiresAt: result.github.tokenExpiresAt ?? null,
-      message: result.github.message ?? null,
-    },
-  };
 }
 
 function line(row: GoldenRecord): string {

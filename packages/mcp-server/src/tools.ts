@@ -4,6 +4,7 @@ import {
   goldenForSettings,
   goldenResponse,
   idlePauseMessage,
+  launchResponse,
   MACHINE_SIZES,
   parseMachineSizePolicy,
   SANDBOX_PLACEMENT_PROVIDERS,
@@ -1089,30 +1090,9 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           context.launch ?? {},
         );
         return {
-          id: result.sandbox.id,
-          ...sandboxIds(result.sandbox),
+          ...launchResponse(result),
           helper: result.helper,
-          golden: result.golden.name,
           visibility: result.sandbox.visibility ?? result.golden.visibility,
-          harness: result.sandbox.harness,
-          skills: result.sandbox.skills ?? [],
-          repositoryDir: result.sandbox.repositoryDir ?? null,
-          model: result.sandbox.model,
-          reasoningEffort: result.sandbox.reasoningEffort,
-          credentialId: result.sandbox.credentialId ?? null,
-          credentialVersion: result.sandbox.credentialVersion ?? null,
-          machineSize: result.sandbox.machineSize ?? null,
-          status: result.sandbox.status,
-          conversationIds: result.sandbox.conversationIds,
-          promptId: result.promptId ?? null,
-          ttlSeconds: result.ttlSeconds,
-          expiresAt: result.expiresAt ? result.expiresAt.toISOString() : null,
-          github: {
-            status: result.github.status,
-            login: result.github.login ?? null,
-            tokenExpiresAt: result.github.tokenExpiresAt ?? null,
-            message: result.github.message ?? null,
-          },
         };
       },
     );
@@ -2055,15 +2035,6 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
   }
 
   return server;
-}
-
-/** A sandbox's ids, with the Boat field of earlier clients kept for Boat sandboxes only. */
-function sandboxIds(row: { provider: SandboxProviderId; providerSandboxId: string }) {
-  return {
-    provider: row.provider,
-    providerSandboxId: row.providerSandboxId,
-    boatId: row.provider === "boat" ? row.providerSandboxId : null,
-  };
 }
 
 const providerLimitsText = SANDBOX_PROVIDERS.map((provider) => {
