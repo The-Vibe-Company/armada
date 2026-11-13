@@ -559,3 +559,59 @@ test("replicas observe an already-stopping Modal checkpoint before either adopts
     await db.close();
   }
 });
+
+test("shared subscription admission and native turn repair never inspect an Armada runtime guest", async () => {
+  const { db, people } = await database();
+  try {
+    const actor: GoldenActor = { userId: people.owner, orgId: people.org, role: "member" };
+    const account = (
+      await db.query<{ id: string }>(
+        "insert into credentials(scope,owner_id,kind,value_enc) values('user',$1,'codex_auth',$2) returning id",
+        [people.owner, await encryptSecret(native(0), ENCRYPTION_KEY)],
+      )
+    ).rows[0]!;
+    const boat = fakeBoat();
+    const physical = await boat.provider.fork({ from: "runtime", noEnv: true, env: {}, labels: {}, ttlSeconds: 3600 });
+    const id = crypto.randomUUID();
+    await db.query(
+      `insert into sandboxes(id,org_id,owner_id,golden_id,harness,status,provider,provider_sandbox_id,boat_id,visibility,credential_id,credential_version,boat_runtime)
+       select $1,$2,$3,id,'codex','running','boat',$4,$4,'org',$5,1,true from goldens where org_id=$2 and name='shared'`,
+      [id, people.org, people.owner, physical.id, account.id],
+    );
+    const resolved: string[] = [];
+    const inspected: string[] = [];
+    const provider = {
+      ...boat.provider,
+      async get(...args: Parameters<typeof boat.provider.get>) {
+        inspected.push(args[0]);
+        return boat.provider.get(...args);
+      },
+    };
+    const unexpected = async (): Promise<never> => {
+      throw Error("native transport must not reach a runtime guest");
+    };
+    const migration = createSubscriptionMigration(
+      db,
+      async (_sql, sandboxId) => {
+        resolved.push(sandboxId);
+        return { provider, providerSandboxId: physical.id };
+      },
+      unexpected,
+      {
+        configuration() {
+          throw Error("unexpected native capability");
+        },
+        transferLegacy: unexpected,
+      },
+    );
+    await migration.prepareAccount(actor, account.id, 1);
+    await migration.prepareTurn(provider, physical.id, actor);
+    expect(resolved).toEqual([]);
+    expect(inspected).toEqual([]);
+    expect((await db.query<{ status: string }>("select status from sandboxes where id=$1", [id])).rows[0]?.status).toBe(
+      "running",
+    );
+  } finally {
+    await db.close();
+  }
+});

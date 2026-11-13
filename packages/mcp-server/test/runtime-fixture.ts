@@ -15,6 +15,7 @@ import { database, ENCRYPTION_KEY } from "./support.ts";
 /** Caller-supplied seeded rows stay caller-owned; journal/outbox/root cleanup always stays here. */
 export async function runtimeFixture(
   fixture?: Awaited<ReturnType<typeof database>>,
+  provider: "boat" | "modal" = "boat",
   harness: "codex" | "claude" = "codex",
 ) {
   const { db, people } = fixture ?? (await database());
@@ -35,12 +36,20 @@ export async function runtimeFixture(
       [people.org, harness === "claude" ? "claude_oauth" : "openai"],
     )
   ).rows[0]!;
-  const golden = (
+  let golden = (
     await db.query<{ id: string }>("select id from goldens where org_id=$1 and visibility='org'", [people.org])
   ).rows[0]!;
+  if (provider === "modal")
+    golden = (
+      await db.query<{ id: string }>(
+        `insert into goldens(org_id,owner_id,name,visibility,provider,provider_sandbox_id,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config)
+    values($1,$2,'modal-checkpoint','org','modal','master','image','workspace','main','app','{"repos":[],"init":[]}') returning id`,
+        [people.org, people.owner],
+      )
+    ).rows[0]!;
   const row = await createSqlSandboxStore(sql).insert({
     id: crypto.randomUUID(),
-    provider: "boat",
+    provider,
     providerSandboxId: "physical",
     goldenId: golden.id,
     orgId: people.org,
@@ -50,7 +59,7 @@ export async function runtimeFixture(
     visibility: "org",
     model: "gpt-5.4",
     reasoningEffort: "high",
-    boatRuntime: true,
+    ...(provider === "boat" ? { boatRuntime: true as const } : { runtimeTransport: "dialout" as const }),
     credentialId: account.id,
     credentialVersion: account.version,
   });

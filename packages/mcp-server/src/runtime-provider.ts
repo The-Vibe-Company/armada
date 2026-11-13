@@ -9,10 +9,10 @@ export function createRuntimeProvider(
   providerSandboxId: string,
   reads: Pick<Provider, "getPrompt" | "events">,
 ): Provider {
-  if (host.id !== "boat") throw Error("boat_runtime_host_required");
+  if (host.id !== "boat" && host.id !== "modal") throw Error("boat_runtime_host_required");
   const unsupported = async (): Promise<never> => {
     throw new ProviderError({
-      provider: "boat",
+      provider: host.id,
       code: "invalid_request",
       message: "This experimental runtime operation is not supported.",
       retryable: false,
@@ -21,7 +21,7 @@ export function createRuntimeProvider(
   const target = (id: string) => {
     if (id !== providerSandboxId)
       throw new ProviderError({
-        provider: "boat",
+        provider: host.id,
         code: "not_found",
         message: "No such runtime sandbox.",
         retryable: false,
@@ -45,8 +45,8 @@ export function createRuntimeProvider(
     },
   };
   return {
-    id: "boat",
-    harnesses: ["codex", "claude"],
+    id: host.id,
+    harnesses: host.id === "boat" ? ["codex", "claude"] : ["codex"],
     capabilities,
     ...(host.managementIdentity ? { managementIdentity: host.managementIdentity.bind(host) } : {}),
     ...(host.backendIdentity ? { backendIdentity: host.backendIdentity.bind(host) } : {}),

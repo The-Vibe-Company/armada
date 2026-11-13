@@ -41,6 +41,14 @@ test("budget guard rejects late, failed, missing and queued verdicts", () => {
         0,
       ],
       [[{ ...success, completed_at: new Date(start + 121_000).toISOString() }], 1],
+      // Relocated native contracts remain part of required admission latency.
+      [
+        [
+          success,
+          { ...success, name: "Native runtime contracts", completed_at: new Date(start + 121_000).toISOString() },
+        ],
+        1,
+      ],
       [[{ ...success, conclusion: "failure" }], 1],
       [[{ ...success, conclusion: null, status: "queued" }], 1],
       [[success, { name: "Lint, typecheck and test", conclusion: null, status: "in_progress" }], 1],

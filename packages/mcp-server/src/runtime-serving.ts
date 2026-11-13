@@ -1,6 +1,7 @@
 import {
   isFinalPromptStatus,
   type MemberRole,
+  type Provider,
   ProviderError,
   type ProviderTarget,
   type Sql,
@@ -18,7 +19,7 @@ import { createRuntimeProvider } from "./runtime-provider.ts";
 export function createRuntimeServing(sql: Sql, key: string) {
   const commands = createRuntimeCommands(createRuntimeEnrolments(sql, key), key);
   const history = createRuntimeHistory(sql, key);
-  return async (apiKey: string, target: ProviderTarget, actor: { userId: string }) => {
+  return async (apiKey: string | Provider, target: ProviderTarget, actor: { userId: string }) => {
     const member = (
       await sql.query<{ role: MemberRole }>(
         "select role::text as role from public.members where org_id=$1 and user_id=$2",
@@ -34,9 +35,11 @@ export function createRuntimeServing(sql: Sql, key: string) {
     const sandbox = await createSqlData(sql)(caller).sandboxes.get(target.id);
     if (
       !sandbox ||
-      !sandbox.boatRuntime ||
-      sandbox.provider !== "boat" ||
-      (sandbox.harness !== "codex" && sandbox.harness !== "claude") ||
+      (!sandbox.boatRuntime && sandbox.runtimeTransport !== "dialout") ||
+      !["boat", "modal"].includes(sandbox.provider) ||
+      (sandbox.harness !== "codex" && !(sandbox.provider === "boat" && sandbox.harness === "claude")) ||
+      sandbox.provider !== target.provider ||
+      (typeof apiKey !== "string" && apiKey.id !== sandbox.provider) ||
       sandbox.visibility !== target.visibility ||
       sandbox.sourceGoldenVisibility !== (target.sourceGoldenVisibility ?? target.visibility) ||
       !sandbox.model ||
@@ -51,38 +54,42 @@ export function createRuntimeServing(sql: Sql, key: string) {
       cwd: sandbox.repositoryDir ? `/home/user/${sandbox.repositoryDir}` : "/home/user",
       defaults: { model: sandbox.model, reasoningEffort: sandbox.reasoningEffort },
     });
-    return createRuntimeProvider(createBoatProvider({ apiKey }), sandbox.providerSandboxId, {
-      async getPrompt(request) {
-        if (!["failed", "stopped", "deleted"].includes(sandbox.status)) return agent.getPrompt(request);
-        const page = await history(caller, sandbox.id, { direction: "backward", limit: 1000 });
-        const last = page.events
-          .toReversed()
-          .find((event) => event.kind === "prompt" && event.promptId === request.promptId);
-        if (
-          (!last || last.kind !== "prompt") &&
-          sandbox.status === "failed" &&
-          sandbox.taskPromptId === request.promptId
-        )
-          return { promptId: request.promptId, status: "failed" as const, done: true };
-        if (!last || last.kind !== "prompt")
-          throw new ProviderError({
-            provider: "boat",
-            code: "not_found",
-            message: "No archived runtime prompt.",
-            retryable: false,
-          });
-        return {
-          promptId: request.promptId,
-          ...(last.conversationId ? { conversationId: last.conversationId } : {}),
-          status: isFinalPromptStatus(last.status)
-            ? last.status
-            : sandbox.status === "failed"
-              ? "failed"
-              : "interrupted",
-          done: true,
-        };
+    return createRuntimeProvider(
+      typeof apiKey === "string" ? createBoatProvider({ apiKey }) : apiKey,
+      sandbox.providerSandboxId,
+      {
+        async getPrompt(request) {
+          if (!["failed", "stopped", "deleted"].includes(sandbox.status)) return agent.getPrompt(request);
+          const page = await history(caller, sandbox.id, { direction: "backward", limit: 1000 });
+          const last = page.events
+            .toReversed()
+            .find((event) => event.kind === "prompt" && event.promptId === request.promptId);
+          if (
+            (!last || last.kind !== "prompt") &&
+            sandbox.status === "failed" &&
+            sandbox.taskPromptId === request.promptId
+          )
+            return { promptId: request.promptId, status: "failed" as const, done: true };
+          if (!last || last.kind !== "prompt")
+            throw new ProviderError({
+              provider: "boat",
+              code: "not_found",
+              message: "No archived runtime prompt.",
+              retryable: false,
+            });
+          return {
+            promptId: request.promptId,
+            ...(last.conversationId ? { conversationId: last.conversationId } : {}),
+            status: isFinalPromptStatus(last.status)
+              ? last.status
+              : sandbox.status === "failed"
+                ? "failed"
+                : "interrupted",
+            done: true,
+          };
+        },
+        events: ({ sandboxId: _physical, ...pagination }) => history(caller, sandbox.id, pagination),
       },
-      events: ({ sandboxId: _physical, ...pagination }) => history(caller, sandbox.id, pagination),
-    });
+    );
   };
 }

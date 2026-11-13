@@ -53,6 +53,10 @@ export interface ProcessBaseline {
 }
 
 export interface Machine {
+  /** Frozen host-only launch routing; enrolled runtime health belongs to the server. */
+  commonRuntime?: true;
+  /** One detached bootstrap attempt per physical incarnation; uncertainty cannot spawn twice. */
+  runtimeStartAttempted?: true;
   info: SandboxInfo;
   generation: number;
   /** Assigned only when reserving a NEW managed launch; legacy/unknown rows stay unknown. */

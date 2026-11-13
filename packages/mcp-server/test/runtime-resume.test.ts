@@ -15,7 +15,7 @@ import { ENCRYPTION_KEY } from "./support.ts";
 const sharedDatabase = rowOnlyDatabase();
 
 async function stopped(harness: "codex" | "claude" = "codex") {
-  const f = await runtimeFixture(await sharedDatabase(), harness);
+  const f = await runtimeFixture(await sharedDatabase(), "boat", harness);
   const cp = await createRuntimeCheckpoint(
     f.sql,
     ENCRYPTION_KEY,

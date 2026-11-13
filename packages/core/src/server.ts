@@ -64,6 +64,7 @@ export {
   type RoutineTaskState,
 } from "./routine-scheduler.ts";
 export { createRoutineService, type RoutineService } from "./routine-service.ts";
+export { runtimeBootstrapScript } from "./runtime-bootstrap.ts";
 export { sandboxActivity } from "./sandbox-activity.ts";
 export {
   createUsagePricingContext,

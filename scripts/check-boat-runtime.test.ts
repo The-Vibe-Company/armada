@@ -42,6 +42,7 @@ test.each([
   "mcp-no-result",
   "mcp-resume-no-tool",
   "mcp-github-resume",
+  "mcp-skills-resume",
   "skills",
   "skills-empty",
   "skills-status",
@@ -60,7 +61,7 @@ test.each([
   const claude = mode === "claude-resume";
   const usage = mode.startsWith("usage");
   const usageResume = usage && mode.includes("resume");
-  const skills = mode.startsWith("skills");
+  const skills = mode.startsWith("skills") || mode === "mcp-skills-resume";
   const skillResume = mode === "skills-resume";
   const combined = mode.startsWith("github-resume");
   const mcp = mode.startsWith("mcp") || mode === "old-mcp";
@@ -73,7 +74,7 @@ test.each([
     const preload = join(root, "api.ts");
     await writeFile(
       preload,
-      `let launches=0,stops=0,marker='',memory='',phase=1,now=0,checkpoints=0,resumes=0,githubConfigurations=0,mcpConfigurations=0,defaultReads=0,skillStatuses=0;
+      `let launches=0,stops=0,marker='',memory='',phase=1,now=0,checkpoints=0,resumes=0,githubConfigurations=0,mcpConfigurations=0,sends=0,defaultReads=0,skillStatuses=0;
 const receipts=["notes@2.0.0","catalog/other@1.0.0"].map(reference=>({reference,version:reference.split("@")[1],skillId:"11111111-1111-4111-8111-111111111111",checksum:"sha256:"+"a".repeat(64),origin:"https://skillpack.app/v1"}));
 const usagePrompts=()=>['prompt',...(phase>=2?['followup']:[]),...(phase>=3?['resumed']:[]),...(phase>=4?['github-resumed']:[])];
 const usageData=()=>({model:'gpt-6.1-sol',inputTokens:100,outputTokens:20,cachedTokens:10,cacheWriteTokens:${mode === "usage-unknown"}?null:0,reasoningTokens:null});
@@ -81,7 +82,7 @@ function projectedUsage(){const ids=usagePrompts(),raw=usageData(),inputs={input
 const quote={schemaVersion:1,basis:'estimated',credentialId:'account',credentialVersion:1,capturedAt:'2026-11-13T00:00:00Z',snapshot:{schemaVersion:1,provider:'openai',model:raw.model,source:'connection',revision:'1',connectionId:'account',unsupported:false,rates:{input:${mode === "usage-resume-repriced"}&&phase>=3?'200':'2',output:'5',cacheRead:'1',cacheWrite:null,reasoning:null}},inputs,usd:${mode === "usage-unknown"}?null:'0.00029',unknown:${mode === "usage-unknown"}?'tokens':null};
 return {turnCount:ids.length,computeSeconds:1,turns:ids.map(promptId=>({...raw,inputTokens:${mode === "usage-wrong-counters"}?101:100,promptId,pricing:${mode === "usage-no-admission"}?null:quote})),tokenTotals:{inputTokens:100*ids.length,outputTokens:20*ids.length,cachedTokens:10*ids.length,cacheWriteTokens:raw.cacheWriteTokens,reasoningTokens:null,incomplete:true},cost:{currency:'USD',usd:quote.usd===null?null:['0','0.00029','0.00058','0.00087','0.00116'][ids.length],basis:'estimated',unknown:quote.unknown,unpricedTurns:quote.usd===null?ids.length:0}};}
 Date.now=()=>now;Bun.sleep=async(ms)=>{now+=Number(ms);};
-process.on('exit',()=>{console.log('COUNTERS '+JSON.stringify({launches,stops}));console.log('CHECKPOINTS '+checkpoints);console.log('RESUMES '+resumes);console.log('GITHUB_CONFIGURATIONS '+githubConfigurations);console.log('MCP_CONFIGURATIONS '+mcpConfigurations);console.log('DEFAULT_READS '+defaultReads);console.log('SKILL_STATUSES '+skillStatuses);});
+process.on('exit',()=>{console.log('COUNTERS '+JSON.stringify({launches,stops}));console.log('CHECKPOINTS '+checkpoints);console.log('RESUMES '+resumes);console.log('GITHUB_CONFIGURATIONS '+githubConfigurations);console.log('MCP_CONFIGURATIONS '+mcpConfigurations);console.log('SENDS '+sends);console.log('DEFAULT_READS '+defaultReads);console.log('SKILL_STATUSES '+skillStatuses);});
 globalThis.fetch=async(url,options)=>{
  if(new Headers(options.headers).get('authorization')!=='Bearer '+process.env.ARMADA_TOKEN)throw Error('bad auth transport');
  const path=new URL(url).pathname,body=JSON.parse(options.body);
@@ -98,7 +99,7 @@ globalThis.fetch=async(url,options)=>{
   if(body.runtimeVersion!==1||body.boatRuntime!==true||body.harness!==${JSON.stringify(claude ? "claude" : "codex")})throw Error('missing explicit opt-in');
   if(${skills}&&(defaultReads!==3||Object.hasOwn(body,'skills')||Object.hasOwn(body,'skipSkillDefaults')))throw Error('defaults bypassed');
   marker=body.prompt.match(/ARMADA_RUNTIME_[a-f0-9]+/)[0];memory=body.prompt.match(/ARMADA_MEMORY_[a-f0-9]+/)?.[0]??'';return Response.json({sandbox:{id:'worker',goldenId:'${mode === "skills-golden" ? "wrong" : "golden"}',boatRuntime:true,...(${skills}?{skills:receipts}:{})},runtime:{kind:'armada',epoch:'1'},promptId:'prompt',conversationId:'conversation'});}
- if(path.endsWith('/sandbox/send')){if(body.id!=='worker'||body.conversation_id!=='conversation'||!body.request_id||body.prompt.includes(memory))throw Error('wrong continuation');if(${mode === "followup-lost"})throw Error('lost follow-up response');if(phase>=3){if(${combined || triple} && githubConfigurations!==2)throw Error('no new epoch GitHub setup');if(${mcp} && mcpConfigurations!==2)throw Error('no new epoch automatic MCP setup');phase=4;return Response.json({promptId:'github-resumed',conversationId:'conversation',requestId:body.request_id,runtime:{kind:'armada',epoch:'2'}});}phase=2;return Response.json({promptId:'followup',conversationId:'conversation',requestId:body.request_id,runtime:{kind:'armada',epoch:'1'}});}
+ if(path.endsWith('/sandbox/send')){sends++;if(body.id!=='worker'||body.conversation_id!=='conversation'||!body.request_id||body.prompt.includes(memory))throw Error('wrong continuation');if(${mode === "followup-lost"})throw Error('lost follow-up response');if(phase>=3){if(${combined || triple} && githubConfigurations!==2)throw Error('no new epoch GitHub setup');if(${mcp} && mcpConfigurations!==2)throw Error('no new epoch automatic MCP setup');phase=4;return Response.json({promptId:'github-resumed',conversationId:'conversation',requestId:body.request_id,runtime:{kind:'armada',epoch:'2'}});}phase=2;return Response.json({promptId:'followup',conversationId:'conversation',requestId:body.request_id,runtime:{kind:'armada',epoch:'1'}});}
  if(path.endsWith('/logs/read') && ${mode === "runtime-failed"})return Response.json({source:'armada-runtime',events:[],runtimeFailure:{status:'failed',reason:'Armada runtime process failed.'}});
  if(path.endsWith('/sandbox/resume-runtime-v1')){if(++resumes!==1||stops!==1||body.id!=='worker'||body.conversation_id!=='conversation'||!body.request_id||body.runtimeVersion!==1||body.prompt.includes(memory))throw Error('wrong resume or repeated activation');if(${mode === "resume-lost"})throw Error('lost resume');phase=3;if(${mcp})mcpConfigurations=2;return Response.json({id:'worker',requestId:body.request_id,resumed:true,runtime:{kind:'armada',epoch:'${mode === "bad-resume" ? "1" : "2"}'},sourceCheckpoint:{epoch:'1',watermark:4},promptId:'resumed',conversationId:'conversation'});}
  if(path.endsWith('/sandbox/checkpoint-runtime-v1')){checkpoints++;if(${mode === "checkpoint-lost"})throw Error('lost checkpoint response');return Response.json({id:'worker',requestId:body.request_id,runtime:{kind:'armada',epoch:phase>=3?'2':'1'},checkpoint:{state:'complete',watermark:phase===4?8:phase===3?6:4,acknowledgedSequence:${mode === "bad-checkpoint" ? 3 : 4}+(phase===4?4:phase===3?2:0)}});}
@@ -170,6 +171,7 @@ globalThis.fetch=async(url,options)=>{
         "mcp",
         "mcp-resume",
         "mcp-github-resume",
+        "mcp-skills-resume",
         "skills",
         "skills-resume",
         "usage",
@@ -196,6 +198,7 @@ globalThis.fetch=async(url,options)=>{
         "mcp",
         "mcp-resume",
         "mcp-github-resume",
+        "mcp-skills-resume",
         "skills",
         "skills-resume",
         "usage",
@@ -239,7 +242,7 @@ globalThis.fetch=async(url,options)=>{
       }
     }
     if (mcp) {
-      const ok = ["mcp", "mcp-resume", "mcp-github-resume"].includes(mode);
+      const ok = ["mcp", "mcp-resume", "mcp-github-resume", "mcp-skills-resume"].includes(mode);
       if (ok) expect(out).toContain('"mcp":"verified"');
       if (mcpResume) {
         expect(out).toContain("MCP_CONFIGURATIONS 2");
@@ -250,6 +253,13 @@ globalThis.fetch=async(url,options)=>{
       }
       if (triple) expect(out).toContain('"githubAfterResume":"verified"');
     }
+    if (["mcp-resume", "mcp-skills-resume"].includes(mode)) expect(out).toContain("SENDS 1");
+    if (mode === "mcp-skills-resume") {
+      expect(out).toContain('"skillsAfterResume":"verified"');
+      expect(out).toContain("DEFAULT_READS 3");
+      expect(out).toContain("SKILL_STATUSES 4");
+    }
+    if (triple) expect(out).toContain("SENDS 2");
     if (usage) {
       if (["usage", "usage-resume", "usage-unknown"].includes(mode)) expect(out).toContain('"usage":"verified"');
       if (mode === "usage-resume") {

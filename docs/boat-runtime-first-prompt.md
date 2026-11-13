@@ -251,6 +251,40 @@ activation/two prompts, not resume parity. Flags select acceptance checks, not
 product behavior switches. Offline SDK/native evidence is not real staging
 model/MCP acceptance. Current deployed parity remains coordinator-owned.
 
+## Single skills + MCP acceptance check
+
+Remote HTTP/SSE MCP already uses the normal runtime launch/turn flow (#1407),
+and default skills installation is merged (#1417). To accept these together,
+use the staging inputs above and the same existing read-only MCP tool inputs:
+
+```sh
+ARMADA_RUNTIME_SMOKE=one_real_boat_launch \
+  bun scripts/check-boat-runtime.ts --skills --mcp --resume
+```
+
+Budget: **one allocation + one same-VM resume activation (two host starts),
+THREE prompts, TWO stops**, no retry. First prompt calls MCP; ordinary follow-up
+calls MCP and recalls memory; first resumed prompt calls MCP and recalls memory
+in epoch+1. No extra MCP-only post-resume prompt is needed. Adding `--github`
+retains its existing fourth prompt, because explicit GitHub refresh must happen
+before that check; the three-prompt mode does not claim GitHub acceptance.
+
+Before allocation, skills are discovered through the shipped golden/org/personal
+`skills/defaults/get` API using the existing post-deploy-smoke oracle. Empty
+effective defaults stop plainly before allocation. Launch omits explicit skills
+and the skip-defaults flag. Both launch receipts and persisted `status.skills`
+must match exactly the effective pins, including version/ID/checksum/origin;
+receipts are checked after stop and resume. No skill references, file substrings,
+new credentials or manual artifact publication are required.
+
+Require `skillsAfterResume:verified`, `mcpAfterResume:verified`,
+`resume:verified`, archived `source:armada-runtime`, successful MCP server/tool/
+exact-argument/result evidence on all three prompts and stopped readback,
+matching receipts, remembered token and epoch+1. Neither configuration ACK nor
+assistant assertion is a tool-call pass. Local pinned stdio remains unsupported;
+its production use needs owner inventory, not speculative porting or deletion.
+This procedure is not evidence of a staging pass or permission to flip defaults.
+
 ## Cutover boundary
 
 The [owner parity table](https://github.com/The-Vibe-Company/armada/issues/1161#issuecomment-6848248708)
@@ -271,7 +305,7 @@ ARMADA_RUNTIME_HARNESS=claude ARMADA_RUNTIME_SMOKE=one_real_boat_launch \
   bun scripts/check-boat-runtime.ts --usage --resume
 ```
 
-Prerequisites: apply the new `20261113114000_boat_runtime_claude.sql` migration
+Prerequisites: apply the new `20261113123000_boat_runtime_claude.sql` migration
 through the operator migration process and deploy matching server/runtime artifacts.
 No manual artifact publication. Workers neither apply remote migrations nor deploy.
 One allocation, one retained-VM activation, three prompts, two stops; no allocation

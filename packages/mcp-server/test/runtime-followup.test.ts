@@ -11,7 +11,7 @@ describe.each(["codex", "claude"] as const)("shared runtime send (%s)", (harness
   // Runner turn are setup, not send/replay behavior. Keep them out of the test's
   // 5s budget; the real SQL/Runner/epoch assertions below remain unchanged.
   beforeAll(async () => {
-    f = await fixture(undefined, harness);
+    f = await fixture(undefined, "boat", harness);
   }, 20_000);
   afterAll(async () => {
     await f?.close();

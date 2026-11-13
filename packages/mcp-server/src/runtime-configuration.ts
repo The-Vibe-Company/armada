@@ -48,9 +48,12 @@ export interface RuntimeConfigurationInput {
 /** Project an ALREADY authorized launch/account pin. Not an account resolver or public DTO.
  * The caller holds launch admission and must send configuration only via encrypted enrolment.
  */
-export async function runtimeConfiguration(input: RuntimeConfigurationInput, expectedProvider: "boat" | "docker") {
+export async function runtimeConfiguration(
+  input: RuntimeConfigurationInput,
+  expectedProvider: "boat" | "docker" | "modal",
+) {
   try {
-    if (expectedProvider !== "boat" && expectedProvider !== "docker") throw Error();
+    if (expectedProvider !== "boat" && expectedProvider !== "docker" && expectedProvider !== "modal") throw Error();
     const actor = { ...input.actor };
     const sandbox = { ...input.sandbox };
     const credentials = { ...input.credentials, env: { ...input.credentials.env } };

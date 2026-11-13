@@ -40,6 +40,7 @@ export interface ComposedModalOptions
   extends Pick<
     ModalProviderOptions,
     | "scope"
+    | "commonRuntime"
     | "appName"
     | "client"
     | "tokenId"

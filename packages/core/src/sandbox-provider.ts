@@ -121,6 +121,7 @@ export interface ProviderTarget {
   /** Persisted sandbox hints; goldens never opt in. Runtime routing fails closed without id. */
   readonly id?: string;
   readonly boatRuntime?: true;
+  readonly runtimeTransport?: "dialout";
   provider: SandboxProviderId;
   orgId: string;
   visibility: Visibility;

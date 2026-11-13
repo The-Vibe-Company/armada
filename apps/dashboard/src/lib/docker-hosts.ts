@@ -1,3 +1,4 @@
+import type { DockerHostListResponse, DockerHostRegistrationResponse, DockerHostSummary } from "@armada/core";
 import { relativeAge } from "./relative-time.ts";
 import type { ResourceState } from "./resource-list.ts";
 
@@ -5,9 +6,10 @@ import type { ResourceState } from "./resource-list.ts";
  * The Hosts page (#1380): an organization's owned Docker hosts. Pure logic only; the server calls live in
  * `lib/data/docker-hosts.ts` and `app/actions/docker-hosts.ts`.
  *
- * `register-token` and `revoke` are the server's routes on `main` (#1165). `list` is the shape proposed on #1380
- * while the server lane has not published one: until the server mounts it, it answers 404 and the dashboard reads
- * that as "Docker is not enabled here", so the Hosts entry and page stay hidden.
+ * The routes and their DTOs are the server's (#1165, `@armada/core`). Without `ARMADA_DOCKER_HOSTS=1` the server
+ * does not mount them: the list answers 404, which the dashboard reads as "Docker is not enabled here", so the Hosts
+ * entry and page stay hidden. Answers are still parsed strictly: the types say what the server promises, not what
+ * arrived.
  */
 export const DOCKER_HOST_ROUTES = {
   list: "docker/hosts/list",
@@ -20,20 +22,11 @@ export const HOSTS_PATH = "/hosts";
 /** Where the host keeps its private registration and credential, in the command the dialog shows. */
 export const HOST_STATE_DIR = '"$HOME/.local/state/armada-docker-host"';
 
-export type DockerHostState = "pending" | "online" | "offline" | "revoked";
-
-export type DockerHost = {
-  id: string;
-  name: string | null;
-  state: DockerHostState;
-  createdAt: string;
-  lastSeenAt: string | null;
-  revokedAt: string | null;
-  sandboxes: number;
-};
+export type DockerHost = DockerHostSummary;
+export type DockerHostState = DockerHost["state"];
 
 /** `skipped`: hosts the server listed that do not match the contract, left out of the list (#1398). */
-export type DockerHostList = { placement: boolean; hosts: DockerHost[]; skipped: number };
+export type DockerHostList = DockerHostListResponse & { skipped: number };
 
 const STATES: readonly DockerHostState[] = ["pending", "online", "offline", "revoked"];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -85,7 +78,7 @@ export function parseDockerHostList(value: unknown): DockerHostList | null {
 }
 
 /** A one-use registration ticket as `register-token` returns it. */
-export type HostRegistration = { hostId: string; registrationToken: string };
+export type HostRegistration = DockerHostRegistrationResponse;
 
 export function parseHostRegistration(value: unknown): HostRegistration | null {
   if (!isRecord(value)) return null;

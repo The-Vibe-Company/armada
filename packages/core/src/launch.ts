@@ -162,6 +162,7 @@ export interface LaunchResult {
 export interface LaunchOptions extends GoldenLimits {
   /** Trusted per-launch opt-in, never public request configuration. Codex
    * snapshot launch: no native setup/refresh or runner fallback. */
+  runtime?: LaunchOptions["boatRuntime"];
   boatRuntime?: {
     start(input: {
       host: Provider;
@@ -227,17 +228,17 @@ export async function launchSandbox(
   if (request.skipSkillDefaults !== undefined && typeof request.skipSkillDefaults !== "boolean")
     throw new LaunchError("invalid_request", "skipSkillDefaults must be a boolean.");
   const harness = checkHarness(provider, request.harness);
-  const runtime = options.boatRuntime;
+  const runtime = options.runtime ?? options.boatRuntime;
   if (
     runtime &&
-    (provider.id !== "boat" ||
-      (harness !== "codex" && harness !== "claude") ||
+    (!["boat", "modal"].includes(provider.id) ||
+      (harness !== "codex" && !(provider.id === "boat" && harness === "claude")) ||
       options.privateParent ||
       options.privateVisibility)
   )
     throw new LaunchError(
       "invalid_request",
-      "The experimental runtime supports ordinary Boat Codex or Claude workers only.",
+      "The experimental runtime supports ordinary Boat Codex/Claude or Modal Codex workers only.",
     );
   const prompt = checkPrompt(request.prompt);
   const choice = checkModel(provider, harness, request);
@@ -399,7 +400,11 @@ export async function launchSandbox(
     let record: SandboxRecord;
     try {
       record = await stores.sandboxes.insert({
-        ...(runtime ? { boatRuntime: true as const } : {}),
+        ...(runtime
+          ? provider.id === "boat"
+            ? { boatRuntime: true as const }
+            : { runtimeTransport: "dialout" as const }
+          : {}),
         ...credentials.binding,
         id,
         provider: golden.provider,
@@ -455,7 +460,7 @@ export async function launchSandbox(
     };
     let startedRuntime: ReturnType<NonNullable<LaunchOptions["boatRuntime"]>["start"]> | undefined;
     const start = async (signal: AbortSignal) => {
-      if ((record.boatRuntime === true) !== Boolean(runtime))
+      if ((record.boatRuntime === true || record.runtimeTransport === "dialout") !== Boolean(runtime))
         throw new LaunchError("start_failed", "The sandbox runtime selection was not persisted; no agent was started.");
       if ((record.visibility ?? golden.visibility) !== visibility) {
         await provider.delete({ sandboxId: forked.id });
