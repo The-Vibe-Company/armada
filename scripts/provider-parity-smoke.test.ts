@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { postDeploySmoke } from "./post-deploy-smoke.ts";
+import { smokeReceipts } from "./smoke-sandbox-cleanup.ts";
 
 // The CLI boundary owns parity reporting: independent fake HTTP receipts catch
 // route/receipt regressions without provider compute, credentials, or sleeps.
@@ -17,6 +18,11 @@ for (const mode of [
   "resume_quota",
   "server_failure",
   "delete_retry",
+  "journal_failure",
+  "stop_response_lost",
+  "terminal_failed",
+  "already_deleted",
+  "wrong_delete_id",
 ] as const) {
   test(`parity normal lifecycle and honest reporting: ${mode}`, async () => {
     const lines: string[] = [];
@@ -54,6 +60,11 @@ for (const mode of [
         now: () => 0,
         sleep: async () => {},
         out: (line) => lines.push(line),
+        recordSandbox: async (org, _id, requestKey) => {
+          // Exercise the real journal validator, not a permissive callback.
+          smokeReceipts([{ org, id: "12345678-1234-1234-1234-123456789abc", requestKey }]);
+          if (mode === "journal_failure") throw new Error("journal_unwritable");
+        },
         fetch: async (url, init) => {
           const path = url.split("/api/v1/")[1]!;
           const body = JSON.parse(String(init.body));
@@ -122,8 +133,9 @@ for (const mode of [
               result = { id: p, status: states.get(p) };
               break;
             case "sandbox/stop":
-              states.set(p, "stopped");
+              states.set(p, mode === "already_deleted" ? "deleted" : mode === "terminal_failed" ? "failed" : "stopped");
               if (mode === "recall_loss") prompts.delete(p);
+              if (mode === "stop_response_lost") throw new Error("stop_response_lost");
               result = { status: "stopped" };
               break;
             case "sandbox/resume":
@@ -144,8 +156,11 @@ for (const mode of [
                   { error: { code: "conflict", message: "Provider deletion is pending." } },
                   { status: 409 },
                 );
-              expect(states.get(p)).toBe("stopped");
-              result = { status: mode === "delete_failure" && p === "docker" ? "pending" : "deleted" };
+              expect(["stopped", "failed"]).toContain(states.get(p) ?? "missing");
+              result = {
+                id: mode === "wrong_delete_id" ? "another-sandbox" : p,
+                status: mode === "delete_failure" && p === "docker" ? "pending" : "deleted",
+              };
               break;
             default:
               throw new Error(`Unexpected route ${path}`);
@@ -173,6 +188,34 @@ for (const mode of [
         expect(calls).not.toContain("docker:sandbox/send");
         expect(calls).toContain("docker:sandbox/delete");
       }
+      return;
+    }
+    if (
+      mode === "journal_failure" ||
+      mode === "stop_response_lost" ||
+      mode === "resume_failure" ||
+      mode === "terminal_failed" ||
+      mode === "already_deleted"
+    ) {
+      expect(passed).toBe(false);
+      for (const provider of providers) {
+        expect(report.features.cleanup[provider].status).toBe("pass");
+        if (mode === "already_deleted") expect(calls).not.toContain(`${provider}:sandbox/delete`);
+        else expect(calls).toContain(`${provider}:sandbox/delete`);
+      }
+      if (mode === "stop_response_lost") {
+        // Unknown stop outcome is reconciled with status, not replayed.
+        for (const provider of providers)
+          expect(calls.filter((call) => call === `${provider}:sandbox/stop`)).toHaveLength(1);
+      }
+      return;
+    }
+    if (mode === "wrong_delete_id") {
+      expect(passed).toBe(false);
+      expect(report.features.cleanup.docker.status).toBe("fail");
+      expect(
+        lines.filter((line) => line.includes('"step":"parity_cleanup"')).every((line) => !JSON.parse(line).deleted),
+      ).toBe(true);
       return;
     }
     expect(report.starts).toBe(mode === "offline" ? 2 : 3);
@@ -209,8 +252,7 @@ for (const mode of [
     } else if (mode === "unsupported") {
       expect(report.features.resume.docker).toEqual({ status: "unsupported", reason: "Server resume disabled." });
       expect(calls).not.toContain("docker:sandbox/resume");
-    } else if (mode === "resume_failure") expect(report.features.resume.docker.status).toBe("fail");
-    else if (mode === "recall_loss") expect(report.features["resume-recall"].modal.status).toBe("fail");
+    } else if (mode === "recall_loss") expect(report.features["resume-recall"].modal.status).toBe("fail");
     else if (mode === "delete_failure") expect(report.features.delete.docker.status).toBe("fail");
     else expect(report.features.resume.docker.status).toBe("pass");
   });

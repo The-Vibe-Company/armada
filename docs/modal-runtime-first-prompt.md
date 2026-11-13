@@ -6,7 +6,7 @@ allocation, proves a model answer and same-conversation recall through the commo
 runtime archive, performs an acknowledged checkpoint, and requests compute stop
 once. The `--resume` extension activates that same logical sandbox once from its
 retained filesystem image, proves a new-epoch same-conversation recall, then
-checkpoints and stops it again. Optional `--github`, `--mcp` and `--skills` add the scoped
+checkpoints and stops it again. Optional `--github`, `--mcp`, `--skills` and `--variables` add the scoped
 checks below; they do not claim full harness/setup parity. The golden
 checkout remains as-is (no pull/init).
 The existing Modal tunnel path remains the default.
@@ -172,7 +172,7 @@ launch, follow-up and resumed turns.
 ### Single combined coordinator check
 
 ```sh
-ARMADA_RUNTIME_SMOKE=one_real_modal_launch bun scripts/check-modal-runtime.ts --skills --mcp --github --resume
+ARMADA_RUNTIME_SMOKE=one_real_modal_launch bun scripts/check-modal-runtime.ts --variables --skills --mcp --github --resume
 ```
 
 ONE logical allocation, ONE resume activation, FOUR prompts and TWO stops remain.
@@ -226,3 +226,59 @@ and current-epoch proofs are unchanged. It proves the public/private defaults
 actually configured by the existing policy; it does not claim coverage of a kind
 absent from that policy, nor does it ask the coordinator to supply a skill pin.
 Workers do not run the billable staging check.
+
+
+## Frozen readable template variables (`--variables`)
+
+The combined command above can also prove the template's readable environment on
+every tested prompt, before and after the retained stop/resume. Supply one new
+**non-secret selector**, `ARMADA_RUNTIME_TEMPLATE_ID`, identifying an **existing
+published Modal Codex template** in the selected golden's organization. Do not
+create/publish a template or change variables/defaults for this check. No raw
+values, variable references, secret bindings or new credentials are requested.
+
+Before allocation the server must advertise `variablesVersion:1`. The check
+resolves the authorized Modal golden once, reads the existing `templates/get`
+revision and requires:
+
+- The selected golden, Modal provider and Codex harness.
+- At least one distinct, valid uppercase readable binding; no application secrets.
+- A pinned model account matching `ARMADA_RUNTIME_CREDENTIAL_ID`.
+- Empty explicit template skills (existing effective defaults are checked with
+  `--skills`), and connections exactly matching the selected MCP connection or
+  empty when `--mcp` is absent.
+- If `ARMADA_RUNTIME_MODEL` is supplied, it matches the published model.
+
+It pins the returned immutable revision and calls the **existing** experimental
+Modal route with standard template `id`, `revision`, `requestKey`, organization
+and prompt/TTL fields. It omits direct-golden/account/model/connection overrides.
+This reuses the standard template source; it is not another runtime or a new API
+route. The non-secret request key is printed before dispatch for reconciliation.
+The standard template receipt must be succeeded and match template/revision,
+request key, golden, account and definition identity. Its frozen readable values
+must have exactly the published keys and pass `validateReadableVariables`.
+The script locally normalizes this ordinary template receipt for its existing
+checks; it does not change the server's template response shape or infer an epoch
+from mutable metadata.
+
+For each tested prompt, the model must run one fixed `node -e` program that reads
+only the sorted known readable keys, builds their JSON map, and writes SHA256.
+Unset keys become JSON `null`, distinct from configured empty strings. The local
+expected digest is computed **only from the frozen launch manifest**, never from
+mutable variable APIs. **Neither values nor expected digest appear in prompts or
+console output.** Only non-secret key metadata appears in the command; the actual
+tool's opaque digest is archived as the evidence under test.
+
+A successful archived `commandExecution` must identify that exact program (or an
+exact, correctly quoted Bash/sh login-shell wrapper) and return the expected
+digest. Assistant text, another prompt's result, missing environment, a wrong
+hash, an echo-masking command or pre-resume tool replay cannot pass. Existing
+GitHub command matching remains equally strict. The ordinary nonce answer,
+MCP tool provenance, GitHub acquisition, skill receipts, checkpoint and stop
+proofs are still independently required when their flags are enabled.
+
+The full combined command remains ONE logical allocation, ONE resume activation,
+FOUR prompts and TWO stops. Final receipts add `variables:"verified"` and
+`variablesAfterResume:"verified"` without printing values or digests. This proves
+frozen readable delivery and continuity, **not application-secret parity**.
+Workers do not run this billable check or mutate staging configuration.
