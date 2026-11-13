@@ -1,4 +1,11 @@
-import { type AgentEvent, type MemberRole, PROMPT_STATUSES, reportedTurnUsage, VaultError } from "@armada/core";
+import {
+  type AgentEvent,
+  type MemberRole,
+  PROMPT_STATUSES,
+  reportedTurnUsage,
+  type Sql,
+  VaultError,
+} from "@armada/core";
 import { decryptSecret, encryptSecret } from "@armada/core/server";
 import { createSqlData } from "./data.ts";
 import type { Route } from "./http.ts";
@@ -205,13 +212,20 @@ export function createRuntimeEvents(
           )
         ).rows[0];
         if (!owner) throw new RuntimeEnrolmentDenied();
-        const data = createSqlData(tx)({
+        // Stay inside the epoch/archive transaction. A query-only tx would take
+        // recordUsage's legacy unpriced fallback and silently lose admission.
+        const local: Sql = {
+          ...tx,
+          query: tx.query.bind(tx),
+          transaction: async (work) => work(tx),
+        };
+        const data = createSqlData(local)({
           userId: owner.owner_id,
           orgs: [{ orgId: owner.org_id, role: owner.role }],
           via: "service",
         });
         if (!data.sandboxes.recordUsage) throw Error("runtime_usage_projection_unavailable");
-        await data.sandboxes.recordUsage(scope.sandboxId, usage);
+        await data.sandboxes.recordUsage(scope.sandboxId, usage, { observations: usage.turns });
       }
       if (initialAck === 0 && fresh.length) first = scope;
       return { acknowledgedSequence: ack };

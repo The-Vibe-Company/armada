@@ -1,6 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
 import type { AgentEvent, Sql } from "@armada/core";
-import { decryptSecret } from "@armada/core/server";
+import { createUsagePricingContext, decryptSecret } from "@armada/core/server";
+import { createSqlData } from "../src/data.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
@@ -467,4 +468,93 @@ test("runtime archive rechecks membership after decryption before returning hist
   } finally {
     await f.close();
   }
+});
+
+test("runtime archive projects coherent observed costs from the frozen admission across replay and resume, never guest money or missing tokens", async () => {
+  const f = await fixture();
+  const caller = {
+    userId: f.people.owner,
+    via: "service" as const,
+    orgs: [{ orgId: f.people.org, role: "member" as const }],
+  };
+  const store = createSqlData(f.sql)(caller).sandboxes;
+  const read = async () => {
+    const usage = (await store.get(f.id))?.usage;
+    if (!usage) throw Error("Missing usage fixture");
+    // The live compute clock is not part of the immutable token/cost snapshot.
+    return { cost: usage.cost, turns: usage.turns, tokenTotals: usage.tokenTotals, turnCount: usage.turnCount };
+  };
+  const book = createUsagePricingContext({
+    harness: "codex",
+    credentialKind: "openai",
+    customEndpoint: true,
+    credentialId: crypto.randomUUID(),
+    credentialVersion: 1,
+    modelPrices: { "gpt-6.1-sol": { input: "2", output: "5", cacheRead: "1", cacheWrite: null, reasoning: null } },
+  });
+  await store.recordUsagePricingContext!(f.id, book);
+  const first = {
+    sequence: 1,
+    event: {
+      ...f.usage("priced-first"),
+      data: { ...(f.usage("template").data as object), cacheWriteTokens: 0, usd: "999", pricing: { usd: "999" } },
+    },
+  };
+  const active = await f.enrol();
+  expect((await f.publish(active, [first])).status).toBe(200);
+  const initial = await read();
+  expect(initial?.cost).toMatchObject({ usd: "0.00029", basis: "estimated", unknown: null, unpricedTurns: 0 });
+  expect(initial?.turns[0]?.pricing).toMatchObject({
+    snapshot: book.prices["gpt-6.1-sol"],
+    inputs: { inputTokens: 100, outputTokens: 20, cachedTokens: 10, cacheWriteTokens: 0 },
+  });
+  // A catalog/account edit does not rewrite the pre-work session admission.
+  await store.recordUsagePricingContext!(f.id, {
+    ...book,
+    prices: {
+      "gpt-6.1-sol": { ...book.prices["gpt-6.1-sol"]!, rates: { ...book.prices["gpt-6.1-sol"]!.rates, input: "200" } },
+    },
+  });
+  expect((await f.publish(active, [first])).status).toBe(200);
+  expect(await read()).toEqual(initial);
+  const resumed = await f.enrol();
+  const second = {
+    sequence: 2,
+    event: {
+      ...f.usage("priced-resumed"),
+      promptId: "prompt-b",
+      data: {
+        model: "gpt-6.1-sol",
+        inputTokens: 50,
+        outputTokens: 4,
+        cachedTokens: 0,
+        cacheWriteTokens: 0,
+        reasoningTokens: null,
+      },
+    },
+  };
+  expect((await f.publish(active, [second])).status).toBe(401);
+  expect((await f.publish(resumed, [first, second])).status).toBe(200);
+  const two = await read();
+  expect(two?.turnCount).toBe(2);
+  expect(two?.cost).toMatchObject({ usd: "0.00041", unknown: null, unpricedTurns: 0 });
+  expect(two?.tokenTotals).toMatchObject({ inputTokens: 150, outputTokens: 24 });
+  expect((await f.publish(resumed, [second])).status).toBe(200);
+  expect(await read()).toEqual(two);
+  const missing = { sequence: 3, event: { ...f.usage("missing-counter"), promptId: "prompt-c" } };
+  expect((await f.publish(resumed, [missing])).status).toBe(200);
+  const incomplete = await read();
+  expect(incomplete?.turns.find((r) => r.promptId === "prompt-c")?.pricing).toMatchObject({
+    unknown: "tokens",
+    usd: null,
+    snapshot: book.prices["gpt-6.1-sol"],
+  });
+  expect(incomplete?.turns.find((r) => r.promptId === "prompt-c")?.cacheWriteTokens).toBeNull();
+  expect(incomplete?.tokenTotals).toMatchObject({
+    inputTokens: 250,
+    outputTokens: 44,
+    cacheWriteTokens: 0,
+    incomplete: true,
+  });
+  expect(incomplete?.cost).toMatchObject({ usd: null, unknown: "tokens", unpricedTurns: 1 });
 });
