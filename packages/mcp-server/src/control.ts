@@ -768,7 +768,11 @@ async function dispatch(
   if (route === "launch/options")
     return {
       ...launchOptions,
-      boatRuntime: { version: 1, enabled: Boolean(options.boatRuntimeLaunch && options.runtimeHostFor) },
+      boatRuntime: {
+        version: 1,
+        diagnosticsVersion: 1,
+        enabled: Boolean(options.boatRuntimeLaunch && options.runtimeHostFor),
+      },
     };
   if (route === "creds/accounts/usage") {
     if (!options.modelUsage || !options.logs) throw new VaultError("unavailable", "Model usage is not configured.");
@@ -1407,6 +1411,7 @@ async function readLogs(
   hasMore: boolean;
   settled: boolean;
   source?: "armada-runtime";
+  runtimeFailure?: { status: "failed"; reason: string };
   olderCursor?: string;
 }> {
   if (!options.logs) throw new VaultError("unavailable", "Sandbox logs are not configured on the server.");
@@ -1427,6 +1432,7 @@ async function readLogs(
   let cursor = optional(body, "cursor");
   let hasMore = false;
   let source: "armada-runtime" | undefined;
+  let runtimeFailure: { status: "failed"; reason: string } | undefined;
   const events: Awaited<ReturnType<Provider["events"]>>["events"] = [];
   for (let pageNumber = 0; pageNumber < (all ? maxPages : 1); pageNumber += 1) {
     const page = await measured(options, "events", () =>
@@ -1441,6 +1447,7 @@ async function readLogs(
       }),
     );
     if (page.source) source = page.source;
+    runtimeFailure = page.runtimeFailure ?? runtimeFailure;
     olderCursor = page.olderCursor;
     events.push(...page.events);
     hasMore = page.hasMore;
@@ -1453,23 +1460,28 @@ async function readLogs(
   }
   // Ordinary history reads need only the authorized event stream. Live compute is
   // consulted solely to decide whether a follow request should keep waiting.
-  const info = follow ? await measured(options, "state", () => target.provider.get(target.providerSandboxId)) : null;
+  const info =
+    follow && !runtimeFailure
+      ? await measured(options, "state", () => target.provider.get(target.providerSandboxId))
+      : null;
   const latest = latestPrompt(events);
   // A live sandbox with no turn is idle, so following has nothing to wait for.
   const prompt =
-    follow && latest && info?.state !== "stopped" && info?.state !== "failed"
+    follow && !runtimeFailure && latest && info?.state !== "stopped" && info?.state !== "failed"
       ? await measured(options, "prompt", () =>
           target.provider.getPrompt({ sandboxId: target.providerSandboxId, promptId: latest }),
         )
       : null;
   return {
     ...(source ? { source } : {}),
+    ...(runtimeFailure ? { runtimeFailure } : {}),
     ...(olderCursor ? { olderCursor } : {}),
     events: dedupe(events).filter((event) => !isPrivateModelEvent(event)),
     cursor: cursor ?? null,
     hasMore,
     settled:
       !follow ||
+      runtimeFailure !== undefined ||
       info?.state === "stopped" ||
       info?.state === "failed" ||
       (latest === null ? info?.state !== "running" && info?.state !== "starting" : prompt?.done === true),

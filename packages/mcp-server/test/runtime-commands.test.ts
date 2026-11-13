@@ -692,7 +692,10 @@ test.each(["selection", "pre-abort", "timeout", "bootstrap", "replacement", "lif
         provider: "boat",
         code: scenario === "selection" ? "invalid_request" : "sandbox_not_ready",
         retryable: false,
-        message: scenario === "selection" ? "Invalid runtime startup selection." : "Armada runtime startup failed.",
+        message:
+          scenario === "selection"
+            ? "Invalid runtime startup selection."
+            : `Armada runtime startup failed (${["pre-abort", "bootstrap"].includes(scenario) ? "bootstrap" : ["timeout", "lifecycle"].includes(scenario) ? "enrolment" : "readiness"}).`,
       });
       expect(starts).toBe(scenario === "pre-abort" || scenario === "selection" ? 0 : 1);
       if (scenario === "pre-abort" || scenario === "selection")

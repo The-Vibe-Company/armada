@@ -10,6 +10,7 @@ import {
   MACHINE_SIZES,
   MODEL_CATALOG,
   PROVIDER_LIMITS,
+  type Provider,
   ProviderError,
   resolveBoatKey,
   resolveCredentials,
@@ -30,6 +31,10 @@ import { createModalIntegration } from "../src/modal-integration.ts";
 import { modalLaunchEnvironment } from "../src/modal-launch-environment.ts";
 import { createModelAuthOwnership } from "../src/model-auth.ts";
 import { createProviderMetadata } from "../src/provider-metadata.ts";
+import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
+import { createRuntimeEvents } from "../src/runtime-events.ts";
+import { createRuntimeHistory } from "../src/runtime-history.ts";
+import { createRuntimeStartup } from "../src/runtime-startup.ts";
 import { rowOnlyConnection } from "./row-only-database.ts";
 import { fakeBoat } from "./support.ts";
 
@@ -2397,6 +2402,14 @@ test("versioned runtime launch is explicit/default-off and never selects native 
       ],
     );
     const host = fakeBoat();
+    const authority = createRuntimeEnrolments(
+      {
+        query: (q, v) => db.query(q, v),
+        transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
+      },
+      KEY,
+    );
+    let session: Awaited<ReturnType<typeof authority.enrol>> | undefined;
     let native = 0,
       starts = 0;
     options.providerFor = () => {
@@ -2428,6 +2441,9 @@ test("versioned runtime launch is explicit/default-off and never selects native 
     options.boatRuntimeLaunch = {
       async start(input) {
         starts++;
+        session = await authority.enrol(
+          (await authority.issue({ ownerId: STAN, sandboxId: input.sandbox.id, configuration: {} })).enrolmentToken,
+        );
         expect(input.sandbox.boatRuntime).toBe(true);
         expect(input.credentials.env.OPENAI_API_KEY).toBe("fixture-model-key");
         return {
@@ -2456,11 +2472,97 @@ test("versioned runtime launch is explicit/default-off and never selects native 
       sandbox: { boatRuntime: true },
       promptId: "runtime-initial",
     });
+    if (!session) throw Error("missing enrolled runtime");
+    const active = session;
+    const append = () =>
+      createRuntimeEvents(authority, KEY).route(
+        new Request("https://armada.test/api/runtime/events", {
+          method: "POST",
+          headers: { authorization: `Bearer ${active.runtimeToken}`, "x-armada-runtime-epoch": active.epoch },
+          body: JSON.stringify({
+            sandboxId: active.sandboxId,
+            generation: active.epoch,
+            events: [
+              {
+                sequence: 1,
+                event: {
+                  id: "first",
+                  at: 1,
+                  kind: "prompt",
+                  promptId: "runtime-initial",
+                  text: "reply",
+                  status: "finished",
+                },
+              },
+            ],
+          }),
+        }),
+      );
+    // Launch completion advances observation generation, but MUST NOT revoke the
+    // just-enrolled runtime before its first asynchronous outbox upload.
+    expect((await append())?.status).toBe(200);
+    expect(
+      (await db.query("select sequence from runtime_events where sandbox_id=$1", [active.sandboxId])).rows,
+    ).toHaveLength(1);
+    await db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [active.sandboxId]);
+    expect((await append())?.status).toBe(401);
     expect(starts).toBe(1);
     expect(native).toBe(0);
     expect(host.forks).toHaveLength(1);
     expect(host.forks[0]?.env).toEqual({});
     expect(host.prompts).toHaveLength(0);
     expect(host.execs).toHaveLength(0);
+    // Actual startup timeout -> launch failure persistence -> public logs response.
+    options.boatRuntimeLaunch = {
+      async start(input) {
+        let now = 0;
+        await createRuntimeStartup(
+          authority,
+          {
+            bootstrap: async () => {},
+            health: async () => {
+              throw Error("health must not run without enrolment");
+            },
+          },
+          {
+            now: () => now,
+            wait: async () => {
+              now += 1000;
+            },
+          },
+        )({
+          ownerId: STAN,
+          sandboxId: input.sandbox.id,
+          providerSandboxId: input.sandbox.providerSandboxId,
+          serverUrl: "https://armada.test",
+          cacheDir: "/unused",
+          artifact: { sha256: "a".repeat(64), bytes: 1 },
+          configuration: { selectedHarness: "codex" },
+          readinessTimeoutMs: 1000,
+        });
+        throw Error("Expected timeout");
+      },
+    };
+    expect((await request("sandbox/launch-runtime-v1", body))?.status).toBeGreaterThanOrEqual(400);
+    const failed = (
+      await db.query<{ id: string; status_reason: string }>(
+        "select id,status_reason from sandboxes where status='failed'",
+      )
+    ).rows[0];
+    if (!failed) throw Error("failure was not persisted");
+    expect(failed.status_reason).toContain("startup failed (enrolment)");
+    const sql: Sql = {
+      query: (q, v) => db.query(q, v),
+      transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
+    };
+    options.logs = async (caller, id) => ({
+      providerSandboxId: "unused",
+      provider: { events: ({ sandboxId: _, ...page }) => createRuntimeHistory(sql, KEY)(caller, id, page) } as Provider,
+    });
+    expect(await (await request("logs/read", { id: failed.id, follow: true }))?.json()).toMatchObject({
+      events: [],
+      source: "armada-runtime",
+      runtimeFailure: { status: "failed", reason: failed.status_reason },
+    });
   });
 });

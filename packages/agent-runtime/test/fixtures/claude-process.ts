@@ -1,9 +1,10 @@
 #!/usr/bin/env bun
-// Official SDK control/message shapes; synthetic peer, NOT authenticated Claude evidence.
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, readlinkSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { createInterface } from "node:readline";
+// Official SDK control/message shapes; synthetic peer, NOT authenticated Claude evidence.
+import recording from "./claude-resume-recorded.json";
 
 if (process.env.ARMADA_MCP_INSPECTION) {
   const header = "mcp-header-fixture-sensitive",
@@ -79,13 +80,13 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       writeFileSync(path, JSON.stringify(prior));
     }
 
-    if (["usage-fresh", "usage-resumed", "usage-after-reset"].includes(m.message.content)) {
+    if (["usage-fresh", "usage-resumed", "usage-after-reset", "usage-recorded"].includes(m.message.content)) {
       const result = (sessionId: string, consumed: string[], model = "claude-native") =>
         send({
           type: "result",
           subtype: "success",
           is_error: false,
-          session_id: sessionId,
+          session_id: m.message.content === "usage-recorded" ? recording.baseline.sessionId : sessionId,
           uuid: crypto.randomUUID(),
           duration_ms: 1,
           duration_api_ms: 1,
@@ -107,6 +108,20 @@ createInterface({ input: process.stdin }).on("line", (line) => {
               webSearchRequests: 2,
             },
           },
+          ...(m.message.content === "usage-recorded"
+            ? {
+                ...recording.resumed,
+                ...(process.env.ARMADA_USAGE_CASE === "reset" ? { total_cost_usd: 0 } : {}),
+                ...(process.env.ARMADA_USAGE_CASE === "new-model"
+                  ? {
+                      modelUsage: {
+                        ...recording.resumed.modelUsage,
+                        "claude-new": recording.resumed.modelUsage["claude-sonnet-5"],
+                      },
+                    }
+                  : {}),
+              }
+            : {}),
           permission_denials: [],
           user_message_uuid: m.uuid,
           user_message_uuids: consumed,

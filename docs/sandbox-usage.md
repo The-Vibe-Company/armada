@@ -29,8 +29,14 @@ reported counters. A native session-ID change during a prompt also invalidates
 whole-prompt attribution (`session_reset`), including across steer. No cumulative
 snapshot is treated as a delta or replaced with main-loop-only `usage`, which
 excludes subagents. Native model IDs/metadata remain available. This conservative
-slice does not recover a baseline from transcript history or driver memory; even
-later resumed turns remain unknown until that separate work is implemented.
+slice now recovers the last valid native cost-state before creating the query,
+then subtracts all per-model counters and SDK cost. The same persisted state is
+what the pinned CLI restores, including subagent/auxiliary pipeline usage.
+Missing/ambiguous/unreadable native state or regressing/removed counters stay
+unknown. Lookup is bounded to 1,024 project entries and a 32 MiB transcript;
+exceeding these limits also means no verified baseline. Optional legacy
+thinking/cache-TTL counters start at zero as in the native ledger. No transcript
+text leaves the runtime.
 Intermediate native result events during steer carry empty `modelUsage`, null
 SDK cost estimates, and `usageAccounting.reason: intermediate_result`. Only the
 final native result publishes prompt accounting, so a later session reset cannot
@@ -112,18 +118,25 @@ armada logs <id>
 armada status <id> --json
 ```
 
-Expect fresh-session reported model counters to remain available. The resumed
-prompt must not repeat the prior session's cumulative counts: result
-`modelUsage` token fields and SDK cost estimates are null, with
-`usageAccounting.reason: resumed_baseline_unverified`; status shows unknown token
-counts, not zero or historical totals. Repeat after stop/resume. Native session
-reset inside an active prompt is likewise unknown with `session_reset`; the
-JSONL regression exercises the reset/steer boundary offline. No runtime transcript
-is copied to the server, and `/usage` results keep their existing private masking.
-There is no migration. This runtime safety fix does not integrate server pricing
-or promise measured resumed turns; verified baseline recovery remains a following
-slice. Source semantics checked against pinned Agent SDK 0.3.322 result types and
-[official cost tracking](https://code.claude.com/docs/en/agent-sdk/cost-tracking).
+Expect fresh and resumed prompts to report their own per-model counters and
+estimated cost, not historical cumulative totals. Repeat after stop/resume;
+status totals should remain complete and cost should be computed. The native
+modelUsage/cost-state baseline must be available. Missing or unsafe baseline
+retains explicit unknown with resumed_baseline_unverified; a session-ID change
+or reset cannot publish guessed deltas. Intermediate steer results remain
+suppressed and the final result covers the complete Armada prompt.
+
+Native evidence (#1329): pinned Claude Code 2.1.322 was run locally against a
+loopback Anthropic protocol fixture, once fresh and once after process restart.
+The native result changed from 12 input / 3 output to cumulative 24 / 6, while
+the saved cost-state was 12 / 3. A separate two-driver probe with this runtime
+reported 12 / 3 for both prompts. The accounting-only recording is in
+packages/agent-runtime/test/fixtures/claude-resume-recorded.json. Model responses
+were simulated; this is native serialization/restoration evidence, not an
+authenticated provider or staging run. No production access was used.
+
+There is no migration. Coordinator check: staging Modal Claude/API-key
+resume_usage plus exact-turn counters, complete totals and computed cost.
 
 ## Coordinator staging check: Claude cache lifetimes (#1163)
 

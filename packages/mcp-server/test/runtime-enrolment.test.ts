@@ -7,8 +7,8 @@ async function fixture() {
   const { db, people } = await database();
   const id = crypto.randomUUID();
   await db.query(
-    `insert into sandboxes(id,golden_id,org_id,owner_id,boat_id,provider_sandbox_id,harness,status)
-     select $1,id,org_id,owner_id,'runtime-native','runtime-native','codex','ready' from goldens
+    `insert into sandboxes(id,golden_id,org_id,owner_id,boat_id,provider_sandbox_id,harness,status,boat_runtime)
+     select $1,id,org_id,owner_id,'runtime-native','runtime-native','codex','ready',true from goldens
      where owner_id=$2 and visibility='private' limit 1`,
     [id, people.owner],
   );
@@ -147,6 +147,53 @@ test("runtime bootstrap SQL is service-only and private routes reject ambient/ma
       }),
     ).rejects.toThrow("runtime_enrolment_denied");
     expect(mutation).toBe(false);
+  } finally {
+    await f.db.close();
+  }
+});
+
+// The happy-path owner is control.test.ts's real launch completion. These are
+// lookalike completions which must NOT turn the exception into a fencing bypass.
+test("initial handoff exception refuses expired leases, generation jumps, missing prompt and concurrent stop", async () => {
+  const f = await fixture();
+  try {
+    for (const change of ["expired", "jump", "missing-prompt", "stop"]) {
+      await f.db.query(
+        "update sandboxes set status='starting',stop_requested_at=null,activity_lease_id=$2,activity_until=now()+interval '2 minutes',task_prompt_id=null where id=$1",
+        [f.id, crypto.randomUUID()],
+      );
+      const active = await f.service().enrol((await f.issue()).enrolmentToken);
+      if (change === "expired")
+        await f.db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [f.id]);
+      await f.db.query(
+        `update sandboxes set status='running',activity_lease_id=null,activity_until=null,
+        lifecycle_generation=lifecycle_generation+$2,task_prompt_id=$3,stop_requested_at=$4 where id=$1`,
+        [
+          f.id,
+          change === "jump" ? 2 : 1,
+          change === "missing-prompt" ? null : "accepted",
+          change === "stop" ? new Date().toISOString() : null,
+        ],
+      );
+      expect((await f.request("session", active.runtimeToken, active.epoch)).status).toBe(401);
+      expect(
+        (await f.db.query("select runtime_hash from runtime_enrolments where sandbox_id=$1", [f.id])).rows[0],
+      ).toEqual({ runtime_hash: null });
+    }
+    await f.db.query(
+      "update sandboxes set status='starting',stop_requested_at=null,activity_lease_id=$2,activity_until=now()+interval '2 minutes' where id=$1",
+      [f.id, crypto.randomUUID()],
+    );
+    const pending = await f.issue();
+    await f.db.query(
+      "update sandboxes set status='running',activity_lease_id=null,activity_until=null,lifecycle_generation=lifecycle_generation+1,task_prompt_id='accepted' where id=$1",
+      [f.id],
+    );
+    expect((await f.request("enrol", pending.enrolmentToken)).status).toBe(401);
+    expect(
+      (await f.db.query("select enrolment_hash,configuration_enc from runtime_enrolments where sandbox_id=$1", [f.id]))
+        .rows[0],
+    ).toEqual({ enrolment_hash: null, configuration_enc: null });
   } finally {
     await f.db.close();
   }

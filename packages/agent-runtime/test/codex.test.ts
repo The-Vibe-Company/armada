@@ -11,8 +11,12 @@ const nativeTest = process.platform === "linux" ? test : test.skip;
 // Audit: actual JSONL child-process transport owns request/notification races and restart steering.
 // Runtime fake tests cannot detect duplicate delivery or response-vs-terminal ordering here.
 nativeTest("Codex waits for interrupt terminal then sends steer once on the same resumed thread", async () => {
+  let started = false;
   const driver = new CodexDriver({
     executable: `${import.meta.dir}/fixtures/app-server.ts`,
+    onStarted: () => {
+      started = true;
+    },
     cwd: import.meta.dir,
     env: { PATH: process.env.PATH ?? "/usr/bin:/bin", ARMADA_RESUME_USAGE_BASELINE: "before" },
   });
@@ -27,6 +31,7 @@ nativeTest("Codex waits for interrupt terminal then sends steer once on the same
       signal: new AbortController().signal,
       session: (id) => sessions.push(id),
       emit: (event) => {
+        expect(started).toBe(true); // Handshake stage must precede native turn output.
         events.push(event);
         if (event.kind === "message" && event.partial && !steering) steering = turn?.steer("redirect");
       },
@@ -656,3 +661,85 @@ nativeTest("recorded cold Codex resume publishes one unknown snapshot, never his
     await driver.close();
   }
 });
+
+// One driver-boundary regression: actual native notification ordering plus
+// persisted token_count fields; no provider/server duplicate of this contract.
+nativeTest.each(["closed", "after-abort", "unclosed", "wrong-session", "corrupt"])(
+  "cold Codex resume validates persisted history: %s",
+  async (mode) => {
+    const dir = await mkdtemp(join(tmpdir(), "codex-resume-"));
+    const path = join(dir, "rollout.jsonl");
+    const recording = await import("./fixtures/codex-resume-recorded.json");
+    const total = recording.default.find((e) => e.phase === "fresh" && e.method === "thread/tokenUsage/updated")!
+      .params!.tokenUsage.total;
+    await writeFile(
+      path,
+      [
+        JSON.stringify({
+          type: "session_meta",
+          payload: { id: mode === "wrong-session" ? "unrelated-thread" : "recorded-thread" },
+        }),
+        ...(mode === "after-abort"
+          ? [
+              JSON.stringify({ type: "event_msg", payload: { type: "task_started", turn_id: "aborted" } }),
+              JSON.stringify({ type: "event_msg", payload: { type: "turn_aborted", turn_id: "aborted" } }),
+            ]
+          : []),
+        JSON.stringify({ type: "event_msg", payload: { type: "task_started", turn_id: "recorded-fresh" } }),
+        JSON.stringify({
+          type: "event_msg",
+          payload: {
+            type: "token_count",
+            info: {
+              total_token_usage: {
+                input_tokens: total.inputTokens,
+                output_tokens: total.outputTokens,
+                cached_input_tokens: total.cachedInputTokens,
+                cache_write_input_tokens: total.cacheWriteInputTokens,
+                reasoning_output_tokens: total.reasoningOutputTokens,
+              },
+            },
+          },
+        }),
+        ...(mode === "unclosed"
+          ? []
+          : [JSON.stringify({ type: "event_msg", payload: { type: "task_complete", turn_id: "recorded-fresh" } })]),
+        ...(mode === "corrupt" ? ["not-json"] : []),
+      ].join("\n") + "\n",
+    );
+    const driver = new CodexDriver({
+      executable: `${import.meta.dir}/fixtures/recorded-resume.ts`,
+      cwd: import.meta.dir,
+      env: { PATH: process.env.PATH ?? "/usr/bin:/bin", ARMADA_TEST_ROLLOUT: path },
+    });
+    const events: DriverEvent[] = [];
+    try {
+      expect(
+        await driver.start({
+          request: { sandboxId: "s", harness: "codex", text: "Reply OK" },
+          sessionId: "recorded-thread",
+          signal: new AbortController().signal,
+          session: () => {},
+          emit: (e) => events.push(e),
+        }).done,
+      ).toBe("finished");
+      expect(events.filter((e) => e.kind === "other" && e.type === "armada/turnUsage")).toEqual([
+        {
+          kind: "other",
+          type: "armada/turnUsage",
+          data: {
+            model: "gpt-6.1-sol",
+            inputTokens: mode === "closed" || mode === "after-abort" ? 13163 : null,
+            outputTokens: mode === "closed" || mode === "after-abort" ? 5 : null,
+            cachedTokens: mode === "closed" || mode === "after-abort" ? 13140 : null,
+            cacheWriteTokens: mode === "closed" || mode === "after-abort" ? 20 : null,
+            reasoningTokens: mode === "closed" || mode === "after-abort" ? 0 : null,
+          },
+        },
+      ]);
+    } finally {
+      await driver.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
+);
