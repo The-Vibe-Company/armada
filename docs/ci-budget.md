@@ -4,9 +4,10 @@ Required names to retain:
 - Migration versions
 - Lint, typecheck and test
 - Golden PostgreSQL concurrency
+- Golden OS recipe (actual provider image)
 - Binary (linux-x64), Binary (linux-arm64), Binary (darwin-arm64)
 
-Coordinator ruleset changes: **remove Binary (darwin-x64), Golden OS recipe (actual provider image), and CI budget (120s)**.
+The ruleset is coordinator-owned. Retain **Golden OS recipe (actual provider image)** exactly; its cheap verdict reports independently of full informational conformance. **CI budget (120s)** is non-required per the coordinator decision.
 Intel macOS still builds/tests on main, manual runs, and the unchanged release workflow.
 
 PR and merge-group expensive checks compare the entire candidate against its event
@@ -24,8 +25,8 @@ checks every dependency's result. It never depends on or executes the budget
 check. Runner timing cannot turn successful code checks red.
 
 **CI budget (120s)** is a separate, visible, **non-required** job on PRs and merge
-groups, after the required verdict and its prerequisites. **Remove this name
-from the ruleset if present.** Its own runner queue, checkout, API calls and setup
+groups, after the required verdict and its prerequisites, as established by the
+coordinator-owned ruleset. Its own runner queue, checkout, API calls and setup
 are not admission latency: the script measures the latest completed required-path
 verdict minus workflow start, including the required aggregate. Only known
 required-path names participate; informational Golden OS, Intel macOS, unrelated
@@ -36,8 +37,8 @@ gate. No threshold increase, polling or test/assertion weakening.
 ## Informative recipe policy (coordinator decision, 2026-11-12)
 
 The informational Golden OS job runs on affected PRs and main/manual runs,
-not merge groups. The marker-only required Golden OS job is removed to avoid
-allocating a runner solely to report; remove its old name from the ruleset.
+not merge groups. The cheap required Golden OS verdict is retained with its exact ruleset name
+on PRs and merge groups; it never waits for the full recipe.
 Do not require the informational name. A full failure remains visible/loud on main.
 Recipe classification now shares migration validation and includes actual source,
 manifest, recipe/fixture and OS-test inputs, not unrelated test files or migrations.
@@ -80,14 +81,14 @@ test's 1s estimate, refreshed LPT sizing is:
 | 12 | 37.357s | 85.557s |
 
 Eleven, not eight, is the smallest count below ~90s under this CI-derived model.
-The required-path job count drops from 21 to 18 versus main; including the
-separate budget diagnostic, runner jobs drop from 22 to 19 (plus informative
+The required-path job count drops from 21 to 19 versus main; including the
+separate budget diagnostic, runner jobs drop from 22 to 20 (plus informative
 recipe work when affected). Classification shares the migration job, and the
-marker-only Golden OS job is removed. All discovered test files remain assigned
+required Golden OS compatibility verdict is retained. All discovered test files remain assigned
 exactly once, with one fresh Bun process each and cancellation cleanup.
 
 The organisation API returns `plan: null`, not an Actions concurrency limit.
 An administrator must confirm the actual limit L and reserve R slots for browser,
-PR and other workflows before deriving a safe queue cap `floor((L - R) / 18)`.
+PR and other workflows before deriving a safe queue cap `floor((L - R) / 19)`.
 The temporary cap two is not proven safe without that information. Browser
 promotion still needs complete PR/merge-group timing and capacity evidence.
