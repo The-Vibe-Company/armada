@@ -5,6 +5,7 @@ import {
   dockerLaunchBlocker,
   dockerLaunchBody,
   dockerLaunchOption,
+  dockerSandboxControls,
   dockerUnavailable,
   launchedDockerSandbox,
 } from "../src/lib/docker-launch.ts";
@@ -127,3 +128,29 @@ test("the launch body is the normal route's Docker shape: Codex, private, the fo
 function fail(): never {
   throw new Error("expected a Docker option");
 }
+
+test("a Docker sandbox's page offers only what the server supports, and gives the server's reason for the rest", () => {
+  const option = dockerLaunchOption(
+    options({
+      capabilities: capabilities(["logs", "status", "stop", "delete"]),
+      unsupportedReasons: { followupPrompts: "Docker follow-up prompts are not available yet." },
+    }),
+  );
+  const controls = dockerSandboxControls(option);
+  expect(controls.reasons.logs).toBeUndefined();
+  expect(controls.reasons.stop).toBeUndefined();
+  expect(controls.reasons.delete).toBeUndefined();
+  expect(controls.reasons.followupPrompts).toBe("Docker follow-up prompts are not available yet.");
+  expect(controls.reasons.resume).toBe("Not available on Docker hosts yet.");
+  expect(controls.unavailable.map((item) => item.name)).toEqual([
+    "Follow-up messages",
+    "Steering",
+    "Interrupt",
+    "Resume",
+    "Commands",
+  ]);
+  // No readable option: nothing is offered, every control says why.
+  const unknown = dockerSandboxControls(null);
+  expect(unknown.reasons.stop).toContain("does not say");
+  expect(unknown.reasons.logs).toContain("does not say");
+});

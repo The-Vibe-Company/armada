@@ -84,6 +84,8 @@ type Props = {
   conversations: string[];
   /** The Armada server is configured: messages can be sent. */
   configured: boolean;
+  /** Why this sandbox takes no messages from here whatever its status (a Docker sandbox, for now): shown instead. */
+  composerUnavailable?: string | undefined;
 };
 
 type Poll = {
@@ -452,17 +454,23 @@ export function SandboxChat(props: Props) {
           onMore={() => void tick()}
         />
 
-        {props.configured && (
-          <Composer
-            {...props}
-            status={status}
-            conversation={selected && props.conversations.includes(selected) ? selected : null}
-            running={turnRunning}
-            onDone={() => {
-              router.refresh();
-              resumePolling();
-            }}
-          />
+        {props.configured && props.composerUnavailable ? (
+          <p className="border-t px-4 py-3 text-sm text-muted-foreground sm:px-6" data-composer-unavailable>
+            {props.composerUnavailable}
+          </p>
+        ) : (
+          props.configured && (
+            <Composer
+              {...props}
+              status={status}
+              conversation={selected && props.conversations.includes(selected) ? selected : null}
+              running={turnRunning}
+              onDone={() => {
+                router.refresh();
+                resumePolling();
+              }}
+            />
+          )
         )}
       </Card>
 

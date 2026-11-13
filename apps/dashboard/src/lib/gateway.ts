@@ -163,6 +163,8 @@ export function sandboxGateway(gateway: Gateway) {
       gateway.call("logs", { id: sandboxId, ...(since ? { since_cursor: since } : {}), ...read }),
     status: (sandboxId: string) => gateway.call("status", { id: sandboxId }),
     stop: (sandboxId: string) => gateway.call("stop", { id: sandboxId }),
+    /** Permanent; the server refuses it unless the sandbox is stopped or failed. */
+    delete: (sandboxId: string) => gateway.call("delete", { id: sandboxId }),
     send: (sandboxId: string, prompt: string, override: SendArgs = {}, conversationId?: string) =>
       gateway.call("send", { id: sandboxId, prompt, ...conversation(conversationId), ...override }),
     steer: (sandboxId: string, text: string, conversationId?: string) =>

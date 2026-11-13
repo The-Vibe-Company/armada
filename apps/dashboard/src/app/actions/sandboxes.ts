@@ -74,6 +74,28 @@ export async function stopSandbox(_previous: ActionResult | null, data: FormData
   return done("Stop requested. The machine is removed and the disk is kept.");
 }
 
+/**
+ * Deletes a stopped or failed sandbox. The dashboard offers it on Docker sandboxes, where the server reports delete
+ * as supported (#1380); the server checks the owner/admin role, the status and the capability again.
+ */
+export async function deleteSandbox(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
+  const id = formString(data, "sandbox");
+  if (!isUuid(id)) return fail("That request is not valid.");
+  const target = await gatewayFor(id);
+  if (target.error) return target.error;
+  if (target.sandbox.provider !== "docker") return fail("Deleting is offered for Docker sandboxes only.");
+  if (target.sandbox.status !== "stopped" && target.sandbox.status !== "failed")
+    return fail("Stop the sandbox before deleting it.");
+  try {
+    await target.gateway.delete(id);
+  } catch (error) {
+    if (error instanceof GatewayError) return fail(error.message);
+    throw error;
+  }
+  revalidatePath("/sandboxes");
+  redirect("/sandboxes");
+}
+
 /** A new turn, in the conversation the person chose. The model and effort override applies to this turn only. */
 export async function sendToSandbox(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
   const id = formString(data, "sandbox");

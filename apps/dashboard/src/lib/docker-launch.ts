@@ -176,3 +176,45 @@ export function launchedDockerSandbox(payload: unknown): string | null {
   const { id, provider } = payload.sandbox;
   return typeof id === "string" && isUuid(id) && provider === "docker" ? id : null;
 }
+
+/** The capabilities that act on an existing sandbox, in the order its page names them. */
+const SANDBOX_CAPABILITIES = [
+  "logs",
+  "followupPrompts",
+  "steer",
+  "interrupt",
+  "stop",
+  "delete",
+  "resume",
+  "exec",
+] as const satisfies readonly DockerCapability[];
+
+export type DockerSandboxControls = {
+  /** Why each control is unavailable; absent means the server supports it on Docker. */
+  reasons: Partial<Record<(typeof SANDBOX_CAPABILITIES)[number], string>>;
+  /** What the page lists as unavailable on Docker, with the server's reasons. */
+  unavailable: { name: string; reason: string }[];
+};
+
+const NO_OPTIONS = "This Armada server does not say what Docker sandboxes support.";
+
+/**
+ * What a Docker sandbox's page may offer, from the server's Docker capabilities. Without a readable Docker option
+ * every control is unavailable: the page shows the reason, never a button the server would refuse.
+ */
+export function dockerSandboxControls(option: DockerLaunchOption | null): DockerSandboxControls {
+  const reasons: DockerSandboxControls["reasons"] = {};
+  for (const name of SANDBOX_CAPABILITIES) {
+    if (option?.enabled && option.capabilities[name]) continue;
+    reasons[name] = option?.enabled
+      ? (option.unsupportedReasons[name] ?? "Not available on Docker hosts yet.")
+      : NO_OPTIONS;
+  }
+  return {
+    reasons,
+    unavailable: SANDBOX_CAPABILITIES.flatMap((name) => {
+      const reason = reasons[name];
+      return reason ? [{ name: CAPABILITY_LABELS[name], reason }] : [];
+    }),
+  };
+}
