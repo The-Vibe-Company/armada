@@ -217,3 +217,42 @@ test("Claude gateway creation supports bearer and API-key authentication without
     await expect(page.locator('input[name="value"]')).toHaveCount(0);
   }
 });
+
+test("a DeepSeek connection is added by choosing the provider, pasting a key and ticking a model", async ({
+  page,
+}, info) => {
+  await signIn(page, "alice@example.com", "/harness");
+  await page.getByRole("button", { name: "Add a model account", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("radio", { name: "DeepSeek", exact: true }).check();
+  await expect(dialog.getByText("https://api.deepseek.com", { exact: true })).toBeVisible();
+  await expect(dialog.getByText(/For OpenCode/).first()).toBeVisible();
+  await dialog.getByLabel("Name", { exact: true }).fill("DeepSeek");
+  await dialog.getByRole("searchbox", { name: "Search models" }).fill("flash");
+  await dialog
+    .getByRole("checkbox")
+    .filter({ hasNot: page.locator("[name]") })
+    .first()
+    .check();
+  await page.screenshot({ path: info.outputPath("deepseek-connection.png"), fullPage: true, animations: "disabled" });
+  const key = randomUUID();
+  await dialog.locator('input[name="value"]').fill(key);
+  await dialog.getByRole("button", { name: "Add connection", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.locator('[data-account="DeepSeek"]')).toBeVisible();
+  await expect(page.locator("body")).not.toContainText(key);
+
+  // Replacing the key re-enters the provider: a plain plan key is never chosen silently.
+  await page.getByRole("button", { name: "More actions for DeepSeek" }).click();
+  await page.getByRole("menuitem", { name: "Replace key", exact: true }).click();
+  const replace = page.getByRole("dialog");
+  await expect(replace.getByLabel("Connection type")).toHaveValue("");
+  await replace.getByLabel("Connection type").selectOption("deepseek");
+  await replace.getByRole("searchbox", { name: "Search models" }).fill("flash");
+  await replace.getByRole("checkbox").first().check();
+  const next = randomUUID();
+  await replace.locator('input[name="value"]').fill(next);
+  await replace.getByRole("button", { name: /^Save/ }).click();
+  await expect(replace).toHaveCount(0);
+  await expect(page.locator("body")).not.toContainText(next);
+});
