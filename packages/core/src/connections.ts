@@ -499,12 +499,12 @@ export function createSqlMcpLeasePort(sql: Sql) {
         throw new VaultError("invalid", "Invalid lease scope.");
       const r = await sql.query<{ id: string }>(
         `insert into public.mcp_leases(sandbox_id,connection_id,grant_id,org_id,owner_id,generation,sandbox_generation,hash,operations,expires_at,runtime_epoch)
-        select s.id,c.id,g.id,s.org_id,s.owner_id,g.generation,s.mcp_generation,$3,$4::text[],$5,case when (s.provider='boat' and s.boat_runtime) or s.provider='docker' then r.epoch else null end
+        select s.id,c.id,g.id,s.org_id,s.owner_id,g.generation,s.mcp_generation,$3,$4::text[],$5,case when (s.provider='boat' and s.boat_runtime) or (s.provider='modal' and s.runtime_transport is not distinct from 'dialout') or s.provider='docker' then r.epoch else null end
         from public.mcp_bindings b join public.sandboxes s on s.id=b.sandbox_id
         join public.mcp_connections c on c.id=b.connection_id join public.mcp_grants g on g.id=b.grant_id
         left join public.runtime_enrolments r on r.sandbox_id=s.id
         where b.sandbox_id=$1::uuid and b.connection_id=$2::uuid and not c.disabled and public.mcp_grant_effective_status(g.status,g.revoked_at,g.refresh_consumed,g.refresh_until)='connected'
-        and (not ((s.provider='boat' and s.boat_runtime) or s.provider='docker') or (r.runtime_hash is not null and r.lifecycle_generation=s.lifecycle_generation
+        and (not ((s.provider='boat' and s.boat_runtime) or (s.provider='modal' and s.runtime_transport is not distinct from 'dialout') or s.provider='docker') or (r.runtime_hash is not null and r.lifecycle_generation=s.lifecycle_generation
           and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>now()
           and not exists(select 1 from public.runtime_checkpoints p where p.sandbox_id=s.id and p.epoch=r.epoch)
           and (s.provider<>'docker' or exists(select 1 from public.docker_hosts h
@@ -532,7 +532,7 @@ export function createSqlMcpLeasePort(sql: Sql) {
         left join public.runtime_enrolments r on r.sandbox_id=s.id
         where l.hash=$1 and $2=any(l.operations) and l.expires_at>now() and l.revoked_at is null
         and g.revoked_at is null and public.mcp_grant_effective_status(g.status,g.revoked_at,g.refresh_consumed,g.refresh_until)='connected' and not c.disabled
-        and (not ((s.provider='boat' and s.boat_runtime) or s.provider='docker') or (l.runtime_epoch=r.epoch and r.runtime_hash is not null
+        and (not ((s.provider='boat' and s.boat_runtime) or (s.provider='modal' and s.runtime_transport is not distinct from 'dialout') or s.provider='docker') or (l.runtime_epoch=r.epoch and r.runtime_hash is not null
           and r.lifecycle_generation=s.lifecycle_generation and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>now()
           and not exists(select 1 from public.runtime_checkpoints p where p.sandbox_id=s.id and p.epoch=r.epoch)
           and (s.provider<>'docker' or exists(select 1 from public.docker_hosts h

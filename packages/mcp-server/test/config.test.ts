@@ -12,6 +12,13 @@ const ENV = {
 };
 
 describe("config", () => {
+  test("Boat launch selection is one strict server setting, native by default and explicit for rollback", () => {
+    expect(configFromEnv(ENV).boatAgentPath).toBe("native");
+    for (const mode of ["native", "runtime"] as const)
+      expect(configFromEnv({ ...ENV, ARMADA_BOAT_AGENT_PATH: mode }).boatAgentPath).toBe(mode);
+    for (const mode of ["", "TRUE", " runtime ", "auto", "fallback"])
+      expect(() => configFromEnv({ ...ENV, ARMADA_BOAT_AGENT_PATH: mode })).toThrow("ARMADA_BOAT_AGENT_PATH");
+  });
   test("database pool budget defaults to three main sessions and accepts only safe integers >= 2", () => {
     expect(configFromEnv(ENV).databasePoolMax).toBe(3);
     for (const max of [2, 3, 6, 12])

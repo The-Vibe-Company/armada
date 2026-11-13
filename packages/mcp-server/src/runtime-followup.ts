@@ -206,7 +206,7 @@ export function createRuntimeFollowup(
       {},
       async (signal) => {
         const existing = await commands.result(caller.userId, found.id, commandId, admitted.epoch);
-        if (existing.state === "missing" && found.provider === "boat") await prepareMcp?.(caller, found.id, signal);
+        if (existing.state === "missing") await prepareMcp?.(caller, found.id, signal);
         const accepted = await submit(signal);
         try {
           await store.recordTurnModel?.(found.id, accepted.promptId, found.model);
