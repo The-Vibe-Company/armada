@@ -817,6 +817,7 @@ async function dispatch(
         resumeVersion: options.runtimeResume && options.modalRuntimeLaunch ? 1 : 0,
         mcpVersion: options.runtimeMcp ? 2 : 0,
         skillsVersion: options.modalRuntimeLaunch ? 1 : 0,
+        usageVersion: options.modalRuntimeLaunch ? 1 : 0,
         variablesVersion: options.templates && options.modalRuntimeLaunch && options.modalRuntimeHostFor ? 1 : 0,
       },
       boatRuntime: {
