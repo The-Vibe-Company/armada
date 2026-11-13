@@ -293,10 +293,12 @@ process, not in the smoke client's shell. Ordinary API, CLI, dashboard, MCP
 `sandbox_launch`, template and routine launches share the same Core launch
 selection: no client flag/endpoint change. Modal/Docker selection is unchanged.
 Runtime mode uses the image's matching `/opt/armada/runtime-manifests/<arch>.json`
-(or the existing trusted manifest override); missing/invalid artifacts fail
-startup rather than selecting native. Image-installed artifacts also keep the
-existing explicit runtime route and retained runtime sessions available during
-rollback. `launch/options.boatRuntime.defaultPath` reports the ordinary selection.
+(or the existing trusted manifest override); in runtime-default mode,
+missing/invalid manifest metadata fails startup rather than selecting native. Valid
+image-installed artifacts keep the explicit runtime route/retained sessions
+available during rollback. Missing/corrupt runtime-only metadata does not prevent
+native rollback from booting; explicit runtime bootstrap remains unavailable
+until artifacts are fixed (never converted to native). `launch/options.boatRuntime.defaultPath` reports the ordinary selection.
 
 Rollback: set the same server setting to **`native`** and redeploy normally.
 Native code is retained. This changes new ordinary launches only, never converts
