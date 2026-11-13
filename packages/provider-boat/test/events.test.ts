@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { fakeBoat } from "./support.ts";
+import { createBoatProvider } from "../src/provider.ts";
+import { fakeBoat, KEY } from "./support.ts";
 
 const ID = "bx_23456789";
 
@@ -126,7 +127,7 @@ test("events are read oldest first, after the cursor, which anchors on the last 
         ok: true,
         type: "events.list",
         id: ID,
-        events: [prompt, tools],
+        events: [{ ...prompt, data: { ...prompt.data, status: "finished" } }, tools],
         pageInfo: { nextCursor: "server-side", hasMore: true, limit: 2 },
       },
     },
@@ -317,3 +318,109 @@ test("canonical plan diagnoses acquire metadata only on a failed prompt event", 
     { code: "usage_limit_exceeded", resetsAt: "2026-11-10T00:00:00.000Z" },
   ]);
 });
+
+test.each([
+  [1, 262144],
+  [100, 262144],
+  [100, 256],
+] as const)(
+  "forward cursor observes an in-place terminal prompt and drains later answers (limit=%s, maxBytes=%s)",
+  async (limit, maxBytes) => {
+    const nativePrompt = { ...prompt, data: { ...prompt.data, status: "running" } };
+    const nativePartial = { ...partial, data: { ...partial.data } };
+    const history = [nativePrompt, nativePartial] as (typeof prompt | typeof tools | typeof partial)[];
+    const queries: URLSearchParams[] = [];
+    const provider = createBoatProvider({
+      apiKey: KEY,
+      fetch: (async (input) => {
+        const url = new URL(String(input));
+        if (url.pathname.endsWith("/commands"))
+          return Response.json({
+            ok: true,
+            type: "command.finished",
+            success: true,
+            exitCode: 0,
+            stdout: "",
+            stderr: "",
+            timedOut: false,
+          });
+        if (url.pathname.endsWith("/prompt"))
+          return Response.json({
+            ok: true,
+            type: "prompt.queued",
+            id: ID,
+            promptId: prompt.taskId,
+            conversationId: "conv_1",
+            status: "queued",
+          });
+        if (!url.pathname.endsWith("/events")) throw Error("Unexpected native endpoint");
+        queries.push(url.searchParams);
+        const after = url.searchParams.get("cursor");
+        const boundary = after ? Buffer.from(after, "base64url").toString("utf8") : undefined;
+        const offset = boundary ? history.findIndex((e) => `${e.timestamp}:${e.id}` === boundary) + 1 : 0;
+        const count = Number(url.searchParams.get("limit") ?? 100);
+        const rows = history.slice(offset, offset + count);
+        return Response.json({
+          ok: true,
+          type: "events.list",
+          id: ID,
+          events: rows,
+          pageInfo: { hasMore: offset + rows.length < history.length, nextCursor: null, limit: count },
+        });
+      }) as typeof fetch,
+    });
+    const receipt = await provider.prompt({
+      sandboxId: ID,
+      harness: "claude",
+      text: "follow-up",
+      conversationId: "conv_1",
+    });
+    let running = await provider.events({ sandboxId: ID, limit, maxBytes });
+    expect(running.events[0]).toMatchObject({ promptId: receipt.promptId, kind: "prompt", status: "running" });
+    while (running.hasMore)
+      running = await provider.events({
+        sandboxId: ID,
+        ...(running.cursor ? { cursor: running.cursor } : {}),
+        limit,
+        maxBytes,
+      });
+    // The row's timestamp/id stay put. A native timestamp cursor cannot see this edit.
+    nativePrompt.data.status = "finished";
+    nativePartial.data.content = "SMOKE_OK";
+    nativePartial.data.is_streaming = false;
+    history.push({
+      ...tools,
+      id: "newest",
+      timestamp: partial.timestamp + 1,
+      data: { ...tools.data, content: "newest" },
+    });
+    let cursor = running.cursor;
+    const observed = [];
+    for (let page = 0; page < 3; page++) {
+      const result = await provider.events({ sandboxId: ID, ...(cursor ? { cursor } : {}), limit, maxBytes });
+      observed.push(...result.events);
+      cursor = result.cursor;
+      if (!result.hasMore) break;
+    }
+    expect(observed).toMatchObject([
+      { id: prompt.id, promptId: receipt.promptId, kind: "prompt", status: "finished", text: prompt.data.prompt },
+      { id: partial.id, promptId: receipt.promptId, kind: "message", text: "SMOKE_OK", partial: false },
+      { id: "newest", promptId: receipt.promptId, kind: "message", text: "newest" },
+    ]);
+    const idle = await provider.events({ sandboxId: ID, ...(cursor ? { cursor } : {}), limit, maxBytes });
+    expect(idle.events).toEqual([]);
+    expect(idle.cursor).toBe(cursor);
+    // Native requests must never receive an Armada envelope.
+    expect(queries.every((q) => !q.get("cursor")?.startsWith("armada-"))).toBe(true);
+  },
+);
+
+test.each(["not-json", "null", '{"pending":[{"id":"x","before":5,"fingerprint":"bad"}]}'])(
+  "malformed replay continuations fail before native I/O (%s)",
+  async (value) => {
+    const boat = fakeBoat();
+    const cursor = "armada-boat-events-v1." + Buffer.from(value).toString("base64url");
+    await expect(boat.provider.events({ sandboxId: ID, cursor })).rejects.toMatchObject({ code: "invalid_request" });
+    expect(boat.requests).toHaveLength(0);
+  },
+);

@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 const script = resolve(import.meta.dir, "deploy-production.sh");
 
 // Exercise the real shell entrypoint; fake only external provider executables.
-function deploy(failure = "", missing = "", pinVersion?: string, source = "", stagingGit = false) {
+function deploy(failure = "", missing = "", pinVersion?: string, source = "") {
   const dir = mkdtempSync(join(tmpdir(), "release-deploy-"));
   try {
     const bin = join(dir, "bin");
@@ -59,13 +59,7 @@ fi`,
     executable(
       "curl",
       `echo curl >> "$CALLS"
-if [[ "$STAGING_FALLBACK" == true ]]; then
-  count=$(grep -c '^curl$' "$CALLS")
-  if [[ "$count" == 1 ]]; then commit=old; else commit="$RELEASE_SHA"; fi
-  printf '{"ok":true,"version":"1.2.3","commit":"%s"}' "$commit"
-  exit
-fi
-if [[ "$FAILURE" == health ]]; then echo '{"ok":true,"version":"0.0.0"}'; else echo '{"ok":true,"version":"1.2.3"}'; fi`,
+if [[ "$FAILURE" == health ]]; then echo '{"ok":true,"version":"0.0.0"}'; else printf '{"ok":true,"version":"1.2.3","commit":"%s"}' "$RELEASE_SHA"; fi`,
     );
     executable("vercel", 'echo "vercel $*" >> "$CALLS"; [[ "$FAILURE" != "dashboard-$1" ]]');
     executable("sleep", ":");
@@ -74,8 +68,8 @@ if [[ "$FAILURE" == health ]]; then echo '{"ok":true,"version":"0.0.0"}'; else e
       CALLS: log,
       FAILURE: failure,
       PIN_VERSION: pinVersion ?? "",
-      STAGING_FALLBACK: String(stagingGit),
-      DEPLOYMENT_ENVIRONMENT: stagingGit ? "staging" : "production",
+      // A legacy environment flag must not restore the retired missing-token path.
+      DEPLOYMENT_ENVIRONMENT: "staging",
       HOME: dir,
       RELEASE_SHA: sha,
       REMOTE_HEAD: source === "current" ? sha : source === "unresolved" ? "invalid" : "b".repeat(40),
@@ -157,12 +151,15 @@ test.each(["migrations", "server", "health", "dashboard-pull", "dashboard-build"
   },
 );
 
-test("missing deployment configuration fails before any production mutation", () => {
-  const result = deploy("", "VERCEL_TOKEN");
-  expect(result.code).not.toBe(0);
-  expect(result.calls).toBe("");
-  expect(result.error).toContain("Missing deployment environment secret/configuration: VERCEL_TOKEN");
-});
+test.each(["VERCEL_TOKEN", "RAILWAY_TOKEN", "RAILWAY_SERVICE_ID"])(
+  "missing %s fails before any deployment mutation",
+  (key) => {
+    const result = deploy("", key);
+    expect(result.code).not.toBe(0);
+    expect(result.calls).toBe("");
+    expect(result.error).toContain(`Missing deployment environment secret/configuration: ${key}`);
+  },
+);
 
 test.each(["current", "stale", "pinned", "unresolved"])(
   "%s source only supersedes ordinary queued main deployments",
@@ -182,19 +179,4 @@ test("deployment carries only a matching generated official-image pin into the s
   expect(wrong.code).not.toBe(0);
   expect(wrong.calls).toBe("");
   expect(wrong.error).toContain("Official sandbox image pin does not match");
-});
-
-test("tokenless staging waits through a same-version wrong commit without uploading Railway", () => {
-  const result = deploy("", "RAILWAY_TOKEN", undefined, "", true);
-  expect(result.code).toBe(0);
-  expect(result.calls).not.toContain("railway");
-  expect(result.calls.split("\n").filter((line) => line === "curl")).toHaveLength(2);
-  expect(result.calls).toContain("vercel deploy --prebuilt");
-});
-
-test("production never uses tokenless Git fallback", () => {
-  const result = deploy("", "RAILWAY_TOKEN");
-  expect(result.code).not.toBe(0);
-  expect(result.calls).toBe("");
-  expect(result.error).toContain("RAILWAY_TOKEN");
 });
