@@ -3237,6 +3237,21 @@ const server = Bun.serve({
           return controlFail(403, "forbidden", "Only organization members can list hosts.");
         return json({ placement: true, hosts: dockerHosts });
       }
+      if (route === "launch/options" && dockerHosts !== null) {
+        if (!viewer(request)) return controlFail(401, "unauthorized", "Sign in again.");
+        return json({
+          providers: [
+            {
+              id: "docker",
+              enabled: true,
+              launchSources: ["image"],
+              harnesses: ["claude", "codex"],
+              capabilities: { launch: true, followupPrompts: true, stop: true, delete: true, status: true, logs: true },
+              unsupportedReasons: {},
+            },
+          ],
+        });
+      }
       if (route === "auth/email/start") return json({ ok: true });
       if (route === "skillpack/catalog" || route === "skillpack/versions")
         return skillCatalogRoute(route, body, request);
