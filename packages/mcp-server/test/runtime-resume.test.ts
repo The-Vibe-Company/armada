@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { createSqlVaultStore } from "@armada/core/server";
 import { sandbox as sdkSandbox } from "../../provider-boat/test/support.ts";
 import { boatRuntimeResume } from "../src/boat-runtime-resume.ts";
@@ -31,9 +31,18 @@ const input = (id: string) => ({
   prompt: "continue the previous conversation",
 });
 
-test("resume reopens the same journal into a new attested epoch; stable replay never activates or starts a turn twice", async () => {
-  const f = await stopped();
-  try {
+describe("retained runtime resume", () => {
+  let f: Awaited<ReturnType<typeof stopped>>;
+  // Cold WASM/migrations and building the stopped checkpoint are prerequisites,
+  // not resume/replay work. Keep the behavior timeout and real assertions intact.
+  beforeAll(async () => {
+    f = await stopped();
+  }, 20_000);
+  afterAll(async () => {
+    await f?.close();
+  });
+
+  test("resume reopens the same journal into a new attested epoch; stable replay never activates or starts a turn twice", async () => {
     const old = f.active;
     let activations = 0;
     const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, async () => ({
@@ -73,9 +82,7 @@ test("resume reopens the same journal into a new attested epoch; stable replay n
     ).toBe(true);
     await expect(resume(f.caller, { ...request, prompt: "different" })).rejects.toMatchObject({ code: "conflict" });
     expect(activations).toBe(1);
-  } finally {
-    await f.close();
-  }
+  });
 });
 
 test("an already enrolled uncertain resume reconciles on a fresh server without another activation or ticket", async () => {
