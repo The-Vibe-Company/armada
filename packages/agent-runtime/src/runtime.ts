@@ -25,6 +25,7 @@ import {
 } from "./protocol.ts";
 import { sampleVmResources } from "./resource-sampler.ts";
 import { installRuntimeSkills } from "./skills.ts";
+import { executeWorkspace, validateWorkspaceExec } from "./workspace-exec.ts";
 export class Runner {
   private active = new Map<
     string,
@@ -32,6 +33,7 @@ export class Runner {
   >();
   private barrier = false;
   private installingSkills = false;
+  private preparingWorkspace = false;
   private mcp: McpConfiguration | undefined;
   private nativeEpoch: NativeEpoch;
   private execEnvironment: Readonly<Record<string, string>>;
@@ -476,6 +478,7 @@ export class Runner {
         generation: this.grant.generation,
         mcpVersion: 1,
         skillsVersion: 1,
+        workspaceVersion: 1,
         ready: !this.barrier,
         pid: process.pid,
       };
@@ -548,8 +551,53 @@ export class Runner {
       return { watermark, acknowledgedSequence: this.journal.ack, generation: this.grant.generation };
     }
     if (this.barrier) throw Error("checkpoint_in_progress");
+    if (this.preparingWorkspace && !["getPrompt", "events", "getExec"].includes(r.op))
+      throw Error("workspace_setup_in_progress");
     if (this.installingSkills && !["getPrompt", "events", "getExec"].includes(r.op))
       throw Error("skills_install_in_progress");
+    if (r.op === "workspaceExec") {
+      if (
+        this.credentialFreeBuilder ||
+        this.active.size ||
+        this.commands.size ||
+        this.resumingNative ||
+        this.journal.db.query("SELECT 1 FROM prompts LIMIT 1").get()
+      )
+        throw Error("workspace_launch_only");
+      const input = validateWorkspaceExec(r.input);
+      this.preparingWorkspace = true;
+      const workspaceEvent = (status: "running" | "finished" | "failed", exitCode?: number | null) =>
+        this.journal.append({
+          id: `workspace_${r.requestId}_${status}`,
+          at: Date.now(),
+          kind: "other",
+          type: "armada/workspaceStep",
+          data: {
+            phase: input.phase,
+            index: input.index,
+            attempt: input.attempt,
+            status,
+            ...(exitCode !== undefined ? { exitCode } : {}),
+          },
+        });
+      workspaceEvent("running");
+      const work = (async () => {
+        await this.execution.prepareWorkspace?.();
+        return executeWorkspace(input, this.journal, this.execEnvironment, signal);
+      })();
+      this.commands.add(work);
+      try {
+        const result = await work;
+        workspaceEvent(!result.timedOut && result.exitCode === 0 ? "finished" : "failed", result.exitCode);
+        return result;
+      } catch (error) {
+        workspaceEvent("failed");
+        throw error;
+      } finally {
+        this.commands.delete(work);
+        this.preparingWorkspace = false;
+      }
+    }
     if (r.op === "installSkills") {
       if (
         this.credentialFreeBuilder ||

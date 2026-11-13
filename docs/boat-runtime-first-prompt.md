@@ -308,14 +308,17 @@ recorded success/refusal; use the normal new-request policy for new work.
 
 ### Refused today / remaining parity (do not call this cutover-ready)
 
-- **Repository refresh, automatic GitHub initialization and golden init commands.**
-  Ordinary native launch promises these, while runtime currently uses a saved
-  checkout as-is. The default switch conservatively refuses this mismatch before
-  allocation. **Every newly valid golden requires a repo, so all such ordinary
-  Boat launches are currently refused in runtime-default mode.** The existing
-  explicit snapshot-runtime endpoint is unchanged. This gate needs real repo/
-  GitHub setup parity (or explicit owner approval of changed snapshot semantics),
-  not a silent skip. The switch is preparation, not a usable production cutover.
+Repository refresh/init is now performed at launch through private runtime
+workspace commands, reusing the native command builders and execution policy:
+configured repository order/branches, `pull --ff-only` without reset,600-second
+step deadlines, the same single ownership retry, then ordered init in
+`/home/user`. Automatic current-epoch GitHub broker setup precedes pulls when
+connected; public/local git remains possible without a connection. Initialization
+uses the existing model-credential-free runtime execution environment and scoped
+GitHub wrappers, not borrowed model keys or native Boat exec/SSH. Background or
+failed setup cannot proceed to inference. General public exec remains unsupported.
+
+Remaining refusals:
 - Idle launches with no initial prompt; current continuation requires an existing
   runtime conversation.
 - Claude/OpenCode (current ordinary runtime admission is Codex-only), private
@@ -345,15 +348,56 @@ ARMADA_SMOKE=create_real_compute bun scripts/post-deploy-smoke.ts
 Confirm `launch/options.boatRuntime.defaultPath:runtime`. A successful future
 case must have persisted `boatRuntime:true` and archived
 `logs/read.source:armada-runtime`, not Boat-native events; standard send/wait,
-git probes and stop must all pass. **Today the repo/init gate should refuse
-clearly before allocating**, so the standard case cannot pass yet. Do not remove
-that gate or relax the standard smoke to conceal remaining work, and do not
+git probes and stop must all pass. Repository/init admission is implemented; **the standard smoke still uses an
+idle launch and later exec/git probes, which remain refused** until those next
+slices. Do not relax the standard smoke to conceal remaining work, and do not
 retry allocation after an ambiguous result. Roll back the server setting to
 `native` for ordinary native launches; no deletion is authorized here.
 
 Owner staging facts (12:38:43Z): Boat quota exhausted (`launch-runtime-v1`429),
 no effective smoke golden/org/user default skills and no named MCP connection.
 No live check or setting flip by this worker. Skills/MCP rows remain orange.
+
+## Repository/init runtime staging check
+
+The operator-only workspace check reuses an existing golden recipe; no new
+canary, branch, repository or secret input is required. With the same existing
+staging Armada origin/token/org/golden/Codex account:
+
+```sh
+ARMADA_RUNTIME_SMOKE=one_real_boat_launch \
+  bun scripts/check-boat-runtime.ts --workspace --resume
+```
+
+ONE allocation + ONE same-VM activation (two host starts), three prompts, two
+stops; no allocation/activation retry. Preflight requires workspace-v1 server
+support and reads the selected golden's repository/init counts before allocating.
+The guest independently proves workspace-v1 health in the current epoch before
+GitHub authority or commands are delivered; old artifacts refuse, never use
+native setup. The server image publishes the updated compiled artifact normally.
+
+Require archived `source:armada-runtime` / `type:armada/workspaceStep`: every
+configured repository and init step must finish before any first prompt event.
+Failed setup prevents inference; command output is bounded/redacted, not copied
+into diagnostic events. Retry is only the native completed Git-ownership refusal,
+not uncertain command delivery. Stable command IDs replay cached outcomes, never
+run init twice. Workspace operations are launch-only: existing journal prompts
+prevent re-running setup even after process reconstruction. Cancellation closes
+the owned process group before the private operation returns.
+
+Final `workspace:verified` and `workspaceAfterResume:preserved_without_rerun`
+require original setup history, exact replies/terminal events, same conversation,
+epoch+1 and stopped readback. Resume must not emit new workspace setup events or
+overwrite user work. The check deliberately skips skill defaults/MCP in this
+bounded workspace slice; adding `--skills --mcp` can batch their existing gates
+once those resources are configured, still without extra allocation. It is not a
+proof of idle/public exec or any other currently refused feature.
+
+Current owner facts remain: quota exhausted today, no smoke default skills or
+named MCP connection. No live attempt or setting flip by this worker; real
+repository/init staging acceptance remains pending. Next smallest refusal is idle
+launch/first send, then the remaining owned parity gates; Claude/cost/subscription
+work remains with #1419/#1420.
 
 ## Cutover boundary
 

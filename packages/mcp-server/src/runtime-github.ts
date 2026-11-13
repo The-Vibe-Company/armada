@@ -39,7 +39,7 @@ const snapshot = `select jsonb_build_object('sandboxId',s.id,'ownerId',s.owner_i
  join public.mcp_actor_epochs e on e.org_id=m.org_id and e.user_id=m.user_id
  join public.github_connections c on c.user_id=s.owner_id and c.revoked_at is null
  where s.id=$1 and s.boat_runtime and s.provider='boat' and s.harness='codex'
- and s.status in ('ready','running') and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>now()
+ and (s.status in ('ready','running') or (s.status='starting' and s.activity_lease_id is not null and s.activity_until>now())) and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>now()
  and not exists(select 1 from public.runtime_checkpoints p where p.sandbox_id=s.id and p.epoch=r.epoch)`;
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 function allowed(binding: Pick<Binding, "repositories">, repo: string) {
@@ -171,11 +171,11 @@ export function createRuntimeGitHub(options: {
       return empty;
     }
   }
-  async function prepare(caller: Caller, id: string) {
+  async function prepare(caller: Caller, id: string, resolved?: Awaited<ReturnType<typeof resolveGitHubAccess>>) {
     const s = await owner(caller, id);
     if (!options.github.app) return denied();
     const before = await authority.withOwner(id, s.ownerId, (tx) => current(tx, id));
-    const access = await resolveGitHubAccess({ ...options.github, caller: "managed_runtime" }, s.ownerId);
+    const access = resolved ?? (await resolveGitHubAccess({ ...options.github, caller: "managed_runtime" }, s.ownerId));
     if (access.status !== "connected" || access.identity.id !== before.binding.githubId) return denied();
     const identity = gitIdentity(access.identity);
     const issuedCap = await authority.withOwner(id, s.ownerId, async (tx, scope) => {
@@ -288,5 +288,16 @@ export function createRuntimeGitHub(options: {
       return new Response(null, { status: 403, headers });
     }
   };
-  return { prepare, status, preflight, route };
+  async function prepareLaunch(caller: Caller, id: string) {
+    const s = await owner(caller, id);
+    const access = await resolveGitHubAccess({ ...options.github, caller: "managed_runtime" }, s.ownerId);
+    if (access.status !== "connected") return { status: access.status, message: access.message };
+    const result = await prepare(caller, id, access);
+    return {
+      status: result.status,
+      login: result.login,
+      ...(access.expiresAt ? { tokenExpiresAt: access.expiresAt.toISOString() } : {}),
+    };
+  }
+  return { prepare, prepareLaunch, status, preflight, route };
 }

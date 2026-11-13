@@ -62,6 +62,7 @@ export function createRuntimeAgent(
     try {
       reply = await commands.call(ownerId, command, {
         ...(signal ? { signal } : {}),
+        ...(command.op === "workspaceExec" ? { timeoutMs: 610_000 } : {}),
         ...(expectedEpoch !== undefined ? { expectedEpoch } : {}),
       });
     } catch {
@@ -120,6 +121,47 @@ export function createRuntimeAgent(
       )
         throw refusal("sandbox_not_ready");
       return { runtime: "armada", epoch: reply.epoch };
+    },
+    async workspaceHealth(epoch: string, signal?: AbortSignal) {
+      const health = await invoke<{ ready?: unknown; generation?: unknown; workspaceVersion?: unknown }>(
+        { ...identity(), op: "health" },
+        signal,
+        epoch,
+      );
+      if (health.ready !== true || health.generation !== epoch || health.workspaceVersion !== 1)
+        throw new Error("Boat runtime workspace setup requires updated runtime artifacts; no native fallback.");
+    },
+    async workspaceExec(
+      request: import("@armada/core").ExecRequest,
+      step: { phase: "repository" | "init"; index: number; attempt: number },
+      epoch: string,
+      signal?: AbortSignal,
+    ) {
+      target(request.sandboxId);
+      if (request.detached) throw refusal("invalid_request");
+      const result = await invoke<import("@armada/core").ExecResult>(
+        {
+          ...identity(`workspace_${epoch}_${step.phase}_${step.index}_${step.attempt}`),
+          op: "workspaceExec",
+          input: {
+            command: request.command,
+            cwd: request.cwd ?? "/home/user",
+            timeoutSeconds: request.timeoutSeconds ?? 600,
+            ...step,
+          },
+        },
+        signal,
+        epoch,
+      );
+      if (
+        !result ||
+        result.detached !== false ||
+        typeof result.stdout !== "string" ||
+        typeof result.stderr !== "string" ||
+        !(result.exitCode === null || Number.isInteger(result.exitCode))
+      )
+        throw refusal("unavailable");
+      return result;
     },
     async installSkills(
       references: string[],

@@ -30,6 +30,7 @@ import {
   type SandboxRecord,
   type SandboxStore,
 } from "../src/index.ts";
+import { prepareLaunchWorkspace } from "../src/launch.ts";
 import { catalogLock, catalogReference } from "./support/skillpack-catalog.ts";
 
 const ORG = "11111111-1111-4111-8111-111111111111";
@@ -53,7 +54,7 @@ const owner: GoldenActor = { userId: OWNER, orgId: ORG, role: "member" };
 const other: GoldenActor = { userId: OTHER, orgId: ORG, role: "member" };
 
 describe("launch", () => {
-  test("deployment runtime default refuses unsupported ordinary golden work before native credentials or compute", async () => {
+  test("deployment runtime default refuses idle ordinary requests before native credentials or compute", async () => {
     const world = setup({ golden: golden("org") });
     let selected = 0;
     const forbidden = async (): Promise<never> => {
@@ -66,7 +67,7 @@ describe("launch", () => {
         world.provider,
         world.stores,
         owner,
-        { golden: "web", harness: "codex", prompt: "ordinary client request" },
+        { golden: "web", harness: "codex" },
         {
           boatRuntimeDefault: {
             policy: { start: forbidden },
@@ -79,11 +80,105 @@ describe("launch", () => {
           },
         },
       ),
-    ).rejects.toMatchObject({ code: "invalid_request", message: expect.stringContaining("repository refresh") });
+    ).rejects.toMatchObject({ code: "invalid_request", message: expect.stringContaining("idle sandbox") });
     expect(selected).toBe(0);
     expect(world.forks).toHaveLength(0);
   });
 
+  test("ordinary runtime default uses private native-equivalent repo/init setup before MCP, final admission and inference", async () => {
+    const world = setup({ golden: golden("org") }),
+      order: string[] = [],
+      commands: string[] = [];
+    const resolve = world.stores.credentials.resolve.bind(world.stores.credentials);
+    const credentials = {
+      ...world.stores.credentials,
+      async resolve(...args: Parameters<typeof resolve>) {
+        return { ...(await resolve(...args)), binding: { credentialId: OWNER, credentialVersion: 1 } };
+      },
+    };
+    const result = await launchSandbox(
+      world.provider,
+      world.stores,
+      owner,
+      { golden: "web", harness: "codex", prompt: "ordinary request" },
+      {
+        beforeStart: async () => {
+          order.push("admit");
+        },
+        boatRuntimeDefault: {
+          provider: async () => world.provider,
+          credentials,
+          connections: {
+            async validate() {},
+            async bind() {
+              order.push("bind");
+            },
+            async prepare() {
+              order.push("mcp");
+            },
+          },
+          policy: {
+            async start() {
+              order.push("start");
+              return {
+                epoch: "1",
+                async prepareWorkspace(g, onStage, _sleep) {
+                  order.push("workspace");
+                  let retry = false;
+                  await prepareLaunchWorkspace(
+                    {
+                      id: "boat",
+                      exec: async () => {
+                        throw Error("No native exec");
+                      },
+                    },
+                    "bx_1",
+                    "logical",
+                    g,
+                    [],
+                    onStage,
+                    async (ms) => {
+                      expect(ms).toBe(1000);
+                      retry = true;
+                    },
+                    async (req, step) => {
+                      commands.push(`${step.phase}:${step.index}:${step.attempt}:${req.cwd}:${req.command}`);
+                      return {
+                        detached: false as const,
+                        timedOut: false,
+                        truncated: false,
+                        exitCode: step.phase === "repository" && step.index === 0 && step.attempt === 0 ? 128 : 0,
+                        stdout: "",
+                        stderr:
+                          step.phase === "repository" && step.index === 0 && step.attempt === 0
+                            ? "detected dubious ownership in repository"
+                            : "",
+                      };
+                    },
+                  );
+                  expect(retry).toBe(true);
+                  return { status: "not_connected" };
+                },
+                async prompt() {
+                  expect(order).toEqual(["bind", "start", "workspace", "mcp", "admit"]);
+                  return { promptId: "runtime", conversationId: "conversation", status: "queued" };
+                },
+              };
+            },
+          },
+        },
+      },
+    );
+    expect(result.runtime).toEqual({ kind: "armada", epoch: "1" });
+    expect(commands).toHaveLength(4);
+    expect(commands[0]).toContain("repository:0:0:/home/user/web:");
+    expect(commands[1]).toContain("repository:0:1:");
+    expect(commands[2]).toContain("repository:1:0:/home/user/api:");
+    expect(commands[3]).toContain("init:0:0:/home/user:");
+    expect(world.execs).toHaveLength(0);
+    expect(world.prompts).toHaveLength(0);
+    expect(world.forks[0]?.env).toEqual({});
+  });
   test.each(["key", "auth"] as const)(
     "experimental %s launch hands off after persisted selection, never native setup/prompt",
     async (kind) => {
@@ -135,7 +230,7 @@ describe("launch", () => {
         async prepare(_provider, record, _actor, signal) {
           expect(record.boatRuntime).toBe(true);
           expect(signal?.aborted).toBe(false);
-          expect(order).toEqual(["bind", "start", "skills"]);
+          expect(order).toEqual(["bind", "start", "workspace", "skills"]);
           order.push("mcp");
         },
       };
@@ -162,6 +257,11 @@ describe("launch", () => {
               expect(input.credentials.codexAuthJson).toBe(kind === "auth");
               return {
                 epoch: "3",
+                async prepareWorkspace(golden) {
+                  expect(golden.config.repos).toHaveLength(2);
+                  order.push("workspace");
+                  return { status: "not_connected" as const };
+                },
                 async installSkills(references, key) {
                   expect(references).toEqual(pins);
                   expect(key).toBe(skillKey);
@@ -175,7 +275,7 @@ describe("launch", () => {
                   }));
                 },
                 async prompt(request) {
-                  expect(order).toEqual(["bind", "start", "skills", "mcp"]);
+                  expect(order).toEqual(["bind", "start", "workspace", "skills", "mcp"]);
                   expect(recorded).toHaveLength(2);
                   calls.push(request);
                   return { promptId: "runtime-prompt", conversationId: "runtime-conversation", status: "queued" };
@@ -254,6 +354,9 @@ describe("launch", () => {
               if (failure === "startup") throw Error(OPENAI_KEY);
               return {
                 epoch: failure === "invalid-epoch" ? "0" : "1",
+                async prepareWorkspace() {
+                  return { status: "not_connected" as const };
+                },
                 async prompt() {
                   throw Error(OPENAI_KEY);
                 },
