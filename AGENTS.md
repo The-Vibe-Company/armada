@@ -72,6 +72,9 @@ standalone migration workflow retains manual previews/history/owner repair,
 never per-commit production applies.
 Ordinary queued staging-main sources are superseded before mutation when newer
 main exists; started deployments and explicit pinned release smoke are never cancelled.
+Publishing releases first validate required staging/production configuration,
+including before Release Please announces/tags or image/npm/host publication;
+ordinary preparation/dry runs do not access production secrets.
 Binaries are built by the release workflow when a version is published.
 
 What CI does not do, and must not be added back:
