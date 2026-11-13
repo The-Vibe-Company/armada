@@ -28,6 +28,7 @@ import { requireDatabaseSchema } from "./database-schema.ts";
 import { createDockerBootstrapService } from "./docker-bootstrap-service.ts";
 import { createDockerHostRoutes } from "./docker-host-routes.ts";
 import { createDockerHostStore } from "./docker-host-store.ts";
+import { createDockerNormalLaunch } from "./docker-normal-launch.ts";
 import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
 import { createDockerSandboxControls } from "./docker-sandbox-controls.ts";
 import { createDockerSandboxRoutes } from "./docker-sandbox-routes.ts";
@@ -290,6 +291,7 @@ export async function startServer(
   }
   // Docker placement is a separate, explicit API preview. Host polling remains
   // enabled independently so disabling new placement does not strand cleanup.
+  const dockerCredentials = launchCredentials(store, config.encryptionKey, undefined, modelAuth);
   const dockerEnabled = env.ARMADA_DOCKER_HOSTS === "1" && env.ARMADA_DOCKER_PLACEMENT === "1";
   let dockerBootstrap: ReturnType<typeof createDockerBootstrapService> | undefined;
   if (dockerEnabled) {
@@ -309,7 +311,7 @@ export async function startServer(
         manifest: dockerManifest,
         architecture: dockerManifest.architecture,
         // Plain-image launches resolve only the model account, not GitHub or host credentials.
-        credentials: launchCredentials(store, config.encryptionKey, undefined, modelAuth),
+        credentials: dockerCredentials,
         modelAuth,
       });
     } catch {
@@ -327,13 +329,23 @@ export async function startServer(
   );
   const dockerControls =
     env.ARMADA_DOCKER_HOSTS === "1" ? createDockerSandboxControls(sql, config.encryptionKey) : undefined;
+  const dockerLaunchEnabled = dockerEnabled && Boolean(dockerBootstrap);
+  const dockerLaunch =
+    env.ARMADA_DOCKER_HOSTS === "1"
+      ? createDockerNormalLaunch(sql, config.encryptionKey, {
+          enabled: dockerLaunchEnabled,
+          credentials: dockerCredentials,
+          ...(dockerBootstrap ? { bootstrap: dockerBootstrap } : {}),
+        })
+      : undefined;
   const control: ConfiguredControlOptions = {
     ...(dockerControls ? { dockerControls } : {}),
+    ...(dockerLaunch ? { dockerLaunch } : {}),
     docker: {
       hosts: env.ARMADA_DOCKER_HOSTS === "1",
       placement: dockerEnabled,
       normalApi: Boolean(dockerControls),
-      normalLaunch: false,
+      normalLaunch: dockerLaunchEnabled,
     },
     runtimeSend,
     runtimeCheckpoint,
@@ -467,12 +479,15 @@ export async function startServer(
                   now: new Date(),
                 }),
             ),
-            createDockerHostRoutes(createDockerHostStore(sql, config.encryptionKey), (request) =>
-              authenticateCaller(request.headers.get("authorization"), {
-                store: authStore,
-                supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
-                now: new Date(),
-              }),
+            createDockerHostRoutes(
+              createDockerHostStore(sql, config.encryptionKey),
+              (request) =>
+                authenticateCaller(request.headers.get("authorization"), {
+                  store: authStore,
+                  supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
+                  now: new Date(),
+                }),
+              { placement: dockerLaunchEnabled },
             ),
           ]
         : []),
@@ -571,6 +586,10 @@ export async function startServer(
       workerDone: Promise.resolve(),
     },
   );
+  // Cold image pulls/bootstrap can exceed Bun's default ten-second idle window.
+  // Only authenticated normal Docker launches opt out; their service deadline
+  // remains bounded, and other providers/routes keep their existing timeouts.
+  control.configureDockerLaunchRequest = (request) => server.timeout(request, 0);
   const lifecycle = createSandboxLifecycle(sql, createMcpSandboxProviderResolver(sql, providers));
   const workers = startServerWorkers(
     goldenBuilds,
