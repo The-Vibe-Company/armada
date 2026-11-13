@@ -60,6 +60,7 @@ import type { OrchestratorPair } from "./orchestrator-activation.ts";
 import type { OrchestratorRuntime } from "./orchestrator-runtime.ts";
 import type { GoldenProviderMetadata } from "./provider-metadata.ts";
 import { summarizeResourceHistory } from "./resource-advice.ts";
+import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
 import { sandboxActivity } from "./sandbox-activity.ts";
 import { extendSandbox } from "./sandbox-extend.ts";
@@ -75,6 +76,7 @@ import { recordStopDispatch } from "./work-preservation.ts";
 
 /** Everything a tool call may use, for one authenticated request. */
 export interface ToolContext {
+  runtimeCheckpoint?: RuntimeCheckpoint;
   runtimeSend?: RuntimeFollowup;
   measure?: import("./request-timing.ts").RequestTiming["measure"];
   storedProvider?(target: ProviderTarget): Promise<Provider>;
@@ -1337,6 +1339,31 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       if (!data.sandboxes.reportTaskOutcome) throw new ToolError("conflict", "Task reporting is unavailable.");
       await data.sandboxes.reportTaskOutcome(args.id, found.taskPromptId!, args.outcome, found.lifecycleGeneration);
       return { id: args.id, taskOutcome: args.outcome };
+    },
+  );
+
+  tool(
+    "runtime_checkpoint",
+    {
+      title: "Checkpoint an opted-in runtime",
+      description:
+        "Quiesce and seal the current Boat runtime journal/harness state before compute stop. Does not stop the VM or promise disk retention/resume. Owner-only; reuse request_id on uncertainty. New sends remain fenced until fresh enrolment.",
+      input: { id, request_id: z.string().uuid(), runtimeVersion: z.literal(1) },
+      output: {
+        id: z.string(),
+        requestId: z.string(),
+        runtime: z.object({ kind: z.literal("armada"), epoch: z.string() }),
+        checkpoint: z.object({
+          state: z.literal("complete"),
+          watermark: z.number().int().nonnegative(),
+          acknowledgedSequence: z.number().int().nonnegative(),
+        }),
+      },
+      destructive: true,
+    },
+    async (args) => {
+      if (!context.runtimeCheckpoint) throw new ToolError("unsupported", "Runtime checkpoint is unavailable.");
+      return context.runtimeCheckpoint(caller, args);
     },
   );
 

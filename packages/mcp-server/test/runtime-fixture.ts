@@ -1,0 +1,235 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { type Driver, HarnessState, Journal, Runner, type RunnerRequest } from "@armada/agent-runtime";
+import { createSqlSandboxStore, type Sql } from "@armada/core/server";
+import { createSqlData } from "../src/data.ts";
+import { createRuntimeAgent } from "../src/runtime-agent.ts";
+import { createRuntimeCommands } from "../src/runtime-commands.ts";
+import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
+import { createRuntimeEvents } from "../src/runtime-events.ts";
+import { createRuntimeFollowup } from "../src/runtime-followup.ts";
+import type { ToolContext } from "../src/tools.ts";
+import { database, ENCRYPTION_KEY } from "./support.ts";
+
+export async function runtimeFixture() {
+  const { db, people } = await database();
+  const root = await mkdtemp(join(tmpdir(), "runtime-followup-"));
+  const journal = new Journal(join(root, "journal"), (value) => value);
+  const sql: Sql = {
+    query: (q, v) => db.query(q, v),
+    transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
+  };
+  const caller = {
+    userId: people.owner,
+    orgs: [{ orgId: people.org, role: "member" as const }],
+    via: "service" as const,
+  };
+  const account = (
+    await db.query<{ id: string; version: number }>(
+      "select id,version from credentials where kind='openai' and owner_id=$1",
+      [people.org],
+    )
+  ).rows[0]!;
+  const golden = (
+    await db.query<{ id: string }>("select id from goldens where org_id=$1 and visibility='org'", [people.org])
+  ).rows[0]!;
+  const row = await createSqlSandboxStore(sql).insert({
+    id: crypto.randomUUID(),
+    provider: "boat",
+    providerSandboxId: "physical",
+    goldenId: golden.id,
+    orgId: people.org,
+    ownerId: people.owner,
+    harness: "codex",
+    status: "ready",
+    visibility: "org",
+    model: "gpt-5.4",
+    reasoningEffort: "high",
+    boatRuntime: true,
+    credentialId: account.id,
+    credentialVersion: account.version,
+  });
+  const authority = createRuntimeEnrolments(sql, ENCRYPTION_KEY);
+  const active = await authority.enrol(
+    (await authority.issue({ sandboxId: row.id, ownerId: people.owner, configuration: {} })).enrolmentToken,
+  );
+  const starts: (string | undefined)[] = [];
+  let lost = false,
+    now = 0;
+  let nextDone: Promise<"finished" | "interrupted"> | undefined;
+  let checkpointFault: "generation" | "prefix" | "ack" | undefined;
+  let afterProbe: (() => Promise<void>) | undefined;
+  let nextInterrupt: (() => void) | undefined;
+  const driver: Driver = {
+    start(context) {
+      starts.push(context.sessionId);
+      context.session("native-thread");
+      const done = nextDone ?? Promise.resolve("finished" as const);
+      nextDone = undefined;
+      const interrupt = nextInterrupt;
+      nextInterrupt = undefined;
+      return {
+        done,
+        async steer() {},
+        async interrupt() {
+          interrupt?.();
+        },
+      };
+    },
+    async close() {},
+  };
+  const grant = {
+    sandboxId: row.id,
+    generation: active.epoch,
+    token: active.runtimeToken,
+    expiresAt: Date.now() + 60000,
+  };
+  const state = new HarnessState(root, (value) => value);
+  await state.restore(grant, journal.assertRestoreSource(grant));
+  const runner = new Runner(
+    journal,
+    grant,
+    { codex: driver },
+    {
+      async append(batch) {
+        const reply = await createRuntimeEvents(authority, ENCRYPTION_KEY).append(
+          active.runtimeToken,
+          active.epoch,
+          batch,
+        );
+        if (!("acknowledgedSequence" in reply)) throw Error("wrong ACK");
+        return reply;
+      },
+    },
+    undefined,
+    async () => {
+      await state.checkpoint(grant);
+      journal.sanitize();
+    },
+  );
+  const bridge = createRuntimeCommands(authority, ENCRYPTION_KEY, {
+    now: () => now,
+    async wait() {
+      now++;
+      const command = (await bridge.next(active.runtimeToken, active.epoch)).command;
+      if (!command) throw Error("Expected a durable command, not a timer wait");
+      // Fake guest mount maps /home/user to the fixture home; all request identity,
+      // Runner/session/journal/SQL/epoch behavior remains real. No host/provider I/O.
+      const wire: RunnerRequest =
+        command.op === "prompt" ? { ...command, input: { ...command.input, cwd: root } } : command;
+      const reply = await runner.handle(
+        new Request("http://runtime/v1", {
+          method: "POST",
+          headers: { "x-armada-runner-grant": active.runtimeToken },
+          body: JSON.stringify(wire),
+        }),
+      );
+      const responseBody = (await reply.json()) as {
+        result?: { watermark: number; acknowledgedSequence: number; generation: string };
+      };
+      if (command.op === "checkpoint" && checkpointFault && responseBody.result) {
+        if (checkpointFault === "generation") responseBody.result.generation = "999";
+        if (checkpointFault === "prefix") {
+          responseBody.result.watermark++;
+          responseBody.result.acknowledgedSequence++;
+        }
+        if (checkpointFault === "ack") responseBody.result.acknowledgedSequence--;
+      }
+      await bridge.complete(active.runtimeToken, active.epoch, {
+        epoch: active.epoch,
+        requestId: command.requestId,
+        status: reply.status,
+        body: responseBody,
+      });
+      if (afterProbe && command.op === "getPrompt") {
+        const competing = afterProbe;
+        afterProbe = undefined;
+        await competing();
+      }
+      if (lost && command.op === "prompt" && command.requestId.startsWith("follow_")) {
+        lost = false;
+        throw Error("lost_wait_after_commit");
+      }
+    },
+  });
+  const agent = createRuntimeAgent(bridge, {
+    ownerId: people.owner,
+    sandboxId: row.id,
+    providerSandboxId: "physical",
+    cwd: root,
+    defaults: { model: "gpt-5.4", reasoningEffort: "high" },
+  });
+  const first = await agent.prompt({ sandboxId: "physical", harness: "codex", text: "initial" });
+  await createSqlData(sql)(caller).sandboxes.update(row.id, {
+    status: "running",
+    taskPromptId: first.promptId,
+    conversationIds: [first.conversationId],
+  });
+  await runner.flushOutbox();
+  const send = createRuntimeFollowup(sql, ENCRYPTION_KEY, bridge);
+  const context: ToolContext = {
+    caller,
+    data: createSqlData(sql)(caller),
+    runtimeSend: send,
+    async provider() {
+      throw Error("No host/native provider resolution");
+    },
+    launchCredentials: {
+      async resolve() {
+        throw Error("No native credential hooks");
+      },
+    },
+    async exposedSecrets() {
+      throw Error("No native secret reads");
+    },
+    now: () => new Date(),
+    async sleep() {
+      throw Error("No wall-clock sleeps");
+    },
+  };
+  const input = (prompt = "follow-up") => ({
+    id: row.id,
+    prompt,
+    request_id: crypto.randomUUID(),
+    conversation_id: first.conversationId,
+  });
+  return {
+    root,
+    db,
+    people,
+    sql,
+    caller,
+    row,
+    account,
+    active,
+    starts,
+    first,
+    runner,
+    journal,
+    authority,
+    bridge,
+    send,
+    context,
+    input,
+    tamper(mode: "generation" | "prefix" | "ack") {
+      checkpointFault = mode;
+    },
+    hold(done: Promise<"finished" | "interrupted">, interrupt?: () => void) {
+      nextDone = done;
+      nextInterrupt = interrupt;
+    },
+    race(work: () => Promise<void>) {
+      afterProbe = work;
+    },
+    lose() {
+      lost = true;
+    },
+    async close() {
+      await runner.flushOutbox().catch(() => {});
+      journal.close();
+      await db.close();
+      await rm(root, { recursive: true, force: true });
+    },
+  };
+}
