@@ -162,3 +162,24 @@ extra history. This avoids importing unrelated historical credentials into a
 snapshot. Token-shaped test fixtures must be assembled at runtime rather than
 stored literally in source; the scan does not exempt test files. Boat and Modal
 checkout behavior is unchanged.
+
+### Normal launch preparation
+
+Normal owner Docker launches (including snapshot launches) return their persisted
+sandbox reservation promptly: `sandbox.status: "starting"`, `runtime: null`, and
+no prompt receipt yet. The server's dedicated launch worker prepares the runtime,
+GitHub access, repository checkout and environment before admitting the first
+prompt. Replay the **identical** `sandbox/launch` request (same `requestId`) to
+obtain the final prompt receipt, or inspect sandbox status for a plain failure
+reason. `scripts/smoke-docker-lifecycle.py` handles both accepted and older
+synchronous responses. A starting receipt is not proof that checkout succeeded.
+
+Repository checkout uses a shallow branch clone with a bounded runtime command;
+a slow clone no longer holds the launch HTTP response open. The server stores
+only fixed phase diagnostics, never Git output, credentials or exception text.
+Missing GitHub access becomes an authorization failure on the admitted sandbox.
+Durable worker leases are renewed while preparing; another server resumes an
+unfinished manifest after lease expiry (30 seconds) following a restart. Pending
+launches are not ready for user prompts until preparation completes. Template
+launches retain their existing synchronous admission callbacks and authorization
+rechecks; this change does not move those callbacks into background work.

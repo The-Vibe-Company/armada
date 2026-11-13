@@ -5,6 +5,7 @@ import {
   type AgentEvent,
   DOCKER_DEFAULT_IMAGE,
   DOCKER_IMAGE_UNAVAILABLE_MESSAGE,
+  DOCKER_LAUNCH_FAILURE_MESSAGES,
   type DockerLaunchResult,
   type DockerSandboxStatus,
   type Harness,
@@ -140,7 +141,8 @@ async function fixture(
   let session: Awaited<ReturnType<typeof authority.enrol>> | undefined;
   const receipt = { promptId: randomUUID(), conversationId: randomUUID(), status: "queued" };
   const jobs: unknown[] = [],
-    native: unknown[] = [];
+    native: unknown[] = [],
+    checkoutStatuses: string[] = [];
   async function step() {
     const job = await hosts.poll(host.hostToken, installationId, options.daemonVersion ?? "2.28.0");
     if (job) {
@@ -165,6 +167,11 @@ async function fixture(
       if (next.command) {
         const command = next.command;
         native.push(command);
+        if (command.op === "exec")
+          checkoutStatuses.push(
+            (await db.query<{ status: string }>("select status from public.sandboxes where id=$1", [body.requestId]))
+              .rows[0]!.status,
+          );
         await commands.complete(session.runtimeToken, session.epoch, {
           epoch: session.epoch,
           requestId: command.requestId,
@@ -245,9 +252,16 @@ async function fixture(
     });
     return createRuntimeMcp({ sql: target, key, origin: "https://armada.example", commands: bridge });
   }
-  function service(target = sql, enabled = true, timeoutMs = 10_000, releaseImage: string | null = officialImage) {
+  function service(
+    target = sql,
+    enabled = true,
+    timeoutMs = 10_000,
+    releaseImage: string | null = officialImage,
+    deferLaunch = false,
+  ) {
     return createDockerNormalLaunch(target, key, {
       enabled,
+      deferLaunch,
       ...(releaseImage === null ? {} : { officialImage: releaseImage }),
       credentials: resolver,
       bootstrap,
@@ -272,6 +286,7 @@ async function fixture(
     clock,
     jobs,
     native,
+    checkoutStatuses,
     receipt,
     github,
     service,
@@ -794,6 +809,97 @@ test.each(["claude", "opencode"] as const)("normal Docker launch selects and boo
     expect.objectContaining({ op: "prompt", input: expect.objectContaining({ harness }) }),
   );
 });
+
+test("deferred launch reconciles an uncertain first-prompt receipt without marking it failed or dispatching twice", async () => {
+  const f = await fixture();
+  let failed = false;
+  const interrupted: Sql = {
+    ...sql,
+    transaction: async (work) => {
+      if (!sql.transaction) throw Error("transaction required");
+      return sql.transaction((tx) =>
+        work({
+          query: (q, v) => {
+            if (!failed && q.startsWith("update public.docker_launch_requests set result_enc=")) {
+              failed = true;
+              throw Error("synthetic lost receipt publication");
+            }
+            return tx.query(q, v);
+          },
+        }),
+      );
+    },
+  };
+  const server = f.service(interrupted, true, 10000, officialImage, true);
+  await server.launch(f.caller, f.body);
+  await server.drain();
+  expect(failed).toBe(true);
+  expect((await server.launch(f.caller, f.body)).sandbox.status).toBe("starting");
+  const recovered = f.service(sql, true, 10000, officialImage, true);
+  await recovered.drain();
+  expect((await recovered.launch(f.caller, f.body)).promptId).toBe(f.receipt.promptId);
+  expect((f.native as { op: string }[]).filter((c) => c.op === "prompt")).toHaveLength(1);
+  await server.close();
+  await recovered.close();
+});
+
+for (const scenario of ["success", "checkout-failed", "missing-github"] as const)
+  test(`deferred repository launch returns before host work and durably completes: ${scenario}`, async () => {
+    const f = await fixture({ checkoutExitCode: scenario === "checkout-failed" ? 1 : 0 });
+    if (scenario !== "missing-github")
+      await db.query(
+        `insert into public.github_connections(user_id,github_id,login,name,refresh_token_enc,access_token_enc,access_expires_at)
+       values($1,123,'owner','Owner',$2,$3,now()+interval '1 hour')`,
+        [f.actor.userId, await encryptSecret("offline-refresh", key), await encryptSecret("offline-github-token", key)],
+      );
+    const body = {
+      ...f.body,
+      repos: [{ url: "https://github.com/example/project.git", branch: "main", dir: "project" }],
+    };
+    const first = f.service(sql, true, 10000, officialImage, true);
+    const accepted = await first.launch(f.caller, body);
+    expect(accepted.sandbox.status).toBe("starting");
+    expect(accepted.runtime).toBeNull();
+    expect(accepted.promptId).toBeUndefined();
+    expect(f.native).toHaveLength(0);
+    // A fresh server instance resumes the durable manifest, not an HTTP continuation.
+    const restarted = f.service(sql, true, 10000, officialImage, true);
+    if (scenario === "success") {
+      await db.query(
+        "update public.docker_launch_requests set worker_id=$2,worker_expires_at=now()+interval '1 hour' where sandbox_id=$1",
+        [body.requestId, randomUUID()],
+      );
+      await restarted.drain();
+      expect(f.native).toHaveLength(0);
+      await db.query(
+        "update public.docker_launch_requests set worker_expires_at=now()-interval '1 hour' where sandbox_id=$1",
+        [body.requestId],
+      );
+    }
+    await restarted.drain();
+    const completed = await restarted.launch(f.caller, body);
+    if (scenario === "success") {
+      expect(f.checkoutStatuses).toEqual(["starting"]);
+      expect(completed.promptId).toBe(f.receipt.promptId);
+      expect(completed.runtime?.epoch).toBe(f.session()?.epoch);
+      const before = f.native.length;
+      await restarted.drain();
+      expect(f.native).toHaveLength(before);
+    } else {
+      expect(completed.sandbox.status).toBe("failed");
+      expect(completed.sandbox.statusReason).toBe(
+        scenario === "missing-github" ? DOCKER_LAUNCH_FAILURE_MESSAGES.github : DOCKER_LAUNCH_FAILURE_MESSAGES.checkout,
+      );
+      expect((f.native as { op: string }[]).some((c) => c.op === "prompt")).toBe(false);
+      const controls = createDockerSandboxControls(sql, key);
+      const status = await controls.invoke(f.caller, "status", { id: body.requestId });
+      expect(status.handled && (status.result as DockerSandboxStatus).statusReason).toBe(
+        completed.sandbox.statusReason,
+      );
+    }
+    await first.close();
+    await restarted.close();
+  });
 
 for (const checkoutExitCode of [0, 1])
   test(`Docker checkout exit ${checkoutExitCode} gates its first prompt and scopes GitHub access`, async () => {

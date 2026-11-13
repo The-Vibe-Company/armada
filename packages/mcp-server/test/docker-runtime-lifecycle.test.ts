@@ -146,6 +146,33 @@ test("ACK is not readiness: current epoch health proof alone publishes ready wit
   await denied(service.ready(f.actor, f.sandbox.id, healthId));
 });
 
+test("normal launch preparation cannot be bypassed by private readiness or an unrelated first prompt", async () => {
+  const f = await fixture(),
+    session = await f.enrol(),
+    healthId = randomUUID();
+  const input = { requestId: randomUUID(), text: "Original admitted prompt" };
+  await db.query(
+    `insert into public.docker_launch_requests(sandbox_id,actor_epoch,request_hash,request_enc)
+    select $1,e.epoch,$2,$3 from public.mcp_actor_epochs e where e.user_id=$4 and e.org_id=$5`,
+    [
+      f.sandbox.id,
+      "a".repeat(64),
+      await encryptSecret(JSON.stringify({ promptId: input.requestId, request: { prompt: input.text } }), key),
+      f.actor.userId,
+      f.actor.orgId,
+    ],
+  );
+  await service.ready(f.actor, f.sandbox.id, healthId);
+  await complete(session, { ready: true, generation: session.epoch });
+  await service.ready(f.actor, f.sandbox.id, healthId);
+  expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("starting");
+  await denied(service.prompt(f.actor, f.sandbox.id, input));
+  // Even after trusted preparation publishes ready, the reserved first prompt cannot be replaced.
+  await db.query("update public.sandboxes set status='ready' where id=$1", [f.sandbox.id]);
+  await denied(service.prompt(f.actor, f.sandbox.id, { ...input, requestId: randomUUID() }));
+  expect(await service.prompt(f.actor, f.sandbox.id, input)).toEqual({ state: "pending" });
+});
+
 test("a health reply from before stop or an epoch replacement cannot publish readiness", async () => {
   for (const change of ["stop", "epoch"] as const) {
     const f = await fixture(),
