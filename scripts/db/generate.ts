@@ -27,6 +27,8 @@ type Schema = {
 };
 
 const ROW_ALIASES: Record<string, string> = {
+  docker_hosts: "DockerHostRow",
+  docker_host_jobs: "DockerHostJobRow",
   otto_orphan_days: "OttoOrphanDayRow",
   otto_tasks: "OttoTaskRow",
   otto_resources: "OttoResourceRow",

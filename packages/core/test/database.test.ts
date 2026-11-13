@@ -241,6 +241,7 @@ describe("database", () => {
         "application_secret_uploads.value_enc",
         "application_secrets.value_enc",
         "credentials.value_enc",
+        "docker_host_jobs.input_enc",
         "github_connections.access_token_enc",
         "github_connections.refresh_token_enc",
         "github_runtime_issued.token_enc",

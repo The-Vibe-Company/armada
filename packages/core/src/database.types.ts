@@ -296,6 +296,98 @@ export type Database = {
         };
         Relationships: [];
       };
+      docker_host_jobs: {
+        Row: {
+          request_id: string;
+          host_id: string;
+          position: number;
+          input_enc: string;
+          outcome: string | null;
+          created_at: string;
+          completed_at: string | null;
+        };
+        Insert: {
+          request_id: string;
+          host_id: string;
+          position?: number;
+          input_enc: string;
+          outcome?: string | null;
+          created_at?: string;
+          completed_at?: string | null;
+        };
+        Update: {
+          request_id?: string;
+          host_id?: string;
+          position?: number;
+          input_enc?: string;
+          outcome?: string | null;
+          created_at?: string;
+          completed_at?: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "docker_host_jobs_host_id_fkey";
+            columns: ["host_id"];
+            isOneToOne: false;
+            referencedRelation: "docker_hosts";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      docker_hosts: {
+        Row: {
+          id: string;
+          org_id: string;
+          owner_id: string;
+          registration_hash: string | null;
+          registration_expires_at: string;
+          installation_id: string | null;
+          hash: string | null;
+          revoked_at: string | null;
+          last_seen_at: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id: string;
+          org_id: string;
+          owner_id: string;
+          registration_hash?: string | null;
+          registration_expires_at: string;
+          installation_id?: string | null;
+          hash?: string | null;
+          revoked_at?: string | null;
+          last_seen_at?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          org_id?: string;
+          owner_id?: string;
+          registration_hash?: string | null;
+          registration_expires_at?: string;
+          installation_id?: string | null;
+          hash?: string | null;
+          revoked_at?: string | null;
+          last_seen_at?: string | null;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "docker_hosts_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "docker_hosts_owner_id_fkey";
+            columns: ["owner_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       github_authorizations: {
         Row: {
           id: string;
@@ -3858,6 +3950,8 @@ export type ApplicationSecretRow = Database["public"]["Tables"]["application_sec
 export type ApplicationVaultAuditRow = Database["public"]["Tables"]["application_vault_audit"]["Row"];
 export type ArmadaAccessParentRow = Database["public"]["Tables"]["armada_access_parents"]["Row"];
 export type Credential = Database["public"]["Tables"]["credentials"]["Row"];
+export type DockerHostJobRow = Database["public"]["Tables"]["docker_host_jobs"]["Row"];
+export type DockerHostRow = Database["public"]["Tables"]["docker_hosts"]["Row"];
 export type GitHubAuthorization = Database["public"]["Tables"]["github_authorizations"]["Row"];
 export type GitHubConnection = Database["public"]["Tables"]["github_connections"]["Row"];
 export type GitHubRefreshFence = Database["public"]["Tables"]["github_refresh_fences"]["Row"];
