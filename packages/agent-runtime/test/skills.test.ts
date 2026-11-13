@@ -15,7 +15,7 @@ async function fixture() {
   await mkdir(repo);
   const git = Bun.spawnSync(["/usr/lib/git-core/git", "init", repo]);
   if (git.exitCode) throw Error("Git fixture unavailable");
-  const cli = `#!/usr/bin/node
+  const cli = `#!${process.execPath}
 const fs=require('fs'),path=require('path');const args=process.argv.slice(2),get=n=>args[args.indexOf(n)+1];
 const key=process.env.SKILLPACK_API_KEY,expected=${JSON.stringify(key)},workspace=${JSON.stringify(workspace)};
 if(JSON.stringify(args).includes(expected)||process.env.OPENAI_API_KEY||get('--api-url')!=='https://skillpack.app/v1')process.exit(97);
@@ -149,7 +149,7 @@ test("aborting private installation terminates its owned process group before re
   await new Promise<void>((resolve) => server.listen(join(f.root, "ready.sock"), resolve));
   await writeFile(
     join(f.bin, "skillpack"),
-    `#!/usr/bin/node
+    `#!${process.execPath}
 const {spawn}=require('child_process'),net=require('net'),path=require('path');
 const child=spawn(process.execPath,['-e','setInterval(()=>{},10000)'],{stdio:['ignore',1,2]});
 const socket=net.connect(path.join(process.env.HOME,'ready.sock'),()=>socket.end(JSON.stringify({pid:process.pid,child:child.pid})));
@@ -160,7 +160,12 @@ setInterval(()=>{},10000);
   let pids: { pid: number; child: number } | undefined;
   try {
     const pending = f.install(key, abort.signal);
-    pids = await ready.promise;
+    pids = await Promise.race([
+      ready.promise,
+      pending.then(() => {
+        throw Error("Installer exited before child readiness");
+      }),
+    ]);
     expect(
       await (
         await f.call({
