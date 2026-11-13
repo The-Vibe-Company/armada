@@ -99,7 +99,7 @@ export function createRuntimeIdle(
             signal.throwIfAborted();
             // Leave expiry unchanged. Existing lifecycle owns fenced provider shutdown.
             await sql.query(
-              `update public.sandboxes set status='stopping',stop_requested_at=coalesce(stop_requested_at,now()),
+              `update public.sandboxes set status='stopping',status_reason='idle_paused',stop_requested_at=coalesce(stop_requested_at,now()),
                stop_generation=stop_generation+1,reconcile_after=now()
                where id=$1 and status in ('ready','running') and stop_requested_at is null
                and exists(select 1 from public.runtime_checkpoints p join public.runtime_enrolments r

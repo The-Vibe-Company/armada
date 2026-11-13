@@ -7,6 +7,9 @@ import type { TaskOutcome } from "./task-outcome.ts";
 
 /** Version 1 organization list contract. Never extend from the interior SandboxRecord. */
 export interface SandboxListMetadata {
+  /** Server-owned idle checkpoint/stop marker, never a new wire status. */
+  idlePaused?: boolean;
+  statusMessage?: string | null;
   usage?: SandboxUsage | null;
   preservationNote?: string | null;
   /** Interior-only: null for organization metadata-only viewers. */
@@ -41,4 +44,17 @@ export function canAccessSandboxInterior(
   caller: { userId: string; currentRole: "admin" | "member" | null },
 ): boolean {
   return caller.currentRole !== null && (sandbox.ownerId === caller.userId || caller.currentRole === "admin");
+}
+
+/** Wording only: stopped remains the canonical status/filter. The marker is set
+ * only after a successful idle checkpoint, and an expired pause never promises wake. */
+export function idlePauseMessage(
+  row: { status: string; idlePaused?: boolean; statusReason?: string | null; expiresAt?: string | null },
+  now: Date,
+): string | null {
+  return row.status === "stopped" &&
+    (row.idlePaused === true || row.statusReason === "idle_paused") &&
+    Date.parse(row.expiresAt ?? "") > now.getTime()
+    ? "Paused — wakes on your next message"
+    : null;
 }

@@ -219,7 +219,11 @@ async function SandboxesContent({ searchParams }: Props) {
                     <PhoneCost cost={costs.get(sandbox.id)} />
                   </TableCell>
                   <TableCell className="max-sm:block max-sm:p-0">
-                    <StatusBadge status={sandbox.status} />
+                    <StatusBadge
+                      status={sandbox.status}
+                      idlePaused={sandbox.idlePaused === true}
+                      expiresAt={sandbox.expiresAt}
+                    />
                     <LifecycleHint view={lifecycleView(sandbox.status, readLifecycle(sandbox), now)} />
                     <OutcomeHint sandbox={sandbox} />
                   </TableCell>
