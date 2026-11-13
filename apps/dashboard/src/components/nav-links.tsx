@@ -10,12 +10,14 @@ import {
   PackageIcon,
   PlugIcon,
   RadarIcon,
+  ServerIcon,
   SettingsIcon,
   UsersIcon,
   VariableIcon,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { type ReactNode, Suspense, use } from "react";
 
 import { LinkPendingIcon } from "@/components/link-pending";
 import {
@@ -46,6 +48,7 @@ const GROUPS = [
     label: "Library",
     links: [
       { href: "/environments", label: "Environments", icon: CameraIcon },
+      { href: "/hosts", label: "Hosts", icon: ServerIcon, optIn: "dockerHosts" },
       { href: "/skills", label: "Skills", icon: PackageIcon },
       { href: "/tools", label: "Tools", icon: PlugIcon },
       { href: "/variables", label: "Variables", icon: VariableIcon },
@@ -60,6 +63,16 @@ const GROUPS = [
     ],
   },
 ] as const;
+
+/**
+ * Destinations behind a server opt-in. The shell passes the server's answer as a promise and does not wait for it:
+ * only the entry itself appears once the answer says the server offers it.
+ */
+export type NavOptIns = { dockerHosts: Promise<boolean> };
+
+function OptIn({ when, children }: { when: Promise<boolean>; children: ReactNode }) {
+  return use(when) ? children : null;
+}
 
 export function NavMobileTrigger() {
   const pathname = usePathname();
@@ -83,7 +96,7 @@ export function NavMobileTrigger() {
   );
 }
 
-export function NavLinks({ className }: { className?: string }) {
+export function NavLinks({ className, optIns }: { className?: string; optIns: NavOptIns }) {
   const pathname = usePathname();
   const { setOpenMobile } = useSidebar();
   return (
@@ -99,9 +112,10 @@ export function NavLinks({ className }: { className?: string }) {
             </SidebarGroupLabel>
             <SidebarGroupContent>
               <SidebarMenu className="gap-0.5">
-                {group.links.map(({ href, label, icon: Icon }) => {
+                {group.links.map((link) => {
+                  const { href, label, icon: Icon } = link;
                   const active = pathname === href || pathname.startsWith(`${href}/`);
-                  return (
+                  const item = (
                     <SidebarMenuItem key={href}>
                       <SidebarMenuButton
                         asChild
@@ -126,6 +140,12 @@ export function NavLinks({ className }: { className?: string }) {
                         </Link>
                       </SidebarMenuButton>
                     </SidebarMenuItem>
+                  );
+                  if (!("optIn" in link)) return item;
+                  return (
+                    <Suspense key={href} fallback={null}>
+                      <OptIn when={optIns[link.optIn]}>{item}</OptIn>
+                    </Suspense>
                   );
                 })}
               </SidebarMenu>
