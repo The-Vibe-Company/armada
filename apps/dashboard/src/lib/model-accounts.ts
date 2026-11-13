@@ -746,3 +746,19 @@ export function connectionModelsFrom(payload: unknown): Map<string, ConnectionMo
   }
   return result;
 }
+
+/**
+ * A subscription pasted by hand (#1483): the exact command to run on the person's own computer and what to paste
+ * from it. Neither vendor documents a sign-in a third-party server may run for a subscription, so the token is
+ * produced locally by the vendor's own CLI.
+ */
+export const PASTE_SIGN_IN: Partial<Record<AccountKind, { command: string; paste: string }>> = {
+  claude_oauth: {
+    command: "claude setup-token",
+    paste: "Sign in when your browser opens, then paste the token it prints (it starts with sk-ant-oat01-).",
+  },
+  codex_auth: {
+    command: "codex login && cat ~/.codex/auth.json",
+    paste: "Sign in with ChatGPT when your browser opens, then paste the whole JSON it prints.",
+  },
+};
