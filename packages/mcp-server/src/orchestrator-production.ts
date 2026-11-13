@@ -148,6 +148,14 @@ export function createProductionOrchestrators(input: {
           : { extensionHeadroomSeconds: input.extensionHeadroomSeconds }),
         stores: {
           ...stores,
+          // Children are ordinary sandboxes: initialization owns the same activity
+          // lease as a public launch. The legacy service store does not fence the
+          // lifecycle observer, which otherwise treats "starting" as abandoned.
+          sandboxes: createSqlData(sql)({
+            via: "service",
+            userId: operation.ownerId,
+            orgs: [{ orgId: operation.orgId, role: "member" }],
+          }).sandboxes,
           goldens: new Proxy(stores.goldens, {
             get(target, key) {
               if (key === "findByName")
