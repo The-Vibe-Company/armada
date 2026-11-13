@@ -24,6 +24,8 @@ import { VaultError } from "./vault-error.ts";
 export interface TemplateRuntime {
   stores: LaunchStores;
   provider(golden: GoldenRecord): Promise<Provider>;
+  /** Trusted fresh-admission policy; historical receipts never revalidate mutable template sources. */
+  validateDefinition?(definition: TemplateDefinition): void | Promise<void>;
   options?: LaunchOptions;
 }
 type Header = {
@@ -518,6 +520,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       return { a, h, r: await revision(tx, h, input.revision) };
     });
     const def = selection.r.definition;
+    await runtime.validateDefinition?.(def);
     let account = def.modelAccount;
     if (input.modelAccount !== undefined) {
       if (account) invalid(); // A launch never overrides a revision's pinned billing account.

@@ -197,6 +197,10 @@ test("Modal experimental template launch freezes variables and its original runt
   const replay = await f.api(request);
   expect(replay.status).toBe(200);
   expect(await replay.json()).toEqual(launched);
+  await f.templates.command(f.caller, "delete", { org: f.people.org, id: template.id, expectedRevision: 1 });
+  const tombstoneReplay = await f.api(request);
+  expect(tombstoneReplay.status).toBe(200);
+  expect(await tombstoneReplay.json()).toEqual(launched);
   expect(f.physical.forks).toHaveLength(1);
   expect(f.prompts()).toBe(1);
   // Resume reads the admitted manifest, not the mutable current variable source.

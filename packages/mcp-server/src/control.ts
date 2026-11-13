@@ -96,7 +96,6 @@ import {
   setCredential,
   setMemberRole,
   snapshotGolden,
-  type TemplateDefinition,
   type TemplateService,
   VaultError,
   type VaultErrorCode,
@@ -1227,28 +1226,19 @@ async function dispatch(
             "Modal runtime templates require a pinned revision, organization UUID and unambiguous template fields.",
           );
         if (!options.templates) throw new VaultError("unavailable", "Templates unavailable.");
-        const selected = await options.templates.command(caller, "get", {
-          org: body.org,
-          id: body.id,
-          revision: body.revision,
-        });
-        const definition = (selected.revision as { definition?: TemplateDefinition } | undefined)?.definition;
-        if (
-          !definition ||
-          definition.provider !== "modal" ||
-          definition.harness !== "codex" ||
-          definition.secrets?.length
-        )
-          throw new VaultError(
-            "invalid",
-            "Modal runtime templates require Modal Codex without application-secret bindings.",
-          );
         const base = templateRuntime(options, caller);
         if (!base) throw new VaultError("unavailable", "Template launching unavailable.");
         const input = Object.fromEntries(
           standard.filter((key) => body[key] !== undefined).map((key) => [key, body[key]]),
         );
         return options.templates.command(caller, "launch", input, {
+          validateDefinition: (definition) => {
+            if (definition.provider !== "modal" || definition.harness !== "codex" || definition.secrets?.length)
+              throw new VaultError(
+                "invalid",
+                "Modal runtime templates require Modal Codex without application-secret bindings.",
+              );
+          },
           stores: {
             goldens: base.stores.goldens,
             sandboxes: base.stores.sandboxes,
