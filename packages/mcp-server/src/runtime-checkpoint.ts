@@ -59,7 +59,7 @@ export function createRuntimeCheckpoint(sql: Sql, key: string, commands: ReturnT
       acknowledgedSequence: Number(p.watermark),
     },
   });
-  return async (caller: Caller, input: RuntimeCheckpointInput) => {
+  return async (caller: Caller, input: RuntimeCheckpointInput, beforeIntent?: (tx: Sql) => Promise<void>) => {
     const requestId = input.request_id.toLowerCase();
     if (input.runtimeVersion !== 1 || !uuid.test(input.id) || !uuid.test(requestId))
       throw new VaultError("invalid", "Runtime checkpoint v1 requires sandbox and request UUIDs.");
@@ -184,6 +184,7 @@ export function createRuntimeCheckpoint(sql: Sql, key: string, commands: ReturnT
           "conflict",
           "Runtime admission is busy; wait or reconcile its original request before checkpointing.",
         );
+      await beforeIntent?.(tx);
       const current = (
         await tx.query<{ request_id: string }>(
           "select request_id::text from public.runtime_checkpoints where sandbox_id=$1 and epoch=$2 for update",

@@ -66,6 +66,7 @@ import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import { createRuntimeEvents } from "./runtime-events.ts";
 import { createRuntimeFollowup } from "./runtime-followup.ts";
 import { createRuntimeGitHub } from "./runtime-github.ts";
+import { createRuntimeIdle } from "./runtime-idle.ts";
 import { createRuntimeMcp } from "./runtime-mcp.ts";
 import { createRuntimeModelAccess } from "./runtime-model-access.ts";
 import { createRuntimeNativeAuth } from "./runtime-native-auth.ts";
@@ -664,7 +665,12 @@ export async function startServer(
     options.logError,
     goldenRetirements,
     () => pruneServerRetention(sql, control.applicationVault, new Date()),
-    [delegatedAccess.childWorker],
+    [
+      delegatedAccess.childWorker,
+      createRuntimeIdle(sql, config.encryptionKey, runtimeCheckpoint, {
+        delayMs: Number(process.env.ARMADA_RUNTIME_IDLE_MINUTES ?? 10) * 60_000,
+      }),
+    ],
   );
   const invitationWorker =
     env.ARMADA_INVITATION_MAIL === "supabase" && control.invitations
