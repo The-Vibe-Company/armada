@@ -51,8 +51,11 @@ umask 077
 node <<'ARMADA_RUNTIME_BOOTSTRAP'
 const fs=require('node:fs/promises'), crypto=require('node:crypto'), cp=require('node:child_process');
 const origin=${JSON.stringify(serverUrl)}, artifact=${JSON.stringify(artifact)};
+let report=async()=>{};
 (async()=>{
  const ticket=JSON.parse(process.env.ARMADA_GIT_TOKEN); delete process.env.ARMADA_GIT_TOKEN;
+ report=async(stage)=>{try{await fetch(origin+'/api/runtime/progress',{method:'POST',redirect:'error',credentials:'omit',signal:AbortSignal.timeout(3000),headers:{authorization:'Bearer '+ticket.enrolmentToken,'content-type':'application/json'},body:JSON.stringify({stage})});}catch{}};
+ await report('bootstrap_started');
  const home='/home/user', root=${JSON.stringify(cacheDir)};
  const owner=await fs.lstat(home);
  try{await fs.mkdir(root,{mode:0o700});}catch(e){if(e.code!=='EEXIST')throw e;}
@@ -82,12 +85,13 @@ const origin=${JSON.stringify(serverUrl)}, artifact=${JSON.stringify(artifact)};
    await fs.rename(tmp,target);
   }finally{await file?.close();await fs.rm(tmp,{force:true});}
  }
+ await report('artifact_verified');
  await fs.chmod(target,0o700);await fs.chown(root,owner.uid,owner.gid);await fs.chown(target,owner.uid,owner.gid);
  const child=cp.spawn(target,['dialout'],{detached:true,uid:owner.uid,gid:owner.gid,cwd:home,env:{HOME:home,PATH:'/usr/bin:/bin'},stdio:['pipe','ignore','ignore']});
  await new Promise((resolve,reject)=>{child.once('error',reject);child.once('spawn',resolve);});
  await new Promise((resolve,reject)=>{child.stdin.once('error',reject);child.stdin.end(JSON.stringify(ticket),resolve);});
  child.unref();
-})().catch(()=>{process.exitCode=1;});
+})().catch(async()=>{await report('bootstrap_failed');process.exitCode=1;});
 ARMADA_RUNTIME_BOOTSTRAP
 `;
 }

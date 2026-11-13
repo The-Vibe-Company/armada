@@ -125,6 +125,7 @@ async function main() {
             if (!httpOnly && instance.upgrade(request, { data: undefined })) return;
             return new Response(null, { status: 403 }); // Exercise denied upgrade fallback.
           }
+          if (path === "/api/runtime/progress") return Response.json({ accepted: true });
           if (path === "/api/runtime/results") {
             const reply = (await request.json()) as {
               epoch: string;

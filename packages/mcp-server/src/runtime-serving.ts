@@ -52,11 +52,17 @@ export function createRuntimeServing(sql: Sql, key: string) {
     });
     return createRuntimeProvider(createBoatProvider({ apiKey }), sandbox.providerSandboxId, {
       async getPrompt(request) {
-        if (sandbox.status !== "stopped" && sandbox.status !== "deleted") return agent.getPrompt(request);
+        if (!["failed", "stopped", "deleted"].includes(sandbox.status)) return agent.getPrompt(request);
         const page = await history(caller, sandbox.id, { direction: "backward", limit: 1000 });
         const last = page.events
           .toReversed()
           .find((event) => event.kind === "prompt" && event.promptId === request.promptId);
+        if (
+          (!last || last.kind !== "prompt") &&
+          sandbox.status === "failed" &&
+          sandbox.taskPromptId === request.promptId
+        )
+          return { promptId: request.promptId, status: "failed" as const, done: true };
         if (!last || last.kind !== "prompt")
           throw new ProviderError({
             provider: "boat",
@@ -67,7 +73,11 @@ export function createRuntimeServing(sql: Sql, key: string) {
         return {
           promptId: request.promptId,
           ...(last.conversationId ? { conversationId: last.conversationId } : {}),
-          status: isFinalPromptStatus(last.status) ? last.status : "interrupted",
+          status: isFinalPromptStatus(last.status)
+            ? last.status
+            : sandbox.status === "failed"
+              ? "failed"
+              : "interrupted",
           done: true,
         };
       },

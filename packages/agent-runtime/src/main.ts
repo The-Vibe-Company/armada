@@ -20,11 +20,16 @@ import { prepareOpenCode } from "./opencode-install.ts";
 import type { ExecEnvironment } from "./protocol.ts";
 import { createRedactor, HarnessState } from "./state.ts";
 
+let reportRuntimeFailure: (() => Promise<void>) | undefined;
 async function main(dialout = false) {
   // Bootstrap is delivered through a private stdin pipe, never argv or a golden file.
   const input = JSON.parse(await Bun.stdin.text());
   const enrolled = dialout ? await enrolRuntime(input) : undefined;
   const channel = enrolled ? new RuntimeDialout(input.serverUrl, enrolled) : undefined;
+  if (channel) {
+    reportRuntimeFailure = () => channel.progress("runtime_failed");
+    await channel.progress("enrolled").catch(() => {});
+  }
   const config = (enrolled ? enrolled.configuration : input) as {
     root: string;
     cwd: string;
@@ -356,6 +361,13 @@ async function main(dialout = false) {
         executable: config.codexExecutable,
         env: config.codexEnv,
         refreshSecrets: refreshNativeSecrets,
+        ...(channel
+          ? {
+              onStarted: () => {
+                void channel.progress("harness_started").catch(() => {});
+              },
+            }
+          : {}),
         exclusiveAuth: config.nativeAuthRevision !== undefined,
         ...(subscriptionAccess ? { subscriptionAccess } : {}),
       }),
@@ -487,7 +499,8 @@ void (
       : process.argv[2] === "install-harness"
         ? runHarnessInstallMode()
         : main(process.argv[2] === "dialout")
-).catch(() => {
+).catch(async () => {
+  await reportRuntimeFailure?.().catch(() => {});
   process.stderr.write("runner_boot_failed\n");
   process.exitCode = 1;
 });

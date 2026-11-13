@@ -68,6 +68,29 @@ test("serving factory authorizes persisted binding and reads stopped runtime arc
       status: "finished",
       done: true,
     });
+    await db.query(
+      "update sandboxes set status='failed',status_reason='Armada runtime process failed.',task_prompt_id='prompt' where id=$1",
+      [row.id],
+    );
+    const failed = await serving("unused-cloud-key", target, { userId: people.owner });
+    // A later process failure must never rewrite a durably finished prompt.
+    expect(await failed.getPrompt({ sandboxId: "physical", promptId: "prompt" })).toMatchObject({
+      status: "finished",
+      done: true,
+    });
+    await db.query("update sandboxes set task_prompt_id='unarchived-prompt' where id=$1", [row.id]);
+    const empty = await serving("unused-cloud-key", target, { userId: people.owner });
+    expect(await empty.getPrompt({ sandboxId: "physical", promptId: "unarchived-prompt" })).toMatchObject({
+      status: "failed",
+      done: true,
+    });
+    await expect(empty.getPrompt({ sandboxId: "physical", promptId: "unrelated" })).rejects.toMatchObject({
+      code: "not_found",
+    });
+    expect((await empty.events({ sandboxId: "physical" })).runtimeFailure).toEqual({
+      status: "failed",
+      reason: "Armada runtime process failed.",
+    });
     await expect(serving("unused-cloud-key", target, { userId: people.member })).rejects.toMatchObject({
       code: "not_found",
     });

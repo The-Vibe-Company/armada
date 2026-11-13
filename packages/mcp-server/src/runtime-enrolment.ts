@@ -105,6 +105,30 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string) {
       return { sandboxId: sandbox.id, epoch: updated.epoch, runtimeToken, configuration };
     });
   }
+  /** Read-only bootstrap reporting does not consume or extend the one-use ticket. */
+  async function withBootstrap<T>(enrolmentToken: string, work: (tx: Sql, scope: RuntimeSessionScope) => Promise<T>) {
+    if (!valid(enrolmentToken, "enrol")) throw new RuntimeEnrolmentDenied();
+    const hash = await sha256Hex(enrolmentToken);
+    return transaction(async (tx) => {
+      const candidate = (
+        await tx.query<{ sandbox_id: string }>(
+          "select sandbox_id from public.runtime_enrolments where enrolment_hash=$1",
+          [hash],
+        )
+      ).rows[0];
+      if (!candidate) throw new RuntimeEnrolmentDenied();
+      const sandbox = await lockSandbox(tx, candidate.sandbox_id);
+      const row = (
+        await tx.query<{ epoch: string }>(
+          `select epoch::text from public.runtime_enrolments where sandbox_id=$1 and enrolment_hash=$2
+         and lifecycle_generation=$3 and enrolment_expires_at>now() for update`,
+          [sandbox.id, hash, sandbox.lifecycle_generation],
+        )
+      ).rows[0];
+      if (!row) throw new RuntimeEnrolmentDenied();
+      return work(tx, { sandboxId: sandbox.id, epoch: String(BigInt(row.epoch) + 1n) });
+    });
+  }
   /** Keep the epoch lock through journal/command mutations, not merely an earlier auth lookup. */
   async function withSession<T>(
     runtimeToken: string,
@@ -174,5 +198,5 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string) {
       );
     }
   };
-  return { issue, enrol, withSession, withOwner, route };
+  return { issue, enrol, withBootstrap, withSession, withOwner, route };
 }
