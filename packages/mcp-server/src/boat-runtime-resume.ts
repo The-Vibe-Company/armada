@@ -1,5 +1,11 @@
 import type { CredentialReader } from "@armada/core";
-import { type LaunchOptions, PROVIDER_LIMITS, resolveBoatKey, SANDBOX_STOP_MARGIN_SECONDS } from "@armada/core/server";
+import {
+  type LaunchOptions,
+  PROVIDER_LIMITS,
+  resolveBoatKey,
+  SANDBOX_STOP_MARGIN_SECONDS,
+  type Sql,
+} from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
 import { launchCredentials } from "./launch-credentials.ts";
 import type { ModelAuthOwnership } from "./model-auth.ts";
@@ -8,6 +14,7 @@ import type { RuntimeResumePrepare } from "./runtime-resume.ts";
 /** Compute activation is isolated from legacy native harness/GitHub/MCP hooks. */
 export function boatRuntimeResume(options: {
   vault: CredentialReader;
+  sql: Sql;
   key: string;
   policy: NonNullable<LaunchOptions["boatRuntime"]>;
   modelAuth: ModelAuthOwnership;
@@ -37,7 +44,20 @@ export function boatRuntimeResume(options: {
           restoreCheckpoint,
           activate: async (admission) => {
             const current = await host.get(sandbox.providerSandboxId, { signal: admission });
-            if (current.state !== "stopped") throw Error("runtime_resume_requires_stopped_compute");
+            if (current.state !== "stopped" || current.physicalExitConfirmed)
+              throw Error("runtime_resume_requires_stopped_compute");
+            const admissionRow = (
+              await options.sql.query(
+                `select s.id from public.sandboxes s join public.runtime_enrolments r on r.sandbox_id=s.id
+              join public.credentials c on c.id=s.credential_id and c.version=s.credential_version
+              where s.id=$1 and s.owner_id=$2 and s.lifecycle_generation=$3 and s.status='starting'
+              and s.activity_lease_id is not null and s.stop_requested_at is null and s.deleted_at is null and not s.application_secret_tainted
+              and r.epoch=$4 and c.status='active' and (c.expires_at is null or c.expires_at>now())
+              and exists(select 1 from public.members m where m.user_id=s.owner_id and m.org_id=s.org_id)`,
+                [sandbox.id, caller.userId, sandbox.lifecycleGeneration, restoreCheckpoint.epoch],
+              )
+            ).rows[0];
+            if (!admissionRow) throw Error("runtime_resume_admission_changed");
             await host.resumeRuntime(
               sandbox.providerSandboxId,
               Math.min(

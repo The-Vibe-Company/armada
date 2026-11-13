@@ -288,7 +288,7 @@ export async function startServer(
     config.encryptionKey,
     runtimeCommands,
     runtimeLaunch
-      ? boatRuntimeResume({ vault: store, key: config.encryptionKey, policy: runtimeLaunch, modelAuth })
+      ? boatRuntimeResume({ sql, vault: store, key: config.encryptionKey, policy: runtimeLaunch, modelAuth })
       : undefined,
   );
   const control: ConfiguredControlOptions = {

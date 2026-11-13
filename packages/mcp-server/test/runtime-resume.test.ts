@@ -1,5 +1,9 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
+import { createSqlVaultStore } from "@armada/core/server";
+import { sandbox as sdkSandbox } from "../../provider-boat/test/support.ts";
+import { boatRuntimeResume } from "../src/boat-runtime-resume.ts";
 import { createSqlData } from "../src/data.ts";
+import { createModelAuthOwnership } from "../src/model-auth.ts";
 import { createRuntimeCheckpoint } from "../src/runtime-checkpoint.ts";
 import { createRuntimeHistory } from "../src/runtime-history.ts";
 import { createRuntimeResume } from "../src/runtime-resume.ts";
@@ -172,3 +176,45 @@ test("an old runtime without verified restore health cannot receive a resumed pr
     await f.close();
   }
 });
+
+test.each([false, true])(
+  "actual activation boundary dispatches only while retained disk remains untainted (%s)",
+  async (taint) => {
+    const f = await stopped();
+    const requests: string[] = [];
+    let activated = false;
+    const network = spyOn(globalThis, "fetch").mockImplementation((async (value: Parameters<typeof fetch>[0]) => {
+      const url = String(value instanceof Request ? value.url : value);
+      requests.push(url);
+      if (url.endsWith("/resume")) activated = true;
+      if (url.endsWith("/stop")) activated = false;
+      return Response.json({
+        ok: true,
+        sandbox: sdkSandbox({ id: "physical", state: activated ? "running" : "archived" }),
+      });
+    }) as typeof fetch);
+    try {
+      const prepare = boatRuntimeResume({
+        sql: f.sql,
+        vault: createSqlVaultStore(f.sql),
+        key: ENCRYPTION_KEY,
+        modelAuth: createModelAuthOwnership(f.sql, ENCRYPTION_KEY),
+        policy: {
+          async start(value) {
+            if (taint) await f.db.query("update sandboxes set application_secret_tainted=true where id=$1", [f.row.id]);
+            await value.activate?.(value.signal);
+            throw Error("Fixture ends after activation boundary");
+          },
+        },
+      });
+      await expect(
+        createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, prepare)(f.caller, input(f.row.id)),
+      ).rejects.toThrow();
+      expect(requests.some((path) => path.endsWith("/resume"))).toBe(!taint);
+      expect(f.starts).toHaveLength(1);
+    } finally {
+      network.mockRestore();
+      await f.close();
+    }
+  },
+);
