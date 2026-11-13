@@ -516,6 +516,11 @@ export class ProviderError extends Error {
   }
 }
 
+/** The provider's known pre-admission start-limit signal, not an ambiguous transport failure. */
+export function isProviderStartRateLimit(error: ProviderError): boolean {
+  return error.provider === "boat" && error.code === "rate_limited" && error.status === 429;
+}
+
 /** Explicit non-mutating provider refusals, not transport failures or ambiguous conflicts. */
 export function isNonMutatingProviderRefusal(error: unknown): boolean {
   return (
@@ -530,6 +535,6 @@ export function isNonMutatingProviderRefusal(error: unknown): boolean {
       "payment_required",
       "provider_not_configured",
     ].includes(error.code) ||
-      (error.provider === "boat" && error.code === "rate_limited" && error.status === 429))
+      isProviderStartRateLimit(error))
   );
 }

@@ -9,6 +9,7 @@ import {
   providerRateLimitMessage,
   VaultError,
 } from "@armada/core";
+import { isProviderStartRateLimit } from "@armada/core/server";
 
 /** Only typed causes determine categories. Never infer an error code from human diagnostics. */
 export function apiFailureCode(error: unknown): ApiFailureCode | undefined {
@@ -35,7 +36,7 @@ export function apiFailureCode(error: unknown): ApiFailureCode | undefined {
 export function providerFailureResponse(error: ProviderError) {
   const category = apiFailureCode(error);
   const limit =
-    !category && error.provider === "boat" && error.code === "rate_limited" && error.status === 429
+    !category && isProviderStartRateLimit(error)
       ? providerRateLimitDetails({ ...error.details, provider: "boat", retryAfterSeconds: error.retryAfterSeconds })
       : undefined;
   const statuses = new Map<ProviderError["code"], number>([
