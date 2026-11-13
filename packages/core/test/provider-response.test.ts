@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { type GoldenRecord, goldenResponse } from "../src/index.ts";
+import { type GoldenRecord, goldenResponse, sandboxIdentity } from "../src/index.ts";
 
 test.each([
   ["boat", "snapshot", "builder"],
@@ -26,4 +26,12 @@ test.each([
     boatSandboxId: builder,
   });
   expect(goldenResponse(row)).not.toHaveProperty("createdAt");
+});
+
+test.each([
+  ["boat", "worker"],
+  ["modal", null],
+  ["docker", null],
+] as const)("%s sandbox legacy aliases do not borrow another placement's id", (provider, boatId) => {
+  expect(sandboxIdentity({ provider, providerSandboxId: "worker" })).toHaveProperty("boatId", boatId);
 });
