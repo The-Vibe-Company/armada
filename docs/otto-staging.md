@@ -63,7 +63,8 @@ inferred from usage counters. The three orphan reasons are `pr_without_live_owne
 Needs-work evidence must match the exact current head: a failed REQUIRED check,
 a conflict, or observed queue removal after entry. Pending/missing evidence is
 UNKNOWN, never a failure. Reconciliation reads PR details (conflicts), classic
-required-status-check protection (context + GitHub App ID), latest check runs and
+required-status-check protection and active effective branch rules (context +
+GitHub App/integration ID), latest check runs and
 combined commit statuses. All URLs cache selected metadata + ETags independently;
 304 reuses stored selected metadata, revalidated before truth is derived. Policy lookup is shared by base branch
 within a traversal. A head change during detail lookup yields UNKNOWN work evidence.
@@ -71,12 +72,15 @@ Only an observed required failure is positive; another App's same-named failed c
 is not. A partial check listing can supply a positive witness but never prove that
 no failures exist. Pending checks do not themselves create an orphan.
 
-The existing GitHub observer token needs Administration **read** permission for
-classic required-check policy lookup, in addition to Checks/Contents/PR/Issues read.
-See [GitHub's branch protection API](https://docs.github.com/en/rest/branches/branch-protection)
+Active repository/organization branch rules use the existing observer token's
+Metadata **read** permission; evaluate/disabled rules are excluded by GitHub's
+[effective branch-rules endpoint](https://docs.github.com/en/rest/repos/rules).
+Classic protection additionally needs Administration **read** permission; see
+[branch protection](https://docs.github.com/en/rest/branches/branch-protection)
 and [check-run reference](https://docs.github.com/en/rest/checks/runs).
-Do not grant write permission. Policy 403/404 or ruleset-only requirements that
-cannot be identified by that endpoint stay UNKNOWN when a failure might be required.
+The server combines known requirements from both sources and pins each required
+check to its configured App/integration when provided. Do not grant write access.
+A denied or unavailable policy source stays unknown, not proof a failure is optional.
 No failures in a proven complete check universe can establish a negative even when
 policy is unavailable. Metadata caches exclude PR bodies and check outputs.
 Signed `pull_request` enqueued/dequeued events retain exact-head entry/removal

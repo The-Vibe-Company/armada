@@ -31,13 +31,16 @@ test.each([
   "legacy_failure",
   "timed_out",
   "malformed",
+  "rules_only",
+  "rules_other_app",
 ])("work evidence: %s is exact-head, required-producer scoped and survives conditional 304", async (mode) => {
   const repo = `example/${mode}`,
     f = await setup(repo);
   const fetcher = (async (url: string | URL | Request, init?: RequestInit) => {
     if (new Headers(init?.headers).get("if-none-match")) return new Response(null, { status: 304 });
     const path = new URL(String(url)).pathname;
-    if (mode === "denied" && path.endsWith("/required_status_checks")) return new Response(null, { status: 403 });
+    if ((mode === "denied" || mode.startsWith("rules_")) && path.endsWith("/required_status_checks"))
+      return new Response(null, { status: 403 });
     let body: unknown;
     if (path.endsWith("/pulls"))
       body = [
@@ -68,7 +71,7 @@ test.each([
           {
             name: "required",
             head_sha: mode === "wrong_sha" ? "e".repeat(40) : SHA,
-            app: { id: mode === "other_app" ? 8 : 7 },
+            app: { id: mode === "other_app" || mode === "rules_other_app" ? 8 : 7 },
             status: mode === "in_progress" || mode === "partial" ? "in_progress" : "completed",
             conclusion: mode === "in_progress" || mode === "partial" ? null : "failure",
             output: { text: "private_transcript_marker" },
@@ -76,6 +79,15 @@ test.each([
         ],
       };
     else if (path.endsWith("/status")) body = { sha: SHA, total_count: 0, statuses: [] };
+    else if (path.endsWith("/rules/branches/main"))
+      body = mode.startsWith("rules_")
+        ? [
+            {
+              type: "required_status_checks",
+              parameters: { required_status_checks: [{ context: "required", integration_id: 7 }] },
+            },
+          ]
+        : [];
     else throw Error(`unexpected_url:${path}`);
     if (mode === "legacy_failure" && path.endsWith("/check-runs")) body = { total_count: 0, check_runs: [] };
     if (mode === "timed_out" && path.endsWith("/check-runs"))
@@ -93,8 +105,8 @@ test.each([
   await f.observer.reconcile("fixture", new AbortController().signal, fetcher);
   const values = (await f.facts()).filter((v) => v.kind === "pr.work.required_check");
   expect(values.map((v) => v.value)).toEqual([
-    ["failure", "legacy_failure"].includes(mode) ? "true" : mode === "in_progress" ? "false" : "unknown",
-    ["failure", "legacy_failure"].includes(mode) ? "true" : mode === "in_progress" ? "false" : "unknown",
+    ["failure", "legacy_failure", "rules_only"].includes(mode) ? "true" : mode === "in_progress" ? "false" : "unknown",
+    ["failure", "legacy_failure", "rules_only"].includes(mode) ? "true" : mode === "in_progress" ? "false" : "unknown",
   ]);
   expect(values.every((v) => v.evidence.headSha === SHA)).toBe(true);
   const cache = await f.db.query<{ items: unknown }>("select items from otto_github_pages where repository=$1", [repo]);

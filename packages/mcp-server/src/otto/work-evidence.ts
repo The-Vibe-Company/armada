@@ -51,7 +51,8 @@ export async function observeWork(
       return cached.items[0];
     }
     if (!response.ok) throw Error("work_observation_unavailable");
-    const body = select(obj(await response.json()), response);
+    const payload: unknown = await response.json();
+    const body = select(Array.isArray(payload) ? { rules: payload } : obj(payload), response);
     await sql.query(
       `insert into public.otto_github_pages(org_id,repository,path,etag,items,next_path) values($1,$2,$3,$4,$5::jsonb,null)
     on conflict(org_id,repository,path) do update set etag=excluded.etag,items=excluded.items,next_path=null`,
@@ -94,13 +95,37 @@ export async function observeWork(
     if (typeof detail.baseRef === "string") {
       let pending = policies.get(detail.baseRef);
       if (!pending) {
-        pending = get(`/branches/${encodeURIComponent(detail.baseRef)}/protection/required_status_checks`, (v) => ({
-          requirements: array(v.checks).length
-            ? array(v.checks).map((c) => ({ context: c.context, appId: c.app_id ?? null }))
-            : Array.isArray(v.contexts)
-              ? v.contexts.map((context) => ({ context, appId: null }))
-              : [],
-        }));
+        const classic = get(
+          `/branches/${encodeURIComponent(detail.baseRef)}/protection/required_status_checks`,
+          (v) => ({
+            requirements: array(v.checks).length
+              ? array(v.checks).map((c) => ({ context: c.context, appId: c.app_id ?? null }))
+              : Array.isArray(v.contexts)
+                ? v.contexts.map((context) => ({ context, appId: null }))
+                : [],
+          }),
+        ).catch(() => undefined);
+        const rules = get(`/rules/branches/${encodeURIComponent(detail.baseRef)}`, (v) => ({
+          requirements: array(v.rules)
+            .filter((rule) => rule.type === "required_status_checks")
+            .flatMap((rule) =>
+              array(obj(rule.parameters).required_status_checks).map((check) => ({
+                context: check.context,
+                appId: check.integration_id ?? null,
+              })),
+            ),
+        })).catch(() => undefined);
+        pending = Promise.all([classic, rules]).then((parts) => {
+          if (!parts.some(Boolean)) throw Error("required_check_policy_unavailable");
+          return {
+            requirements: parts.flatMap((part, index) =>
+              array(part?.requirements).map((rule) => ({
+                ...rule,
+                policySource: index === 0 ? "classic" : "active_rules",
+              })),
+            ),
+          };
+        });
         policies.set(detail.baseRef, pending);
       }
       try {
@@ -181,7 +206,16 @@ export async function observeWork(
           : checks.complete === true && statuses.complete === true && !anyFailure
             ? "false"
             : "unknown";
+      const witness = requirements.find(
+        (rule) =>
+          rule.context === (failedCheck?.name ?? failedStatus?.name) &&
+          (rule.appId === null || rule.appId === failedCheck?.appId),
+      );
       await record("required_check", value, {
+        baseRef: detail.baseRef,
+        observedAppId: failedCheck?.appId ?? null,
+        requiredAppId: witness?.appId ?? null,
+        policySource: witness?.policySource ?? null,
         context: failedCheck?.name ?? failedStatus?.name ?? null,
         policyObserved: !!policy,
         checksComplete: checks.complete === true && statuses.complete === true,
