@@ -31,7 +31,7 @@ export function GoldenCreateDialog({
       {!open && <BuildFollower key={param} param={param} />}
       <CreateDialog
         label="New"
-        title="Create a golden"
+        title="Create a snapshot"
         description="Repositories, branches and init commands, built once and saved as a snapshot."
         open={open}
         onOpenChange={(next) => {

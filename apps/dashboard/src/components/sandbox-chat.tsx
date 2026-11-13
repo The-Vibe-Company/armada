@@ -50,9 +50,10 @@ import {
   toolSummary,
   toolText,
 } from "@/lib/chat";
-import { INCOMPLETE_MODEL, modelChange } from "@/lib/composer";
+import { INCOMPLETE_MODEL, modelChange, PINNED_MODEL, SEND_KEY_FIELD } from "@/lib/composer";
 import { type ChatEvent, isActiveStatus, mergeEvents, parseEventPage } from "@/lib/events";
 import { describeFailure } from "@/lib/failure";
+import { type LaunchKey, launchKeyFor } from "@/lib/launch-key";
 import { cn } from "@/lib/utils";
 
 const POLL_MS = 2000;
@@ -75,6 +76,8 @@ const CLOSED_COMPOSER: Record<Exclude<SandboxStatus, (typeof CAN_SEND)[number]>,
 type Props = {
   sandboxId: string;
   initialStatus: SandboxStatus;
+  initialIdlePaused?: boolean;
+  expiresAt?: string | null;
   initialUsageRevision: string;
   live: boolean;
   harness: Harness;
@@ -86,6 +89,11 @@ type Props = {
   configured: boolean;
   /** Why this sandbox takes no messages from here whatever its status (a Docker sandbox, for now): shown instead. */
   composerUnavailable?: string | undefined;
+  /**
+   * A Docker sandbox: the model and effort stay as launched, and each message carries a request key that a retry of
+   * the same message reuses, so the server never runs it twice (#1526).
+   */
+  pinnedModel?: boolean;
 };
 
 type Poll = {
@@ -160,6 +168,7 @@ export function SandboxChat(props: Props) {
   const router = useRouter();
   const [events, setEvents] = useState<ChatEvent[]>([]);
   const [status, setStatus] = useState(initialStatus);
+  const [idlePaused, setIdlePaused] = useState(props.initialIdlePaused === true);
   const [poll, setPoll] = useState<Poll>({
     error: null,
     configured: true,
@@ -195,6 +204,7 @@ export function SandboxChat(props: Props) {
     (session: PollSession, body: Record<string, unknown>) => {
       if (!isCurrent(session)) return null;
       if (isRecord(body.prompt)) setTurnModel(body.prompt);
+      setIdlePaused(body.statusMessage === "Paused — wakes on your next message");
       const next = isSandboxStatus(body.status) ? body.status : known.current;
       const statusChanged = next !== known.current;
       const usageChanged = typeof body.usageRevision === "string" && body.usageRevision !== rendered.current.usage;
@@ -358,11 +368,12 @@ export function SandboxChat(props: Props) {
   // A server action such as Stop re-renders the page with the new status: show it in the same paint as the header,
   // not at the next poll, and read again when it says the sandbox is active (polling stops on an inactive status).
   useLayoutEffect(() => {
+    setIdlePaused(props.initialIdlePaused === true);
     if (initialStatus === known.current) return;
     known.current = initialStatus;
     setStatus(initialStatus);
     if (isActiveStatus(initialStatus)) void tick();
-  }, [initialStatus, tick]);
+  }, [initialStatus, tick, props.initialIdlePaused]);
 
   useEffect(() => {
     const session: PollSession = {
@@ -413,33 +424,31 @@ export function SandboxChat(props: Props) {
                 <StatusDot tone="success" pulse /> Live
               </span>
             )}
-            <StatusBadge status={status} />
+            <StatusBadge status={status} idlePaused={idlePaused} expiresAt={props.expiresAt ?? null} />
           </div>
         </div>
 
-        {turnModel && (
+        {/* The latest turn's model shows only when there is something to say about it (#1526): turn and conversation
+            ids, or models nobody recorded, are noise above the conversation. */}
+        {turnModel?.modelSelectionReason && (
           <div className="px-4 py-2 text-sm" role="status">
-            <p>
-              Latest turn {turnModel.promptId ?? "unknown"} · Conversation {turnModel.conversationId ?? "unknown"}
-            </p>
-            <p>
-              Requested: {turnModel.requestedModel ?? "unknown"} · Observed: {turnModel.observedModel ?? "unknown"}
-            </p>
-            {turnModel.modelSelectionReason && (
-              <p
-                className={
-                  turnModel.modelSelectionReason === "model_selection_mismatch"
-                    ? "text-destructive"
-                    : "text-muted-foreground"
-                }
-                title={turnModel.modelSelectionReason}
-              >
-                {turnModel.modelSelectionReason === "model_selection_mismatch"
-                  ? "Model selection changed"
-                  : "Model not verified"}
-                : {turnModel.modelSelectionMessage}
+            {(turnModel.requestedModel || turnModel.observedModel) && (
+              <p>
+                Requested: {turnModel.requestedModel ?? "unknown"} · Observed: {turnModel.observedModel ?? "unknown"}
               </p>
             )}
+            <p
+              className={
+                turnModel.modelSelectionReason === "model_selection_mismatch"
+                  ? "text-destructive"
+                  : "text-muted-foreground"
+              }
+            >
+              {turnModel.modelSelectionReason === "model_selection_mismatch"
+                ? "Model selection changed"
+                : "Model not verified"}
+              : {turnModel.modelSelectionMessage}
+            </p>
           </div>
         )}
         <Notices status={status} reason={reason} poll={poll} onRetry={retryPolling} />
@@ -922,6 +931,7 @@ function Composer({
   harness,
   catalog,
   launchedModel,
+  pinnedModel,
   status,
   conversation,
   running,
@@ -934,6 +944,11 @@ function Composer({
   const [, startTransition] = useTransition();
   const [showModel, setShowModel] = useState(false);
   const [override, setOverride] = useState(false);
+  /**
+   * The Docker request key of the message not yet accepted: kept only while the same text is sent again unchanged, so
+   * an edited, retyped or later identical message is never mistaken for a retry of an old one.
+   */
+  const sendKey = useRef<LaunchKey | null>(null);
   const fieldId = useId();
   const enabled = (CAN_SEND as readonly SandboxStatus[]).includes(status);
   const restarts = STEER_RESTARTS_TURN[harness];
@@ -967,6 +982,13 @@ function Composer({
       setResult({ ok: false, error: INCOMPLETE_MODEL });
       return;
     }
+    if (intent === "send" && pinnedModel) {
+      sendKey.current = launchKeyFor(sendKey.current, [
+        ["prompt", String(data.get("prompt") ?? "")],
+        ["conversation", String(data.get("conversation") ?? "")],
+      ]);
+      data.set(SEND_KEY_FIELD, sendKey.current.key);
+    }
     const action = intent === "send" ? sendToSandbox : intent === "steer" ? steerSandbox : interruptSandbox;
     setPending(intent);
     setResult(null);
@@ -980,6 +1002,7 @@ function Composer({
       setPending(null);
       setResult(outcome);
       if (!outcome.ok) return;
+      sendKey.current = null;
       if (intent !== "interrupt") {
         // An accepted action owns only the draft it submitted, not text typed during its round trip.
         const submitted = String(data.get("prompt") ?? "");
@@ -1030,7 +1053,10 @@ function Composer({
         name="prompt"
         rows={2}
         value={draft}
-        onChange={(event) => setDraft(event.target.value)}
+        onChange={(event) => {
+          sendKey.current = null;
+          setDraft(event.target.value);
+        }}
         onKeyDown={onKeyDown}
         placeholder={
           running
@@ -1042,37 +1068,49 @@ function Composer({
         className="max-h-60 min-h-14 resize-y bg-card shadow-xs sm:min-h-20 dark:bg-card"
       />
       <Collapsible open={showModel} onOpenChange={setShowModel} className="space-y-3">
-        <CollapsibleContent forceMount className="data-[state=closed]:hidden">
-          <fieldset disabled={pending !== null}>
-            <ModelFields
-              idPrefix={`send-${sandboxId}`}
-              harness={harness}
-              catalog={catalog}
-              keepLabel="As launched"
-              launchedModel={launchedModel}
-            />
-          </fieldset>
-        </CollapsibleContent>
+        {!pinnedModel && (
+          <CollapsibleContent forceMount className="data-[state=closed]:hidden">
+            <fieldset disabled={pending !== null}>
+              <ModelFields
+                idPrefix={`send-${sandboxId}`}
+                harness={harness}
+                catalog={catalog}
+                keepLabel="As launched"
+                launchedModel={launchedModel}
+              />
+            </fieldset>
+          </CollapsibleContent>
+        )}
         <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
-          <CollapsibleTrigger asChild>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className={cn("relative text-muted-foreground max-sm:px-2", override && "text-foreground")}
-            >
-              <SlidersHorizontalIcon />
-              {/* A changed model is marked by more than colour: a dot, and the word where there is room. */}
-              {override && (
-                <span
-                  className="absolute top-1 right-1 size-1.5 rounded-full bg-primary sm:hidden"
-                  aria-hidden="true"
-                />
-              )}
-              {/* Icon only on a phone, where the controls must fit one row; the name stays for assistive tech. */}
-              <span className="max-sm:sr-only">{override ? "Model changed" : "Model"}</span>
-            </Button>
-          </CollapsibleTrigger>
+          {pinnedModel ? (
+            // No model picker on Docker: the launch model serves every message, said plainly instead of refused.
+            <p className="flex items-center gap-1.5 px-1 text-xs text-muted-foreground" title={PINNED_MODEL}>
+              <SlidersHorizontalIcon className="size-3.5" aria-hidden />
+              {/* Words at every width: a title never shows on a touch screen. */}
+              <span>Model as launched</span>
+              <span className="sr-only">: {PINNED_MODEL}</span>
+            </p>
+          ) : (
+            <CollapsibleTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className={cn("relative text-muted-foreground max-sm:px-2", override && "text-foreground")}
+              >
+                <SlidersHorizontalIcon />
+                {/* A changed model is marked by more than colour: a dot, and the word where there is room. */}
+                {override && (
+                  <span
+                    className="absolute top-1 right-1 size-1.5 rounded-full bg-primary sm:hidden"
+                    aria-hidden="true"
+                  />
+                )}
+                {/* Icon only on a phone, where the controls must fit one row; the name stays for assistive tech. */}
+                <span className="max-sm:sr-only">{override ? "Model changed" : "Model"}</span>
+              </Button>
+            </CollapsibleTrigger>
+          )}
           {steerHint ? (
             // Why Steer is unavailable, visible on a touch screen too (a title never shows there); one line, never a row.
             // It takes the place of an earlier success message, never of an error.

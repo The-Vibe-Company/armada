@@ -8,7 +8,7 @@
     "healthcheckPath": "/healthz",
     "healthcheckTimeout": 180,
     "restartPolicyType": "ALWAYS",
-    "overlapSeconds": 0,
+    "overlapSeconds": 180,
     "drainingSeconds": 30
   }
 }

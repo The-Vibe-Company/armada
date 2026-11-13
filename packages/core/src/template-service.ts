@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
+import { parseApplicationSecretBindings } from "./application-secret-bindings.ts";
 import type { ApplicationVaultActor } from "./application-vault.ts";
 import { HARNESS_KINDS } from "./credentials.ts";
-import { decryptSecret } from "./crypto.ts";
 import type { DockerLaunchResult } from "./docker-api.ts";
 import type { GoldenActor, GoldenOperation, GoldenRecord } from "./golden.ts";
 import { GoldenError } from "./golden-config.ts";
@@ -9,11 +9,13 @@ import { GOLDEN_SELECT, type GoldenRow, mapGoldenRow, type Sql } from "./golden-
 import { isHarness } from "./harnesses.ts";
 import { type LaunchOptions, type LaunchStores, launchSandbox } from "./launch.ts";
 import { LaunchError } from "./launch-error.ts";
+import { assertLaunchSecretBindings, resolveLaunchSecrets } from "./launch-secrets.ts";
+import { resolveLaunchVariables } from "./launch-variables.ts";
 import { parseMachineSize } from "./machine-size.ts";
 import { resolveModelChoice } from "./models.ts";
 import { PRIVATE_SKILL_FAILURES } from "./private-skill-error.ts";
 import { isNonMutatingProviderRefusal, type Provider, ProviderError } from "./provider.ts";
-import { validateReadableVariables } from "./readable-variables.ts";
+import { parseReadableVariableBindings, validateReadableVariables } from "./readable-variables.ts";
 import { ProviderRoutingError } from "./sandbox-provider.ts";
 import { createSkillDefaultsService } from "./skill-defaults.ts";
 import { skillRefusalMessage } from "./skill-diagnostics.ts";
@@ -25,6 +27,8 @@ import { VaultError } from "./vault-error.ts";
 export interface TemplateRuntime {
   stores: LaunchStores;
   provider(golden: GoldenRecord): Promise<Provider>;
+  /** Trusted fresh-admission policy; historical receipts never revalidate mutable template sources. */
+  validateDefinition?(definition: TemplateDefinition): void | Promise<void>;
   options?: LaunchOptions;
   launchDocker?(
     body: Record<string, unknown>,
@@ -238,8 +242,6 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       ).rows[0];
       if (!row) unavailable("environment_unavailable");
       host = { installationId: row.installation_id, ownerId: row.owner_id };
-      if (def.secrets?.length) unavailable("secret_delivery_unavailable");
-      if (def.variables.length) unavailable("variable_delivery_unavailable");
     } else if (g) {
       if (canonical(g.modal) !== canonical(def.goldenBinding)) unavailable("environment_binding_changed");
       const retired = (
@@ -250,29 +252,8 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       ).rows.length;
       if (retired) unavailable("environment_snapshot_unavailable");
     }
-    const values: Record<string, string> = {};
-    for (const binding of def.variables) {
-      const v = (
-        await tx.query<{ value: string; version: number; scope: string; owner_id: string }>(
-          "select value,version,scope,owner_id from public.readable_variables where id=$1 and org_id=$2 and status='active' and (scope='org' or owner_id=$3) for share",
-          [binding.variableId, actor.orgId, actor.userId],
-        )
-      ).rows[0];
-      if (!v || (scope === "org" && v.scope !== "org")) unavailable("variable_unavailable");
-      if (v.version !== binding.version) unavailable("variable_version_changed");
-      values[binding.key] = v.value;
-    }
-    // Metadata only: publication and admission must never fetch ciphertext or plaintext.
-    for (const binding of def.secrets ?? []) {
-      const secret = (
-        await tx.query<{ version: number; scope: string }>(
-          "select version,scope from public.application_secrets where id=$1 and org_id=$2 and status='active' and (expires_at is null or expires_at>now()) and (scope='org' or owner_id=$3) for share",
-          [binding.secretId, actor.orgId, actor.userId],
-        )
-      ).rows[0];
-      if (!secret || (scope === "org" && secret.scope !== "org")) unavailable("secret_unavailable");
-      if (secret.version !== binding.version) unavailable("secret_version_changed");
-    }
+    const values = await resolveLaunchVariables(tx, actor, def.variables, scope === "org");
+    await assertLaunchSecretBindings(tx, actor, def.secrets ?? [], scope === "org");
     try {
       validateReadableVariables(values);
     } catch {
@@ -312,7 +293,6 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
     fields(d, [
       "goldenId",
       "hostId",
-      "image",
       "provider",
       "harness",
       "model",
@@ -338,13 +318,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
     if (d.provider === "docker") {
       id(d.hostId);
       if (d.goldenId !== undefined && d.goldenId !== null) invalid();
-      if (
-        typeof d.image !== "string" ||
-        d.image.length > 512 ||
-        !/^[a-z0-9][a-z0-9./:_-]*@sha256:[0-9a-f]{64}$/.test(d.image)
-      )
-        invalid();
-    } else if (d.hostId !== undefined || d.image !== undefined) invalid();
+    } else if (d.hostId !== undefined) invalid();
     const connections: TemplateDefinition["connections"] = [];
     if (d.connections !== undefined && (!Array.isArray(d.connections) || d.connections.length > 100)) invalid();
     for (const connection of (d.connections ?? []) as unknown[]) {
@@ -352,35 +326,19 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       if (connections.includes(connectionId)) invalid();
       connections.push(connectionId);
     }
-    const variables: TemplateDefinition["variables"] = [];
-    if (d.variables !== undefined && (!Array.isArray(d.variables) || d.variables.length > 64)) invalid();
-    for (const binding of (d.variables ?? []) as unknown[]) {
-      const b = object(binding);
-      fields(b, ["key", "variableId", "version"]);
-      const key = text(b.key, 128);
-      try {
-        validateReadableVariables({ [key]: "" });
-      } catch {
-        invalid();
-      }
-      if (variables.some((v) => v.key === key)) invalid();
-      variables.push({ key, variableId: id(b.variableId), version: integer(b.version) });
+    let variables: TemplateDefinition["variables"];
+    try {
+      variables = parseReadableVariableBindings(d.variables === undefined ? [] : d.variables);
+    } catch {
+      invalid();
     }
-    const secrets: NonNullable<TemplateDefinition["secrets"]> = [];
-    if (d.secrets !== undefined && (!Array.isArray(d.secrets) || d.secrets.length > 64)) invalid();
-    for (const binding of (d.secrets ?? []) as unknown[]) {
-      const b = object(binding);
-      fields(b, ["key", "secretId", "version"]);
-      const key = text(b.key, 128);
-      if (/^(NEXT_PUBLIC_|VITE_|PUBLIC_)/i.test(key)) invalid();
-      try {
-        validateReadableVariables({ [key]: "" });
-      } catch {
-        invalid();
-      }
-      if (variables.some((v) => v.key === key) || secrets.some((v) => v.key === key)) invalid();
-      secrets.push({ key, secretId: id(b.secretId), version: integer(b.version) });
+    let secrets: NonNullable<TemplateDefinition["secrets"]>;
+    try {
+      secrets = parseApplicationSecretBindings(d.secrets === undefined ? [] : d.secrets);
+    } catch {
+      invalid();
     }
+    if (secrets.some((secret) => variables.some((variable) => variable.key === secret.key))) invalid();
     if (variables.length + secrets.length > 64) unavailable("environment_limits_exceeded");
     const skills = (d.skills ?? []) as string[];
     if (!Array.isArray(skills)) invalid();
@@ -403,7 +361,6 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
             provider: "docker" as const,
             goldenBinding: null,
             hostId: id(d.hostId),
-            image: d.image as string,
           }),
       harness: d.harness,
       ...choice,
@@ -545,7 +502,11 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       invalid();
     }
     const size = input.size === undefined ? undefined : parseMachineSize(input.size);
-    const bodyDigest = digest(input);
+    // An explicit enrolled-runtime request must not adopt a native template
+    // request key (or vice versa). Preserve historical/native digests unchanged.
+    const bodyDigest = digest(
+      runtime.options?.runtime || runtime.options?.boatRuntime ? { input, runtime: "armada" } : input,
+    );
     // Resolve a model account before the claim, then revalidate that binding inside admission.
     const existing = await transaction(async (tx) => {
       await member(tx, actor, org);
@@ -563,6 +524,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       return { a, h, r: await revision(tx, h, input.revision) };
     });
     const def = selection.r.definition;
+    await runtime.validateDefinition?.(def);
     let account = def.modelAccount;
     if (input.modelAccount !== undefined) {
       if (account) invalid(); // A launch never overrides a revision's pinned billing account.
@@ -705,13 +667,14 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
                   org,
                   provider: "docker",
                   hostId: def.hostId,
-                  image: def.image,
                   harness: def.harness,
                   credentialId: m.account.id,
                   credentialVersion: m.account.version,
                   requestId: request.sandbox_id,
                   model: def.model,
                   reasoningEffort: def.reasoningEffort,
+                  variables: def.variables,
+                  secrets: def.secrets ?? [],
                   connections: def.connections,
                   skills: m.resolvedSkills ?? def.skills,
                   skipSkillDefaults: true,
@@ -797,18 +760,23 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
                   beforeStart: async (p, s) => {
                     await revalidate(actor, org, m);
                     await runtime.options?.beforeStart?.(p, s);
-                    if (def.variables.length || def.secrets?.length)
-                      await p.configureReadableVariables!({
-                        sandboxId: s.providerSandboxId,
-                        harness: def.harness,
-                        variables: await resolveEnvironment(selection.a, m),
-                      });
+                    if (def.variables.length || def.secrets?.length) {
+                      const variables = await resolveEnvironment(selection.a, m);
+                      // Enrolled Modal receives frozen readables privately before its driver starts.
+                      if (s.runtimeTransport !== "dialout")
+                        await p.configureReadableVariables!({
+                          sandboxId: s.providerSandboxId,
+                          harness: def.harness,
+                          variables,
+                        });
+                    }
                   },
                 },
               );
             })();
       const output = {
         requestId: request.id,
+        ...("runtime" in result && result.runtime ? { runtime: result.runtime } : {}),
         state: "succeeded",
         id: result.sandbox.id,
         provider: result.sandbox.provider,
@@ -925,23 +893,11 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
   }
   // Resolve only into a short-lived provider call; never put plaintext in the durable manifest.
   async function resolveSecrets(actor: { userId: string; orgId: string }, def: TemplateDefinition) {
-    const values: Record<string, string> = {};
-    if (!def.secrets?.length) return values;
-    await transaction(async (tx) => {
+    if (!def.secrets?.length) return {};
+    return transaction(async (tx) => {
       await member(tx, { userId: actor.userId, orgs: [{ orgId: actor.orgId }] }, actor.orgId);
-      for (const binding of def.secrets ?? []) {
-        const row = (
-          await tx.query<{ value_enc: Uint8Array; version: number }>(
-            "select value_enc,version from public.application_secrets where id=$1 and org_id=$2 and status='active' and (expires_at is null or expires_at>now()) and (scope='org' or owner_id=$3) for share",
-            [binding.secretId, actor.orgId, actor.userId],
-          )
-        ).rows[0];
-        if (!row) unavailable("secret_unavailable");
-        if (row.version !== binding.version) unavailable("secret_version_changed");
-        values[binding.key] = await decryptSecret(new Uint8Array(row.value_enc), encryptionKey);
-      }
+      return resolveLaunchSecrets(tx, actor, def.secrets ?? [], encryptionKey);
     });
-    return values;
   }
   /** Later turns need current sandbox authority, NOT the mutable sources of a frozen readable launch. */
   async function prepare(

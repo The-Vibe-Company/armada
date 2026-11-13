@@ -35,6 +35,11 @@ Owner-facing orchestrators have been removed, with no compatibility route or fea
 ## CI: what we test and what we do not
 
 One verdict, under two minutes. A pull request has a single required check, `Lint, typecheck and test`. If it takes more than two minutes, that is a defect to fix before anything else merges.
+No blocking PR or merge-queue check may exceed two minutes. The only slow gated
+path is a publishing release: release → exact-commit staging deployment/smoke →
+production. Staging smoke otherwise runs only after deploying a main commit,
+never from PR, gh-readonly-queue/* or release-please branch deployment events
+and never as a pull-request check. Do not subscribe smoke to deployment_status.
 
 **CI proves the code is sound on its own. Staging proves it works.**
 
@@ -44,7 +49,21 @@ What CI runs on every pull request and in the merge queue:
 
 What runs only when its files change: the iOS checks (`apps/ios`), the migration dry-run (`supabase/migrations`).
 
-What runs after a merge, not before: the deploy to staging and the post-deploy smoke, which launches real sandboxes on every enabled provider, builds goldens and exercises the whole lifecycle. Binaries are built by the release workflow when a version is published.
+What runs after a merge, not before: the staging dashboard build in GitHub Actions
+(`vercel pull`, `vercel build`, then `vercel deploy --prebuilt`), the deploy to staging and the post-deploy smoke, which launches real sandboxes on every enabled provider, builds goldens and exercises the whole lifecycle. Production deploys only from a publishing release after its exact-SHA staging
+smoke succeeds; there is no opt-in bypass. The #1547 owner cutover in
+`docs/releasing.md` records which provider settings still need owner changes.
+Vercel Git deployments are disabled for both dashboard projects via
+`apps/dashboard/vercel.json`; no PR previews. Keep the Actions staging path
+working and follow the owner cutover prerequisites in `docs/releasing.md`.
+The release dashboard build also runs in Actions and uploads only prebuilt
+output; provider-side Git autodeploy still requires the owner cutover.
+Production SQL applies only from the validated release deployment path; the
+standalone migration workflow retains manual previews/history/owner repair,
+never per-commit production applies.
+Ordinary queued staging-main sources are superseded before mutation when newer
+main exists; started deployments and explicit pinned release smoke are never cancelled.
+Binaries are built by the release workflow when a version is published.
 
 What CI does not do, and must not be added back:
 - no binary builds per pull request;

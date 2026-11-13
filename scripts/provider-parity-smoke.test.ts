@@ -12,6 +12,8 @@ for (const mode of [
   "resume_failure",
   "filtered",
   "unimplemented",
+  "idle-pause",
+  "wake-on-send",
   "invalid_filter",
   "recall_loss",
   "quota",
@@ -31,6 +33,8 @@ for (const mode of [
   "baseline_quota",
 ] as const) {
   test(`parity normal lifecycle and honest reporting: ${mode}`, async () => {
+    const debtFeature =
+      mode === "unimplemented" ? "mcp" : mode === "idle-pause" || mode === "wake-on-send" ? mode : undefined;
     const lines: string[] = [];
     const calls: string[] = [];
     const deletes = new Map<string, number>();
@@ -53,7 +57,6 @@ for (const mode of [
             modelAccountId: "fake-account",
             golden: "fake-golden",
             hostId: "owned-host",
-            image: "fake-image@sha256:abc",
           })),
         ),
       },
@@ -61,8 +64,8 @@ for (const mode of [
         ? ["--parity", "--only", "docker", "--feature", "exact-cost"]
         : mode === "filtered"
           ? ["--parity", "--only", "docker", "--feature", "exec"]
-          : mode === "unimplemented"
-            ? ["--parity", "--feature", "mcp"]
+          : debtFeature
+            ? ["--parity", "--feature", debtFeature]
             : mode === "invalid_filter"
               ? ["--parity", "--feature", "typo"]
               : ["--parity"],
@@ -105,6 +108,7 @@ for (const mode of [
               result = { hosts: [{ id: "owned-host", state: mode === "offline" ? "offline" : "online" }] };
               break;
             case "sandbox/launch":
+              if (p === "docker") expect(body).not.toHaveProperty("image");
               if (p === "boat" && (mode === "quota" || mode === "server_failure"))
                 return Response.json(
                   {
@@ -229,11 +233,16 @@ for (const mode of [
       return;
     }
     const report = JSON.parse(lines.find((line) => line.startsWith('{"step":"provider_parity"'))!);
-    if (mode === "filtered" || mode === "unimplemented") {
+    if (mode === "filtered" || debtFeature) {
       expect(passed).toBe(true);
-      if (mode === "unimplemented") {
+      if (debtFeature) {
         expect(calls).toHaveLength(0);
-        expect(report.features.mcp.docker).toEqual({ status: "not-run", reason: "probe_not_implemented" });
+        expect(report.starts).toBe(0);
+        for (const provider of providers)
+          expect(report.features[debtFeature][provider]).toEqual({
+            status: "not-run",
+            reason: "probe_not_implemented",
+          });
       } else {
         expect(report.features.exec.docker.status).toBe("pass");
         expect(report.features.exec.boat.reason).toBe("provider_filtered");

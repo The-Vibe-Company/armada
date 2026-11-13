@@ -34,17 +34,20 @@ export {
   type AuthorizedRepo,
   type GoldenCreateDeps,
   GoldenCreateService,
+  goldenCheckoutScript,
   goldenScript,
   type PreparedRepo,
   withGoldenDirs,
 } from "./golden-create-service.ts";
 export { type GoldenGitHubAdapterOptions, goldenGitHubAdapter } from "./golden-github.ts";
 export { snapshotGolden } from "./golden-runtime.ts";
-export { GITHUB_TOKEN_PATTERN, scanGoldenSandbox } from "./golden-scan.ts";
+export { GITHUB_TOKEN_PATTERN, goldenScanScript, scanGoldenSandbox } from "./golden-scan.ts";
 export * from "./golden-snapshot-retirement.ts";
 export { assertSqlGoldenMutation } from "./golden-store.ts";
 export * from "./index.ts";
 export { prepareLaunchWorkspace } from "./launch.ts";
+export { assertLaunchSecretBindings, resolveLaunchSecrets } from "./launch-secrets.ts";
+export { resolveLaunchVariables } from "./launch-variables.ts";
 export {
   installPrivateSkill,
   PRIVATE_SKILL_FAILURES,

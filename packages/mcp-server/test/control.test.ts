@@ -19,7 +19,7 @@ import {
   VaultError,
   type VaultStore,
 } from "@armada/core";
-import { createSqlVaultStore } from "@armada/core/server";
+import { createSkillDefaultsService, createSqlVaultStore } from "@armada/core/server";
 import { appendModalEvents, createSqlModalStore, type Machine, type Scope, scopeKey } from "@armada/provider-modal";
 import type { PGlite } from "@electric-sql/pglite";
 import { AppService } from "modal";
@@ -2750,7 +2750,7 @@ test("versioned runtime launch is explicit/default-off and never selects native 
 // Public HTTP admission owns the opt-in: no allocation when disabled/malformed,
 // and no native agent/configuration fallback on the accepted model-only path.
 test.each([false, true])(
-  "Modal runtime launch prepares explicit/default MCP selection before its first prompt (%s)",
+  "Modal runtime launch prepares explicit/default MCP and skills before its first prompt (%s)",
   async (fromDefaults) => {
     await withServer(async ({ db, options }) => {
       const org = await options.store.createOrg("Modal runtime", STAN);
@@ -2789,6 +2789,24 @@ test.each([false, true])(
       const host = { ...fake.provider, id: "modal" as const };
       let starts = 0;
       let mcpPrepared = false;
+      let skillsInstalled = false;
+      const skill = "team/runtime-skill@1.2.3";
+      const receipt = {
+        reference: skill,
+        version: "1.2.3",
+        skillId: "11111111-1111-4111-8111-111111111111",
+        checksum: `sha256:${"a".repeat(64)}`,
+        origin: "https://skillpack.app/v1",
+      };
+      options.skillDefaults = createSkillDefaultsService({
+        query: (q, v) => db.query(q, v),
+        transaction: (work) => db.transaction((tx) => work(tx)),
+      });
+      await options.skillDefaults.command({ userId: STAN, orgs: [{ orgId: org.id }] }, "set", {
+        org: org.id,
+        scope: "personal",
+        skills: [skill],
+      });
       const connection = crypto.randomUUID();
       options.providerFor = () => {
         throw Error("No Boat provider for Modal");
@@ -2803,16 +2821,25 @@ test.each([false, true])(
           expect(input.sandbox.runtimeTransport).toBe("dialout");
           expect(input.sandbox.boatRuntime).toBeUndefined();
           return {
+            async installSkills(references, key) {
+              expect(references).toEqual([skill]);
+              expect(key).toBeNull();
+              expect(mcpPrepared).toBe(false);
+              skillsInstalled = true;
+              return [receipt];
+            },
             epoch: "1",
             prompt: async () => {
               expect(mcpPrepared).toBe(true);
+              expect(skillsInstalled).toBe(true);
               return { promptId: "modal-initial", conversationId: "modal-conversation", status: "running" };
             },
           };
         },
       };
       for (const bad of [
-        { ...body, skipSkillDefaults: false },
+        { ...body, skipSkillDefaults: "invalid" },
+        { ...body, skills: "invalid" },
         { ...body, connections: ["invalid"] },
         { ...body, harness: "claude" },
         { ...body, runtimeTransport: undefined },
@@ -2840,17 +2867,22 @@ test.each([false, true])(
           },
           async prepare(_provider, sandbox) {
             expect(starts).toBe(1);
-            expect(sandbox).toMatchObject({ runtimeTransport: "dialout", provider: "modal" });
+            expect(sandbox).toMatchObject({ runtimeTransport: "dialout", provider: "modal", skills: [receipt] });
             mcpPrepared = true;
           },
         },
       };
-      const response = await request({ ...body, connections: fromDefaults ? undefined : [connection] });
+      const response = await request({
+        ...body,
+        connections: fromDefaults ? undefined : [connection],
+        skills: fromDefaults ? undefined : [skill],
+        skipSkillDefaults: fromDefaults ? undefined : true,
+      });
       if (response?.status !== 200) throw Error(JSON.stringify(await response?.json()));
       expect(response?.status).toBe(200);
       expect(await response?.json()).toMatchObject({
         runtime: { kind: "armada", epoch: "1" },
-        sandbox: { provider: "modal", runtimeTransport: "dialout" },
+        sandbox: { provider: "modal", runtimeTransport: "dialout", skills: [receipt] },
         promptId: "modal-initial",
       });
       expect(starts).toBe(1);

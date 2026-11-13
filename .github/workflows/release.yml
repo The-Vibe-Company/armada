@@ -22,7 +22,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ vars.RELEASE_SYNCED_DEPLOYS == 'true' && 'release-production' || format('release-{0}', github.ref) }}
+  group: release-production
   queue: max
   cancel-in-progress: false
 
@@ -114,15 +114,6 @@ jobs:
             echo "dist_tag=$dist_tag"
             echo "publish=$publish"
           } >> "$GITHUB_OUTPUT"
-      - name: Validate deployment mode
-        env:
-          GATED: ${{ vars.STAGING_GATED_DEPLOYS }}
-          RELEASE_SYNCED: ${{ vars.RELEASE_SYNCED_DEPLOYS }}
-        run: |
-          if [[ "$GATED" == true && "$RELEASE_SYNCED" != true ]]; then
-            echo "::error::Staging gate requires release-synchronized production."
-            exit 1
-          fi
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
       - run: bun run lint
@@ -133,11 +124,61 @@ jobs:
         env:
           CODEX_NATIVE_TEST_BINARY: ${{ github.workspace }}/packages/agent-runtime/dist/codex
 
+  sandbox-image:
+    name: Publish official sandbox image (linux/amd64)
+    outputs:
+      enabled: ${{ steps.foundation.outputs.enabled }}
+    needs: check
+    if: ${{ !cancelled() && needs.check.result == 'success' && needs.check.outputs.publish == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.check.outputs.sha }}
+          persist-credentials: false
+      - id: foundation
+        name: Preserve recovery of releases predating the official image
+        run: |
+          if [ -f images/sandbox/Dockerfile ]; then
+            echo 'enabled=true' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Publish versioned image and record immutable pin
+        if: steps.foundation.outputs.enabled == 'true'
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          set -euo pipefail
+          registry=ghcr.io/the-vibe-company/armada-sandbox
+          echo "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          trap 'docker logout ghcr.io' EXIT
+          # A recovery run must reuse an existing version, not replace its bytes.
+          digest=$(python3 scripts/release/sandbox-image-digest.py)
+          if [ -z "$digest" ]; then
+            docker buildx build --platform linux/amd64 --file images/sandbox/Dockerfile \
+              --tag "$registry:$VERSION" --push --metadata-file /tmp/sandbox-metadata.json .
+            digest=$(jq -er '."containerimage.digest"' /tmp/sandbox-metadata.json)
+          fi
+          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          jq -n --arg version "$VERSION" --arg image "$registry@$digest" \
+            '{version: $version, image: $image}' > packages/core/src/official-sandbox-image.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: steps.foundation.outputs.enabled == 'true'
+        with:
+          name: official-sandbox-image
+          path: packages/core/src/official-sandbox-image.json
+          if-no-files-found: error
+          overwrite: true
+
   # As in CI, each binary is compiled and run on its own platform (macOS signs it ad hoc there).
   binary:
     name: Binary (${{ matrix.target }})
-    needs: check
-    if: ${{ !cancelled() && needs.check.result == 'success' }}
+    needs: [check, sandbox-image]
+    if: ${{ !cancelled() && needs.check.result == 'success' && (needs.sandbox-image.result == 'success' || needs.check.outputs.publish != 'true') }}
     strategy:
       fail-fast: false
       matrix:
@@ -158,6 +199,11 @@ jobs:
           ref: ${{ needs.check.outputs.sha }}
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: needs.sandbox-image.outputs.enabled == 'true'
+        with:
+          name: official-sandbox-image
+          path: packages/core/src
       - run: bun run build --target ${{ matrix.target }}
       - name: npm pack and install
         run: |
@@ -179,17 +225,21 @@ jobs:
       contents: read
       actions: read
     name: Smoke exact release commit on staging
-    needs: [check, binary]
-    if: ${{ !cancelled() && vars.RELEASE_SYNCED_DEPLOYS == 'true' && vars.STAGING_GATED_DEPLOYS == 'true' && needs.check.outputs.publish == 'true' && needs.check.result == 'success' && needs.binary.result == 'success' }}
+    needs: [check, binary, sandbox-image]
+    if: ${{ !cancelled() && needs.check.outputs.publish == 'true' && needs.check.result == 'success' && needs.binary.result == 'success' }}
     uses: ./.github/workflows/staging-gated-production.yml
     with:
       source_sha: ${{ needs.check.outputs.sha }}
+      official_image: ${{ needs.sandbox-image.outputs.enabled == 'true' }}
     secrets: inherit
 
   production:
     name: Release migrations, server and dashboard
+    permissions:
+      contents: read
+      actions: read
     needs: [check, binary, staging-smoke]
-    if: ${{ !cancelled() && vars.RELEASE_SYNCED_DEPLOYS == 'true' && needs.check.outputs.publish == 'true' && needs.check.result == 'success' && needs.binary.result == 'success' && (needs.staging-smoke.result == 'success' || (vars.STAGING_GATED_DEPLOYS != 'true' && needs.staging-smoke.result == 'skipped')) }}
+    if: ${{ !cancelled() && needs.check.outputs.publish == 'true' && needs.check.result == 'success' && needs.binary.result == 'success' && needs.staging-smoke.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
     environment: production
@@ -216,6 +266,11 @@ jobs:
           ref: ${{ needs.check.outputs.sha }}
           fetch-depth: 0
           persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: hashFiles('images/sandbox/Dockerfile') != ''
+        with:
+          name: official-sandbox-image
+          path: packages/core/src
       - name: Reject superseded releases
         run: |
           # Recovery retries the latest stable release, never silently downgrades production.
@@ -238,7 +293,8 @@ jobs:
           node-version: 24
       - name: Install pinned deployment clients
         run: npm install --global @railway/cli@5.71.0 vercel@65.14.0
-      - name: Migrate, deploy server, wait healthy, then deploy dashboard
+      - uses: ./.github/actions/setup-bun
+      - name: Migrate, deploy server, wait healthy, then deploy prebuilt dashboard
         run: bash .release-tools/scripts/release/deploy-production.sh
       - name: Report stopped release
         if: failure()
@@ -247,7 +303,7 @@ jobs:
   publish:
     name: Publish to npm
     needs: [check, binary, production]
-    if: ${{ !cancelled() && needs.check.result == 'success' && needs.binary.result == 'success' && (needs.production.result == 'success' || (needs.production.result == 'skipped' && (vars.RELEASE_SYNCED_DEPLOYS != 'true' || needs.check.outputs.publish != 'true'))) }}
+    if: ${{ !cancelled() && needs.check.result == 'success' && needs.binary.result == 'success' && (needs.production.result == 'success' || (needs.production.result == 'skipped' && needs.check.outputs.publish != 'true')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: npm

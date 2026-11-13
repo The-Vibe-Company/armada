@@ -2,6 +2,7 @@ import {
   dedupeEvents,
   GitHubHydrationError,
   goldenForSettings,
+  idlePauseMessage,
   MACHINE_SIZES,
   parseMachineSizePolicy,
   SANDBOX_PLACEMENT_PROVIDERS,
@@ -250,6 +251,8 @@ const sandboxUsage = z
   .optional();
 
 const sandboxListMetadata = z.object({
+  idlePaused: z.boolean().optional(),
+  statusMessage: z.string().nullable().optional(),
   usage: sandboxUsage,
   preservationNote: z.string().nullable().optional(),
   providerSandboxId: z.string().nullable(),
@@ -315,6 +318,7 @@ const status = {
   machineSize: z.unknown().nullable(),
   status: z.enum(SANDBOX_STATUSES),
   statusReason: z.string().nullable(),
+  statusMessage: z.string().nullable().optional(),
   taskOutcome: taskOutcome.nullable().optional(),
   providerState: z.string().nullable(),
   conversationIds: z.array(z.string()),
@@ -652,13 +656,14 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         : useStored
           ? await context.storedProvider!(found)
           : await context.provider(found);
-    return measure("state", () =>
+    const result = await measure("state", () =>
       readStatus(provider, data.sandboxes, found, {
         stored: useStored,
         ...(promptId ? { promptId } : {}),
         now: context.now(),
       }),
     );
+    return { ...result, statusMessage: idlePauseMessage(result, context.now()) };
   };
 
   tool(
@@ -1157,7 +1162,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         limit,
         hasMore,
         nextPage: hasMore && page < 1_000_000 ? page + 1 : null,
-        sandboxes: rows,
+        sandboxes: rows.map((row) => ({ ...row, statusMessage: idlePauseMessage(row, context.now()) })),
       };
     },
   );
@@ -1430,7 +1435,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         "sandbox opens a conversation and later sends continue the latest one. To redirect a turn that is " +
         "still running, use steer. The turn runs with the model and effort chosen at launch; model and " +
         "reasoning_effort override them for this turn only. Experimental runtime follow-up requires request_id, " +
-        "an existing conversation and an already-running sandbox; model/effort remain pinned to launch.",
+        "an existing conversation; checkpointed stopped sandboxes wake automatically. Model/effort remain pinned to launch.",
       input: {
         id,
         request_id: z

@@ -1,18 +1,21 @@
 # Unit shards
 
 `bun scripts/ci/unit-shards.ts --check` discovers Git-tracked Bun test filenames
-and assigns every file exactly once to six nonempty shards. Stage new files
+and assigns every file exactly once to eight nonempty shards. Stage new files
 before checking locally. Run a shard with `bun scripts/ci/unit-shards.ts 1`
-(through `6`). Each file runs in an isolated Bun process with `--no-orphans`.
+(through `8`). Each file runs in an isolated Bun process with `--no-orphans`.
 New files receive a one-second estimate; recorded weights in
 `test-durations.json` drive deterministic longest-first placement.
 
-The recorded main-run sample totals about 472 seconds of isolated file work.
-Six shards predict about 79 seconds each, leaving roughly 40 seconds for setup
-and the aggregate within the two-minute target. Five predict about 95 seconds
-before setup and leave too little headroom. These are estimates, not CI proof;
-the coordinator measures actual verdict time and reduces shards as slow tests
-are removed (#1458).
+Eight shards are the owner-approved immediate response to merge-queue verdicts
+exceeding two minutes (#1458). Weights were refreshed from completed merge-queue
+run 43457010784 (per-file `Completed ... in ...s` lines). That run's six shard
+jobs took 85, 69, 111, 94, 85 and 116 seconds respectively, including setup.
+The eight-way refreshed plan predicts about 58.1 seconds of measured file work
+per shard, before setup and aggregate overhead. This is a projection, not an
+observed eight-shard result: the coordinator measures after merge, targeting
+shards under 75 seconds and verdict under 110 seconds. Keep deleting slow tests
+so the repository can return to six shards when measured CI permits it.
 
 `Lint and typecheck` owns lint, strict typecheck, migration-version validation
 and the native artifact/process contracts, which portable unit fixtures do not

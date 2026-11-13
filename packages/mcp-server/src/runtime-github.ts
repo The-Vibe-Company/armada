@@ -12,6 +12,8 @@ import {
 } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import { createSqlData } from "./data.ts";
+import { matchesDockerLaunchRequestHash } from "./docker-launch-identity.ts";
+import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import type { Route } from "./http.ts";
 import { createRuntimeAgent } from "./runtime-agent.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
@@ -35,12 +37,13 @@ const snapshot = `select jsonb_build_object('sandboxId',s.id,'ownerId',s.owner_i
  'membershipEpoch',e.epoch,'mcpGeneration',s.mcp_generation,'connectionEpoch',c.connection_epoch,
  'githubId',c.github_id,'repositories',g.config->'repos') as binding,s.expires_at
  from public.sandboxes s join public.runtime_enrolments r on r.sandbox_id=s.id
- join public.goldens g on g.id=s.golden_id and g.org_id=s.org_id
+ left join public.goldens g on g.id=s.golden_id and g.org_id=s.org_id
  join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
  join public.mcp_actor_epochs e on e.org_id=m.org_id and e.user_id=m.user_id
  join public.github_connections c on c.user_id=s.owner_id and c.revoked_at is null
- where s.id=$1 and ((s.provider='boat' and s.boat_runtime) or (s.provider='modal' and s.runtime_transport='dialout'))
- and g.provider=s.provider and s.harness in ('codex','claude')
+ where s.id=$1 and (s.provider='docker' or (
+   ((s.provider='boat' and s.boat_runtime) or (s.provider='modal' and s.runtime_transport='dialout'))
+   and g.provider=s.provider and s.harness in ('codex','claude')))
  and (s.status in ('ready','running') or (s.provider='boat' and s.boat_runtime and s.status='starting' and s.activity_lease_id is not null and s.activity_until>now())) and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>now()
  and not exists(select 1 from public.runtime_checkpoints p where p.sandbox_id=s.id and p.epoch=r.epoch)`;
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
@@ -69,19 +72,63 @@ export function createRuntimeGitHub(options: {
   const { sql, key } = options,
     authority = createRuntimeEnrolments(sql, key);
   const owner = async (caller: Caller, id: string) => {
-    const s = await createSqlData(sql)(caller).sandboxes.get(id);
+    const native = await createSqlData(sql)(caller).sandboxes.get(id);
+    const s =
+      native ??
+      (await createDockerSandboxService(sql, key).get(
+        {
+          userId: caller.userId,
+          orgId:
+            (
+              await sql.query<{ org_id: string }>(
+                "select org_id from public.sandboxes where id=$1 and owner_id=$2 and provider='docker' and org_id=any($3::uuid[])",
+                [id, caller.userId, caller.orgs.map((org) => org.orgId)],
+              )
+            ).rows[0]?.org_id ?? denied(),
+        },
+        id,
+      ));
     if (
       !s ||
       s.ownerId !== caller.userId ||
-      !((s.provider === "boat" && s.boatRuntime) || (s.provider === "modal" && s.runtimeTransport === "dialout")) ||
-      (s.harness !== "codex" && s.harness !== "claude") ||
+      !(
+        s.provider === "docker" ||
+        (((s.provider === "boat" && native?.boatRuntime) ||
+          (s.provider === "modal" && native?.runtimeTransport === "dialout")) &&
+          (s.harness === "codex" || s.harness === "claude"))
+      ) ||
       s.deletedAt
     )
       return denied();
     return s;
   };
-  const current = async (tx: Sql, id: string) =>
-    (await tx.query<{ binding: Binding; expires_at: string | Date }>(snapshot, [id])).rows[0] ?? denied();
+  const current = async (tx: Sql, id: string) => {
+    const row = (await tx.query<{ binding: Binding; expires_at: string | Date }>(snapshot, [id])).rows[0] ?? denied();
+    const docker = (
+      await tx.query<{ request_enc: Uint8Array<ArrayBuffer>; request_hash: string; actor_epoch: string }>(
+        `select d.request_enc,d.request_hash,d.actor_epoch::text from public.docker_launch_requests d
+       join public.sandboxes s on s.id=d.sandbox_id join public.mcp_actor_epochs e on e.org_id=s.org_id and e.user_id=s.owner_id
+       where s.id=$1 and s.provider='docker' and d.actor_epoch=e.epoch`,
+        [id],
+      )
+    ).rows[0];
+    if (docker) {
+      const manifest = JSON.parse(await decryptSecret(docker.request_enc, key));
+      if (
+        !matchesDockerLaunchRequestHash(manifest.request, docker.request_hash) ||
+        !Array.isArray(manifest.request.repos ?? manifest.snapshotConfig?.repos)
+      )
+        return denied();
+      row.binding.repositories = manifest.request.repos ?? manifest.snapshotConfig.repos;
+      Object.assign(row.binding, { launchHash: docker.request_hash, launchActorEpoch: docker.actor_epoch });
+      // Match the JSONB representation persisted with the capability, including nested key order.
+      row.binding =
+        (await tx.query<{ binding: Binding }>("select $1::jsonb as binding", [JSON.stringify(row.binding)])).rows[0]
+          ?.binding ?? denied();
+    }
+    if (!Array.isArray(row.binding.repositories)) return denied();
+    return row;
+  };
   const read = async (tx: Sql, capHash: string) =>
     (
       await tx.query<{
@@ -102,6 +149,27 @@ export function createRuntimeGitHub(options: {
       `insert into public.github_runtime_issued(sandbox_id,owner_id,physical_generation,hash,token_enc) values($1,$2,$3,$4,$5) on conflict do nothing`,
       [binding.sandboxId, binding.ownerId, `runtime:${binding.epoch}`, hash(value), await encryptSecret(value, key)],
     );
+  async function preflightRepositories(caller: Caller, org: string, repositories: { url: string }[]) {
+    if (!caller.orgs.some((m) => m.orgId === org) || !options.github.app) return denied();
+    const access = await resolveGitHubAccess({ ...options.github, caller: "managed_runtime" }, caller.userId);
+    if (access.status !== "connected") return denied();
+    for (const { url } of repositories) {
+      const match = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?$/.exec(url);
+      if (!match) return denied();
+      const response = await (options.github.fetch ?? fetch)(`https://api.github.com/repos/${match[1]}`, {
+        redirect: "error",
+        headers: { authorization: `Bearer ${access.token}`, accept: "application/vnd.github+json" },
+        signal: AbortSignal.timeout(15000),
+      }).catch(() => denied());
+      const repository = (await response.json().catch(() => null)) as { full_name?: unknown } | null;
+      if (
+        !response.ok ||
+        typeof repository?.full_name !== "string" ||
+        repository.full_name.toLowerCase() !== match[1]?.toLowerCase()
+      )
+        return denied();
+    }
+  }
   async function preflight(caller: Caller, input: { org: string; golden: string; repository: string }) {
     if (!caller.orgs.some((m) => m.orgId === input.org) || !options.github.app) return denied();
     const golden = (
@@ -246,6 +314,18 @@ export function createRuntimeGitHub(options: {
       revision: issuedCap.revision,
     };
   }
+  async function prepareTurn(caller: Caller, id: string) {
+    const launch = (
+      await sql.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
+        `select d.request_enc from public.docker_launch_requests d join public.sandboxes s on s.id=d.sandbox_id
+       where s.id=$1 and s.provider='docker' and s.owner_id=$2 and s.org_id=any($3::uuid[])`,
+        [id, caller.userId, caller.orgs.map((org) => org.orgId)],
+      )
+    ).rows[0];
+    if (!launch) return;
+    const manifest = JSON.parse(await decryptSecret(launch.request_enc, key));
+    if (manifest.request?.repos) await prepare(caller, id);
+  }
   const route: Route = async (request) => {
     if (new URL(request.url).pathname !== path) return null;
     const headers = { "cache-control": "no-store" };
@@ -306,5 +386,5 @@ export function createRuntimeGitHub(options: {
       ...(access.expiresAt ? { tokenExpiresAt: access.expiresAt.toISOString() } : {}),
     };
   }
-  return { prepare, prepareLaunch, status, preflight, route };
+  return { prepare, prepareTurn, prepareLaunch, status, preflight, preflightRepositories, route };
 }

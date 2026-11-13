@@ -1,9 +1,27 @@
-import { DOCKER_LOCAL_IMAGE_LABELS, isDockerImageReference } from "./docker-image.ts";
+import type { DockerHostJob } from "./docker-host-job.ts";
+import {
+  DOCKER_LOCAL_IMAGE_LABELS,
+  type DockerSnapshotBinding,
+  isDockerImageReference,
+  parseDockerSnapshotBinding,
+} from "./docker-image.ts";
+import { buildDockerSnapshot } from "./docker-snapshot-build.ts";
 
 /** Direct argv execution only; adapters must never invoke a shell or log stdin/output. */
 export interface DockerMachineCli {
-  run(argv: readonly string[], stdin?: string | Uint8Array): Promise<{ exitCode: number; stdout: string }>;
+  /** `timeoutMs` lengthens the CLI's default bound for a slow command (an image pull). */
+  run(
+    argv: readonly string[],
+    stdin?: string | Uint8Array,
+    options?: { timeoutMs?: number },
+  ): Promise<{ exitCode: number; stdout: string }>;
 }
+
+/**
+ * How long a host may take to fetch an image it does not have yet: half the launch's 10-minute deadline, leaving the
+ * rest for the container and the runtime. The daemon is serial, so it does nothing else while it pulls.
+ */
+export const DOCKER_IMAGE_PULL_TIMEOUT_MS = 5 * 60_000;
 
 export interface DockerMachineRequest {
   sandboxId: string;
@@ -13,10 +31,19 @@ export interface DockerMachineRequest {
   ttlSeconds: number;
   /** Frozen absolute UTC deadline; omitted requests retain relative TTL behavior. */
   expiresAt?: number;
+  snapshot?: DockerSnapshotBinding;
 }
 
 export class DockerMachineError extends Error {
-  constructor(readonly code: "invalid_request" | "docker_failed" | "ownership_mismatch" | "expired" | "not_found") {
+  constructor(
+    readonly code:
+      | "invalid_request"
+      | "docker_failed"
+      | "image_unavailable"
+      | "ownership_mismatch"
+      | "expired"
+      | "not_found",
+  ) {
     super(`Docker machine ${code}`);
     this.name = "DockerMachineError";
   }
@@ -25,6 +52,9 @@ export class DockerMachineError extends Error {
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const prefix = "dev.armada.machine.";
 type Row = Record<string, unknown>;
+
+/** A host-local image ID (`sha256:<hex>`), as opposed to a registry reference such as `sha256:base@sha256:<hex>`. */
+const isLocalImage = (image: string) => image.startsWith("sha256:") && !image.includes("@");
 
 function fail(code: DockerMachineError["code"]): never {
   throw new DockerMachineError(code);
@@ -78,6 +108,10 @@ export function createDockerMachineExecutor(options: {
           request.expiresAt > 8_640_000_000_000_000))
     )
       fail("invalid_request");
+    if (request.snapshot !== undefined) {
+      parseDockerSnapshotBinding(request.snapshot);
+      if (request.image.includes("@")) fail("invalid_request");
+    }
     const name = `armada-${options.installationId}-${options.hostId}-${request.sandboxId}-${request.generation}`;
     return {
       containerName: name,
@@ -89,6 +123,13 @@ export function createDockerMachineExecutor(options: {
         [`${prefix}generation`]: request.generation,
         [`${prefix}image`]: request.image,
         [`${prefix}ttl-seconds`]: String(request.ttlSeconds),
+        ...(request.snapshot
+          ? {
+              [`${prefix}snapshot`]: request.snapshot.id,
+              [`${prefix}snapshot-owner`]: request.snapshot.ownerId,
+              [`${prefix}snapshot-visibility`]: request.snapshot.visibility,
+            }
+          : {}),
         ...(request.expiresAt === undefined ? {} : { [`${prefix}absolute-expiry`]: String(request.expiresAt) }),
       },
     };
@@ -188,8 +229,8 @@ export function createDockerMachineExecutor(options: {
     return value;
   }
 
-  async function approveLocalImage(image: string) {
-    if (!image.startsWith("sha256:") || image.includes("@")) return;
+  async function approveLocalImage(image: string, snapshot?: DockerSnapshotBinding) {
+    if (!isLocalImage(image)) return;
     const raw = await checked(["image", "inspect", image]);
     try {
       const rows: unknown = JSON.parse(raw);
@@ -200,7 +241,11 @@ export function createDockerMachineExecutor(options: {
         row.Id !== image ||
         labels[DOCKER_LOCAL_IMAGE_LABELS.installation] !== options.installationId ||
         labels[DOCKER_LOCAL_IMAGE_LABELS.host] !== options.hostId ||
-        labels[DOCKER_LOCAL_IMAGE_LABELS.scope] !== "org"
+        (snapshot
+          ? labels[DOCKER_LOCAL_IMAGE_LABELS.scope] !== snapshot.visibility ||
+            labels[DOCKER_LOCAL_IMAGE_LABELS.owner] !== snapshot.ownerId ||
+            labels[DOCKER_LOCAL_IMAGE_LABELS.snapshot] !== snapshot.id
+          : labels[DOCKER_LOCAL_IMAGE_LABELS.scope] !== "org")
       )
         fail("ownership_mismatch");
     } catch {
@@ -219,7 +264,7 @@ export function createDockerMachineExecutor(options: {
       fail("expired");
     // An immutable local ID alone is not authorization to consume another host's cache.
     // Approval is checked before any new allocation, never required for retained cleanup/resume.
-    if (!state.container) await approveLocalImage(request.image);
+    if (!state.container) await approveLocalImage(request.image, request.snapshot);
     if (!state.volume) {
       const created = absoluteCreationTime ?? now();
       const labels = {
@@ -236,6 +281,22 @@ export function createDockerMachineExecutor(options: {
     if (state.expiresAt === undefined) fail("ownership_mismatch");
     if (state.expiresAt <= now()) fail("expired");
     if (!state.container) {
+      // An image the host does not have is fetched first, with a pull's own bound, so a failure says the image could
+      // not be fetched instead of a generic Docker failure (#1507). A local image ID is never pulled: it was approved
+      // above, and a missing one has no registry to come from (#1523).
+      if (
+        !isLocalImage(request.image) &&
+        (await run(["image", "inspect", "--format", "{{.Id}}", request.image])).exitCode !== 0
+      ) {
+        let pulled = false;
+        try {
+          const pull = ["image", "pull", "--quiet", request.image];
+          pulled = (await options.cli.run(pull, undefined, { timeoutMs: DOCKER_IMAGE_PULL_TIMEOUT_MS })).exitCode === 0;
+        } catch {
+          // A pull that could not run or outlived its bound is a fetch failure too.
+        }
+        if (!pulled) fail("image_unavailable");
+      }
       const result = await run([
         "container",
         "create",
@@ -337,7 +398,20 @@ export function createDockerMachineExecutor(options: {
     return true;
   }
 
-  return { resume, create, bootstrap, installRuntime, stop, delete: remove, stopIfExpired };
+  return {
+    resume,
+    create,
+    bootstrap,
+    installRuntime,
+    stop,
+    delete: remove,
+    stopIfExpired,
+    async buildSnapshot(job: Extract<DockerHostJob, { operation: "buildSnapshot" }>, recoverOnly = false) {
+      context(job.request);
+      await approveLocalImage(job.request.image);
+      return buildDockerSnapshot(options, job, recoverOnly);
+    },
+  };
 }
 
 function labelArgs(labels: Row): string[] {

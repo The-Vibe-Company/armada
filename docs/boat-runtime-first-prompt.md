@@ -55,7 +55,8 @@ by the model-only milestone.
 
 ## Follow-up and uncertain delivery
 
-For a running sandbox, `POST /api/v1/sandbox/send` (MCP `send`) requires a stable
+`POST /api/v1/sandbox/send` (MCP `send`) wakes a checkpointed stopped runtime
+through the existing resume path and preserves its absolute expiry. It requires a stable
 `request_id` UUID and the existing `conversation_id`. Only the owner can send;
 current membership, active pinned account/version, logical expiry and runtime
 epoch are revalidated. Wait for the previous prompt's finished event before

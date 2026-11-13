@@ -23,7 +23,13 @@ The workspace packages stay private; the compiled binaries bundle their dependen
    are checked for availability without requiring a rebuild to be byte-identical. Registry retries
    share a five-minute budget (`NPM_PUBLISH_WAIT_SECONDS`, poll interval `NPM_PUBLISH_POLL_SECONDS`).
 
-Stable versions go to `latest`; prereleases go to `next`. The initial migration commit uses a
+Production publication supports stable versions only, sent to `latest`. The
+mandatory production chain retains its existing latest-stable-tag guard, so a
+prerelease tag cannot publish through this workflow; it fails closed before
+production. Dry-run prerelease packing may still select `next`, but that is not
+permission to publish without deployment/smoke. Restoring a separate prerelease
+publication policy requires an explicit owner decision, not an automatic gate
+bypass. The initial migration commit uses a
 `Release-As: 2.0.0` footer to promote v2. Future versions follow conventional commits normally.
 Version changes stay in the release PR; do not edit package versions or push release tags by hand
 for the normal flow. All root and workspace versions must match the CLI's version.
@@ -86,64 +92,82 @@ Installing v2 under the same package replaces the old global `armada` executable
 new version before removing any separate legacy installation. Authentication state from v1
 is not reused by v2; sign in once. See [onboarding](dave-onboarding.md).
 
-## Release-synchronized production (owner opt-in)
+## Deployment policy (#1547)
 
-**Merging this change alone does not change production.** Until the repository
-Actions variable `RELEASE_SYNCED_DEPLOYS` is exactly `true`, Railway/Vercel Git
-autodeploy and the existing push-to-main migration job retain their behavior.
-Do not enable the variable before completing the cutover below. PR previews are
-not changed by these workflows.
+**Interim staging exception:** until its Railway token exists, keep staging Git
+auto-deploy and use the [exact-commit Git-wait path](#interim-tokenless-staging-git-deployment-1547). Production remains token-required.
 
-With opt-in enabled, a publishing release waits for validation and all four
-binary builds, then runs **Release migrations, server and dashboard**, then npm
-publication. All artifacts and both source uploads use the validated tag's full
-commit SHA, not the moving tip of `main`. Deploy tooling comes from the executing
-workflow revision so tagged recovery also works for older source tags. Ordinary
-merges only prepare the next Release Please PR; they no longer apply migrations.
-Dry-run releases never access the production environment. Prereleases can still
-be packed/published in legacy mode; the opt-in production chain deliberately
-accepts only the latest stable `vX.Y.Z` tag, preventing stale-tag redeployment.
-A newer tag supersedes recovery of an older tag; recover the newest release or
-make a forward hotfix instead.
+Main pushes run **Pinned staging smoke**: migrate staging → deploy pinned server
+→ wait for that Railway deployment and public version health → build dashboard
+in Actions → upload prebuilt output → sandbox smoke. There is one staging writer,
+not an independent migration job plus provider-triggered deployments. No PR,
+merge-queue or release-please branch deployment triggers smoke. The main-only
+manual **Post-deploy smoke** entry point calls the same deploy/smoke workflow,
+using its selected main SHA; it is not a deployment-status subscriber.
 
-### Owner cutover checklist (no agent performs these operations)
+Production deploys **only through a publishing Release**. Release Please creates
+the tag when the owner merges its version PR; that same workflow validates the
+exact tag/SHA, builds binaries, calls staging with that SHA, and requires a
+successful (not skipped) smoke before production migrations → server → prebuilt
+dashboard → npm. Tag push and reviewed existing-tag recovery keep this same path.
+A dry-run release never enters staging/production deployment or publishes npm.
+There is no variable to bypass the gate: RELEASE_SYNCED_DEPLOYS and
+STAGING_GATED_DEPLOYS are obsolete and ignored. Missing configuration fails,
+never falls back to Git auto-deploy or a successful no-op smoke. Production
+publication cannot proceed after a skipped/failed/cancelled publishing deploy.
 
-Schedule a short release freeze; do not merge migration/application changes
-while switching settings. Wait for in-flight release, migration and host deploys
-to finish. Keep the previous successful deployment IDs for incident recovery.
+Both dashboard projects use `apps/dashboard/vercel.json` with
+`git.deploymentEnabled: false`. Vercel documents false for all branches in its
+[Git configuration reference](https://vercel.com/docs/project-configuration/git-configuration#turning-off-all-automatic-deployments).
+Both project Root Directories must be apps/dashboard with workspace inclusion.
+Node 24, repository-pinned Bun and Vercel CLI 65.14.0 run `vercel pull` with
+production environment selection, `vercel build --prod`, and
+`vercel deploy --prebuilt --prod`. For staging, --prod targets the separate
+staging project's domain, not Armada production. Token authentication uses the
+environment, never argv. Clean source archives remain pinned to the validated
+SHA; deployment tooling comes from the executing workflow revision for recovery.
+Pulled settings/env and generated artifacts live only in disposable runner files,
+not the repository. See [Vercel's Actions guide](https://vercel.com/kb/guide/how-can-i-use-github-actions-with-vercel).
 
-1. In GitHub, use the existing **production** environment (environment names are
-   case-insensitive; do not make a second `Production` environment). Allow the
-   `main` branch **and** version tags (`v*`) in its deployment branch/tag rules;
-   keep arbitrary branches denied. Use required reviewers if desired. Restrict
-   workflow dispatch and environment configuration to release owners. Keep the
-   separate `npm` environment and its OIDC trusted-publisher settings unchanged.
-2. Add the exact environment secrets below. No credential belongs in dispatch
-   inputs, the repository, or a deploy hook URL. Missing values fail explicitly
-   before the first production mutation. Invalid credentials/settings fail the
-   corresponding provider command; preflight does not claim to validate access.
-3. Railway: on the existing production server service, disable automatic GitHub
-   deployments from `main` (disconnect its GitHub source if necessary); leave
-   the service, domain and runtime variables intact. Keep deployment health
-   checks enabled at `/healthz` using `railway.json`, Dockerfile at repository
-   root, and root directory `/`. Ensure the project token is scoped to the
-   production environment and the service ID is the server, not another service.
-   CLI source uploads replace GitHub autodeploy as the production release path.
-4. Vercel: keep the Git integration for PR previews. Set the production branch to
-   an owner-protected, non-developing branch such as `production-disabled` (create
-   it once from `main`, never push/merge to it, and deny developer pushes).
-   Thus ordinary `main` merges cannot promote production. Do **not** disable the
-   whole Git integration or set an ignored-build command that also blocks PRs.
-   Keep Root Directory **apps/dashboard**, enable **Include source files outside
-   of the Root Directory in the Build Step**, and retain production build/runtime
-   environment variables. The CLI uploads the repo root and targets the existing
-   project via its IDs; it does not create a project or deploy only the app folder.
-5. Set repository Actions variable **`RELEASE_SYNCED_DEPLOYS=true`** last. Keep
-   the variable at repository scope, not environment scope (job conditions must
-   see it before entering an environment). Lift the release freeze. Use the next
-   normal release, or dispatch the latest existing stable tag with `publish=true`
-   after reviewing its migration plan and source. No deployment is needed merely
-   to review/merge this PR. Verify a PR still receives its Vercel preview.
+### Owner cutover prerequisites (no agent performs these operations)
+
+Before merging the default-policy switch, freeze merges and drain active release,
+migration and provider deployment writers. Confirm the earlier staging Actions
+path built/uploaded a Ready deployment with matching githubCommitSha, working
+staging domain and login. Keep known-good Railway IDs/Vercel URLs/source SHAs and
+review database history/backups with the operator. Preparing stacked PRs does not
+waive deployed proof; local checks do not prove provider settings or credentials.
+
+1. GitHub Environments: allow **main and version tags v*** on staging/production,
+   deny arbitrary branches, restrict dispatch and environment settings to owners.
+   Keep existing npm OIDC protections and optional production approvals. No new
+   required PR check: Lint, typecheck and test remains under two minutes. The
+   only slow gated path is publishing release → staging smoke → production.
+2. Populate the existing environment secrets below in **each** matching environment
+   with its own project/service IDs. Keep staging variable ARMADA_ORIGIN and
+   secrets ARMADA_SMOKE_TOKEN/ARMADA_SMOKE_CASES covering enabled pairs; the
+   smoke origin must equal ARMADA_SERVER_URL. See [smoke setup](post-deploy-smoke.md).
+   Preserve Vercel production-environment build variables including public Supabase
+   values. No credential is supplied through dispatch or logged.
+3. Railway administrator: in the **production server service** and **staging
+   server service**, disable GitHub branch auto-deploy (disconnect the GitHub
+   source if necessary). Leave the service, domain and runtime variables intact,
+   root directory /, repository-root Dockerfile and /healthz checks enabled.
+   Existing project tokens must be scoped to their matching environment. CLI
+   uploads become the only deploy writer. Delete/disable independent deploy hooks
+   or other automation that can promote main outside the serialized Actions path.
+4. Vercel owner: verify both projects use Root Directory apps/dashboard and
+   **Include source files outside of the Root Directory in the Build Step**.
+   Ensure old active branches incorporate the config; source-local disablement
+   does not rewrite old branches. For a project-wide cutoff or lingering checks,
+   disconnect the repo on **each project → Settings → Git → Connected Git
+   Repository → Disconnect** per the [official guide](https://vercel.com/docs/project-configuration/git-settings#disconnect-your-git-repository).
+   Keep domains/project IDs/build/runtime vars; explicit CLI paths stay available.
+   Remove obsolete Vercel/Post-deploy smoke required checks in GitHub rules,
+   never Armada's fast verdict. Historical checks are not erased by a commit.
+5. No opt-in variables need enabling. Dispatch main's pinned staging workflow
+   under the freeze, confirm staging proof, then use an owner-reviewed release.
+   Do not restore legacy production Git deployment or standalone SQL apply.
 
 | production environment secret | Required value |
 | --- | --- |
@@ -159,187 +183,50 @@ to finish. Keep the previous successful deployment IDs for incident recovery.
 | `VERCEL_ORG_ID` | Existing Vercel team/account ID |
 | `VERCEL_PROJECT_ID` | Existing dashboard project ID |
 
-No deploy hooks are used: hooks commonly deploy the latest branch tip rather
-than the validated release SHA. The pinned clients are Railway CLI 5.71.0 and
-Vercel CLI 65.14.0; deployment semantics are documented in the official
-[Railway upload](https://docs.railway.com/cli/up),
-[Railway deployment list](https://docs.railway.com/cli/deployment) and
-[Vercel deploy](https://vercel.com/docs/cli/deploy) references.
 
-### Ordering, failures and recovery
+### Ordering, failures, recovery and deployed proof
 
-The production job first checks all required configuration, then applies only
-pending tagged migrations (forward-only), uploads the tagged server, polls the
-**exact returned Railway deployment ID** until `SUCCESS`, and checks that the
-public `/healthz` reports the tagged version. Only then does it upload/build the
-dashboard with `vercel deploy --prod`, which waits for Ready before success.
-Only after both hosts succeed can npm publish. The server health version,
-dashboard landing's version badge and `armada --version` all use the same core
-package version; compare them after the release finishes.
+Railway CLI 5.71.0 uploads clean pinned source, then the workflow waits for the
+**exact returned deployment ID** to reach SUCCESS and public /healthz to report
+the source version. Only then does it build/upload the dashboard. Vercel waits
+for Ready. npm only follows successful production for publishing releases.
+No deploy hook or moving main checkout substitutes for the validated source.
 
-The opted-in release workflow is globally serialized through npm publication,
-with cancellation off and queue: max retaining existing pending runs in FIFO
-order (up to 100 pending). New arrivals at capacity are rejected; drain the queue
-and retry a rejected run. The production job also shares the legacy migration
-lock; do not run manual migrations/history/repair/preview or provider deployments
-during a release. Check the intended release run completed before declaring success.
+Deployment/smoke and release queues retain waiting runs with queue:max and
+cancellation disabled, preserving cleanup and queued release calls. Immediately
+before the first mutation, an ordinary main run resolves current main over Git
+and skips migration/provider builds/deployment/smoke if a newer SHA superseded
+it. This avoids stale deployments without evicting a pending release. Resolution
+failure fails closed. After mutation starts, newer main never interrupts it.
+Explicit pinned release/manual calls are exempt, so a skipped stale main can
+never authorize production. Queued stale workflows may still perform runner/tool
+setup before this final admission guard; they do not build or deploy an app. Never cancel a live
+smoke blindly: it owns real compute and durable cleanup receipts. Already-running
+old workflow revisions/provider jobs are not stopped by a source change.
 
-A failure fails Actions loudly and stops later stages. **These independent
-services cannot provide an atomic transaction or guarantee rollback of already
-successful stages.** Railway keeps the previous server when its new deployment
-fails health checks; a failed Vercel build does not promote its domains. But if
-Vercel fails after Railway succeeds, the server is already new; if npm fails,
-the hosts are already new. Applied migrations also remain applied, and a
-multi-statement SQL migration may have partial effects. Therefore every release
-must use additive/backward-compatible migrations and tolerate a temporary mixed
-version window. Never automatically undo SQL, reset production, or unpublish npm.
+Owner proof: updated PR/queue/release-please deployment events create no smoke
+workflow; ordinary main updates staging but not production or npm; a publishing
+release uses its exact SHA for staging and production; failed/cancelled/skipped
+release smoke blocks production/npm. Compare Actions source SHA, Railway message,
+Vercel githubCommitSha, public server/dashboard version and deployment histories.
+Record the actual results; a procedure is not proof. Do not intentionally fail
+production. Only use staging fault cases under owner authorization.
 
-Recover via **Release → Run workflow**, ref **main**, exact latest stable `tag`,
-`publish=true`. This retries the whole chain from that SHA; already recorded
-migrations and already published npm versions are skipped. Inspect a failed
-migration's partial effects before retrying. Fix an unapplied migration only
-after review; never edit applied migrations. History/repair remains an explicit
-operator-only operation in Database migrations. A production job timeout may
-leave a remote deploy in progress: inspect/wait for it before recovery.
+Services do not provide an atomic transaction. If dashboard fails after server
+or migrations succeeded, those changes remain applied; npm can fail after hosts
+succeed. Keep migrations additive/backward-compatible. Never auto-undo SQL,
+reset databases, unpublish npm or automatically roll back hosts. A timeout may
+leave a remote deployment running: owner inspects/drains before recovery.
 
-For a hotfix, merge a conventional `fix:` PR into `main`, expedite and merge its
-Release Please version PR after checks pass, then let this same chain release
-the new tag. Do not push mutable production branches, retag, deploy untagged code,
-or cherry-pick directly into hosts. If earlier stages already succeeded, prefer
-this forward fix; an emergency host rollback is an owner incident action only
-with a verified schema-compatible prior release. To abandon cutover, freeze
-changes, finish/stop in-flight work, disable the repository variable and restore
-the original host autodeploy settings together; changing only one risks drift.
-
-## Staging-gated releases (owner opt-in)
-
-**Production is release-only, not per-merge.** Set both repository Actions variables
-**RELEASE_SYNCED_DEPLOYS=true** and **STAGING_GATED_DEPLOYS=true** after the owner
-cutover below. With neither set, existing behavior remains unchanged and the new
-staging workflow emits a disabled notice. Release-sync alone retains #714's
-release-only deployment behavior without the new smoke gate. The staging gate
-without release-sync is invalid and fails explicitly before deployment/publication.
-
-### Investigation and design
-
-Railway/Vercel Git deployments, independent migrations and deployment-event smoke
-do not form a production gate. Generic CI or hooks building moving main cannot bind
-a smoke to the promoted source. The #714 release uploader is reusable: it archives
-one validated SHA, waits for its Railway deployment ID and health, then uploads the
-same source to Vercel. This promotes the **same commit**, not the same image; builds
-use environment-specific settings.
-
-- Main pushes continuously run **Pinned staging smoke**: staging migrations →
-  staging server → staging dashboard → sandbox smoke, all from the triggering SHA.
-- A release (Release Please release creation, version tag push or existing tagged
-  recovery) validates its tag/SHA and binaries, then **calls the same staging
-  workflow with that exact validated SHA**. Only that successful dependency admits
-  production migrations → server → dashboard → npm. A skipped/no-op smoke cannot
-  authorize production. Ordinary main merges never enter production or publish npm.
-- Release re-smokes rather than trusting a historical check name, mutable branch,
-  latest deployment or cached attestation. This also covers tags created by
-  GITHUB_TOKEN (which do not trigger separate push workflows). A release commit
-  may be smoked twice (ordinary push, then release call): this deliberately buys
-  fresh, direct dependency evidence rather than an attestation lookup.
-- One non-cancelling lock serializes all staging deploy/smoke runs, including
-  release calls. Both this lock and release-production use **queue: max**:
-  [GitHub queues existing waiters in FIFO order instead of replacing them](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
-  A main push cannot evict a release already waiting for staging, nor interrupt
-  an active smoke. GitHub permits 100 pending entries per group; at capacity it
-  rejects new arrivals, not existing waiters. Monitor/drain the queue before
-  release if saturated; retry a rejected run after capacity is available.
-  No cancellation or skipped staging run ever authorizes production.
-  Release's release-production lock serializes releases through npm;
-  production shares the migration lock. Later main runs may update staging after
-  the release smoke completes, but production uploads only the already-smoked SHA.
-  A tagged recovery deliberately re-deploys that release SHA to staging; dispatch
-  current main afterward if staging must immediately return to its tip. If newer
-  main migrations already advanced staging, Supabase may refuse the older release
-  checkout because of remote-only migration history, even with additive SQL.
-  This fails closed: cut a forward release including those migrations, or
-  freeze/drain merges before cutting the intended release. Never repair/remove
-  migration history just to force an older release through smoke.
-- Missing configuration fails closed in opted-in mode; failed staging visibly blocks
-  production and npm. Manual smoke remains diagnostic only and uses the separate
-  post-deploy-smoke-staging lock, so it can overlap a gated staging deployment.
-  Run diagnostics only after the pinned staging run completes and while no next
-  deployment is queued (freeze merges if needed); never treat their result as
-  release evidence. Independent staging
-  migrations/deployment-event smoke and standalone production migration applies
-  are disabled in gate mode; history/repair/preview remain operator tools.
-
-Existing smoke lifecycle expansion remains tracked by #819/#826/#827. This ticket
-gates on the existing sandbox smoke contract, not an unimplemented quality claim.
-Migrations must stay additive/compatible with old running code.
-
-### Exact owner cutover (no agent performs these operations)
-
-1. Freeze merges and drain release, migration, smoke and host deployment runs.
-   Record known-good Railway deployment IDs, Vercel URLs and source SHAs for both
-   environments; verify database history/backups with the database operator.
-2. GitHub Settings → Environments: allow **main and version tags v*** for staging
-   and production (tag-triggered reusable staging calls need staging tag access).
-   Deny arbitrary branches. Restrict dispatch/configuration to release owners;
-   optional production reviewers add approval before production mutation. Keep
-   npm OIDC protections unchanged.
-3. In **each** environment populate the exact secret table under release-sync
-   above, with its own values: SUPABASE_ACCESS_TOKEN, SUPABASE_PROJECT_ID,
-   SUPABASE_DB_PASSWORD, RAILWAY_TOKEN, RAILWAY_PROJECT_ID, RAILWAY_ENVIRONMENT_ID,
-   RAILWAY_SERVICE_ID, ARMADA_SERVER_URL, VERCEL_TOKEN, VERCEL_ORG_ID,
-   VERCEL_PROJECT_ID. Supabase token: authorized account access-token settings;
-   project reference/password: matching project settings. Railway IDs: project
-   settings; token: project token scoped to that environment. Vercel token:
-   account Settings → Tokens; team/project IDs: matching project Settings.
-   Staging uses its existing separate dashboard project; CLI --prod means that
-   project's staging domain, not the production dashboard.
-4. In staging configure variable ARMADA_ORIGIN and secrets ARMADA_SMOKE_TOKEN,
-   ARMADA_SMOKE_CASES per [smoke setup](post-deploy-smoke.md). Mint the bearer for a
-   dedicated staging Armada user; cases reference staging goldens/model accounts
-   covering enabled pairs. ARMADA_SERVER_URL must match ARMADA_ORIGIN.
-5. Railway: disable production Git auto-deploy from main (disconnect its source if
-   needed). Also disable staging Git auto-deploy because the serialized workflow
-   now owns it. Keep domains/runtime variables, root Dockerfile and /healthz checks.
-   Vercel: on both dashboard projects move the production branch to a protected
-   non-developing branch such as production-disabled as described above; keep
-   PR previews, apps/dashboard root, workspace inclusion and environment variables.
-   Disable other hooks/writers that can promote main; an independent writer defeats
-   the staging lock. No deploy hook tokens are needed.
-6. Set repository RELEASE_SYNCED_DEPLOYS=true then STAGING_GATED_DEPLOYS=true
-   **last**, under the freeze. Dispatch main staging, then cut/recover a reviewed
-   release and verify below before lifting the freeze. Merely merging this PR does
-   not stop today's production Git auto-deploys. If incomplete, leave variables
-   off and restore prior host settings under the freeze.
-
-### Coordinator proof, emergency override and rollback
-
-Record production IDs/history. Verify an ordinary main merge updates staging but
-does not mutate production or publish npm. Cut a throwaway release with deliberately
-failing staging smoke (e.g. invalid staging golden): release staging must be red,
-production and npm skipped, production IDs/history unchanged. Restore the case;
-recover that same validated tag, verify green and compare full SHA in staging and
-production Railway messages, Vercel githubCommitSha metadata and release Actions.
-Exercise the review's cancellation scenario explicitly: keep the release-commit
-push smoke active, let Release finish check/binary and queue its staging call,
-then merge another main change. Verify the pending release call is retained,
-the new push queues behind it, and the release reaches production/npm only after
-its own smoke succeeds. No production source may differ from that successful
-staging-call SHA. Also verify a failed/cancelled staging call blocks both stages.
-Owner performs these deployed
-checks; local lint/tests cannot prove platform settings. Never intentionally fail
-production. Use a forward hotfix release if a newer stable tag supersedes recovery.
-
-Emergency override: owner freezes/drains writers and records incident approval,
-keeps RELEASE_SYNCED_DEPLOYS=true and all host Git deploys **disabled**, temporarily
-sets STAGING_GATED_DEPLOYS=false, then recovers a reviewed latest stable hotfix tag
-through Release. This explicitly bypasses smoke, not the release boundary or
-migration/server/dashboard/npm ordering. Record why, SHA and run URL; restore the
-gate variable before lifting the freeze. No standalone migration applies in parallel.
-
-Rollback: freeze/drain writers; owner restores recorded known-good Railway and
-Vercel deployments through provider rollback controls after checking compatibility
-with applied schema. Never automatically undo migration history/down-migrate.
-Prefer a new forward fix/revert release. Follow partial-release recovery above if
-schema/server advanced but dashboard/npm did not.
+Recover via **Release → Run workflow**, ref main, exact existing latest stable
+tag and publish=true. Already recorded migrations/published versions are skipped.
+The production job rejects superseded stable tags; cut a forward hotfix instead.
+Older tags can fail staging due to newer migration history; never repair history
+to force them through. A failed smoke has no variable-based emergency bypass.
+Owner incident rollback requires schema-compatible known-good host deployments
+and recorded approval; prefer a new reviewed forward fix/revert release.
+Production history/confirmed repair and dry-run remain explicit manual operator
+tools, not a release authorization or application SQL apply path.
 
 ### iOS TestFlight
 
@@ -351,3 +238,51 @@ APP_STORE_CONNECT_API_* and IOS_DISTRIBUTION_CERTIFICATE_* secrets remain in tha
 environment (see apps/ios/README.md); no new iOS credentials/settings are required.
 Changing TestFlight's beta cadence or coupling its app binary to release tags is
 outside this small deployment-gate PR.
+
+
+## Interim tokenless staging Git deployment (#1547)
+
+Until the owner supplies the environment-scoped Railway project tokens, staging
+alone may keep Railway Git auto-deploy enabled. The staging job explicitly sets
+DEPLOYMENT_ENVIRONMENT=staging. If its resolved RAILWAY_TOKEN is absent, it still
+applies staging migrations but makes **no Railway CLI call**; it polls /healthz
+for up to 15 minutes, requiring ok=true, the source version and **exact full
+commit SHA**. The new health commit field comes only from a validated Railway
+RAILWAY_GIT_COMMIT_SHA (automatically supplied on Git-triggered deployments per
+[Railway's reference](https://docs.railway.com/variables/reference)). An old server
+without this field, a same-version different commit, unhealthy/unreachable server
+or timeout cannot authorize dashboard upload or smoke. This PR's first Git deploy
+must land to expose the new field; no credentials or manual deploy are required.
+
+Only after that exact Git deployment is live does Actions build/upload the
+prebuilt dashboard and run smoke. With RAILWAY_TOKEN present, the existing CLI
+upload/exact deployment-ID wait path is unchanged. Keep migrations compatible
+with old/new servers: Git deploy is an independent interim writer, not an atomic
+SQL/code transaction. Ordinary stale-main admission still applies. An explicit
+release smoke for a commit not currently served by staging fails closed; freeze
+main merges during a release until tokens restore pinned server deployments.
+Git may replace staging independently during this interim mode, so the owner
+must freeze merges for release smoke through production authorization.
+
+Production has **no fallback**: its RAILWAY_TOKEN and IDs remain required before
+any mutation. The owner must provide that token before an authorized release;
+never re-enable production Git auto-deploy to bypass this requirement. After
+staging CLI deployment is proven with its token, disable staging Git auto-deploy
+under the documented freeze/drain cutover. Do not disable it while this interim
+fallback is the only server deploy path.
+
+Required secret names that must resolve (environment or inherited scope):
+- Both staging and production: SUPABASE_ACCESS_TOKEN, SUPABASE_DB_PASSWORD,
+  SUPABASE_PROJECT_ID, VERCEL_TOKEN, VERCEL_ORG_ID, VERCEL_PROJECT_ID,
+  ARMADA_SERVER_URL.
+- Staging additionally: ARMADA_SMOKE_TOKEN, ARMADA_SMOKE_CASES.
+- Production additionally: RAILWAY_TOKEN, RAILWAY_PROJECT_ID,
+  RAILWAY_ENVIRONMENT_ID, RAILWAY_SERVICE_ID.
+- Staging CLI mode additionally: RAILWAY_TOKEN, RAILWAY_PROJECT_ID,
+  RAILWAY_ENVIRONMENT_ID, RAILWAY_SERVICE_ID; these are not needed by the
+  tokenless Git-wait mode. Use distinct matching-environment Railway tokens.
+- Staging variable (not a secret): ARMADA_ORIGIN, matching ARMADA_SERVER_URL.
+
+Never paste token values into an issue, PR, command argument or log. This is a
+repository-only interim change; no actual provider settings or deployments were
+changed or verified by the agent.

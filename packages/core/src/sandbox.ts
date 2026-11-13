@@ -365,7 +365,11 @@ export function mapSandboxRow(row: SandboxRow): SandboxRecord {
  * any other status, and undefined (left as it is) when the patch does not touch either.
  */
 export function statusReasonOf(patch: SandboxPatch): string | null | undefined {
-  if (patch.statusReason === "expired" && (patch.status === "stopped" || patch.status === "stopping")) return "expired";
+  if (
+    ["expired", "idle_paused"].includes(patch.statusReason ?? "") &&
+    (patch.status === "stopped" || patch.status === "stopping")
+  )
+    return patch.statusReason;
   if (patch.status !== undefined && patch.status !== "failed") return null;
   if (patch.statusReason === undefined) return undefined;
   if (patch.statusReason === null || patch.statusReason.trim() === "") return null;

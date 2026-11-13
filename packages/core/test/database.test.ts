@@ -126,6 +126,7 @@ describe("database", () => {
         "credentials INSERT(created_at,id,kind,owner_id,scope,value_enc)",
         "credentials SELECT(created_at,expires_at,id,is_default,kind,name,owner_id,scope,status,updated_at,version)",
         "credentials UPDATE(value_enc)",
+        "docker_snapshots SELECT",
         "github_connections DELETE",
         "github_connections SELECT(created_at,github_id,installations,login,name,refresh_expires_at,revoked_at,updated_at,user_id)",
         "golden_skill_defaults SELECT",

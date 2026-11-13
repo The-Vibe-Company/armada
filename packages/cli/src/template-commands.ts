@@ -105,7 +105,6 @@ export async function templateCommand(argv: readonly string[], io: VaultIo): Pro
         const allowed = [
           "goldenId",
           "hostId",
-          "image",
           "provider",
           "harness",
           "model",

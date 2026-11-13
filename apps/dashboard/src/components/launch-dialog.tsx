@@ -1,6 +1,7 @@
 "use client";
 
-import type { Harness, MachineSize, MachineSizePolicy, SandboxProviderId } from "@armada/core";
+import type { Harness, MachineSize, MachineSizePolicy, SandboxPlacementProviderId } from "@armada/core";
+import { SANDBOX_PLACEMENT_LABELS as PROVIDER_LABELS } from "@armada/core";
 import {
   ChevronDownIcon,
   CircleAlertIcon,
@@ -15,6 +16,7 @@ import {
 import Link from "next/link";
 import { Fragment, type ReactNode, type RefObject, useCallback, useEffect, useId, useRef, useState } from "react";
 import { flushSync } from "react-dom";
+import { launchFromDockerSnapshot } from "@/app/actions/docker-snapshots";
 import { launchFromGolden } from "@/app/actions/sandboxes";
 import { ActionForm, SubmitButton } from "@/components/action-form";
 import { ConnectionStatusBadge } from "@/components/connections";
@@ -45,7 +47,6 @@ import {
   type McpConnection,
   unreadyDefaults,
 } from "@/lib/connections";
-import { PROVIDER_LABELS } from "@/lib/golden-form";
 import { HARNESS_LABELS } from "@/lib/labels";
 import { LAUNCH_KEY_FIELD, type LaunchKey, launchKeyFor } from "@/lib/launch-key";
 import { MACHINE_SIZE_LABELS } from "@/lib/machine-size";
@@ -74,7 +75,8 @@ export type LaunchSizing = { policy: MachineSizePolicy | null };
 
 type LaunchProps = {
   golden: string;
-  provider: SandboxProviderId;
+  provider: SandboxPlacementProviderId;
+  snapshotId?: string;
   orgId: string;
   catalog: ModelCatalog;
   connections: LaunchConnections;
@@ -156,7 +158,17 @@ function LaunchStart(props: LaunchProps) {
 }
 
 /** Mounted with the dialog, so every opening starts from the defaults. */
-function LaunchForm({ golden, provider, orgId, catalog, connections, accounts, repositories, sizing }: LaunchProps) {
+function LaunchForm({
+  golden,
+  provider,
+  snapshotId,
+  orgId,
+  catalog,
+  connections,
+  accounts,
+  repositories,
+  sizing,
+}: LaunchProps) {
   const id = useId();
   const [harness, setHarness] = useState<Harness>("claude");
   const [choice, setChoice] = useState({
@@ -175,7 +187,7 @@ function LaunchForm({ golden, provider, orgId, catalog, connections, accounts, r
     accountsFor(accounts.accounts, "codex").some(
       (account) => account.id === value && accountProblem(account, accounts.now) === null,
     );
-  const canDelegate = harness === "codex" && usableCodexAccount(credential);
+  const canDelegate = provider !== "docker" && harness === "codex" && usableCodexAccount(credential);
   const access = useLaunchAccess(connections);
   const root = useRef<HTMLDivElement>(null);
   const advanced = useRef<HTMLDivElement>(null);
@@ -255,7 +267,7 @@ function LaunchForm({ golden, provider, orgId, catalog, connections, accounts, r
   return (
     <div ref={root} className="flex min-h-0 flex-1 flex-col">
       <ActionForm
-        action={launchFromGolden}
+        action={provider === "docker" ? launchFromDockerSnapshot : launchFromGolden}
         className="flex min-h-0 flex-1 flex-col"
         focusError
         footerClassName="space-y-2 border-t px-6 py-4"
@@ -278,6 +290,7 @@ function LaunchForm({ golden, provider, orgId, catalog, connections, accounts, r
         }
       >
         <input type="hidden" name="golden" value={golden} />
+        {provider === "docker" && <input type="hidden" name="snapshotId" value={snapshotId ?? ""} />}
         <input type="hidden" name="provider" value={provider} />
         <input type="hidden" name="org" value={orgId} />
         {/* Untouched, or not listed: the launch names no connections and the server applies the defaults (#681). */}
@@ -382,7 +395,7 @@ function LaunchForm({ golden, provider, orgId, catalog, connections, accounts, r
               {repositories.length === 1 && (
                 <RepositoryField idPrefix={id} repositories={repositories} onChange={setProject} />
               )}
-              {sizing && (
+              {provider !== "docker" && sizing && (
                 <MachineSizeField
                   idPrefix={id}
                   provider={provider}

@@ -462,3 +462,57 @@ test("catalog proxy preserves query parameters for strict upstream refusal", asy
   }
   expect(seen).toEqual(["?unexpected=1", "?unexpected=1"]);
 });
+
+// Golden configs can exceed the generic 128 KiB proxy bound; keep the backend's byte limit for this route only.
+test("snapshot create forwards bounded golden configs up to one MiB and refuses streamed or declared overflow", async () => {
+  process.env.ARMADA_MCP_URL = "https://armada.test/mcp";
+  try {
+    const payload = JSON.stringify({
+      config: {
+        repos: [{ url: "https://github.com/example/project.git", branch: "main", dir: "project" }],
+        init: Array.from({ length: 32 }, () => "é".repeat(3000)),
+      },
+    });
+    const bytes = new TextEncoder().encode(payload);
+    const streamed = (parts: Uint8Array[]) =>
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          for (const part of parts) controller.enqueue(part);
+          controller.close();
+        },
+      });
+    let forwards = 0;
+    const send = (
+      body: string | ReadableStream<Uint8Array>,
+      path = ["docker", "snapshots", "create"],
+      length?: number,
+    ) =>
+      forwardControl(
+        new Request(`https://dashboard.test/api/v1/${path.join("/")}`, {
+          method: "POST",
+          headers: {
+            authorization: "Bearer masked",
+            ...(length === undefined ? {} : { "content-length": String(length) }),
+          },
+          body,
+        }),
+        path,
+        async (input, init) => {
+          forwards++;
+          const request = new Request(input, init);
+          expect(request.headers.get("authorization")).toBe("Bearer masked");
+          expect(new Uint8Array(await request.arrayBuffer())).toEqual(bytes);
+          return Response.json({ snapshot: {} });
+        },
+      );
+    expect((await send(payload)).status).toBe(200);
+    expect((await send(streamed([bytes.subarray(0, 100_000), bytes.subarray(100_000)]))).status).toBe(200);
+    expect((await send("{}", undefined, 1024 * 1024 + 1)).status).toBe(413);
+    expect((await send(streamed([new Uint8Array(512 * 1024), new Uint8Array(512 * 1024 + 1)]))).status).toBe(413);
+    expect((await send(payload, ["golden", "list"])).status).toBe(413);
+    expect(forwards).toBe(2);
+  } finally {
+    if (env === undefined) delete process.env.ARMADA_MCP_URL;
+    else process.env.ARMADA_MCP_URL = env;
+  }
+});

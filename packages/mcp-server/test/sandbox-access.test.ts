@@ -39,7 +39,12 @@ test("current org metadata is allowlisted; raw interior and mutation require cur
     await db.query("update goldens set removed_at=now() where id=$1", [golden]);
     const caller = (userId: string): Caller => ({ userId, via: "service", orgs: [{ orgId: p.org, role: "admin" }] });
     const data = (userId: string) => createSqlData(db)(caller(userId)).sandboxes;
+    await db.query(
+      "update sandboxes set status='stopped',status_reason='idle_paused',stopped_at=now(),expires_at=now()+interval '1 hour' where id=$1",
+      [ids[0]],
+    );
     const expectedKeys = [
+      "idlePaused",
       "usage",
       "preservationNote",
       "taskOutcome",
@@ -84,6 +89,7 @@ test("current org metadata is allowlisted; raw interior and mutation require cur
         expect(row.providerSandboxId).toBe(`physical-${row.id}`);
         expect(row.boatId).toBe(row.provider === "boat" ? row.providerSandboxId : null);
         expect(row.taskOutcome).toEqual(mayOpen ? { state: "blocked", reason: "interior-only" } : null);
+        expect(row.idlePaused).toBe(row.id === ids[0]);
         expect(row.canOpen).toBe(mayOpen);
         expect(row.canManage).toBe(mayOpen);
         expect(JSON.stringify(row)).not.toMatch(/sensitive-source|conversation-private|failure-private|app-private/);
@@ -107,6 +113,7 @@ test("current org metadata is allowlisted; raw interior and mutation require cur
         for (const row of rpc.rows) {
           expect(Object.keys(row).sort()).toEqual(expectedKeys.filter((key) => key !== "usage"));
           expect(row.taskOutcome).toEqual(mayOpen ? { state: "blocked", reason: "interior-only" } : null);
+          expect(row.idlePaused).toBe(row.id === ids[0]);
           expect(row.canOpen).toBe(mayOpen);
         }
         expect((await db.query("select * from sandboxes")).rows.length).toBe(mayOpen ? 4 : 0);

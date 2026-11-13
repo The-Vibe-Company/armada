@@ -1,20 +1,33 @@
-import type { SandboxStatus } from "@armada/core";
+import { idlePauseMessage, type SandboxStatus } from "@armada/core";
 import type { ComponentProps } from "react";
 import { Badge } from "@/components/ui/badge";
 import { type ConnectionState, connectionLook, statusLook, TONE_BADGE, TONE_DOT, type Tone } from "@/lib/status-tone";
 import { cn } from "@/lib/utils";
 
 /** A sandbox's state: a dot that pulses while the state moves on its own, and its name. */
-export function StatusBadge({ status, className }: { status: SandboxStatus; className?: string }) {
+export function StatusBadge({
+  status,
+  idlePaused = false,
+  expiresAt,
+  className,
+}: {
+  status: SandboxStatus;
+  idlePaused?: boolean;
+  expiresAt?: string | null;
+  className?: string;
+}) {
   const look = statusLook(status);
+  const paused = idlePauseMessage({ status, idlePaused, expiresAt: expiresAt ?? null }, new Date());
   return (
     <Badge
       variant="outline"
       className={cn("gap-1.5 pr-2 pl-1.5", TONE_BADGE[look.tone], status === "deleted" && "line-through", className)}
       data-status={status}
+      title={paused ?? undefined}
+      aria-label={paused ?? undefined}
     >
       <StatusDot tone={look.tone} pulse={look.pulse} />
-      {look.label}
+      {paused ? "Paused" : look.label}
     </Badge>
   );
 }

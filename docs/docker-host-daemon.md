@@ -162,6 +162,54 @@ and reported tokens, then normal stop/delete ACKs. It prints
 The host remains registered/running. Compare container/volume inventories with
 the baseline; no prune, registration replacement or worker host access.
 
+## Installing through the CLI
+
+On the Docker machine, `armada host install --server https://ARMADA_ORIGIN`
+reads the five-minute, single-use registration token **only from stdin**. It needs
+no Armada login or organization selection. Use the one-line command from
+`armada host add` or the dashboard rather than putting a token in CLI arguments.
+
+The bootstrap prefers `bun x --bun`, then `npx -y`, pinned to the server's
+exact published Armada version (not `latest`), retains the standalone no-Node
+fallback and offers an optional global CLI installation. The `--bun` flag lets
+Bun-only machines run the npm launcher's Node shebang. The bare globally installed
+`armada` launcher requires Node; Bun-only users can use `bun x --bun` instead.
+
+The CLI fetches the public `/api/docker-host/install.json` manifest and the
+selected Linux x64/arm64 artifact from the same HTTPS origin, rejects redirects,
+checks SHA-256 **before execution**, then atomically installs
+`~/.local/bin/armada-docker-host`. Installation paths must not contain symlinks.
+The separate binary owns Docker checks, registration and systemd user-service
+installation. The CLI waits up to 60 seconds for a connected status; timeout is
+not permission to exchange another registration token blindly.
+
+Re-running reports the existing host ID, version and connectivity. Registered
+hosts keep their registration while a verified temporary host binary upgrades the
+managed executable in place and updates its ownership digest. Upgrade never exchanges
+or deletes machine credentials. An interrupted executable replacement leaves a pending
+digest in the private marker so validation accepts either the old or new verified
+bytes; retrying upgrades reconciles it. The existing user service is restarted and
+gets the same bounded reconnect wait.
+
+A fresh registration token can cancel its own unused ticket and resolve an existing
+registered host's name through `POST /api/docker-host/reuse-registration`. It cannot
+read or alter another owner's or organization's machine. The response contains only
+host ID and name; no long-lived machine credential is read by the CLI. The canceled
+ticket disappears from the list, allowing `host add` to stop waiting. Expired unused
+registrations are hidden too; registered/offline and revoked host records remain.
+If cancellation or name lookup is unavailable, local registration is preserved,
+the ticket expires naturally, and the installer gives Ctrl-C/list guidance.
+Unregistered binaries without retained installation files can be replaced;
+unreadable or partially registered state is preserved for diagnosis.
+
+`armada host status` prints public local status; `armada host uninstall` delegates
+to the separate binary's drain/revoke/removal procedure. Both work without login.
+Uninstall can wait for active sandbox cleanup and must be retried, not bypassed,
+if drain is unresolved. Native diagnostic output is not relayed by the wrapper;
+run `armada-docker-host status` or `armada-docker-host uninstall` directly when
+repairing local service or ownership problems. Never delete registration state or
+force-clear a daemon lock to make installation succeed.
+
 ## Host authority, ownership and failure recovery
 
 An org admin obtains a five-minute single-use capability from
@@ -431,6 +479,26 @@ The existing machine results endpoint accepts either the original job outcome or
 `{installationId,requestId,expired:true}` referring to a bound create/bootstrap.
 The two packets are separate facts; expiry never rewrites the original job outcome.
 Older servers reject the new packet safely and it remains pending until upgrade.
+
+### Fetching the image (#1507)
+
+Before it creates a container, the host checks whether it has the image. If it does
+not, it runs `docker image pull` with its own 5-minute bound (half the launch
+deadline), longer than the 30-second bound on other Docker commands. If the fetch fails or times out, the
+failed create result carries `reason: "image_unavailable"`:
+`{installationId,requestId,outcome:"failed",reason:"image_unavailable"}`.
+
+- **What the person sees:** the server stores `DOCKER_IMAGE_UNAVAILABLE_MESSAGE`
+  from `@armada/core` as the sandbox's status reason, in plain words. The launch
+  answers with the same words instead of "did not become ready".
+- **Where the reason counts:** only for a create, the only operation that fetches
+  an image. Any other failure keeps the generic reason.
+- **Older servers:** they refuse the extra field with a 400. The host then sends
+  the plain failed outcome again, so the result is never left pending. Any other
+  error keeps the reason for the next attempt.
+- **Known limit:** the daemon is serial. While it pulls, it does not sweep expired
+  sandboxes or take other jobs, and the host can show as offline (no poll for
+  more than 60 seconds) until the pull ends.
 
 The server validates the current host/installation and the original frozen machine
 identity, then records a terminal stop and revokes runtime authority. Server time

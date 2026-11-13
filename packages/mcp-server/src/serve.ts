@@ -38,6 +38,7 @@ import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
 import { createDockerSandboxControls } from "./docker-sandbox-controls.ts";
 import { createDockerSandboxRoutes } from "./docker-sandbox-routes.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
+import { createDockerSnapshots } from "./docker-snapshots.ts";
 import { createGitHubAccountApi } from "./github-account.ts";
 import { configureBoatGitHub } from "./github-boat.ts";
 import { createHandler, providerRegistry, type Route } from "./http.ts";
@@ -66,6 +67,7 @@ import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import { createRuntimeEvents } from "./runtime-events.ts";
 import { createRuntimeFollowup } from "./runtime-followup.ts";
 import { createRuntimeGitHub } from "./runtime-github.ts";
+import { createRuntimeIdle } from "./runtime-idle.ts";
 import { createRuntimeMcp } from "./runtime-mcp.ts";
 import { createRuntimeModelAccess } from "./runtime-model-access.ts";
 import { createRuntimeNativeAuth } from "./runtime-native-auth.ts";
@@ -161,7 +163,6 @@ export async function startServer(
     commands: runtimeCommands,
     probe: (userId, orgId, connectionId) => mcp.controlBroker.status({ userId, orgId, connectionId }),
   });
-  const runtimeSend = createRuntimeFollowup(sql, config.encryptionKey, runtimeCommands, runtimeMcp.prepare);
   try {
     await retryDatabaseBoot(async () => {
       await requireDatabaseSchema(sql);
@@ -374,14 +375,25 @@ export async function startServer(
       : undefined,
     runtimeMcp.prepare,
   );
+  const runtimeSend = createRuntimeFollowup(
+    sql,
+    config.encryptionKey,
+    runtimeCommands,
+    runtimeMcp.prepare,
+    runtimeResume,
+  );
   const dockerControls =
     env.ARMADA_DOCKER_HOSTS === "1"
       ? createDockerSandboxControls(sql, config.encryptionKey, {
           prepareMcp: runtimeMcp.prepare,
+          ...(runtimeGitHub ? { prepareSnapshotGitHub: runtimeGitHub.prepareLaunch } : {}),
           ...(dockerBootstrap ? { resume: dockerBootstrap } : {}),
+          ...(runtimeGitHub ? { github: runtimeGitHub } : {}),
           send: createDockerNormalSend(sql, config.encryptionKey, {
             prepareMcp: runtimeMcp.prepare,
+            ...(runtimeGitHub ? { prepareSnapshotGitHub: runtimeGitHub.prepareLaunch } : {}),
             enabled: dockerEnabled && Boolean(dockerBootstrap),
+            ...(runtimeGitHub ? { github: runtimeGitHub } : {}),
           }),
         })
       : undefined;
@@ -391,6 +403,7 @@ export async function startServer(
       ? createDockerNormalLaunch(sql, config.encryptionKey, {
           mcp: runtimeMcp,
           enabled: dockerLaunchEnabled,
+          ...(runtimeGitHub ? { github: runtimeGitHub } : {}),
           credentials: dockerCredentials,
           ...(dockerBootstrap ? { bootstrap: dockerBootstrap } : {}),
         })
@@ -500,6 +513,7 @@ export async function startServer(
     runtimeResume,
     ...(runtimeGitHub ? { runtimeGitHub } : {}),
     ready: createDatabaseReadiness(sql),
+    ...(env.RAILWAY_GIT_COMMIT_SHA ? { commitSha: env.RAILWAY_GIT_COMMIT_SHA } : {}),
     runtimeProviderFor,
     launch,
     modelAuth,
@@ -552,7 +566,15 @@ export async function startServer(
                   supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
                   now: new Date(),
                 }),
-              { placement: dockerLaunchEnabled, publicUrl: config.publicUrl },
+              {
+                placement: dockerLaunchEnabled,
+                publicUrl: config.publicUrl,
+                snapshots: createDockerSnapshots(sql, config.encryptionKey, {
+                  enabled: dockerLaunchEnabled,
+                  github: { store, app: githubApp, encryptionKey: config.encryptionKey },
+                  installationApp: githubInstallationAppFromEnv(env),
+                }),
+              },
             ),
           ]
         : []),
@@ -663,7 +685,12 @@ export async function startServer(
     options.logError,
     goldenRetirements,
     () => pruneServerRetention(sql, control.applicationVault, new Date()),
-    [delegatedAccess.childWorker],
+    [
+      delegatedAccess.childWorker,
+      createRuntimeIdle(sql, config.encryptionKey, runtimeCheckpoint, {
+        delayMs: Number(process.env.ARMADA_RUNTIME_IDLE_MINUTES ?? 10) * 60_000,
+      }),
+    ],
   );
   const invitationWorker =
     env.ARMADA_INVITATION_MAIL === "supabase" && control.invitations

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   type AgentEvent,
+  DOCKER_IMAGE_UNAVAILABLE_MESSAGE,
   type DockerSandboxStatus,
   GoldenError,
   HARNESS_CAPABILITIES,
@@ -17,12 +18,14 @@ import type { Caller } from "./caller.ts";
 import { createSqlData } from "./data.ts";
 import type { createDockerBootstrapService } from "./docker-bootstrap-service.ts";
 import { createDockerHostStore, DockerHostDenied } from "./docker-host-store.ts";
+import { createDockerLaunchEnvironment } from "./docker-launch-environment.ts";
 import type { createDockerNormalSend } from "./docker-normal-send.ts";
 import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
 import { isPrivateModelEvent } from "./model-usage.ts";
 import { createRuntimeAgent } from "./runtime-agent.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
+import type { RuntimeGitHub } from "./runtime-github.ts";
 import { createRuntimeHistory } from "./runtime-history.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
 import { withServerCost } from "./turn-pricing.ts";
@@ -36,6 +39,7 @@ type Row = {
   provider: string;
   docker_host_id: string;
   docker_image: string;
+  docker_snapshot_id: string | null;
   harness: Harness;
   status: SandboxRecord["status"];
   status_reason: string | null;
@@ -61,7 +65,8 @@ const invalid = () => failure("invalid_request", "Invalid Docker sandbox request
 const terminal = (row: Row) => ["stopped", "deleted", "failed"].includes(row.status);
 function reason(row: Row) {
   if (row.status_reason === "expired") return "expired";
-  return row.status === "failed" ? "Docker sandbox failed." : null;
+  if (row.status !== "failed") return null;
+  return row.status_reason === DOCKER_IMAGE_UNAVAILABLE_MESSAGE ? row.status_reason : "Docker sandbox failed.";
 }
 function usage(value: unknown): SandboxUsage | null {
   if (!value || typeof value !== "object" || !("turnCount" in value) || !("turns" in value)) return null;
@@ -88,9 +93,11 @@ export function createDockerSandboxControls(
   sql: Sql,
   key: string,
   options: {
+    github?: Pick<RuntimeGitHub, "prepare" | "prepareTurn">;
     clock?: Clock;
     timeoutMs?: number;
     prepareMcp?: RuntimeMcp["prepare"];
+    prepareSnapshotGitHub?: RuntimeGitHub["prepareLaunch"];
     send?: ReturnType<typeof createDockerNormalSend>;
     resume?: Pick<ReturnType<typeof createDockerBootstrapService>, "resume">;
   } = {},
@@ -100,7 +107,7 @@ export function createDockerSandboxControls(
     if (!UUID.test(id) || !UUID.test(caller.userId) || caller.orgs.some((org) => !UUID.test(org.orgId))) throw denied();
     const row = (
       await sql.query<Row>(
-        `select s.id,s.org_id,s.owner_id,s.provider,s.docker_host_id,s.docker_image,s.harness,s.status,s.status_reason,
+        `select s.id,s.org_id,s.owner_id,s.provider,s.docker_host_id,s.docker_image,s.docker_snapshot_id,s.harness,s.status,s.status_reason,
         s.stopped_at,s.model,s.reasoning_effort,s.conversation_ids,s.expires_at,s.usage_turns,m.role,
        (select coalesce(max(c.sequence),0)::text from public.runtime_commands c where c.sandbox_id=s.id and starts_with(c.request_id,'docker_prompt_')) as prompt_sequence,
        (select coalesce(max(e.sequence),0)::text from public.runtime_events e where e.sandbox_id=s.id) as journal_sequence
@@ -388,6 +395,26 @@ export function createDockerSandboxControls(
     if (!options.resume) throw failure("unavailable", "Docker sandbox resume is unavailable.");
     if (row.owner_id !== caller.userId) throw denied();
     if (!requestId) throw invalid();
+    const host = (
+      await sql.query<{ daemon_version: string | null }>(
+        "select daemon_version from public.docker_hosts where id=$1 and org_id=$2",
+        [row.docker_host_id, row.org_id],
+      )
+    ).rows[0];
+    const version = host?.daemon_version?.match(/^(\d+)\.(\d+)\.(\d+)(?:[-+][A-Za-z0-9.-]+)?$/);
+    const major = Number(version?.[1]),
+      minor = Number(version?.[2]);
+    // Initial create/bootstrap is compatible with 2.27; the resume opcode first shipped in 2.28.
+    if (
+      !version ||
+      !Number.isSafeInteger(major) ||
+      !Number.isSafeInteger(minor) ||
+      !(major > 2 || (major === 2 && minor >= 28))
+    )
+      throw failure(
+        "conflict",
+        "Update this Docker host daemon to Armada 2.28.0 or later before resuming. Keep its existing registration, then retry. No resume job was sent.",
+      );
     const actor = { userId: caller.userId, orgId: row.org_id };
     await options.resume.resume(actor, row.id, requestId);
     const deadline = clock.now() + (options.timeoutMs ?? 45_000);
@@ -404,6 +431,9 @@ export function createDockerSandboxControls(
       if (state?.outcome === "completed") {
         const ready = await runtime.ready(actor, row.id, requestId);
         if (ready.state === "ready") {
+          await createDockerLaunchEnvironment(sql, key, clock)(caller, row.id);
+          await options.github?.prepareTurn(caller, row.id);
+          if (row.docker_snapshot_id) await options.prepareSnapshotGitHub?.(caller, row.id);
           await options.prepareMcp?.(caller, row.id);
           return { id: row.id, status: "ready" as const };
         }
@@ -532,7 +562,20 @@ export function createDockerSandboxControls(
       name: string,
       args: Record<string, unknown>,
     ): Promise<{ handled: false } | { handled: true; result: object }> {
-      if (!["status", "logs", "stop", "delete", "send", "resume", "steer", "interrupt", "exec"].includes(name))
+      if (
+        ![
+          "status",
+          "logs",
+          "stop",
+          "delete",
+          "send",
+          "resume",
+          "steer",
+          "interrupt",
+          "exec",
+          "github_refresh",
+        ].includes(name)
+      )
         return { handled: false };
       try {
         if (typeof args.id !== "string" || !UUID.test(args.id)) throw denied();
@@ -545,6 +588,10 @@ export function createDockerSandboxControls(
           throw invalid();
         const row = await visible(caller, args.id);
         if (row.provider !== "docker") return { handled: false };
+        if (name === "github_refresh") {
+          if (!options.github) throw failure("unavailable", "Docker GitHub refresh is unavailable.");
+          return { handled: true, result: await options.github.prepare(caller, row.id) };
+        }
         if (["steer", "interrupt", "exec"].includes(name))
           return { handled: true, result: await control(caller, row, name, args) };
         if (name === "send") {

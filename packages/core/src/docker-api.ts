@@ -63,6 +63,9 @@ export interface LaunchProviderCapabilities {
   resume: boolean;
   goldens: boolean;
   repositories: boolean;
+  /** Absent on older servers: no readable-variable delivery support. */
+  variables?: boolean;
+  secrets?: boolean;
   machineSizes: boolean;
   github: boolean;
   mcp: boolean;
@@ -91,6 +94,9 @@ export interface LaunchOptionsResponse {
     followupVersion?: number;
     resumeVersion?: number;
     mcpVersion?: number;
+    skillsVersion?: number;
+    variablesVersion?: number;
+    usageVersion?: number;
   };
   boatRuntime: {
     defaultPath?: "native" | "runtime";
@@ -108,20 +114,26 @@ export interface LaunchOptionsResponse {
   };
 }
 
-/**
- * The plain Linux image a Docker host launch uses when none is given (#1507): Debian with HTTPS CA roots, pinned by
- * digest. The launch API, the CLI and the dashboard all default to it, so a person never has to know what an image is.
- */
+/** Why a host reports a failed machine operation, when the person can act on it (#1507). */
+export const DOCKER_JOB_FAILURE_REASONS = ["image_unavailable"] as const;
+export type DockerJobFailureReason = (typeof DOCKER_JOB_FAILURE_REASONS)[number];
+/** What a sandbox and its launch say when its host could not fetch the image. */
+export const DOCKER_IMAGE_UNAVAILABLE_MESSAGE =
+  "Your host could not fetch the image. Check that the image exists and that the host can reach its registry, then launch again.";
+/** Legacy operator/compatibility fixture image. Normal launches use officialSandboxImage(). */
 export const DOCKER_DEFAULT_IMAGE =
   "buildpack-deps@sha256:58021c2a0204361b62a23d2e0244d144d74c29af2d678e2a1f7e6611885d6949";
 
 /** Normal API/CLI contract. Discover capabilities.launch before offering this source. */
 export interface DockerLaunchRequest {
+  secrets?: import("./application-secret-bindings.ts").ApplicationSecretBinding[];
+  variables?: import("./readable-variables.ts").ReadableVariableBinding[];
+  /** GitHub checkouts, using the same single-segment directory rules as goldens. */
+  repos?: import("./golden-config.ts").GoldenRepo[];
   org: string;
   provider: "docker";
-  hostId: string;
-  /** Immutable registry digest or host-approved full local image ID; omitted means DOCKER_DEFAULT_IMAGE. */
-  image?: string;
+  hostId?: string;
+  snapshotId?: string;
   harness: Harness;
   credentialId: string;
   credentialVersion?: number;
@@ -138,6 +150,7 @@ export interface DockerLaunchRequest {
 export interface DockerSandboxRecord extends Omit<SandboxRecord, "provider" | "goldenId" | "harness"> {
   provider: "docker";
   goldenId: null;
+  snapshotId?: string | null;
   harness: Harness;
   hostId: string;
   image: string;
@@ -178,4 +191,25 @@ export interface DockerSandboxStatus {
     reason: string | null;
   } | null;
   settled: boolean;
+}
+
+export const DOCKER_SNAPSHOT_STATUSES = ["building", "ready", "failed"] as const;
+export interface DockerSnapshotRecord {
+  /** Frozen server release version; null only for snapshots created before version recording. */
+  builtOnVersion: string | null;
+  id: string;
+  orgId: string;
+  ownerId: string;
+  name: string;
+  provider: "docker";
+  visibility: "private" | "org";
+  hostId: string;
+  installationId: string;
+  hostName: string | null;
+  hostAvailable: boolean;
+  definitionHash: string;
+  status: (typeof DOCKER_SNAPSHOT_STATUSES)[number];
+  image: string | null;
+  config: import("./golden-config.ts").GoldenConfig;
+  createdAt: string;
 }
