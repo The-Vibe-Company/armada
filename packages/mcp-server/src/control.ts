@@ -786,6 +786,7 @@ async function dispatch(
         enabled: Boolean(options.modalRuntimeLaunch),
         followupVersion: options.runtimeSend ? 1 : 0,
         resumeVersion: options.runtimeResume && options.modalRuntimeLaunch ? 1 : 0,
+        mcpVersion: options.runtimeMcp ? 2 : 0,
       },
       boatRuntime: {
         defaultPath: options.launch?.boatRuntimeDefault ? "runtime" : "native",
@@ -1187,14 +1188,13 @@ async function dispatch(
         body.armadaAccess ||
         body.skipSkillDefaults !== true ||
         !Array.isArray(body.connections) ||
-        body.connections.length ||
         (body.skills !== undefined && (!Array.isArray(body.skills) || body.skills.length)) ||
         (body.helperCapabilities !== undefined &&
           (!Array.isArray(body.helperCapabilities) || body.helperCapabilities.length))
       )
         throw new VaultError(
           "invalid",
-          "Modal runtime v1 requires explicit model-only Codex launch, no setup capabilities.",
+          "Modal runtime v1 requires explicit Codex launch; skills and helpers are unavailable.",
         );
       if (!options.modalRuntimeLaunch || !options.modalRuntimeHostFor)
         throw new VaultError("unavailable", "Modal runtime staging opt-in is disabled.");
@@ -1651,11 +1651,7 @@ async function launchRoute(
               ? { ...golden, visibility: "private", sourceGoldenVisibility: golden.visibility }
               : golden,
         );
-  const connectionLifecycle = modalRuntime
-    ? undefined
-    : runtime
-      ? options.runtimeMcp?.connections
-      : options.connections;
+  const connectionLifecycle = runtime ? options.runtimeMcp?.connections : options.connections;
   const result = await launchSandbox(
     provider,
     {

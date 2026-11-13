@@ -2724,6 +2724,8 @@ test("Modal runtime launch is explicit and persists dial-out selection before it
     const fake = fakeBoat();
     const host = { ...fake.provider, id: "modal" as const };
     let starts = 0;
+    let mcpPrepared = false;
+    const connection = crypto.randomUUID();
     options.providerFor = () => {
       throw Error("No Boat provider for Modal");
     };
@@ -2738,19 +2740,47 @@ test("Modal runtime launch is explicit and persists dial-out selection before it
         expect(input.sandbox.boatRuntime).toBeUndefined();
         return {
           epoch: "1",
-          prompt: async () => ({ promptId: "modal-initial", conversationId: "modal-conversation", status: "running" }),
+          prompt: async () => {
+            expect(mcpPrepared).toBe(true);
+            return { promptId: "modal-initial", conversationId: "modal-conversation", status: "running" };
+          },
         };
       },
     };
     for (const bad of [
       { ...body, skipSkillDefaults: false },
-      { ...body, connections: [crypto.randomUUID()] },
+      { ...body, connections: ["invalid"] },
       { ...body, harness: "claude" },
       { ...body, runtimeTransport: undefined },
     ])
       expect((await request(bad))?.status).toBe(400);
     expect(fake.forks).toHaveLength(0);
-    const response = await request(body);
+    options.runtimeMcp = {
+      async preflight() {
+        throw Error("No live preflight in launch");
+      },
+      async prepare() {
+        throw Error("Connection lifecycle owns preparation");
+      },
+      connections: {
+        async defaults() {
+          throw Error("Explicit MCP selection must not load defaults");
+        },
+        async validate(_actor, ids) {
+          expect(ids).toEqual([connection]);
+          expect(fake.forks).toHaveLength(0);
+        },
+        async bind(_id, ids) {
+          expect(ids).toEqual([connection]);
+        },
+        async prepare(_provider, sandbox) {
+          expect(starts).toBe(1);
+          expect(sandbox).toMatchObject({ runtimeTransport: "dialout", provider: "modal" });
+          mcpPrepared = true;
+        },
+      },
+    };
+    const response = await request({ ...body, connections: [connection] });
     if (response?.status !== 200) throw Error(JSON.stringify(await response?.json()));
     expect(response?.status).toBe(200);
     expect(await response?.json()).toMatchObject({
