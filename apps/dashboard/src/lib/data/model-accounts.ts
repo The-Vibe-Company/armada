@@ -10,6 +10,8 @@ import {
   type LaunchAccounts,
   type ModelAccount,
 } from "@/lib/model-accounts";
+import type { ConnectionTestChoices } from "@/lib/model-connection-check";
+import { createClient } from "@/lib/supabase/server";
 import { selectedOrganization } from "./selected-org";
 import { requireViewer } from "./viewer";
 
@@ -109,4 +111,48 @@ export async function readAccountUsage(
     }),
   );
   return Object.fromEntries(entries);
+}
+
+/** Read recent eligible candidates per account/version under the viewer JWT. Submit rechecks binding. */
+export async function readConnectionTestChoices(accounts: readonly ModelAccount[]): Promise<ConnectionTestChoices> {
+  const [viewer, selected, supabase] = await Promise.all([requireViewer(), selectedOrganization(), createClient()]);
+  if (!selected) return { state: "unavailable" };
+  const eligible = accounts.filter(
+    (account) =>
+      account.status === "active" && KIND_INFO[account.kind].billing === "api" && account.kind !== "opencode",
+  );
+  const reads = await Promise.all(
+    eligible.map((account) =>
+      supabase
+        .from("sandboxes")
+        .select("id,credential_id,credential_version,harness,created_at")
+        .eq("owner_id", viewer.id)
+        .eq("org_id", selected.org.id)
+        .eq("provider", "modal")
+        .eq("credential_id", account.id)
+        .eq("credential_version", account.version)
+        .in("status", ["ready", "running"])
+        .order("created_at", { ascending: false })
+        .limit(50),
+    ),
+  );
+  if (reads.some((read) => read.error)) return { state: "unavailable" };
+  return {
+    state: "ready",
+    sandboxes: reads.flatMap(({ data }) =>
+      (data ?? []).flatMap((row) =>
+        row.credential_id !== null && row.credential_version !== null
+          ? [
+              {
+                id: row.id,
+                accountId: row.credential_id,
+                version: row.credential_version,
+                harness: row.harness,
+                createdAt: row.created_at,
+              },
+            ]
+          : [],
+      ),
+    ),
+  };
 }

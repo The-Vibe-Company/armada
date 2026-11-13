@@ -221,7 +221,7 @@ export async function testAccountConnection(_previous: ActionResult | null, data
   const revision = version(data);
   const model = formString(data, "model");
   if (!isUuid(accountId) || !isUuid(sandboxId) || revision === null || revision < 1 || !model || model.length > 200)
-    return fail("Enter the running Modal sandbox UUID and deployment/model name.");
+    return fail("Choose a running sandbox and enter the deployment or model name.");
   const viewer = await requireViewer();
   const supabase = await createClient();
   const { data: sandbox, error } = await supabase
@@ -242,11 +242,13 @@ export async function testAccountConnection(_previous: ActionResult | null, data
     })
   )
     return fail(
-      "Use your running Modal sandbox bound to this exact account version in the selected organization. No machine was started or resumed.",
+      "That sandbox is no longer available for this account. Reload Models and choose a matching running sandbox. No machine was started or resumed.",
     );
   try {
     return connectionTestOutcome(await context.control.testConnection({ id: sandboxId, model, org: context.org }));
   } catch (error) {
-    return explain(error);
+    if (error instanceof ControlError)
+      return fail("The check could not be completed. Check the sandbox and your connection before trying again.");
+    throw error;
   }
 }

@@ -10,6 +10,7 @@ import {
   listSelectedAccounts,
   readAccountUsage,
   readAuthCapabilities,
+  readConnectionTestChoices,
 } from "@/lib/data/model-accounts";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { requireViewer } from "@/lib/data/viewer";
@@ -114,7 +115,10 @@ async function HarnessSections({
       </Alert>
     );
 
-  const usage = await readAccountUsage(list.accounts);
+  const [usage, testChoices] = await Promise.all([
+    readAccountUsage(list.accounts),
+    readConnectionTestChoices(list.accounts),
+  ]);
   return (
     <>
       {HARNESS_ORDER.map((harness) => (
@@ -129,6 +133,7 @@ async function HarnessSections({
           isAdmin={selected.role === "admin"}
           usage={usage}
           now={now}
+          testChoices={testChoices}
           emptyAction={
             <AddAccountDialog
               orgId={selected.org.id}
