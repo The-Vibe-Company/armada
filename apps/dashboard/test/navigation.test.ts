@@ -6,7 +6,7 @@ describe("sidebar navigation", () => {
     expect(NAV_GROUPS.map((group) => [group.label, group.links.map((link) => link.label)])).toEqual([
       ["Run", ["Sandboxes", "Otto", "Routines", "Templates"]],
       ["Library", ["Snapshots", "Skills", "Tools", "Variables"]],
-      ["Providers", ["Self-hosted", "Cloud"]],
+      ["Providers", ["Overview", "Self-hosted"]],
       ["Account", ["Models", "Settings"]],
     ]);
   });
@@ -17,10 +17,10 @@ describe("sidebar navigation", () => {
     expect(isActiveLink("/routinesx", "/routines")).toBe(false);
   });
 
-  test("hides Self-hosted behind the Docker hosts opt-in, but never Cloud", () => {
+  test("hides Self-hosted behind the Docker hosts opt-in, but never Overview", () => {
     const providers = NAV_GROUPS.find((group) => group.label === "Providers");
     expect(providers?.links.find((link) => link.label === "Self-hosted")?.optIn).toBe("dockerHosts");
-    expect(providers?.links.find((link) => link.label === "Cloud")?.optIn).toBeUndefined();
+    expect(providers?.links.find((link) => link.label === "Overview")?.optIn).toBeUndefined();
   });
 
   test("shows organizations only to a member of several, or to someone with none", () => {
