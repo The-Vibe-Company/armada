@@ -37,6 +37,11 @@ on:
 permissions:
   contents: read
 
+# Cancel stale PR previews, never interrupt production migration operations.
+concurrency:
+  group: migrations-${{ github.event_name }}-${{ github.ref }}-${{ github.event_name == 'merge_group' && github.sha || 'latest' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   preview:
     name: Migration dry-run (disposable database)
