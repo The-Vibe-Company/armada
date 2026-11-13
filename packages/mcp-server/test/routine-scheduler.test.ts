@@ -292,7 +292,14 @@ test.each([false, true])(
         throw Error("provider resolution unavailable");
       };
       await f.due();
-      await createRoutineScheduler(f.sql, { launch: f.launch, observe: f.observe }).tick();
+      const admissions: RoutineLaunchAdmission[] = [];
+      await createRoutineScheduler(f.sql, {
+        launch: async (...args) => {
+          admissions.push(args[2]);
+          return f.launch(...args);
+        },
+        observe: f.observe,
+      }).tick();
       const failed = (await f.runs())[0]!;
       const claim = (
         await f.db.query<{ id: string; sandbox_id: string; state: string }>(
@@ -318,6 +325,26 @@ test.each([false, true])(
       expect(
         (await f.db.query("select consecutive_failures from routines where id=$1", [f.routine.id])).rows[0],
       ).toEqual({ consecutive_failures: 0 });
+      if (!legacy) {
+        const admission = admissions[0];
+        const input = f.launches[0];
+        if (!admission || !input) throw Error("Missing routine launch admission");
+        // A valid template/provider path must recheck the failed run's admission before allocating.
+        let checked = false;
+        const refused = await f.launch(
+          f.actor,
+          { ...input, requestKey: crypto.randomUUID() },
+          {
+            async beforeFork(tx) {
+              checked = true;
+              await admission.beforeFork(tx);
+            },
+          },
+        );
+        expect(checked).toBe(true);
+        expect(refused).toMatchObject({ state: "failed" });
+        expect(f.boat.forks).toHaveLength(1);
+      }
     } finally {
       await f.close();
     }
@@ -417,60 +444,6 @@ test("run input snapshots and sandbox links stay outside JWT history grants", as
     await expect(f.db.query("update routine_runs set state='failed'")).rejects.toThrow("permission denied");
     await f.db.exec("reset role");
   } finally {
-    await f.close();
-  }
-});
-
-// The lease must fence allocation, not only history writes: an expired caller can still be in
-// credential preflight while its replacement records a terminal pre-claim failure.
-test("expired preflight cannot allocate after a replacement lease records failure", async () => {
-  const f = await fixture();
-  let resume!: () => void;
-  let entered!: () => void;
-  const ready = new Promise<void>((resolve) => {
-    entered = resolve;
-  });
-  const gate = new Promise<void>((resolve) => {
-    resume = resolve;
-  });
-  let pending: Promise<void> | undefined;
-  try {
-    await f.due();
-    const first = createRoutineScheduler(f.sql, {
-      observe: f.observe,
-      launch: async (actor, input, admission) => {
-        entered();
-        await gate;
-        return f.launch(actor, input, admission);
-      },
-    });
-    pending = first.tick();
-    await ready;
-    await f.db.query("update routine_runs set lease_until=now()-interval '1 second' where routine_id=$1", [
-      f.routine.id,
-    ]);
-    const replacement = createRoutineScheduler(f.sql, {
-      observe: f.observe,
-      launch: async () => {
-        throw Error("credential preflight refused");
-      },
-    });
-    await replacement.tick();
-    expect((await f.runs())[0]).toMatchObject({ state: "failed", sandbox_id: null });
-    expect((await f.db.query("select id from template_launch_requests")).rows).toHaveLength(0);
-    resume();
-    await pending;
-    expect(f.boat.forks).toHaveLength(0);
-    expect((await f.db.query<{ state: string }>("select state from template_launch_requests")).rows[0]).toEqual({
-      state: "failed",
-    });
-    await f.due();
-    await createRoutineScheduler(f.sql, { launch: f.launch, observe: f.observe }).tick();
-    expect(f.boat.forks).toHaveLength(1);
-    expect((await f.runs()).at(-1)).toMatchObject({ state: "succeeded" });
-  } finally {
-    resume();
-    await pending?.catch(() => {});
     await f.close();
   }
 });
