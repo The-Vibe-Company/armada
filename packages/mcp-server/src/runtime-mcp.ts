@@ -42,7 +42,9 @@ export function createRuntimeMcp(options: {
       result = [];
     for (const id of selected) {
       const c = await registry.get(caller.userId, org, id);
-      if (c.status !== "connected" || !["http", "sse"].includes(c.transport)) return deny();
+      if (!["http", "sse"].includes(c.transport))
+        throw new VaultError("invalid", "Boat runtime does not support pinned stdio MCP; no native fallback.");
+      if (c.status !== "connected") return deny();
       result.push(c);
     }
     return result;

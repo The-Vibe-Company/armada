@@ -11,11 +11,14 @@ import {
   GoldenSnapshotRetirements,
   githubAppFromEnv,
   githubInstallationAppFromEnv,
+  type LaunchOptions,
   promptOutcome,
+  resolveBoatKey,
   VaultError,
 } from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
 import { boatRuntimeLaunch } from "./boat-runtime-launch.ts";
+import { readBoatRuntimeManifest } from "./boat-runtime-manifest.ts";
 import { boatRuntimeResume } from "./boat-runtime-resume.ts";
 import { authenticateCaller } from "./caller.ts";
 import { configFromEnv } from "./config.ts";
@@ -93,7 +96,7 @@ export async function startServer(
   } = {},
 ) {
   const config = configFromEnv(env);
-  const launch = { extensionHeadroomSeconds: config.sandboxExtensionHeadroomSeconds };
+  const launch: LaunchOptions = { extensionHeadroomSeconds: config.sandboxExtensionHeadroomSeconds };
   const catalogAuthentication = catalogAuthenticationFromEnv(
     env,
     config.encryptionKey,
@@ -254,43 +257,38 @@ export async function startServer(
     encryptionKey: config.encryptionKey,
     provider: (actor, target) => providers.resolve(target, { userId: actor.userId }),
   });
-  let manifest: unknown;
-  if (env.ARMADA_BOAT_RUNTIME_MANIFEST) {
-    try {
-      manifest = JSON.parse(await Bun.file(env.ARMADA_BOAT_RUNTIME_MANIFEST).text());
-    } catch {
-      throw Error("Invalid Boat runtime deployment manifest.");
-    }
-  }
-  let runtimeLaunch: ReturnType<typeof boatRuntimeLaunch> | undefined;
-  if (manifest !== undefined) {
-    const row = manifest as {
-      protocol?: unknown;
-      platform?: unknown;
-      libc?: unknown;
-      architecture?: unknown;
-      runtime?: { sha256?: unknown; bytes?: unknown };
+  const imageBoatManifest = `/opt/armada/runtime-manifests/${process.arch}.json`;
+  const deployed = await readBoatRuntimeManifest(
+    env.ARMADA_BOAT_RUNTIME_MANIFEST ?? imageBoatManifest,
+    config.boatAgentPath,
+  );
+  const runtimeLaunch = deployed
+    ? boatRuntimeLaunch({
+        sql,
+        encryptionKey: config.encryptionKey,
+        serverUrl: config.publicUrl,
+        manifest: deployed.manifest,
+        architecture: deployed.architecture,
+        modelAuth,
+      })
+    : undefined;
+  if (config.boatAgentPath === "runtime") {
+    if (!runtimeLaunch) throw Error("Boat runtime default requires installed runtime artifacts.");
+    launch.boatRuntimeDefault = {
+      policy: runtimeLaunch,
+      credentials: launchCredentials(store, config.encryptionKey, undefined, modelAuth),
+      connections: runtimeMcp.connections,
+      provider: async (actor, golden) =>
+        createBoatProvider({
+          apiKey: (
+            await resolveBoatKey(store, config.encryptionKey, {
+              userId: actor.userId,
+              orgId: actor.orgId,
+              visibility: golden.visibility,
+            })
+          ).key,
+        }),
     };
-    if (
-      row?.protocol !== 1 ||
-      row.platform !== "linux" ||
-      row.libc !== "glibc" ||
-      (row.architecture !== "x64" && row.architecture !== "arm64") ||
-      typeof row.runtime?.sha256 !== "string" ||
-      !/^[a-f0-9]{64}$/.test(row.runtime.sha256) ||
-      !Number.isSafeInteger(row.runtime.bytes) ||
-      Number(row.runtime.bytes) < 1 ||
-      Number(row.runtime.bytes) > 512 * 1024 * 1024
-    )
-      throw Error("Invalid Boat runtime deployment manifest.");
-    runtimeLaunch = boatRuntimeLaunch({
-      sql,
-      encryptionKey: config.encryptionKey,
-      serverUrl: config.publicUrl,
-      manifest,
-      architecture: row.architecture,
-      modelAuth,
-    });
   }
   let modalRuntimePolicy: ReturnType<typeof modalRuntimeLaunch> | undefined;
   if (env.ARMADA_MODAL_DIALOUT === "1") {

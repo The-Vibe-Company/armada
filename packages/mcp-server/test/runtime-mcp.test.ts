@@ -372,7 +372,10 @@ test("connection admission rejects unsupported stdio before launch binding or co
     });
     await expect(
       x.service.connections.validate({ userId: f.people.owner, orgId: f.people.org }, [local.id], "org"),
-    ).rejects.toThrow();
+    ).rejects.toMatchObject({
+      code: "invalid",
+      message: "Boat runtime does not support pinned stdio MCP; no native fallback.",
+    });
     expect(
       (
         await f.db.query<{ n: number }>(
