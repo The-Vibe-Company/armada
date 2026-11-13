@@ -86,6 +86,9 @@ export class AcpDriver implements Driver {
     child.once("error", () => failure());
     child.once("exit", () => failure());
     let buffer = "";
+    let assistantMessageId = "";
+    let assistantBytes = 0;
+    let assistantChunks: string[] = [];
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => {
       buffer += chunk;
@@ -122,6 +125,7 @@ export class AcpDriver implements Driver {
             else send({ id: m.id, error: { code: -32601, message: "Client operation unavailable" } });
           } else if (
             !replay &&
+            !stopped &&
             m.method === "session/update" &&
             object(m.params) &&
             m.params.sessionId === sessionId &&
@@ -132,16 +136,21 @@ export class AcpDriver implements Driver {
               u.sessionUpdate === "agent_message_chunk" &&
               object(u.content) &&
               u.content.type === "text" &&
-              typeof u.content.text === "string"
-            )
+              typeof u.content.text === "string" &&
+              assistantMessageId
+            ) {
+              assistantBytes += Buffer.byteLength(u.content.text);
+              if (assistantBytes > 16 * 1024 * 1024) throw new HarnessError("invalid_harness_protocol");
+              if (u.content.text) assistantChunks.push(u.content.text);
               c.emit({
                 kind: "message",
                 text: u.content.text,
                 partial: true,
                 textMode: "delta",
-                messageId: `acp-${sequence}-${typeof u.messageId === "string" ? u.messageId : "assistant"}`,
+                messageId: assistantMessageId,
                 tools: [],
               });
+            }
             if (
               (u.sessionUpdate === "tool_call" || u.sessionUpdate === "tool_call_update") &&
               typeof u.toolCallId === "string"
@@ -204,7 +213,13 @@ export class AcpDriver implements Driver {
       }
       usageSeen = true;
     };
-    const begin = (text: string) => rpc("session/prompt", { sessionId, prompt: [{ type: "text", text }] }, false);
+    const begin = (text: string) => {
+      assistantChunks = [];
+      assistantBytes = 0;
+      const response = rpc("session/prompt", { sessionId, prompt: [{ type: "text", text }] }, false);
+      assistantMessageId = `acp-${crypto.randomUUID()}-${sequence}-assistant`;
+      return response;
+    };
     const ready = (async () => {
       const initialized = await rpc("initialize", {
         protocolVersion: 1,
@@ -255,6 +270,17 @@ export class AcpDriver implements Driver {
           usage(response);
           if (response.stopReason === "cancelled") return "interrupted";
           if (response.stopReason !== "end_turn") throw new HarnessError("harness_failed");
+          // ACP only streams text chunks. Publish the terminal snapshot with the same identity so
+          // journal consumers need not reconstruct a completed answer from partial deltas.
+          if (!interrupted && assistantChunks.length)
+            c.emit({
+              kind: "message",
+              text: assistantChunks.join(""),
+              partial: false,
+              textMode: "snapshot",
+              messageId: assistantMessageId,
+              tools: [],
+            });
           return interrupted ? "interrupted" : "finished";
         }
       } catch (error) {
