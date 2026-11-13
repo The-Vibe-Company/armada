@@ -99,6 +99,27 @@ test("OpenCode uses the native Anthropic SDK for Messages connections and remove
   expect(env[OPENCODE_ENDPOINT_ENV]).toBeUndefined();
 });
 
+test("OpenCode uses Azure Responses without duplicating v1 on Azure OpenAI or losing Foundry paths", () => {
+  for (const [baseUrl, sdkUrl] of [
+    ["https://resource.openai.azure.com/openai/v1", "https://resource.openai.azure.com/openai"],
+    ["https://resource.services.ai.azure.com/openai/v1", "https://resource.services.ai.azure.com/openai/v1"],
+  ]) {
+    const env: Record<string, string> = {
+      OPENCODE_API_KEY: "fake-azure-key",
+      [OPENCODE_ENDPOINT_ENV]: JSON.stringify({ version: 1, protocol: "azure", baseUrl, models: ["my-deployment"] }),
+    };
+    configureOpenCodeEndpoint(env);
+    const config = JSON.parse(env.OPENCODE_CONFIG_CONTENT ?? "{}");
+    expect(config.provider.armada).toMatchObject({
+      npm: "@ai-sdk/azure",
+      options: { baseURL: sdkUrl, apiKey: "fake-azure-key" },
+      models: { "my-deployment": { name: "my-deployment" } },
+    });
+    expect(env.OPENCODE_API_KEY).toBeUndefined();
+    expect(env[OPENCODE_ENDPOINT_ENV]).toBeUndefined();
+  }
+});
+
 // A failed native export must not turn an older JSON export into a false continuity proof.
 test("OpenCode refuses stale history and checkpoint after an unacknowledged export", async () => {
   const { HarnessState } = await import("../src/state.ts");
