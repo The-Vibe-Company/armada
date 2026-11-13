@@ -3,22 +3,33 @@ import { spawnSync } from "node:child_process";
 
 // Execute the real coordinator helper offline: its new mode must prove the normal
 // route, not accidentally succeed via the already accepted private preview.
-test.each(["launch", "resume", "cost", "bad-cost", "claude", "opencode", "repository", "repository-no-proof"])(
-  "normal Docker smoke uses normal routes (%s)",
-  (mode) => {
-    const result = spawnSync(
-      "python3",
-      [
-        "-c",
-        `
+test.each([
+  "launch",
+  "resume",
+  "cost",
+  "bad-cost",
+  "claude",
+  "opencode",
+  "repository",
+  "repository-no-proof",
+  "config",
+  "config-no-init-proof",
+  "config-wrong-output",
+])("normal Docker smoke uses normal routes (%s)", (mode) => {
+  const result = spawnSync(
+    "python3",
+    [
+      "-c",
+      `
 import contextlib, io, json, os, runpy, sys, types
 from unittest.mock import patch
 calls, ssh = [], []
 sandbox, prompt, conversation = None, "native-prompt", "native-conversation"
 marker, answer, sends, stops = None, "DOCKER_OK", 0, 0
 mode = sys.argv[1]
-lifecycle = mode not in ("launch", "repository", "repository-no-proof")
+lifecycle = mode not in ("launch", "repository", "repository-no-proof", "config-no-init-proof", "config-wrong-output")
 prices = []
+config = {"repos": [{"url": "https://github.com/example/project.git", "branch": "feature/work", "dir": "project"}], "init": ["printf INIT_CONFIG_OK > /home/user/.armada-environment-proof"]}
 class Opener:
     def open(self, request, timeout):
         global sandbox, prompt, marker, answer, sends, stops
@@ -36,6 +47,9 @@ class Opener:
             assert body["provider"] == "docker" and body["harness"] == (mode if mode in ("claude", "opencode") else "codex")
             assert body["visibility"] == "private" and "DOCKER_OK" in body["prompt"]
             assert "credentialVersion" not in body
+            if mode.startswith("config"):
+                assert body["repos"] == config["repos"] and body["init"] == config["init"]
+                assert "cat /home/user/.armada-environment-proof" in body["prompt"] and "INIT_CONFIG_OK" not in body["prompt"]
             if mode.startswith("repository"):
                 assert body["repos"] == [{"url": "https://github.com/example/project.git", "branch": "feature/work", "dir": "project"}]
                 assert "git -C /home/user/project log -1" in body["prompt"]
@@ -53,10 +67,12 @@ class Opener:
         elif path == "sandbox/list":
             value = {"sandboxes": [{"id": sandbox, "provider": "docker"}]}
         elif path == "logs/read":
-            value = {"source": "armada-runtime", "cursor": "next", "hasMore": False, "events": [
+            value = {"source": "armada-runtime", "cursor": "next", "hasMore": False, "events": ([{"kind": "other", "type": "armada/workspaceStep", "data": {"phase": "init", "index": 0, "status": "finished"}}] if mode.startswith("config") and mode != "config-no-init-proof" and prompt == "native-prompt" else []) + [
                 {"kind": "message", "promptId": prompt, "text": answer, "tools":
                  [{"name": "commandExecution", "input": {"command": "git -C /home/user/project log -1 --format=%H"},
-                   "result": {"isError": False, "output": "a" * 40}}] if mode == "repository" else []},
+                   "result": {"isError": False, "output": "a" * 40}}] if mode == "repository" else
+                 [{"name": "commandExecution", "input": {"command": "git -C /home/user/project log -1 --format=%H"}, "result": {"isError": False, "output": "a" * 40}},
+                  {"name": "commandExecution", "input": {"command": "cat /home/user/.armada-environment-proof"}, "result": {"isError": False, "output": "wrong" if mode == "config-wrong-output" else "INIT_CONFIG_OK"}}] if mode.startswith("config") else []},
                 {"kind": "prompt", "promptId": prompt, "status": "finished"}]}
         elif path == "sandbox/detail":
             if not any(t["promptId"] == prompt for t in prices):
@@ -81,6 +97,8 @@ argv = ["scripts/smoke-docker-lifecycle.py", "--server", "https://staging.exampl
         "--host-id", "retained-host", "--start-host", "--normal-launch"]
 if mode.startswith("repository"):
     argv += ["--repository", "example/project", "--branch", "feature/work"]
+if mode.startswith("config"):
+    argv += ["--config", "golden.json"]
 if lifecycle:
     argv.append("--normal-lifecycle")
 if mode in ("cost", "bad-cost"):
@@ -88,16 +106,17 @@ if mode in ("cost", "bad-cost"):
 if mode in ("claude", "opencode"):
     argv.append("--" + mode)
 output = io.StringIO()
-with patch.dict(os.environ, {"ARMADA_TOKEN": "offline-only"}), patch.object(sys, "argv", argv), \\
+with patch.dict(os.environ, {"ARMADA_TOKEN": "offline-only", "ARMADA_DOCKER_INIT_EXPECTED": "INIT_CONFIG_OK"}), patch.object(sys, "argv", argv), \\
      patch("urllib.request.build_opener", return_value=Opener()), patch("subprocess.run", side_effect=command), \\
+     patch("builtins.open", side_effect=lambda *args, **kwargs: io.BytesIO(json.dumps(config).encode())), \
      patch("time.sleep", side_effect=AssertionError("No wall-clock waits")), contextlib.redirect_stdout(output):
     try:
         runpy.run_path(argv[0], run_name="__main__")
     except SystemExit as error:
-        assert mode in ("bad-cost", "repository-no-proof") and error.code == 1
+        assert mode in ("bad-cost", "repository-no-proof", "config-no-init-proof", "config-wrong-output") and error.code == 1
         assert stops == 1
         sys.exit(0)
-    assert mode not in ("bad-cost", "repository-no-proof"), "Missing proof was accepted"
+    assert mode not in ("bad-cost", "repository-no-proof", "config-no-init-proof", "config-wrong-output"), "Missing proof was accepted"
 assert len(ssh) == 1 and " run --state-dir " in ssh[0][0][-1]
 assert "nohup setsid" in ssh[0][0][-1] and "daemon.lock" in ssh[0][0][-1]
 assert (not lifecycle or (sends == 2 and stops == 2))
@@ -105,17 +124,18 @@ assert lifecycle or [path for path, _ in calls] == ["launch/options", "sandbox/l
 assert "PASS: normal Docker launch route created" in output.getvalue()
 assert "offline-only" not in output.getvalue()
 `,
-        mode,
-      ],
-      { cwd: import.meta.dir + "/..", encoding: "utf8" },
-    );
-    expect(result.stderr).toBe(
-      mode === "bad-cost"
-        ? "Docker cost proof failed: expected stable priced turns and exact session total\n"
-        : mode === "repository-no-proof"
-          ? "Repository proof missing: successful git log -1 command result required\n"
+      mode,
+    ],
+    { cwd: import.meta.dir + "/..", encoding: "utf8" },
+  );
+  expect(result.stderr).toBe(
+    mode === "bad-cost"
+      ? "Docker cost proof failed: expected stable priced turns and exact session total\n"
+      : mode === "repository-no-proof"
+        ? "Repository proof missing: successful git log -1 command result required\n"
+        : mode === "config-no-init-proof" || mode === "config-wrong-output"
+          ? "Init proof missing: all successful workspace steps and exact proof file output required\n"
           : "",
-    );
-    expect(result.status).toBe(0);
-  },
-);
+  );
+  expect(result.status).toBe(0);
+});

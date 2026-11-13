@@ -171,6 +171,7 @@ export {
   GoldenError,
   type GoldenErrorCode,
   type GoldenRepo,
+  initCommand,
   normalizeGitHubGoldenConfig,
   parseGoldenConfig,
   parseGoldenName,

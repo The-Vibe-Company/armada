@@ -73,7 +73,12 @@ afterAll(async () => {
 // The real migrated boundary owns normal-launch sequencing and durable retries.
 // Existing private-lane tests own the individual host/runtime protocol matrices.
 async function fixture(
-  options: { lifecycleGenerationAfterCreate?: number; harness?: Harness; checkoutExitCode?: number } = {},
+  options: {
+    lifecycleGenerationAfterCreate?: number;
+    harness?: Harness;
+    initExitCode?: number;
+    checkoutExitCode?: number;
+  } = {},
 ) {
   const orgId = randomUUID(),
     userId = randomUUID(),
@@ -161,13 +166,16 @@ async function fixture(
             requestId: command.requestId,
             result:
               command.op === "health"
-                ? { ready: true, generation: session.epoch, mcpVersion: 1, skillsVersion: 1 }
+                ? { ready: true, generation: session.epoch, mcpVersion: 1, skillsVersion: 1, workspaceVersion: 1 }
                 : command.op === "configureGitHub"
                   ? { acknowledged: true }
-                  : command.op === "exec"
+                  : command.op === "exec" || command.op === "workspaceExec"
                     ? {
                         detached: false,
-                        exitCode: options.checkoutExitCode ?? 0,
+                        exitCode:
+                          command.op === "workspaceExec"
+                            ? (options.initExitCode ?? 0)
+                            : (options.checkoutExitCode ?? 0),
                         timedOut: false,
                         stdout: "",
                         stderr: "",
@@ -437,6 +445,11 @@ test("normal admission rejects unsupported input before resolution, scopes owner
   const f = await fixture();
   for (const change of [
     { goldenId: randomUUID() },
+    { init: ["echo missing repository config"] },
+    {
+      repos: [{ url: "https://github.com/example/project.git", branch: "main", dir: "project" }],
+      init: ["export APP_TOKEN=unsafe"],
+    },
     { env: { TOKEN: "private" } },
     { harness: "unknown" },
     { visibility: "org" },
@@ -770,9 +783,13 @@ test.each(["claude", "opencode"] as const)("normal Docker launch selects and boo
   );
 });
 
-for (const checkoutExitCode of [0, 1])
-  test(`Docker checkout exit ${checkoutExitCode} gates its first prompt and scopes GitHub access`, async () => {
-    const f = await fixture({ checkoutExitCode });
+for (const [checkoutExitCode, initExitCode] of [
+  [0, 0],
+  [1, 0],
+  [0, 1],
+] as const)
+  test(`Docker checkout exit ${checkoutExitCode} and init exit ${initExitCode} gate its first prompt and scope GitHub access`, async () => {
+    const f = await fixture({ checkoutExitCode, initExitCode });
     await db.query(
       `insert into public.github_connections(user_id,github_id,login,name,refresh_token_enc,access_token_enc,access_expires_at)
     values($1,123,'owner','Owner',$2,$3,now()+interval '1 hour')`,
@@ -782,6 +799,7 @@ for (const checkoutExitCode of [0, 1])
     const body = {
       ...f.body,
       skills: ["catalog/repository@1.0.0"],
+      init: ["printf '%s' 'literal;not-shell-interpolation' > /home/user/init-proof"],
       connections: [remote.id],
       repos: [{ url: "https://github.com/example/project.git", branch: "feature/work", dir: "project" }],
     };
@@ -790,12 +808,20 @@ for (const checkoutExitCode of [0, 1])
       expect((f.native as { op: string }[]).map((c) => c.op)).toEqual(["health", "configureGitHub", "exec"]);
       return;
     }
+    if (initExitCode) {
+      await rejected(f.service().launch(f.caller, body), "sandbox_not_ready");
+      expect(
+        (f.native as { op: string }[]).filter((command) => command.op !== "health").map((command) => command.op),
+      ).toEqual(["configureGitHub", "exec", "workspaceExec"]);
+      return;
+    }
     const launched = await f.service().launch(f.caller, body);
     expect(launched.github).toMatchObject({ status: "connected", login: "owner" });
     const native = f.native as { op: string; input?: { command?: string } }[];
     expect(native.filter((c) => c.op !== "health").map((c) => c.op)).toEqual([
       "configureGitHub",
       "exec",
+      "workspaceExec",
       "installSkills",
       "configureMcp",
       "prompt",
@@ -803,6 +829,9 @@ for (const checkoutExitCode of [0, 1])
     expect(launched.sandbox.skills?.map((receipt) => receipt.reference)).toEqual(["catalog/repository@1.0.0"]);
     expect(native[2]?.input?.command).toContain("--branch 'feature/work'");
     expect(native[2]?.input?.command).toContain("'/home/user/project'");
+    expect(native.find((command) => command.op === "workspaceExec")).toMatchObject({
+      input: { phase: "init", index: 0, attempt: 0, cwd: "/home/user", command: body.init[0] },
+    });
     expect(JSON.stringify(native)).not.toContain("offline-github-token");
     expect(JSON.stringify(f.jobs)).not.toContain("offline-github-token");
     expect(launched.promptId).toBe(f.receipt.promptId);
@@ -813,6 +842,7 @@ for (const checkoutExitCode of [0, 1])
       f.service().launch(f.caller, { ...body, repos: [{ ...body.repos[0], branch: "other" }] }),
       "conflict",
     );
+    await rejected(f.service().launch(f.caller, { ...body, init: ["printf changed"] }), "conflict");
     const before = f.native.length;
     const fresh = { ...body, requestId: randomUUID() };
     for (const repos of [

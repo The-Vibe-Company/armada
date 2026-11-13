@@ -8,6 +8,7 @@ import {
   type GoldenRepo,
   HARNESSES,
   type Harness,
+  initCommand,
   type LaunchCredentialResolver,
   normalizeGitHubGoldenConfig,
   ProviderError,
@@ -39,6 +40,7 @@ import type { RuntimeMcp } from "./runtime-mcp.ts";
 
 type Request = {
   repos?: GoldenRepo[];
+  init?: string[];
   org: string;
   provider: "docker";
   harness: Harness;
@@ -143,6 +145,7 @@ function normalize(body: Record<string, unknown>): Request {
       (field) =>
         ![
           "repos",
+          "init",
           "org",
           "provider",
           "hostId",
@@ -205,9 +208,11 @@ function normalize(body: Record<string, unknown>): Request {
     throw failure("invalid_request");
   }
   let repos: GoldenRepo[] | undefined;
-  if (body.repos !== undefined) {
+  let init: string[] | undefined;
+  if (body.repos !== undefined || body.init !== undefined) {
     try {
-      const config = parseGoldenConfig({ repos: body.repos, init: [] });
+      const config = parseGoldenConfig({ repos: body.repos, init: body.init === undefined ? [] : body.init });
+      if (body.init !== undefined) init = config.init;
       repos = normalizeGitHubGoldenConfig(config).repos.map((r) => ({
         url: `https://github.com/${r.owner}/${r.repo}.git`,
         branch: r.branch,
@@ -219,6 +224,7 @@ function normalize(body: Record<string, unknown>): Request {
   }
   return {
     ...(repos ? { repos } : {}),
+    ...(init ? { init } : {}),
     org: identifier(body.org),
     provider: "docker",
     harness: body.harness as Harness,
@@ -559,6 +565,32 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
             }
             if (response.state !== "pending") throw failure("sandbox_not_ready");
             await wait();
+          }
+        }
+        if (manifest.request.init?.length) {
+          const agent = createRuntimeAgent(
+            createRuntimeCommands(createRuntimeEnrolments(sql, key), key, {
+              now: clock.now,
+              wait: (ms) => clock.wait(ms),
+            }),
+            {
+              harness: request.harness,
+              ownerId: actor.userId,
+              sandboxId: request.requestId,
+              providerSandboxId: request.requestId,
+              cwd: "/home/user",
+              defaults: { model: request.model, reasoningEffort: request.reasoningEffort },
+            },
+          );
+          await agent.workspaceHealth(receipt.epoch);
+          for (const [index, command] of manifest.request.init.entries()) {
+            await live();
+            const result = await agent.workspaceExec(
+              { sandboxId: request.requestId, ...initCommand(command) },
+              { phase: "init", index, attempt: 0 },
+              receipt.epoch,
+            );
+            if (result.detached || result.exitCode !== 0 || result.timedOut) throw failure("sandbox_not_ready");
           }
         }
         const selections = manifest.preparation;

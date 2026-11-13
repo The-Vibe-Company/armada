@@ -3,6 +3,7 @@ import {
   DOCKER_DEFAULT_IMAGE,
   type DockerLaunchRequest,
   type DockerLaunchResult,
+  type GoldenConfig,
   GoldenError,
   HARNESSES,
   type Harness,
@@ -17,9 +18,15 @@ import { parseTtl } from "./operations.ts";
 
 const uuid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
 /** API-only plain-image launch. No golden, provider credential or database dependency. */
-export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, auth: AuthIo): Promise<number> {
+export async function launchDocker(
+  args: Args,
+  io: Pick<AuthIo, "out" | "err">,
+  auth: AuthIo,
+  config?: GoldenConfig,
+): Promise<number> {
   const allowed = new Set([
     "--repo",
+    "--config",
     "--provider",
     "--host",
     "--image",
@@ -84,7 +91,8 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
   const client = await createArmadaApiClient(auth);
   const hostId = await resolveHost(client, org, selector);
   const body: DockerLaunchRequest = {
-    ...(repos.length
+    ...(config ? { repos: config.repos, init: config.init } : {}),
+    ...(!config && repos.length
       ? {
           repos: configFromFlags(
             repos.map((repo) =>

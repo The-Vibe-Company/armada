@@ -85,7 +85,7 @@ Usage:
   armada host add [--name NAME] [--org UUID]
   armada host list [--json] [--org UUID]
   armada host revoke UUID [--org UUID]
-  armada launch [prompt] --provider docker --host UUID|NAME [--image digest-ref] --agent claude|codex|opencode --credential-id UUID --org UUID [--repo owner/repo[@branch] ...] [--request-id UUID] [--json]
+  armada launch [prompt] --provider docker --host UUID|NAME [--image digest-ref] --agent claude|codex|opencode --credential-id UUID --org UUID [--repo owner/repo[@branch] ... | --config file] [--request-id UUID] [--json]
                                            Plain-image Docker launch through the normal Armada API (Armada's default image without --image).
   armada --version                         Print the version
   armada --help                            Show this help
@@ -866,7 +866,8 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
   );
   if (single(args, "--provider") === "docker") {
     const auth = authOf(io, deps);
-    return launchDocker(args, io, { ...auth, fetch: deps.fetch ?? auth.fetch });
+    const config = single(args, "--config") !== undefined ? await readConfig(args, deps) : undefined;
+    return launchDocker(args, io, { ...auth, fetch: deps.fetch ?? auth.fetch }, config);
   }
   if (["--host", "--image", "--request-id", "--credential-version"].some((key) => single(args, key) !== undefined))
     throw new GoldenError("invalid_config", "Docker placement flags require --provider docker.");

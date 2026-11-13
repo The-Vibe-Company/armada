@@ -119,6 +119,8 @@ export const DOCKER_DEFAULT_IMAGE =
 export interface DockerLaunchRequest {
   /** GitHub checkouts, using the same single-segment directory rules as goldens. */
   repos?: import("./golden-config.ts").GoldenRepo[];
+  /** Golden-file init steps, run through shared runtime workspace preparation after checkout. */
+  init?: string[];
   org: string;
   provider: "docker";
   hostId: string;

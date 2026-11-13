@@ -201,6 +201,7 @@ def main():
     parser.add_argument("--skills", action="append", default=[], help="Exact Skillpack pin to install and verify (repeatable)")
     parser.add_argument("--skill-defaults", action="store_true", help="Require at least one receipt from existing personal/org defaults; does not modify defaults")
     parser.add_argument("--model")
+    parser.add_argument("--config", help="Versionable golden config with repos/init; expected proof file value in ARMADA_DOCKER_INIT_EXPECTED")
     parser.add_argument("--repository", help="Clone owner/repo before the first prompt and prove git log -1; implies --normal-launch")
     parser.add_argument("--branch", default="main", help="Repository branch for --repository")
     parser.add_argument("--host-id", help="Reuse an existing host registration")
@@ -235,6 +236,29 @@ def main():
         except ValueError:
             parser.error("--mcp requires a connection UUID")
     harness = "claude" if args.claude else "opencode" if args.opencode else "codex"
+    workspace_config = None
+    init_expected = os.environ.get("ARMADA_DOCKER_INIT_EXPECTED", "")
+    if args.config:
+        if args.repository or args.claude or args.opencode or args.template or args.routine:
+            parser.error("--config workspace proof requires Codex normal launch, without --repository/templates/routines")
+        try:
+            with open(args.config, "rb") as stream:
+                raw = stream.read(262145)
+            if len(raw) > 262144:
+                raise ValueError()
+            workspace_config = json.loads(raw)
+            if (not isinstance(workspace_config, dict) or set(workspace_config) != {"repos", "init"}
+                    or not isinstance(workspace_config["repos"], list) or not workspace_config["repos"]
+                    or not isinstance(workspace_config["init"], list) or not workspace_config["init"]
+                    or not isinstance(workspace_config["repos"][0], dict)
+                    or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,80}", workspace_config["repos"][0].get("dir", ""))):
+                raise ValueError()
+        except (OSError, ValueError, TypeError):
+            parser.error("--config requires a bounded golden JSON file with repos, init and an explicit first repo dir")
+        if not init_expected:
+            parser.error("Set nonempty ARMADA_DOCKER_INIT_EXPECTED for the init proof file")
+        args.normal_launch = True
+    repository_required = bool(args.repository or workspace_config)
     if args.exec or args.steer or args.interrupt:
         args.normal_launch = True
     if args.cost or args.claude or args.opencode:
@@ -344,6 +368,12 @@ def main():
         launch["repos"] = [{"url": "https://github.com/" + args.repository + ".git",
                             "branch": args.branch, "dir": args.repository.split("/")[1]}]
         initial_task = first + f"Run git -C {shlex.quote(directory)} log -1 --format=%H using your command tool. Then reply with exactly DOCKER_OK."
+    init_task = ""
+    if workspace_config:
+        launch.update(workspace_config)
+        directory = "/home/user/" + workspace_config["repos"][0]["dir"]
+        init_task = "Run cat /home/user/.armada-environment-proof using your command tool. "
+        initial_task = first + f"Run git -C {shlex.quote(directory)} log -1 --format=%H using your command tool. " + init_task + "Then reply with exactly DOCKER_OK."
     cleanup_needed = True
     try:
         launch_receipt = None
@@ -416,6 +446,7 @@ def main():
         def turn(text, expected_answer, conversation=None, receipt=None, require_mcp=False):
             nonlocal cursor
             if receipt is None:
+                text = init_task + text
                 prompt_id = str(uuid.uuid4())
                 print("PROMPT_REQUEST_ID=" + prompt_id, flush=True)
                 body = {"sandboxId": sandbox_id, "requestId": prompt_id, "text": text}
@@ -433,7 +464,10 @@ def main():
             deadline = time.monotonic() + args.timeout
             answer, finished, used_mcp = False, False, False
             matching_mcp_calls = set()
-            repository_proven = not (args.repository and receipt is launch_receipt)
+            repository_proven = not (repository_required and receipt is launch_receipt)
+            init_proven = workspace_config is None
+            init_steps = set()
+            required_steps = set(range(len(workspace_config["init"]))) if workspace_config and receipt is launch_receipt else set()
             while True:
                 if args.normal_controls:
                     page = api("logs/read", {"id": sandbox_id, **({"cursor": cursor} if cursor else {})}, normal=True)
@@ -441,7 +475,7 @@ def main():
                     if summary.get("provider") != "docker" or summary.get("golden") is not None:
                         raise RuntimeError("Normal Docker status did not match its contract")
                     page["usage"] = summary.get("usage")
-                    if args.repository and page.get("source") != "armada-runtime":
+                    if repository_required and page.get("source") != "armada-runtime":
                         raise RuntimeError("Repository proof requires the archived Armada runtime journal")
                 else:
                     page = api("sandboxes/journal", {"sandboxId": sandbox_id, "cursor": cursor})
@@ -451,10 +485,22 @@ def main():
                     if require_mcp and event.get("promptId") == native_prompt:
                         used_mcp = successful_mcp_tool(event.get("tools", []), matching_mcp_calls,
                                                        harness, args.mcp, args.mcp_tool) or used_mcp
+                    if workspace_config and receipt is launch_receipt and event.get("kind") == "other" and event.get("type") == "armada/workspaceStep":
+                        step = event.get("data") or {}
+                        if step.get("phase") == "init" and step.get("status") == "finished":
+                            init_steps.add(step.get("index"))
                     if event.get("promptId") != native_prompt:
                         continue
                     if event.get("kind") == "message" and expected_answer in event.get("text", ""):
                         answer = True
+                    if workspace_config and event.get("kind") == "message":
+                        for tool in event.get("tools", []):
+                            command = (tool.get("input") or {}).get("command", "")
+                            result = tool.get("result") or {}
+                            if (tool.get("name") == "commandExecution" and isinstance(command, str)
+                                    and "cat" in command and "/home/user/.armada-environment-proof" in command
+                                    and result.get("isError") is False and result.get("output") == init_expected):
+                                init_proven = True
                     if not repository_proven and event.get("kind") == "message":
                         for tool in event.get("tools", []):
                             command = (tool.get("input") or {}).get("command", "")
@@ -472,7 +518,7 @@ def main():
                 usage = next((t for t in turns if t.get("promptId") == native_prompt
                               and isinstance(t.get("inputTokens"), int)
                               and isinstance(t.get("outputTokens"), int)), None)
-                if answer and finished and usage and repository_proven and (not require_mcp or used_mcp):
+                if answer and finished and usage and repository_proven and init_proven and required_steps.issubset(init_steps) and (not require_mcp or used_mcp):
                     if args.cost:
                         check_cost(page["usage"], native_prompt)
                     print(json.dumps({"answer": expected_answer, "promptId": native_prompt,
@@ -480,6 +526,8 @@ def main():
                                       "inputTokens": usage["inputTokens"], "outputTokens": usage["outputTokens"]}),
                           flush=True)
                     return receipt["conversationId"]
+                if finished and (not init_proven or not required_steps.issubset(init_steps)) and not page["hasMore"]:
+                    raise RuntimeError("Init proof missing: all successful workspace steps and exact proof file output required")
                 if finished and not repository_proven and not page["hasMore"]:
                     raise RuntimeError("Repository proof missing: successful git log -1 command result required")
                 if time.monotonic() >= deadline:

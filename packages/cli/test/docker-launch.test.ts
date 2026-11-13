@@ -23,7 +23,7 @@ const args = [
   "--request-id",
   requestId,
 ];
-async function capture(argv: string[], fetcher: (request: Request) => Promise<Response>) {
+async function capture(argv: string[], fetcher: (request: Request) => Promise<Response>, config?: unknown) {
   let out = "",
     err = "";
   const code = await run(
@@ -37,6 +37,7 @@ async function capture(argv: string[], fetcher: (request: Request) => Promise<Re
       },
     },
     {
+      ...(config === undefined ? {} : { readFile: async () => JSON.stringify(config) }),
       auth: {
         out: () => {},
         err: () => {},
@@ -232,4 +233,42 @@ test("Docker CLI translates repeated repository flags with golden branch and dir
       { url: "https://github.com/acme/api", branch: "main", dir: "api" },
     ],
   });
+});
+
+test("Docker consumes the same versionable golden config file without forwarding a local path", async () => {
+  const config = {
+    repos: [{ url: "https://github.com/acme/web.git", branch: "feature/work", dir: "web" }],
+    init: ["cd /home/user/web && bun install"],
+  };
+  let body: unknown;
+  const result = await capture(
+    [...args, "--config", "armada.golden.json"],
+    async (request) => {
+      body = await request.json();
+      return Response.json({
+        sandbox: { id: requestId, provider: "docker", status: "ready" },
+        golden: null,
+        runtime: { epoch: "1" },
+      });
+    },
+    config,
+  );
+  expect(result.code).toBe(0);
+  expect(body).toMatchObject(config);
+  expect(JSON.stringify(body)).not.toContain("armada.golden.json");
+  let mixedCalls = 0;
+  const mixed = await capture(
+    [...args, "--config", "armada.golden.json", "--repo", "acme/other"],
+    async () => {
+      mixedCalls++;
+      return Response.json({
+        sandbox: { id: requestId, provider: "docker", status: "ready" },
+        golden: null,
+        runtime: { epoch: "1" },
+      });
+    },
+    config,
+  );
+  expect(mixed.code).not.toBe(0);
+  expect(mixedCalls).toBe(0);
 });
