@@ -23,7 +23,7 @@ import {
   updateVariable,
 } from "@/app/actions/variables";
 import { SubmitButton } from "@/components/action-form";
-import { ChoiceCard } from "@/components/connections";
+import { ChoiceCard, ResultLine } from "@/components/connections";
 import { CopyButton } from "@/components/copy-button";
 import { CreateDialog } from "@/components/create-dialog";
 import { CreatedAt } from "@/components/created-at";
@@ -59,18 +59,6 @@ import {
 } from "@/lib/variables";
 
 type Action = (previous: ActionResult | null, data: FormData) => Promise<ActionResult>;
-
-function ResultLine({ result, className }: { result: ActionResult | null; className?: string }) {
-  if (!result) return null;
-  return (
-    <p
-      role={result.ok ? "status" : "alert"}
-      className={cn("text-sm", result.ok ? "text-success" : "text-destructive", className)}
-    >
-      {result.ok ? result.message : result.error}
-    </p>
-  );
-}
 
 /** A variable's or a secret's mark on its row: braces for readable configuration, a lock for a write-only value. */
 export function VaultMark({ kind }: { kind: VaultKind }) {
