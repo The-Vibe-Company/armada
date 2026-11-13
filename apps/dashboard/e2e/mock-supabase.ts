@@ -1744,6 +1744,7 @@ const ISSUER = `http://127.0.0.1:${PORT}`;
 /** Pending browser sign-ins by state: the API, not the URL, knows which user and connection a state is for. */
 let failSandboxConnections = false;
 let failConnectionList = false;
+let mcpReadFailures: Partial<Record<"list" | "catalog" | "status", string>> = {};
 const pendingOAuth = new Map<string, { connection: string; user: string; code: string | null }>();
 
 function visibleConnections(orgId: string, userId: string): Row[] {
@@ -1958,6 +1959,10 @@ function mcpControl(operation: string, body: Row, userId: string | null): Respon
   if (operation === "oauth/callback") return oauthCallback(body, userId);
   const org = String(body.org ?? "");
   if (!isMember(org, userId)) return controlFail(403, "forbidden", "You are not a member of that organization.");
+  if (operation === "list" || operation === "catalog" || operation === "status") {
+    const failure = mcpReadFailures[operation];
+    if (failure) return controlFail(503, "unavailable", failure);
+  }
   if (operation === "list") {
     if (failConnectionList) return controlFail(503, "unavailable", "The registry is unavailable.");
     return json({ connections: visibleConnections(org, userId).map(connectionDto) });
@@ -2685,6 +2690,7 @@ function control(url: URL, body: Row): Response {
     githubCliFlows.clear();
     failSandboxConnections = false;
     failConnectionList = false;
+    mcpReadFailures = {};
     failCatalog = false;
     failConnect = false;
     if (body.missingUsage) {
@@ -3068,6 +3074,14 @@ function control(url: URL, body: Row): Response {
   }
   if (url.pathname === "/__test/fail-next-tool") {
     state.failNextTool = String(body.message);
+    return json({ ok: true });
+  }
+  if (url.pathname === "/__test/mcp-read-failure") {
+    const operation = body.operation;
+    if (operation !== "list" && operation !== "catalog" && operation !== "status")
+      return json({ error: "Unknown read" }, 400);
+    if (typeof body.message === "string") mcpReadFailures[operation] = body.message;
+    else delete mcpReadFailures[operation];
     return json({ ok: true });
   }
   if (url.pathname === "/__test/fail-connection-list") {
