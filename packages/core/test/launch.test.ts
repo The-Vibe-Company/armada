@@ -205,7 +205,9 @@ describe("launch", () => {
     let starts = 0;
     await expect(
       launchSandbox(
-        world.provider,
+        failure === "harness"
+          ? { ...world.provider, harnesses: [...world.provider.harnesses, "opencode"] }
+          : world.provider,
         world.stores,
         owner,
         {
@@ -232,6 +234,9 @@ describe("launch", () => {
         },
       ),
     ).rejects.toMatchObject({
+      ...(failure === "harness"
+        ? { message: "The experimental runtime supports ordinary Boat Codex or Claude workers only." }
+        : {}),
       code: ["harness", "mcp", "skills", "parent"].includes(failure)
         ? "invalid_request"
         : failure === "prompt"
