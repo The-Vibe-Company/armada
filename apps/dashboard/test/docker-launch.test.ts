@@ -18,7 +18,6 @@ const ORG = "00000000-0000-4000-8000-000000000010";
 const HOST = "70bde9cd-36c9-40af-b15e-65b2f9d3c2a2";
 const ACCOUNT = "11111111-1111-4111-8111-111111111111";
 const REQUEST = "22222222-2222-4222-8222-222222222222";
-const DIGEST = `buildpack-deps@sha256:${"5".repeat(64)}`;
 
 const capabilities = (on: string[]) => Object.fromEntries(DOCKER_CAPABILITIES.map((name) => [name, on.includes(name)]));
 const options = (docker: Record<string, unknown> = {}) => ({
@@ -55,7 +54,7 @@ test("the Docker launch option is read strictly from launch/options; anything un
   });
 });
 
-test("a host takes a launch only when the server launches an agent from an image on Docker and the host is online", () => {
+test("a host takes a launch only when the server launches an agent in the official Armada environment on Docker and the host is online", () => {
   const ready = dockerLaunchOption(options());
   expect(dockerLaunchBlocker(ready, true, { state: "online" })).toBeNull();
   expect(dockerLaunchBlocker(null, true, { state: "online" })).toContain("does not launch on Docker");
@@ -70,7 +69,7 @@ test("a host takes a launch only when the server launches an agent from an image
     dockerLaunchBlocker(dockerLaunchOption(options({ harnesses: ["claude"] })), true, { state: "online" }),
   ).toBeNull();
   expect(dockerLaunchBlocker(dockerLaunchOption(options({ harnesses: [] })), true, { state: "online" })).toContain(
-    "an agent from an image",
+    "an agent in the official Armada environment",
   );
   expect(dockerLaunchBlocker(ready, true, { state: "offline" })).toBe("The host must be online to launch on it.");
   expect(dockerLaunchBlocker(ready, true, { state: "revoked" })).toBe("This host is revoked.");
@@ -102,12 +101,11 @@ test("the dialog offers the agents the server launches on Docker, Codex chosen f
   expect(preferredHarness(["claude"], "codex", () => false)).toBe("claude");
 });
 
-test("the launch body is the normal route's Docker shape: Codex, private, the form key as requestId", () => {
+test("the launch body omits image overrides: the chosen agent, private, the form key as requestId", () => {
   expect(
     dockerLaunchBody({
       org: ORG,
       hostId: HOST,
-      image: DIGEST,
       harness: "codex",
       credentialId: ACCOUNT,
       requestId: REQUEST,
@@ -115,11 +113,10 @@ test("the launch body is the normal route's Docker shape: Codex, private, the fo
       reasoningEffort: "medium",
       prompt: "Say Hello",
     }),
-  ).toEqual({
+  ).toStrictEqual({
     org: ORG,
     provider: "docker",
     hostId: HOST,
-    image: DIGEST,
     harness: "codex",
     credentialId: ACCOUNT,
     requestId: REQUEST,
@@ -132,7 +129,6 @@ test("the launch body is the normal route's Docker shape: Codex, private, the fo
     dockerLaunchBody({
       org: ORG,
       hostId: HOST,
-      image: DIGEST,
       harness: "codex",
       credentialId: ACCOUNT,
       requestId: "x",
@@ -144,7 +140,6 @@ test("the launch body is the normal route's Docker shape: Codex, private, the fo
     dockerLaunchBody({
       org: ORG,
       hostId: HOST,
-      image: DIGEST,
       harness: "claude",
       credentialId: ACCOUNT,
       requestId: REQUEST,
@@ -206,6 +201,7 @@ test("the server's own launch options drive the Docker sandbox page and the laun
 });
 
 test("a Docker sandbox's image reads as a name, with the full reference kept for its tooltip", () => {
+  const DIGEST = `buildpack-deps@sha256:${"b".repeat(64)}`;
   expect(dockerImageLabel(DOCKER_DEFAULT_IMAGE)).toEqual({ label: "Armada default", detail: DOCKER_DEFAULT_IMAGE });
   expect(dockerImageLabel(DIGEST)).toEqual({ label: "buildpack-deps", detail: DIGEST });
   expect(dockerImageLabel(`sha256:${"a".repeat(64)}`)).toMatchObject({ label: `Local image ${"a".repeat(12)}` });

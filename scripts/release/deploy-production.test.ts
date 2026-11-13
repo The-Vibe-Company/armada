@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 const script = resolve(import.meta.dir, "deploy-production.sh");
 
 // Exercise the real shell entrypoint; fake only external provider executables.
-function deploy(failure = "", missing = "") {
+function deploy(failure = "", missing = "", pinVersion?: string) {
   const dir = mkdtempSync(join(tmpdir(), "release-deploy-"));
   try {
     const bin = join(dir, "bin");
@@ -18,9 +18,19 @@ function deploy(failure = "", missing = "") {
     };
     run(["git", "init", "--quiet"]);
     writeFileSync(join(dir, "package.json"), '{"version":"1.2.3"}');
-    run(["git", "add", "package.json"]);
+    mkdirSync(join(dir, "packages/core/src"), { recursive: true });
+    writeFileSync(join(dir, "packages/core/src/official-sandbox-image.json"), "null");
+    run(["git", "add", "package.json", "packages/core/src/official-sandbox-image.json"]);
     run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--quiet", "-m", "fixture"]);
     const sha = run(["git", "rev-parse", "HEAD"]);
+    if (pinVersion)
+      writeFileSync(
+        join(dir, "packages/core/src/official-sandbox-image.json"),
+        JSON.stringify({
+          version: pinVersion,
+          image: `ghcr.io/the-vibe-company/armada-sandbox@sha256:${"a".repeat(64)}`,
+        }),
+      );
     const log = join(dir, "calls");
     const executable = (name: string, body: string) =>
       writeFileSync(join(bin, name), `#!/bin/bash\nset -eu\n${body}\n`, { mode: 0o755 });
@@ -29,6 +39,9 @@ function deploy(failure = "", missing = "") {
       "railway",
       `echo "railway $*" >> "$CALLS"
 if [[ "$1" == up ]]; then
+  if [[ -n "$PIN_VERSION" ]]; then
+    jq -e '.version == "1.2.3" and (.image | endswith("${"a".repeat(64)}"))' packages/core/src/official-sandbox-image.json >/dev/null
+  fi
   echo '{"deploymentId":"selected"}'
 else
   # Another deployment being healthy must not let this release continue.
@@ -47,6 +60,7 @@ if [[ "$FAILURE" == health ]]; then echo '{"ok":true,"version":"0.0.0"}'; else e
       PATH: `${bin}:${process.env.PATH}`,
       CALLS: log,
       FAILURE: failure,
+      PIN_VERSION: pinVersion ?? "",
       HOME: dir,
       RELEASE_SHA: sha,
       RELEASE_VERSION: "1.2.3",
@@ -103,4 +117,13 @@ test("missing deployment configuration fails before any production mutation", ()
   expect(result.code).not.toBe(0);
   expect(result.calls).toBe("");
   expect(result.error).toContain("Missing deployment environment secret/configuration: VERCEL_TOKEN");
+});
+
+// The generated pin must survive git archive, and a foreign release must never reach a provider.
+test("deployment carries only a matching generated official-image pin into the source archive", () => {
+  expect(deploy("", "", "1.2.3").code).toBe(0);
+  const wrong = deploy("", "", "0.0.1");
+  expect(wrong.code).not.toBe(0);
+  expect(wrong.calls).toBe("");
+  expect(wrong.error).toContain("Official sandbox image pin does not match");
 });

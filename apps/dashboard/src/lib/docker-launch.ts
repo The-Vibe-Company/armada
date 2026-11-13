@@ -88,7 +88,7 @@ export function dockerLaunchOption(payload: unknown): DockerLaunchOption | null 
 
 /**
  * Whether this host takes a launch now, or why not. The launch needs the server to say it launches on Docker
- * (`capabilities.launch`, from a plain image, with at least one agent) and the host list's `placement`; the host itself must be
+ * (`capabilities.launch`, in the official Armada environment, with at least one agent) and the host list's `placement`; the host itself must be
  * online. The server checks all of it again.
  */
 export function dockerLaunchBlocker(
@@ -102,7 +102,7 @@ export function dockerLaunchBlocker(
     return option.unsupportedReasons.launch ?? "This Armada server does not launch on Docker hosts yet.";
   if (!placement) return "This Armada server does not launch on Docker hosts yet.";
   if (!option.launchSources.includes("image") || option.harnesses.length === 0)
-    return "This Armada server does not launch an agent from an image on Docker hosts.";
+    return "This Armada server does not launch an agent in the official Armada environment on Docker hosts.";
   if (host.state !== "online") return "The host must be online to launch on it.";
   return null;
 }
@@ -153,7 +153,6 @@ export function preferredHarness(
 export type DockerLaunchArgs = {
   org: string;
   hostId: string;
-  image: string;
   harness: Harness;
   credentialId: string;
   requestId: string;
@@ -162,7 +161,7 @@ export type DockerLaunchArgs = {
   prompt?: string;
 };
 
-/** The `sandbox/launch` body for a Docker host: an agent from a plain image, private, nothing a golden would carry. */
+/** The `sandbox/launch` body for a Docker host: an agent in the official Armada environment, private, with no image override. */
 export function dockerLaunchBody(args: DockerLaunchArgs): DockerLaunchRequest {
   if (![args.org, args.hostId, args.credentialId, args.requestId].every(isUuid))
     throw new Error("Docker launch identifiers must be UUIDs.");
@@ -170,7 +169,6 @@ export function dockerLaunchBody(args: DockerLaunchArgs): DockerLaunchRequest {
     org: args.org,
     provider: "docker",
     hostId: args.hostId,
-    image: args.image,
     harness: args.harness,
     credentialId: args.credentialId,
     requestId: args.requestId,
