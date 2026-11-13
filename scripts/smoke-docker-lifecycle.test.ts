@@ -76,8 +76,6 @@ class Opener:
                 assert "git -C /home/user/project log -1" in body["prompt"]
             marker = body["prompt"].split("marker for my next message: ")[1].split(".")[0] if lifecycle else None
             value = {"sandbox": {"id": sandbox, "provider": "docker", "image": "sha256:" + "d" * 64 if mode.startswith("snapshot") else "image@sha256:" + "a" * 64, "snapshotId": snapshot_id}, "promptId": prompt, "conversationId": conversation}
-        elif path == "github/runtime-status":
-            value = {"configured": True, "credentialRequests": 1}
         elif path == "sandbox/send":
             assert lifecycle and body["conversation_id"] == conversation
             assert marker not in body["prompt"]

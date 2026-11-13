@@ -33,7 +33,7 @@ introduced. The shared core binding/parser is also used by launch templates.
 
 ## Coordinator's single real-host check
 
-On host `70bde9cd-36c9-40af-b15e-65b2f9d3c2a2`, select an existing authorized
+On host `1bd0db41-6429-430b-99e2-06d60ddf1aa3`, select an existing authorized
 readable variable/version. Set its non-secret expected value in
 `ARMADA_DOCKER_VARIABLE_EXPECTED` privately in the coordinator environment;
 `ARMADA_TOKEN` also stays environment-only:
@@ -41,7 +41,7 @@ readable variable/version. Set its non-secret expected value in
 ```sh
 python3 scripts/smoke-docker-lifecycle.py \
   --server "$ARMADA_URL" --org "$ARMADA_ORG" --credential "$ARMADA_CREDENTIAL_ID" \
-  --ssh "$ARMADA_DOCKER_SSH" --host-id 70bde9cd-36c9-40af-b15e-65b2f9d3c2a2 \
+  --ssh "$ARMADA_DOCKER_SSH" --host-id 1bd0db41-6429-430b-99e2-06d60ddf1aa3 \
   --image "$ARMADA_DOCKER_IMAGE" --repository The-Vibe-Company/armada --branch main \
   --github --normal-lifecycle \
   --variable "APP_REGION:$ARMADA_DOCKER_VARIABLE_ID:$ARMADA_DOCKER_VARIABLE_VERSION"

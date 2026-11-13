@@ -574,13 +574,17 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
                 request.requestId,
                 resolved.usagePricing,
               );
-            if (request.variables?.length)
-              manifest.variables = await resolveLaunchVariables(scoped(tx), actor, request.variables);
-            if (request.secrets?.length)
-              validateReadableVariables({
-                ...manifest.variables,
-                ...(await resolveLaunchSecrets(scoped(tx), actor, request.secrets, key)),
-              });
+            try {
+              if (request.variables?.length)
+                manifest.variables = await resolveLaunchVariables(scoped(tx), actor, request.variables);
+              if (request.secrets?.length)
+                validateReadableVariables({
+                  ...manifest.variables,
+                  ...(await resolveLaunchSecrets(scoped(tx), actor, request.secrets, key)),
+                });
+            } catch {
+              throw failure("unavailable");
+            }
             const encrypted = await encryptSecret(JSON.stringify(manifest), key);
             const connections = manifest.preparation?.connections ?? [];
             const port = createSqlMcpLaunchPort(scoped(tx), createSqlMcpRegistry(scoped(tx), key));

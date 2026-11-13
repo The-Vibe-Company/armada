@@ -92,7 +92,7 @@ snapshot remains usable afterward. It never treats assistant claims as proof.
 The current tool matcher is Codex-only. Real-host acceptance is coordinator-owned;
 this procedure is not evidence it passed.
 
-Migration `20261113180001_docker_snapshots.sql` must be applied through normal
+Migration `20261113190000_docker_snapshots.sql` must be applied through normal
 operator procedures before matching server/daemon/clients. The normal release
 ships binaries/artifacts; no manual publication step. No remote migrations,
 deployment or host operations are performed by workers.

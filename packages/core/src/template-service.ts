@@ -732,8 +732,6 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
                   harness: def.harness,
                   model: def.model,
                   reasoningEffort: def.reasoningEffort,
-                  variables: def.variables,
-                  secrets: def.secrets ?? [],
                   connections: def.connections,
                   skills: m.resolvedSkills ?? def.skills,
                   skipSkillDefaults: true,

@@ -28,7 +28,7 @@ enabled. This is not a Boat/Modal alias: build the same config separately for ea
 provider or host installation.
 
 Migration `20261113170001_docker_local_image_ids.sql` introduces local image IDs;
-`20261113180001_docker_snapshots.sql` adds their scoped catalog/publication.
+`20261113190000_docker_snapshots.sql` adds their scoped catalog/publication.
 Apply through operator procedures before matching binaries. Update old daemons
 before sending build jobs. No compatibility fallback or remote deployment is
 performed by a worker.

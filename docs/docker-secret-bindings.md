@@ -38,7 +38,7 @@ No new provider/harness/status enum values or driver-specific delivery path.
 ## Coordinator's single real-host check
 
 Use a dedicated existing application-secret canary/version authorized to the
-launch owner on host `70bde9cd-36c9-40af-b15e-65b2f9d3c2a2`. Set
+launch owner on host `1bd0db41-6429-430b-99e2-06d60ddf1aa3`. Set
 `ARMADA_DOCKER_SECRET_SHA256` to its UTF-8 value's lowercase SHA256 digest outside
 the model prompt; never provide the raw value to this script. Keep ARMADA_TOKEN
 in the environment. With existing server/org/account/SSH/digest-image inputs:
@@ -46,7 +46,7 @@ in the environment. With existing server/org/account/SSH/digest-image inputs:
 ```sh
 python3 scripts/smoke-docker-lifecycle.py \
   --server "$ARMADA_URL" --org "$ARMADA_ORG" --credential "$ARMADA_CREDENTIAL_ID" \
-  --ssh "$ARMADA_DOCKER_SSH" --host-id 70bde9cd-36c9-40af-b15e-65b2f9d3c2a2 \
+  --ssh "$ARMADA_DOCKER_SSH" --host-id 1bd0db41-6429-430b-99e2-06d60ddf1aa3 \
   --image "$ARMADA_DOCKER_IMAGE" --repository The-Vibe-Company/armada --branch main \
   --github --normal-lifecycle \
   --secret "APP_TOKEN:$ARMADA_DOCKER_SECRET_ID:$ARMADA_DOCKER_SECRET_VERSION"

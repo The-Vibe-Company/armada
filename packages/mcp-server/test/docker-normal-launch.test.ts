@@ -1344,6 +1344,19 @@ test("Docker honors frozen launch pins without re-merging later skill defaults",
 test("Docker templates freeze admission pins, use normal launch, and replay one durable allocation", async () => {
   const f = await fixture();
   const templates = createTemplateService(sql, key);
+  const variable = await createApplicationVault(sql, undefined).command(f.caller, "variable", "set", {
+    org: f.actor.orgId,
+    scope: "personal",
+    name: "APP_REGION",
+    value: "offline-template-region",
+  });
+  const variableId = (variable.item as { id: string }).id;
+  const secretId = randomUUID(),
+    canary = "offline-template-secret";
+  await db.query(
+    "insert into public.application_secrets(id,org_id,owner_id,scope,name,value_enc) values($1,$2,$3,'personal','APP_TOKEN',$4)",
+    [secretId, f.actor.orgId, f.actor.userId, await encryptSecret(canary, key)],
+  );
   const stores = createSqlData(sql)(f.caller);
   await db.query("insert into public.personal_skill_defaults(user_id,skills) values($1,$2::text::jsonb)", [
     f.actor.userId,
@@ -1358,6 +1371,8 @@ test("Docker templates freeze admission pins, use normal launch, and replay one 
       hostId: f.hostId,
       harness: "codex",
       modelAccount: { id: f.body.credentialId, version: 2 },
+      variables: [{ key: "APP_REGION", variableId, version: 1 }],
+      secrets: [{ key: "APP_TOKEN", secretId, version: 1 }],
     },
   });
   const id = (created.item as { id: string }).id;
@@ -1403,6 +1418,13 @@ test("Docker templates freeze admission pins, use normal launch, and replay one 
     (await db.query("select golden_operation_fence_id from template_launch_requests where id=$1", [result.requestId]))
       .rows,
   ).toEqual([{ golden_operation_fence_id: null }]);
+  expect(f.native).toContainEqual(
+    expect.objectContaining({
+      op: "configureReadableVariables",
+      variables: { APP_REGION: "offline-template-region", APP_TOKEN: canary },
+    }),
+  );
+  expect(JSON.stringify(result)).not.toContain(canary);
   expect(allocations).toBe(1);
   expect(starts).toBeGreaterThan(0);
   expect(await counts(f)).toMatchObject({ sandboxes: 1, claims: 1, jobs: 2 });
