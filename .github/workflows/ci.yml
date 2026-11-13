@@ -4,8 +4,7 @@ on:
   pull_request:
   merge_group:
     types: [checks_requested]
-  push:
-    branches: [main]
+  # No push:main run: the merge queue already tested that exact commit.
   workflow_dispatch:
 
 permissions:
