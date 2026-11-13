@@ -35,6 +35,8 @@ export const PROVIDER_LIMITS: Readonly<Record<SandboxProviderId, ProviderLimits>
  * and must never dispose of it. A fresh fork belongs to that restore attempt.
  */
 export interface HostCapabilities {
+  /** Re-resolve pinned management authority inside the golden build admission transaction. */
+  readonly revalidateGoldenManagementAtAdmission: boolean;
   readonly goldenRestore: "fresh-fork" | "shared-source";
   /**
    * Retain the source until a snapshot attempt settles, including explicit save
@@ -64,6 +66,7 @@ export interface HostCapabilities {
 
 export const HOST_CAPABILITIES: Readonly<Record<SandboxProviderId, HostCapabilities>> = {
   boat: {
+    revalidateGoldenManagementAtAdmission: false,
     goldenRestore: "fresh-fork",
     retainSourceOnSnapshotUncertainty: false,
     waitForPendingStop: true,
@@ -74,6 +77,7 @@ export const HOST_CAPABILITIES: Readonly<Record<SandboxProviderId, HostCapabilit
     snapshotManagementAuthority: false,
   },
   modal: {
+    revalidateGoldenManagementAtAdmission: true,
     goldenRestore: "shared-source",
     retainSourceOnSnapshotUncertainty: true,
     waitForPendingStop: false,

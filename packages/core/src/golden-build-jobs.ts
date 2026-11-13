@@ -204,8 +204,9 @@ export class GoldenBuildJobs {
       }
       // The server factory verifies the pinned management connection, never a client profile label.
       // It may read App metadata here, but must not allocate a builder before this transaction commits.
-      const verified =
-        providerId === "modal" ? await this.options.provider(currentActor, input.visibility, target) : provider;
+      const verified = HOST_CAPABILITIES[providerId].revalidateGoldenManagementAtAdmission
+        ? await this.options.provider(currentActor, input.visibility, target)
+        : provider;
       assertProviderOf(verified, providerId);
       const reservation = await reserveGoldenBuild(sql, verified, currentActor, input.existingGolden);
       if (!reservation && PROVIDER_LIMITS[providerId].defaultGoldenCapacity !== undefined)
