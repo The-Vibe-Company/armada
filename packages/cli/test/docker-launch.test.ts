@@ -95,7 +95,7 @@ test("Docker incompatible or malformed options fail before HTTP", async () => {
   for (const flags of [
     ["--agent", "unknown"],
     ["--skill", "foo@1"],
-    ["--repo", "acme/web"],
+    ["--repo", "https://user:secret@example.test/web"],
     ["--connections", "a"],
     ["--credential-version", "0"],
     ["--host", "not-a-host"],
@@ -121,4 +121,26 @@ test("unknown Docker launch outcome retains a stable request UUID for exact retr
     expect(result.err).toContain(`--request-id ${requestId}`);
     expect(result.err).toContain("do not create a replacement");
   }
+});
+
+test("Docker CLI translates repeated repository flags with golden branch and directory rules", async () => {
+  let body: unknown;
+  const result = await capture(
+    [...args, "--repo", "acme/web@feature/work", "--repo", "acme/api@main"],
+    async (request) => {
+      body = await request.json();
+      return Response.json({
+        sandbox: { id: requestId, provider: "docker", providerSandboxId: "docker-logical", status: "ready" },
+        golden: null,
+        runtime: { epoch: "1" },
+      });
+    },
+  );
+  expect(result.code).toBe(0);
+  expect(body).toMatchObject({
+    repos: [
+      { url: "https://github.com/acme/web", branch: "feature/work", dir: "web" },
+      { url: "https://github.com/acme/api", branch: "main", dir: "api" },
+    ],
+  });
 });

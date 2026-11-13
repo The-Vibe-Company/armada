@@ -391,6 +391,7 @@ export async function startServer(
     env.ARMADA_DOCKER_HOSTS === "1"
       ? createDockerNormalLaunch(sql, config.encryptionKey, {
           enabled: dockerLaunchEnabled,
+          ...(runtimeGitHub ? { github: runtimeGitHub } : {}),
           credentials: dockerCredentials,
           ...(dockerBootstrap ? { bootstrap: dockerBootstrap } : {}),
         })

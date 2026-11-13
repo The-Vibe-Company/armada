@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 
 // Execute the real coordinator helper offline: its new mode must prove the normal
 // route, not accidentally succeed via the already accepted private preview.
-test.each(["launch", "resume", "cost", "bad-cost", "claude", "opencode"])(
+test.each(["launch", "resume", "cost", "bad-cost", "claude", "opencode", "repository", "repository-no-proof"])(
   "normal Docker smoke uses normal routes (%s)",
   (mode) => {
     const result = spawnSync(
@@ -17,7 +17,7 @@ calls, ssh = [], []
 sandbox, prompt, conversation = None, "native-prompt", "native-conversation"
 marker, answer, sends, stops = None, "DOCKER_OK", 0, 0
 mode = sys.argv[1]
-lifecycle = mode != "launch"
+lifecycle = mode not in ("launch", "repository", "repository-no-proof")
 prices = []
 class Opener:
     def open(self, request, timeout):
@@ -36,6 +36,9 @@ class Opener:
             assert body["provider"] == "docker" and body["harness"] == (mode if mode in ("claude", "opencode") else "codex")
             assert body["visibility"] == "private" and "DOCKER_OK" in body["prompt"]
             assert "credentialVersion" not in body
+            if mode.startswith("repository"):
+                assert body["repos"] == [{"url": "https://github.com/example/project.git", "branch": "feature/work", "dir": "project"}]
+                assert "git -C /home/user/project log -1" in body["prompt"]
             marker = body["prompt"].split("marker for my next message: ")[1].split(".")[0] if lifecycle else None
             value = {"sandbox": {"id": sandbox, "provider": "docker"}, "promptId": prompt, "conversationId": conversation}
         elif path == "sandbox/send":
@@ -50,8 +53,10 @@ class Opener:
         elif path == "sandbox/list":
             value = {"sandboxes": [{"id": sandbox, "provider": "docker"}]}
         elif path == "logs/read":
-            value = {"cursor": "next", "hasMore": False, "events": [
-                {"kind": "message", "promptId": prompt, "text": answer},
+            value = {"source": "armada-runtime", "cursor": "next", "hasMore": False, "events": [
+                {"kind": "message", "promptId": prompt, "text": answer, "tools":
+                 [{"name": "commandExecution", "input": {"command": "git -C /home/user/project log -1 --format=%H"},
+                   "result": {"isError": False, "output": "a" * 40}}] if mode == "repository" else []},
                 {"kind": "prompt", "promptId": prompt, "status": "finished"}]}
         elif path == "sandbox/detail":
             if not any(t["promptId"] == prompt for t in prices):
@@ -74,6 +79,8 @@ def command(argv, **kwargs):
 argv = ["scripts/smoke-docker-lifecycle.py", "--server", "https://staging.example", "--org", "org",
         "--credential", "account", "--ssh", "host-alias", "--image", "image@sha256:digest",
         "--host-id", "retained-host", "--start-host", "--normal-launch"]
+if mode.startswith("repository"):
+    argv += ["--repository", "example/project", "--branch", "feature/work"]
 if lifecycle:
     argv.append("--normal-lifecycle")
 if mode in ("cost", "bad-cost"):
@@ -87,10 +94,10 @@ with patch.dict(os.environ, {"ARMADA_TOKEN": "offline-only"}), patch.object(sys,
     try:
         runpy.run_path(argv[0], run_name="__main__")
     except SystemExit as error:
-        assert mode == "bad-cost" and error.code == 1
+        assert mode in ("bad-cost", "repository-no-proof") and error.code == 1
         assert stops == 1
         sys.exit(0)
-    assert mode != "bad-cost", "Incorrect total was accepted"
+    assert mode not in ("bad-cost", "repository-no-proof"), "Missing proof was accepted"
 assert len(ssh) == 1 and " run --state-dir " in ssh[0][0][-1]
 assert "nohup setsid" in ssh[0][0][-1] and "daemon.lock" in ssh[0][0][-1]
 assert (not lifecycle or (sends == 2 and stops == 2))
@@ -103,7 +110,11 @@ assert "offline-only" not in output.getvalue()
       { cwd: import.meta.dir + "/..", encoding: "utf8" },
     );
     expect(result.stderr).toBe(
-      mode === "bad-cost" ? "Docker cost proof failed: expected stable priced turns and exact session total\n" : "",
+      mode === "bad-cost"
+        ? "Docker cost proof failed: expected stable priced turns and exact session total\n"
+        : mode === "repository-no-proof"
+          ? "Repository proof missing: successful git log -1 command result required\n"
+          : "",
     );
     expect(result.status).toBe(0);
   },

@@ -96,6 +96,8 @@ export interface LaunchOptionsResponse {
 
 /** Normal API/CLI contract. Discover capabilities.launch before offering this source. */
 export interface DockerLaunchRequest {
+  /** GitHub checkouts, using the same single-segment directory rules as goldens. */
+  repos?: import("./golden-config.ts").GoldenRepo[];
   org: string;
   provider: "docker";
   hostId: string;

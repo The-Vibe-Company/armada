@@ -25,6 +25,7 @@ import { launchCredentials } from "../src/launch-credentials.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
+import { createRuntimeGitHub } from "../src/runtime-github.ts";
 import { migratedDatabase } from "./migrated-database.ts";
 
 let db: Awaited<ReturnType<typeof migratedDatabase>>;
@@ -60,7 +61,9 @@ afterAll(async () => {
 
 // The real migrated boundary owns normal-launch sequencing and durable retries.
 // Existing private-lane tests own the individual host/runtime protocol matrices.
-async function fixture(options: { lifecycleGenerationAfterCreate?: number; harness?: Harness } = {}) {
+async function fixture(
+  options: { lifecycleGenerationAfterCreate?: number; harness?: Harness; checkoutExitCode?: number } = {},
+) {
   const orgId = randomUUID(),
     userId = randomUUID(),
     adminId = randomUUID(),
@@ -143,7 +146,21 @@ async function fixture(options: { lifecycleGenerationAfterCreate?: number; harne
           body: {
             version: 1,
             requestId: command.requestId,
-            result: command.op === "health" ? { ready: true, generation: session.epoch } : receipt,
+            result:
+              command.op === "health"
+                ? { ready: true, generation: session.epoch }
+                : command.op === "configureGitHub"
+                  ? { acknowledged: true }
+                  : command.op === "exec"
+                    ? {
+                        detached: false,
+                        exitCode: options.checkoutExitCode ?? 0,
+                        timedOut: false,
+                        stdout: "",
+                        stderr: "",
+                        truncated: false,
+                      }
+                    : receipt,
           },
         });
       }
@@ -163,8 +180,35 @@ async function fixture(options: { lifecycleGenerationAfterCreate?: number; harne
       return credentials.resolve(...args);
     },
   };
+  const github = createRuntimeGitHub({
+    sql,
+    key,
+    origin: "https://armada.example",
+    commands: createRuntimeCommands(authority, key, {
+      now: clock.now,
+      wait: async () => {
+        await step();
+      },
+    }),
+    github: {
+      store: createSqlVaultStore(sql),
+      encryptionKey: key,
+      app: { clientId: "offline-app", clientSecret: "offline-secret" },
+      fetch: (async (url: string | URL | Request) =>
+        String(url).includes("/repos/")
+          ? Response.json({ full_name: "example/project" })
+          : Response.json({ id: 123, login: "owner", name: "Owner" })) as typeof fetch,
+    },
+  });
   function service(target = sql, enabled = true, timeoutMs = 10_000) {
-    return createDockerNormalLaunch(target, key, { enabled, credentials: resolver, bootstrap, clock, timeoutMs });
+    return createDockerNormalLaunch(target, key, {
+      enabled,
+      credentials: resolver,
+      bootstrap,
+      clock,
+      timeoutMs,
+      github,
+    });
   }
   return {
     actor,
@@ -179,6 +223,7 @@ async function fixture(options: { lifecycleGenerationAfterCreate?: number; harne
     jobs,
     native,
     receipt,
+    github,
     service,
     step,
     setDrive(value: boolean) {
@@ -683,3 +728,60 @@ test.each(["claude", "opencode"] as const)("normal Docker launch selects and boo
     expect.objectContaining({ op: "prompt", input: expect.objectContaining({ harness }) }),
   );
 });
+
+for (const checkoutExitCode of [0, 1])
+  test(`Docker checkout exit ${checkoutExitCode} gates its first prompt and scopes GitHub access`, async () => {
+    const f = await fixture({ checkoutExitCode });
+    await db.query(
+      `insert into public.github_connections(user_id,github_id,login,name,refresh_token_enc,access_token_enc,access_expires_at)
+    values($1,123,'owner','Owner',$2,$3,now()+interval '1 hour')`,
+      [f.actor.userId, await encryptSecret("offline-refresh", key), await encryptSecret("offline-github-token", key)],
+    );
+    const body = {
+      ...f.body,
+      repos: [{ url: "https://github.com/example/project.git", branch: "feature/work", dir: "project" }],
+    };
+    if (checkoutExitCode !== 0) {
+      await rejected(f.service().launch(f.caller, body), "sandbox_not_ready");
+      expect((f.native as { op: string }[]).map((c) => c.op)).toEqual(["health", "configureGitHub", "exec"]);
+      return;
+    }
+    const launched = await f.service().launch(f.caller, body);
+    expect(launched.github).toMatchObject({ status: "connected", login: "owner" });
+    const native = f.native as { op: string; input?: { command?: string } }[];
+    expect(native.map((c) => c.op)).toEqual(["health", "configureGitHub", "exec", "prompt"]);
+    expect(native[2]?.input?.command).toContain("--branch 'feature/work'");
+    expect(native[2]?.input?.command).toContain("'/home/user/project'");
+    expect(JSON.stringify(native)).not.toContain("offline-github-token");
+    expect(JSON.stringify(f.jobs)).not.toContain("offline-github-token");
+    expect(launched.promptId).toBe(f.receipt.promptId);
+    await f.service().launch(f.caller, body);
+    expect(f.native).toHaveLength(4);
+    await rejected(
+      f.service().launch(f.caller, { ...body, repos: [{ ...body.repos[0], branch: "other" }] }),
+      "conflict",
+    );
+    const before = f.native.length;
+    const fresh = { ...body, requestId: randomUUID() };
+    for (const repos of [
+      [],
+      [{ ...body.repos[0], dir: "../escape" }],
+      [{ ...body.repos[0], branch: "--upload-pack=evil" }],
+    ]) {
+      await rejected(f.service().launch(f.caller, { ...fresh, repos }), "invalid_request");
+    }
+    expect(f.native).toHaveLength(before);
+    const capability = (f.native[1] as { configuration: { capability: string } }).configuration.capability;
+    const acquire = async (repository: string) =>
+      f.github.route(
+        new Request("https://armada.example/api/runtime/github/credentials", {
+          method: "POST",
+          headers: { authorization: `Bearer ${capability}` },
+          body: JSON.stringify({ version: 1, repository, operation: "git" }),
+        }),
+      );
+    expect((await acquire("example/project"))?.status).toBe(200);
+    expect((await acquire("example/other"))?.status).toBe(403);
+    await hosts.revoke(f.admin, f.hostId);
+    expect((await acquire("example/project"))?.status).toBe(403);
+  });
