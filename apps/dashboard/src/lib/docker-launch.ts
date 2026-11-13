@@ -5,7 +5,7 @@ import type {
   LaunchProviderCapabilities,
   LaunchProviderOption,
 } from "@armada/core";
-import { DOCKER_DEFAULT_IMAGE, HARNESSES, isDockerImageReference } from "@armada/core";
+import { DOCKER_DEFAULT_IMAGE, HARNESSES } from "@armada/core";
 import { isUuid } from "./action.ts";
 import type { DockerHost } from "./docker-hosts.ts";
 
@@ -88,7 +88,7 @@ export function dockerLaunchOption(payload: unknown): DockerLaunchOption | null 
 
 /**
  * Whether this host takes a launch now, or why not. The launch needs the server to say it launches on Docker
- * (`capabilities.launch`, from a plain image, with Codex) and the host list's `placement`; the host itself must be
+ * (`capabilities.launch`, in the official Armada environment, with at least one agent) and the host list's `placement`; the host itself must be
  * online. The server checks all of it again.
  */
 export function dockerLaunchBlocker(
@@ -101,8 +101,8 @@ export function dockerLaunchBlocker(
   if (!option.capabilities.launch)
     return option.unsupportedReasons.launch ?? "This Armada server does not launch on Docker hosts yet.";
   if (!placement) return "This Armada server does not launch on Docker hosts yet.";
-  if (!option.launchSources.includes("image") || !option.harnesses.includes("codex"))
-    return "This Armada server does not launch Codex from an image on Docker hosts.";
+  if (!option.launchSources.includes("image") || option.harnesses.length === 0)
+    return "This Armada server does not launch an agent in the official Armada environment on Docker hosts.";
   if (host.state !== "online") return "The host must be online to launch on it.";
   return null;
 }
@@ -127,38 +127,33 @@ export function dockerUnavailable(option: DockerLaunchOption): { name: string; r
   }));
 }
 
-export function checkImage(raw: string): { ok: true; image: string } | { ok: false; error: string } {
-  const image = raw.trim();
-  if (!isDockerImageReference(image))
-    return {
-      ok: false,
-      error: "Enter repository@sha256:<64 lowercase hex> or a host-approved local sha256:<64 lowercase hex> image ID.",
-    };
-  return { ok: true, image };
+/**
+ * The agents the dialog offers on Docker (#1507): those the server launches there, in Armada's usual order, Codex
+ * first chosen when offered (the first agent Docker hosts ran).
+ */
+export function dockerHarnesses(option: DockerLaunchOption | null): { offered: Harness[]; initial: Harness | null } {
+  const offered = HARNESSES.filter((harness) => option?.harnesses.includes(harness));
+  return { offered, initial: offered.includes("codex") ? "codex" : (offered[0] ?? null) };
 }
 
 /**
- * The dialog's image choice (#1507): Armada's default image unless the person opens "Custom image…" and types one.
- * Nobody has to know what an image is to launch.
+ * The agent the dialog starts on: the server's first choice when the viewer has a usable account for it, else the
+ * first offered agent they can launch with, else the first choice (the dialog then says an account is needed).
  */
-export const IMAGE_CHOICES = [
-  { value: "default", label: "Armada default (Debian, recommended)" },
-  { value: "custom", label: "Custom image…" },
-] as const;
-export type ImageChoice = (typeof IMAGE_CHOICES)[number]["value"];
-
-/** The image a launch uses from the dialog's choice; only a typed (custom) image is checked, and only then can it fail. */
-export function chosenImage(choice: string, custom: string): ReturnType<typeof checkImage> {
-  // An empty choice with a typed image is a form from before the choice existed: honour what was typed.
-  if (choice === "custom" || (choice === "" && custom.trim())) return checkImage(custom);
-  if (choice === "default" || choice === "") return { ok: true, image: DOCKER_DEFAULT_IMAGE };
-  return { ok: false, error: "Choose an image." };
+export function preferredHarness(
+  offered: readonly Harness[],
+  initial: Harness,
+  usable: (harness: Harness) => boolean,
+): Harness {
+  const first = offered.includes(initial) ? initial : (offered[0] ?? initial);
+  if (usable(first)) return first;
+  return offered.find(usable) ?? first;
 }
 
 export type DockerLaunchArgs = {
   org: string;
   hostId: string;
-  image: string;
+  harness: Harness;
   credentialId: string;
   requestId: string;
   model: string;
@@ -166,7 +161,7 @@ export type DockerLaunchArgs = {
   prompt?: string;
 };
 
-/** The `sandbox/launch` body for a Docker host: Codex from a plain image, private, nothing a golden would carry. */
+/** The `sandbox/launch` body for a Docker host: an agent in the official Armada environment, private, with no image override. */
 export function dockerLaunchBody(args: DockerLaunchArgs): DockerLaunchRequest {
   if (![args.org, args.hostId, args.credentialId, args.requestId].every(isUuid))
     throw new Error("Docker launch identifiers must be UUIDs.");
@@ -174,8 +169,7 @@ export function dockerLaunchBody(args: DockerLaunchArgs): DockerLaunchRequest {
     org: args.org,
     provider: "docker",
     hostId: args.hostId,
-    image: args.image,
-    harness: "codex",
+    harness: args.harness,
     credentialId: args.credentialId,
     requestId: args.requestId,
     model: args.model,
@@ -231,4 +225,17 @@ export function dockerSandboxControls(option: DockerLaunchOption | null): Docker
       return reason ? [{ name: CAPABILITY_LABELS[name], reason }] : [];
     }),
   };
+}
+
+/**
+ * A Docker sandbox's image in its page's details (#1526): Armada's default image by name, a custom one by its
+ * repository (or "Local image" and its short ID for a host-approved image ID). `detail` is the full reference with
+ * its digest, for a tooltip.
+ */
+export function dockerImageLabel(image: string | null): { label: string; detail: string | null } {
+  if (!image) return { label: "Unknown", detail: null };
+  if (image === DOCKER_DEFAULT_IMAGE) return { label: "Armada default", detail: image };
+  // Which local image, at a glance: the first digest characters, as `docker images` shows an image ID.
+  if (image.startsWith("sha256:")) return { label: `Local image ${image.slice(7, 19)}`, detail: image };
+  return { label: image.split("@")[0] || image, detail: image };
 }

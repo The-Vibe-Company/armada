@@ -387,22 +387,6 @@ test("exhausted unknown stops reserve cleanup for observation rather than redisp
   });
 });
 
-// This is the GitHub Actions scheduling contract, not a simulation of its queue.
-test("only eligible smoke jobs compete for staging compute", () => {
-  const workflow = Bun.YAML.parse(
-    readFileSync(new URL("../.github/workflows/post-deploy-smoke.yml", import.meta.url), "utf8"),
-  ) as {
-    concurrency?: unknown;
-    jobs: { smoke: { if: string; concurrency: { group: string; "cancel-in-progress": boolean } } };
-  };
-  expect(workflow.concurrency).toBeUndefined();
-  expect(workflow.jobs.smoke.if).toContain("github.event.deployment_status.state == 'success'");
-  expect(workflow.jobs.smoke.concurrency).toEqual({
-    group: "post-deploy-smoke-staging",
-    "cancel-in-progress": false,
-  });
-});
-
 test("GitHub runtime slice requires staging assertions and disposable repository before compute", async () => {
   const valid = {
     ...env,
@@ -1633,19 +1617,27 @@ test("GitHub refresh refuses modes that bypass its ordinary lifecycle worker bef
 
 test("the advertised smoke workflow invocation admits ordinary staging checks", async () => {
   const workflow = Bun.YAML.parse(
-    readFileSync(new URL("../.github/workflows/post-deploy-smoke.yml", import.meta.url), "utf8"),
+    readFileSync(new URL("../.github/workflows/staging-gated-production.yml", import.meta.url), "utf8"),
   ) as {
     on: { workflow_dispatch: { inputs?: Record<string, unknown> } | null };
-    jobs: { smoke: { steps: { name?: string; env?: Record<string, string>; run?: string }[] } };
+    jobs: { staging: { steps: { name?: string; env?: Record<string, string>; run?: string }[] } };
   };
-  const exercise = workflow.jobs.smoke.steps.find((step) => step.name === "Exercise deployed staging API")!;
+  const exercise = workflow.jobs.staging.steps.find((step) => step.name === "Smoke pinned staging")!;
   const directory = mkdtempSync(join(tmpdir(), "smoke-workflow-admission-"));
   try {
     const bun = join(directory, "bun");
     writeFileSync(bun, '#!/bin/bash\nif [[ "$1" == "scripts/post-deploy-smoke.ts" ]]; then printf "%s\\0" "$@"; fi\n');
     chmodSync(bun, 0o755);
     const command = Bun.spawnSync(["bash", "-eu", "-c", exercise.run!], {
-      env: { ...process.env, PATH: `${directory}:${process.env.PATH}` },
+      env: {
+        ...process.env,
+        PATH: `${directory}:${process.env.PATH}`,
+        ARMADA_URL: "https://armada-mcp-staging.up.railway.app",
+        ARMADA_TOKEN: "fixture",
+        ARMADA_SMOKE_CASES: JSON.stringify([selected]),
+        ARMADA_SMOKE: "create_real_compute",
+        ARMADA_SMOKE_JOURNAL: join(directory, "sandboxes.json"),
+      },
     });
     expect(command.exitCode).toBe(0);
     const argv = command.stdout.toString().split("\0").slice(0, -1);

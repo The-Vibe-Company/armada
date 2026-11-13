@@ -1,4 +1,5 @@
 import { readBoundedText } from "@armada/auth";
+import { DOCKER_JOB_FAILURE_REASONS, type DockerJobFailureReason } from "@armada/core";
 import type { CallerResult } from "./caller.ts";
 import { type createDockerHostStore, DockerHostDenied } from "./docker-host-store.ts";
 import type { DockerSnapshots } from "./docker-snapshots.ts";
@@ -10,6 +11,7 @@ const machinePaths = [
   "/api/docker-host/results",
   "/api/docker-host/unregister",
 ];
+const reusePath = "/api/docker-host/reuse-registration";
 const ownerPaths = [
   "/api/v1/docker/snapshots/list",
   "/api/v1/docker/snapshots/get",
@@ -39,7 +41,7 @@ export function createDockerHostRoutes(
   return async (request) => {
     const path = new URL(request.url).pathname;
     const owner = ownerPaths.includes(path);
-    if (!owner && !machinePaths.includes(path)) return null;
+    if (!owner && path !== reusePath && !machinePaths.includes(path)) return null;
     const headers = { "cache-control": "no-store" };
     if (request.method !== "POST") return new Response(null, { status: 405, headers: { ...headers, allow: "POST" } });
     try {
@@ -90,13 +92,20 @@ export function createDockerHostRoutes(
       if (!token) throw new DockerHostDenied();
       const body: unknown = JSON.parse(await readBoundedText(request, 4096));
       if (!object(body)) throw new InvalidInput();
+      // Registration-token capability, not user or installed-machine authority.
+      if (path === reusePath) {
+        fields(body, ["hostId"]);
+        const hostId = string(body.hostId);
+        if (!uuid.test(hostId)) throw new InvalidInput();
+        return Response.json(await store.reuseRegistration(token, hostId), { headers });
+      }
       fields(
         body,
         path.endsWith("/results")
           ? [
               "installationId",
               "requestId",
-              "expired" in body ? "expired" : "outcome",
+              ...("expired" in body ? ["expired"] : "reason" in body ? ["outcome", "reason"] : ["outcome"]),
               ...("imageId" in body ? ["imageId"] : []),
             ]
           : path.endsWith("/poll") && "version" in body
@@ -127,9 +136,17 @@ export function createDockerHostRoutes(
       const outcome = string(body.outcome);
       if (outcome !== "completed" && outcome !== "failed") throw new InvalidInput();
       const requestId = string(body.requestId);
+      // A reason explains a failure; it never accompanies a success.
+      const reason = body.reason === undefined ? undefined : string(body.reason);
+      if (
+        reason !== undefined &&
+        (outcome !== "failed" || !DOCKER_JOB_FAILURE_REASONS.includes(reason as DockerJobFailureReason))
+      )
+        throw new InvalidInput();
       await store.complete(token, installationId, {
         requestId,
         outcome,
+        ...(reason === undefined ? {} : { reason: reason as DockerJobFailureReason }),
         ...("imageId" in body ? { imageId: string(body.imageId) } : {}),
       });
       return Response.json({ requestId }, { headers });

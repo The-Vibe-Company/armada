@@ -67,6 +67,7 @@ import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import { createRuntimeEvents } from "./runtime-events.ts";
 import { createRuntimeFollowup } from "./runtime-followup.ts";
 import { createRuntimeGitHub } from "./runtime-github.ts";
+import { createRuntimeIdle } from "./runtime-idle.ts";
 import { createRuntimeMcp } from "./runtime-mcp.ts";
 import { createRuntimeModelAccess } from "./runtime-model-access.ts";
 import { createRuntimeNativeAuth } from "./runtime-native-auth.ts";
@@ -162,7 +163,6 @@ export async function startServer(
     commands: runtimeCommands,
     probe: (userId, orgId, connectionId) => mcp.controlBroker.status({ userId, orgId, connectionId }),
   });
-  const runtimeSend = createRuntimeFollowup(sql, config.encryptionKey, runtimeCommands, runtimeMcp.prepare);
   try {
     await retryDatabaseBoot(async () => {
       await requireDatabaseSchema(sql);
@@ -375,6 +375,13 @@ export async function startServer(
       : undefined,
     runtimeMcp.prepare,
   );
+  const runtimeSend = createRuntimeFollowup(
+    sql,
+    config.encryptionKey,
+    runtimeCommands,
+    runtimeMcp.prepare,
+    runtimeResume,
+  );
   const dockerControls =
     env.ARMADA_DOCKER_HOSTS === "1"
       ? createDockerSandboxControls(sql, config.encryptionKey, {
@@ -504,6 +511,7 @@ export async function startServer(
     runtimeResume,
     ...(runtimeGitHub ? { runtimeGitHub } : {}),
     ready: createDatabaseReadiness(sql),
+    ...(env.RAILWAY_GIT_COMMIT_SHA ? { commitSha: env.RAILWAY_GIT_COMMIT_SHA } : {}),
     runtimeProviderFor,
     launch,
     modelAuth,
@@ -675,7 +683,12 @@ export async function startServer(
     options.logError,
     goldenRetirements,
     () => pruneServerRetention(sql, control.applicationVault, new Date()),
-    [delegatedAccess.childWorker],
+    [
+      delegatedAccess.childWorker,
+      createRuntimeIdle(sql, config.encryptionKey, runtimeCheckpoint, {
+        delayMs: Number(process.env.ARMADA_RUNTIME_IDLE_MINUTES ?? 10) * 60_000,
+      }),
+    ],
   );
   const invitationWorker =
     env.ARMADA_INVITATION_MAIL === "supabase" && control.invitations

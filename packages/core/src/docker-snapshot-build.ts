@@ -32,7 +32,7 @@ export async function buildDockerSnapshot(
   };
   let directory: string | undefined;
   const checked = async (args: string[], stdin?: string, timeoutMs?: number) => {
-    const result = await options.cli.run(args, stdin, timeoutMs);
+    const result = await options.cli.run(args, stdin, timeoutMs === undefined ? undefined : { timeoutMs });
     if (result.exitCode !== 0) throw Error("Snapshot build failed.");
     return result.stdout;
   };

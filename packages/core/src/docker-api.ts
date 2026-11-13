@@ -92,6 +92,8 @@ export interface LaunchOptionsResponse {
     resumeVersion?: number;
     mcpVersion?: number;
     skillsVersion?: number;
+    variablesVersion?: number;
+    usageVersion?: number;
   };
   boatRuntime: {
     defaultPath?: "native" | "runtime";
@@ -109,10 +111,13 @@ export interface LaunchOptionsResponse {
   };
 }
 
-/**
- * The plain Linux image a Docker host launch uses when none is given (#1507): Debian with HTTPS CA roots, pinned by
- * digest. The launch API, the CLI and the dashboard all default to it, so a person never has to know what an image is.
- */
+/** Why a host reports a failed machine operation, when the person can act on it (#1507). */
+export const DOCKER_JOB_FAILURE_REASONS = ["image_unavailable"] as const;
+export type DockerJobFailureReason = (typeof DOCKER_JOB_FAILURE_REASONS)[number];
+/** What a sandbox and its launch say when its host could not fetch the image. */
+export const DOCKER_IMAGE_UNAVAILABLE_MESSAGE =
+  "Your host could not fetch the image. Check that the image exists and that the host can reach its registry, then launch again.";
+/** Legacy operator/compatibility fixture image. Normal launches use officialSandboxImage(). */
 export const DOCKER_DEFAULT_IMAGE =
   "buildpack-deps@sha256:58021c2a0204361b62a23d2e0244d144d74c29af2d678e2a1f7e6611885d6949";
 
@@ -124,8 +129,6 @@ export interface DockerLaunchRequest {
   provider: "docker";
   hostId?: string;
   snapshotId?: string;
-  /** Immutable registry digest or host-approved full local image ID; omitted means DOCKER_DEFAULT_IMAGE. */
-  image?: string;
   harness: Harness;
   credentialId: string;
   credentialVersion?: number;

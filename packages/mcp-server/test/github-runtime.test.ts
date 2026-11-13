@@ -19,11 +19,12 @@ test("private GitHub issuance rechecks original owner/org/physical identity and 
       other = crypto.randomUUID(),
       golden = crypto.randomUUID();
     await db.query("insert into auth.users(id) values($1),($2)", [owner, admin]);
-    await db.query("insert into public.orgs(id,name) values($1,'GitHub runtime'),($2,'Other')", [org, other]);
-    await db.query(
-      "insert into public.members(org_id,user_id,role) values($1,$2,'member'),($1,$3,'admin'),($4,$3,'admin')",
-      [org, owner, admin, other],
-    );
+    await db.query("insert into public.orgs(id,name) values($1,'GitHub runtime')", [org]);
+    await db.query("insert into public.members(org_id,user_id,role) values($1,$2,'member'),($1,$3,'admin')", [
+      org,
+      owner,
+      admin,
+    ]);
     await db.query(
       "insert into public.goldens(id,org_id,owner_id,name,visibility,config) values($1,$2,$3,'runtime','org',$4::jsonb)",
       [golden, org, owner, JSON.stringify({ repos: [{ url: "https://github.com/acme/repo.git" }], init: [] })],

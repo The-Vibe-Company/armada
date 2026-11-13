@@ -50,7 +50,7 @@ test("snapshot builds mount credentials privately, publish automatic ownership l
           directory = argv.at(-1)!;
           expect(stdin).toBe(token);
           expect(argv.join(" ")).not.toContain(token);
-          expect(timeout).toBe(60000);
+          expect(timeout).toEqual({ timeoutMs: 60000 });
           expect(argv).toContain("id=github,src=/dev/stdin");
           expect((await lstat(directory)).mode & 0o777).toBe(0o700);
           for (const path of [

@@ -215,7 +215,7 @@ function row(item: TemplateItem, context: RowContext): ResourceRow & { bucket: B
               <p className="text-sm">{environment}</p>
             )}
             {definition.provider === "docker" && (
-              <p className="break-all text-xs text-muted-foreground">{definition.image}</p>
+              <p className="text-xs text-muted-foreground">Official Armada environment</p>
             )}
           </PanelSection>
           <PanelSection title="Agent">

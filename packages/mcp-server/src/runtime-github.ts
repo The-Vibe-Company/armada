@@ -12,6 +12,7 @@ import {
 } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import { createSqlData } from "./data.ts";
+import { matchesDockerLaunchRequestHash } from "./docker-launch-identity.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import type { Route } from "./http.ts";
 import { createRuntimeAgent } from "./runtime-agent.ts";
@@ -114,7 +115,7 @@ export function createRuntimeGitHub(options: {
     if (docker) {
       const manifest = JSON.parse(await decryptSecret(docker.request_enc, key));
       if (
-        hash(JSON.stringify(manifest.request)) !== docker.request_hash ||
+        !matchesDockerLaunchRequestHash(manifest.request, docker.request_hash) ||
         !Array.isArray(manifest.request.repos ?? manifest.snapshotConfig?.repos)
       )
         return denied();

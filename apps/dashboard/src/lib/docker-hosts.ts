@@ -202,3 +202,19 @@ export function revokeWarning(sandboxes: number): string {
   if (sandboxes === 0) return base;
   return `${base} It still has ${sandboxCount(sandboxes).toLowerCase()}: delete ${sandboxes === 1 ? "it" : "them"} first, because a revoked host can no longer stop or delete them.`;
 }
+
+/** A Docker sandbox's host in its page's details: the host's name when the list has it, else its short id (#1526). */
+export function sandboxHostLabel(list: DockerHostList | null, hostId: string | null): string {
+  if (!hostId) return "Unknown";
+  const host = list?.hosts.find((candidate) => candidate.id === hostId);
+  return host ? hostName(host) : `Host ${shortHostId(hostId)}`;
+}
+
+/**
+ * A Docker sandbox's short, readable name (#1526): the container name is a 150-character machine name, so the title
+ * shows `docker-` and the first block of the sandbox id instead, as a Boat `bx_` id is short. The full ids stay in the
+ * details and the copy button.
+ */
+export function dockerSandboxName(id: string): string {
+  return `docker-${id.slice(0, 8)}`;
+}

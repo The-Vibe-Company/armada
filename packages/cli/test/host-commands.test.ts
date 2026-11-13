@@ -145,3 +145,16 @@ test("host add network loss after issue retains host identity without issuing an
   expect(result.err).toContain(hostId);
   expect(result.err).toContain("do not issue another registration blindly");
 });
+
+// Reuse cancels only the fresh ticket; it must not wait for that new ID forever.
+test("host add stops waiting when its unused registration disappears without claiming a new host is online", async () => {
+  const result = await capture(["host", "add"], async (request) =>
+    new URL(request.url).pathname.endsWith("register-token")
+      ? Response.json(ticket())
+      : Response.json({ placement: true, hosts: [{ ...summary, id: other }] }),
+  );
+  expect(result.code).toBe(0);
+  expect(result.slept).toBe(0);
+  expect(result.out).toContain("canceled or expired");
+  expect(result.out).not.toContain(`${hostId} is online`);
+});

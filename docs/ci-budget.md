@@ -7,7 +7,7 @@ shards. No separate timing diagnostic, compatibility verdict or informational
 job remains. The coordinator measures elapsed verdict time, including runner
 queue/setup and aggregate overhead; exceeding two minutes is a defect to fix.
 
-See [unit shard sizing](../scripts/ci/README.md) for the current six-shard
+See [unit shard sizing](../scripts/ci/README.md) for the current eight-shard
 starting estimate and [merge queue](merge-queue.md) for the required-check policy.
 Recorded durations guide sizing but do not establish actual latest-SHA verdict
 time. Reduce the shard count as slow tests are removed (#1458), using hosted CI

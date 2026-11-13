@@ -44,6 +44,7 @@ import {
 import { launchDocker } from "./docker-launch.ts";
 import { dockerSnapshotCommand } from "./docker-snapshots.ts";
 import { hostCommand } from "./host-commands.ts";
+import { type LocalHostIo, localHostCommand, productionLocalHostIo } from "./local-host.ts";
 import { operation, parseTtl } from "./operations.ts";
 import { printOptionalResourceAdvice } from "./resource-advice.ts";
 import { routineCommand } from "./routine-commands.ts";
@@ -64,6 +65,8 @@ export interface Deps {
   readFile?: (path: string) => Promise<string>;
   /** Values for credential/application vault writes. By default stdin, only when piped. */
   readStdin?: () => Promise<string>;
+  /** Separate native Docker host binary boundary; no Armada session required. */
+  localHost?: LocalHostIo;
   /** Legacy test seam; commands use the Armada API rather than direct stores. */
   actor?: GoldenActor;
   store?: GoldenStore;
@@ -83,11 +86,13 @@ export interface Deps {
 const HELP = `armada ${VERSION}: launch coding agents in provider-scoped sandboxes
 
 Usage:
+  armada host install --server HTTPS_ORIGIN   Install on the Docker machine; one-use token on stdin, no login
+  armada host status|uninstall                Local host binary wrappers; no login
   armada host add [--name NAME] [--org UUID]
   armada host list [--json] [--org UUID]
   armada host revoke UUID [--org UUID]
-  armada launch [prompt] --provider docker --host UUID|NAME [--image digest-ref | --golden snapshot-UUID] --agent claude|codex|opencode --credential-id UUID --org UUID [--repo owner/repo[@branch] ...] [--request-id UUID] [--json]
-                                           Plain-image Docker launch through the normal Armada API (Armada's default image without --image).
+  armada launch [prompt] --provider docker [--host UUID|NAME | --golden snapshot-UUID] --agent claude|codex|opencode --credential-id UUID --org UUID [--repo owner/repo[@branch] ...] [--request-id UUID] [--json]
+                                           Docker launch through the normal Armada API using the official Armada environment.
   armada --version                         Print the version
   armada --help                            Show this help
   armada skill install (--project <directory> | --global) --yes [--revision <commit>]
@@ -268,6 +273,16 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
     error instanceof AuthError &&
     (error.code === "unauthorized" || (error instanceof ArmadaApiError && error.status === 401));
   try {
+    if (argv[0] === "host" && ["install", "status", "uninstall"].includes(argv[1] ?? ""))
+      return await localHostCommand(
+        argv.slice(1),
+        io,
+        deps.localHost ??
+          productionLocalHostIo({
+            ...(deps.fetch ? { fetch: deps.fetch } : {}),
+            ...(deps.readStdin ? { readStdin: deps.readStdin } : {}),
+          }),
+      );
     auth = authOf(io, deps);
     try {
       if (argv.length === 0) {

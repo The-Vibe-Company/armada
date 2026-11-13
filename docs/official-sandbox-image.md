@@ -6,8 +6,9 @@ only for a validated release tag, and only `linux/amd64`. PR CI never builds it.
 There is no `latest` alias: a release records `version` and `image@sha256:…`
 in the `official-sandbox-image` workflow artifact. Release binary jobs download
 that pin into core before compiling CLI/server, so `officialSandboxImage()`
-returns only that version's digest. Source/dev builds deliberately have no pin
-and fail closed; the existing normal-launch default is unchanged in this slice.
+returns that version's digest. Source/dev builds without a release pin retain the
+server-owned immutable bootstrap baseline; see `docker-staging-image-compatibility.md`.
+A present but invalid or mismatched release pin still fails closed.
 
 The final image contains no checkout, credentials, enrolment tickets or account
 environment. It contains build tools from buildpack-deps, Git, gh, Python, CA
@@ -41,3 +42,27 @@ anonymously pull it on the owner's host, check UID1000 workspace ownership and
 Git/gh/Python/build tools, and verify no checkout/secrets. Full no-input launch
 and snapshot update acceptance require the later slices. No provider allocation,
 publishing, deployment or migration is performed by this change's local checks.
+
+## Slice 2: normal launch policy
+
+Normal API requests, CLI launches and dashboard forms no longer accept an image.
+New Docker template definitions select a host only. Historic template image
+fields are ignored at launch; existing sandbox/resume bindings are untouched.
+The server chooses `officialSandboxImage()` from its own release, never from the
+client's CLI version. A deployment with no generated pin uses the pre-transition immutable bootstrap
+baseline so main-between-releases remains usable; it does not invent a GHCR digest. Exact request retries retain the admitted
+image even if the server's release pin changes.
+
+The release workflow carries the generated public pin into both release staging
+and production source archives before Railway builds the server. Direct source
+builds outside that release path need the same generated
+`packages/core/src/official-sandbox-image.json` for their package version before
+building; the checked-in null file is not a production pin. Do not manually
+invent a digest or use a different release's pin. The operator lifecycle helper's
+`--image` is now an expected-image assertion for normal launches, not a selector;
+only its existing private preview route still sends it.
+
+Host fetching and plain fetch-failure reporting are owned by #1525; this slice
+adds dashboard progress but does not duplicate the host pull implementation.
+Public artifact cache seeding/launch optimization remains follow-up work; the
+existing verified bootstrap remains authoritative.
