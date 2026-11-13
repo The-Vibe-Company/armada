@@ -1527,16 +1527,26 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         return new Date(row.grantExpiresAt);
       });
     },
-    async stop({ sandboxId }) {
+    async stop({ sandboxId, requireRetention = false }) {
       await bound();
       let observed: Machine | undefined;
       try {
         await store.lease(sandboxId, async (row, save) => {
           observed = row;
+          if (
+            requireRetention &&
+            (row.commonRuntime ||
+              row.info.stopNote === "checkpoint_failed_disk_not_retained" ||
+              (row.phase === "terminate" && !row.recoveryImageId))
+          )
+            throw refusal(
+              "conflict",
+              "Retained workspace is not proven; automatic idle stop refuses compute-only cleanup.",
+            );
           // Golden builders retain their fail-closed contract.
           // Dispatch is durable before any RPC, so a crash cannot reset the retry budget.
           if (!row.golden && row.phase !== "stopped") {
-            if (row.ordinaryStopAttempted && row.phase !== "terminate") {
+            if (row.ordinaryStopAttempted && row.phase !== "terminate" && !requireRetention) {
               row.info.stopNote = "checkpoint_failed_disk_not_retained";
               // Never allow resume to silently restore a stale recovery image.
               if (row.recoveryImageId)

@@ -168,8 +168,9 @@ export interface Provider {
   quiesce?(request: InterruptRequest): Promise<void>;
   /** Reset the physical lifetime without restoring or replacing compute. Returns the confirmed hard deadline. */
   extendLifetime?(request: { sandboxId: string; ttlSeconds: number }): Promise<Date>;
-  /** Removes the machine and keeps the disk and the conversations. */
-  stop(request: { sandboxId: string }): Promise<void>;
+  /** Removes compute through the provider's stop policy. Automatic idle requires
+   * retained workspace/conversation state and must refuse a compute-only fallback. */
+  stop(request: { sandboxId: string; requireRetention?: boolean }): Promise<void>;
   /** Removes the sandbox and its disk for good. */
   delete(request: { sandboxId: string }): Promise<DeleteReceipt>;
 }

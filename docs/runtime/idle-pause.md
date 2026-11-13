@@ -3,7 +3,7 @@
 The server checks enrolled Boat and Modal runtimes and eligible Docker hosts once per minute. The default
 quiet period is ten minutes, configured globally with
 `ARMADA_RUNTIME_IDLE_MINUTES` (positive whole milliseconds after conversion).
-There is no per-user setting. Native Boat and native Modal are not changed.
+There is no per-user setting. Native Boat and Modal use the leased lifecycle worker and the same delay, with their own quiescence evidence.
 
 A runtime is eligible only after its current admitted prompt has a terminal
 journal event, all recorded prompts have settled, no current-epoch command is
@@ -55,7 +55,7 @@ No provider lifecycle or staging operation was run for this implementation.
 
 ## Idle-pause presentation
 
-The wire status and filter remain `stopped`. Only an idle checkpoint stop sets
+The wire status and filter remain `stopped`. Only an automatic idle stop sets
 the `idle_paused` status reason; API list/status include additive wording, and
 the safe list metadata RPC exposes an `idlePaused` boolean without interior
 history or credentials. The CLI says “Paused — wakes on your next message”.
@@ -120,4 +120,50 @@ Existing explicit unsealed manual stop/resume remains available.
 
 No Docker, Modal or Boat staging success is claimed by unit tests. Run the
 coordinator procedure in #1562 and retain provider compute/recall evidence.
-Native Boat/native Modal are not selected by this runtime worker.
+Native Boat/native Modal are handled by the leased native lifecycle path described below, not by this enrolled-runtime worker.
+
+
+## Native Boat / native Modal
+
+The existing generation-fenced lifecycle worker also detects idle native
+sandboxes using the same global delay. It requires a bound model account, no
+application-secret taint, no unresolved activity lease, a terminal current
+prompt and its terminal event in the bounded newest 200 events. Boat must
+report every conversation inactive; Modal must report quiescence for its exact
+physical generation with a synchronized event watermark. Missing/unknown ports,
+active turns, missing history and unbound legacy workers stay live until the
+ordinary TTL policy or explicit owner action resolves them.
+
+Automatic idle stop substitutes a non-interrupting quiescence check into the
+existing work-preservation path and checks again before stop. It never calls
+native interrupt to make an idle candidate quiescent. If work becomes active or
+unknown after the stop intent, the intent waits without interruption. Its
+fence cannot be canceled by a racing send; wait for confirmed stopped before
+sending. The provider's normal retained-disk/checkpoint stop remains responsible
+for workspace/conversation retention, and TTL expiry still takes priority.
+
+An expired native activity lease with an unresolved identity remains unknown,
+not proof an exec ended. Observation alone no longer clears that identity and
+makes the sandbox falsely eligible on the next sweep. Terminal/explicit TTL
+cleanup retains its existing behavior.
+
+Sending to a confirmed native idle pause uses the existing normal native resume
+path but does not renew or rearm the original logical deadline. Expired idle
+pauses refuse activation, and the same rule is enforced atomically at admission.
+Manual (non-idle) stop/resume deadline behavior is unchanged. The provider's
+physical deadline remains its existing native adapter contract; this policy
+keeps Armada's logical expiry fixed and its existing expiry cleanup in force.
+
+These are deterministic code-level checks, not staging evidence. The coordinator
+must still observe actual native/provider shutdown and same-conversation recall
+on staging. The deployed setting override has not been inspected here.
+
+Once native Modal has durably entered checkpoint/snapshot/terminate, its own
+stop reconciler owns the transition. Idle retries do not run active-only
+observation or Git recapture against that fenced incarnation; they delegate
+the existing stop reconciliation with a retention-required policy. Automatic idle
+must not use ordinary stop's compute-only failure fallback: failed checkpoint
+or unknown snapshot outcomes retain the source and refuse destructive cleanup,
+never blindly retry snapshot/create. Explicit and TTL cleanup keep their
+existing default policy. A provider-reported lost workspace is failed, not
+advertised as a resumable paused sandbox.

@@ -1416,6 +1416,16 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     }
     // One send shape across placements. Native providers do not implement a
     // durable request-key protocol; accepting this field promises no deduplication.
+    if (
+      selected.statusReason === "idle_paused" &&
+      (selected.status === "stopping" ||
+        !selected.expiresAt ||
+        Date.parse(selected.expiresAt) <= context.now().getTime())
+    )
+      throw new ToolError(
+        "conflict",
+        "Idle pause is still finishing or its original deadline has expired; inspect status before sending.",
+      );
     const { sandbox: found, provider } = await live(args.id, false, selected);
     if (args.prompt.trim() === "") throw new ToolError("invalid_request", "The prompt is empty.");
     if (found.credentialId)
@@ -1458,7 +1468,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       found,
       {
         clearTaskOutcome: true,
-        renewLifecycle: machine.state === "stopped",
+        renewLifecycle: machine.state === "stopped" && found.statusReason !== "idle_paused",
         stopRequested: false,
         ...(machine.state === "stopped" ? { status: "starting" as const, stoppedAt: null } : {}),
       },
@@ -1497,7 +1507,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
             statusReason: null,
             conversationIds,
             stoppedAt: null,
-            rearmDeadline: receipt.resumed === true,
+            rearmDeadline: receipt.resumed === true && found.statusReason !== "idle_paused",
           },
           result: {
             id: found.id,
