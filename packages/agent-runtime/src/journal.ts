@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import type { AgentEvent, PromptStatus } from "@armada/core";
 import { HARNESSES, isFinalPromptStatus } from "@armada/core";
+import { HarnessError } from "./errors.ts";
 import { checkpointIdentity, checkpointIdentityKey } from "./identity.ts";
 import type { CheckpointIdentity, StoredPrompt } from "./protocol.ts";
 import { createRedactor } from "./state.ts";
@@ -24,7 +25,9 @@ export class Journal {
   }
   append(event: AgentEvent): number {
     let body = this.redact(JSON.stringify(event));
-    if (body.length > 262144)
+    const terminalSnapshot = event.kind === "message" && !event.partial && event.textMode === "snapshot";
+    const oversized = body.length > 262144;
+    if (oversized)
       body = JSON.stringify({
         id: event.id,
         at: event.at,
@@ -32,9 +35,13 @@ export class Journal {
         promptId: event.promptId,
         kind: "other",
         type: "event_truncated",
-        data: { originalKind: event.kind, bytes: body.length },
+        data: { originalKind: event.kind, bytes: body.length, ...(terminalSnapshot ? { terminal: true } : {}) },
       });
-    return Number(this.db.query("INSERT INTO events(body) VALUES(?)").run(body).lastInsertRowid);
+    const sequence = Number(this.db.query("INSERT INTO events(body) VALUES(?)").run(body).lastInsertRowid);
+    // A terminal snapshot is an answer receipt. Never acknowledge a finished answer whose full text
+    // was replaced by a truncation marker (including size growth caused by secret redaction).
+    if (oversized && terminalSnapshot) throw new HarnessError("invalid_harness_protocol");
+    return sequence;
   }
   transition(prompt: StoredPrompt, status: PromptStatus, reason?: string) {
     this.db.transaction(() => {
