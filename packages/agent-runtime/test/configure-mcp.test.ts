@@ -289,16 +289,19 @@ test.skipIf(process.platform !== "linux")(
       },
       close: () => codex.close(),
     };
+    let claudeDone: Promise<unknown> | undefined;
     let ready: () => void = () => {};
     const claude: Driver = {
       start(c) {
-        return nativeClaude.start({
+        const turn = nativeClaude.start({
           ...c,
           emit: (e) => {
             c.emit(e);
             if (e.kind === "message" && e.partial) ready();
           },
         });
+        claudeDone = turn.done;
+        return turn;
       },
       close: () => nativeClaude.close(),
     };
@@ -348,12 +351,18 @@ test.skipIf(process.platform !== "linux")(
       expect(
         JSON.parse(await readFile(first.configPath, "utf8")).mcpServers.remote.headers.Authorization === secret1,
       ).toBe(true);
+      // Finish the peer through its protocol instead of paying SDK process-kill grace periods.
+      await call(runner, "steer", { conversationId: conversation, text: "redirect" });
+      await claudeDone;
       await call(runner, "interrupt", { conversationId: conversation });
       await begin(conversation);
       const second = JSON.parse(await readFile(claudeReceipt, "utf8"));
       expect(second.resumed).toBe(true);
       expect(second.headerFingerprint).toBe(createHash("sha256").update(secret2).digest("hex"));
       expect(second.argvLeak).toBe(false);
+      // Finish the peer through its protocol instead of paying SDK process-kill grace periods.
+      await call(runner, "steer", { conversationId: conversation, text: "redirect" });
+      await claudeDone;
       await call(runner, "interrupt", { conversationId: conversation });
       await call(runner, "configureMcp", { configuration: { revision: "native-r3", servers: {} } });
       await begin(conversation);
@@ -361,6 +370,9 @@ test.skipIf(process.platform !== "linux")(
       expect(empty.serverNames).toEqual([]);
       expect(empty.strict).toBe(true);
       expect(empty.headerFingerprint).toBe(null);
+      // Finish the peer through its protocol instead of paying SDK process-kill grace periods.
+      await call(runner, "steer", { conversationId: conversation, text: "redirect" });
+      await claudeDone;
       await call(runner, "interrupt", { conversationId: conversation });
       await call(runner, "prompt", { input: { sandboxId: "s", harness: "codex", text: "redirect" } });
       await codexDone;
