@@ -516,7 +516,9 @@ if (resumeMode && !failure && id && checkpointReceipt && initialConversation && 
     await priorHistory?.();
     const third = resumed.promptId;
     let fourth: string | undefined;
-    if (githubMode || mcpMode) {
+    // MCP already ran in the first resumed prompt; only GitHub needs a new
+    // post-refresh turn. Do not spend another MCP-only model turn.
+    if (githubMode) {
       const epoch = resumed.runtime.epoch ?? "";
       let revision: string | undefined;
       if (githubMode) {
