@@ -1,6 +1,6 @@
 import type { SandboxProviderId } from "@armada/core";
 import { type CapacityState, type LaunchReadiness, PROVIDER_LABELS } from "./golden-form.ts";
-import { PROVIDER_SETTINGS_PATH } from "./provider-setup.ts";
+import { CLOUD_PROVIDERS_PATH } from "./provider-setup.ts";
 import type { Blocker, ResourceState } from "./resource-list.ts";
 
 /**
@@ -67,7 +67,7 @@ export function environmentBlockers({
       key: "provider",
       label: "Connect a sandbox provider",
       detail: "New builds and launches are paused until the organization connects one.",
-      target: { href: PROVIDER_SETTINGS_PATH },
+      target: { href: CLOUD_PROVIDERS_PATH },
     });
   else {
     const waiting = new Map<SandboxProviderId, number>();
@@ -78,7 +78,7 @@ export function environmentBlockers({
         key: `connect-${provider}`,
         label: `Connect ${PROVIDER_LABELS[provider]}`,
         detail: `${count} ${count === 1 ? "environment waits" : "environments wait"} for it.`,
-        target: { href: PROVIDER_SETTINGS_PATH },
+        target: { href: CLOUD_PROVIDERS_PATH },
       });
   }
   const snapshots = rows.filter((row) => row.state.action === "snapshot");

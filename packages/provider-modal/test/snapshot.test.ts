@@ -1,13 +1,12 @@
-import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, open, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Sandbox } from "modal";
 import { type Machine, prepareFilesystemSnapshot, prepareFreshFilesystem } from "../src/index.ts";
 
 (process.platform === "linux" ? test : test.skip)(
-  "golden cleanup refuses open SQLite, removes native/history only after closure, and recovery keeps sessions",
+  "golden cleanup refuses an open journal, removes native/history only after closure, and recovery keeps sessions",
   async () => {
     const root = await mkdtemp(join(tmpdir(), "armada-golden-state-"));
     const runtime = join(root, ".armada-runtime");
@@ -18,18 +17,19 @@ import { type Machine, prepareFilesystemSnapshot, prepareFreshFilesystem } from 
     await Bun.write(join(root, ".claude", "history.jsonl"), "synthetic native history");
     await mkdir(join(root, ".codex"));
     await Bun.write(join(root, ".codex", "session.json"), "synthetic session");
-    const journal = new Database(join(runtime, "journal.sqlite"));
-    journal.exec("create table history(value text);insert into history values('synthetic request')");
+    const journal = await open(join(runtime, "journal.sqlite"), "w");
+    const readerProc = `/proc/${process.pid}`;
     let calls = 0;
     const sdk = {
       async exec(argv: string[]) {
         calls++;
         // Cloud quiescence is the first public SDK boundary. The actual deletion command must still
-        // detect this deliberately open (unexpected legacy/root) SQLite FD, rather than trusting it.
+        // detect this deliberately open (unexpected legacy/root) journal FD, rather than trusting it.
+        // Inspect the actual holder's kernel FDs, not unrelated processes on the test host.
         if (calls % 3 !== 0)
           return { stdin: { writeText: async () => {}, close: async () => {} }, wait: async () => 0 };
         const process = Bun.spawn(
-          argv.map((arg) => arg.replaceAll("/home/user", root)),
+          argv.map((arg) => arg.replaceAll("/home/user", root).replaceAll("/proc/[0-9]*", readerProc)),
           { cwd: root, stdout: "ignore", stderr: "ignore" },
         );
         return { wait: () => process.exited };
@@ -55,7 +55,7 @@ import { type Machine, prepareFilesystemSnapshot, prepareFreshFilesystem } from 
       await expect(prepareFilesystemSnapshot(sdk, machine)).rejects.toMatchObject({ code: "conflict" });
       expect(await Bun.file(join(runtime, "journal.sqlite")).exists()).toBe(true);
       expect(await Bun.file(join(root, ".claude", "history.jsonl")).exists()).toBe(true);
-      journal.close();
+      await journal.close();
       await prepareFilesystemSnapshot(sdk, machine);
       expect(await Bun.file(join(runtime, "journal.sqlite")).exists()).toBe(false);
       expect(await Bun.file(join(root, ".claude", "history.jsonl")).exists()).toBe(false);
@@ -71,7 +71,7 @@ import { type Machine, prepareFilesystemSnapshot, prepareFreshFilesystem } from 
       expect(calls).toBe(before + 2);
       expect(await Bun.file(join(runtime, "session-state.json")).text()).toBe("keep recovered native session");
     } finally {
-      journal.close(false);
+      await journal.close();
       await rm(root, { recursive: true, force: true });
     }
   },

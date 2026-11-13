@@ -11,7 +11,6 @@ export { CLIENT_CONFIG_PATH, type ClientConfig } from "./client-config.ts";
 export { CODEX_ENDPOINT_ENV, type CodexEndpoint, parseCodexEndpoint } from "./codex-endpoint.ts";
 export {
   type CatalogModel,
-  CONNECTION_CATALOG_FETCHED_AT,
   CONNECTION_PRESETS,
   type ConnectionPreset,
   type ConnectionPresetId,

@@ -9,7 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { isUuid } from "@/lib/action";
 import { isSelectedOrganization } from "@/lib/data/selected-org";
 import { listMemberships, requireViewer } from "@/lib/data/viewer";
-import { PROVIDER_SETTINGS_PATH } from "@/lib/provider-setup";
+import { CLOUD_PROVIDERS_PATH } from "@/lib/provider-setup";
 import { createClient } from "@/lib/supabase/server";
 
 export const metadata: Metadata = { title: "Sandbox providers" };
@@ -28,7 +28,7 @@ export default async function ProviderSetupPage({ params }: Props) {
   const viewer = await requireViewer();
   const membership = (await listMemberships(await createClient(), viewer.id)).find((item) => item.org.id === id);
   if (!membership) notFound();
-  if (await isSelectedOrganization(id)) redirect(PROVIDER_SETTINGS_PATH);
+  if (await isSelectedOrganization(id)) redirect(CLOUD_PROVIDERS_PATH);
   const { org } = membership;
   return (
     <div className="max-w-2xl space-y-6">
@@ -44,7 +44,7 @@ export default async function ProviderSetupPage({ params }: Props) {
         <CardContent>
           <ActionForm action={switchOrganization}>
             <input type="hidden" name="org" value={org.id} />
-            <input type="hidden" name="section" value="settings" />
+            <input type="hidden" name="section" value="setup" />
             <SubmitButton>Switch to {org.name}</SubmitButton>
           </ActionForm>
         </CardContent>

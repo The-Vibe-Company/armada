@@ -30,9 +30,9 @@ export const COMMANDS: readonly Command[] = [
   {
     id: "connect-provider",
     label: "Connect a sandbox provider",
-    href: "/settings",
+    href: "/providers/cloud",
     group: "Actions",
-    keywords: ["boat", "modal", "hosting", "key"],
+    keywords: ["boat", "modal", "hosting", "key", "cloud"],
   },
   {
     id: "routines",
@@ -80,7 +80,14 @@ export const COMMANDS: readonly Command[] = [
     keywords: ["subscriptions", "accounts", "claude", "codex", "credentials", "harness"],
   },
   { id: "orgs", label: "Organizations", href: "/orgs", group: "Go to", keywords: ["members", "roles", "team"] },
-  { id: "settings", label: "Settings", href: "/settings", group: "Go to", keywords: ["providers", "github"] },
+  {
+    id: "cloud-providers",
+    label: "Cloud providers",
+    href: "/providers/cloud",
+    group: "Go to",
+    keywords: ["boat", "modal", "provider", "account"],
+  },
+  { id: "settings", label: "Settings", href: "/settings", group: "Go to", keywords: ["github", "account"] },
 ];
 
 /**

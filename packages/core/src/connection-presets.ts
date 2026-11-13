@@ -7,6 +7,8 @@
 import { parseCredentialValue } from "./credentials.ts";
 import type { ModelPriceOverrides } from "./model-price-overrides.ts";
 import { CONNECTION_MODEL_ID, MAX_CONNECTION_MODELS, OPENCODE_CONNECTION_PROVIDER } from "./opencode-endpoint.ts";
+// Read the catalog only inside functions: a top-level read keeps this JSON in every bundle of the core index,
+// including the GitHub broker, whose private transport budget is 64 KiB (packages/mcp-server/src/github-boat.ts).
 import catalog from "./pricing/connection-catalog.json";
 import { validRate } from "./pricing/rates.ts";
 import { VaultError } from "./vault-error.ts";
@@ -138,8 +140,6 @@ export interface CatalogModel {
 export function presetModels(preset: ConnectionPreset): readonly CatalogModel[] {
   return preset.catalog ? (catalog.providers[preset.catalog] as CatalogModel[]) : [];
 }
-
-export const CONNECTION_CATALOG_FETCHED_AT: string = catalog.fetchedAt;
 
 /**
  * The catalog's public prices for the chosen models, keyed by the model ID the agent reports: `armada/<id>` for an
