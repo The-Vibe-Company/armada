@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { planShards, SHARD_COUNT, validatePlan } from "./unit-shards.ts";
+import { planShards, SHARD_COUNT, validatePlan, workerBatches } from "./unit-shards.ts";
 
 test("balanced shards include new files exactly once without depending on discovery order", () => {
   const files = [
@@ -25,4 +25,32 @@ test("coverage guard refuses missing, duplicate, foreign and empty shard assignm
     [files],
   ])
     expect(() => validatePlan(files, invalid)).toThrow("exactly one");
+});
+
+test("SQL worker merging keeps every file once and leaves native or global-mock suites isolated", () => {
+  const sql = Array.from({ length: 15 }, (_, i) => `packages/mcp-server/test/sql-${i}.test.ts`);
+  const unsafe = [
+    "Bun.spawn",
+    "Bun.env",
+    "captureGitHubAuditLogs",
+    "mock.module",
+    "spyOn(",
+    "process.env",
+    "globalThis.fetch",
+    "test.concurrent",
+    "CodexDriver",
+  ];
+  const files = [
+    ...sql,
+    ...unsafe.map((_, i) => `packages/mcp-server/test/unsafe-${i}.test.ts`),
+    "scripts/other.test.ts",
+  ];
+  const source = "const db = await migratedDatabase();";
+  const sources = Object.fromEntries(
+    files.map((file, i) => [file, i < sql.length ? source : `${source} ${unsafe[i - sql.length] ?? ""}`]),
+  );
+  const batches = workerBatches(files, sources);
+  expect(batches.flat().sort()).toEqual([...files].sort());
+  expect(batches.slice(0, 2).map((batch) => batch.length)).toEqual([12, 3]);
+  expect(batches.slice(2).every((batch) => batch.length === 1)).toBe(true);
 });
