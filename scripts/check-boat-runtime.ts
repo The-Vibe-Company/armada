@@ -18,7 +18,13 @@ interface Reply {
     followupVersion?: number;
     checkpointVersion?: number;
     resumeVersion?: number;
+    githubVersion?: number;
   };
+  githubReady?: boolean;
+  status?: string;
+  revision?: string;
+  configured?: boolean;
+  credentialRequests?: number;
   sandbox?: { id?: string; goldenId?: string; boatRuntime?: boolean };
   runtime?: { kind?: string; epoch?: string };
   promptId?: string;
@@ -49,11 +55,26 @@ if (options.boatRuntime?.enabled !== true || options.boatRuntime.diagnosticsVers
   throw Error(
     "Use the armada-server origin with experimental Boat runtime diagnostics v1 enabled; no launch attempted.",
   );
+const githubMode = process.argv.includes("--github");
+const repository = process.env.ARMADA_RUNTIME_GITHUB_REPOSITORY ?? "";
 const resumeMode = process.argv.includes("--resume");
 const checkpointMode = process.argv.includes("--checkpoint") || resumeMode;
 if (resumeMode && options.boatRuntime.resumeVersion !== 1)
   throw Error("Server has no verified runtime resume v1; no launch attempted.");
-const followup = process.argv.includes("--followup") || checkpointMode;
+const followup = process.argv.includes("--followup") || checkpointMode || githubMode;
+if (githubMode) {
+  if (
+    resumeMode ||
+    options.boatRuntime.githubVersion !== 1 ||
+    !repository ||
+    !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)
+  )
+    throw Error(
+      "GitHub check requires broker v1, ARMADA_RUNTIME_GITHUB_REPOSITORY=owner/repo and no --resume; no launch attempted.",
+    );
+  const preflight = await api("sandbox/github-preflight-v1", { runtimeVersion: 1, org, golden, repository });
+  if (preflight.githubReady !== true) throw Error("GitHub preflight refused; no launch attempted.");
+}
 if (checkpointMode && options.boatRuntime.checkpointVersion !== 1)
   throw Error("Server has no runtime checkpoint v1; no launch attempted.");
 if (followup && options.boatRuntime.followupVersion !== 1)
@@ -68,6 +89,7 @@ let checkpointReceipt: Reply | undefined;
 let verifyStoppedHistory: (() => Promise<void>) | undefined;
 let verifyPrompt: ((id: string, expected: string) => Promise<void>) | undefined;
 let initialConversation: string | undefined;
+let githubProof: { repository: string; epoch: string; credentialRequests: number } | undefined;
 let firstPrompt: string | undefined, followupPrompt: string | undefined;
 function validateCheckpoint(candidate: Reply, epoch: string | undefined, requestId: string) {
   const proof = candidate.checkpoint;
@@ -109,6 +131,7 @@ try {
     !launched.promptId
   )
     throw Error("Missing runtime launch acknowledgement.");
+  let githubToolVerified = false;
   const verify = async (promptId: string, expected: string) => {
     const deadline = Date.now() + 300000;
     let cursor: string | undefined;
@@ -123,6 +146,21 @@ try {
       if (page.source !== "armada-runtime") throw Error("History did not come from the Armada journal archive.");
       for (const event of page.events ?? []) {
         if (event.promptId !== promptId) continue;
+        if (githubMode && event.kind === "message") {
+          for (const tool of event.tools) {
+            const command = (tool.input as { command?: unknown } | undefined)?.command;
+            if (
+              tool.name === "commandExecution" &&
+              typeof command === "string" &&
+              command.includes("gh api") &&
+              command.includes(repository) &&
+              tool.result?.isError === false &&
+              typeof tool.result.output === "string" &&
+              tool.result.output.toLowerCase().includes(repository.toLowerCase())
+            )
+              githubToolVerified = true;
+          }
+        }
         if (
           event.kind === "message" &&
           event.responseKind !== "tool_result" &&
@@ -146,6 +184,15 @@ try {
   let nextPromptId: string | undefined;
   if (followup) {
     if (!launched.conversationId) throw Error("Launch did not return a conversation ID.");
+    const githubConfiguration = githubMode ? await api("github/refresh", { id }) : undefined;
+    if (
+      githubMode &&
+      (githubConfiguration?.status !== "connected" ||
+        githubConfiguration.runtime?.kind !== "armada" ||
+        githubConfiguration.runtime.epoch !== launched.runtime.epoch ||
+        !githubConfiguration.revision)
+    )
+      throw Error("Missing current-epoch runtime GitHub configuration acknowledgement.");
     const requestId = crypto.randomUUID();
     console.log(
       JSON.stringify({
@@ -159,8 +206,9 @@ try {
       id,
       request_id: requestId,
       conversation_id: launched.conversationId,
-      prompt:
-        "Reply exactly with the token I asked you to remember in my previous message. Do not use tools or change files.",
+      prompt: githubMode
+        ? `Run this read-only shell command using your command tool: \`gh api repos/${repository} --jq .full_name\`. After it succeeds, reply exactly with the token I asked you to remember in my previous message. Do not change files.`
+        : "Reply exactly with the token I asked you to remember in my previous message. Do not use tools or change files.",
     });
     if (
       !sent.promptId ||
@@ -174,6 +222,25 @@ try {
         "Missing same-conversation/epoch runtime follow-up acknowledgement. Reconcile with the original request_id; do not launch again.",
       );
     await verify(sent.promptId, memory);
+    if (githubMode) {
+      const audit = await api("github/runtime-status", { id });
+      if (
+        !githubToolVerified ||
+        audit.configured !== true ||
+        audit.runtime?.kind !== "armada" ||
+        audit.runtime.epoch !== launched.runtime.epoch ||
+        audit.revision !== githubConfiguration?.revision ||
+        typeof audit.credentialRequests !== "number" ||
+        !Number.isSafeInteger(audit.credentialRequests) ||
+        audit.credentialRequests < 1
+      )
+        throw Error("Missing successful archived gh command AND current runtime broker credential-delivery proof.");
+      githubProof = {
+        repository: repository,
+        epoch: launched.runtime.epoch ?? "",
+        credentialRequests: audit.credentialRequests,
+      };
+    }
     nextPromptId = sent.promptId;
     followupPrompt = sent.promptId;
   }
@@ -199,6 +266,7 @@ try {
       epoch: launched.runtime.epoch,
       promptId: launched.promptId,
       answer: "verified",
+      ...(githubProof ? { github: "verified", githubProof } : {}),
       ...(checkpointReceipt ? { checkpoint: "verified", watermark: checkpointReceipt.checkpoint?.watermark } : {}),
       ...(nextPromptId
         ? { followup: "verified", followupPromptId: nextPromptId, conversationId: launched.conversationId }

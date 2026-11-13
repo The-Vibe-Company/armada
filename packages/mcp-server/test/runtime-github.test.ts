@@ -77,6 +77,15 @@ test("runtime GitHub uses durable private RPC, owner identity and epoch/reposito
   const x = await fixture(),
     { f, service } = x;
   try {
+    const golden = (await f.db.query<{ name: string }>("select name from goldens where id=$1", [f.row.goldenId]))
+      .rows[0]!;
+    await f.db.query("update goldens set boat_snapshot_id='offline-snapshot' where id=$1", [f.row.goldenId]);
+    expect(
+      await service.preflight(f.caller, { org: f.people.org, golden: golden.name, repository: "example/web" }),
+    ).toMatchObject({ githubReady: true });
+    await expect(
+      service.preflight(f.caller, { org: f.people.org, golden: golden.name, repository: "foreign/repo" }),
+    ).rejects.toThrow();
     const result = await callSharedTool({ ...f.context, runtimeGitHub: service }, "github_refresh", { id: f.row.id });
     expect(result).toMatchObject({ status: "connected", runtime: { kind: "armada", epoch: "1" } });
     expect(JSON.stringify(result)).not.toMatch(/armada_gh_|ghu_/);
