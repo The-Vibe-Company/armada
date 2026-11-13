@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   type AgentEvent,
   type DockerSandboxStatus,
+  GoldenError,
   PROMPT_STATUSES,
   ProviderError,
   type SandboxRecord,
@@ -10,6 +11,7 @@ import {
 } from "@armada/core";
 import { decryptSecret, type Sql } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
+import { createSqlData } from "./data.ts";
 import { createDockerHostStore, DockerHostDenied } from "./docker-host-store.ts";
 import { isPrivateModelEvent } from "./model-usage.ts";
 import { createRuntimeHistory } from "./runtime-history.ts";
@@ -298,8 +300,20 @@ export function createDockerSandboxControls(
         : {}),
     };
   }
+  async function assertDelete(caller: Caller, id: string, target: Sql = sql) {
+    const store = createSqlData(target)(caller).sandboxes;
+    if (!store.assertDeletionAllowed) throw failure("unavailable", "Docker sandbox deletion is unavailable.");
+    try {
+      await store.assertDeletionAllowed(id);
+    } catch (error) {
+      if (error instanceof GoldenError)
+        throw failure(error.code === "conflict" ? "conflict" : "not_found", error.message);
+      throw error;
+    }
+  }
   async function cleanup(caller: Caller, row: Row, operation: "stop" | "delete", requestId?: string) {
     if (requestId !== undefined && !UUID.test(requestId)) throw invalid();
+    if (operation === "delete") await assertDelete(caller, row.id);
     const done = (current: Row) =>
       operation === "delete"
         ? current.status === "deleted"
@@ -328,6 +342,7 @@ export function createDockerSandboxControls(
         throw failure("conflict", "Docker sandbox cleanup is pending. Retry the same request.");
       const id = requestId ?? pending?.request_id ?? randomUUID();
       const scoped: Sql = { query: tx.query.bind(tx), transaction: (work) => work(tx) };
+      if (operation === "delete") await assertDelete(caller, row.id, scoped);
       await createDockerHostStore(scoped, key).enqueueSandbox({ userId: caller.userId, orgId: row.org_id }, row.id, {
         requestId: id,
         operation,

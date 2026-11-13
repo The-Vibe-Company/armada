@@ -22,6 +22,7 @@ import {
   API_FAILURE_STATUS,
   CLAUDE_ENDPOINT_ENV,
   CODEX_ENDPOINT_ENV,
+  dedupeEvents,
   GitHubHydrationError,
   goldenForSettings,
   isHarness,
@@ -1313,7 +1314,7 @@ async function createGoldenRoute(options: ControlOptions, caller: Caller, body: 
     throw new ProviderRoutingError("provider_not_configured", "modal", "Modal is not configured.");
   const name = required(body, "name");
   const config = body.config === undefined ? undefined : normalizeGitHubGoldenConfig(parseGoldenConfig(body.config));
-  const repos = config ? [] : requiredStringArray(body, "repos");
+  const repos = config ? [] : requiredRepos(body);
   const setup = optional(body, "setup");
   const actor: GoldenActor = { userId: caller.userId, orgId: org.id, role: org.role };
   assertGoldenMutation(actor, { orgId: org.id, visibility, ownerId: caller.userId, name });
@@ -1514,7 +1515,7 @@ async function readLogs(
     ...(source ? { source } : {}),
     ...(runtimeFailure ? { runtimeFailure } : {}),
     ...(olderCursor ? { olderCursor } : {}),
-    events: dedupe(events).filter((event) => !isPrivateModelEvent(event)),
+    events: dedupeEvents(events).filter((event) => !isPrivateModelEvent(event)),
     cursor: cursor ?? null,
     hasMore,
     settled:
@@ -1533,12 +1534,6 @@ function latestPrompt(events: Awaited<ReturnType<Provider["events"]>>["events"])
     if (!latest || event.at >= latest.at) latest = event;
   }
   return latest?.promptId ?? null;
-}
-
-function dedupe<T extends { id: string }>(events: readonly T[]): T[] {
-  const byId = new Map<string, T>();
-  for (const event of events) byId.set(event.id, event);
-  return [...byId.values()];
 }
 
 async function launchRoute(
@@ -1803,10 +1798,10 @@ function required(body: Record<string, unknown>, key: string): string {
   return value;
 }
 
-function requiredStringArray(body: Record<string, unknown>, key: string): string[] {
-  const value = body[key];
+function requiredRepos(body: Record<string, unknown>): string[] {
+  const value = body.repos;
   if (!Array.isArray(value) || value.length === 0 || !value.every((item) => typeof item === "string" && item !== "")) {
-    throw new VaultError("invalid", `${key} must be a non-empty array of non-empty strings.`);
+    throw new VaultError("invalid", "repos must be a non-empty array of non-empty strings.");
   }
   return value;
 }

@@ -605,3 +605,62 @@ test("normal API and MCP accept Docker list/status/logs rows and acknowledge cle
     3,
   );
 });
+
+// Merge integration: normal Docker cleanup obeys the shared delegated-child fence too.
+test("Docker child deletion requires permanent delegated parent deletion before mailbox admission", async () => {
+  const f = await fixture(),
+    who = caller(f.actor);
+  const parent = await reservations.reserve(f.actor, {
+    requestId: randomUUID(),
+    hostId: f.hostId,
+    image: f.sandbox.image,
+    credentialId: f.credentialId,
+    credentialVersion: 1,
+  });
+  await hosts.complete(f.hostToken, f.installationId, { requestId: parent.id, outcome: "completed" });
+  for (const id of [parent.id, f.sandbox.id]) {
+    const requestId = randomUUID();
+    await reservations.stop(f.actor, id, requestId);
+    await hosts.complete(f.hostToken, f.installationId, { requestId, outcome: "completed" });
+  }
+  await db.query(
+    `insert into armada_access_parents(id,kind,org_id,owner_id,sandbox_id,state)
+    values($1,'sandbox',$2,$3,$1,'stopped')`,
+    [parent.id, f.actor.orgId, f.actor.userId],
+  );
+  await db.query(
+    `insert into orchestrator_children(sandbox_id,orchestrator_id,org_id,owner_id)
+    values($1,$2,$3,$4)`,
+    [f.sandbox.id, parent.id, f.actor.orgId, f.actor.userId],
+  );
+  let now = 0;
+  const controller = createDockerSandboxControls(sql, key, {
+    clock: {
+      now: () => now,
+      async wait(ms) {
+        const job = await hosts.poll(f.hostToken, f.installationId);
+        if (!job || job.operation !== "delete") throw Error("Expected authorized delete job");
+        await hosts.complete(f.hostToken, f.installationId, { requestId: job.requestId, outcome: "completed" });
+        now += ms;
+      },
+    },
+  });
+  await rejected(invoke(who, "delete", { id: f.sandbox.id }, controller), "conflict");
+  expect(
+    (
+      await db.query(
+        `select request_id from docker_host_jobs where bound_sandbox_id=$1
+    and bound_operation='delete'`,
+        [f.sandbox.id],
+      )
+    ).rows,
+  ).toHaveLength(0);
+  expect(await invoke(who, "delete", { id: parent.id }, controller)).toEqual({ id: parent.id, status: "deleted" });
+  expect(await invoke(who, "delete", { id: f.sandbox.id }, controller)).toEqual({
+    id: f.sandbox.id,
+    status: "deleted",
+  });
+  expect(
+    (await db.query(`select sandbox_id from orchestrator_children where sandbox_id=$1`, [f.sandbox.id])).rows,
+  ).toEqual([{ sandbox_id: f.sandbox.id }]);
+});

@@ -46,41 +46,147 @@ export function saveSmokeJournal(path: string, rows: SmokeSandboxReceipt[]) {
   return journalWrite;
 }
 
+interface CleanupIo {
+  fetch: (url: string, init: RequestInit) => Promise<Response>;
+  out: (line: string) => void;
+  now?: () => number;
+  deadline?: number;
+  sleep?: (ms: number) => Promise<void>;
+}
+const ERROR_CODES = new Set([
+  "invalid",
+  "invalid_request",
+  "unauthorized",
+  "forbidden",
+  "not_found",
+  "conflict",
+  "sandbox_not_ready",
+  "provider_unavailable",
+  "dependency_unavailable",
+  "outcome_unknown",
+  "credential_refused",
+  "provider_not_configured",
+  "unavailable",
+  "internal",
+  "unknown_route",
+  "rate_limited",
+  "payment_required",
+  "unsupported",
+]);
+const RETRY_CODES = new Set([
+  "conflict",
+  "sandbox_not_ready",
+  "provider_unavailable",
+  "dependency_unavailable",
+  "outcome_unknown",
+]);
+const CLEANUP_MS = 300_000; // Share the existing five-minute reserve across both deletion waves.
+
 export async function deleteSmokeReceipts(
   origin: string,
   token: string,
   rows: SmokeSandboxReceipt[],
-  io: { fetch: (url: string, init: RequestInit) => Promise<Response>; out: (line: string) => void },
+  io: CleanupIo,
   limit = 32,
 ): Promise<SmokeSandboxReceipt[]> {
   if (origin !== STAGING_ORIGIN) throw new Error("staging_only");
-  const remaining: SmokeSandboxReceipt[] = [];
-  await Promise.all(
-    rows.map(async (row, index) => {
-      if (index >= limit) {
-        remaining.push(row);
-        return;
-      }
-      try {
-        for (const action of ["stop", "delete"]) {
-          const response = await io.fetch(`${origin}/api/v1/sandbox/${action}`, {
-            method: "POST",
-            redirect: "error",
-            signal: AbortSignal.timeout(15_000),
-            headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-            body: JSON.stringify({ org: row.org, id: row.id }),
-          });
-          const body = (await response.json()) as { id?: string; status?: string; error?: { code?: string } };
-          // Already-deleted resources may reject stop. Delete is the authoritative receipt.
-          if (action === "delete" && (!response.ok || body.id !== row.id || body.status !== "deleted"))
-            throw new Error("delete_unconfirmed");
-        }
-        io.out(JSON.stringify({ step: "delete_smoke_sandbox", pass: true, ...row }));
-      } catch {
-        remaining.push(row);
-        io.out(JSON.stringify({ step: "delete_smoke_sandbox", pass: false, ...row }));
-      }
-    }),
+  const now = io.now ?? Date.now;
+  const sleep = io.sleep ?? ((ms: number) => Bun.sleep(ms));
+  const ordered = rows.toSorted(
+    (a, b) => Number(a.requestKey.startsWith("smoke-scoped-")) - Number(b.requestKey.startsWith("smoke-scoped-")),
   );
+  const selected = ordered.slice(0, limit);
+  const remaining = ordered.slice(limit);
+  // Deleted ordinary parents are the durable authority fence required before
+  // their delegated children may be removed. Do not race the two admissions.
+  const deadline = Math.min(now() + CLEANUP_MS, io.deadline ?? Number.POSITIVE_INFINITY);
+  const cleanup = async (row: SmokeSandboxReceipt) => {
+    let phase = "stop";
+    let httpStatus: number | null = null;
+    let code = "request_failed";
+    async function request(action: "stop" | "status" | "delete") {
+      const budget = deadline - now();
+      if (budget <= 0) {
+        if (httpStatus === null) code = "cleanup_timeout";
+        throw Error("cleanup_timeout");
+      }
+      phase = action;
+      code = "request_failed";
+      httpStatus = null;
+      const response = await io.fetch(
+        action === "delete"
+          ? `${origin}/api/v1/sandboxes/${encodeURIComponent(row.id)}?${new URLSearchParams({ org: row.org })}`
+          : `${origin}/api/v1/sandbox/${action}`,
+        {
+          method: action === "delete" ? "DELETE" : "POST",
+          redirect: "error",
+          signal: AbortSignal.timeout(Math.min(120_000, budget)),
+          headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+          ...(action === "delete" ? {} : { body: JSON.stringify({ org: row.org, id: row.id }) }),
+        },
+      );
+      httpStatus = response.status;
+      const body = (await response.json().catch(() => null)) as {
+        id?: unknown;
+        status?: unknown;
+        error?: { code?: unknown };
+      } | null;
+      code = response.ok
+        ? "invalid_receipt"
+        : typeof body?.error?.code === "string" && ERROR_CODES.has(body.error.code)
+          ? body.error.code
+          : "api_failed";
+      return { ok: response.ok, body };
+    }
+    async function pause() {
+      if (now() >= deadline) throw Error("cleanup_timeout");
+      await sleep(Math.min(5_000, deadline - now()));
+    }
+    try {
+      // Dispatch stop once. An unknown acknowledgement is reconciled by read,
+      // never by blindly replaying stop hooks on an archiving machine.
+      let terminalStop = false;
+      let alreadyDeleted = false;
+      try {
+        const stopped = await request("stop");
+        if (!stopped.ok && !RETRY_CODES.has(code)) throw Error(code);
+        if (stopped.ok && stopped.body?.id === row.id) {
+          terminalStop = stopped.body.status === "stopped" || stopped.body.status === "failed";
+          alreadyDeleted = stopped.body.status === "deleted";
+        }
+      } catch (error) {
+        if (code !== "request_failed" && !RETRY_CODES.has(code)) throw error;
+      }
+      while (!terminalStop && !alreadyDeleted) {
+        const status = await request("status");
+        if (!status.ok) throw Error(code);
+        if (status.body?.status === "deleted") {
+          if (status.body.id !== row.id) throw Error(code);
+          alreadyDeleted = true;
+          break;
+        }
+        if (status.body?.status === "stopped" || status.body?.status === "failed") break;
+        if (!["starting", "ready", "running", "stopping"].includes(String(status.body?.status))) throw Error(code);
+        code = "stop_not_terminal";
+        await pause();
+      }
+      if (!alreadyDeleted)
+        while (true) {
+          const deleted = await request("delete");
+          if (deleted.ok && deleted.body?.id === row.id && deleted.body.status === "deleted") break;
+          if (!RETRY_CODES.has(code)) throw Error(code);
+          // A pending delete retains a two-minute activity lease. Do not refresh
+          // provider status or replay stop; reconcile this same idempotent delete.
+          io.out(JSON.stringify({ step: "delete_smoke_sandbox_retry", ...row, phase, httpStatus, code }));
+          await pause();
+        }
+      io.out(JSON.stringify({ step: "delete_smoke_sandbox", pass: true, ...row }));
+    } catch {
+      remaining.push(row);
+      io.out(JSON.stringify({ step: "delete_smoke_sandbox", pass: false, ...row, phase, httpStatus, code }));
+    }
+  };
+  await Promise.all(selected.filter((row) => !row.requestKey.startsWith("smoke-scoped-")).map(cleanup));
+  await Promise.all(selected.filter((row) => row.requestKey.startsWith("smoke-scoped-")).map(cleanup));
   return remaining;
 }

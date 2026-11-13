@@ -190,7 +190,7 @@ def main():
           if args.follow_up else "PASS: one runtime-journal answer with reported tokens; stop/delete ACKed.")
     if args.normal_controls:
         print("PASS: normal Docker status/logs and stop/delete routes confirmed.")
-    print("Host remains registered/running for inspection. See docs/docker-staging.md for uninstall.")
+    print("Host remains registered/running for inspection. See docs/docker-host-daemon.md for uninstall.")
 
 
 if __name__ == "__main__":

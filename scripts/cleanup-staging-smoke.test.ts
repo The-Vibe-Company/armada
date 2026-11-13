@@ -13,9 +13,9 @@ test("coordinator cleanup is staging-only, org-scoped and dry-run unless explici
   const id = "22222222-2222-2222-2222-222222222222";
   const io = {
     out: (line: string) => counts.push(JSON.parse(line)),
-    fetch: (async () => {
+    fetch: (async (_url: string, init: RequestInit) => {
       mutations++;
-      return Response.json({ id, status: "deleted" });
+      return Response.json({ id, status: init.method === "DELETE" ? "deleted" : "stopped" });
     }) as unknown as typeof fetch,
   };
   try {

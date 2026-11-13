@@ -10,12 +10,16 @@ const root = import.meta.dir;
 const out = join(root, "dist");
 await rm(out, { recursive: true, force: true });
 await mkdir(out, { recursive: true });
-const result = await Bun.build({
-  entrypoints: [join(root, "src/main.ts"), join(root, "src/github-boat-main.ts")],
-  target: "bun",
-  outdir: out,
-});
-if (!result.success) throw Error("Runner bundle failed");
+// Build separate graphs: a multi-entry build retains main-runtime-only Core
+// dependencies in the small SSH broker, which has a strict transport budget.
+for (const entry of ["main.ts", "github-boat-main.ts"]) {
+  const result = await Bun.build({
+    entrypoints: [join(root, "src", entry)],
+    target: "bun",
+    outdir: out,
+  });
+  if (!result.success) throw Error("Runner bundle failed");
+}
 const require = createRequire(join(root, "package.json"));
 const codexRequire = createRequire(require.resolve("@openai/codex/package.json"));
 const vendor = dirname(codexRequire.resolve(`@openai/codex-linux-${process.arch}/package.json`));

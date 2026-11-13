@@ -167,7 +167,12 @@ async function verifyRecovery(archive: string, repo: string, commit: string) {
 }
 
 /** Operator entrypoint; injected I/O also permits fake-API validation without compute. */
-async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[], io: SmokeIo): Promise<boolean> {
+async function runPostDeploySmoke(
+  env: NodeJS.ProcessEnv,
+  args: readonly string[],
+  io: SmokeIo,
+  cleanupEnd?: number,
+): Promise<boolean> {
   function report(index: number, step: string, error?: unknown) {
     io.out(
       JSON.stringify({
@@ -332,7 +337,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     return false;
   }
   // Reserve the final five minutes for best-effort cleanup, independently of a failed step.
-  const deadline = io.now() + 35 * 60_000;
+  const deadline = Math.min(io.now() + 35 * 60_000, (cleanupEnd ?? Number.POSITIVE_INFINITY) - 5 * 60_000);
   const cleanupDeadline = deadline + 5 * 60_000;
   let cleaning = false;
   const protectedCanaries = new Set<string>();
@@ -1188,7 +1193,8 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
     io.out(JSON.stringify({ step: "smoke_cleanup_journal", pass: false }));
     return false;
   }
-  const cleanupIo = { fetch: io.fetch, out: io.out };
+  const cleanupEnd = io.now() + 40 * 60_000;
+  const cleanupIo = { fetch: io.fetch, out: io.out, now: io.now, sleep: io.sleep, deadline: cleanupEnd };
   rows = await deleteSmokeReceipts(STAGING_ORIGIN, env.ARMADA_TOKEN, rows, cleanupIo);
   await saveSmokeJournal(path, rows);
   const earlierRows = rows;
@@ -1245,7 +1251,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
     },
   };
   try {
-    passed = await runPostDeploySmoke(env, args, trackedIo);
+    passed = await runPostDeploySmoke(env, args, trackedIo, cleanupEnd);
   } finally {
     rows = await deleteSmokeReceipts(STAGING_ORIGIN, env.ARMADA_TOKEN, rows, cleanupIo, 64);
     rows = [...earlierRows, ...rows];

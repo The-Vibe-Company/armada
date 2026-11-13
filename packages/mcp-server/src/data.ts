@@ -109,6 +109,15 @@ const SANDBOX_MEMBER = `not exists(select 1 from public.orchestrators o where o.
   where m.org_id=s.org_id and m.user_id=$2::uuid)`;
 const SANDBOX_VISIBLE = `${SANDBOX_MEMBER} and exists(select 1 from public.members m
   where m.org_id=s.org_id and m.user_id=$2::uuid and (s.owner_id=$2::uuid or m.role='admin'))`;
+// Ordinary delegated children retain their relation, but permanent parent deletion
+// fences their authority before owner/admin cleanup. Legacy orchestrators keep
+// their dedicated lifecycle. Share the policy between authorization and admission.
+const SANDBOX_DELETION_MANAGED = `(exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)
+  or exists(select 1 from public.orchestrator_children c where c.sandbox_id=s.id
+    and not exists(select 1 from public.armada_access_parents p
+      join public.sandboxes parent on parent.id=p.sandbox_id
+      where p.id=c.orchestrator_id and p.org_id=c.org_id and p.owner_id=c.owner_id
+        and p.kind='sandbox' and parent.status='deleted')))`;
 const SANDBOX_LIST_COLUMNS = `case when (s.owner_id=$2::uuid or exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$2::uuid and m.role='admin')) then ${SANDBOX_USAGE} else null end as usage, s.preservation_note as "preservationNote", nullif(s.provider_sandbox_id,'') as "providerSandboxId",
   case when s.provider='boat' then nullif(s.provider_sandbox_id,'') else null end as "boatId", s.id, s.org_id as "orgId", s.owner_id as "ownerId",
   s.provider::text as provider, s.harness::text as harness, s.model, s.reasoning_effort as "reasoningEffort",
@@ -336,8 +345,7 @@ export function createSqlData(sql: Sql): DataSource {
         const row = (
           await sql.query<{ status: string; managed: boolean }>(
             `select s.status::text as status,
-             (exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)
-              or exists(select 1 from public.orchestrator_children c where c.sandbox_id=s.id)) as managed
+             ${SANDBOX_DELETION_MANAGED} as managed
            from public.sandboxes s where s.id=$3::uuid and s.org_id=any($1::uuid[])
            and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$2::uuid
              and (s.owner_id=$2::uuid or m.role='admin'))`,
@@ -346,7 +354,10 @@ export function createSqlData(sql: Sql): DataSource {
         ).rows[0];
         if (!row) throw new GoldenError("not_found", "No such sandbox or deletion access denied.");
         if (row.managed)
-          throw new GoldenError("conflict", "Managed orchestrator parents and children have their own lifecycle.");
+          throw new GoldenError(
+            "conflict",
+            "Managed orchestrators have their own lifecycle; delete an ordinary delegated parent before its child.",
+          );
         if (!["stopped", "failed", "deleted"].includes(row.status))
           throw new GoldenError("conflict", "Stop the sandbox before deleting it.");
       },
@@ -577,8 +588,7 @@ export function createSqlData(sql: Sql): DataSource {
         }
         if (patch.deleteRequested)
           fence += ` and s.status in ('stopped','failed')
-            and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)
-            and not exists(select 1 from public.orchestrator_children c where c.sandbox_id=s.id)`;
+            and not ${SANDBOX_DELETION_MANAGED}`;
         const ownsActivity = !!patch.activityToken && (patch.finishActivity || patch.renewActivity);
         if (ownsActivity) {
           params.push(patch.activityToken);

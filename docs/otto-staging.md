@@ -1,14 +1,21 @@
-# Otto read-only observation setup
+# Otto observations
+
+Otto is a read-only control tower bound to one organization and explicit GitHub
+repository. It does not launch, message, wake, refuse, complete tasks or operate
+providers. Observation APIs and the read-only dashboard are implemented; no automation
+authority follows from displaying the read model.
+
+## Operator setup
 
 Do not apply migrations or deploy from a worker. Coordinator staging actions:
 
-1. Apply the new Otto migration through the normal authorized migration process.
+1. Ensure the merged Otto schema is present through the normal authorized migration process.
 2. Bind `ARMADA_OTTO_ORG_ID` to the organization UUID and
    `ARMADA_OTTO_REPOSITORY` to the exact `owner/repo` full name. No default org.
 3. Set server-only `ARMADA_OTTO_GITHUB_TOKEN` to a repository-scoped read token
    (GitHub App installation token supplied/rotated by the owner, or fine-grained
    token). Required read permissions: Metadata, Pull requests, Issues, Checks,
-   Contents. No write permission. Rotation is operator-owned in this slice.
+   Contents. No write permission. Rotation is operator-owned.
 4. Reconciliation runs every five minutes without a webhook or model. Conditional
    requests cache ETags independently per page; a failed traversal records partial
    completeness. Token expiry/rate limits never produce an empty complete list.
@@ -26,9 +33,17 @@ Do not apply migrations or deploy from a worker. Coordinator staging actions:
 No sandbox tokens, provider operations, effects, task completion, or launch policy
 changes are introduced. Journal stores selected metadata only, not webhook bodies.
 
+## Dashboard and read model
+
+The `/otto` page displays tasks, associated/unlinked PR resources, owner evidence
+and today's observed orphans for the selected organization. It distinguishes
+unconfigured/unavailable/unknown observations rather than treating them as empty
+success. It has no task editing, launch or messaging controls. Resource links do
+not expand private sandbox visibility.
+
 ## Read model API and current-fleet limits
 
-Slice 3 adds authenticated GET `summary`, `tasks`, `resources`, `orphans`, `facts`
+Authenticated GET endpoints are `summary`, `tasks`, `resources`, `orphans`, `facts`
 under `/api/v1/otto/`. Pass `org_id=<bound UUID>` and optionally the exact bound
 `repository`. Use `limit=1..100` and the opaque `nextCursor` returned by each view.
 Every page carries `items`, `observedAt`, `completeness`, `nextCursor`; responses
@@ -101,7 +116,7 @@ ownership completeness and orphan completeness; an unproven total stays null.
 `confirmedDailyOrphanCount` counts observed detections, including recovered ones.
 Compare every paginated PR with a complete `gh pr list` in staging. Provisioning,
 webhook configuration, migration application and deployment remain coordinator-only.
-The dashboard slice is reserved for its assigned frontend agent.
+No write/task-management API is exposed.
 
 PR webhook state uses GitHub's `updated_at`, not receipt time, so delayed events
 cannot replace a newer observed head. Missing/future PR timestamps are rejected.
@@ -119,3 +134,32 @@ PR-number/URL metadata reports do not confirm ownership.
 Journal reads cap event size and total Boat bytes; an oversized/truncated tail is
 UNKNOWN, never an old idle state. Modal journal reads use the exact immutable
 workspace/environment/App scope, not an unscoped provider sandbox ID.
+
+## Storage and observation safety
+
+Server implementation is `packages/mcp-server/src/otto/`; browser-safe DTOs are
+`packages/core/src/otto/`. `otto_facts` is append-only selected evidence with org,
+repository, subject, source/ID, observation time, tri-state value and completeness.
+Delivery IDs deduplicate retries; even service role cannot UPDATE/DELETE facts.
+`otto_tasks` and `otto_resources` are replaceable server-owned projections, not
+writable task records. APIs recheck membership and private sandbox visibility.
+Neither raw webhook bodies, credentials, prompts nor arbitrary journal payloads
+are retained. A fact never asserts task completion.
+
+Signed webhooks are point observations, not complete inventory. REST reconciliation
+follows pagination to its end, caching validators per URL/page; 304 requires a
+stored successful selected page. A traversal is an observation window, not an
+atomic snapshot. Rate limits, missing pages, truncation or failed requests leave
+coverage partial/unknown. Positive evidence may survive a partial traversal;
+missing items cannot be retired without a complete relevant universe.
+
+Golden branches are launch defaults, not current checkout proof. Task/branch
+metadata and `codex/<issue>-…` refs can nominate candidates only within the exact
+repository; a user owner alone is not responsibility for a PR. Conflicts, invisible
+bindings and unobservable workstations stay unknown. No worker exec, new reporting
+tool, model call or extra agent authority is used to fill gaps.
+
+Before accepting staging, compare **every paginated PR** with a complete scoped
+`gh pr list`, including unknown/partial coverage, current/daily orphan distinction
+and private visibility. Future intentions, obligations, refusal rules and wake-ups
+are not part of this implemented read-only surface.

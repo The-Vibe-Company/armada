@@ -15,7 +15,15 @@ Choose a starting point below; these are selected guides, not an inventory of ev
 - [Self-hosting and local development](self-hosting.md): configure and run the server and dashboard.
 - [CLI/web parity](cli-web-parity.md) and [paging/JSON contract](cli-web-parity-556.md): complementary interface contracts.
 - [API error codes](api-error-codes.md) and [event history](events-history.md): failure and event-stream contracts.
-- [Template staging checklist](templates-staging.md): slice-specific operator validation, distinct from the user workflow and from [proposed template guarantees](design/templates-variables-secrets.md).
+- [Templates](templates-cli.md): CLI/API definitions, frozen manifests, recovery and raw-delivery limits; [deployed checks](post-deploy-smoke.md#targeted-staging-checks) cover staging acceptance, distinct from [proposed hardening](design/templates-variables-secrets.md).
+
+## Runtime and hosts
+
+- [Runtime](runtime-startup.md): artifacts, verified caches, private enrolment/epochs, dial-out commands and journal reconciliation.
+- [Boat runtime](boat-runtime-first-prompt.md): default-off Codex lifecycle, checkpoint/resume, explicit GitHub, automatic MCP and staged acceptance.
+- [Docker hosts](docker-host-daemon.md): daemon installation, registration, ownership/TTL, API preview and cleanup limits.
+- [OpenCode](runtime/opencode-modal.md): Modal-only ACP harness, accounts, portable state and lifecycle checks.
+- [Otto](otto-staging.md): read-only observations, dashboard, repository scope and unknown/partial evidence.
 
 ## Operate
 
