@@ -410,6 +410,7 @@ export async function startServer(
       ? createDockerNormalLaunch(sql, config.encryptionKey, {
           mcp: runtimeMcp,
           enabled: dockerLaunchEnabled,
+          deferLaunch: true,
           ...(runtimeGitHub ? { github: runtimeGitHub } : {}),
           credentials: dockerCredentials,
           ...(dockerBootstrap ? { bootstrap: dockerBootstrap } : {}),
@@ -626,6 +627,7 @@ export async function startServer(
     ...(options.logError ? { log: options.logError } : {}),
   });
   mcp.startBackground();
+  dockerLaunch?.startBackground();
   let draining = false;
   const requests = new Set<Promise<unknown>>();
   const fetch = (request: Request) => {
@@ -811,6 +813,7 @@ export async function startServer(
     const stopped = stop(closeActiveConnections);
     shutdown = Promise.all([
       allWorkersDone,
+      dockerLaunch?.close(),
       socketsStopped,
       (async () => {
         while (requests.size) await Promise.allSettled([...requests]);

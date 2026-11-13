@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import type { AgentEvent } from "../packages/core/src/provider.ts";
 import { validateReadableVariables } from "../packages/core/src/readable-variables.ts";
 import type { SandboxUsage } from "../packages/core/src/sandbox-usage.ts";
+import { shellQuote } from "../packages/core/src/shell-quote.ts";
 import type { TemplateDefinition } from "../packages/core/src/templates.ts";
 import { readDefaultPins, verifyDefaultReceipts } from "./default-skill-smoke.ts";
 import { createRuntimeUsageCheck } from "./runtime-usage-smoke.ts";
@@ -247,9 +248,6 @@ function canonical(value: unknown): string {
       .map(([k, v]) => `${JSON.stringify(k)}:${canonical(v)}`)
       .join(",")}}`;
   return JSON.stringify(value) ?? "undefined";
-}
-function shellQuote(value: string): string {
-  return "'" + value.replaceAll("'", "'\\''") + "'";
 }
 function exactCommand(command: unknown, expected: string): boolean {
   if (typeof command !== "string") return false;

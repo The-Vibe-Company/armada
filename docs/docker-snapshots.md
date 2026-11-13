@@ -13,6 +13,15 @@ not aliases for foreign provider snapshots. Snapshot builds require GitHub acces
 not a model account. The product applies host/installation, owner, visibility,
 source-definition and generation labels automatically.
 
+The host provides the checkout credential to the Docker build client through a
+per-build child environment variable and an explicit BuildKit `type=env` secret.
+The Dockerfile still reads only the private `github` secret mount; no token is
+stored in the context, arguments, Dockerfile `ENV`/`ARG`, labels, or image. The
+reserved environment variable is removed from ordinary Docker commands and the
+daemon's environment is never mutated. Reopening `/dev/stdin` is not supported
+by every Docker buildx client/plugin transport, so it is not used as a secret
+source.
+
 Create `armada.golden.json` locally (use repositories your GitHub connection can
 access; setup runs as the unprivileged sandbox user):
 
@@ -71,6 +80,13 @@ Build context and durable host receipts contain no token. Publication occurs onl
 after successful build/scan and exact immutable provenance verification. Known
 pattern scanning is not a proof against arbitrary encoded/user-supplied secrets:
 never put credentials in repository/config/init content.
+
+Failed builds expose a safe `failureReason` in `armada golden get`,
+`armada golden list` and the dashboard snapshot details. The host daemon logs
+the snapshot ID and a fixed failure message. Raw Docker/build/init output is
+not returned or logged because it can contain credentials. A failed build, an
+expired build and invalidated build authorization have distinct messages;
+older failed snapshots retain a generic diagnostic.
 
 There is one active build per host and a one-hour deadline. While building, the
 daemon continues ordinary mailbox work and physical TTL sweeps. Recovery adopts
@@ -145,3 +161,57 @@ offline or the server version changes. The rebuild endpoint accepts only
 `org`, source `id` and a new `requestId`, never caller image/config/version fields.
 Existing scan, unprivileged initialization, publication and epoch checks apply.
 A failed new build does not retire the original snapshot.
+
+### Repository history and secret scanning
+
+Docker snapshot builds clone only the selected branch head (`--depth=1`). Init
+commands can fetch additional history if needed, but the secret scan checks all
+materialized files and Git objects before publishing the image, including that
+extra history. This avoids importing unrelated historical credentials into a
+snapshot. Token-shaped test fixtures must be assembled at runtime rather than
+stored literally in source; the scan does not exempt test files. Boat and Modal
+checkout behavior is unchanged.
+
+### Normal launch preparation
+
+Normal owner Docker launches (including snapshot launches) return their persisted
+sandbox reservation promptly: `sandbox.status: "starting"`, `runtime: null`, and
+no prompt receipt yet. The server's dedicated launch worker prepares the runtime,
+GitHub access, repository checkout and environment before admitting the first
+prompt. Replay the **identical** `sandbox/launch` request (same `requestId`) to
+obtain the final prompt receipt, or inspect sandbox status for a plain failure
+reason. `scripts/smoke-docker-lifecycle.py` handles both accepted and older
+synchronous responses. A starting receipt is not proof that checkout succeeded.
+
+Repository checkout uses a shallow branch clone with a bounded runtime command;
+a slow clone no longer holds the launch HTTP response open. The server stores
+only fixed phase diagnostics, never Git output, credentials or exception text.
+Missing GitHub access becomes an authorization failure on the admitted sandbox.
+Durable worker leases are renewed while preparing; another server resumes an
+unfinished manifest after lease expiry (30 seconds) following a restart. Pending
+launches are not ready for user prompts until preparation completes. Template
+launches retain their existing synchronous admission callbacks and authorization
+rechecks; this change does not move those callbacks into background work.
+
+### Checking GitHub access
+
+Docker repository launches use the **launching user's** connected Armada GitHub
+App user access token, not the host owner's identity or the selected model
+credential. The App must cover the repository and that user must have access;
+Docker does not ask for a separate installation token or host-local GitHub login.
+Boat/Modal managed-runtime repository preflight uses the same token resolver and
+GitHub repository access check.
+
+Sign in as that same person against the same Armada server, then run
+`armada github status` to inspect connection state and installations;
+`armada github connect`, `reconnect`, `install`, and `manage INSTALLATION_ID`
+provide the corresponding repair flows. Status is not a per-repository access
+probe, and `armada doctor` currently checks neither GitHub connection nor repo
+access. Account-management commands require a personal login, not a service
+bearer. `armada github refresh SANDBOX_ID` configures an existing sandbox; it is
+not a read-only access check.
+
+A repository-authorization failure and an unacknowledged runtime GitHub setup are
+distinct. The latter reports a runtime/host delivery problem rather than telling
+the user to reconnect GitHub; a duration or generic error alone cannot establish
+that the stored GitHub grant is missing.

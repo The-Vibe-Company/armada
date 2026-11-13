@@ -33,8 +33,6 @@ import {
   MAX_SANDBOX_EXTENSION_TTL_SECONDS,
   parseMachineSize,
   parseMachineSizePolicy,
-  providerRateLimitDetails,
-  providerRateLimitMessage,
   sandboxIdentity,
   VERSION,
 } from "@armada/core";
@@ -110,7 +108,7 @@ import {
 } from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
 import { GatewayError } from "../../mcp-gateway/src/network.ts";
-import { apiFailureCode } from "./api-failure.ts";
+import { apiFailureCode, providerFailureResponse } from "./api-failure.ts";
 import { AuthUnavailable, authenticateCaller, type Caller, type SupabaseProject } from "./caller.ts";
 import { databasePoolMax } from "./config.ts";
 import { type CredentialBindingRecovery, createCredentialBindingRecovery } from "./credential-binding-recovery.ts";
@@ -141,7 +139,9 @@ import type { RuntimeFollowup } from "./runtime-followup.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
 import type { RuntimeResume } from "./runtime-resume.ts";
+import { createSandboxAccountChange } from "./sandbox-account-change.ts";
 import { type createSandboxArmadaAccess, parseSandboxArmadaAccess } from "./sandbox-armada-access.ts";
+import { createSandboxBillingAccount } from "./sandbox-billing-account.ts";
 import { bunSql } from "./sql.ts";
 import { createSubscriptionMigration } from "./subscription-migration.ts";
 import { callSharedTool, ToolApiError } from "./tool-api.ts";
@@ -359,6 +359,10 @@ export async function handleControlRequest(request: Request, options: ControlOpt
     });
   } catch (error) {
     if (error instanceof BodyTooLargeError) return fail(413, "invalid", error.message);
+    if (error instanceof ProviderError) {
+      const { status, error: failure } = providerFailureResponse(error);
+      return Response.json({ error: failure }, { status, headers: { "cache-control": "no-store" } });
+    }
     const failureCode = apiFailureCode(error);
     if (failureCode)
       return Response.json(
@@ -367,9 +371,6 @@ export async function handleControlRequest(request: Request, options: ControlOpt
             code: failureCode,
             message: error instanceof Error ? error.message : failureCode,
             ...(error instanceof GitHubHydrationError ? { details: error.details } : {}),
-            ...(error instanceof ProviderError && error.details?.keepSource === true
-              ? { details: { keepSource: true, sourceSandboxId: error.details.sourceSandboxId } }
-              : {}),
           },
         },
         { status: API_FAILURE_STATUS[failureCode], headers: { "cache-control": "no-store" } },
@@ -383,43 +384,6 @@ export async function handleControlRequest(request: Request, options: ControlOpt
     if (error instanceof Unauthorized) return fail(401, "unauthorized", error.message);
     if (error instanceof AuthUnavailable)
       return fail(503, "dependency_unavailable", "Authentication is temporarily unavailable.");
-    if (error instanceof ProviderError) {
-      const limit =
-        error.provider === "boat" && error.code === "rate_limited" && error.status === 429
-          ? providerRateLimitDetails({ ...error.details, provider: "boat", retryAfterSeconds: error.retryAfterSeconds })
-          : undefined;
-      const status =
-        error.code === "rate_limited"
-          ? 429
-          : error.code === "payment_required"
-            ? 402
-            : error.code === "conflict"
-              ? 409
-              : error.code === "forbidden"
-                ? 403
-                : error.code === "invalid_request"
-                  ? 400
-                  : 503;
-      return Response.json(
-        {
-          error: {
-            code: error.code,
-            message: limit ? providerRateLimitMessage(limit) : error.message,
-            ...(limit
-              ? { details: limit }
-              : error.details?.keepSource === true
-                ? {
-                    details: {
-                      keepSource: true,
-                      sourceSandboxId: error.details.sourceSandboxId,
-                    },
-                  }
-                : {}),
-          },
-        },
-        { status, headers: { "cache-control": "no-store" } },
-      );
-    }
     if (error instanceof ProviderRoutingError) return fail(503, error.code, error.message);
     if (error instanceof LaunchError)
       return fail(
@@ -2069,7 +2033,12 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
     );
   return {
     ...(env.ARMADA_PUBLIC_URL ? { publicUrl: env.ARMADA_PUBLIC_URL } : {}),
-    credentialBindingRecovery: createCredentialBindingRecovery(sql, encryptionKey),
+    sandboxBillingAccount: createSandboxBillingAccount(sql),
+    credentialBindingRecovery: createSandboxAccountChange(
+      sql,
+      launchCredentials(store, encryptionKey, undefined, modelAuth),
+      createCredentialBindingRecovery(sql, encryptionKey),
+    ),
     invitations: invitationsFromEnv(sql, env),
     templates,
     skillDefaults: createSkillDefaultsService(sql),

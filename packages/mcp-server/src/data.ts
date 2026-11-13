@@ -460,9 +460,11 @@ export function createSqlData(sql: Sql): DataSource {
             usage: Pick<SandboxUsage, "turnCount" | "turns"> | null;
             harness: Harness;
             admission: unknown;
+            rebound: boolean;
           }>(
             `select s.usage_turns as usage,s.harness::text as harness,
-               (select p.context from public.sandbox_usage_pricing p where p.sandbox_id=s.id) as admission
+               (select p.context from public.sandbox_usage_pricing p where p.sandbox_id=s.id) as admission,
+               exists(select 1 from public.sandbox_account_usage_pricing a where a.sandbox_id=s.id) as rebound
              from public.sandboxes s where ${SANDBOX_VISIBLE} and s.id=$3::uuid for update`,
             [...scope, id],
           );
@@ -470,13 +472,36 @@ export function createSqlData(sql: Sql): DataSource {
           if (!before) return;
           const merged = (await mergeNative(tx, false)).rows[0]?.usage;
           if (!merged) return;
+          const observations = options?.observations ?? [];
+          let contexts = options?.contexts;
+          if (contexts === undefined && observations.length) {
+            const admissions = await tx.query<{ prompt_id: string; context: unknown; captured: boolean }>(
+              `select prompt_id,pricing_context as context,pricing_context is not null as captured
+               from public.sandbox_turn_models where sandbox_id=$1 and prompt_id=any($2::text[])`,
+              [id, observations.map((row) => row.promptId)],
+            );
+            const byPrompt = new Map(admissions.rows.map((row) => [row.prompt_id, row]));
+            contexts = observations.flatMap((row) => {
+              const captured = byPrompt.get(row.promptId);
+              // Legacy turns retain the launch book. Missing provenance after a switch is unknown,
+              // never an excuse to bill the old turn against the new account (or vice versa).
+              const book = captured
+                ? captured.captured
+                  ? captured.context
+                  : before.admission
+                : before.rebound
+                  ? null
+                  : before.admission;
+              return admittedTurnContexts(book, [row], before.harness);
+            });
+          }
           const priced = {
             ...merged,
             turns: stampTurnPricing(
               merged.turns,
               before.usage?.turns ?? [],
-              options?.observations ?? [],
-              options?.contexts ?? admittedTurnContexts(before.admission, options?.observations ?? [], before.harness),
+              observations,
+              contexts ?? [],
               before.harness,
             ),
           };

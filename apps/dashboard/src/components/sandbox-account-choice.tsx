@@ -1,12 +1,11 @@
 "use client";
 
 import type { SandboxStatus } from "@armada/core";
-import { KeyRoundIcon, Loader2Icon } from "lucide-react";
+import { ChevronDownIcon, KeyRoundIcon, Loader2Icon } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useId, useState, useTransition } from "react";
 import { bindSandboxAccount } from "@/app/actions/sandbox-account";
-import { StopButton } from "@/components/sandbox-actions";
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -34,13 +33,14 @@ type Props = {
   /** Absent for a viewer who is not the owner: their accounts are never read. */
   choices?: AccountChoices;
   harnessLabel: string;
+  alreadyBound: boolean;
 };
 
 /**
  * A legacy Modal sandbox has no pinned account: its owner chooses one, deliberately and once, before it resumes.
  * Nothing is preselected, and the choice is confirmed before it is sent; a refusal keeps the selection.
  */
-export function SandboxAccountChoice({ sandboxId, status, owner, choices, harnessLabel }: Props) {
+export function SandboxAccountChoice({ sandboxId, status, owner, choices, harnessLabel, alreadyBound }: Props) {
   const router = useRouter();
   const [selected, setSelected] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
@@ -69,11 +69,14 @@ export function SandboxAccountChoice({ sandboxId, status, owner, choices, harnes
     });
   }
 
-  return (
+  const content = (
     <section
       id="account"
       aria-labelledby="account-title"
-      className="shrink-0 space-y-4 rounded-xl border border-warning/40 bg-warning/5 px-4 py-4 sm:px-6"
+      className={cn(
+        "shrink-0 space-y-4 rounded-xl border px-4 py-4 sm:px-6",
+        alreadyBound ? "bg-background" : "border-warning/40 bg-warning/5",
+      )}
     >
       <div className="space-y-1">
         <h2 id="account-title" className="flex items-center gap-2 text-base font-semibold">
@@ -129,8 +132,9 @@ export function SandboxAccountChoice({ sandboxId, status, owner, choices, harnes
               <p className="text-sm text-muted-foreground">Stopping. The choice opens once it has stopped.</p>
             ) : (
               <>
-                <StopButton sandboxId={sandboxId} />
-                <p className="text-sm text-muted-foreground">Stop it first, then choose.</p>
+                <p className="text-sm text-muted-foreground">
+                  Wait for the current turn or startup to finish, then refresh to choose an account.
+                </p>
               </>
             )}
             {result && (
@@ -164,6 +168,17 @@ export function SandboxAccountChoice({ sandboxId, status, owner, choices, harnes
         </AlertDialogContent>
       </AlertDialog>
     </section>
+  );
+  return alreadyBound ? (
+    <details className="group shrink-0">
+      <summary className="flex w-fit cursor-pointer list-none items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium outline-none hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring/50">
+        Change model account
+        <ChevronDownIcon className="size-4 transition-transform group-open:rotate-180" aria-hidden="true" />
+      </summary>
+      <div className="mt-3">{content}</div>
+    </details>
+  ) : (
+    content
   );
 }
 

@@ -93,6 +93,12 @@ export function createSandboxAccountChange(
           "Choose an account that supports this sandbox's current model, or launch a new sandbox with that account's model.",
         );
     }
+    if (
+      resolved.usagePricing &&
+      (resolved.usagePricing.credentialId !== pin.credentialId ||
+        resolved.usagePricing.credentialVersion !== pin.credentialVersion)
+    )
+      throw new VaultError("unavailable", "The selected account's pricing identity is inconsistent.");
     if (before.status === "ready") {
       if (!quiesce)
         throw new VaultError("credential_binding_unsafe", "Stop the sandbox safely before changing its account.");
@@ -153,16 +159,21 @@ export function createSandboxAccountChange(
           "update public.modal_server_harnesses set credential_id=$3,credential_version=$4 where scope=$1 and machine_id=$2",
           [machine.scope, current.provider_sandbox_id, pin.credentialId, pin.credentialVersion],
         );
-        await tx.query("update public.modal_machines set record=$3::jsonb where scope=$1 and id=$2", [
-          machine.scope,
-          current.provider_sandbox_id,
-          JSON.stringify(machine.record),
-        ]);
+        await tx.query(
+          "update public.modal_machines set record=$3::jsonb,lease_id=null,lease_until=null where scope=$1 and id=$2",
+          [machine.scope, current.provider_sandbox_id, JSON.stringify(machine.record)],
+        );
       }
       // Generation change revokes old runtime/enrolment tokens and sealed configuration via the existing trigger.
       await tx.query(
         "update public.sandboxes set credential_id=$2,credential_version=$3,lifecycle_generation=lifecycle_generation+1 where id=$1",
         [current.id, pin.credentialId, pin.credentialVersion],
+      );
+      // Keep immutable historical launch/turn quotes. Only future admissions select this new book.
+      await tx.query(
+        `insert into public.sandbox_account_usage_pricing(sandbox_id,credential_id,credential_version,context)
+         values($1,$2,$3,$4::jsonb) on conflict do nothing`,
+        [current.id, pin.credentialId, pin.credentialVersion, JSON.stringify(resolved.usagePricing ?? null)],
       );
       return { id: current.id, ...pin, harness: current.harness, status: "bound" };
     });

@@ -358,8 +358,14 @@ function sqlTurnModelStore(
     },
     async recordTurnModel(id, promptId, requestedModel) {
       await sql.query(
-        `insert into public.sandbox_turn_models(sandbox_id,prompt_id,requested_model)
-        values($1::uuid,$2,$3) on conflict do nothing`,
+        `insert into public.sandbox_turn_models(sandbox_id,prompt_id,requested_model,pricing_context)
+        select s.id,$2,$3,coalesce(
+          (select context from public.sandbox_account_usage_pricing a where a.sandbox_id=s.id
+            and a.credential_id=s.credential_id and a.credential_version=s.credential_version),
+          case when not exists(select 1 from public.sandbox_account_usage_pricing a where a.sandbox_id=s.id)
+            then (select context from public.sandbox_usage_pricing p where p.sandbox_id=s.id) end,
+          'null'::jsonb)
+        from public.sandboxes s where s.id=$1::uuid on conflict do nothing`,
         [id, promptId, requestedModel],
       );
     },

@@ -222,7 +222,7 @@ test("a pasted URL auto-detects OAuth, signs in through the server and reports t
   // A crafted return link cannot claim success: the page rereads the real status.
   await page.goto(`/tools?connection=${ALICE_LINEAR.replace("61", "99")}&oauth=returned`);
   await expect(page.locator('[data-oauth-return="failed"]').filter({ visible: true })).toContainText(
-    "could not be found",
+    "Sign-in status could not be checked",
   );
   await page.goto(`/tools?connection=00000000-0000-4000-8000-000000000063&oauth=returned`);
   await expect(page.locator('[data-oauth-return="failed"]').filter({ visible: true })).toContainText(
@@ -608,7 +608,7 @@ test("a catalog service adds a second named account through its sign-in, and Sla
   await page.goto("/tools");
   await expect(card(page, "Work Linear")).toBeVisible();
   await openAdd(page);
-  await expect(page.locator("[data-catalog-unavailable]")).toContainText("does not offer the service catalog yet");
+  await expect(page.locator("[data-catalog-unavailable]")).toContainText("You can still use Add server");
 });
 
 test("rename and include-by-default change metadata only, and an unreachable server offers Retry", async ({ page }) => {

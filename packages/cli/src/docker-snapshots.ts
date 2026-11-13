@@ -41,7 +41,7 @@ export async function dockerSnapshotCommand(
         : rows
             .map(
               (r) =>
-                `${r.id}\t${r.name}\t${r.status}\t${r.visibility}\t${r.hostName ?? r.hostId}\tBuilt on Armada ${r.builtOnVersion ?? "unknown version"}${snapshotUpdateAvailable(r.builtOnVersion, currentVersion) ? ` · Update to ${currentVersion}: armada golden rebuild ${r.id} --provider docker --org ${org}` : ""}`,
+                `${r.id}\t${r.name}\t${r.status}\t${r.visibility}\t${r.hostName ?? r.hostId}${r.failureReason ? `\t${r.failureReason}` : ""}\tBuilt on Armada ${r.builtOnVersion ?? "unknown version"}${snapshotUpdateAvailable(r.builtOnVersion, currentVersion) ? ` · Update to ${currentVersion}: armada golden rebuild ${r.id} --provider docker --org ${org}` : ""}`,
             )
             .join("\n") + "\n",
     );

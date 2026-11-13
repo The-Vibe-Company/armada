@@ -187,3 +187,29 @@ Coordinator verification uses the same command above with
 honest estimated/unknown costs and cleanup. Azure deployment names may have no
 catalog price; unknown cost is not a free request. No live Azure request has been
 proved by the deterministic adapter-selection tests.
+
+## Shared provider presets in the CLI (#1579)
+
+`armada creds presets` lists the same model connection choices as the dashboard,
+including their compatible agent. `--json` returns non-secret preset metadata.
+Create a named account with `creds connect`, without writing connection JSON or
+choosing an internal credential kind:
+
+```sh
+armada creds connect opencode-anthropic --name 'Anthropic coding' \
+  --models claude-opus-5-5 --file /private/anthropic-key
+armada creds connect opencode-azure --name 'Azure coding' \
+  --base-url https://resource.openai.azure.com/openai/v1 \
+  --models my-deployment --file /private/azure-key
+armada creds connect deepseek --name 'DeepSeek coding' \
+  --models deepseek-flash --file /private/deepseek-key
+```
+
+Omit `--file` to pipe a key on stdin. Fixed provider addresses cannot be
+overridden. Presets with resource-specific addresses require `--base-url`;
+custom providers require comma-separated `--models`. Ordinary OpenAI,
+Anthropic-for-Claude and OpenCode plan-key presets use the agent's own model
+list and take neither address nor model options. Add `--org` for an authorized
+shared account. This command creates accounts; the existing version-checked
+replacement/import commands remain unchanged. Preset catalog prices are captured
+by the same core serializer as dashboard creation; unknown prices remain unknown.

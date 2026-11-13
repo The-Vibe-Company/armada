@@ -8,18 +8,18 @@ import { useFormStatus } from "react-dom";
 import { launchOnDockerHost } from "@/app/actions/docker-hosts";
 import { ActionForm, SubmitButton } from "@/components/action-form";
 import { AccountField, Segmented } from "@/components/launch-dialog";
+import {
+  LaunchAdvanced,
+  LaunchDialogContent,
+  LaunchDialogHeader,
+  LaunchFields,
+  LaunchTaskField,
+  useLaunchSurface,
+} from "@/components/launch-surface";
+import { SubmitShortcut } from "@/components/mod-key";
 import { ModelFields } from "@/components/model-fields";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
-import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
+import { Dialog, DialogTrigger } from "@/components/ui/dialog";
 import type { ActionResult } from "@/lib/action";
 import { dockerLaunchKeyStorage, preferredHarness, UNKNOWN_DOCKER_LAUNCH } from "@/lib/docker-launch";
 import { HARNESS_LABELS } from "@/lib/labels";
@@ -57,13 +57,11 @@ export function DockerLaunchDialog({
           <RocketIcon /> Launch on this host
         </Button>
       </DialogTrigger>
-      <DialogContent className="max-h-[calc(100dvh-2rem)] gap-5 overflow-y-auto sm:max-w-xl">
-        <DialogHeader>
-          <DialogTitle>Launch on {hostName}</DialogTitle>
-          <DialogDescription>
-            An agent in a private sandbox, using the official Armada environment on this host.
-          </DialogDescription>
-        </DialogHeader>
+      <LaunchDialogContent>
+        <LaunchDialogHeader
+          title={`Launch on ${hostName}`}
+          description="An agent in a private sandbox, using the official Armada environment on this host."
+        />
         <DockerLaunchForm
           orgId={orgId}
           hostId={hostId}
@@ -72,7 +70,7 @@ export function DockerLaunchDialog({
           harnesses={harnesses}
           initialHarness={initialHarness}
         />
-      </DialogContent>
+      </LaunchDialogContent>
     </Dialog>
   );
 }
@@ -104,6 +102,7 @@ function DockerLaunchForm({
     ? chosenHarness
     : preferredHarness(harnesses, initialHarness, hasUsableAccount);
   const root = useRef<HTMLDivElement>(null);
+  useLaunchSurface(root);
   const storage = dockerLaunchKeyStorage(hostId);
   const router = useRouter();
   const usable = hasUsableAccount(harness);
@@ -147,24 +146,25 @@ function DockerLaunchForm({
   );
 
   return (
-    <div ref={root}>
+    <div ref={root} className="flex min-h-0 flex-1 flex-col">
       <ActionForm
         action={launch}
         focusError
-        className="space-y-4"
+        className="flex min-h-0 flex-1 flex-col"
+        footerClassName="space-y-2 border-t px-6 py-4"
         footer={
-          <div className="flex items-center justify-end gap-3">
+          <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-2">
             <LaunchProgress />
             {usable ? (
-              <SubmitButton>
-                <RocketIcon /> Launch
+              <SubmitButton className="w-full sm:w-auto">
+                <RocketIcon /> Launch <SubmitShortcut />
               </SubmitButton>
             ) : (
               <>
                 <p id={`${id}-no-account`} className="mr-auto text-xs text-warning">
                   A usable {HARNESS_LABELS[harness]} account is needed to launch.
                 </p>
-                <Button type="button" disabled aria-describedby={`${id}-no-account`}>
+                <Button type="button" className="w-full sm:w-auto" disabled aria-describedby={`${id}-no-account`}>
                   <RocketIcon /> Launch
                 </Button>
               </>
@@ -174,48 +174,44 @@ function DockerLaunchForm({
       >
         <input type="hidden" name="org" value={orgId} />
         <input type="hidden" name="hostId" value={hostId} />
-        <div className="space-y-2">
-          <Label htmlFor={`${id}-prompt`}>Task</Label>
-          <Textarea
-            id={`${id}-prompt`}
-            name="prompt"
-            rows={3}
-            placeholder="What should the agent do? Leave empty to start idle."
-          />
-        </div>
-        <p className="text-sm">
-          <span className="text-muted-foreground">Environment:</span> Armada official{" "}
-          <span className="text-muted-foreground">(fetched by your host the first time)</span>
-        </p>
-        {harnesses.length > 1 ? (
-          <Segmented
-            legend="Agent"
-            name="harness"
-            value={harness}
-            onChange={setHarness}
-            options={harnesses.map((value) => ({ value, label: HARNESS_LABELS[value] }))}
-          />
-        ) : (
-          <p className="text-sm">
-            <input type="hidden" name="harness" value={harness} />
-            <span className="text-muted-foreground">Agent:</span> {HARNESS_LABELS[harness]}
-          </p>
-        )}
-        <AccountField key={harness} idPrefix={id} harness={harness} accounts={accounts} onChange={() => {}} />
-        <ModelFields key={`${harness}-model`} idPrefix={id} harness={harness} catalog={MODEL_CATALOG} />
-        {unavailable.length > 0 && (
-          <details className="rounded-md border p-3 text-sm" data-docker-unavailable>
-            <summary className="cursor-pointer text-muted-foreground">Not available on Docker hosts yet</summary>
-            <ul className="mt-2 space-y-1">
-              {unavailable.map((item) => (
-                <li key={item.name}>
-                  <span className="font-medium">{item.name}</span>
-                  <span className="text-muted-foreground">: {item.reason}</span>
-                </li>
-              ))}
-            </ul>
-          </details>
-        )}
+        <LaunchFields>
+          <LaunchTaskField idPrefix={id} />
+          {harnesses.length > 1 ? (
+            <Segmented
+              legend="Agent"
+              name="harness"
+              value={harness}
+              onChange={setHarness}
+              options={harnesses.map((value) => ({ value, label: HARNESS_LABELS[value] }))}
+            />
+          ) : (
+            <p className="text-sm">
+              <input type="hidden" name="harness" value={harness} />
+              <span className="text-muted-foreground">Agent:</span> {HARNESS_LABELS[harness]}
+            </p>
+          )}
+          <AccountField key={harness} idPrefix={id} harness={harness} accounts={accounts} onChange={() => {}} />
+          <ModelFields key={`${harness}-model`} idPrefix={id} harness={harness} catalog={MODEL_CATALOG} />
+          <LaunchAdvanced summary={<span className="text-xs text-muted-foreground">Armada official environment</span>}>
+            <p className="text-sm">
+              <span className="text-muted-foreground">Environment:</span> Armada official (fetched by your host the
+              first time)
+            </p>
+            {unavailable.length > 0 && (
+              <div data-docker-unavailable>
+                <p className="font-medium">Not available on Docker hosts yet</p>
+                <ul className="mt-2 space-y-1">
+                  {unavailable.map((item) => (
+                    <li key={item.name}>
+                      <span className="font-medium">{item.name}</span>
+                      <span className="text-muted-foreground">: {item.reason}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </LaunchAdvanced>
+        </LaunchFields>
       </ActionForm>
     </div>
   );

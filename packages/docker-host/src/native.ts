@@ -258,8 +258,16 @@ export function httpApi(request: typeof fetch = fetch): Api & {
 /** Never a shell, never inherited output; inspect can contain secrets. */
 export const dockerCli: DockerMachineCli = {
   run(argv, stdin, options) {
+    // Buildx is a separate client process: its stdin may be a socket that cannot be reopened as /dev/stdin.
+    // A scoped environment secret is consumed by BuildKit, not Dockerfile ENV/ARG or the image.
+    const env = { ...process.env };
+    delete env.ARMADA_SNAPSHOT_GITHUB_TOKEN;
+    if (options?.githubBuildToken !== undefined) {
+      if (argv[0] !== "build") return Promise.reject(new Error("Build secret is only valid for image builds."));
+      env.ARMADA_SNAPSHOT_GITHUB_TOKEN = options.githubBuildToken;
+    }
     return new Promise((resolve, reject) => {
-      const child = spawn("docker", [...argv], { stdio: ["pipe", "pipe", "ignore"] });
+      const child = spawn("docker", [...argv], { stdio: ["pipe", "pipe", "ignore"], env });
       let output = "";
       let bytes = 0;
       let failed = false;

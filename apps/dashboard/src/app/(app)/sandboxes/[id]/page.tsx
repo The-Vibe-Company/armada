@@ -193,6 +193,9 @@ export default async function SandboxPage({ params }: Props) {
           </div>
           {configured && <SandboxActions sandboxId={sandbox.id} status={sandbox.status} />}
         </div>
+        <p className="text-xs text-muted-foreground" data-sandbox-billing-account>
+          Model account: <span className="font-medium text-foreground">{account.name}</span> · {account.billing}
+        </p>
         {outcome && <OutcomeDetail outcome={outcome} />}
         {preservation && <PreservationNotice preservation={preservation} className="max-w-2xl" />}
       </div>
@@ -214,6 +217,7 @@ export default async function SandboxPage({ params }: Props) {
             <SandboxAccountChoice
               sandboxId={sandbox.id}
               status={sandbox.status}
+              alreadyBound={sandbox.credential_id !== null}
               owner={owner}
               {...(choices ? { choices } : {})}
               harnessLabel={HARNESS_LABELS[sandbox.harness] ?? sandbox.harness}
@@ -356,6 +360,10 @@ function DockerSandbox({
         </div>
       </div>
 
+      <p className="text-xs text-muted-foreground" data-sandbox-billing-account>
+        Model account: <span className="font-medium text-foreground">{billing.name}</span> · {billing.billing}
+      </p>
+
       {life.notice && (
         <Alert data-lifecycle-notice={life.notice.kind} className="border-warning/40">
           <ClockAlertIcon className="text-warning" />
@@ -370,6 +378,7 @@ function DockerSandbox({
             <SandboxAccountChoice
               sandboxId={sandbox.id}
               status={sandbox.status}
+              alreadyBound={sandbox.credential_id !== null}
               owner
               {...(choices ? { choices } : {})}
               harnessLabel={HARNESS_LABELS[sandbox.harness] ?? sandbox.harness}

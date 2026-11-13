@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   type AgentEvent,
   DOCKER_IMAGE_UNAVAILABLE_MESSAGE,
+  DOCKER_LAUNCH_FAILURE_MESSAGES,
   type DockerSandboxStatus,
   GoldenError,
   HARNESS_CAPABILITIES,
@@ -69,7 +70,10 @@ function reason(row: Row) {
   if (row.status_reason === "expired") return "expired";
   if (row.status_reason === "idle_paused" && ["stopping", "stopped"].includes(row.status)) return "idle_paused";
   if (row.status !== "failed") return null;
-  return row.status_reason === DOCKER_IMAGE_UNAVAILABLE_MESSAGE ? row.status_reason : "Docker sandbox failed.";
+  return row.status_reason === DOCKER_IMAGE_UNAVAILABLE_MESSAGE ||
+    Object.values(DOCKER_LAUNCH_FAILURE_MESSAGES).some((message) => message === row.status_reason)
+    ? row.status_reason
+    : "Docker sandbox failed.";
 }
 function usage(value: unknown): SandboxUsage | null {
   if (!value || typeof value !== "object" || !("turnCount" in value) || !("turns" in value)) return null;
@@ -356,6 +360,8 @@ export function createDockerSandboxControls(
   ) {
     if (requestId !== undefined && !UUID.test(requestId)) throw invalid();
     if (operation === "delete") await assertDelete(caller, row.id);
+    if (onlyIfIdle && row.status === "ready" && !(await status(caller, row)).settled)
+      throw failure("conflict", "Wait for the current turn to finish before changing accounts.");
     const done = (current: Row) =>
       operation === "delete"
         ? current.status === "deleted"

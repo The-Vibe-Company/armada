@@ -1,5 +1,6 @@
 import {
   HARNESSES,
+  idlePauseMessage,
   MACHINE_SIZES,
   SANDBOX_PLACEMENT_LABELS,
   SANDBOX_PLACEMENT_PROVIDERS,
@@ -26,7 +27,7 @@ import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { readSelectedDockerHosts } from "@/lib/data/docker-hosts";
 import { readProviderSetup } from "@/lib/data/provider-setup";
-import { listSandboxCosts, listSandboxes } from "@/lib/data/sandboxes";
+import { listSandboxCosts, listSandboxes, listSandboxHostNames } from "@/lib/data/sandboxes";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { displayUser, listMemberships, memberDirectory, requireViewer } from "@/lib/data/viewer";
 import { hasDockerHost } from "@/lib/docker-snapshots";
@@ -34,7 +35,7 @@ import { HARNESS_LABELS } from "@/lib/labels";
 import { type LifecycleView, lifecycleView, readLifecycle } from "@/lib/lifecycle";
 import { preservationView, settledOutcome } from "@/lib/outcome";
 import { CLOUD_PROVIDERS_PATH } from "@/lib/provider-setup";
-import { machineSizeLabel, sandboxName, skippedRowsNote } from "@/lib/sandbox-access";
+import { machineSizeLabel, skippedRowsNote } from "@/lib/sandbox-access";
 import { costFigure } from "@/lib/sandbox-cost";
 import {
   FACETS,
@@ -46,6 +47,7 @@ import {
   parseSandboxFilters,
   SANDBOX_STATUSES,
 } from "@/lib/sandbox-filters";
+import { sandboxListName } from "@/lib/sandbox-list-name";
 import { createClient } from "@/lib/supabase/server";
 
 export const metadata: Metadata = { title: "Sandboxes" };
@@ -79,7 +81,10 @@ async function SandboxesContent({ searchParams }: Props) {
     selected ? readProviderSetup(selected.org.id) : null,
     readSelectedDockerHosts(),
   ]);
-  const costs = await listSandboxCosts(supabase, rows);
+  const [costs, hostNames] = await Promise.all([
+    listSandboxCosts(supabase, rows),
+    listSandboxHostNames(supabase, rows, hostRead.state === "ready" ? hostRead.list : null),
+  ]);
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const now = new Date();
   const filtered = hasSandboxFilters(filters);
@@ -213,7 +218,7 @@ async function SandboxesContent({ searchParams }: Props) {
                   <TableCell className="w-full min-w-0 max-sm:col-span-2 max-sm:block max-sm:p-0 sm:max-w-0 sm:min-w-40">
                     <SandboxName sandbox={sandbox} />
                     <p className="mt-2 flex flex-wrap items-center gap-1 text-xs text-muted-foreground sm:hidden">
-                      <ProviderName provider={sandbox.provider} className="shrink-0 gap-1" />
+                      <ProviderPlacement sandbox={sandbox} hostName={hostNames.get(sandbox.id)} />
                       <span className="break-words">
                         <span aria-hidden="true">·</span> {HARNESS_LABELS[sandbox.harness]}
                         {sandbox.machineSize && `, ${machineSizeLabel(sandbox.machineSize)}`}
@@ -226,13 +231,15 @@ async function SandboxesContent({ searchParams }: Props) {
                     <StatusBadge
                       status={sandbox.status}
                       idlePaused={sandbox.idlePaused === true}
+                      canMessage={sandbox.canOpen}
                       expiresAt={sandbox.expiresAt}
                     />
+                    <ConversationHint sandbox={sandbox} now={now} />
                     <LifecycleHint view={lifecycleView(sandbox.status, readLifecycle(sandbox), now)} />
                     <OutcomeHint sandbox={sandbox} />
                   </TableCell>
                   <TableCell className="hidden sm:table-cell">
-                    <ProviderName provider={sandbox.provider} />
+                    <ProviderPlacement sandbox={sandbox} hostName={hostNames.get(sandbox.id)} />
                   </TableCell>
                   <TableCell className="hidden md:table-cell">{HARNESS_LABELS[sandbox.harness]}</TableCell>
                   <TableCell className="hidden md:table-cell">
@@ -253,7 +260,7 @@ async function SandboxesContent({ searchParams }: Props) {
                     <CostCell cost={costs.get(sandbox.id)} />
                   </TableCell>
                   <TableCell className="relative z-10 max-sm:col-start-2 max-sm:row-start-2 max-sm:p-0">
-                    <SandboxRowMenu id={sandbox.id} name={sandboxName(sandbox)} canOpen={sandbox.canOpen} />
+                    <SandboxRowMenu id={sandbox.id} name={sandboxListName(sandbox)} canOpen={sandbox.canOpen} />
                   </TableCell>
                   <TableCell className="relative z-10 col-span-2 block p-0 text-xs text-muted-foreground sm:hidden">
                     {displayUser(directory, sandbox.ownerId, viewer.id)} · Created{" "}
@@ -300,21 +307,18 @@ function SandboxName({ sandbox }: { sandbox: SandboxListMetadata }) {
       <Link
         href={`/sandboxes/${sandbox.id}`}
         // The link covers its whole row (the row is the target), and its focus ring is drawn around the row.
-        className="inline-flex max-w-full items-center gap-1.5 font-mono text-[13px] font-medium underline-offset-4 outline-none after:absolute after:inset-0 after:content-[''] hover:underline focus-visible:after:ring-2 focus-visible:after:ring-ring focus-visible:after:ring-inset"
+        className="inline-flex max-w-full items-center gap-1.5 text-[13px] font-medium underline-offset-4 outline-none after:absolute after:inset-0 after:content-[''] hover:underline focus-visible:after:ring-2 focus-visible:after:ring-ring focus-visible:after:ring-inset"
       >
-        <span className="break-all whitespace-normal sm:truncate" title={sandboxName(sandbox)}>
-          {sandboxName(sandbox)}
+        <span className="min-w-0 break-words whitespace-normal" title={sandboxListName(sandbox)}>
+          {sandboxListName(sandbox)}
         </span>
         <LinkPendingIcon />
       </Link>
     );
   return (
-    <span
-      className="inline-flex max-w-full items-center gap-1.5 font-mono text-sm text-muted-foreground"
-      data-restricted
-    >
-      <span className="break-all whitespace-normal sm:truncate" title={sandboxName(sandbox)}>
-        {sandboxName(sandbox)}
+    <span className="inline-flex max-w-full items-center gap-1.5 text-sm text-muted-foreground" data-restricted>
+      <span className="min-w-0 break-words whitespace-normal" title={sandboxListName(sandbox)}>
+        {sandboxListName(sandbox)}
       </span>
       <LockIcon aria-hidden="true" className="size-3.5 shrink-0" />
       <span className="sr-only">Only its owner and organization admins can open it</span>
@@ -397,4 +401,28 @@ function countLabel(total: number, filtered: boolean): string {
 
 function capitalize(value: string): string {
   return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+function ProviderPlacement({ sandbox, hostName }: { sandbox: SandboxListMetadata; hostName: string | undefined }) {
+  return (
+    <span className="inline-flex min-w-0 flex-col gap-0.5">
+      <ProviderName provider={sandbox.provider} />
+      {sandbox.provider === "docker" && (
+        <span className="max-w-48 text-xs whitespace-normal text-muted-foreground break-words">
+          {sandbox.canOpen ? (hostName ?? "Machine name unavailable") : "Machine details private"}
+        </span>
+      )}
+    </span>
+  );
+}
+
+/** The state badge stays canonical; touch users also get the next step without a hover tooltip. */
+function ConversationHint({ sandbox, now }: { sandbox: SandboxListMetadata; now: Date }) {
+  if (!sandbox.canOpen) return null;
+  const text = idlePauseMessage(sandbox, now)
+    ? "Wakes when you message"
+    : sandbox.status === "ready"
+      ? "Waiting for you"
+      : null;
+  return text ? <p className="mt-1 max-w-48 text-xs whitespace-normal text-muted-foreground">{text}</p> : null;
 }

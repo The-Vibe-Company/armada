@@ -37,9 +37,9 @@ execution owner; unpinned templates choose the current default per occurrence.
 Explicit template/launch pins remain explicit. No ordinary fallback to a second
 account was found when a valid compatible personal default exists.
 
-Direct Docker launch, Armada-access parent launch and scoped child launch still
-require explicit account selection: omission is refused, not silently billed to
-another account. Scoped children additionally require an account/version allowed
+Direct Docker launch now uses the personal default when omitted (#1640).
+Armada-access parent launch and scoped child launch still require explicit
+account selection: omission is refused, not silently billed to another account. Scoped children additionally require an account/version allowed
 by the parent's grant. Omission/default support on these paths remains #1579 work
 and must not broaden delegated account permissions.
 
@@ -52,3 +52,16 @@ auth. Repeat from stopped and idle-paused. During a turn verify refusal without
 interrupting it or changing the pin. Verify other members and wrong-org tokens
 cannot switch the owner's account. Native Boat must report its explicit limitation
 without claiming success. This is a procedure, not live staging evidence.
+
+
+## Pricing admission and deployment ordering
+
+Apply `20261113233524_account_pricing_admission.sql` through the normal validated
+migration path before deploying this server. No worker applies remote SQL.
+Original launch books and per-account revision books remain immutable. Each new
+turn captures its book at admission. A binding change admits the selected
+account's book without rewriting historical turn quotes; delayed observations use
+their captured original account. Missing post-switch provenance stays unknown.
+Legacy observations retain their original launch book. Preserve this
+admission-aware reader/writer on rollback after account changes; older pricing
+code does not understand rebound books.

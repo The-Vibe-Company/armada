@@ -1,4 +1,5 @@
 import { type Harness, isHarness } from "../packages/core/src/harnesses.ts";
+import { shellQuote as quote } from "../packages/core/src/shell-quote.ts";
 import { providerParitySmoke } from "./provider-parity-smoke.ts";
 import {
   deleteSmokeReceipts,
@@ -587,7 +588,6 @@ async function runPostDeploySmoke(
           },
         })
       : undefined;
-    const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
     const scratch = `armada-runtime-smoke-${crypto.randomUUID()}`;
     const receipt = `/tmp/${scratch}`;
     let pushAttempted = false;

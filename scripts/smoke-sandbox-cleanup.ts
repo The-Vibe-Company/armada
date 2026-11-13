@@ -80,8 +80,11 @@ const ERROR_CODES = new Set([
   "rate_limited",
   "payment_required",
   "unsupported",
+  "sandbox_busy",
 ]);
 const RETRY_CODES = new Set([
+  "unavailable",
+  "sandbox_busy",
   "conflict",
   "sandbox_not_ready",
   "provider_unavailable",
@@ -167,7 +170,11 @@ export async function deleteSmokeReceipts(
       }
       while (!terminalStop && !alreadyDeleted) {
         const status = await request("status");
-        if (!status.ok) throw Error(code);
+        if (!status.ok) {
+          if (!RETRY_CODES.has(code)) throw Error(code);
+          await pause();
+          continue;
+        }
         if (status.body?.status === "deleted") {
           if (status.body.id !== row.id) throw Error(code);
           alreadyDeleted = true;
@@ -182,7 +189,7 @@ export async function deleteSmokeReceipts(
         while (true) {
           const deleted = await request("delete");
           if (deleted.ok && deleted.body?.id === row.id && deleted.body.status === "deleted") break;
-          if (!RETRY_CODES.has(code)) throw Error(code);
+          if (!RETRY_CODES.has(code) && !(deleted.ok && deleted.body?.id === row.id)) throw Error(code);
           // A pending delete retains a two-minute activity lease. Do not refresh
           // provider status or replay stop; reconcile this same idempotent delete.
           io.out(JSON.stringify({ step: "delete_smoke_sandbox_retry", ...row, phase, httpStatus, code }));

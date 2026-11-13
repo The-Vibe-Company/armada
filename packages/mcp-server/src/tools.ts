@@ -1955,6 +1955,11 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           "credential_binding_unsafe",
           "Wait for the running turn or lifecycle operation to finish before changing accounts.",
         );
+      if (args.only_if_idle && found.status === "ready" && !(await statusOf(args.id, undefined)).settled)
+        throw new VaultError(
+          "credential_binding_unsafe",
+          "Wait for the current turn to finish before changing accounts.",
+        );
       // A repeated stop observes the admitted request; it must not compete with
       // its activity/reconciliation lease or replay provider hooks on archiving compute.
       if (found.stopRequestedAt || ["stopping", "stopped"].includes(found.status))
