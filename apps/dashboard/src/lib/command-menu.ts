@@ -44,10 +44,10 @@ export const COMMANDS: readonly Command[] = [
   { id: "sandboxes", label: "Sandboxes", href: "/sandboxes", group: "Go to", keywords: ["agents", "logs", "running"] },
   {
     id: "environments",
-    label: "Environments",
+    label: "Snapshots",
     href: "/environments",
     group: "Go to",
-    keywords: ["goldens", "snapshots", "repositories"],
+    keywords: ["environments", "goldens", "repositories"],
   },
   {
     id: "templates",

@@ -42,6 +42,7 @@ import {
   tokenRevoke,
 } from "./auth-commands.ts";
 import { launchDocker } from "./docker-launch.ts";
+import { hostCommand } from "./host-commands.ts";
 import { operation, parseTtl } from "./operations.ts";
 import { printOptionalResourceAdvice } from "./resource-advice.ts";
 import { routineCommand } from "./routine-commands.ts";
@@ -81,8 +82,10 @@ export interface Deps {
 const HELP = `armada ${VERSION}: launch coding agents in provider-scoped sandboxes
 
 Usage:
-  armada host add --org UUID
-  armada launch [prompt] --provider docker --host UUID --image digest-ref --agent claude|codex|opencode --credential-id UUID --org UUID [--request-id UUID] [--json]
+  armada host add [--name NAME] [--org UUID]
+  armada host list [--json] [--org UUID]
+  armada host revoke UUID [--org UUID]
+  armada launch [prompt] --provider docker --host UUID|NAME --image digest-ref --agent claude|codex|opencode --credential-id UUID --org UUID [--request-id UUID] [--json]
                                            Opt-in plain-image Docker launch through the normal Armada API.
   armada --version                         Print the version
   armada --help                            Show this help
@@ -347,6 +350,7 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
   const terminator = rest.indexOf("--");
   const optionArgs = terminator < 0 ? rest : rest.slice(0, terminator);
   const scoped = [
+    "host",
     "golden",
     "launch",
     "list",
@@ -393,27 +397,8 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
     case "help":
       io.out(HELP);
       return 0;
-    case "host": {
-      const args = parseArgs(rest.slice(1));
-      if (rest[0] !== "add" || args.positionals.length || [...args.options.keys()].some((key) => key !== "--org"))
-        throw new GoldenError("invalid_config", "Usage: armada host add --org UUID");
-      const org = single(args, "--org");
-      if (!org) throw new GoldenError("invalid_config", "--org is required.");
-      const client = await createArmadaApiClient(authOf(io, deps));
-      const ticket = await client.request<{ hostId: string; command: string; expiresAt: string }>(
-        "/api/v1/docker/hosts/register-token",
-        { method: "POST", body: JSON.stringify({ org }) },
-      );
-      if (!ticket.command || !ticket.expiresAt)
-        throw new GoldenError(
-          "invalid_config",
-          "Invalid host registration response; reconcile the issued host before retrying.",
-        );
-      io.out(
-        `Run on the Docker machine (one-use registration):\n${ticket.command}\nHost: ${ticket.hostId}\nExpires: ${ticket.expiresAt}\n`,
-      );
-      return 0;
-    }
+    case "host":
+      return hostCommand(rest, { ...authOf(io, deps), ...io });
     case "golden":
       return golden(rest, io, deps);
     case "launch":
