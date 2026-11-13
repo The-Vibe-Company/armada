@@ -680,7 +680,10 @@ export async function startServer(
   // Only authenticated normal Docker launches opt out; their service deadline
   // remains bounded, and other providers/routes keep their existing timeouts.
   control.configureDockerLaunchRequest = (request) => server.timeout(request, 0);
-  const lifecycle = createSandboxLifecycle(sql, createMcpSandboxProviderResolver(sql, providers));
+  const idleDelayMs = Number(env.ARMADA_RUNTIME_IDLE_MINUTES ?? 10) * 60_000;
+  const lifecycle = createSandboxLifecycle(sql, createMcpSandboxProviderResolver(sql, providers), {
+    delayMs: idleDelayMs,
+  });
   const workers = startServerWorkers(
     goldenBuilds,
     lifecycle,
@@ -690,7 +693,7 @@ export async function startServer(
     [
       delegatedAccess.childWorker,
       createRuntimeIdle(sql, config.encryptionKey, runtimeCheckpoint, {
-        delayMs: Number(env.ARMADA_RUNTIME_IDLE_MINUTES ?? 10) * 60_000,
+        delayMs: idleDelayMs,
         ...(dockerBootstrap
           ? {
               dockerStop: (actor, id, requestId) =>

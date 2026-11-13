@@ -1,11 +1,19 @@
 import { HOST_CAPABILITIES, isSandboxProvider, type Provider, ProviderError, type Sql } from "@armada/core/server";
 
+import { nativeIdleDue, nativeQuiescent } from "./native-idle.ts";
 import { INTERRUPTED_LAUNCH_REASON } from "./turns.ts";
 import { preserveBeforeStop, recordStopDispatch } from "./work-preservation.ts";
 
 /** One bounded batch in the existing server loop. SQL leases serialize replicas; generation
  * fencing prevents an old observation from publishing over a newly admitted resume. */
-export function createSandboxLifecycle(sql: Sql, providerFor: (id: string) => Promise<Provider>) {
+export function createSandboxLifecycle(
+  sql: Sql,
+  providerFor: (id: string) => Promise<Provider>,
+  options: { now?: () => number; delayMs?: number } = {},
+) {
+  const now = options.now ?? Date.now;
+  const delay = options.delayMs ?? 600_000;
+  if (!Number.isSafeInteger(delay) || delay < 1) throw Error("Invalid native idle delay.");
   const pending = new Set<Promise<unknown>>();
   // Cancellation bounds the scheduling lane without pretending an in-flight SDK stop
   // was undone. Raw operations remain tracked and their results cannot publish late.
@@ -41,6 +49,12 @@ export function createSandboxLifecycle(sql: Sql, providerFor: (id: string) => Pr
           lifecycle_generation: number;
           expires_at: Date | string;
           status: string;
+          status_reason: string | null;
+          task_prompt_id: string | null;
+          activity_lease_id: string | null;
+          application_secret_tainted: boolean;
+          credential_id: string | null;
+          credential_version: number | null;
           owner_is_member: boolean;
           preservation_note: string | null;
           stop_requested_at: Date | string | null;
@@ -55,7 +69,7 @@ export function createSandboxLifecycle(sql: Sql, providerFor: (id: string) => Pr
           and (candidate.activity_until is null or candidate.activity_until<now())
           and (candidate.reconcile_lease_until is null or candidate.reconcile_lease_until<now())
           order by candidate.reconcile_after limit 1 for update of candidate skip locked)
-        returning s.id,s.provider_sandbox_id,s.runtime_transport,s.boat_runtime,s.lifecycle_generation,s.expires_at,s.status::text as status,s.stop_requested_at,s.preservation_note,
+        returning s.id,s.provider_sandbox_id,s.runtime_transport,s.boat_runtime,s.lifecycle_generation,s.expires_at,s.status::text as status,s.status_reason,s.task_prompt_id,s.activity_lease_id,s.application_secret_tainted,s.credential_id,s.credential_version,s.stop_requested_at,s.preservation_note,
           exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id) as owner_is_member`,
           [token],
         )
@@ -79,13 +93,35 @@ export function createSandboxLifecycle(sql: Sql, providerFor: (id: string) => Pr
       let error: string | null = null;
       let resolved = false;
       let stoppedAt: Date | undefined;
-      const expired = new Date(row.expires_at).getTime() <= Date.now();
+      const expired = new Date(row.expires_at).getTime() <= now();
+      const native = !row.boat_runtime && row.runtime_transport !== "dialout";
+      // Lease expiry is not evidence a native exec completed. Retain its identity
+      // until an owner outcome or explicit/TTL cleanup, rather than inventing idle.
+      const retainUnknownActivity =
+        native &&
+        row.activity_lease_id !== null &&
+        !expired &&
+        !row.stop_requested_at &&
+        ["ready", "running"].includes(row.status);
       try {
         // Uses persisted owner membership, source credential visibility and pinned Modal App.
         const provider = await operation(signal, () => providerFor(row.id));
         resolved = true;
         let info = await operation(signal, () => provider.get(row.provider_sandbox_id));
         physicalExit = info.physicalExitConfirmed === true;
+        const idleStop =
+          native &&
+          !expired &&
+          (row.status_reason === "idle_paused" ||
+            (!row.stop_requested_at &&
+              row.activity_lease_id === null &&
+              !row.application_secret_tainted &&
+              row.credential_id !== null &&
+              row.credential_version !== null &&
+              ["ready", "running"].includes(row.status) &&
+              (await operation(signal, () =>
+                nativeIdleDue(provider, info, row.task_prompt_id, now(), delay, signal),
+              ))));
         if (
           !physicalExit &&
           !["stopped", "deleted"].includes(info.state) &&
@@ -94,7 +130,11 @@ export function createSandboxLifecycle(sql: Sql, providerFor: (id: string) => Pr
             HOST_CAPABILITIES[provider.id].waitForPendingStop &&
             info.state === "stopping"
           ) &&
-          (row.stop_requested_at !== null || row.status === "stopping" || row.status === "starting" || expired)
+          (row.stop_requested_at !== null ||
+            row.status === "stopping" ||
+            row.status === "starting" ||
+            expired ||
+            idleStop)
         ) {
           signal?.throwIfAborted();
           const owned = await sql.query<{ id: string }>(
@@ -103,23 +143,61 @@ export function createSandboxLifecycle(sql: Sql, providerFor: (id: string) => Pr
               stop_requested_at=coalesce(stop_requested_at,clock_timestamp()),
               stop_generation=case when stop_requested_at is null then stop_generation+1 else stop_generation end,
               status=case when status in ('starting','failed') then status else 'stopping'::public.sandbox_status end,
-              status_reason=case when $4 and status not in ('starting','failed') then 'expired' else status_reason end
+              status_reason=case when $4 and status not in ('starting','failed') then 'expired' when $5 then 'idle_paused' else status_reason end
             where id=$1::uuid and reconcile_lease=$2::uuid and lifecycle_generation=$3
-              and reconcile_lease_until>now() and (activity_until is null or activity_until<now()) returning id`,
-            [row.id, token, row.lifecycle_generation, expired],
+              and reconcile_lease_until>now() and (activity_until is null or activity_until<now())
+              and exists(select 1 from public.members m where m.org_id=sandboxes.org_id and m.user_id=sandboxes.owner_id) returning id`,
+            [row.id, token, row.lifecycle_generation, expired, idleStop],
           );
           if (!owned.rows[0]) return true;
           signal?.throwIfAborted();
-          // A best-effort preservation timeout is NOT proof the active turn settled.
-          if (!row.boat_runtime && row.runtime_transport !== "dialout" && ["ready", "running"].includes(info.state))
+          // Modal has already fenced native admission once its durable stop enters
+          // checkpoint/snapshot/terminate. Its reconciler owns that in-flight stop;
+          // active-only observation or recapture here would make retries impossible.
+          const reconcilingModalStop =
+            idleStop &&
+            provider.id === "modal" &&
+            info.state === "stopping" &&
+            ["checkpoint", "snapshot", "terminate"].includes(info.providerState);
+          const requireIdle = async () => {
+            if (!(await nativeQuiescent(provider, info, signal)))
+              throw new ProviderError({
+                provider: provider.id,
+                code: "sandbox_not_ready",
+                retryable: true,
+                message: "Native work is active or unknown; idle stop waits without interruption.",
+              });
+          };
+          if (idleStop && !reconcilingModalStop) await operation(signal, requireIdle);
+          const preservationProvider = idleStop
+            ? new Proxy(provider, {
+                get(target, property) {
+                  if (property === "quiesce") return requireIdle;
+                  const value = Reflect.get(target, property, target);
+                  return typeof value === "function" ? value.bind(target) : value;
+                },
+              })
+            : provider;
+          // Automatic idle stop may observe quiescence, never interrupt a turn.
+          if (
+            !idleStop &&
+            !row.boat_runtime &&
+            row.runtime_transport !== "dialout" &&
+            ["ready", "running"].includes(info.state)
+          )
             await operation(signal, () =>
               (provider.quiesce ?? provider.interrupt).call(provider, { sandboxId: row.provider_sandbox_id }),
             );
           signal?.throwIfAborted();
           if (
-            (await preserveBeforeStop(sql, provider, row.id, row.provider_sandbox_id, "lifecycle_stop").catch(
-              () => {},
-            )) === "pending"
+            !reconcilingModalStop &&
+            (await preserveBeforeStop(
+              sql,
+              preservationProvider,
+              row.id,
+              row.provider_sandbox_id,
+              "lifecycle_stop",
+            ).catch(() => {})) === "pending"
           )
             throw new ProviderError({
               provider: provider.id,
@@ -128,12 +206,22 @@ export function createSandboxLifecycle(sql: Sql, providerFor: (id: string) => Pr
               message: "Interruption is pending; retry stop after turns settle.",
             });
           signal?.throwIfAborted();
+          if (idleStop && !reconcilingModalStop) await operation(signal, requireIdle);
+          const requireRetention = !expired && (idleStop || row.status_reason === "idle_paused");
           recordStopDispatch(row.id, row.provider_sandbox_id, "lifecycle_stop");
-          await operation(signal, () => provider.stop({ sandboxId: row.provider_sandbox_id }));
+          await operation(signal, () =>
+            provider.stop({
+              sandboxId: row.provider_sandbox_id,
+              ...(requireRetention ? { requireRetention: true } : {}),
+            }),
+          );
           info = await operation(signal, () => provider.get(row.provider_sandbox_id));
         }
         signal?.throwIfAborted();
-        physicalExit = info.physicalExitConfirmed === true;
+        physicalExit =
+          info.physicalExitConfirmed === true ||
+          ((idleStop || row.status_reason === "idle_paused") &&
+            info.stopNote === "checkpoint_failed_disk_not_retained");
         stoppedAt = info.stoppedAt;
         terminal = physicalExit || ["stopped", "deleted"].includes(info.state);
         if (!terminal && (expired || row.status === "stopping" || row.stop_requested_at !== null))
@@ -149,11 +237,12 @@ export function createSandboxLifecycle(sql: Sql, providerFor: (id: string) => Pr
         `update public.sandboxes set
         -- A failed launch keeps its diagnostic even after its machine is confirmed stopped.
         status=case when $7 or status='starting' then 'failed'::public.sandbox_status when $4 and status <> 'failed' then 'stopped'::public.sandbox_status else status end,
-        status_reason=case when status='starting' then coalesce(status_reason,$8::text) when $7 then coalesce(status_reason,'Provider confirmed physical exit without a new verified recovery checkpoint.') when $4 and $10 and status<>'failed' then 'expired' else status_reason end,
+        status_reason=case when status='starting' then coalesce(status_reason,$8::text) when $7 then coalesce(nullif(status_reason,'idle_paused'),'Provider confirmed physical exit without a new verified recovery checkpoint.') when $4 and $10 and status<>'failed' then 'expired' else status_reason end,
         stop_requested_at=case when $4 then null when status='starting' then coalesce(stop_requested_at,now()) else stop_requested_at end,
         stopped_at=case when $4 then coalesce(stopped_at,$9::timestamptz,now()) else stopped_at end,
         last_observed_at=case when $5::text is null then now() else last_observed_at end,
-        activity_lease_id=null,activity_until=null,
+        activity_lease_id=case when $11 and not $4 then activity_lease_id else null end,
+        activity_until=case when $11 and not $4 then activity_until else null end,
         lifecycle_error=$5::text,reconcile_after=now()+interval '1 minute',
         reconcile_lease=case when $6 then reconcile_lease else null end,
         reconcile_lease_until=case when $6 then reconcile_lease_until else null end
@@ -171,6 +260,7 @@ export function createSandboxLifecycle(sql: Sql, providerFor: (id: string) => Pr
           INTERRUPTED_LAUNCH_REASON,
           stoppedAt?.toISOString() ?? null,
           expired,
+          retainUnknownActivity,
         ],
       );
       return true;
