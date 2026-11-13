@@ -3595,7 +3595,7 @@ export type Database = {
         Row: {
           id: string;
           boat_id: string | null;
-          golden_id: string;
+          golden_id: string | null;
           org_id: string;
           owner_id: string;
           harness: Database["public"]["Enums"]["harness"];
@@ -3610,7 +3610,7 @@ export type Database = {
           provider: Database["public"]["Enums"]["sandbox_provider"];
           provider_sandbox_id: string;
           visibility: Database["public"]["Enums"]["visibility"];
-          source_golden_visibility: Database["public"]["Enums"]["visibility"];
+          source_golden_visibility: Database["public"]["Enums"]["visibility"] | null;
           access_owner_id: string;
           mcp_generation: number;
           repository_dir: string | null;
@@ -3645,11 +3645,15 @@ export type Database = {
           preservation_stop_generation: number | null;
           application_secret_tainted: boolean;
           boat_runtime: boolean;
+          docker_host_id: string | null;
+          docker_installation_id: string | null;
+          docker_generation: string | null;
+          docker_image: string | null;
         };
         Insert: {
           id?: string;
           boat_id?: string | null;
-          golden_id: string;
+          golden_id?: string | null;
           org_id: string;
           owner_id: string;
           harness: Database["public"]["Enums"]["harness"];
@@ -3664,7 +3668,7 @@ export type Database = {
           provider: Database["public"]["Enums"]["sandbox_provider"];
           provider_sandbox_id: string;
           visibility: Database["public"]["Enums"]["visibility"];
-          source_golden_visibility: Database["public"]["Enums"]["visibility"];
+          source_golden_visibility?: Database["public"]["Enums"]["visibility"] | null;
           access_owner_id: string;
           mcp_generation?: number;
           repository_dir?: string | null;
@@ -3699,11 +3703,15 @@ export type Database = {
           preservation_stop_generation?: number | null;
           application_secret_tainted?: boolean;
           boat_runtime?: boolean;
+          docker_host_id?: string | null;
+          docker_installation_id?: string | null;
+          docker_generation?: string | null;
+          docker_image?: string | null;
         };
         Update: {
           id?: string;
           boat_id?: string | null;
-          golden_id?: string;
+          golden_id?: string | null;
           org_id?: string;
           owner_id?: string;
           harness?: Database["public"]["Enums"]["harness"];
@@ -3718,7 +3726,7 @@ export type Database = {
           provider?: Database["public"]["Enums"]["sandbox_provider"];
           provider_sandbox_id?: string;
           visibility?: Database["public"]["Enums"]["visibility"];
-          source_golden_visibility?: Database["public"]["Enums"]["visibility"];
+          source_golden_visibility?: Database["public"]["Enums"]["visibility"] | null;
           access_owner_id?: string;
           mcp_generation?: number;
           repository_dir?: string | null;
@@ -3753,6 +3761,10 @@ export type Database = {
           preservation_stop_generation?: number | null;
           application_secret_tainted?: boolean;
           boat_runtime?: boolean;
+          docker_host_id?: string | null;
+          docker_installation_id?: string | null;
+          docker_generation?: string | null;
+          docker_image?: string | null;
         };
         Relationships: [
           {
@@ -3761,6 +3773,13 @@ export type Database = {
             isOneToOne: false;
             referencedRelation: "users";
             referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "sandboxes_docker_host_fk";
+            columns: ["docker_host_id", "org_id"];
+            isOneToOne: false;
+            referencedRelation: "docker_hosts";
+            referencedColumns: ["id", "org_id"];
           },
           {
             foreignKeyName: "sandboxes_golden_id_fkey";
@@ -3935,7 +3954,7 @@ export type Database = {
       harness: "claude" | "codex" | "opencode";
       member_role: "admin" | "member";
       notify_status: "finished" | "failed";
-      sandbox_provider: "boat" | "modal";
+      sandbox_provider: "boat" | "modal" | "docker";
       sandbox_status: "starting" | "ready" | "running" | "stopping" | "stopped" | "failed" | "deleted";
       visibility: "org" | "private";
     };

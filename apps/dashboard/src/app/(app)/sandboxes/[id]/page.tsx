@@ -1,4 +1,4 @@
-import { MODEL_CATALOG, type SandboxListMetadata } from "@armada/core";
+import { isSandboxProvider, MODEL_CATALOG, type SandboxListMetadata } from "@armada/core";
 import { ArrowLeftIcon, ClockAlertIcon, LockIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
@@ -71,6 +71,7 @@ export default async function SandboxPage({ params }: Props) {
     if (!listed || listed.canOpen) notFound();
     return <RestrictedSandbox sandbox={listed} owner={displayUser(directory, listed.ownerId, viewer.id)} />;
   }
+  if (!isSandboxProvider(sandbox.provider) || sandbox.golden_id === null) notFound();
   const org = memberships.find((item) => item.org.id === sandbox.org_id);
   const configured = mcpUrl() !== null;
   const recovery = needsAccountChoice(sandbox);

@@ -207,6 +207,7 @@ export function goldenRowState(
   visible: readonly Pick<Golden, "name" | "provider">[],
   viewer: { id: string; isAdmin: boolean },
 ): GoldenRowState {
+  if (!isSandboxProvider(golden.provider)) throw new GoldenError("invalid_config", "Unsupported golden provider.");
   const duplicateName =
     visible.filter((row) => row.name === golden.name && row.provider === golden.provider).length > 1;
   const reason = duplicateName

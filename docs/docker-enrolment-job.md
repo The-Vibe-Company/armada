@@ -40,7 +40,7 @@ launcher still needs enrolment/epoch and health verification before prompting.
 The server must authorize the logical sandbox/ticket binding at issuance; this
 mailbox is not a public ticket-issuance or arbitrary-runtime API.
 
-Default host credential remains revocable without expiry; planned launch TTL3600
+Default host credential remains revocable without expiry; planned launch TTL14400
 seconds; no disk quota yet. No goldens, resume, Hosts UI or gVisor. Existing host
 registration requires ARMADA_DOCKER_HOSTS=1. Upgrade the host binary before sending
 new bootstrap jobs; older binaries reject the new operation safely.

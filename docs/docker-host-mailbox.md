@@ -17,7 +17,7 @@ AES-GCM sealed using ARMADA_ENCRYPTION_KEY; only fixed machine outcomes are
 accepted back, not arbitrary CLI output. RLS and privilege revocation keep
 hashes and ciphertext inaccessible to user JWTs.
 
-Defaults for later launch integration: 3,600-second default launch TTL (as existing launches),
+Defaults for later launch integration: 14,400-second default launch TTL (as existing launches),
 no disk quota yet. No resume, goldens, Hosts UI or gVisor. Registration exchange
 and bootstrap jobs will be mounted only behind explicit opt-in in later PRs.
 
