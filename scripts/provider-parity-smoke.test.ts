@@ -6,6 +6,12 @@ import { smokeReceipts } from "./smoke-sandbox-cleanup.ts";
 // route/receipt regressions without provider compute, credentials, or sleeps.
 for (const mode of [
   "online",
+  "accounts",
+  "accounts_unknown",
+  "accounts_invalid",
+  "accounts_stop_unsupported",
+  "accounts_unknown_bad",
+  "accounts_price_lost",
   "offline",
   "unsupported",
   "delete_failure",
@@ -49,26 +55,31 @@ for (const mode of [
         ARMADA_TOKEN: "fake",
         ARMADA_SMOKE: "create_real_compute",
         ARMADA_SMOKE_CASES: JSON.stringify(
-          providers.map((provider) => ({
-            provider,
-            org: provider,
-            harness: "codex",
-            model: "fake-model",
-            modelAccountId: "fake-account",
-            golden: "fake-golden",
-            hostId: "owned-host",
-          })),
+          (mode.startsWith("accounts") ? ["modal", "docker"] : providers).flatMap((provider) =>
+            (mode.startsWith("accounts") ? ["codex-openai", "codex-azure"] : [undefined]).map((account) => ({
+              ...(account ? { account: mode === "accounts_invalid" ? "unknown-account" : account } : {}),
+              provider,
+              org: provider,
+              harness: "codex",
+              model: "fake-model",
+              modelAccountId: "fake-account",
+              golden: "fake-golden",
+              hostId: "owned-host",
+            })),
+          ),
         ),
       },
-      mode === "usage_filter"
-        ? ["--parity", "--only", "docker", "--feature", "exact-cost"]
-        : mode === "filtered"
-          ? ["--parity", "--only", "docker", "--feature", "exec"]
-          : debtFeature
-            ? ["--parity", "--feature", debtFeature]
-            : mode === "invalid_filter"
-              ? ["--parity", "--feature", "typo"]
-              : ["--parity"],
+      mode.startsWith("accounts")
+        ? ["--parity", "--accounts"]
+        : mode === "usage_filter"
+          ? ["--parity", "--only", "docker", "--feature", "exact-cost"]
+          : mode === "filtered"
+            ? ["--parity", "--only", "docker", "--feature", "exec"]
+            : debtFeature
+              ? ["--parity", "--feature", debtFeature]
+              : mode === "invalid_filter"
+                ? ["--parity", "--feature", "typo"]
+                : ["--parity"],
       {
         now: () => 0,
         sleep: async () => {},
@@ -96,11 +107,14 @@ for (const mode of [
                     followupPrompts: true,
                     status: true,
                     logs: true,
-                    stop: true,
+                    stop: mode !== "accounts_stop_unsupported",
                     resume: !(id === "docker" && mode === "unsupported"),
                     delete: true,
                   },
-                  unsupportedReasons: { resume: "Server resume disabled." },
+                  unsupportedReasons: {
+                    stop: "Stop unavailable (#1579)",
+                    resume: "Server resume disabled.",
+                  },
                 })),
               };
               break;
@@ -108,6 +122,7 @@ for (const mode of [
               result = { hosts: [{ id: "owned-host", state: mode === "offline" ? "offline" : "online" }] };
               break;
             case "sandbox/launch":
+              if (mode.startsWith("accounts")) turns.set(p, []);
               if (p === "docker") expect(body).not.toHaveProperty("image");
               if (p === "boat" && (mode === "quota" || mode === "server_failure"))
                 return Response.json(
@@ -169,22 +184,44 @@ for (const mode of [
                     inputTokens: mode === "usage_missing" ? null : 10,
                     outputTokens: 5,
                     pricing: {
-                      unknown: null,
+                      unknown:
+                        mode === "accounts_unknown" ||
+                        (mode === "accounts_price_lost" && (turns.get(p)?.length ?? 0) > 1)
+                          ? "price"
+                          : null,
                       usd:
-                        mode === "price_changed" && (turns.get(p)?.length ?? 0) > 1
-                          ? i === 0
-                            ? "0.2"
-                            : i === 1
-                              ? "0.0"
-                              : "0.1"
-                          : "0.1",
+                        mode === "accounts_unknown" ||
+                        (mode === "accounts_price_lost" && (turns.get(p)?.length ?? 0) > 1)
+                          ? null
+                          : mode === "price_changed" && (turns.get(p)?.length ?? 0) > 1
+                            ? i === 0
+                              ? "0.2"
+                              : i === 1
+                                ? "0.0"
+                                : "0.1"
+                            : "0.1",
                     },
                   })),
                   cost: {
                     currency: "USD",
-                    unknown: null,
-                    unpricedTurns: 0,
-                    usd: mode === "cost_mismatch" ? "99" : `0.${turns.get(p)?.length ?? 0}`,
+                    basis: "estimated",
+                    unknown:
+                      mode.startsWith("accounts_unknown") ||
+                      (mode === "accounts_price_lost" && (turns.get(p)?.length ?? 0) > 1)
+                        ? "price"
+                        : null,
+                    unpricedTurns:
+                      mode.startsWith("accounts_unknown") ||
+                      (mode === "accounts_price_lost" && (turns.get(p)?.length ?? 0) > 1)
+                        ? turns.get(p)?.length
+                        : 0,
+                    usd:
+                      mode.startsWith("accounts_unknown") ||
+                      (mode === "accounts_price_lost" && (turns.get(p)?.length ?? 0) > 1)
+                        ? null
+                        : mode === "cost_mismatch"
+                          ? "99"
+                          : `0.${turns.get(p)?.length ?? 0}`,
                   },
                 },
               };
@@ -226,6 +263,33 @@ for (const mode of [
         },
       },
     );
+    if (mode.startsWith("accounts")) {
+      if (mode === "accounts_invalid") {
+        expect(passed).toBe(false);
+        expect(calls).toHaveLength(0);
+        expect(lines[0]).toContain("invalid_accounts_configuration");
+        return;
+      }
+      const badCost = mode === "accounts_unknown_bad" || mode === "accounts_price_lost";
+      expect(passed).toBe(!badCost);
+      const report = JSON.parse(lines.find((line) => line.startsWith('{"step":"accounts_parity"'))!);
+      for (const account of ["codex-openai", "codex-azure"]) {
+        for (const provider of ["modal", "docker"]) {
+          const cell = report.accounts[account][provider];
+          expect(cell.status).toBe(badCost ? "fail" : mode === "accounts_stop_unsupported" ? "not-run" : "pass");
+          expect(cell.features["resume-recall"][provider].status).toBe("pass");
+          if (mode === "accounts_unknown") expect(cell.features["exact-cost"][provider].reason).toBe("unknown: price");
+        }
+      }
+      expect(report.accounts["codex-subscription"].modal).toEqual({
+        status: "not-run",
+        reason: "no account on staging",
+      });
+      expect(calls.filter((call) => call.endsWith(":sandbox/launch"))).toHaveLength(4);
+      expect(calls.filter((call) => call.endsWith(":sandbox/delete"))).toHaveLength(4);
+      expect(calls.some((call) => call.startsWith("boat:"))).toBe(false);
+      return;
+    }
     if (mode === "invalid_filter") {
       expect(passed).toBe(false);
       expect(calls).toHaveLength(0);
