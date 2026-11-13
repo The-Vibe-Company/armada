@@ -464,13 +464,16 @@ try {
           "A two-minute Modal launch must have only the configured 30-minute headroom plus five-minute preservation margin, not a 24h timer",
         );
       const unusedLease = provider === "boat" && !active ? await unusedBoatLease(id, before.provider_sandbox_id) : null;
-      // Prior scenarios may be stopping in the real background worker. This
-      // denied request must not mutate its own target; unrelated cleanup is valid.
-      const targetEffects = () => effects.filter((item) => item.id === before.provider_sandbox_id).length;
-      const deniedBefore = targetEffects();
-      const denied = await request<{ error: { code: string } }>("extend", { id, ttl_seconds: 600 }, 403, memberId);
-      assert.equal(denied.error.code, "extension_not_allowed");
-      assert.equal(targetEffects(), deniedBefore, "Denied member must not mutate the target provider state");
+      // Authorization is independent of a later prompt; exercise it once per provider.
+      if (!active) {
+        // Prior scenarios may be stopping in the real background worker. This
+        // denied request must not mutate its own target; unrelated cleanup is valid.
+        const targetEffects = () => effects.filter((item) => item.id === before.provider_sandbox_id).length;
+        const deniedBefore = targetEffects();
+        const denied = await request<{ error: { code: string } }>("extend", { id, ttl_seconds: 600 }, 403, memberId);
+        assert.equal(denied.error.code, "extension_not_allowed");
+        assert.equal(targetEffects(), deniedBefore, "Denied member must not mutate the target provider state");
+      }
       let conversation: string | null = null;
       if (active)
         conversation = (await request<{ conversationId: string }>("send", { id, prompt: "remember lifetime-token" }))
@@ -512,20 +515,23 @@ try {
           900,
         );
       const acceptedDeadline = new Date((await row(id)).expires_at).toISOString();
-      for (const ttl_seconds of [0, 2_592_001, 1, provider === "boat" ? 2_591_701 : 86_101]) {
-        const refusal = await request<{ error: { code: string } }>(
-          "extend",
-          { id, ttl_seconds },
-          ttl_seconds === 1 ? 409 : 400,
+      // Input/non-extending refusals precede provider activity and do not depend on a live turn.
+      if (!active) {
+        for (const ttl_seconds of [0, 2_592_001, 1, provider === "boat" ? 2_591_701 : 86_101]) {
+          const refusal = await request<{ error: { code: string } }>(
+            "extend",
+            { id, ttl_seconds },
+            ttl_seconds === 1 ? 409 : 400,
+          );
+          if (ttl_seconds > 0)
+            assert.equal(refusal.error.code, ttl_seconds === 1 ? "extension_state" : "extension_maximum");
+        }
+        assert.equal(
+          new Date((await row(id)).expires_at).toISOString(),
+          acceptedDeadline,
+          "Invalid/non-extending TTL must not publish",
         );
-        if (ttl_seconds > 0)
-          assert.equal(refusal.error.code, ttl_seconds === 1 ? "extension_state" : "extension_maximum");
       }
-      assert.equal(
-        new Date((await row(id)).expires_at).toISOString(),
-        acceptedDeadline,
-        "Invalid/non-extending TTL must not publish",
-      );
       if (provider === "boat") {
         shortBoatConfirmation = true;
         await request("extend", { id, ttl_seconds: 900 }, 409);

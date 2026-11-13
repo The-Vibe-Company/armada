@@ -350,7 +350,6 @@
   "scripts/build-migration.test.ts": 0.16,
   "scripts/build.test.ts": 0.083,
   "scripts/check-boat-runtime.test.ts": 0.682,
-  "scripts/ci/check-budget.test.ts": 0.357,
   "scripts/ci/unit-shards.test.ts": 0.008,
   "scripts/cleanup-staging-smoke.test.ts": 0.012,
   "scripts/dashboard-read-smoke.test.ts": 0.07,
