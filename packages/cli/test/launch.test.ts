@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { GoldenActor } from "@armada/core";
+import type { AuthIo } from "../src/auth-commands.ts";
 import { run } from "../src/run.ts";
 import { memorySessionStore } from "../src/session.ts";
 
@@ -14,19 +14,7 @@ import { memorySessionStore } from "../src/session.ts";
 describe("launch command", () => {
   test("bad flags and a missing credential fail before anything starts", async () => {
     const calls: string[] = [];
-    const base = {
-      actor: {
-        userId: "22222222-2222-4222-8222-222222222222",
-        orgId: "11111111-1111-4111-8111-111111111111",
-        role: "member",
-      } as GoldenActor,
-      store: { list: async () => [], findByName: async () => [] } as never,
-      sandboxes: {} as never,
-      fetch: (async () => {
-        calls.push("fetch");
-        throw new Error("no network");
-      }) as unknown as typeof fetch,
-    };
+    const base = { auth: offlineAuth(calls) };
     expect((await capture(["launch", "web"], base)).err).toContain("Pass --agent claude or codex");
     expect((await capture(["launch", "web", "--agent", "not-a-harness"], base)).code).toBe(2);
     expect((await capture(["launch", "web", "--agent", "claude", "--ttl", "soon"], base)).err).toContain(
@@ -48,24 +36,28 @@ describe("launch command", () => {
   test("a provider selection still requires Armada authentication, not local provider credentials", async () => {
     const calls: string[] = [];
     const result = await capture(["launch", "web", "--agent", "claude", "--provider", "modal"], {
-      auth: {
-        env: {},
-        session: memorySessionStore(),
-        out: () => undefined,
-        err: () => undefined,
-        now: () => new Date(),
-        open: () => undefined,
-        fetch: async (input) => {
-          calls.push(String(input));
-          throw new Error("no network");
-        },
-      },
+      auth: offlineAuth(calls),
     });
     expect(result.code).toBe(1);
     expect(result.err).toContain("You are not signed in. Run armada login.");
     expect(calls).toEqual([]);
   });
 });
+
+function offlineAuth(calls: string[]): AuthIo {
+  return {
+    env: {},
+    session: memorySessionStore(),
+    out: () => undefined,
+    err: () => undefined,
+    now: () => new Date(),
+    open: () => undefined,
+    fetch: async (input) => {
+      calls.push(String(input));
+      throw new Error("no network");
+    },
+  };
+}
 
 async function capture(argv: string[], deps: Parameters<typeof run>[2]) {
   let out = "";
