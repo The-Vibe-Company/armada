@@ -78,7 +78,12 @@ if (mcpMode) {
     throw Error(
       "MCP check requires v1, connection UUID, read-only tool, non-secret JSON args and expected substring; no launch attempted.",
     );
-  const parsed: unknown = JSON.parse(mcpArgumentsJson);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(mcpArgumentsJson);
+  } catch {
+    throw Error("MCP args must be valid non-secret JSON; no launch attempted.");
+  }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
     throw Error("MCP args must be a non-secret JSON object; no launch attempted.");
   mcpArguments = parsed as Record<string, unknown>;

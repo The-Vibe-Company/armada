@@ -35,6 +35,7 @@ test.each([
   "mcp-resume",
   "old-mcp",
   "mcp-preflight-denied",
+  "mcp-invalid-json",
   "mcp-wrong-server",
   "mcp-wrong-args",
   "mcp-no-result",
@@ -78,6 +79,7 @@ globalThis.fetch=async(url,options)=>{
  throw Error('unexpected API path');};`,
     );
     const token = crypto.randomUUID();
+    const privateArgument = crypto.randomUUID();
     const child = Bun.spawn(
       [
         process.execPath,
@@ -108,7 +110,7 @@ globalThis.fetch=async(url,options)=>{
           ARMADA_TOKEN: token,
           ARMADA_RUNTIME_MCP_CONNECTION_ID: mcpId,
           ARMADA_RUNTIME_MCP_TOOL: "read_counter",
-          ARMADA_RUNTIME_MCP_ARGS_JSON: '{"probe":"safe"}',
+          ARMADA_RUNTIME_MCP_ARGS_JSON: mode === "mcp-invalid-json" ? `{${privateArgument}` : '{"probe":"safe"}',
           ARMADA_RUNTIME_MCP_EXPECT: "expected MCP value",
           ARMADA_RUNTIME_GITHUB_REPOSITORY: "example/web",
           ARMADA_RUNTIME_GOLDEN: "fixture",
@@ -134,8 +136,11 @@ globalThis.fetch=async(url,options)=>{
       ].includes(mode),
     );
     expect(out + err).not.toContain(token);
+    expect(out + err).not.toContain(privateArgument);
+    if (mode === "mcp-invalid-json")
+      expect(out + err).toContain("MCP args must be valid non-secret JSON; no launch attempted.");
     expect(out).toContain(
-      `COUNTERS ${JSON.stringify({ launches: ["disabled", "old-diagnostics", "old-followup", "old-checkpoint", "old-resume", "old-github", "github-preflight-denied", "old-mcp", "mcp-preflight-denied"].includes(mode) ? 0 : 1, stops: ["disabled", "old-diagnostics", "old-followup", "old-checkpoint", "old-resume", "old-github", "github-preflight-denied", "old-mcp", "mcp-preflight-denied"].includes(mode) ? 0 : ["resume", "resume-lost", "bad-resume"].includes(mode) || combined || mcpResume ? 2 : 1 })}`,
+      `COUNTERS ${JSON.stringify({ launches: ["disabled", "old-diagnostics", "old-followup", "old-checkpoint", "old-resume", "old-github", "github-preflight-denied", "old-mcp", "mcp-preflight-denied", "mcp-invalid-json"].includes(mode) ? 0 : 1, stops: ["disabled", "old-diagnostics", "old-followup", "old-checkpoint", "old-resume", "old-github", "github-preflight-denied", "old-mcp", "mcp-preflight-denied", "mcp-invalid-json"].includes(mode) ? 0 : ["resume", "resume-lost", "bad-resume"].includes(mode) || combined || mcpResume ? 2 : 1 })}`,
     );
     if (
       [
