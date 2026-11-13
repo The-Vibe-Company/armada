@@ -115,7 +115,11 @@ current sandbox metadata (even after stop/delete), never restarts the sandbox.
 The API-only CLI uses the same normal route, not the private preview. `image` is
 optional everywhere (API, CLI, dashboard): without it the launch uses
 `DOCKER_DEFAULT_IMAGE` from `@armada/core`, a digest-pinned Debian
-`buildpack-deps` image (#1507). `--image` overrides it:
+`buildpack-deps` image (#1507). The resolved image is part of the request's
+identity: the CLI and dashboard send it explicitly, so a retry with the same
+`requestId` stays identical even if a later release changes the default. A raw API
+caller that omits `image` should do the same when it retries across an upgrade.
+`--image` overrides the default:
 
 ```sh
 bun run armada launch --provider docker --org "$ARMADA_ORG" \

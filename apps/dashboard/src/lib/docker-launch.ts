@@ -150,9 +150,10 @@ export const IMAGE_CHOICES = [
 ] as const;
 export type ImageChoice = (typeof IMAGE_CHOICES)[number]["value"];
 
-/** The image a launch uses from the dialog's choice; only a custom image is checked, and only then can it fail. */
+/** The image a launch uses from the dialog's choice; only a typed (custom) image is checked, and only then can it fail. */
 export function chosenImage(choice: string, custom: string): ReturnType<typeof checkImage> {
-  if (choice === "custom") return checkImage(custom);
+  // An empty choice with a typed image is a form from before the choice existed: honour what was typed.
+  if (choice === "custom" || (choice === "" && custom.trim())) return checkImage(custom);
   if (choice === "default" || choice === "") return { ok: true, image: DOCKER_DEFAULT_IMAGE };
   return { ok: false, error: "Choose an image." };
 }

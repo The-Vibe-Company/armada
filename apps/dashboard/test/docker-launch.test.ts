@@ -94,6 +94,8 @@ test("the dialog launches Armada's default image unless a custom digest-pinned i
   expect(chosenImage("custom", ` ${DIGEST} `)).toEqual({ ok: true, image: DIGEST });
   expect(chosenImage("custom", "").ok).toBe(false);
   expect(chosenImage("other", DIGEST).ok).toBe(false);
+  expect(chosenImage("", "")).toEqual({ ok: true, image: DOCKER_DEFAULT_IMAGE });
+  expect(chosenImage("", DIGEST)).toEqual({ ok: true, image: DIGEST });
   expect(checkImage(DOCKER_DEFAULT_IMAGE).ok).toBe(true);
 });
 
