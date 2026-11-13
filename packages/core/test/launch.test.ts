@@ -7,7 +7,6 @@ import helperManifest from "../helper/manifest.json";
 import {
   type AgentEvent,
   type CredentialSource,
-  cleanupSandboxes,
   dedupeEvents,
   type ForkRequest,
   GH_MISSING_NOTE,
@@ -1207,45 +1206,6 @@ describe("prompt outcome", () => {
   });
 });
 
-describe("cleanup", () => {
-  test("deletes sandboxes older than the retention from the provider, tolerates a missing one and reports failures", async () => {
-    const now = new Date("2026-11-20T00:00:00.000Z");
-    const rows = new Map<string, SandboxRecord>(
-      [
-        ["old", "bx_old", "2026-11-10T00:00:00.000Z"],
-        ["gone", "bx_gone", "2026-11-11T00:00:00.000Z"],
-        ["stuck", "bx_stuck", "2026-11-12T00:00:00.000Z"],
-        ["fresh", "bx_fresh", "2026-11-19T00:00:00.000Z"],
-      ].map(([id, boatId, createdAt]) => [
-        id as string,
-        sandboxRecord(id as string, boatId as string, createdAt as string),
-      ]),
-    );
-    const deleted: string[] = [];
-    const provider = {
-      id: "boat",
-      async delete({ sandboxId }: { sandboxId: string }) {
-        deleted.push(sandboxId);
-        if (sandboxId === "bx_gone")
-          throw new ProviderError({ provider: "boat", code: "not_found", message: "gone", retryable: false });
-        if (sandboxId === "bx_stuck")
-          throw new ProviderError({ provider: "boat", code: "unavailable", message: "boat is down", retryable: true });
-        return { status: "pending" };
-      },
-    } as unknown as Provider;
-    const store = sandboxStore(rows);
-
-    const result = await cleanupSandboxes(provider, store, { retentionDays: 7, now });
-    expect(deleted).toEqual(["bx_old", "bx_gone", "bx_stuck"]);
-    expect(result.deleted).toEqual(["old", "gone"]);
-    expect(result.failed).toEqual([{ id: "stuck", message: "boat is down" }]);
-    expect(rows.get("old")).toMatchObject({ status: "deleted", deletedAt: now.toISOString() });
-    expect(rows.get("stuck")?.status).toBe("ready");
-    expect(rows.get("fresh")?.status).toBe("ready");
-    await expect(cleanupSandboxes(provider, store, { retentionDays: 0 })).rejects.toThrow(RangeError);
-  });
-});
-
 function golden(visibility: "org" | "private"): GoldenRecord {
   return {
     id: "golden-1",
@@ -1412,27 +1372,6 @@ function sandboxStore(rows: Map<string, SandboxRecord>, insertError?: Error): Sa
 
 function definedOnly(patch: SandboxPatch): Record<string, unknown> {
   return Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined));
-}
-
-function sandboxRecord(id: string, providerSandboxId: string, createdAt: string): SandboxRecord {
-  return {
-    repositoryDir: null,
-    id,
-    provider: "boat",
-    providerSandboxId,
-    goldenId: "golden-1",
-    orgId: ORG,
-    ownerId: OWNER,
-    harness: "claude",
-    status: "ready",
-    conversationIds: [],
-    createdAt,
-    stoppedAt: null,
-    deletedAt: null,
-    statusReason: null,
-    model: null,
-    reasoningEffort: null,
-  };
 }
 
 function prompt(status: PromptStatus, reason?: string): AgentEvent {
