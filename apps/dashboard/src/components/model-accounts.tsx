@@ -478,7 +478,7 @@ export function AccountRow({
           </p>
           {account.models?.length ? (
             <p data-account-models className="text-xs text-muted-foreground">
-              {connectionModelsNote(account.models.map((info) => info.model))}
+              {connectionModelsNote(account.models.map((declared) => declared.model))}
             </p>
           ) : null}
           {/* The check runs Codex and Claude endpoints only; an OpenCode account would always be refused. */}
