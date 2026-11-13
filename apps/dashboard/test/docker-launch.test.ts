@@ -13,6 +13,7 @@ import {
   dockerUnavailable,
   imageLabel,
   launchedDockerSandbox,
+  preferredHarness,
   recentHostImages,
 } from "../src/lib/docker-launch.ts";
 
@@ -143,6 +144,11 @@ test("the dialog offers the agents the server launches on Docker, Codex chosen f
     initial: "claude",
   });
   expect(dockerHarnesses(null)).toEqual({ offered: [], initial: null });
+  const all = ["claude", "codex", "opencode"] as const;
+  expect(preferredHarness(all, "codex", () => true)).toBe("codex");
+  expect(preferredHarness(all, "codex", (agent) => agent === "opencode")).toBe("opencode");
+  expect(preferredHarness(all, "codex", () => false)).toBe("codex");
+  expect(preferredHarness(["claude"], "codex", () => false)).toBe("claude");
 });
 
 test("the launch body is the normal route's Docker shape: Codex, private, the form key as requestId", () => {
@@ -183,6 +189,18 @@ test("the launch body is the normal route's Docker shape: Codex, private, the fo
       reasoningEffort: "e",
     }),
   ).toThrow();
+  expect(
+    dockerLaunchBody({
+      org: ORG,
+      hostId: HOST,
+      image: DIGEST,
+      harness: "claude",
+      credentialId: ACCOUNT,
+      requestId: REQUEST,
+      model: "m",
+      reasoningEffort: "e",
+    }).harness,
+  ).toBe("claude");
   expect(launchedDockerSandbox({ sandbox: { id: REQUEST, provider: "docker" } })).toBe(REQUEST);
   expect(launchedDockerSandbox({ sandbox: { id: REQUEST, provider: "boat" } })).toBeNull();
 });

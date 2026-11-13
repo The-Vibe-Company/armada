@@ -197,6 +197,20 @@ export function dockerHarnesses(option: DockerLaunchOption | null): { offered: H
   return { offered, initial: offered.includes("codex") ? "codex" : (offered[0] ?? null) };
 }
 
+/**
+ * The agent the dialog starts on: the server's first choice when the viewer has a usable account for it, else the
+ * first offered agent they can launch with, else the first choice (the dialog then says an account is needed).
+ */
+export function preferredHarness(
+  offered: readonly Harness[],
+  initial: Harness,
+  usable: (harness: Harness) => boolean,
+): Harness {
+  const first = offered.includes(initial) ? initial : (offered[0] ?? initial);
+  if (usable(first)) return first;
+  return offered.find(usable) ?? first;
+}
+
 export type DockerLaunchArgs = {
   org: string;
   hostId: string;

@@ -23,7 +23,7 @@ import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
 import { Textarea } from "@/components/ui/textarea";
 import type { ActionResult } from "@/lib/action";
-import { dockerLaunchKeyStorage, type HostImage, UNKNOWN_DOCKER_LAUNCH } from "@/lib/docker-launch";
+import { dockerLaunchKeyStorage, type HostImage, preferredHarness, UNKNOWN_DOCKER_LAUNCH } from "@/lib/docker-launch";
 import { HARNESS_LABELS } from "@/lib/labels";
 import { LAUNCH_KEY_FIELD, type LaunchKey, launchKeyFor } from "@/lib/launch-key";
 import { accountProblem, accountsFor, type LaunchAccounts } from "@/lib/model-accounts";
@@ -99,7 +99,16 @@ function DockerLaunchForm({
   initialHarness: Harness;
 }) {
   const id = useId();
-  const [harness, setHarness] = useState<Harness>(initialHarness);
+  const hasUsableAccount = (agent: Harness) =>
+    accounts.state === "ready" &&
+    accountsFor(accounts.accounts, agent).some((account) => accountProblem(account, accounts.now) === null);
+  const [chosenHarness, setHarness] = useState<Harness>(() =>
+    preferredHarness(harnesses, initialHarness, hasUsableAccount),
+  );
+  // A refresh can take the chosen agent off the server's list: the dialog then shows, and launches, an offered one.
+  const harness = harnesses.includes(chosenHarness)
+    ? chosenHarness
+    : preferredHarness(harnesses, initialHarness, hasUsableAccount);
   const [selectedImage, setImageChoice] = useState("default");
   // A refresh can drop the chosen image from the list: the select then shows, and launches, the default.
   const imageChoice =
@@ -107,9 +116,7 @@ function DockerLaunchForm({
   const root = useRef<HTMLDivElement>(null);
   const storage = dockerLaunchKeyStorage(hostId);
   const router = useRouter();
-  const usable =
-    accounts.state === "ready" &&
-    accountsFor(accounts.accounts, harness).some((account) => accountProblem(account, accounts.now) === null);
+  const usable = hasUsableAccount(harness);
 
   useEffect(() => {
     const node = root.current;
