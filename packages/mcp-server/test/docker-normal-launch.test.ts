@@ -84,6 +84,7 @@ async function fixture(
     lifecycleGenerationAfterCreate?: number;
     harness?: Harness;
     checkoutExitCode?: number;
+    githubConfigurationAcknowledged?: boolean;
     daemonVersion?: string;
   } = {},
 ) {
@@ -183,7 +184,10 @@ async function fixture(
               command.op === "health"
                 ? { ready: true, generation: session.epoch, mcpVersion: 1, skillsVersion: 1 }
                 : command.op === "configureGitHub" || command.op === "configureReadableVariables"
-                  ? { acknowledged: true }
+                  ? {
+                      acknowledged:
+                        command.op !== "configureGitHub" || options.githubConfigurationAcknowledged !== false,
+                    }
                   : command.op === "exec"
                     ? {
                         detached: false,
@@ -843,9 +847,12 @@ test("deferred launch reconciles an uncertain first-prompt receipt without marki
   await recovered.close();
 });
 
-for (const scenario of ["success", "checkout-failed", "missing-github"] as const)
+for (const scenario of ["success", "checkout-failed", "missing-github", "github-delivery-failed"] as const)
   test(`deferred repository launch returns before host work and durably completes: ${scenario}`, async () => {
-    const f = await fixture({ checkoutExitCode: scenario === "checkout-failed" ? 1 : 0 });
+    const f = await fixture({
+      checkoutExitCode: scenario === "checkout-failed" ? 1 : 0,
+      githubConfigurationAcknowledged: scenario !== "github-delivery-failed",
+    });
     if (scenario !== "missing-github")
       await db.query(
         `insert into public.github_connections(user_id,github_id,login,name,refresh_token_enc,access_token_enc,access_expires_at)
@@ -888,7 +895,11 @@ for (const scenario of ["success", "checkout-failed", "missing-github"] as const
     } else {
       expect(completed.sandbox.status).toBe("failed");
       expect(completed.sandbox.statusReason).toBe(
-        scenario === "missing-github" ? DOCKER_LAUNCH_FAILURE_MESSAGES.github : DOCKER_LAUNCH_FAILURE_MESSAGES.checkout,
+        scenario === "missing-github"
+          ? DOCKER_LAUNCH_FAILURE_MESSAGES.github
+          : scenario === "github-delivery-failed"
+            ? DOCKER_LAUNCH_FAILURE_MESSAGES.githubDelivery
+            : DOCKER_LAUNCH_FAILURE_MESSAGES.checkout,
       );
       expect((f.native as { op: string }[]).some((c) => c.op === "prompt")).toBe(false);
       const controls = createDockerSandboxControls(sql, key);
