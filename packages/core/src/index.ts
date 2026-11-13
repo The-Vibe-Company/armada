@@ -101,6 +101,7 @@ export type {
   LaunchProviderOption,
   SandboxPlacementProviderId,
 } from "./docker-api.ts";
+export { DOCKER_DEFAULT_IMAGE } from "./docker-api.ts";
 export {
   boundEventEntries,
   buildEventPage,

@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { createSqlAuthStore } from "@armada/auth";
 import {
   type AgentEvent,
+  DOCKER_DEFAULT_IMAGE,
   type DockerLaunchResult,
   type DockerSandboxStatus,
   type Harness,
@@ -487,9 +488,9 @@ test("failed startup returns a safe failure without claiming stopped, and pendin
   expect((await createDockerSandboxService(sql, key).get(f.actor, f.body.requestId)).status).toBe("deleted");
 });
 
-test("prompt-free launch normalizes UUIDs, honors TTL and stops at runtime readiness", async () => {
+test("prompt-free, image-free launch normalizes UUIDs, uses the default image, honors TTL and stops at runtime readiness", async () => {
   const f = await fixture();
-  const { prompt: _prompt, ...base } = f.body;
+  const { prompt: _prompt, image: _image, ...base } = f.body;
   const body = {
     ...base,
     org: base.org.toUpperCase(),
@@ -505,12 +506,16 @@ test("prompt-free launch normalizes UUIDs, honors TTL and stops at runtime readi
     conversationIds: [],
     credentialVersion: 2,
     requestedTtlSeconds: 3600,
+    image: DOCKER_DEFAULT_IMAGE,
   });
   expect(result.ttlSeconds).toBe(3600);
   expect(result.promptId).toBeUndefined();
   expect(result.conversationId).toBeUndefined();
   expect(await counts(f)).toEqual({ sandboxes: 1, claims: 1, jobs: 2, commands: 1 });
-  expect(await f.service().launch(f.caller, { ...base, ttlSeconds: 3600 })).toEqual(result);
+  // The explicit default is the same request as an omitted image.
+  expect(await f.service().launch(f.caller, { ...base, image: DOCKER_DEFAULT_IMAGE, ttlSeconds: 3600 })).toEqual(
+    result,
+  );
 });
 
 test("normal publication uses the runtime epoch rather than the independent lifecycle generation", async () => {
