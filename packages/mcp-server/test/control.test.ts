@@ -2702,7 +2702,7 @@ test("Modal runtime launch is explicit and persists dial-out selection before it
         expect(input.sandbox.boatRuntime).toBeUndefined();
         return {
           epoch: "1",
-          prompt: async () => ({ promptId: "modal-initial", conversationId: "modal-conversation" }),
+          prompt: async () => ({ promptId: "modal-initial", conversationId: "modal-conversation", status: "running" }),
         };
       },
     };

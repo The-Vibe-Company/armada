@@ -234,12 +234,17 @@ test("an undelivered checkpoint intent fences new work across replicas until the
 
 // Same actual Runner/checkpoint owner, distinct Modal SQL authorization predicate.
 test("Modal first-answer checkpoint publishes the common archive ACK without a tunnel", async () => {
-  const f = await runtimeFixture(undefined,"modal");
+  const f = await runtimeFixture(undefined, "modal");
   try {
-    const checkpoint = createRuntimeCheckpoint(f.sql,ENCRYPTION_KEY,f.bridge);
-    const receipt = await checkpoint(f.caller,args(f.row.id));
-    expect(receipt).toMatchObject({runtime:{kind:"armada",epoch:f.active.epoch},checkpoint:{state:"complete"}});
+    const checkpoint = createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, f.bridge);
+    const receipt = await checkpoint(f.caller, args(f.row.id));
+    expect(receipt).toMatchObject({
+      runtime: { kind: "armada", epoch: f.active.epoch },
+      checkpoint: { state: "complete" },
+    });
     expect(receipt.checkpoint.watermark).toBe(receipt.checkpoint.acknowledgedSequence);
     expect(receipt.checkpoint.watermark).toBeGreaterThan(0);
-  } finally {await f.close();}
+  } finally {
+    await f.close();
+  }
 });
