@@ -3,10 +3,13 @@ import type { AgentEvent, Sql } from "@armada/core";
 import { decryptSecret } from "@armada/core/server";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
+import { rowOnlyDatabase } from "./row-only-database.ts";
 import { database, ENCRYPTION_KEY } from "./support.ts";
 
-async function fixture() {
-  const { db, people } = await database();
+const sharedDatabase = rowOnlyDatabase();
+
+async function fixture({ isolated = false } = {}) {
+  const { db, people } = await (isolated ? database() : sharedDatabase());
   const id = crypto.randomUUID();
   await db.query(
     `insert into sandboxes(id,golden_id,org_id,owner_id,boat_id,harness,status,boat_runtime)
@@ -69,11 +72,27 @@ async function fixture() {
   const aggregate = async () =>
     (await db.query<{ usage_turns: unknown }>("select usage_turns from sandboxes where id=$1", [id])).rows[0]
       ?.usage_turns;
-  return { db, sql, people, id, authority, enrol, route, publish, other, usage, rows, aggregate };
+  return {
+    db,
+    sql,
+    people,
+    id,
+    authority,
+    enrol,
+    route,
+    publish,
+    other,
+    usage,
+    rows,
+    aggregate,
+    close: async () => {
+      if (isolated) await db.close();
+    },
+  };
 }
 
 test("ACK follows contiguous encrypted persistence and shared usage projection; replay is immutable and atomic", async () => {
-  const f = await fixture();
+  const f = await fixture({ isolated: true });
   try {
     const active = await f.enrol(),
       first = { sequence: 1, event: f.other("first") },
@@ -147,7 +166,7 @@ test("ACK follows contiguous encrypted persistence and shared usage projection; 
       ]),
     });
   } finally {
-    await f.db.close();
+    await f.close();
   }
 });
 
@@ -169,7 +188,7 @@ test("a resumed epoch continues the persistent producer sequence and rejects the
     expect((await f.publish(current, [{ sequence: 3, event: f.other("stopped") }])).status).toBe(401);
     expect(await f.rows()).toHaveLength(2);
   } finally {
-    await f.db.close();
+    await f.close();
   }
 });
 
@@ -209,7 +228,7 @@ test("private archive grants and bounded event validation refuse malformed batch
     expect(await f.route()(new Request("https://armada.example/healthz"))).toBeNull();
     expect((await f.route()(new Request("https://armada.example/api/runtime/events")))?.status).toBe(405);
   } finally {
-    await f.db.close();
+    await f.close();
   }
 });
 
@@ -302,7 +321,7 @@ test.each(["runtime", "server", "unicode-head"] as const)(
       }
     } finally {
       journal.close();
-      await f.db.close();
+      await f.close();
       await rm(root, { recursive: true, force: true });
     }
   },
@@ -330,7 +349,7 @@ test("unmeasured prompt-only turns accumulate across batches without claiming co
       turns: [{ promptId: "prompt-a", inputTokens: 100, outputTokens: 20 }],
     });
   } finally {
-    await f.db.close();
+    await f.close();
   }
 });
 
@@ -414,7 +433,7 @@ test("durable runtime history paginates the authenticated archive after stop wit
       message: "Runtime history is unavailable.",
     });
   } finally {
-    await f.db.close();
+    await f.close();
   }
 });
 
@@ -446,6 +465,6 @@ test("runtime archive rechecks membership after decryption before returning hist
       observed.mockRestore();
     }
   } finally {
-    await f.db.close();
+    await f.close();
   }
 });
