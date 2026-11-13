@@ -332,7 +332,7 @@ describe("ordinary scoped Armada smoke", () => {
     await expect(run(f)).rejects.toThrow("scoped_");
   });
 
-  test.each(["missing", "uncertain", "wrong-target", "malformed"])(
+  test.each(["missing", "uncertain", "wrong-target", "malformed", "array-state"])(
     "failed message proof reports closed non-secret diagnostics: %s",
     async (mode) => {
       const f = fixture();
@@ -341,12 +341,13 @@ describe("ordinary scoped Armada smoke", () => {
         message.input.extra = "secret-native-input";
         if (mode === "missing") tools.splice(1, 1);
         if (mode === "wrong-target") message.input.sandboxId = "secret-native-target";
-        if (mode === "uncertain" || mode === "malformed") {
+        if (mode === "uncertain" || mode === "malformed" || mode === "array-state") {
           message.result.output = {
             structuredContent: {
               result: {
                 ...f.receipt(),
-                state: mode === "uncertain" ? "uncertain" : "secret-native-state",
+                state:
+                  mode === "uncertain" ? "uncertain" : mode === "array-state" ? ["succeeded"] : "secret-native-state",
                 detail: "secret-native-output",
               },
             },

@@ -390,9 +390,11 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
                 targetMatches: call?.input.sandboxId === childId,
                 receiptTargetMatches: call?.result.sandboxId === childId,
                 receiptIdValid: uuid(call?.result.id),
-                receiptState: ["pending", "uncertain", "failed", "succeeded"].includes(String(call?.result.state))
-                  ? call!.result.state
-                  : "unrecognized",
+                receiptState:
+                  typeof call?.result.state === "string" &&
+                  ["pending", "uncertain", "failed", "succeeded"].includes(call.result.state)
+                    ? call.result.state
+                    : "unrecognized",
                 toolError: call?.error ?? null,
                 authorityDenied: call?.denied ?? null,
               }),
