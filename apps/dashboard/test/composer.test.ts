@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { chosenConversation, dockerSend, modelChange, PINNED_MODEL, plainSendFailure } from "../src/lib/composer.ts";
+import {
+  chosenConversation,
+  dockerSend,
+  drivingFailureMessage,
+  modelChange,
+  PINNED_MODEL,
+  UNCONFIRMED_ACTION,
+} from "../src/lib/composer.ts";
 
 const fields = (model = "", otherModel = "", reasoningEffort = "") => ({ model, otherModel, reasoningEffort });
 
@@ -18,20 +25,33 @@ describe("composer guards", () => {
     expect(modelChange(fields("other", "  "))).toBe("incomplete");
   });
 
-  test("a Docker send carries its request key and no model; field names never reach the person", () => {
+  test("a Docker send carries its request key and no model overrides", () => {
     const key = "0b9f3c1e-7d2a-4c5b-9e8f-1a2b3c4d5e6f";
     expect(dockerSend(fields(), key)).toEqual({ ok: true, requestId: key });
     expect(dockerSend(fields("", "", "high"), key)).toEqual({ ok: false, error: PINNED_MODEL });
     expect(dockerSend(fields(), "")).toMatchObject({ ok: false });
     expect(dockerSend(fields(), key.toUpperCase())).toMatchObject({ ok: false });
-    expect(plainSendFailure("Docker send requires request_id and prompt; model and effort remain pinned.")).toBe(
-      "The message could not be delivered. Send it again.",
-    );
-    expect(plainSendFailure("Docker prompt admission pending. Retry identical input with the same request_id.")).toBe(
-      "The host has not confirmed the message yet. Send it again unchanged to check, without editing it.",
-    );
-    expect(plainSendFailure("Docker sandbox must be running before send.")).toBe(
-      "Docker sandbox must be running before send.",
-    );
   });
+});
+
+test("composer failures preserve curated recovery steps and never echo API details", () => {
+  const raw = "HTTP 503: request_id invalid, image sha256:abc";
+  expect(drivingFailureMessage({ message: raw }, true)).toBe(UNCONFIRMED_ACTION);
+  expect(drivingFailureMessage({ message: raw, code: "new_provider_failure" }, true)).toBe(UNCONFIRMED_ACTION);
+  expect(drivingFailureMessage({ message: raw, code: "credential_binding_required" }, true)).toContain(
+    "Choose one above.",
+  );
+  expect(drivingFailureMessage({ message: raw, code: "credential_binding_required" }, false)).toContain(
+    "Only its owner",
+  );
+  expect(drivingFailureMessage({ message: raw, code: "usage_limit" }, true)).toContain("plan or billing limit");
+  expect(drivingFailureMessage({ message: raw, code: "outcome_unknown" }, true)).toContain("before retrying");
+  expect(drivingFailureMessage({ message: raw, status: 401 }, true)).toContain("Sign in again");
+  expect(drivingFailureMessage({ message: raw, status: 403 }, true)).toContain("check your access");
+  expect(drivingFailureMessage({ message: raw }, true, true)).toBe(
+    "The host could not confirm delivery. Send the same message again without editing it to check.",
+  );
+  expect(
+    drivingFailureMessage({ message: "Docker prompt admission pending. Retry with request_id." }, true, true),
+  ).toBe("The host has not confirmed the message yet. Send it again unchanged to check, without editing it.");
 });

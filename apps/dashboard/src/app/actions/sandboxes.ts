@@ -8,9 +8,9 @@ import { type ActionResult, done, fail, formString, isUuid } from "@/lib/action"
 import {
   chosenConversation,
   dockerSend,
+  drivingFailureMessage,
   INCOMPLETE_MODEL,
   modelChange,
-  plainSendFailure,
   SEND_KEY_FIELD,
   STEER_KEEPS_MODEL,
 } from "@/lib/composer";
@@ -57,13 +57,8 @@ async function gatewayFor(id: string) {
  * A refused send, steer or interrupt in words. An unbound legacy Modal sandbox (`credential_binding_required`) is
  * recovered on this page, not with the CLI command the server's own message names.
  */
-function drivingFailure(error: GatewayError, owner: boolean): ActionResult {
-  if (error.code !== "credential_binding_required") return fail(error.message);
-  return fail(
-    owner
-      ? "This sandbox needs an account before it can resume. Choose one above."
-      : "This sandbox needs an account before it can resume. Only its owner can choose it.",
-  );
+function drivingFailure(error: GatewayError, owner: boolean, keyedSend = false): ActionResult {
+  return fail(drivingFailureMessage(error, owner, keyedSend));
 }
 
 export async function stopSandbox(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
@@ -134,9 +129,7 @@ export async function sendToSandbox(_previous: ActionResult | null, data: FormDa
   try {
     await target.gateway.send(id, prompt, override, conversation.id, requestId);
   } catch (error) {
-    if (error instanceof GatewayError && requestId && error.code !== "credential_binding_required")
-      return fail(plainSendFailure(error.message));
-    if (error instanceof GatewayError) return drivingFailure(error, target.owner);
+    if (error instanceof GatewayError) return drivingFailure(error, target.owner, requestId !== undefined);
     throw error;
   }
   revalidatePath(`/sandboxes/${id}`);

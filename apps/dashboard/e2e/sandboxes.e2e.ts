@@ -378,11 +378,18 @@ test("steer, interrupt and send go to the chosen conversation, and a refused mes
 
   await fetch(`${MOCK}/__test/fail-next-tool`, {
     method: "POST",
-    body: JSON.stringify({ message: "No turn is running." }),
+    body: JSON.stringify({ message: "HTTP 503: request_id invalid; image sha256:abc" }),
   });
   await box.fill("Keep the old behaviour for empty input");
   await page.getByRole("button", { name: "Steer", exact: true }).click();
-  await expect(page.locator('form p[role="alert"]')).toHaveText("No turn is running.");
+  await expect(page.locator('form p[role="alert"]')).toHaveText(
+    "This action could not be confirmed. Check the conversation before trying again.",
+  );
+  await expect(page.locator('form p[role="alert"]')).not.toContainText("request_id");
+  await page.screenshot({ path: "test-results/composer-error-desktop.png", animations: "disabled" });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({ path: "test-results/composer-error-mobile.png", animations: "disabled" });
+  await page.setViewportSize({ width: 1280, height: 720 });
   await expect(box).toHaveValue("Keep the old behaviour for empty input");
 
   await box.press("Control+Enter");

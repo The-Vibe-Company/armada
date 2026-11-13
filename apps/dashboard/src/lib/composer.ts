@@ -1,3 +1,4 @@
+import { describeFailure } from "./failure.ts";
 import { type ModelFields, OTHER_MODEL } from "./model-choice.ts";
 
 /**
@@ -47,14 +48,28 @@ export function dockerSend(
 /** Lowercase, as the server checks it. */
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
-/**
- * A Docker send failure as a person reads it: a server sentence that names an API field (`request_id`) becomes plain
- * words. The composer keeps the message's request key until the text changes, so sending it again unchanged is the safe
- * retry the server asks for; a pending admission may still run, so it is never called a failure.
- */
-export function plainSendFailure(message: string): string {
-  if (!/\b[a-z]+_[a-z_]+\b/.test(message)) return message;
-  return /\bpending\b/.test(message)
+export const UNCONFIRMED_ACTION = "This action could not be confirmed. Check the conversation before trying again.";
+
+/** Only curated guidance reaches the composer, never an arbitrary API/provider sentence. */
+export function drivingFailureMessage(
+  error: { message: string; code?: string | undefined; status?: number | undefined },
+  owner: boolean,
+  keyedSend = false,
+): string {
+  if (error.code === "credential_binding_required")
+    return owner
+      ? "This sandbox needs an account before it can resume. Choose one above."
+      : "This sandbox needs an account before it can resume. Only its owner can choose it.";
+  const known = describeFailure(error.code);
+  if (known) return known.hint;
+  if (error.status === 401 || error.status === 403)
+    return "This session cannot access the sandbox. Sign in again, or ask an organization admin to check your access.";
+  return keyedSend ? plainSendFailure(error.message) : UNCONFIRMED_ACTION;
+}
+
+/** A keyed Docker retry checks the same admission; never suggest editing or starting a second message. */
+function plainSendFailure(message: string): string {
+  return /\bpending\b/i.test(message)
     ? "The host has not confirmed the message yet. Send it again unchanged to check, without editing it."
-    : "The message could not be delivered. Send it again.";
+    : "The host could not confirm delivery. Send the same message again without editing it to check.";
 }
