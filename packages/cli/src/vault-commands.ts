@@ -228,7 +228,7 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
               apiKey: raw,
               baseUrl: baseUrl ?? "",
               models: (models ?? "").split(","),
-              apiVersion,
+              ...(apiVersion !== undefined ? { apiVersion } : {}),
             })
           : parseCredentialValue(preset.kind, raw);
       await control(io.auth, "creds/accounts/set", { scope, org, kind: credentialName(preset.kind), name, value });

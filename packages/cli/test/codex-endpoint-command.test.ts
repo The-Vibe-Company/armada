@@ -427,7 +427,7 @@ test("CLI connects shared provider presets without connection JSON or a user-sel
     expect(h.requests).toHaveLength(1);
     const request = h.requests[0]!;
     expect(new URL(request.url).pathname).toBe("/api/v1/creds/accounts/set");
-    const body = await request.json();
+    const body = (await request.json()) as { kind: string; name: string; scope: string; value: string };
     expect(body).toMatchObject({ kind: "opencode", name: "Provider", scope: "user" });
     const connection = JSON.parse(body.value);
     expect(connection.endpoint.protocol).toBe(protocol);
