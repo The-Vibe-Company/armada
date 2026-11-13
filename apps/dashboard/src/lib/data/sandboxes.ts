@@ -1,6 +1,6 @@
-import type { CredentialKind, Sandbox, SandboxCost } from "@armada/core";
+import type { CredentialKind, Sandbox, SandboxCost, SandboxListMetadata } from "@armada/core";
 import { isUuid } from "@/lib/action";
-import { type ListedSandbox, parseSandboxListMetadata, type SkippedSandboxRow } from "@/lib/sandbox-access";
+import { parseSandboxListMetadata, type SkippedSandboxRow } from "@/lib/sandbox-access";
 import { costOfRow } from "@/lib/sandbox-cost";
 import {
   type Facet,
@@ -14,7 +14,7 @@ import type { Supabase } from "@/lib/supabase/server";
 import { selectedOrganization } from "./selected-org";
 
 export type SandboxPage = {
-  rows: ListedSandbox[];
+  rows: SandboxListMetadata[];
   total: number;
   inventoryTotal: number;
   /** Rows the server listed that do not match the contract, left out of the page (#1398). */
@@ -31,7 +31,7 @@ export async function listSandboxes(
   viewerId: string,
 ): Promise<SandboxPage> {
   const selected = await selectedOrganization();
-  const inventory: ListedSandbox[] = [];
+  const inventory: SandboxListMetadata[] = [];
   let skipped = 0;
   if (selected) {
     const batch = 500;
@@ -62,7 +62,7 @@ export async function listSandboxes(
 }
 
 /** The listed metadata of one sandbox of the selected organization, or null when the server lists no such sandbox. */
-export async function getSandboxMetadata(supabase: Supabase, id: string): Promise<ListedSandbox | null> {
+export async function getSandboxMetadata(supabase: Supabase, id: string): Promise<SandboxListMetadata | null> {
   const selected = await selectedOrganization();
   if (!selected) return null;
   const { data, error } = await supabase
@@ -117,7 +117,7 @@ export async function credentialKinds(supabase: Supabase, ids: readonly (string 
  */
 export function listSandboxCosts(
   supabase: Supabase,
-  rows: readonly Pick<ListedSandbox, "id" | "canOpen">[],
+  rows: readonly Pick<SandboxListMetadata, "id" | "canOpen">[],
 ): Promise<Map<string, SandboxCost>> {
   return sandboxCosts(
     supabase,
