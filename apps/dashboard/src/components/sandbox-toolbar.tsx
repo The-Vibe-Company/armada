@@ -89,8 +89,8 @@ export function SandboxToolbar({
             value={current.sort}
             onChange={(event) => navigate({ ...current, sort: event.target.value as SandboxFilters["sort"], page: 1 })}
           >
-            <option value="attention">Needs attention first</option>
             <option value="newest">Newest first</option>
+            <option value="attention">Needs attention first</option>
             <option value="oldest">Oldest first</option>
             <option value="name">Name A–Z</option>
           </NativeSelect>
