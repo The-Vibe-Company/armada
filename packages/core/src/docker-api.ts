@@ -23,6 +23,8 @@ export interface DockerHostSummary {
   createdAt: string;
   lastSeenAt: string | null;
   revokedAt: string | null;
+  /** The daemon version the host last reported (#1453); absent or null until a host has reported one. */
+  version?: string | null;
   /** Retained sandboxes, including stopped/failed, excluding deleted. */
   sandboxes: number;
 }
@@ -80,7 +82,13 @@ export interface LaunchOptionsResponse {
   machineSizes: readonly MachineSize[];
   ttl: { defaultSeconds: number; maxSeconds: Partial<Record<SandboxPlacementProviderId, number>> };
   providers: LaunchProviderOption[];
-  modalRuntime?: { version: number; enabled: boolean; followupVersion?: number; resumeVersion?: number };
+  modalRuntime?: {
+    version: number;
+    enabled: boolean;
+    followupVersion?: number;
+    resumeVersion?: number;
+    mcpVersion?: number;
+  };
   boatRuntime: {
     defaultPath?: "native" | "runtime";
     version: number;
@@ -91,6 +99,7 @@ export interface LaunchOptionsResponse {
     githubVersion: number;
     mcpVersion: number;
     skillsVersion?: number;
+    controlsVersion?: number;
     enabled: boolean;
   };
 }

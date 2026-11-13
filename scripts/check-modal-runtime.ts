@@ -13,7 +13,21 @@ const credentialId = process.env.ARMADA_RUNTIME_CREDENTIAL_ID;
 if (!token || !golden || !org || !credentialId) throw Error("Missing coordinator staging inputs.");
 
 interface Reply {
-  modalRuntime?: { version?: number; enabled?: boolean; followupVersion?: number; resumeVersion?: number };
+  provider?: import("../packages/core/src/sandbox-provider.ts").SandboxProviderId;
+  githubReady?: boolean;
+  mcpReady?: boolean;
+  status?: string;
+  revision?: string;
+  configured?: boolean;
+  credentialRequests?: number;
+  goldens?: { id: string; name: string; provider: string; orgId: string }[];
+  modalRuntime?: {
+    version?: number;
+    enabled?: boolean;
+    followupVersion?: number;
+    resumeVersion?: number;
+    mcpVersion?: number;
+  };
   sandbox?: { id?: string; provider?: string; runtimeTransport?: string };
   runtime?: { kind?: string; epoch?: string };
   promptId?: string;
@@ -58,6 +72,74 @@ if (
 const resumeMode = process.argv.includes("--resume");
 if (resumeMode && options.modalRuntime.resumeVersion !== 1)
   throw Error("Modal retained resume v1 is unavailable; no launch attempted.");
+const githubMode = process.argv.includes("--github");
+const mcpMode = process.argv.includes("--mcp");
+const repository = process.env.ARMADA_RUNTIME_GITHUB_REPOSITORY ?? "";
+const mcpConnection = (process.env.ARMADA_RUNTIME_MCP_CONNECTION_ID ?? "").toLowerCase();
+const mcpTool = process.env.ARMADA_RUNTIME_MCP_TOOL ?? "";
+const mcpExpected = process.env.ARMADA_RUNTIME_MCP_EXPECT ?? "";
+const mcpArgumentsJson = process.env.ARMADA_RUNTIME_MCP_ARGS_JSON ?? "{}";
+let mcpArguments: Record<string, unknown> = {};
+if (mcpMode) {
+  if (
+    options.modalRuntime.mcpVersion !== 2 ||
+    !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(mcpConnection) ||
+    !/^[A-Za-z0-9_.-]{1,64}$/.test(mcpTool) ||
+    !mcpExpected ||
+    mcpExpected.length > 1024 ||
+    Buffer.byteLength(mcpArgumentsJson) > 4096
+  )
+    throw Error(
+      "MCP check requires automatic delivery v2, connection UUID, read-only tool and non-secret JSON arguments/result; no launch attempted.",
+    );
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(mcpArgumentsJson);
+  } catch {
+    throw Error("MCP arguments must be valid non-secret JSON; no launch attempted.");
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+    throw Error("MCP arguments must be a non-secret JSON object; no launch attempted.");
+  mcpArguments = parsed as Record<string, unknown>;
+}
+if (githubMode && !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository))
+  throw Error("GitHub check requires existing ARMADA_RUNTIME_GITHUB_REPOSITORY=owner/repo; no launch attempted.");
+if (githubMode || mcpMode) {
+  const choices = (await api("golden/list", { org })).goldens?.filter(
+    (row) => row.provider === "modal" && (row.id === golden || row.name === golden),
+  );
+  if (choices?.length !== 1 || !choices[0])
+    throw Error("No unique authorized Modal golden for preflight; no launch attempted.");
+  if (githubMode) {
+    const preflight = await api("sandbox/github-preflight-v1", {
+      runtimeVersion: 1,
+      org: choices[0].orgId,
+      golden: choices[0].name,
+      repository,
+    });
+    if (preflight.githubReady !== true || preflight.provider !== "modal")
+      throw Error("Modal GitHub preflight unavailable; no launch attempted.");
+  }
+  if (mcpMode) {
+    const preflight = await api("sandbox/mcp-preflight-v1", {
+      runtimeVersion: 1,
+      org: choices[0].orgId,
+      connections: [mcpConnection],
+    });
+    if (preflight.mcpReady !== true) throw Error("Modal MCP preflight refused; no launch attempted.");
+  }
+}
+const mcpServer = `armada_${mcpConnection.replaceAll("-", "_")}`;
+const mcpInstruction = `Call the read-only MCP tool ${mcpTool} on server ${mcpServer} with exactly these non-secret JSON arguments: ${JSON.stringify(mcpArguments)}. Do not substitute a shell or another tool.`;
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  if (value && typeof value === "object")
+    return `{${Object.entries(value)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([k, v]) => `${JSON.stringify(k)}:${canonical(v)}`)
+      .join(",")}}`;
+  return JSON.stringify(value) ?? "undefined";
+}
 const answer = `ARMADA_MODAL_${crypto.randomUUID().replaceAll("-", "")}`;
 const memory = `ARMADA_MEMORY_${crypto.randomUUID().replaceAll("-", "")}`;
 let id: string | undefined;
@@ -69,17 +151,82 @@ let followupPromptId: string | undefined;
 let checkpointRequestId: string | undefined;
 let checkpointReceipt: Reply | undefined;
 let shouldStop = false;
+let initialGitHubRevision: string | undefined;
+const githubToolPrompts = new Set<string>();
+const githubInstruction = `Run exactly: gh api repos/${repository} --jq .full_name successfully. After the tool succeeds, reply exactly with the token I originally asked you to remember. Do not change files.`;
+const recallInstruction =
+  "After the tool succeeds, reply exactly with the token I originally asked you to remember. Do not change files.";
+const toolsInstruction = [
+  ...(mcpMode ? [mcpInstruction] : []),
+  ...(githubMode ? [githubInstruction] : [recallInstruction]),
+].join(" ");
+const configureGitHub = async (expectedEpoch: string) => {
+  const receipt = await api("github/refresh", { id });
+  if (
+    receipt.status !== "connected" ||
+    receipt.runtime?.kind !== "armada" ||
+    receipt.runtime.epoch !== expectedEpoch ||
+    !receipt.revision
+  )
+    throw Error("GitHub configuration lacks current runtime epoch/revision.");
+  return receipt.revision;
+};
+const verifyGitHub = async (expectedPromptId: string, expectedEpoch: string, revision: string) => {
+  const audit = await api("github/runtime-status", { id });
+  if (
+    !githubToolPrompts.has(expectedPromptId) ||
+    audit.configured !== true ||
+    audit.runtime?.kind !== "armada" ||
+    audit.runtime.epoch !== expectedEpoch ||
+    audit.revision !== revision ||
+    !Number.isSafeInteger(audit.credentialRequests) ||
+    (audit.credentialRequests ?? 0) < 1
+  )
+    throw Error("Missing archived gh command and current-epoch credential acquisition proof.");
+};
 const verifyPrompt = async (expectedPromptId: string, expectedAnswer: string) => {
   let cursor: string | undefined;
   let foundAnswer = false;
   let finished = false;
+  let foundMcp = !mcpMode;
   const deadline = Date.now() + 300000;
-  while (Date.now() < deadline && (!foundAnswer || !finished)) {
+  while (Date.now() < deadline && (!foundAnswer || !finished || !foundMcp)) {
     const page = await api("logs/read", { id, limit: 1000, ...(cursor ? { cursor } : {}) });
     if (page.source !== "armada-runtime") throw Error("Modal answer was not read from the common runtime archive.");
     if (page.runtimeFailure) throw Error("Modal enrolled runtime failed; inspect server diagnostics.");
     for (const event of page.events ?? []) {
       if (event.promptId !== expectedPromptId) continue;
+      if (mcpMode && event.kind === "message" && !event.parentToolUseId && !event.retracted) {
+        for (const tool of event.tools)
+          if (
+            tool.server === mcpServer &&
+            tool.name === mcpTool &&
+            canonical(tool.input) === canonical(mcpArguments) &&
+            tool.result?.isError === false &&
+            JSON.stringify(tool.result.output)?.includes(mcpExpected)
+          )
+            foundMcp = true;
+      }
+      if (githubMode && event.kind === "message" && !event.parentToolUseId && !event.retracted) {
+        for (const tool of event.tools) {
+          const command = (tool.input as { command?: unknown } | undefined)?.command;
+          if (
+            tool.name === "commandExecution" &&
+            typeof command === "string" &&
+            [
+              `gh api repos/${repository} --jq .full_name`,
+              ...["/bin/bash", "/usr/bin/bash", "bash", "/bin/sh", "sh"].flatMap((shell) => [
+                `${shell} -lc 'gh api repos/${repository} --jq .full_name'`,
+                `${shell} -lc "gh api repos/${repository} --jq .full_name"`,
+              ]),
+            ].includes(command.trim()) &&
+            tool.result?.isError === false &&
+            typeof tool.result.output === "string" &&
+            tool.result.output.trim().toLowerCase() === repository.toLowerCase()
+          )
+            githubToolPrompts.add(expectedPromptId);
+        }
+      }
       if (
         event.kind === "message" &&
         event.partial === false &&
@@ -94,7 +241,9 @@ const verifyPrompt = async (expectedPromptId: string, expectedAnswer: string) =>
         throw Error("Modal runtime prompt did not finish successfully.");
     }
     cursor = page.cursor ?? cursor;
-    if (!foundAnswer || !finished) await Bun.sleep(1000);
+    if (foundAnswer && finished && !foundMcp)
+      throw Error("Missing this prompt's archived MCP server/tool/arguments/successful-result proof.");
+    if (!foundAnswer || !finished || !foundMcp) await Bun.sleep(1000);
   }
   if (!foundAnswer || !finished)
     throw Error("Timed out waiting for this Modal prompt's archived answer and finished event.");
@@ -131,11 +280,13 @@ try {
     golden,
     credentialId,
     ...(process.env.ARMADA_RUNTIME_MODEL ? { model: process.env.ARMADA_RUNTIME_MODEL } : {}),
-    connections: [],
+    connections: mcpMode ? [mcpConnection] : [],
     skills: [],
     skipSkillDefaults: true,
     ttlSeconds: 900,
-    prompt: `Remember token ${memory}. Reply exactly ${answer}. Do not use tools or change files.`,
+    prompt: mcpMode
+      ? `Remember token ${memory}. ${mcpInstruction} After it succeeds, reply exactly ${answer}. Do not change files.`
+      : `Remember token ${memory}. Reply exactly ${answer}. Do not use tools or change files.`,
   });
   id = launched.sandbox?.id;
   shouldStop = Boolean(id);
@@ -153,6 +304,7 @@ try {
   )
     throw Error("Missing Modal enrolled launch acknowledgement; reconcile existing allocation, never launch again.");
   await verifyPrompt(promptId, answer);
+  initialGitHubRevision = githubMode ? await configureGitHub(epoch ?? "") : undefined;
   const followupRequestId = crypto.randomUUID();
   console.log(
     JSON.stringify({
@@ -164,7 +316,10 @@ try {
   );
   const followed = await api("sandbox/send", {
     id,
-    prompt: "Reply exactly with the token I originally asked you to remember. Do not use tools or change files.",
+    prompt:
+      githubMode || mcpMode
+        ? toolsInstruction
+        : "Reply exactly with the token I originally asked you to remember. Do not use tools or change files.",
     request_id: followupRequestId,
     conversation_id: launched.conversationId,
   });
@@ -180,6 +335,7 @@ try {
       "Missing same-conversation/current-epoch Modal follow-up acknowledgement; reconcile request_id, never send again.",
     );
   await verifyPrompt(followed.promptId, memory);
+  if (initialGitHubRevision) await verifyGitHub(followed.promptId, epoch ?? "", initialGitHubRevision);
   followupPromptId = followed.promptId;
   const firstCheckpoint = await checkpoint(epoch ?? "");
   checkpointRequestId = firstCheckpoint.requestId;
@@ -195,6 +351,8 @@ try {
       source: "armada-runtime",
       answer: "verified",
       checkpoint: "verified",
+      ...(githubMode ? { github: "verified" } : {}),
+      ...(mcpMode ? { mcp: "verified" } : {}),
     }),
   );
 } catch (error) {
@@ -264,8 +422,9 @@ if (
       runtimeVersion: 1,
       request_id: requestId,
       conversation_id: conversationId,
-      prompt:
-        "Again reply exactly with the token I originally asked you to remember. Do not use tools or change files.",
+      prompt: mcpMode
+        ? `${mcpInstruction} ${recallInstruction}`
+        : "Again reply exactly with the token I originally asked you to remember. Do not use tools or change files.",
     });
     if (
       resumed.requestId !== requestId ||
@@ -285,6 +444,33 @@ if (
     await verifyPrompt(resumed.promptId, memory);
     await verifyPrompt(promptId, answer);
     await verifyPrompt(followupPromptId, memory);
+    if (githubMode) {
+      const currentEpoch = resumed.runtime.epoch ?? "";
+      const before = await api("github/runtime-status", { id });
+      if (before.configured !== false || before.runtime?.epoch !== currentEpoch)
+        throw Error("Old GitHub configuration survived the runtime epoch change.");
+      const revision = await configureGitHub(currentEpoch);
+      if (revision === initialGitHubRevision) throw Error("Resume reused the previous GitHub revision.");
+      const requestId = crypto.randomUUID();
+      console.log(JSON.stringify({ operation: "runtime_github_followup", sandboxId: id, conversationId, requestId }));
+      const sent = await api("sandbox/send", {
+        id,
+        request_id: requestId,
+        conversation_id: conversationId,
+        prompt: toolsInstruction,
+      });
+      if (
+        sent.requestId !== requestId ||
+        sent.runtime?.epoch !== currentEpoch ||
+        sent.runtime.kind !== "armada" ||
+        sent.conversationId !== conversationId ||
+        !sent.promptId ||
+        [promptId, followupPromptId, resumed.promptId].includes(sent.promptId)
+      )
+        throw Error("Missing current-epoch GitHub follow-up acknowledgement.");
+      await verifyPrompt(sent.promptId, memory);
+      await verifyGitHub(sent.promptId, currentEpoch, revision);
+    }
     await checkpoint(resumed.runtime.epoch ?? "");
     resumedReceipt = resumed;
   } catch (error) {
@@ -305,6 +491,8 @@ if (
         epoch: resumedReceipt.runtime?.epoch,
         source: "armada-runtime",
         resume: "verified",
+        ...(githubMode ? { githubAfterResume: "verified" } : {}),
+        ...(mcpMode ? { mcpAfterResume: "verified" } : {}),
       }),
     );
 }

@@ -27,16 +27,20 @@ export async function viewerDockerHosts() {
   const options = { serverUrl, token: viewer.token };
   const post = (route: string, body: object) => controlPost(options, `/api/v1/${route}`, body, FEATURE);
   return {
-    serverUrl,
     async list(org: string): Promise<DockerHostList> {
       const list = parseDockerHostList(await post(DOCKER_HOST_ROUTES.list, { org }));
       if (!list) throw new ControlError("The Armada server sent an unexpected host list.");
       if (list.skipped > 0) console.error(`Docker host list: ${list.skipped} host(s) left out, off the contract.`);
       return list;
     },
-    async register(org: string): Promise<HostRegistration> {
-      const registration = parseHostRegistration(await post(DOCKER_HOST_ROUTES.registerToken, { org }));
-      if (!registration) throw new ControlError("The Armada server sent an unexpected registration.");
+    /** The name is sent only when given, so a server without host naming still answers an unnamed request. */
+    async register(org: string, name: string | null): Promise<HostRegistration> {
+      const answer = await post(DOCKER_HOST_ROUTES.registerToken, name === null ? { org } : { org, name });
+      const registration = parseHostRegistration(answer);
+      if (!registration)
+        throw new ControlError(
+          "The Armada server did not answer with an install command. It may need an update to add hosts with one command.",
+        );
       return registration;
     },
     async revoke(org: string, hostId: string): Promise<void> {
