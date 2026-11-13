@@ -54,3 +54,5 @@ try {
   stop();
   await Promise.all(children.map((child) => child.exited));
 }
+
+export {};

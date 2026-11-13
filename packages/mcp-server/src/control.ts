@@ -32,6 +32,7 @@ import {
   parseMachineSizePolicy,
   providerRateLimitDetails,
   providerRateLimitMessage,
+  VERSION,
 } from "@armada/core";
 import {
   type ApplicationVault,
@@ -844,7 +845,8 @@ async function dispatch(
     const logs = options.logs;
     return options.modelUsage.read(caller, id, sandboxId, (boundSandbox) => logs(caller, boundSandbox));
   }
-  if (route === "account/status") return { userId: caller.userId, orgs: caller.orgs, authentication: caller.via };
+  if (route === "account/status")
+    return { userId: caller.userId, orgs: caller.orgs, authentication: caller.via, version: VERSION };
   if (route.startsWith("github/") && route !== "github/refresh" && route !== "github/runtime-status") {
     if (!options.githubAccount) throw new VaultError("unavailable", "GitHub account authorization is not configured.");
     return options.githubAccount.command(route.slice("github/".length), caller, body);

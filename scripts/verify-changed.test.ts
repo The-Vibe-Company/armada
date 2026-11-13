@@ -15,6 +15,8 @@ test("changed verification includes transitive consumers, isolates leaves and br
   ]);
   expect(affectedWorkspaces(["packages/independent/test/a.test.ts"], workspaces)).toEqual(["packages/independent"]);
   expect(affectedWorkspaces(["bun.lock"], workspaces)).toEqual(workspaces.map((w) => w.path).sort());
-  expect(affectedWorkspaces(["docs/contributing.md", "AGENTS.md"], workspaces)).toEqual([]);
+  expect(affectedWorkspaces(["docs/contributing.md", "AGENTS.md"], workspaces)).toEqual(
+    workspaces.map((w) => w.path).sort(),
+  );
   expect(affectedWorkspaces([], workspaces)).toEqual([]);
 });

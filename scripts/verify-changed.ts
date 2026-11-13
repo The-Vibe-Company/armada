@@ -11,7 +11,6 @@ export interface Workspace {
 export function affectedWorkspaces(changed: string[], workspaces: Workspace[]): string[] {
   const affected = new Set<string>();
   for (const path of changed) {
-    if (path.endsWith(".md") || path.startsWith("docs/")) continue;
     const owner = workspaces.find((workspace) => path.startsWith(`${workspace.path}/`));
     if (!owner) return workspaces.map((workspace) => workspace.path).sort();
     affected.add(owner.name);
