@@ -5,7 +5,10 @@ import { sandbox } from "../../provider-boat/test/support.ts";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
+import { rowOnlyDatabase } from "./row-only-database.ts";
 import { bunLikeSql, ENCRYPTION_KEY, harness, PUBLIC_URL } from "./support.ts";
+
+const sharedDatabase = rowOnlyDatabase();
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -16,11 +19,13 @@ function deferred<T>() {
 }
 
 test("send completion fences an old stopped SDK observation captured after admission expiry", async () => {
-  const server = await harness();
+  const server = await harness({}, await sharedDatabase());
   const resumed = deferred<void>();
   const resumeRequested = deferred<void>();
   const observed = deferred<void>();
   const oldObservation = deferred<void>();
+  let send: ReturnType<typeof handleControlRequest> | undefined;
+  let observation: ReturnType<ReturnType<typeof createSandboxLifecycle>["reconcileOne"]> | undefined;
   const sql = bunLikeSql(server.db);
   let isReady = false;
   let capture = false;
@@ -75,7 +80,7 @@ test("send completion fences an old stopped SDK observation captured after admis
     });
     await scoped.sandboxes.update(id, { status: "stopped", stoppedAt: new Date().toISOString() });
     const token = await server.token(server.people.owner);
-    const send = handleControlRequest(
+    send = handleControlRequest(
       new Request(PUBLIC_URL + "/api/v1/sandbox/send", {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
@@ -94,7 +99,7 @@ test("send completion fences an old stopped SDK observation captured after admis
     // Simulate a process pause beyond the persisted lease; no wall-clock sleep or mocked SQL oracle.
     await server.db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [id]);
     capture = true;
-    const observation = createSandboxLifecycle(sql, async () => provider).reconcileOne();
+    observation = createSandboxLifecycle(sql, async () => provider).reconcileOne();
     await observed.promise;
     resumed.resolve();
     expect((await send)?.status).toBe(200);
@@ -111,12 +116,13 @@ test("send completion fences an old stopped SDK observation captured after admis
   } finally {
     resumed.resolve();
     oldObservation.resolve();
+    await Promise.allSettled([send, observation]);
     await server.close();
   }
 });
 
 test("accepted send with failed completion publication reports outcome unknown, not a retryable dependency outage", async () => {
-  const server = await harness();
+  const server = await harness({}, await sharedDatabase());
   try {
     const data = createSqlData(bunLikeSql(server.db));
     const caller = {

@@ -5,7 +5,10 @@ import { memorySessionStore } from "../../cli/src/session.ts";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { providerRegistry } from "../src/http.ts";
+import { rowOnlyDatabase } from "./row-only-database.ts";
 import { call, ENCRYPTION_KEY, type FakeBoat, harness, PUBLIC_URL } from "./support.ts";
+
+const sharedDatabase = rowOnlyDatabase();
 
 // Successful ready-report fixtures now include actual completed response metadata.
 function finishMatched(boat: FakeBoat, promptId: string) {
@@ -28,7 +31,7 @@ function finishMatched(boat: FakeBoat, promptId: string) {
 // The actual MCP/control API, migrations and provider event stream own this contract.
 // A field-copy unit test would not catch a missing route, stale-turn write or lifecycle clear.
 test("explicit report validates the latest finished turn and persists through API status/list", async () => {
-  const server = await harness();
+  const server = await harness({}, await sharedDatabase());
   try {
     const { client, token, people, boat, db } = server;
     const bearer = await token(people.member);
@@ -102,7 +105,7 @@ test("explicit report validates the latest finished turn and persists through AP
 });
 
 test("send and steer clear outcomes before admission and fence replacement receipts", async () => {
-  const server = await harness();
+  const server = await harness({}, await sharedDatabase());
   try {
     const { client, token, people, boat, db } = server;
     const mcp = await client(await token(people.member));
