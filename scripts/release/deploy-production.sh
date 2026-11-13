@@ -3,15 +3,9 @@
 set -euo pipefail
 
 fail() { echo "::error::$*" >&2; exit 1; }
-staging_git=false
-if [[ "${DEPLOYMENT_ENVIRONMENT:-}" == staging && -z "${RAILWAY_TOKEN:-}" ]]; then
-  staging_git=true
-fi
 required=(SUPABASE_ACCESS_TOKEN SUPABASE_DB_PASSWORD SUPABASE_PROJECT_ID
-  VERCEL_TOKEN VERCEL_ORG_ID VERCEL_PROJECT_ID ARMADA_SERVER_URL RELEASE_SHA RELEASE_VERSION)
-if [[ "$staging_git" != true ]]; then
-  required+=(RAILWAY_TOKEN RAILWAY_PROJECT_ID RAILWAY_ENVIRONMENT_ID RAILWAY_SERVICE_ID)
-fi
+  VERCEL_TOKEN VERCEL_ORG_ID VERCEL_PROJECT_ID ARMADA_SERVER_URL RELEASE_SHA RELEASE_VERSION
+  RAILWAY_TOKEN RAILWAY_PROJECT_ID RAILWAY_ENVIRONMENT_ID RAILWAY_SERVICE_ID)
 for key in "${required[@]}"; do
   [[ -n "${!key:-}" ]] || fail "Missing deployment environment secret/configuration: $key. See docs/releasing.md."
 done
@@ -51,9 +45,6 @@ supabase migration list --linked
 # Discard CLI link metadata before either provider uploads the source tree.
 rm -rf supabase/.temp
 
-if [[ "$staging_git" == true ]]; then
-  echo '::notice::Staging Railway token absent; waiting for the exact Git deployment before dashboard and smoke.'
-else
 # --ci can finish after build logs; explicitly poll this upload's deployment ID instead.
 upload=$(railway up --detach --json --project "$RAILWAY_PROJECT_ID" \
   --environment "$RAILWAY_ENVIRONMENT_ID" --service "$RAILWAY_SERVICE_ID" \
@@ -72,17 +63,11 @@ while (( SECONDS < deadline )); do
   sleep 10
 done
 [[ "${status:-}" == SUCCESS ]] || fail "Timed out waiting for Railway deployment $deployment_id."
-fi
 # The configured public server must actually serve this version, not just pass a generic health check.
 healthy=false
-attempts=12
-if [[ "$staging_git" == true ]]; then attempts=180; fi
-health_deadline=$((SECONDS + 900))
-for (( attempt=0; attempt<attempts; attempt++ )); do
-  (( SECONDS < health_deadline )) || break
+for _ in {1..12}; do
   if curl --fail --silent --show-error --max-time 15 "${ARMADA_SERVER_URL%/}/healthz" \
-    | jq -e --arg version "$RELEASE_VERSION" --arg sha "$RELEASE_SHA" --arg git "$staging_git" \
-      '.ok == true and .version == $version and ($git != "true" or .commit == $sha)' >/dev/null; then
+    | jq -e --arg version "$RELEASE_VERSION" '.ok == true and .version == $version' >/dev/null; then
     healthy=true
     break
   fi
