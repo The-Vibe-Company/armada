@@ -1430,7 +1430,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         "sandbox opens a conversation and later sends continue the latest one. To redirect a turn that is " +
         "still running, use steer. The turn runs with the model and effort chosen at launch; model and " +
         "reasoning_effort override them for this turn only. Experimental runtime follow-up requires request_id, " +
-        "an existing conversation and an already-running sandbox; model/effort remain pinned to launch.",
+        "an existing conversation; checkpointed stopped sandboxes wake automatically. Model/effort remain pinned to launch.",
       input: {
         id,
         request_id: z

@@ -162,7 +162,6 @@ export async function startServer(
     commands: runtimeCommands,
     probe: (userId, orgId, connectionId) => mcp.controlBroker.status({ userId, orgId, connectionId }),
   });
-  const runtimeSend = createRuntimeFollowup(sql, config.encryptionKey, runtimeCommands, runtimeMcp.prepare);
   try {
     await retryDatabaseBoot(async () => {
       await requireDatabaseSchema(sql);
@@ -374,6 +373,13 @@ export async function startServer(
         }
       : undefined,
     runtimeMcp.prepare,
+  );
+  const runtimeSend = createRuntimeFollowup(
+    sql,
+    config.encryptionKey,
+    runtimeCommands,
+    runtimeMcp.prepare,
+    runtimeResume,
   );
   const dockerControls =
     env.ARMADA_DOCKER_HOSTS === "1"
