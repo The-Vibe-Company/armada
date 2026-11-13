@@ -41,11 +41,15 @@ export function ownership(
   const reported = sandboxes.filter((s) => {
     const report = s.task_outcome;
     return (
-      report?.state === "ready" &&
-      !!s.task_prompt_id &&
-      report.headSha === head.sha &&
-      (report.prUrl === `https://github.com/${repository}/pull/${e.number}` ||
-        (repositoryOf(s.resource_project?.url) === repository && report.prNumber === e.number))
+      (repositoryOf(s.resource_project?.url) === repository &&
+        s.reportedHeads.some((r) => r.number === e.number && r.sha === head.sha)) ||
+      (report?.state === "ready" &&
+        !!s.task_prompt_id &&
+        report.headSha === head.sha &&
+        (report.prUrl === undefined || report.prUrl === `https://github.com/${repository}/pull/${e.number}`) &&
+        (report.prNumber === undefined || report.prNumber === e.number) &&
+        (report.prUrl === `https://github.com/${repository}/pull/${e.number}` ||
+          (repositoryOf(s.resource_project?.url) === repository && report.prNumber === e.number)))
     );
   });
   const matches = [...new Map([...candidates, ...reported].map((s) => [s.id, s])).values()];

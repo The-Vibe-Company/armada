@@ -1,6 +1,7 @@
 import { afterAll, expect, test } from "bun:test";
 import type { AgentEvent, OttoOrphan, OttoPage, OttoResource } from "@armada/core";
 import { encryptSecret, type Sql } from "@armada/core/server";
+import { scopeKey } from "@armada/provider-modal";
 import { createOttoApi } from "../src/otto/api.ts";
 import { database, ENCRYPTION_KEY } from "./support.ts";
 
@@ -96,6 +97,15 @@ test("branch match is only candidate; exact-head report confirms, ambiguity and 
     JSON.stringify({ state: "ready", prNumber: 42, headSha: SHA }),
   ]);
   expect(await state()).toBe("owned");
+  await f.db.query("update sandboxes set task_outcome=$2::jsonb where id=$1", [
+    id,
+    JSON.stringify({ state: "ready", prNumber: 42, prUrl: `https://github.com/${f.repository}/pull/99`, headSha: SHA }),
+  ]);
+  expect(await state()).toBe("candidate");
+  await f.db.query("update sandboxes set task_outcome=$2::jsonb where id=$1", [
+    id,
+    JSON.stringify({ state: "ready", prNumber: 42, headSha: SHA }),
+  ]);
   expect(await state(new Date(NOW.getTime() + 600_001))).toBe("unknown");
   const other = await f.sandbox();
   await f.prompt(other, "running", new Date(NOW.getTime() - 30_000), 1);
@@ -171,4 +181,117 @@ test("a confirmed owner recorded stopped in the DB is not live; old unknown prov
   );
   const orphan = (await f.get<OttoOrphan>("orphans")).items.find((o) => o.resource.kind === "pr");
   expect(orphan).toMatchObject({ state: "orphan", reason: "pr_without_live_owner", current: true });
+});
+
+test("an existing canonical assistant report confirms its repository even with stale branch metadata, not echoed tool output", async () => {
+  const f = await fixture(),
+    id = await f.sandbox("main");
+  await f.pr();
+  await f.inventory();
+  await f.prompt(id, "running", new Date(NOW.getTime() - 30_000), 1, "Feature work without a branch in the prompt");
+  const report = async (sequence: number, responseKind: "assistant" | "tool_result", retracted = false) => {
+    const event: AgentEvent = {
+      id: String(sequence),
+      promptId: "p1",
+      messageId: "assistant-report",
+      retracted,
+      kind: "message",
+      partial: false,
+      textMode: "snapshot",
+      responseKind,
+      tools: [],
+      text: `READY TO MERGE: PR #42 head ${SHA}`,
+      at: NOW.getTime() - 1000,
+    };
+    await f.db.query("insert into runtime_events(sandbox_id,sequence,epoch,event_enc) values($1,$2,1,$3)", [
+      id,
+      sequence,
+      await encryptSecret(JSON.stringify(event), ENCRYPTION_KEY),
+    ]);
+  };
+  await report(2, "tool_result");
+  expect((await f.get<OttoResource>("resources")).items.find((r) => r.kind === "pr")?.owner.state).toBe("orphan");
+  await report(3, "assistant");
+  const confirmed = await f.get<OttoResource>("resources");
+  expect(confirmed.items.find((r) => r.kind === "pr")?.owner.state).toBe("owned");
+  expect(confirmed.items.find((r) => r.kind === "sandbox")?.taskIssue).toBe(42);
+  await report(4, "assistant", true);
+  expect((await f.get<OttoResource>("resources")).items.find((r) => r.kind === "pr")?.owner.state).toBe("orphan");
+});
+
+test("an oversized latest journal entry yields unknown activity rather than reviving an older idle turn", async () => {
+  const f = await fixture(),
+    id = await f.sandbox();
+  await f.pr();
+  await f.inventory();
+  await f.prompt(id, "finished", new Date(NOW.getTime() - 2000), 1);
+  await f.prompt(id, "running", new Date(NOW.getTime() - 1000), 2, "x".repeat(70_000));
+  const sandbox = (await f.get<OttoResource>("resources")).items.find((r) => r.kind === "sandbox");
+  expect(sandbox?.activity?.state).toBe("unknown");
+});
+
+test("Modal reports and prompt state are read only from the sandbox immutable workspace/app scope", async () => {
+  const f = await fixture(),
+    golden = crypto.randomUUID(),
+    id = crypto.randomUUID();
+  await f.pr();
+  await f.inventory();
+  await f.db.query(
+    `insert into goldens(id,org_id,owner_id,name,visibility,config,provider,modal_workspace,modal_environment,modal_app_id) values($1,$2,$3,'modal','org','{}','modal','w','e','app')`,
+    [golden, f.org, f.people.owner],
+  );
+  await f.db.query(
+    `insert into sandboxes(id,org_id,golden_id,owner_id,provider,provider_sandbox_id,harness,status,last_observed_at,resource_project,task_prompt_id) values($1::uuid,$2,$3,$4,'modal',$1::text,'codex','ready',$5,$6::jsonb,'p1')`,
+    [
+      id,
+      f.org,
+      golden,
+      f.people.owner,
+      NOW,
+      JSON.stringify({
+        version: 1,
+        url: `https://github.com/${f.repository}.git`,
+        branch: "codex/42-work",
+        dir: "web",
+      }),
+    ],
+  );
+  const scope = (appId: string) =>
+    scopeKey({
+      orgId: f.org,
+      userId: f.people.owner,
+      visibility: "org",
+      binding: { workspace: "w", environment: "e", appId },
+    });
+  for (const app of ["app", "other"])
+    await f.db.query(
+      "insert into modal_machines(scope,org_id,owner_id,visibility,id,request_key,record) values($1,$2,$3,'org',$4,$4,'{}')",
+      [scope(app), f.org, f.people.owner, id],
+    );
+  const append = async (app: string, sequence: number, event: AgentEvent) =>
+    f.db.query(
+      "insert into modal_events(scope,sandbox_id,generation,producer_sequence,event) values($1,$2,'g1',$3,$4::jsonb)",
+      [scope(app), id, sequence, JSON.stringify(event)],
+    );
+  await append("app", 1, {
+    id: "p1",
+    promptId: "p1",
+    kind: "prompt",
+    text: "codex/42-work",
+    status: "running",
+    at: NOW.getTime() - 1000,
+  });
+  const ready: AgentEvent = {
+    id: "ready",
+    promptId: "p1",
+    kind: "message",
+    text: `READY TO MERGE: PR #42 head ${SHA}`,
+    partial: false,
+    tools: [],
+    at: NOW.getTime() - 500,
+  };
+  await append("other", 1, ready);
+  expect((await f.get<OttoResource>("resources")).items.find((r) => r.kind === "pr")?.owner.state).toBe("candidate");
+  await append("app", 2, ready);
+  expect((await f.get<OttoResource>("resources")).items.find((r) => r.kind === "pr")?.owner.state).toBe("owned");
 });
