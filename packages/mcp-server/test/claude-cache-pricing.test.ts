@@ -33,3 +33,30 @@ test("Claude one-hour quote survives persisted witness replay and contributes to
     unpricedTurns: 0,
   });
 });
+
+test("new partial TTL evidence cannot reuse a legacy default-rate quote", () => {
+  const row: TurnTokenUsage = {
+    promptId: "p",
+    model: "claude-opus-5-5",
+    inputTokens: 2,
+    outputTokens: 4,
+    cachedTokens: 0,
+    cacheWriteTokens: 10,
+    reasoningTokens: 0,
+  };
+  const context: TurnPriceContext = {
+    schemaVersion: 1,
+    promptId: "p",
+    model: row.model,
+    basis: "api_equivalent",
+    credentialId: "credential",
+    credentialVersion: 1,
+    capturedAt: "2026-11-13T00:00:00Z",
+    snapshot: resolvePrice({ provider: "anthropic", model: row.model, customEndpoint: false }),
+  };
+  const old = stampTurnPricing([row], [], [row], [context], "claude");
+  expect(old[0]?.pricing?.usd).toBe("0.000138");
+  const partial = { ...row, cacheWriteTokensByTtl: { fiveMinute: null, oneHour: 0 } };
+  const next = stampTurnPricing([partial], old, [partial], [], "claude");
+  expect(next[0]?.pricing).toMatchObject({ usd: null, unknown: "pricing_dimensions" });
+});

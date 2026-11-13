@@ -107,9 +107,13 @@ function inputs(row: TurnTokenUsage, harness: Harness): PricingInputs {
   let ttl: PricingInputs["cacheWriteTtl"] = null;
   const detail = object("cacheWriteTokensByTtl" in row ? row.cacheWriteTokensByTtl : null);
   if (harness === "claude" && detail) {
-    if (detail.conflicted === true || (count(detail.oneHour) && detail.oneHour > 0)) ttl = "other";
-    else if (result.cacheWriteTokens !== null && detail.fiveMinute === result.cacheWriteTokens && detail.oneHour === 0)
-      ttl = "5m";
+    ttl =
+      detail.conflicted !== true &&
+      result.cacheWriteTokens !== null &&
+      detail.fiveMinute === result.cacheWriteTokens &&
+      detail.oneHour === 0
+        ? "5m"
+        : "other";
   }
   return {
     ...result,
