@@ -25,6 +25,8 @@ import { createSqlData } from "./data.ts";
 import { retryDatabaseBoot } from "./database-boot.ts";
 import { createDatabaseReadiness } from "./database-readiness.ts";
 import { requireDatabaseSchema } from "./database-schema.ts";
+import { createDockerHostRoutes } from "./docker-host-routes.ts";
+import { createDockerHostStore } from "./docker-host-store.ts";
 import { createGitHubAccountApi } from "./github-account.ts";
 import { configureBoatGitHub } from "./github-boat.ts";
 import { createHandler, providerRegistry, type Route } from "./http.ts";
@@ -400,6 +402,17 @@ export async function startServer(
     modalTokensFor: modal.modalTokensFor,
     goldenTarget: modal.goldenTarget,
     routes: [
+      ...(env.ARMADA_DOCKER_HOSTS === "1"
+        ? [
+            createDockerHostRoutes(createDockerHostStore(sql, config.encryptionKey), (request) =>
+              authenticateCaller(request.headers.get("authorization"), {
+                store: authStore,
+                supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
+                now: new Date(),
+              }),
+            ),
+          ]
+        : []),
       ...(otto
         ? [
             otto.route,

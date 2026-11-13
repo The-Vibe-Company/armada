@@ -78,6 +78,16 @@
         "cronstrue": "3.39.0",
       },
     },
+    "packages/docker-host": {
+      "name": "@armada/docker-host",
+      "version": "2.25.0",
+      "bin": {
+        "armada-docker-host": "./src/main.ts",
+      },
+      "dependencies": {
+        "@armada/core": "workspace:*",
+      },
+    },
     "packages/mcp-gateway": {
       "name": "@armada/mcp-gateway",
       "version": "2.25.0",
@@ -168,6 +178,8 @@
     "@armada/core": ["@armada/core@workspace:packages/core"],
 
     "@armada/dashboard": ["@armada/dashboard@workspace:apps/dashboard"],
+
+    "@armada/docker-host": ["@armada/docker-host@workspace:packages/docker-host"],
 
     "@armada/mcp-gateway": ["@armada/mcp-gateway@workspace:packages/mcp-gateway"],
 

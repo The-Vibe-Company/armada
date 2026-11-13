@@ -1,0 +1,12 @@
+{
+  "name": "@armada/docker-host",
+  "version": "2.25.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "armada-docker-host": "./src/main.ts"
+  },
+  "dependencies": {
+    "@armada/core": "workspace:*"
+  }
+}
