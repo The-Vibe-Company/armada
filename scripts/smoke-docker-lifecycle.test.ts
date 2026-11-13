@@ -3,18 +3,22 @@ import { spawnSync } from "node:child_process";
 
 // Execute the real coordinator helper offline: its new mode must prove the normal
 // route, not accidentally succeed via the already accepted private preview.
-test.each([false, true])("normal Docker smoke uses normal routes (resume=%s)", (resume) => {
-  const result = spawnSync(
-    "python3",
-    [
-      "-c",
-      `
+test.each(["launch", "resume", "cost", "bad-cost", "claude", "opencode"])(
+  "normal Docker smoke uses normal routes (%s)",
+  (mode) => {
+    const result = spawnSync(
+      "python3",
+      [
+        "-c",
+        `
 import contextlib, io, json, os, runpy, sys, types
 from unittest.mock import patch
 calls, ssh = [], []
 sandbox, prompt, conversation = None, "native-prompt", "native-conversation"
 marker, answer, sends, stops = None, "DOCKER_OK", 0, 0
-lifecycle = sys.argv[1] == "true"
+mode = sys.argv[1]
+lifecycle = mode != "launch"
+prices = []
 class Opener:
     def open(self, request, timeout):
         global sandbox, prompt, marker, answer, sends, stops
@@ -29,7 +33,7 @@ class Opener:
             sandbox = body["requestId"]
             assert timeout == 600
             assert body["hostId"] == "retained-host"
-            assert body["provider"] == "docker" and body["harness"] == "codex"
+            assert body["provider"] == "docker" and body["harness"] == (mode if mode in ("claude", "opencode") else "codex")
             assert body["visibility"] == "private" and "DOCKER_OK" in body["prompt"]
             assert "credentialVersion" not in body
             marker = body["prompt"].split("marker for my next message: ")[1].split(".")[0] if lifecycle else None
@@ -50,8 +54,12 @@ class Opener:
                 {"kind": "message", "promptId": prompt, "text": answer},
                 {"kind": "prompt", "promptId": prompt, "status": "finished"}]}
         elif path == "sandbox/detail":
-            value = {"provider": "docker", "golden": None, "hostId": "retained-host", "conversationIds": [conversation], "usage": {"turns": [
-                {"promptId": prompt, "inputTokens": 10, "outputTokens": 2}]}}
+            if not any(t["promptId"] == prompt for t in prices):
+                prices.append({"promptId": prompt, "model": "test-model", "inputTokens": 10,
+                               "outputTokens": 2, "pricing": {"usd": "0.01", "unknown": None}})
+            value = {"provider": "docker", "golden": None, "hostId": "retained-host", "conversationIds": [conversation], "usage": {"turns": prices, "turnCount": len(prices),
+                "cost": {"currency": "USD", "usd": "9" if mode == "bad-cost" else str(len(prices) / 100),
+                         "unknown": None, "unpricedTurns": 0}}}
         elif path in ("sandbox/stop", "sandbox/delete"):
             assert body["id"] == sandbox
             stops += path.endswith("stop")
@@ -68,11 +76,21 @@ argv = ["scripts/smoke-docker-lifecycle.py", "--server", "https://staging.exampl
         "--host-id", "retained-host", "--start-host", "--normal-launch"]
 if lifecycle:
     argv.append("--normal-lifecycle")
+if mode in ("cost", "bad-cost"):
+    argv.append("--cost")
+if mode in ("claude", "opencode"):
+    argv.append("--" + mode)
 output = io.StringIO()
 with patch.dict(os.environ, {"ARMADA_TOKEN": "offline-only"}), patch.object(sys, "argv", argv), \\
      patch("urllib.request.build_opener", return_value=Opener()), patch("subprocess.run", side_effect=command), \\
      patch("time.sleep", side_effect=AssertionError("No wall-clock waits")), contextlib.redirect_stdout(output):
-    runpy.run_path(argv[0], run_name="__main__")
+    try:
+        runpy.run_path(argv[0], run_name="__main__")
+    except SystemExit as error:
+        assert mode == "bad-cost" and error.code == 1
+        assert stops == 1
+        sys.exit(0)
+    assert mode != "bad-cost", "Incorrect total was accepted"
 assert len(ssh) == 1 and " run --state-dir " in ssh[0][0][-1]
 assert "nohup setsid" in ssh[0][0][-1] and "daemon.lock" in ssh[0][0][-1]
 assert (not lifecycle or (sends == 2 and stops == 2))
@@ -80,10 +98,13 @@ assert lifecycle or [path for path, _ in calls] == ["launch/options", "sandbox/l
 assert "PASS: normal Docker launch route created" in output.getvalue()
 assert "offline-only" not in output.getvalue()
 `,
-      String(resume),
-    ],
-    { cwd: import.meta.dir + "/..", encoding: "utf8" },
-  );
-  expect(result.stderr).toBe("");
-  expect(result.status).toBe(0);
-});
+        mode,
+      ],
+      { cwd: import.meta.dir + "/..", encoding: "utf8" },
+    );
+    expect(result.stderr).toBe(
+      mode === "bad-cost" ? "Docker cost proof failed: expected stable priced turns and exact session total\n" : "",
+    );
+    expect(result.status).toBe(0);
+  },
+);

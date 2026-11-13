@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Coordinator-only staging smoke. No secrets in argv, files or output."""
 import argparse
+from decimal import Decimal, InvalidOperation, getcontext
 import json
 import os
 import shlex
@@ -14,6 +15,7 @@ import uuid
 
 
 def main():
+    getcontext().prec = 80  # Exact addition of fixed-scale server USD amounts.
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--server", required=True)
     parser.add_argument("--org", required=True)
@@ -28,8 +30,15 @@ def main():
     parser.add_argument("--normal-controls", action="store_true", help="Read status/logs and stop/delete through normal sandbox API")
     parser.add_argument("--normal-launch", action="store_true", help="Launch and run the first prompt through the normal API; implies --normal-controls")
     parser.add_argument("--normal-lifecycle", action="store_true", help="Prove normal follow-up and same-host stop/resume with retained history; implies --normal-launch")
+    parser.add_argument("--cost", action="store_true", help="Prove exact per-turn and total USD before/after resume; implies --normal-lifecycle")
+    harnesses = parser.add_mutually_exclusive_group()
+    harnesses.add_argument("--claude", action="store_true", help="Prove Claude launch/follow-up/stop/resume via normal routes")
+    harnesses.add_argument("--opencode", action="store_true", help="Prove OpenCode with the supplied custom OpenAI-compatible connection via normal routes")
     parser.add_argument("--timeout", type=int, default=600, help="Seconds per bounded stage")
     args = parser.parse_args()
+    harness = "claude" if args.claude else "opencode" if args.opencode else "codex"
+    if args.cost or args.claude or args.opencode:
+        args.normal_lifecycle = True
     if args.normal_lifecycle:
         args.normal_launch = True
         args.follow_up = True
@@ -121,7 +130,7 @@ def main():
             docker = next((p for p in options.get("providers", []) if p.get("id") == "docker"), {})
             if docker.get("capabilities", {}).get("launch") is not True:
                 raise RuntimeError("Normal Docker launch is not enabled; check server opt-ins and installed runtime manifest")
-            launch.update({"provider": "docker", "harness": "codex", "visibility": "private",
+            launch.update({"provider": "docker", "harness": harness, "visibility": "private",
                            "prompt": first + "Reply with exactly DOCKER_OK. Do not run tools or modify files."})
             launched = api("sandbox/launch", launch, normal=True)
             if (launched.get("sandbox", {}).get("id") != sandbox_id
@@ -141,6 +150,37 @@ def main():
             api("sandboxes/bootstrap", {"sandboxId": sandbox_id, "requestId": bootstrap_id})
             wait_for("ready", {"sandboxId": sandbox_id, "requestId": str(uuid.uuid4())}, "ready")
         cursor = None if args.normal_controls else "0"
+
+        priced_turns = {}
+
+        def check_cost(usage, prompt_id):
+            try:
+                turns = usage["turns"]
+                cost = usage["cost"]
+                total = Decimal(cost["usd"])
+                if (cost["currency"] != "USD" or cost["unknown"] is not None
+                        or cost["unpricedTurns"] != 0 or not total.is_finite() or total < 0
+                        or usage["turnCount"] != len({t["promptId"] for t in turns})):
+                    raise ValueError()
+                current = {}
+                summed = Decimal(0)
+                for t in turns:
+                    price = t["pricing"]
+                    amount = Decimal(price["usd"])
+                    if price["unknown"] is not None or not amount.is_finite() or amount < 0:
+                        raise ValueError()
+                    identity = (t["promptId"], t["model"])
+                    if identity in current:
+                        raise ValueError()
+                    current[identity] = price
+                    summed += amount
+                if summed != total or not any(k[0] == prompt_id for k in current):
+                    raise ValueError()
+                if any(current.get(k) != v for k, v in priced_turns.items()):
+                    raise ValueError()
+                priced_turns.update(current)
+            except (KeyError, TypeError, ValueError, InvalidOperation):
+                raise RuntimeError("Docker cost proof failed: expected stable priced turns and exact session total") from None
 
         def turn(text, expected_answer, conversation=None, receipt=None):
             nonlocal cursor
@@ -179,13 +219,15 @@ def main():
                         answer = True
                     if event.get("kind") == "prompt":
                         if event.get("status") in ("failed", "interrupted"):
-                            raise RuntimeError("Codex turn failed/interrupted; inspect retained journal")
+                            raise RuntimeError("Agent turn failed/interrupted; inspect retained journal")
                         finished |= event.get("status") == "finished"
                 turns = (page.get("usage") or {}).get("turns", [])
                 usage = next((t for t in turns if t.get("promptId") == native_prompt
                               and isinstance(t.get("inputTokens"), int)
                               and isinstance(t.get("outputTokens"), int)), None)
                 if answer and finished and usage:
+                    if args.cost:
+                        check_cost(page["usage"], native_prompt)
                     print(json.dumps({"answer": expected_answer, "promptId": native_prompt,
                                       "conversationId": receipt["conversationId"],
                                       "inputTokens": usage["inputTokens"], "outputTokens": usage["outputTokens"]}),
@@ -236,6 +278,10 @@ def main():
         print("PASS: normal Docker status/logs and stop/delete routes confirmed.")
     if args.normal_launch:
         print("PASS: normal Docker launch route created, bootstrapped and admitted one prompt; list/status/logs/answer/stop/delete confirmed.")
+    if args.cost:
+        print("PASS: exact per-turn/session USD and immutable prior quotes survived follow-up and resume.")
+    if args.claude or args.opencode:
+        print("PASS: " + harness + " normal launch/follow-up/stop/resume confirmed.")
     print("Host remains registered/running for inspection. See docs/docker-host-daemon.md for uninstall.")
 
 
