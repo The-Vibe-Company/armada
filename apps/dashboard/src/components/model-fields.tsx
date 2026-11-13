@@ -1,11 +1,18 @@
 "use client";
 
-import type { Harness, HarnessModels } from "@armada/core";
-import { useEffect, useRef, useState } from "react";
+import { HARNESS_CATALOG, type Harness, type HarnessModels } from "@armada/core";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
 import { EFFORT_LABEL } from "@/lib/labels";
+import {
+  type ConnectionChoices,
+  connectionValue,
+  decodeModelValue,
+  filterPicker,
+  pickerGroups,
+} from "@/lib/model-picker";
 
 export type ModelCatalog = Readonly<Record<Harness, HarnessModels>>;
 
@@ -27,6 +34,9 @@ export function ModelFields({
   launchedModel,
   onChoice,
   initial,
+  connections,
+  onConnection,
+  account,
 }: {
   idPrefix: string;
   harness: Harness;
@@ -37,18 +47,39 @@ export function ModelFields({
   onChoice?: (choice: { model: string; effort: string }) => void;
   /** Start on this choice instead of the harness default (a template's revision being edited). */
   initial?: { model: string; effort: string };
+  /** The usable connections of this agent and their declared models: offered as groups of their own (#1483). */
+  connections?: readonly ConnectionChoices[];
+  /** A connection model was chosen: its account is who is billed. */
+  onConnection?: (accountId: string) => void;
+  /** The account preselected for the launch: when it declares models, its first one is preselected too. */
+  account?: string;
 }) {
   const entry = catalog[harness];
   // A model the catalog does not list starts as "Other model id", its id in the field.
   const initialListed = initial ? entry.models.some((option) => option.id === initial.model) : true;
-  const initialModel = keepLabel ? "" : initial ? (initialListed ? initial.model : OTHER_MODEL) : entry.defaultModel;
+  const declared = connections?.find((connection) => connection.accountId === account)?.models[0];
+  const initialModel = keepLabel
+    ? ""
+    : initial
+      ? initialListed
+        ? initial.model
+        : OTHER_MODEL
+      : declared && account
+        ? connectionValue(account, declared.model)
+        : entry.defaultModel;
   const initialEffort = keepLabel ? "" : (initial?.effort ?? entry.defaultReasoningEffort);
   const initialOther = initial && !initialListed ? initial.model : "";
   const [model, setModel] = useState(initialModel);
   const [effort, setEffort] = useState(initialEffort);
   const [otherModel, setOtherModel] = useState(initialOther);
   const group = useRef<HTMLDivElement>(null);
-  const selectedModel = model === OTHER_MODEL ? otherModel.trim() : model || launchedModel;
+  const [query, setQuery] = useState("");
+  const selectedModel = model === OTHER_MODEL ? otherModel.trim() : decodeModelValue(model).model || launchedModel;
+  const groups = useMemo(
+    () => (connections?.length ? pickerGroups(HARNESS_CATALOG[harness].label, entry, connections) : null),
+    [connections, entry, harness],
+  );
+  const shown = groups ? filterPicker(groups, query, model) : null;
   const efforts =
     entry.models.find((option) => option.id === selectedModel)?.reasoningEfforts ?? entry.reasoningEfforts;
   const effortPlaceholder =
@@ -72,7 +103,9 @@ export function ModelFields({
 
   function chooseModel(next: string) {
     setModel(next);
-    const nextModel = next === OTHER_MODEL ? otherModel.trim() : next || launchedModel;
+    const decoded = decodeModelValue(next);
+    if (decoded.accountId) onConnection?.(decoded.accountId);
+    const nextModel = next === OTHER_MODEL ? otherModel.trim() : decoded.model || launchedModel;
     const allowed = entry.models.find((option) => option.id === nextModel)?.reasoningEfforts ?? entry.reasoningEfforts;
     if (effort && !allowed.includes(effort)) setEffort(keepLabel ? "" : entry.defaultReasoningEffort);
   }
@@ -81,6 +114,18 @@ export function ModelFields({
     <div ref={group} className="grid gap-3 sm:grid-cols-2">
       <div className="space-y-2">
         <Label htmlFor={`${idPrefix}-model`}>Model</Label>
+        {groups && (
+          <Input
+            type="search"
+            aria-label="Search models"
+            aria-controls={`${idPrefix}-model`}
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            autoComplete="off"
+            spellCheck={false}
+            placeholder="Search models and connections"
+          />
+        )}
         <NativeSelect
           id={`${idPrefix}-model`}
           name="model"
@@ -88,12 +133,24 @@ export function ModelFields({
           onChange={(event) => chooseModel(event.target.value)}
         >
           {keepLabel && <option value="">{keepLabel}</option>}
-          {entry.models.map((option) => (
-            <option key={option.id} value={option.id}>
-              {option.label}
-              {option.id === entry.defaultModel ? " (default)" : ""}
-            </option>
-          ))}
+          {shown
+            ? shown.map((group) => (
+                <optgroup key={group.accountId ?? "agent"} label={group.label}>
+                  {group.options.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                      {option.isDefault ? " (default)" : ""}
+                      {option.price ? ` · ${option.price}` : ""}
+                    </option>
+                  ))}
+                </optgroup>
+              ))
+            : entry.models.map((option) => (
+                <option key={option.id} value={option.id}>
+                  {option.label}
+                  {option.id === entry.defaultModel ? " (default)" : ""}
+                </option>
+              ))}
           <option value={OTHER_MODEL}>Other model id</option>
         </NativeSelect>
         {model === OTHER_MODEL && (

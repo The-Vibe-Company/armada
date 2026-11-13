@@ -58,6 +58,7 @@ import {
   launchDefault,
   type ModelAccount,
 } from "@/lib/model-accounts";
+import type { ConnectionChoices } from "@/lib/model-picker";
 import { isSubmitShortcut } from "@/lib/shortcut";
 import type { TemplateLaunchTarget } from "@/lib/template-launch";
 import { cn } from "@/lib/utils";
@@ -314,6 +315,7 @@ function LaunchForm({ golden, provider, orgId, catalog, connections, accounts, r
             idPrefix={id}
             harness={harness}
             accounts={accounts}
+            value={credential}
             onChange={(next) => {
               setCredential(next);
               setArmadaAccess(false);
@@ -364,7 +366,19 @@ function LaunchForm({ golden, provider, orgId, catalog, connections, accounts, r
               </Button>
             </CollapsibleTrigger>
             <CollapsibleContent forceMount className="space-y-4 border-t p-3 data-[state=closed]:hidden">
-              <ModelFields key={harness} idPrefix={id} harness={harness} catalog={catalog} onChoice={onChoice} />
+              <ModelFields
+                key={harness}
+                idPrefix={id}
+                harness={harness}
+                catalog={catalog}
+                onChoice={onChoice}
+                connections={connectionChoices(accounts, harness)}
+                account={credential}
+                onConnection={(next) => {
+                  setCredential(next);
+                  setArmadaAccess(false);
+                }}
+              />
               {repositories.length === 1 && (
                 <RepositoryField idPrefix={id} repositories={repositories} onChange={setProject} />
               )}
@@ -462,11 +476,14 @@ export function AccountField({
   harness,
   accounts,
   onChange,
+  value,
 }: {
   idPrefix: string;
   harness: Harness;
   accounts: LaunchAccounts;
   onChange: (id: string) => void;
+  /** When set, the select follows it: choosing a connection model also chooses its account (#1483). */
+  value?: string;
 }) {
   const label = HARNESS_LABELS[harness];
   if (accounts.state === "legacy") return null;
@@ -522,7 +539,7 @@ export function AccountField({
         <NativeSelect
           id={`${idPrefix}-account`}
           name="credential"
-          defaultValue={preset}
+          {...(value === undefined ? { defaultValue: preset } : { value })}
           onChange={(event) => onChange(event.target.value)}
           required
           aria-describedby={`${idPrefix}-account-hint`}
@@ -560,6 +577,18 @@ function optionLabel(account: ModelAccount, now: number, orgName: string): strin
     Boolean,
   );
   return notes.length ? `${account.name} (${notes.join(", ")})` : account.name;
+}
+
+/** The usable accounts of this agent that declare models, as the model picker's connection groups. */
+function connectionChoices(accounts: LaunchAccounts, harness: Harness): ConnectionChoices[] {
+  if (accounts.state !== "ready") return [];
+  return accountsFor(accounts.accounts, harness)
+    .filter((account) => account.models?.length && accountProblem(account, accounts.now) === null)
+    .map((account) => ({
+      accountId: account.id,
+      label: account.scope === "org" ? `${account.name} (${accounts.orgName})` : account.name,
+      models: account.models ?? [],
+    }));
 }
 
 /** A compact radio group: every option visible, one choice, arrow keys move between them. */

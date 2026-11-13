@@ -26,16 +26,20 @@ export * from "./connections.ts";
 export { HARNESSES, type Harness, type Visibility } from "./contract.ts";
 export type { CredentialBinding } from "./credentials.ts";
 export {
+  type AccountConnectionModels,
   CODEX_AUTH_ENV,
   CODEX_AUTH_PATH,
+  type ConnectionModelInfo,
   CREDENTIAL_KINDS,
   type CredentialReader,
   type CredentialSource,
+  connectionModels,
   credentialName,
   HARNESS_KINDS,
   type HarnessCredentials,
   harnessCredentials,
   type LaunchCredentialKind,
+  listConnectionModels,
   MAX_AUTH_FILE_LENGTH,
   MAX_SECRET_LENGTH,
   type ModalTokenPair,

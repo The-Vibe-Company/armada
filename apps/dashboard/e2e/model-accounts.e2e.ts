@@ -619,3 +619,40 @@ for (const legacy of [false, true]) {
     expect(await launches()).toEqual([]);
   });
 }
+
+test("the launch model picker offers a connection's models grouped by connection, and bills that connection", async ({
+  page,
+}, info) => {
+  const foundry = account(60, "Foundry", { kind: "openai", is_default: true });
+  const direct = account(61, "Direct", { kind: "openai" });
+  await mock("/__test/accounts", {
+    seed: [foundry, direct],
+    connectionModels: {
+      [String(foundry.id)]: [
+        { model: "team-gpt-deployment", input: "2", output: "10" },
+        { model: "team-mini-deployment", input: null, output: null },
+      ],
+    },
+  });
+  await signIn(page, "alice@example.com", "/environments");
+  const dialog = await openLaunchDialog(page, "shared-golden");
+  await dialog.getByRole("radio", { name: "Codex" }).check();
+  const model = dialog.getByLabel("Model", { exact: true });
+  // The default account declares models: its first one is preselected.
+  await expect(model.locator("option:checked")).toHaveText("team-gpt-deployment · $2 in · $10 out per M tokens");
+  await expect(model.locator('optgroup[label="Foundry"] option')).toHaveCount(2);
+  await expect(model.locator('optgroup[label="Codex models"] option', { hasText: "(default)" })).toHaveCount(1);
+  await dialog.getByRole("searchbox", { name: "Search models" }).fill("mini");
+  await page.screenshot({ path: info.outputPath("launch-picker.png"), fullPage: true, animations: "disabled" });
+  // Choosing another account, then a connection model, moves the billing back to that connection.
+  await dialog.getByLabel("Account").selectOption({ label: "Direct (OpenAI API key)" });
+  await model.selectOption({ label: "team-mini-deployment" });
+  await expect(dialog.getByLabel("Account").locator("option:checked")).toHaveText(/^Foundry/);
+  await dialog.getByRole("button", { name: "Launch", exact: true }).click();
+  await page.waitForURL(/\/sandboxes\/[0-9a-f-]{36}$/);
+  expect((await launches()).at(-1)).toMatchObject({
+    harness: "codex",
+    model: "team-mini-deployment",
+    credentialId: foundry.id,
+  });
+});
