@@ -324,8 +324,6 @@ export {
 export { providerRateLimitDetails, providerRateLimitMessage } from "./provider-limit.ts";
 export {
   goldenCompatibilityIds,
-  goldenCompatibilityIds,
-  goldenResponse,
   goldenResponse,
   launchGitHubResponse,
   launchResponse,
