@@ -284,6 +284,75 @@ assistant assertion is a tool-call pass. Local pinned stdio remains unsupported;
 its production use needs owner inventory, not speculative porting or deletion.
 This procedure is not evidence of a staging pass or permission to flip defaults.
 
+## Environment-wide Boat default switch (prepared, not flipped)
+
+Trusted **server** setting `ARMADA_BOAT_AGENT_PATH=native|runtime` chooses the
+ordinary Boat launch path. Unset means `native`; any other value fails startup.
+Set `runtime` on **staging first**, through the normal operator deployment
+process, not in the smoke client's shell. Ordinary API, CLI, dashboard, MCP
+`sandbox_launch`, template and routine launches share the same Core launch
+selection: no client flag/endpoint change. Modal/Docker selection is unchanged.
+Runtime mode uses the image's matching `/opt/armada/runtime-manifests/<arch>.json`
+(or the existing trusted manifest override); missing/invalid artifacts fail
+startup rather than selecting native. Image-installed artifacts also keep the
+existing explicit runtime route and retained runtime sessions available during
+rollback. `launch/options.boatRuntime.defaultPath` reports the ordinary selection.
+
+Rollback: set the same server setting to **`native`** and redeploy normally.
+Native code is retained. This changes new ordinary launches only, never converts
+an existing runtime/native session or its conversation, and never retries a
+failed launch on the other path. Existing template request keys retain their
+recorded success/refusal; use the normal new-request policy for new work.
+
+### Refused today / remaining parity (do not call this cutover-ready)
+
+- **Repository refresh, automatic GitHub initialization and golden init commands.**
+  Ordinary native launch promises these, while runtime currently uses a saved
+  checkout as-is. The default switch conservatively refuses this mismatch before
+  allocation. **Every newly valid golden requires a repo, so all such ordinary
+  Boat launches are currently refused in runtime-default mode.** The existing
+  explicit snapshot-runtime endpoint is unchanged. This gate needs real repo/
+  GitHub setup parity (or explicit owner approval of changed snapshot semantics),
+  not a silent skip. The switch is preparation, not a usable production cutover.
+- Idle launches with no initial prompt; current continuation requires an existing
+  runtime conversation.
+- Claude/OpenCode (current ordinary runtime admission is Codex-only), private
+  scoped Armada-access launches, and requested helper capabilities.
+- Templates/routines requiring native readable-variable or application-secret
+  environment delivery; plain requests still traverse the runtime default policy.
+- Pinned local stdio MCP; connected remote HTTP/SSE defaults remain supported.
+- Legacy unbound model credentials; runtime requires an authorized bound account.
+
+Other follow-on gaps, including automatic GitHub setup, native exec/git probes,
+steer/interrupt, model changes/new conversations and related controls, remain
+explicit parity work; unsupported runtime operations do not use native fallback.
+Do not interpret the switch or a merged PR as a staging pass for any missing row.
+
+### Standard post-deploy Boat check
+
+Once quota/resources permit, an operator sets the **staging server** setting to
+`runtime` and deploys this revision through the normal process. Keep the existing
+staging `ARMADA_URL`, environment-only `ARMADA_TOKEN`, and configured smoke cases.
+Run **the standard smoke**, selecting one existing Boat case; no runtime-only API:
+
+```sh
+ARMADA_SMOKE_CASES="$(printf '%s' "$ARMADA_SMOKE_CASES" | jq '[.[] | select(.provider == "boat")][0:1]')" \
+ARMADA_SMOKE=create_real_compute bun scripts/post-deploy-smoke.ts
+```
+
+Confirm `launch/options.boatRuntime.defaultPath:runtime`. A successful future
+case must have persisted `boatRuntime:true` and archived
+`logs/read.source:armada-runtime`, not Boat-native events; standard send/wait,
+git probes and stop must all pass. **Today the repo/init gate should refuse
+clearly before allocating**, so the standard case cannot pass yet. Do not remove
+that gate or relax the standard smoke to conceal remaining work, and do not
+retry allocation after an ambiguous result. Roll back the server setting to
+`native` for ordinary native launches; no deletion is authorized here.
+
+Owner staging facts (12:38:43Z): Boat quota exhausted (`launch-runtime-v1`429),
+no effective smoke golden/org/user default skills and no named MCP connection.
+No live check or setting flip by this worker. Skills/MCP rows remain orange.
+
 ## Cutover boundary
 
 The [owner parity table](https://github.com/The-Vibe-Company/armada/issues/1161#issuecomment-6848248708)
