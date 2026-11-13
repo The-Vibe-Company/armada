@@ -425,9 +425,6 @@ export interface McpLeaseClaims {
   org_id: string;
   owner_id: string;
 }
-export type McpGrantPort = ReturnType<typeof createSqlMcpGrantPort>;
-export type McpLeasePort = ReturnType<typeof createSqlMcpLeasePort>;
-export type McpLaunchPort = ReturnType<typeof createSqlMcpLaunchPort>;
 
 /** Trusted broker SQL port: ciphertext only, CAS rotation, exclusive refresh ownership, revocation fencing. */
 export function createSqlMcpGrantPort(sql: Sql) {
@@ -583,7 +580,6 @@ export interface McpPendingOAuthFlow {
   /** Decrypted only after an authorized atomic take, for the trusted broker. */
   payload: string;
 }
-export type McpPendingOAuthPort = ReturnType<typeof createSqlMcpPendingOAuthPort>;
 /** State is hashed before this port; payload is sealed using the existing vault key. */
 export function createSqlMcpPendingOAuthPort(sql: Sql, encryptionKey: string | undefined) {
   return {
@@ -650,7 +646,6 @@ export interface McpInvalidation {
   generation: number | null;
   reason: "grant" | "definition" | "membership" | "sandbox";
 }
-export type McpInvalidationPort = ReturnType<typeof createSqlMcpInvalidationPort>;
 /** Every live gateway replica drains its own feed; acknowledge only after closing affected streams. */
 export function createSqlMcpInvalidationPort(sql: Sql) {
   return {

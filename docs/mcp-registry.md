@@ -64,7 +64,6 @@ All exported from @armada/core in connections.ts:
   tools/resources/prompts. Validation returns McpLeaseClaims|null, not upstream
   credentials. Grant revocation/changes, sandbox stop/failure/deletion/generation
   change and membership removal immediately fence authorization.
-- Structural aliases: McpGrantPort, McpLeasePort, McpLaunchPort.
 
 ControlOptions.mcp accepts {registry,broker?}; startServer wires the SQL registry.
 HandlerOptions.connections and ToolContext.connections accept the structural
@@ -100,12 +99,12 @@ scoped and model choices are preserved. No dashboard/gateway/runtime files were 
 
 ## #523 prerequisite ports: durable uncertainty, callback and replica invalidation
 
-All schema additions remain in the unapplied 20261109020000 migration; provider
-10000 and model 00000 are not modified.
+Use the complete migration history via the [migration guide](database-migrations.md).
+Do not edit applied migrations or infer deployment status from this guide.
 
 ### Refresh uncertainty
 
-McpGrantPort.acquire atomically sets refresh_consumed BEFORE returning ciphertext
+createSqlMcpGrantPort(sql).acquire atomically sets refresh_consumed BEFORE returning ciphertext
 for upstream I/O. A worker must acquire before exchanging a refresh token.
 Expiry does NOT clear consumption: a second worker cannot reuse an old refresh
 token after an uncertain exchange. A consumed expired claim is exposed as
@@ -122,7 +121,7 @@ old authentication and advances its generation; it cannot recover an old token.
 
 ### Pending OAuth
 
-Exports: McpPendingOAuthFlow, McpPendingOAuthPort,
+Exports: McpPendingOAuthFlow and
 createSqlMcpPendingOAuthPort(sql,encryptionKey).
 
 - put({stateHash,actorId,orgId,connectionId,generation,expiresAt,payload}): hash is
@@ -158,7 +157,7 @@ performed by this control route.
 
 ### Cross-replica live revocation
 
-Exports: McpInvalidation, McpInvalidationPort, createSqlMcpInvalidationPort(sql).
+Exports: McpInvalidation and createSqlMcpInvalidationPort(sql).
 
 Database triggers transactionally append service-only outbox metadata on grant
 generation/revocation changes, definition changes/deletion, sandbox generation
