@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
@@ -14,7 +14,7 @@ function installedGit(): string {
   return join(result.stdout.toString().trim(), "git");
 }
 
-// Owning process boundary: an already-running shell, actual gh executable and Git credential IPC.
+// Owning process boundary: one persistent native parent, actual gh executable and Git credential IPC.
 // No network, user HOME, fixed sleeps, test-only production hooks or token-bearing argv.
 test("existing native children use new GitHub material and register it before gh/git consumption", async () => {
   const root = await mkdtemp(join(tmpdir(), "gh692-"));
@@ -37,8 +37,7 @@ test("existing native children use new GitHub material and register it before gh
     expiresAt: Date.now() + 60000,
   });
   const socket = await broker.listen(join(root, "private"));
-  let child: Subprocess<"pipe", "pipe", "pipe"> | undefined;
-  let releaseReader: (() => Promise<void>) | undefined;
+  let child: Subprocess<"ignore", "ignore", "pipe"> | undefined;
   let cleanupFailure: unknown;
   try {
     const home = join(root, "home"),
@@ -49,10 +48,21 @@ test("existing native children use new GitHub material and register it before gh
     const git = installedGit();
     if (!gh || !git) throw Error("Actual gh and git executables required for credential-boundary verification");
     const observer = join(root, "observe-gh");
-    // A consumer may read stdin: it must see EOF, never the shell control pipe.
-    await writeFile(observer, `#!/bin/sh\ncat >/dev/null\n${gh} "$@" | sha256sum\n`, { mode: 0o700 });
+    // A consumer may read stdin: it must see EOF, never the fixture control channel.
+    await writeFile(
+      observer,
+      `#!/usr/bin/env bun
+import { createHash } from "node:crypto";
+await Bun.stdin.text();
+const child = Bun.spawn([${JSON.stringify(gh)}, ...process.argv.slice(2)], { stdin: "ignore", stdout: "pipe", stderr: "inherit" });
+const output = await new Response(child.stdout).arrayBuffer();
+if (await child.exited) process.exit(1);
+console.log(createHash("sha256").update(Buffer.from(output)).digest("hex") + "  -");
+`,
+      { mode: 0o700 },
+    );
     const gitObserver = join(root, "observe-git");
-    await writeFile(gitObserver, `#!/bin/sh\nexec "${git}" "$@"\n`, { mode: 0o700 });
+    await copyFile(git, gitObserver);
     const tools = {
       root: join(root, "private"),
       activation: socket.activation,
@@ -107,78 +117,120 @@ test("existing native children use new GitHub material and register it before gh
       GIT_CONFIG_KEY_0: "armada.probe",
       GIT_CONFIG_VALUE_0: "preserved",
     };
-    const commands = `
-exec 3<&0 </dev/null
-while IFS= read -r phase <&3; do
-  case "$phase" in
-    consume)
-      # Independent read-only consumers share a token epoch, not output pipes.
-      exec 4< <(gh auth token --hostname github.com 3<&-)
-      gh_pid=$!
-      exec 5< <(printf 'protocol=https\nhost=github.com\npath=acme/repo.git\n\n' | git credential fill 3<&-)
-      git_pid=$!
-      exec 6< <(git -c alias.creds=credential creds fill 3<&- <<'CREDENTIAL_INPUT'
-protocol=https
-host=github.com
-path=acme/repo.git
-
-CREDENTIAL_INPUT
-      )
-      alias_pid=$!
-      cat <&4 3<&-
-      cat <&5 3<&-
-      cat <&6 3<&-
-      exec 4<&- 5<&- 6<&-
-      wait "$gh_pid" "$git_pid" "$alias_pid"
-      git config --get armada.probe 3<&-
-      ;;
-    denied)
-      gh pr view https://github.com/foreign/repo/pull/1 3<&-; echo URL_STATUS:$?
-      gh repo view foreign/repo 3<&-; echo REPO_STATUS:$?
-      ;;
-    *) exit 64 ;;
-  esac
-  printf 'PHASE_DONE\n'
-done
-`;
-    const shell = Bun.spawn(["bash", "-c", commands], {
+    const dispatcher = join(root, "dispatch.mjs");
+    await writeFile(
+      dispatcher,
+      `
+const env = Object.fromEntries(${JSON.stringify(Object.keys(env))}.map(key => [key, process.env[key]]));
+const active = new Set();
+let stopping = false;
+async function stop() {
+  if (stopping) return;
+  stopping = true;
+  for (const child of active) if (child.exitCode === null) child.kill();
+  await Promise.allSettled([...active].map(child => child.exited));
+  process.exit(0);
+}
+function reply(value) {
+  if (stopping) return;
+  try { process.send(value); } catch { void stop(); }
+}
+process.on("SIGTERM", () => { void stop(); });
+process.on("disconnect", () => { void stop(); });
+async function run(consumer, args, input) {
+  const child = Bun.spawn(args, { env, stdin: input === undefined ? "ignore" : "pipe", stdout: "pipe", stderr: "pipe" });
+  active.add(child);
+  if (input !== undefined) { child.stdin.write(input); child.stdin.end(); }
+  try {
+    const [output, errors, status] = await Promise.all([
+      new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited,
+    ]);
+    process.stderr.write(errors);
+    return { consumer, output, status };
+  } finally {
+    if (child.exitCode === null) child.kill();
+    await child.exited;
+    active.delete(child);
+  }
+}
+process.on("message", async ({ id, phase }) => {
+  if (stopping) return;
+  try {
+    let output;
+    if (phase === "consume") {
+      const input = "protocol=https\\nhost=github.com\\npath=acme/repo.git\\n\\n";
+      const values = await Promise.all([
+        run("gh", ["gh", "auth", "token", "--hostname", "github.com"]),
+        run("git", ["git", "credential", "fill"], input),
+        run("alias", ["git", "-c", "alias.creds=credential", "creds", "fill"], input),
+      ]);
+      const config = await run("config", ["git", "config", "--get", "armada.probe"]);
+      values.push(config);
+      const failed = values.find(value => value.status !== 0);
+      if (failed) { reply({ id, consumer: failed.consumer }); return; }
+      output = values.map(value => value.output).join("");
+    } else if (phase === "denied") {
+      const [url, repo] = await Promise.all([
+        run("denied-url", ["gh", "pr", "view", "https://github.com/foreign/repo/pull/1"]),
+        run("denied-repo", ["gh", "repo", "view", "foreign/repo"]),
+      ]);
+      output = url.output + "URL_STATUS:" + url.status + "\\n" + repo.output + "REPO_STATUS:" + repo.status + "\\n";
+    } else { reply({ id, consumer: "phase" }); return; }
+    reply({ id, output });
+  } catch { reply({ id, consumer: "spawn" }); }
+});
+reply({ ready: true });
+`,
+    );
+    const ready = Promise.withResolvers<void>();
+    let waiting: { id: number; resolve(value: string): void; reject(error: Error): void } | undefined;
+    let nextPhase = 0;
+    const native = Bun.spawn([process.execPath, dispatcher], {
       env,
-      stdin: "pipe",
-      stdout: "pipe",
+      stdin: "ignore",
+      stdout: "ignore",
       stderr: "pipe",
       detached: true,
+      ipc(message) {
+        const reply = message as { ready?: boolean; id?: number; output?: unknown; consumer?: string };
+        if (reply.ready) {
+          ready.resolve();
+          return;
+        }
+        const pending = waiting;
+        waiting = undefined;
+        if (!pending) return;
+        if (reply.id !== pending.id || typeof reply.output !== "string") {
+          pending.reject(Error(`native fixture consumer failed (${reply.consumer ?? "protocol"})`));
+        } else pending.resolve(reply.output);
+      },
     });
-    child = shell;
-    const output = shell.stdout.getReader();
-    releaseReader = async () => {
-      await output.cancel().catch(() => {});
-      output.releaseLock();
-    };
-    // Drain immediately so diagnostics cannot backpressure a native command.
-    const errors = new Response(shell.stderr).text().catch(() => undefined);
+    child = native;
+    void native.exited.then(() => {
+      const error = Error("native fixture exited before completing its IPC reply");
+      ready.reject(error);
+      waiting?.reject(error);
+      waiting = undefined;
+    });
+    const errors = new Response(native.stderr).text().catch(() => undefined);
     async function errorText() {
       const text = await errors;
       if (text === undefined) throw Error("fixture stderr failed");
       return text;
     }
-    let pending = "";
+    await ready.promise;
     async function phase(name: "consume" | "denied" = "consume") {
-      shell.stdin.write(`${name}\n`);
-      await shell.stdin.flush();
-      while (!pending.includes("PHASE_DONE\n")) {
-        const item = await output.read();
-        if (item.done) throw Error(`fixture exited before ${name} completed`);
-        pending += new TextDecoder().decode(item.value);
-      }
-      const at = pending.indexOf("PHASE_DONE\n"),
-        result = pending.slice(0, at);
-      pending = pending.slice(at + 11);
-      return result;
+      const id = ++nextPhase;
+      const response = new Promise<string>((resolve, reject) => {
+        waiting = { id, resolve, reject };
+        native.send({ id, phase: name });
+      });
+      return response;
     }
     const first = await phase();
     if (!first.includes("password=***") || !first.includes("preserved")) {
-      shell.stdin.end();
-      await shell.exited;
+      native.disconnect();
+      await native.exited;
       let diagnostic = await errorText();
       for (const secret of [current, next, "inherited-stale"]) diagnostic = diagnostic.replaceAll(secret, "***");
       throw Error(diagnostic);
@@ -200,14 +252,14 @@ done
     const denied = await phase("denied");
     expect(denied).toContain("URL_STATUS:1");
     expect(denied).toContain("REPO_STATUS:1");
-    shell.stdin.end();
-    await shell.exited;
+    native.disconnect();
+    await native.exited;
     expect(await errorText()).toBe(
       "Managed GitHub credentials unavailable (request: invalid_response).\nManaged GitHub credentials unavailable (request: invalid_response).\n",
     );
   } finally {
     if (child) {
-      child.stdin.end();
+      child.disconnect();
       if (child.exitCode === null) {
         try {
           process.kill(-child.pid, "SIGTERM");
@@ -217,7 +269,6 @@ done
       }
       await child.exited;
     }
-    await releaseReader?.();
     socket.close();
     await rm(root, { recursive: true, force: true });
   }
