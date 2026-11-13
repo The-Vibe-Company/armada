@@ -52,6 +52,11 @@
           "type": "json",
           "path": "packages/mcp-gateway/package.json",
           "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "packages/docker-host/package.json",
+          "jsonpath": "$.version"
         }
       ]
     }
