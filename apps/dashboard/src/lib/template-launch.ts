@@ -54,7 +54,7 @@ export function launchTarget(
     revision: item.revision.revision,
     definition,
     ...(lookups.accounts ? { accounts: lookups.accounts } : {}),
-    goldenName: golden?.name ?? null,
+    goldenName: definition.provider === "docker" ? definition.hostId : (golden?.name ?? null),
     repositories,
     ...(sizing?.kind === "ready" ? { sizing: { policy: sizing.policy } } : {}),
     tools: definition.connections.map(

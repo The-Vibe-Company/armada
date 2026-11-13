@@ -62,7 +62,7 @@ describe("launch command", () => {
       },
     });
     expect(result.code).toBe(1);
-    expect(result.err).toContain("Set ARMADA_TOKEN or run armada login.");
+    expect(result.err).toContain("You are not signed in. Run armada login.");
     expect(calls).toEqual([]);
   });
 });

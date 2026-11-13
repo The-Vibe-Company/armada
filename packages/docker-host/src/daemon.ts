@@ -1,17 +1,20 @@
 import { createHash } from "node:crypto";
+import type { DockerJobFailureReason } from "../../core/src/docker-api.ts";
 import {
   type BootstrapDescriptor,
   canonicalDockerHostJob,
   type DockerHostJob,
   parseDockerHostJob,
 } from "../../core/src/docker-host-job.ts";
-import type { DockerMachineRequest } from "../../core/src/docker-machine.ts";
+import { DockerMachineError, type DockerMachineRequest } from "../../core/src/docker-machine.ts";
 
 export type Job = DockerHostJob;
 export type Receipt = {
   requestId: string;
   request: DockerMachineRequest;
   outcome?: "completed" | "failed";
+  /** Why a failed machine operation failed, when it is one the person can act on (#1507). */
+  reason?: DockerJobFailureReason;
   /** Durable positive local stop proof, separate from the original job outcome. */
   expired?: true;
   expiryReported?: true;
@@ -22,6 +25,7 @@ export type State = {
   hostId: string;
   hostToken: string;
   receipts: Receipt[];
+  lastPollAt?: string;
   /** Fair bounded retries across retained confirmations and process restarts. */
   expiryReportAfter?: string;
 };
@@ -131,13 +135,18 @@ export async function tick(store: Store, api: Api, executor: Executor): Promise<
         await executor.startRuntime(receipt.request, job.bootstrap);
       } else await executor[receipt.operation](receipt.request);
       receipt.outcome = "completed";
-    } catch {
+    } catch (error) {
       receipt.outcome = "failed";
+      if (error instanceof DockerMachineError && error.code === "image_unavailable") receipt.reason = error.code;
     } // Uncertain native failure is terminal for this request identity.
     await store.save(state);
   }
   const polled = await api.poll(state);
-  if (!polled.job) return;
+  state.lastPollAt = new Date().toISOString();
+  if (!polled.job) {
+    await store.save(state);
+    return;
+  }
   const job = parseDockerHostJob(polled.job);
   if ((job.operation === "bootstrap" || job.operation === "resume") && job.bootstrap.serverUrl !== state.server)
     throw new Error("Wrong bootstrap origin");

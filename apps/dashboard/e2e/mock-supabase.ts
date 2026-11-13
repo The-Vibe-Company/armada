@@ -104,6 +104,8 @@ type State = {
   usage: Record<string, Row | { fail: number }>;
   /** `creds/accounts/auth-capabilities` (#604): what this deployment offers, or null for a server without the route. */
   authCapabilities: Row | null;
+  /** `creds/accounts/models` (#1483): declared models per account id; an account not listed declares none. */
+  connectionModels: Record<string, Row[]>;
   /** Every control API call, with its operation and body, for the tests to check what the dashboard sent. */
   controlCalls: { operation: string; body: Row }[];
   /** Every `org/provider/*` call (#576): its route, the body as sent and whether it carried a session. */
@@ -363,6 +365,7 @@ function seed(): State {
     usage: {},
     // #604 v1 contract (root-native-auth-contract.json): an additive base map, no --name placeholder.
     authCapabilities: { hostedOAuth: false, nativeCLI: { codex_auth: "armada creds login codex" } },
+    connectionModels: {},
     goldenCalls: [],
     goldenRemoveCalls: [],
     goldenStatusCalls: [],
@@ -2580,6 +2583,11 @@ function accounts(route: string, body: Row, request: Request): Response {
   if (route === "creds/accounts/auth-capabilities") {
     return state.authCapabilities ? json(state.authCapabilities) : json({ error: { message: "Unknown route." } }, 404);
   }
+  if (route === "creds/accounts/models") {
+    return json({
+      connections: Object.entries(state.connectionModels).map(([id, models]) => ({ id, models })),
+    });
+  }
   if (route === "creds/accounts/usage") {
     const report = state.usage[String(body.id)];
     if (!report) return json({ error: { code: undefined, message: "Unknown route." } }, 404);
@@ -2942,6 +2950,7 @@ function control(url: URL, body: Row): Response {
     if (body.legacy !== undefined) state.legacyAccounts = body.legacy === true;
     Object.assign(state.usage, (body.usage as Record<string, Row> | undefined) ?? {});
     if (body.authCapabilities !== undefined) state.authCapabilities = body.authCapabilities as Row | null;
+    Object.assign(state.connectionModels, (body.connectionModels as Record<string, Row[]> | undefined) ?? {});
     for (const row of (body.seed as Row[] | undefined) ?? []) state.credentials.push(row);
     // `{user, org}`: the viewer's and Acme's model accounts as `creds/list` DTOs, replacing the seeded ones.
     if (body.user !== undefined || body.org !== undefined) {

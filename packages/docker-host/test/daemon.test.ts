@@ -1,12 +1,16 @@
 import { expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { chmod, mkdtemp, readFile, rm, stat, symlink } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BootstrapDescriptor } from "../../core/src/docker-host-job.ts";
-import { createDockerMachineExecutor } from "../../core/src/docker-machine.ts";
+import { createDockerMachineExecutor, DockerMachineError } from "../../core/src/docker-machine.ts";
 import { type Api, type Executor, type Job, register, type State, type Store, tick } from "../src/daemon.ts";
 import { fileStore, httpApi } from "../src/native.ts";
+
+function fail(): never {
+  throw new Error("missing receipt");
+}
 
 function fixture(
   operation: Exclude<Job["operation"], "bootstrap" | "resume"> = "create",
@@ -31,7 +35,7 @@ function fixture(
   };
   let deny = false;
   let failSave = false;
-  let failure = false;
+  let failure: false | Error = false;
   const executed: string[] = [];
   const swept: string[] = [];
   const acknowledgements: string[] = [];
@@ -48,7 +52,7 @@ function fixture(
     // Receipt comes from the actual store write, not a fixture-supplied pending record.
     expect(state.receipts.some((r) => r.requestId === job.requestId && !r.outcome)).toBe(true);
     executed.push(job.operation);
-    if (failure) throw new Error("uncertain side effect");
+    if (failure) throw failure;
   };
   const executor: Executor = {
     startRuntime: run,
@@ -87,8 +91,8 @@ function fixture(
     failSave: (v: boolean) => {
       failSave = v;
     },
-    failExecution: () => {
-      failure = true;
+    failExecution: (error: Error = new Error("uncertain side effect")) => {
+      failure = error;
     },
   };
 }
@@ -157,6 +161,42 @@ test("rejects changed request identity, generation inputs, and fresh create iden
   f.job.request = original.request;
   await expect(tick(f.store, f.api, f.executor)).rejects.toThrow("Changed machine generation");
   expect(f.executed).toHaveLength(1);
+});
+
+test("a failed image fetch is reported with its reason, and an older server still gets the plain outcome", async () => {
+  const f = fixture();
+  f.failExecution(new DockerMachineError("image_unavailable"));
+  await tick(f.store, f.api, f.executor);
+  expect(f.state().receipts[0]).toMatchObject({ outcome: "failed", reason: "image_unavailable" });
+  const generic = fixture();
+  generic.failExecution(new DockerMachineError("docker_failed"));
+  await tick(generic.store, generic.api, generic.executor);
+  expect(generic.state().receipts[0]?.reason).toBeUndefined();
+
+  // A transient failure is not an older server: the reason is kept for the next tick, never dropped.
+  const sent: Record<string, unknown>[] = [];
+  const transient = httpApi((async (_url: string | URL | Request, init?: RequestInit) => {
+    sent.push(JSON.parse(String(init?.body)));
+    return new Response(null, { status: 503 });
+  }) as typeof fetch);
+  await expect(transient.result(f.state(), f.state().receipts[0] ?? fail())).rejects.toThrow("Host request denied");
+  expect(sent).toEqual([expect.objectContaining({ reason: "image_unavailable" })]);
+  for (const server of ["current", "older"] as const) {
+    const bodies: Record<string, unknown>[] = [];
+    const api = httpApi((async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      bodies.push(body);
+      // An older server refuses any field it does not know.
+      return new Response(null, { status: server === "older" && "reason" in body ? 400 : 204 });
+    }) as typeof fetch);
+    await api.result(f.state(), f.state().receipts[0] ?? fail());
+    const plain = { installationId: f.state().installationId, requestId: f.job.requestId, outcome: "failed" };
+    expect(bodies).toEqual(
+      server === "current"
+        ? [{ ...plain, reason: "image_unavailable" }]
+        : [{ ...plain, reason: "image_unavailable" }, plain],
+    );
+  }
 });
 
 test("uncertain execution fails durably, never replays, and TTL sweep still runs on denied polling", async () => {
@@ -381,9 +421,16 @@ test("private native state survives reopening, excludes concurrent owners and re
     expect(await (await fileStore(directory)).load()).toEqual(
       JSON.parse(await readFile(join(directory, "state.json"), "utf8")),
     );
+    const priorBoot = join(directory, "daemon-00000000-0000-0000-0000-000000000000.lock");
+    if (process.platform === "linux") await writeFile(priorBoot, "", { mode: 0o600 });
     const release = await store.lock();
     await expect(store.lock()).rejects.toThrow();
     await release();
+    if (process.platform === "linux") {
+      expect(await readFile(priorBoot, "utf8")).toBe("");
+      await writeFile(join(directory, "daemon.lock"), "", { mode: 0o600 });
+      await expect(store.lock()).rejects.toThrow("Legacy daemon lock");
+    }
     await chmod(join(directory, "state.json"), 0o644);
     await expect(store.load()).rejects.toThrow("Unsafe host state");
     await expect(store.save(fixture().state())).rejects.toThrow("Unsafe host state");
@@ -533,4 +580,24 @@ test("resume starts the retained container before fresh runtime bootstrap and ne
   await tick(f.store, f.api, executor);
   expect(calls).toEqual(["start", "bootstrap"]);
   expect(f.acknowledgements).toEqual(["completed", "completed"]);
+});
+
+test("unregister distinguishes a pending drain from confirmed revocation and rejects unknown responses", async () => {
+  const state = fixture().state();
+  for (const result of [false, true]) {
+    const api = httpApi((async (url: string | URL | Request, options?: RequestInit) => {
+      expect(String(url)).toBe(`${state.server}/api/docker-host/unregister`);
+      expect(options?.redirect).toBe("error");
+      expect(new Headers(options?.headers).get("authorization")).toBe(`Bearer ${state.hostToken}`);
+      expect(JSON.parse(String(options?.body))).toEqual({ installationId: state.installationId });
+      return Response.json({ revoked: result });
+    }) as typeof fetch);
+    expect(await api.unregister(state)).toBe(result);
+  }
+  for (const response of [{}, { revoked: "true" }, { revoked: true, unknown: true }, null]) {
+    await expect(
+      httpApi((async (_url: string | URL | Request, _options?: RequestInit) =>
+        Response.json(response)) as typeof fetch).unregister(state),
+    ).rejects.toThrow("Invalid host revocation response");
+  }
 });

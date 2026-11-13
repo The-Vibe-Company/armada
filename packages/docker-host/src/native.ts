@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, rename, unlink } from "node:fs/promises";
+import { lstat, mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { DockerMachineCli } from "../../core/src/docker-machine.ts";
+import { VERSION } from "../../core/src/version.ts";
 import { type Api, type Job, type State, type Store, serverOrigin, validId, validToken } from "./daemon.ts";
 
 const MAX_STATE_BYTES = 16 * 1024 * 1024;
@@ -85,7 +86,54 @@ export async function fileStore(
       }
     },
     async lock() {
-      const lockPath = join(directory, "daemon.lock");
+      let lockName = "daemon.lock";
+      if (process.platform === "linux") {
+        // A lock from another boot cannot have a surviving process owner. Keep
+        // legacy locks for explicit operator inspection. OS flock releases on crashes.
+        try {
+          await lstat(join(directory, "daemon.lock"));
+          throw new Error("Legacy daemon lock requires operator inspection");
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+        const bootId = (await readFile("/proc/sys/kernel/random/boot_id", "utf8")).trim();
+        if (!validId(bootId)) throw new Error("Invalid Linux boot identity");
+        lockName = `daemon-${bootId}.lock`;
+      }
+      const lockPath = join(directory, lockName);
+      if (process.platform === "linux") {
+        const file = await open(lockPath, constants.O_CREAT | constants.O_RDWR | constants.O_NOFOLLOW, 0o600);
+        const info = await file.stat();
+        if (!info.isFile() || info.nlink !== 1 || info.uid !== process.getuid?.() || (info.mode & 0o777) !== 0o600) {
+          await file.close();
+          throw new Error("Unsafe daemon lock");
+        }
+        // The private stdin pipe is a lifetime lease: kernel closes it even on SIGKILL.
+        const child = spawn("sh", ["-c", "flock --exclusive --nonblock 3 || exit 1; printf ready; cat >/dev/null"], {
+          stdio: ["pipe", "pipe", "ignore", file.fd],
+        });
+        const ended = new Promise<void>((resolve, reject) => {
+          child.once("error", reject);
+          child.once("close", () => resolve());
+        });
+        try {
+          await new Promise<void>((resolve, reject) => {
+            child.stdout?.once("data", () => resolve());
+            child.once("error", reject);
+            child.once("close", () => reject(new Error("Docker host already running")));
+          });
+        } catch (error) {
+          child.stdin?.end();
+          await ended.catch(() => {});
+          throw error;
+        } finally {
+          await file.close();
+        }
+        return async () => {
+          child.stdin?.end();
+          await ended;
+        };
+      }
       const lock = await open(lockPath, "wx", 0o600);
       await lock.close();
       return () => unlink(lockPath);
@@ -93,8 +141,15 @@ export async function fileStore(
   };
 }
 
+/** A host request the server answered with an error status. */
+class HostRequestDenied extends Error {
+  constructor(readonly status: number) {
+    super("Host request denied");
+  }
+}
+
 /** Outbound HTTPS only. Redirects cannot forward host credentials to another origin. */
-export function httpApi(request: typeof fetch = fetch): Api {
+export function httpApi(request: typeof fetch = fetch): Api & { unregister(state: State): Promise<boolean> } {
   async function post(server: string, endpoint: string, token: string, body: unknown): Promise<unknown> {
     const response = await request(`${serverOrigin(server)}/api/docker-host/${endpoint}`, {
       method: "POST",
@@ -105,7 +160,7 @@ export function httpApi(request: typeof fetch = fetch): Api {
     });
     if (!response.ok) {
       await response.body?.cancel();
-      throw new Error("Host request denied");
+      throw new HostRequestDenied(response.status);
     }
     if (endpoint === "results") {
       await response.body?.cancel();
@@ -130,27 +185,52 @@ export function httpApi(request: typeof fetch = fetch): Api {
     return JSON.parse(Buffer.concat(parts).toString("utf8"));
   }
   return {
+    async unregister(state) {
+      const result = await post(state.server, "unregister", state.hostToken, { installationId: state.installationId });
+      if (
+        !result ||
+        typeof result !== "object" ||
+        Array.isArray(result) ||
+        Object.keys(result).length !== 1 ||
+        !("revoked" in result) ||
+        typeof result.revoked !== "boolean"
+      )
+        throw new Error("Invalid host revocation response");
+      return result.revoked;
+    },
     async register(server, token, installationId) {
       return (await post(server, "register", token, { installationId })) as { hostId: string; hostToken: string };
     },
     async poll(state) {
-      return (await post(state.server, "poll", state.hostToken, { installationId: state.installationId })) as {
+      return (await post(state.server, "poll", state.hostToken, {
+        installationId: state.installationId,
+        version: VERSION,
+      })) as {
         job: Job | null;
       };
     },
     async result(state, receipt, expired) {
-      await post(state.server, "results", state.hostToken, {
+      const body = {
         installationId: state.installationId,
         requestId: receipt.requestId,
         ...(expired ? { expired: true } : { outcome: receipt.outcome }),
-      });
+      };
+      if (expired || !receipt.reason) return void (await post(state.server, "results", state.hostToken, body));
+      try {
+        await post(state.server, "results", state.hostToken, { ...body, reason: receipt.reason });
+      } catch (error) {
+        // Only a server older than failure reasons refuses the field (400): the plain outcome is still the machine
+        // fact. Any other failure is retried with the reason on the next tick.
+        if (!(error instanceof HostRequestDenied) || error.status !== 400) throw error;
+        await post(state.server, "results", state.hostToken, body);
+      }
     },
   };
 }
 
 /** Never a shell, never inherited output; inspect can contain secrets. */
 export const dockerCli: DockerMachineCli = {
-  run(argv, stdin) {
+  run(argv, stdin, options) {
     return new Promise((resolve, reject) => {
       const child = spawn("docker", [...argv], { stdio: ["pipe", "pipe", "ignore"] });
       let output = "";
@@ -160,7 +240,7 @@ export const dockerCli: DockerMachineCli = {
         failed = true;
         child.kill("SIGKILL");
       };
-      const timer = setTimeout(fail, 30_000);
+      const timer = setTimeout(fail, options?.timeoutMs ?? 30_000);
       child.stdout.on("data", (data: Buffer) => {
         bytes += data.length;
         if (bytes > 1024 * 1024) fail();

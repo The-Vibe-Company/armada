@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { DOCKER_DEFAULT_IMAGE } from "@armada/core";
 import { run } from "../src/run.ts";
 import { memorySessionStore } from "../src/session.ts";
 
@@ -90,15 +91,32 @@ test.each(["codex", "claude", "opencode"] as const)(
   },
 );
 
+test("Docker launch without --image sends Armada's default image", async () => {
+  const calls: Request[] = [];
+  const withoutImage = args.filter((arg, index) => arg !== "--image" && args[index - 1] !== "--image");
+  const result = await capture(withoutImage, async (request) => {
+    calls.push(request);
+    return Response.json({
+      sandbox: { id: requestId, provider: "docker", status: "running" },
+      golden: null,
+      runtime: { epoch: "1" },
+    });
+  });
+  expect(result.code).toBe(0);
+  expect(await calls[0]?.json()).toMatchObject({ image: DOCKER_DEFAULT_IMAGE });
+});
+
 test("Docker incompatible or malformed options fail before HTTP", async () => {
   const calls: Request[] = [];
   for (const flags of [
     ["--agent", "unknown"],
+    ["--image", "sha256:short"],
+    ["--image", `sha256:${"A".repeat(64)}`],
     ["--skill", "foo@1"],
     ["--repo", "acme/web"],
     ["--connections", "a"],
     ["--credential-version", "0"],
-    ["--host", "not-a-host"],
+    ["--host", "x".repeat(65)],
     ["one", "two"],
   ]) {
     const result = await capture([...args, ...flags], async (request) => {
@@ -120,5 +138,60 @@ test("unknown Docker launch outcome retains a stable request UUID for exact retr
     expect(result.out).toBe("");
     expect(result.err).toContain(`--request-id ${requestId}`);
     expect(result.err).toContain("do not create a replacement");
+  }
+});
+
+test.each([{ flags: ["--skill", "team/notes@1.2.3", "--connections", host] }, { flags: ["--no-connections"] }])(
+  "Docker forwards existing skill/MCP flags %j",
+  async ({ flags }: { flags: readonly string[] }) => {
+    let body: Record<string, unknown> = {};
+    const result = await capture([...args, ...flags], async (request) => {
+      body = (await request.json()) as Record<string, unknown>;
+      return Response.json({ sandbox: { id: requestId, provider: "docker" }, golden: null, runtime: { epoch: "1" } });
+    });
+    expect(result.code).toBe(0);
+    expect(body.connections).toEqual(flags.includes("--no-connections") ? [] : [host]);
+    if (flags.includes("--skill")) expect(body.skills).toEqual(["team/notes@1.2.3"]);
+  },
+);
+test("Docker launch resolves an exact unique non-revoked host name and refuses missing/ambiguous names", async () => {
+  const receipt = {
+    sandbox: { id: requestId, provider: "docker", status: "running" },
+    golden: null,
+    runtime: { epoch: "1" },
+  };
+  const namedArgs = args.map((arg) => (arg === host ? "office" : arg === image ? `sha256:${"b".repeat(64)}` : arg));
+  const summary = {
+    id: host,
+    name: "office",
+    state: "online",
+    createdAt: "2026-11-13T00:00:00Z",
+    lastSeenAt: null,
+    revokedAt: null,
+    version: "2.27.0",
+    sandboxes: 0,
+  };
+  for (const mode of ["unique", "missing", "ambiguous"]) {
+    let launched = 0;
+    const result = await capture(namedArgs, async (request) => {
+      if (new URL(request.url).pathname.endsWith("/hosts/list")) {
+        expect(await request.json()).toEqual({ org });
+        return Response.json({
+          placement: true,
+          hosts:
+            mode === "missing"
+              ? []
+              : mode === "ambiguous"
+                ? [summary, { ...summary, id: credential }]
+                : [summary, { ...summary, id: credential, state: "revoked" }],
+        });
+      }
+      launched++;
+      expect(await request.json()).toMatchObject({ hostId: host, image: `sha256:${"b".repeat(64)}` });
+      return Response.json(receipt);
+    });
+    expect(result.code === 0).toBe(mode === "unique");
+    expect(launched).toBe(mode === "unique" ? 1 : 0);
+    if (mode !== "unique") expect(result.err).toContain(mode === "missing" ? "No non-revoked" : "ambiguous");
   }
 });

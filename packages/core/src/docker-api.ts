@@ -16,7 +16,6 @@ export interface DockerHostListRequest {
 }
 export interface DockerHostSummary {
   id: string;
-  /** No host naming write exists yet. */
   name: string | null;
   /** Online means a recent heartbeat, not a launch/readiness guarantee. */
   state: "pending" | "online" | "offline" | "revoked";
@@ -35,11 +34,15 @@ export interface DockerHostListResponse {
 }
 export interface DockerHostRegistrationRequest {
   org: string;
+  name?: string;
 }
 export interface DockerHostRegistrationResponse {
   hostId: string;
   /** Single-use, five-minute capability. Show once, never persist or log it. */
   registrationToken: string;
+  /** One-click shell command containing only the short-lived registration capability. */
+  command: string;
+  expiresAt: string;
 }
 export interface DockerHostRevokeRequest {
   org: string;
@@ -102,17 +105,32 @@ export interface LaunchOptionsResponse {
     githubVersion: number;
     mcpVersion: number;
     skillsVersion?: number;
+    workspaceVersion?: number;
     controlsVersion?: number;
     enabled: boolean;
   };
 }
+
+/** Why a host reports a failed machine operation, when the person can act on it (#1507). */
+export const DOCKER_JOB_FAILURE_REASONS = ["image_unavailable"] as const;
+export type DockerJobFailureReason = (typeof DOCKER_JOB_FAILURE_REASONS)[number];
+/** What a sandbox and its launch say when its host could not fetch the image. */
+export const DOCKER_IMAGE_UNAVAILABLE_MESSAGE =
+  "Your host could not fetch the image. Check that the image exists and that the host can reach its registry, then launch again.";
+/**
+ * The plain Linux image a Docker host launch uses when none is given (#1507): Debian with HTTPS CA roots, pinned by
+ * digest. The launch API, the CLI and the dashboard all default to it, so a person never has to know what an image is.
+ */
+export const DOCKER_DEFAULT_IMAGE =
+  "buildpack-deps@sha256:58021c2a0204361b62a23d2e0244d144d74c29af2d678e2a1f7e6611885d6949";
 
 /** Normal API/CLI contract. Discover capabilities.launch before offering this source. */
 export interface DockerLaunchRequest {
   org: string;
   provider: "docker";
   hostId: string;
-  image: string;
+  /** Immutable registry digest or host-approved full local image ID; omitted means DOCKER_DEFAULT_IMAGE. */
+  image?: string;
   harness: Harness;
   credentialId: string;
   credentialVersion?: number;
@@ -122,6 +140,9 @@ export interface DockerLaunchRequest {
   reasoningEffort?: string;
   ttlSeconds?: number;
   visibility?: "private";
+  skills?: string[];
+  connections?: string[];
+  skipSkillDefaults?: boolean;
 }
 export interface DockerSandboxRecord extends Omit<SandboxRecord, "provider" | "goldenId" | "harness"> {
   provider: "docker";

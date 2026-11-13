@@ -658,7 +658,7 @@ test("removing a golden asks first, retires only the golden, and keeps its sandb
   await expect(boat).toHaveAttribute("data-capacity", "legacy");
   await expect(boat).toHaveAttribute("data-capacity-removed", "1");
   await expect(boat).toContainText("2 of 1");
-  await expect(boat.locator("[data-capacity-line]")).toHaveText("Boat: 2 of 1 slot used, 1 by removed environment");
+  await expect(boat.locator("[data-capacity-line]")).toHaveText("Boat: 2 of 1 slot used, 1 by removed snapshot");
   await expect(page.locator("[data-legacy-conflict]")).toHaveCount(0);
   // One request, by id in the selected org, with the session; never a delete of anything else.
   expect((await mockState()).goldenRemoveCalls).toEqual([

@@ -15,7 +15,21 @@ export const metadata: Metadata = { title: "Skills" };
 export const dynamic = "force-dynamic";
 
 const TITLE = "Skills";
-const DESCRIPTION = "The Skillpack key that installs your private skills in the sandboxes Armada launches.";
+const DESCRIPTION = (
+  <>
+    Armada's Skillpack integration: your sandboxes install the Skillpack skills you choose here, with no setup inside
+    the sandbox.{" "}
+    <a
+      className="font-medium text-foreground underline underline-offset-4"
+      href="https://skillpack.app"
+      target="_blank"
+      rel="noreferrer"
+    >
+      Browse Skillpack
+    </a>
+    .
+  </>
+);
 
 /**
  * Build > Skills (#957): where the Skillpack key is added, replaced and removed. Harness is about model

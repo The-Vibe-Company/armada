@@ -6,12 +6,14 @@ import { providerRegistry } from "../src/http.ts";
 import { createMcpLifecycle } from "../src/mcp-lifecycle.ts";
 import { createMcpSandboxProviderResolver } from "../src/mcp-sandbox-provider.ts";
 import { createModalIntegration } from "../src/modal-integration.ts";
-import { database, ENCRYPTION_KEY } from "./support.ts";
+import { migratedDatabase } from "./migrated-database.ts";
+import { ENCRYPTION_KEY } from "./support.ts";
 
 // Real SQL -> production renewal resolver -> registry -> composed Modal adapter -> SQL machine
 // scope -> physical SDK poll -> lease UPDATE. The SDK alone is replaced; no cloud authority.
 test("MCP renewal finds a private Modal machine forked from an org golden with its pinned org credentials", async () => {
-  const { db, people } = await database();
+  const db = await migratedDatabase();
+  const people = { org: crypto.randomUUID(), owner: crypto.randomUUID(), admin: crypto.randomUUID() };
   const binding = { workspace: "app:ap-renew", environment: "main", appId: "ap-renew" };
   const apps = spyOn(AppService.prototype, "fromName").mockImplementation(async (name, options) => {
     expect(name).toBe("renew-org-app");
@@ -29,6 +31,14 @@ test("MCP renewal finds a private Modal machine forked from an org golden with i
     } as unknown as Sandbox;
   });
   try {
+    await db.query("insert into auth.users(id) values($1),($2)", [people.owner, people.admin]);
+    await db.query("insert into orgs(id,name) values($1,'MCP renewal')", [people.org]);
+    // Keep another member after owner revocation; any-org-member authorization must still fail.
+    await db.query("insert into members(org_id,user_id,role) values($1,$2,'member'),($1,$3,'admin')", [
+      people.org,
+      people.owner,
+      people.admin,
+    ]);
     await db.query(
       "insert into modal_server_apps(org_id,authority,authority_scope,authority_owner_id,app_name,app_id,environment) values($1,$2,'org',$1,'renew-org-app',$3,'main')",
       [people.org, `org:${people.org}`, binding.appId],
