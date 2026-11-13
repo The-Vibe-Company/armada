@@ -65,6 +65,16 @@ done
 # Upload the repository root: Vercel project Root Directory remains apps/dashboard,
 # with workspace sources outside that directory included in its build settings.
 # deploy waits for Ready (no --no-wait), then promotes domains only on successful build.
-vercel deploy --prod --yes --token "$VERCEL_TOKEN" \
-  --meta "githubCommitSha=$RELEASE_SHA" --meta "armadaVersion=$RELEASE_VERSION"
+if [[ "${PREBUILT_DASHBOARD:-}" == true ]]; then
+  # Staging builds on the Actions runner, including the release smoke call.
+  # VERCEL_TOKEN is read from the environment, never exposed in argv.
+  vercel pull --yes --environment=production
+  vercel build --prod
+  vercel deploy --prebuilt --prod --yes \
+    --meta "githubCommitSha=$RELEASE_SHA" --meta "armadaVersion=$RELEASE_VERSION"
+else
+  # Production stays unchanged until the owner confirms staging cutover.
+  vercel deploy --prod --yes --token "$VERCEL_TOKEN" \
+    --meta "githubCommitSha=$RELEASE_SHA" --meta "armadaVersion=$RELEASE_VERSION"
+fi
 echo "Released server and dashboard $RELEASE_VERSION from $RELEASE_SHA" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
