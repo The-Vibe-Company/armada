@@ -23,11 +23,19 @@ for (const mode of [
   "terminal_failed",
   "already_deleted",
   "wrong_delete_id",
+  "cost_mismatch",
+  "usage_missing",
+  "price_changed",
+  "usage_filter",
+  "usage_lost",
+  "baseline_quota",
 ] as const) {
   test(`parity normal lifecycle and honest reporting: ${mode}`, async () => {
     const lines: string[] = [];
     const calls: string[] = [];
     const deletes = new Map<string, number>();
+    const detailReads = new Map<string, number>();
+    const turns = new Map<string, string[]>();
     const prompts = new Map<string, string>();
     const states = new Map<string, string>();
     const providers = ["boat", "modal", "docker"];
@@ -49,13 +57,15 @@ for (const mode of [
           })),
         ),
       },
-      mode === "filtered"
-        ? ["--parity", "--only", "docker", "--feature", "exec"]
-        : mode === "unimplemented"
-          ? ["--parity", "--feature", "mcp"]
-          : mode === "invalid_filter"
-            ? ["--parity", "--feature", "typo"]
-            : ["--parity"],
+      mode === "usage_filter"
+        ? ["--parity", "--only", "docker", "--feature", "exact-cost"]
+        : mode === "filtered"
+          ? ["--parity", "--only", "docker", "--feature", "exec"]
+          : mode === "unimplemented"
+            ? ["--parity", "--feature", "mcp"]
+            : mode === "invalid_filter"
+              ? ["--parity", "--feature", "typo"]
+              : ["--parity"],
       {
         now: () => 0,
         sleep: async () => {},
@@ -112,25 +122,68 @@ for (const mode of [
               states.set(p, "ready");
               result = { sandbox: { id: p, provider: p } };
               break;
-            case "sandbox/send":
+            case "sandbox/send": {
               if (p !== "docker") expect(body.request_id).toBeUndefined();
               if (body.prompt.includes("Remember this token")) prompts.set(p, body.prompt.match(/PARITY_[a-z0-9]+/)[0]);
               states.set(p, p === "docker" ? "running" : "ready");
-              result = { promptId: "turn-1" };
+              const history = turns.get(p) ?? [];
+              history.push(`turn-${history.length + 1}`);
+              turns.set(p, history);
+              result = { promptId: history.at(-1) };
               break;
+            }
             case "logs/read":
               result = {
                 events: [
-                  { kind: "prompt", promptId: "turn-1", status: "finished" },
-                  { kind: "message", promptId: "turn-1", text: `SMOKE_OK ${prompts.get(p)}` },
+                  { kind: "prompt", promptId: turns.get(p)?.at(-1), status: "finished" },
+                  { kind: "message", promptId: turns.get(p)?.at(-1), text: `SMOKE_OK ${prompts.get(p)}` },
                 ],
               };
               break;
             case "sandbox/exec":
               result = { exitCode: 0, timedOut: false, stdout: "PARITY_EXEC_OK" };
               break;
+            case "sandbox/detail":
             case "sandbox/status":
-              result = { id: p, status: states.get(p) };
+              detailReads.set(p, (detailReads.get(p) ?? 0) + 1);
+              if (mode === "baseline_quota" && path === "sandbox/detail" && detailReads.get(p) === 1)
+                return Response.json(
+                  { error: { code: "rate_limited", message: "Read quota reached." } },
+                  { status: 429 },
+                );
+              result = {
+                id: p,
+                status: states.get(p),
+                usage: {
+                  turnCount: turns.get(p)?.length ?? 0,
+                  turns: (mode === "usage_lost" && (turns.get(p)?.length ?? 0) > 1
+                    ? (turns.get(p) ?? []).slice(-1)
+                    : (turns.get(p) ?? [])
+                  ).map((promptId, i) => ({
+                    promptId,
+                    model: "fake-model",
+                    inputTokens: mode === "usage_missing" ? null : 10,
+                    outputTokens: 5,
+                    pricing: {
+                      unknown: null,
+                      usd:
+                        mode === "price_changed" && (turns.get(p)?.length ?? 0) > 1
+                          ? i === 0
+                            ? "0.2"
+                            : i === 1
+                              ? "0.0"
+                              : "0.1"
+                          : "0.1",
+                    },
+                  })),
+                  cost: {
+                    currency: "USD",
+                    unknown: null,
+                    unpricedTurns: 0,
+                    usd: mode === "cost_mismatch" ? "99" : `0.${turns.get(p)?.length ?? 0}`,
+                  },
+                },
+              };
               break;
             case "sandbox/stop":
               states.set(p, mode === "already_deleted" ? "deleted" : mode === "terminal_failed" ? "failed" : "stopped");
@@ -210,6 +263,26 @@ for (const mode of [
       }
       return;
     }
+    if (mode === "baseline_quota") {
+      expect(passed).toBe(true);
+      expect(report.features["exact-cost-before-resume"].docker.status).toBe("not-run");
+      expect(report.features["exact-cost-after-resume"].docker.status).toBe("pass");
+      expect(report.features["exact-cost"].docker.status).toBe("not-run");
+      return;
+    }
+    if (["cost_mismatch", "usage_missing", "price_changed", "usage_filter", "usage_lost"].includes(mode)) {
+      const cell = report.features["exact-cost"].docker;
+      expect(cell.status).toBe(mode === "usage_filter" ? "pass" : "fail");
+      expect(passed).toBe(mode === "usage_filter");
+      expect(report.features.cleanup.docker.status).toBe("pass");
+      if (mode === "usage_filter") {
+        expect(calls.filter((call) => call.endsWith(":sandbox/launch"))).toEqual(["docker:sandbox/launch"]);
+        expect(turns.get("docker")).toHaveLength(2);
+        expect(report.features["exact-cost-before-resume"].docker.status).toBe("pass");
+        expect(report.features["exact-cost-after-resume"].docker.status).toBe("pass");
+      }
+      return;
+    }
     if (mode === "wrong_delete_id") {
       expect(passed).toBe(false);
       expect(report.features.cleanup.docker.status).toBe("fail");
@@ -238,6 +311,7 @@ for (const mode of [
       expect(report.features["resume-recall"].docker.status).toBe("not-run");
       expect(report.features["resume-recall"].docker.diagnostic.httpStatus).toBe(429);
       expect(passed).toBe(true);
+      expect(report.features["exact-cost"].docker.status).toBe("not-run");
       return;
     }
     if (mode === "delete_retry") expect(deletes.get("modal")).toBe(2);

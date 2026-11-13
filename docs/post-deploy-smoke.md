@@ -900,3 +900,21 @@ The parity probe's shared 35-minute polling deadline still applies; exhausted
 budget can leave cleanup unconfirmed. The journal-enabled wrapper additionally
 runs its own reserved cleanup phase. This slice does not prove the cause of the
 historical five remaining rows or guarantee deletion after provider refusal.
+
+#### Usage and exact-cost parity rows
+
+`--parity --only docker --feature usage` checks measured input/output counters
+for each observed prompt before and after stop/resume. `--feature exact-cost`
+also requires persisted, fully priced USD turn quotes, an exact session sum,
+unique prompt/model rows and unchanged earlier quotes after resume. Both filters
+reuse one sandbox and run the necessary send/stop/resume/cleanup prerequisites.
+A pre-resume pass alone leaves the aggregate feature not-run; phase rows show
+the before/after observations separately.
+
+Amounts are compared as 18-decimal fixed-point integers, matching the server's
+USD precision; the runner does not recalculate prices from a current catalog or
+compare binary floating-point sums. Unknown pricing or missing counters fail,
+never silently become zero/unsupported. Quotes and counters are not printed.
+These probes migrate the older Docker cost check without deleting that script;
+its other checks and the remaining feature rows still need migration. A full
+staging run, not fixture tests, is the evidence that a provider/harness passes.
