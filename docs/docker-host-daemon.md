@@ -162,6 +162,41 @@ and reported tokens, then normal stop/delete ACKs. It prints
 The host remains registered/running. Compare container/volume inventories with
 the baseline; no prune, registration replacement or worker host access.
 
+## Installing through the CLI
+
+On the Docker machine, `armada host install --server https://ARMADA_ORIGIN`
+reads the five-minute, single-use registration token **only from stdin**. It needs
+no Armada login or organization selection. Use the one-line command from
+`armada host add` or the dashboard rather than putting a token in CLI arguments.
+
+A follow-up bootstrap slice will prefer the published CLI through bunx, then npx,
+pinned to the server's exact Armada version (not `latest`), retain the standalone
+no-Node fallback and offer an optional global CLI installation.
+
+The CLI fetches the public `/api/docker-host/install.json` manifest and the
+selected Linux x64/arm64 artifact from the same HTTPS origin, rejects redirects,
+checks SHA-256 **before execution**, then atomically installs
+`~/.local/bin/armada-docker-host`. Installation paths must not contain symlinks.
+The separate binary owns Docker checks, registration and systemd user-service
+installation. The CLI waits up to 60 seconds for a connected status; timeout is
+not permission to exchange another registration token blindly.
+
+Re-running reports the existing host ID, version and connectivity. Registered
+hosts keep their existing binary and registration; the new token is not consumed.
+An offline registered host restarts its existing user service and gets the same
+bounded reconnect wait. In-place registered-binary upgrades are deliberately not
+performed: the managed install records the binary digest for safe uninstall.
+Unregistered binaries without retained installation files can be replaced;
+unreadable or partially registered state is preserved for diagnosis.
+
+`armada host status` prints public local status; `armada host uninstall` delegates
+to the separate binary's drain/revoke/removal procedure. Both work without login.
+Uninstall can wait for active sandbox cleanup and must be retried, not bypassed,
+if drain is unresolved. Native diagnostic output is not relayed by the wrapper;
+run `armada-docker-host status` or `armada-docker-host uninstall` directly when
+repairing local service or ownership problems. Never delete registration state or
+force-clear a daemon lock to make installation succeed.
+
 ## Host authority, ownership and failure recovery
 
 An org admin obtains a five-minute single-use capability from
