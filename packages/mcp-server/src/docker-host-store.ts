@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import type { Sql } from "@armada/core";
+import type { DockerHostSummary, Sql } from "@armada/core";
 import { decryptSecret, encryptSecret } from "@armada/core/server";
 import {
   type BootstrapDescriptor,
@@ -274,6 +274,49 @@ export function createDockerHostStore(sql: Sql, key: string) {
     );
   }
   return {
+    list(actor: Actor): Promise<DockerHostSummary[]> {
+      return transaction(async (tx) => {
+        exact(actor, ["userId", "orgId"]);
+        id(actor.userId);
+        id(actor.orgId);
+        const member = await tx.query(`select 1 from public.members where org_id=$1 and user_id=$2 for share`, [
+          actor.orgId,
+          actor.userId,
+        ]);
+        if (!member.rows.length) deny();
+        const hosts = await tx.query<{
+          id: string;
+          state: DockerHostSummary["state"];
+          created_at: Date | string;
+          last_seen_at: Date | string | null;
+          revoked_at: Date | string | null;
+          sandboxes: number;
+        }>(
+          `select h.id,
+            case when h.revoked_at is not null then 'revoked'
+              when h.installation_id is null then 'pending'
+              when h.hash is not null and h.registration_hash is null
+                and exists(select 1 from public.members m where m.org_id=h.org_id and m.user_id=h.owner_id)
+                and h.last_seen_at>=now()-interval '60 seconds' then 'online'
+              else 'offline' end as state,
+            h.created_at,h.last_seen_at,h.revoked_at,
+            (select count(*)::integer from public.sandboxes s
+              where s.org_id=h.org_id and s.docker_host_id=h.id
+                and s.provider='docker' and s.status<>'deleted') as sandboxes
+          from public.docker_hosts h where h.org_id=$1 order by h.created_at,h.id`,
+          [actor.orgId],
+        );
+        return hosts.rows.map((host) => ({
+          id: host.id,
+          name: null,
+          state: host.state,
+          createdAt: new Date(host.created_at).toISOString(),
+          lastSeenAt: host.last_seen_at === null ? null : new Date(host.last_seen_at).toISOString(),
+          revokedAt: host.revoked_at === null ? null : new Date(host.revoked_at).toISOString(),
+          sandboxes: host.sandboxes,
+        }));
+      });
+    },
     issueRegistration(actor: Actor) {
       return transaction(async (tx) => {
         await admin(tx, actor);

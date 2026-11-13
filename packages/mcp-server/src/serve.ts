@@ -324,6 +324,7 @@ export async function startServer(
       : undefined,
   );
   const control: ConfiguredControlOptions = {
+    docker: { hosts: env.ARMADA_DOCKER_HOSTS === "1", placement: dockerEnabled, normalApi: false },
     runtimeSend,
     runtimeCheckpoint,
     runtimeResume,

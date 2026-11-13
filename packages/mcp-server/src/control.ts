@@ -112,7 +112,7 @@ import type { GitHubAccountApi } from "./github-account.ts";
 import { providerRegistry } from "./http.ts";
 import { InvitationError, type Invitations, invitationsFromEnv } from "./invitations.ts";
 import { exposedSecrets, launchCredentials } from "./launch-credentials.ts";
-import { launchOptions } from "./launch-options.ts";
+import { launchOptions, launchProviderOptions } from "./launch-options.ts";
 import { catalogAuthenticationFromEnv } from "./mcp-catalog-client.ts";
 import { createMcpLifecycle } from "./mcp-lifecycle.ts";
 import { createHistoricalSandboxProviderResolver } from "./mcp-sandbox-provider.ts";
@@ -144,6 +144,8 @@ const MAX_BODY_BYTES = 128 * 1024;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface ControlOptions {
+  /** Trusted installed-route discovery, never taken from request JSON. */
+  docker?: { hosts?: boolean; placement?: boolean; normalApi?: boolean };
   runtimeMcp?: RuntimeMcp;
   runtimeGitHub?: RuntimeGitHub;
   runtimeResume?: RuntimeResume;
@@ -762,6 +764,7 @@ async function dispatch(
   if (route === "launch/options")
     return {
       ...launchOptions,
+      providers: launchProviderOptions(options.docker),
       boatRuntime: {
         version: 1,
         diagnosticsVersion: 1,
@@ -772,7 +775,7 @@ async function dispatch(
         mcpVersion: options.runtimeMcp ? 1 : 0,
         enabled: Boolean(options.boatRuntimeLaunch && options.runtimeHostFor),
       },
-    };
+    } satisfies import("@armada/core").LaunchOptionsResponse;
   if (route === "creds/accounts/usage") {
     if (!options.modelUsage || !options.logs) throw new VaultError("unavailable", "Model usage is not configured.");
     const id = required(body, "id"),
