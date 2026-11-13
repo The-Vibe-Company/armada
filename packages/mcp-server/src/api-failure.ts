@@ -5,8 +5,11 @@ import {
   GitHubHydrationError,
   LaunchError,
   ProviderError,
+  providerRateLimitDetails,
+  providerRateLimitMessage,
   VaultError,
 } from "@armada/core";
+import { isProviderStartRateLimit } from "@armada/core/server";
 
 /** Only typed causes determine categories. Never infer an error code from human diagnostics. */
 export function apiFailureCode(error: unknown): ApiFailureCode | undefined {
@@ -27,4 +30,32 @@ export function apiFailureCode(error: unknown): ApiFailureCode | undefined {
   }
   if (error instanceof EncryptionKeyError) return "dependency_unavailable";
   return undefined;
+}
+
+/** One HTTP projection for every provider, after the shared typed failure classification. */
+export function providerFailureResponse(error: ProviderError) {
+  const category = apiFailureCode(error);
+  const limit =
+    !category && isProviderStartRateLimit(error)
+      ? providerRateLimitDetails({ ...error.details, provider: "boat", retryAfterSeconds: error.retryAfterSeconds })
+      : undefined;
+  const statuses = new Map<ProviderError["code"], number>([
+    ["rate_limited", 429],
+    ["payment_required", 402],
+    ["conflict", 409],
+    ["forbidden", 403],
+    ["invalid_request", 400],
+  ]);
+  return {
+    status: category ? API_FAILURE_STATUS[category] : (statuses.get(error.code) ?? 503),
+    error: {
+      code: category ?? error.code,
+      message: limit ? providerRateLimitMessage(limit) : error.message,
+      ...(limit
+        ? { details: limit }
+        : error.details?.keepSource === true
+          ? { details: { keepSource: true, sourceSandboxId: error.details.sourceSandboxId } }
+          : {}),
+    },
+  };
 }
