@@ -1358,7 +1358,10 @@ export function HarnessAccounts({
             {subscriptionAvailable ? (
               <>Add one to launch {harnessLabel}. An API key works too.</>
             ) : (
-              <>Add an OpenCode key, or create a custom endpoint account with the Armada CLI. Modal only.</>
+              <>
+                Add an OpenCode plan key, or connect DeepSeek, OpenRouter or another OpenAI-compatible provider. Modal
+                only.
+              </>
             )}
           </Empty>
         </div>
