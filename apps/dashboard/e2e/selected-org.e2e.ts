@@ -78,7 +78,8 @@ for (const mobile of [false, true]) {
     await expect(page.locator('[data-golden="shared-golden"]')).toHaveCount(0);
     await page.goto("/settings");
     await expect(page.locator('[data-credentials="user"]')).toBeVisible();
-    // The providers card names the selected org only; the personal keys below it are the viewer's own.
+    // The cloud providers page (#1474) names the selected org only; the personal keys stay in Settings.
+    await page.goto("/providers/cloud");
     await expect(page.getByRole("heading", { name: "Sandbox providers for Zenith" })).toBeVisible();
     await page.screenshot({ path: `test-results/organization-${mobile ? "mobile" : "desktop"}.png`, fullPage: true });
     await page.goto("/sandboxes?golden=00000000-0000-4000-8000-000000000023");

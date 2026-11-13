@@ -20,8 +20,11 @@ import {
 import { connectionTestOutcome, matchesConnectionTestSandbox } from "@/lib/model-connection-check";
 import {
   customAccountValue,
+  presetAccountValue,
+  presetReplacementValue,
   replacementClaudeAccountValue,
   replacementCodexAccountValue,
+  replacementOpenCodeAccountValue,
 } from "@/lib/model-connection-input";
 import { createClient } from "@/lib/supabase/server";
 
@@ -83,14 +86,19 @@ function refresh() {
 export async function addAccount(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
   const context = await scoped(data);
   if (!isScoped(context)) return context;
-  const kind = formString(data, "kind");
+  const preset = formString(data, "preset");
+  const fromPreset = preset ? presetAccountValue(data) : null;
+  if (fromPreset && !fromPreset.ok) return fail(fromPreset.error);
+  // A provider preset decides the kind; the form's own kind is ignored for it.
+  const kind = fromPreset?.ok ? fromPreset.kind : formString(data, "kind");
   if (!(ACCOUNT_KINDS as readonly string[]).includes(kind)) return fail("Choose what you are adding.");
   const name = checkAccountName(data.get("name"));
   if (!name.ok) return fail(name.error);
   const value =
-    data.get("customEndpoint") === "on"
+    fromPreset ??
+    (data.get("customEndpoint") === "on"
       ? customAccountValue(kind as AccountKind, data)
-      : secret(kind as AccountKind, data.get("value"));
+      : secret(kind as AccountKind, data.get("value")));
   if (!value.ok) return fail(value.error);
 
   let saved: Awaited<ReturnType<AccountControl["set"]>>;
@@ -129,12 +137,17 @@ export async function replaceAccountSecret(_previous: ActionResult | null, data:
     return fail("That request is not valid.");
   const name = checkAccountName(data.get("name"));
   if (!name.ok) return fail(name.error);
+  // A provider preset re-enters the whole connection; it must keep the account's kind.
+  const fromPreset = formString(data, "preset") ? presetReplacementValue(data, kind as AccountKind) : null;
   const value =
-    kind === "openai"
+    fromPreset ??
+    (kind === "openai"
       ? replacementCodexAccountValue(data)
       : kind === "anthropic"
         ? replacementClaudeAccountValue(data)
-        : secret(kind as AccountKind, data.get("value"));
+        : kind === "opencode"
+          ? replacementOpenCodeAccountValue(data)
+          : secret(kind as AccountKind, data.get("value")));
   if (!value.ok) return fail(value.error);
   try {
     const saved = await context.control.set({

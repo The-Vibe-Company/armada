@@ -3,6 +3,8 @@ import {
   type AgentEvent,
   type DockerSandboxStatus,
   GoldenError,
+  HARNESS_CAPABILITIES,
+  HARNESS_KINDS,
   type Harness,
   PROMPT_STATUSES,
   ProviderError,
@@ -18,6 +20,9 @@ import { createDockerHostStore, DockerHostDenied } from "./docker-host-store.ts"
 import type { createDockerNormalSend } from "./docker-normal-send.ts";
 import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
 import { isPrivateModelEvent } from "./model-usage.ts";
+import { createRuntimeAgent } from "./runtime-agent.ts";
+import { createRuntimeCommands } from "./runtime-commands.ts";
+import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import { createRuntimeHistory } from "./runtime-history.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
 import { withServerCost } from "./turn-pricing.ts";
@@ -407,13 +412,128 @@ export function createDockerSandboxControls(
       await clock.wait(Math.min(250, deadline - clock.now()));
     }
   }
+  async function control(caller: Caller, row: Row, name: string, args: Record<string, unknown>) {
+    if (row.owner_id !== caller.userId) throw denied();
+    if (!["ready", "running"].includes(row.status)) throw failure("conflict", "Docker sandbox must be running.");
+    const requestId = (args.request_id as string | undefined) ?? randomUUID();
+    if (
+      args.conversation_id !== undefined &&
+      (typeof args.conversation_id !== "string" || !UUID.test(args.conversation_id))
+    )
+      throw invalid();
+    let conversationId = (args.conversation_id as string | undefined) ?? row.conversation_ids.at(-1);
+    if (name === "steer" && args.conversation_id === undefined) {
+      const previous = (
+        await sql.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
+          "select request_enc from public.runtime_commands where sandbox_id=$1 and request_id=$2",
+          [row.id, requestId],
+        )
+      ).rows[0];
+      if (previous) {
+        const saved = JSON.parse(await decryptSecret(previous.request_enc, key)) as {
+          op?: unknown;
+          conversationId?: unknown;
+        };
+        if (saved.op === "steer" && typeof saved.conversationId === "string") conversationId = saved.conversationId;
+      }
+    }
+    if (conversationId && !row.conversation_ids.includes(conversationId))
+      throw failure("not_found", "Conversation not found.");
+    const authority = createRuntimeEnrolments(sql, key);
+    const fenced = {
+      ...authority,
+      withOwner: ((id, owner, work, generation) => {
+        if (!sql.transaction) throw failure("unavailable", "Docker runtime authorization is unavailable.");
+        return sql.transaction(async (tx) => {
+          const local: Sql = { query: tx.query.bind(tx), transaction: (work) => work(tx) };
+          const current = createRuntimeEnrolments(local, key);
+          await current.lockSourceMembers(tx, id, owner);
+          const allowed = await tx.query(
+            `select s.id from public.sandboxes s join public.credentials c on c.id=s.credential_id and c.version=s.credential_version
+             where s.id=$1 and c.kind=any($4::public.credential_kind[]) and c.status='active' and (c.expires_at is null or c.expires_at>now())
+             and ((c.scope='user' and c.owner_id=$2) or (c.scope='org' and c.owner_id=$3)) for share of c`,
+            [id, owner, row.org_id, HARNESS_KINDS[row.harness]],
+          );
+          if (!allowed.rows.length) throw failure("conflict", "Docker runtime authorization is unavailable.");
+          return current.withOwner(
+            id,
+            owner,
+            async (fenced, scope) => {
+              if (name === "exec") {
+                const safe = await fenced.query(
+                  `select id from public.sandboxes where id=$1 and application_secret_tainted=false`,
+                  [id],
+                );
+                if (!safe.rows.length) throw failure("conflict", "Docker runtime execution is unavailable.");
+              }
+              return work(fenced, scope);
+            },
+            generation,
+          );
+        });
+      }) as typeof authority.withOwner,
+    };
+    const agent = createRuntimeAgent(
+      createRuntimeCommands(fenced, key, {
+        now: clock.now,
+        wait: (ms) => clock.wait(ms),
+      }),
+      {
+        provider: "docker",
+        harness: row.harness,
+        ownerId: caller.userId,
+        sandboxId: row.id,
+        providerSandboxId: row.id,
+        cwd: "/home/user",
+        defaults: { model: row.model ?? "", reasoningEffort: row.reasoning_effort ?? "" },
+      },
+    );
+    if (name === "interrupt") {
+      await agent.interrupt(
+        { sandboxId: row.id, ...(args.conversation_id ? { conversationId: args.conversation_id as string } : {}) },
+        requestId,
+      );
+      return { id: row.id, interrupted: true };
+    }
+    if (name === "steer") {
+      if (typeof args.text !== "string" || !args.text.trim() || !conversationId) throw invalid();
+      const receipt = await agent.steer({ sandboxId: row.id, text: args.text, conversationId }, requestId);
+      return { id: row.id, ...receipt, delivery: HARNESS_CAPABILITIES[row.harness].steer, mode: receipt.mode ?? null };
+    }
+    if (
+      typeof args.command !== "string" ||
+      !args.command.trim() ||
+      (args.cwd !== undefined && (typeof args.cwd !== "string" || !args.cwd || args.cwd.includes("\0"))) ||
+      (args.timeout_seconds !== undefined && typeof args.timeout_seconds !== "number")
+    )
+      throw invalid();
+    const result = await agent.exec(
+      {
+        sandboxId: row.id,
+        command: args.command,
+        ...(args.cwd === undefined ? {} : { cwd: args.cwd as string }),
+        ...(args.timeout_seconds === undefined ? {} : { timeoutSeconds: args.timeout_seconds as number }),
+      },
+      requestId,
+    );
+    if (result.detached) throw failure("conflict", "Runtime command outcome is unknown. Retry the same request_id.");
+    return {
+      id: row.id,
+      exitCode: result.exitCode,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      timedOut: result.timedOut,
+      truncated: result.truncated,
+    };
+  }
   return {
     async invoke(
       caller: Caller,
       name: string,
       args: Record<string, unknown>,
     ): Promise<{ handled: false } | { handled: true; result: object }> {
-      if (!["status", "logs", "stop", "delete", "send", "resume"].includes(name)) return { handled: false };
+      if (!["status", "logs", "stop", "delete", "send", "resume", "steer", "interrupt", "exec"].includes(name))
+        return { handled: false };
       try {
         if (typeof args.id !== "string" || !UUID.test(args.id)) throw denied();
         if (
@@ -425,6 +545,8 @@ export function createDockerSandboxControls(
           throw invalid();
         const row = await visible(caller, args.id);
         if (row.provider !== "docker") return { handled: false };
+        if (["steer", "interrupt", "exec"].includes(name))
+          return { handled: true, result: await control(caller, row, name, args) };
         if (name === "send") {
           if (!options.send) throw failure("unavailable", "Docker send is unavailable.");
           return { handled: true, result: await options.send.send(caller, args, row) };

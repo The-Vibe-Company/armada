@@ -87,29 +87,45 @@ test("auth refuses before dispatch; real WAL survives restart and reconciles los
   }
 });
 test.skipIf(process.platform !== "linux")(
-  "real command timeout kills process group and detached PID retains terminal evidence",
+  "real exec timeout reconciles missing birth evidence and detached PID retains terminal output",
   async () => {
-    const s = setup();
+    // Exec recovery reuses one SQL connection; the separate WAL test owns disk reopening.
+    const journal = new Journal(":memory:", (text) => text);
+    const runner = new Runner(journal, grant, { claude: unused, codex: unused });
     try {
-      const response = await call(s.runner, {
+      const response = await call(runner, {
         op: "exec",
         input: { sandboxId: "logical", command: "sleep 60", timeoutSeconds: 0 },
       });
       const { result } = await payload(response);
       expect(result).toMatchObject({ timedOut: true, detached: false });
       expect(result.exitCode).not.toBe(0);
+      // This real completed command also owns recovery without persisted birth evidence.
+      const rows = journal.db.query("SELECT pid,body FROM processes").all() as { pid: number; body: string }[];
+      for (const row of rows) {
+        const record = JSON.parse(row.body);
+        delete record.identity;
+        journal.db.query("UPDATE processes SET body=? WHERE pid=?").run(JSON.stringify(record), row.pid);
+      }
+      const restarted = new Runner(journal, grant, { claude: unused, codex: unused });
+      expect((await call(restarted, { op: "checkpoint" })).status).toBe(200);
+      const resumed = new Runner(journal, { ...grant, generation: "g2" }, { claude: unused, codex: unused });
       const detached = await (
-        await call(s.runner, { op: "exec", input: { sandboxId: "logical", command: "printf done", detached: true } })
+        await call(resumed, { op: "exec", input: { sandboxId: "logical", command: "printf done", detached: true } })
       )
         .json()
         .then((x) => x as Envelope);
       expect(detached.result.processId).toBeGreaterThan(0);
-      // A real checkpoint is the completion barrier, not a wall-clock sleep.
-      await call(s.runner, { op: "checkpoint" });
-      const state = await payload(await call(s.runner, { op: "getExec", processId: detached.result.processId }));
-      expect(state.result).toMatchObject({ status: "exited", exitCode: 0, stdout: "done" });
+      // Live detached groups refuse checkpoint; observe terminal evidence without a timed sleep.
+      let state: Envelope | undefined;
+      for (let attempt = 0; attempt < 10000; attempt++) {
+        state = await payload(await call(resumed, { op: "getExec", processId: detached.result.processId }));
+        if (state.result.status === "exited") break;
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      expect(state?.result).toMatchObject({ status: "exited", exitCode: 0, stdout: "done" });
     } finally {
-      s.close();
+      journal.close();
     }
   },
 );
@@ -225,30 +241,6 @@ test.skipIf(process.platform !== "linux")(
         if (JSON.parse(row.body).status === "exited") break;
         await new Promise<void>((resolve) => setImmediate(resolve));
       }
-      s.close();
-    }
-  },
-);
-
-test.skipIf(process.platform !== "linux")(
-  "checkpoint reconciles completed exec with unavailable process birth evidence",
-  async () => {
-    const s = setup();
-    try {
-      const response = await call(s.runner, {
-        op: "exec",
-        input: { sandboxId: "logical", command: "printf completed" },
-      });
-      expect((await payload(response)).result).toMatchObject({ exitCode: 0, stdout: "completed" });
-      const rows = s.journal.db.query("SELECT pid,body FROM processes").all() as { pid: number; body: string }[];
-      for (const row of rows) {
-        const record = JSON.parse(row.body);
-        delete record.identity;
-        s.journal.db.query("UPDATE processes SET body=? WHERE pid=?").run(JSON.stringify(record), row.pid);
-      }
-      const restarted = new Runner(s.journal, grant, { claude: unused, codex: unused });
-      expect((await call(restarted, { op: "checkpoint" })).status).toBe(200);
-    } finally {
       s.close();
     }
   },

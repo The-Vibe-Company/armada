@@ -10,6 +10,7 @@ import {
 import { type Args, flag, single, values } from "./args.ts";
 import { createArmadaApiClient } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
+import { resolveHost } from "./host-commands.ts";
 import { parseTtl } from "./operations.ts";
 
 const uuid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
@@ -46,8 +47,10 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
     return value.toLowerCase();
   };
   const org = requiredId("--org"),
-    hostId = requiredId("--host"),
     credentialId = requiredId("--credential-id");
+  const selector = single(args, "--host");
+  if (!selector || selector.length > 64 || /[\p{C}]/u.test(selector))
+    throw new GoldenError("invalid_config", "--host requires a UUID or exact host name.");
   const image = single(args, "--image")?.trim();
   if (!image)
     throw new GoldenError("invalid_config", "Docker launch requires --image with a digest-pinned image reference.");
@@ -71,6 +74,8 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
   const selected = connections?.split(",").map((id) => id.trim());
   if (selected && (selected.length > 32 || selected.some((id) => !uuid.test(id))))
     throw new GoldenError("invalid_config", "Connections require 1–32 comma-separated UUIDs.");
+  const client = await createArmadaApiClient(auth);
+  const hostId = await resolveHost(client, org, selector);
   const body: DockerLaunchRequest = {
     org,
     provider: "docker",
@@ -89,7 +94,6 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
     ...(ttl === undefined ? {} : { ttlSeconds: parseTtl(ttl) }),
     ...(args.positionals[0] === undefined ? {} : { prompt: args.positionals[0] }),
   };
-  const client = await createArmadaApiClient(auth);
   try {
     const result = await client.request<DockerLaunchResult>("/api/v1/sandbox/launch", {
       method: "POST",
