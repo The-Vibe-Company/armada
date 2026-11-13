@@ -81,6 +81,7 @@ export interface Deps {
 const HELP = `armada ${VERSION}: launch coding agents in provider-scoped sandboxes
 
 Usage:
+  armada host add --org UUID
   armada launch [prompt] --provider docker --host UUID --image digest-ref --agent codex --credential-id UUID --org UUID [--request-id UUID] [--json]
                                            Opt-in plain-image Docker launch through the normal Armada API.
   armada --version                         Print the version
@@ -392,6 +393,25 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
     case "help":
       io.out(HELP);
       return 0;
+    case "host": {
+      const args = parseArgs(rest.slice(1));
+      if (rest[0] !== "add" || args.positionals.length || [...args.options.keys()].some((key) => key !== "--org"))
+        throw new GoldenError("invalid_config", "Usage: armada host add --org UUID");
+      const org = single(args, "--org");
+      if (!org) throw new GoldenError("invalid_config", "--org is required.");
+      const client = await createArmadaApiClient(authOf(io, deps));
+      const ticket = await client.request<{ hostId: string; registrationToken: string }>(
+        "/api/v1/docker/hosts/register-token",
+        { method: "POST", body: JSON.stringify({ org }) },
+      );
+      const server = new URL(armadaApiUrl(authOf(io, deps).env.ARMADA_URL));
+      if (server.protocol !== "https:")
+        throw new GoldenError("invalid_config", "Host installation requires an HTTPS server.");
+      io.out(
+        `Run on the Docker machine (paste the token at its private prompt):\ncurl --fail --silent --show-error --proto '=https' '${server.origin}/api/docker-host/install' | bash\nRegistration token (shown once): ${ticket.registrationToken}\nHost: ${ticket.hostId}\n`,
+      );
+      return 0;
+    }
     case "golden":
       return golden(rest, io, deps);
     case "launch":

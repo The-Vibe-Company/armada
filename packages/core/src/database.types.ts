@@ -372,6 +372,8 @@ export type Database = {
           revoked_at: string | null;
           last_seen_at: string | null;
           created_at: string;
+          daemon_version: string | null;
+          draining_at: string | null;
         };
         Insert: {
           id: string;
@@ -384,6 +386,8 @@ export type Database = {
           revoked_at?: string | null;
           last_seen_at?: string | null;
           created_at?: string;
+          daemon_version?: string | null;
+          draining_at?: string | null;
         };
         Update: {
           id?: string;
@@ -396,6 +400,8 @@ export type Database = {
           revoked_at?: string | null;
           last_seen_at?: string | null;
           created_at?: string;
+          daemon_version?: string | null;
+          draining_at?: string | null;
         };
         Relationships: [
           {

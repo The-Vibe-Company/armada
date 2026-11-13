@@ -63,6 +63,7 @@ function parseHost(value: unknown): DockerHost | null {
     lastSeenAt,
     revokedAt,
     sandboxes,
+    version: typeof value.version === "string" ? value.version : null,
   };
 }
 
@@ -176,11 +177,8 @@ export function hostRegistrationCommand(serverUrl: string): string | null {
   } catch {
     return null;
   }
-  return [
-    `(printf 'Registration token: '; read -rs token; echo; printf '%s\\n' "$token" |`,
-    `armada-docker-host register --server '${origin}' --state-dir ${HOST_STATE_DIR}) &&`,
-    `armada-docker-host run --state-dir ${HOST_STATE_DIR}`,
-  ].join(" \\\n  ");
+  if (!origin.startsWith("https://")) return null;
+  return `curl --fail --silent --show-error --proto '=https' '${origin}/api/docker-host/install' | bash`;
 }
 
 /** What revoking a host does, said before it happens. */

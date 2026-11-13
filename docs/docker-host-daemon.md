@@ -332,7 +332,7 @@ using normal private bearer delivery. Verify the saved PID belongs to the exact
 installed `armada-docker-host run --state-dir ...armada-docker-smoke` process before
 sending SIGTERM; wait for it to exit (up to a poll period). Only then remove that
 private smoke state directory and `.local/bin/armada-docker-host`. Do not remove
-a pre-existing binary/state or a shared pulled image. No uninstall CLI is claimed.
+a pre-existing binary/state or a shared pulled image. The managed installer below provides an ownership-checked uninstall CLI.
 
 ## Local checks
 
@@ -406,7 +406,7 @@ not include mounted volume contents; it cannot by itself promise workspace
 preservation. Future stop/resume must prove quiescence, retained disk/journal and
 fresh enrolment/health, not assume a container start is conversation continuity.
 
-No automatic uninstall/purge CLI exists. Any future implementation must drain,
+Managed uninstall below drains through normal bound stop/delete jobs and never prunes. Any future implementation must drain,
 revoke, reconcile exact labelled/receipt-owned resources, refuse shared/in-use or
 uncertain data, preserve unrelated workloads and report offline remote revocation
 pending. Current manual cleanup above is narrower; it does not delete shared
@@ -516,3 +516,48 @@ server/org/credential/SSH/image arguments. This implies normal launch, follow-up
 stop/resume and a third same-conversation recall, then confirmed stop/delete. Keep
 `ARMADA_TOKEN` private in the environment. This procedure is not evidence of a passed
 real-host run.
+
+
+## Managed owner installation (#1453)
+
+The server image publishes Linux x64/arm64 host executables by SHA-256 alongside
+runtime artifacts. `/api/docker-host/install` serves a script pinned to those
+build digests and the configured public server URL. Deploy all replicas from this
+revision and apply `20261113140000_docker_host_version.sql` through the normal
+operator release process before using it. No deployment or remote migration was
+performed here.
+
+Use **Add a host** in the dashboard or `armada host add --org ORG_UUID`.
+Paste its one command on the Linux Docker machine; paste the one-use token at
+the private terminal prompt. Requires curl, sha256sum, util-linux flock/loginctl
+and a working systemd user session. The binary is verified before execution,
+registered over stdin and installed as a user service with linger. If the user
+cannot enable linger or use Docker, an administrator must configure linger and
+rootless Docker (or explicitly grant powerful Docker access). No sudo is run.
+Existing binaries/registration are refused rather than overwritten. Failed or
+uncertain registration must be inspected, never blindly replayed.
+
+`~/.local/bin/armada-docker-host status` reports registration, recent successful
+poll (not inferred runtime health), daemon version and labelled running count.
+The dashboard list displays the reported version; old hosts report unknown.
+`systemctl --user restart armada-docker-host.service` restarts the daemon.
+Kernel-held locks release on process death; legacy manual locks require inspection.
+
+`~/.local/bin/armada-docker-host uninstall` fences new placements, drains through
+normal bound stop/delete jobs and confirmed physical ACKs, revokes, stops/disables
+the service and removes only the verified installation. The host registration's
+issuer must retain cleanup authority (current admin for other owners' sandboxes).
+Offline/uncertain cleanup, unknown labelled resources and changed managed files
+refuse removal, preserving state for reconciliation. Shared images, other workloads
+and account-wide linger are preserved. Drain is bounded; failure is not deletion.
+
+Single coordinator check on the real machine previously registered as
+`70bde9cd-36c9-40af-b15e-65b2f9d3c2a2`: record container/volume baseline,
+reconcile/delete its old sandboxes, revoke and remove the hand-made installation
+using the manual runbook. Run the new Add-a-host command interactively there.
+Retain the new registration's host ID, not the revoked ID. Run the existing smoke
+with server/org/credential/SSH/image arguments plus
+`--host-id NEW_HOST_ID --service-install`. It restarts only the user service,
+proves a normal launch/answer/stop/delete and uninstalls; compare inventories with
+the baseline. No reboot, prune, shared-image removal or worker host access.
+This procedure has not been run here.

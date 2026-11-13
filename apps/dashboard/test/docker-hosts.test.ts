@@ -22,6 +22,7 @@ const host = (overrides: Partial<DockerHost> = {}): DockerHost => ({
   lastSeenAt: "2026-11-13T11:59:50Z",
   revokedAt: null,
   sandboxes: 2,
+  version: null,
   ...overrides,
 });
 
@@ -58,15 +59,17 @@ test("a registration is a host ID and a 64-hex one-use token, nothing else", () 
   expect(parseHostRegistration({ hostId: "x", registrationToken: token })).toBeNull();
 });
 
-test("the command reads the token without echo on stdin, never in argv, and runs the daemon against the server origin", () => {
-  const command = hostRegistrationCommand("https://armada.example.com/mcp?x=1");
-  expect(command).toContain("read -rs token");
-  expect(command).toContain(`printf '%s\\n' "$token" |`);
-  expect(command).toContain("armada-docker-host register --server 'https://armada.example.com' --state-dir");
-  expect(command).toContain('armada-docker-host run --state-dir "$HOME/.local/state/armada-docker-host"');
-  expect(hostRegistrationCommand("ftp://armada.example.com")).toBeNull();
-  expect(hostRegistrationCommand("https://user:pass@armada.example.com")).toBeNull();
-  expect(hostRegistrationCommand("not a url")).toBeNull();
+test("the command fetches the HTTPS installer, leaving private registration to the host", () => {
+  expect(hostRegistrationCommand("https://armada.example.com/mcp?x=1")).toBe(
+    "curl --fail --silent --show-error --proto '=https' 'https://armada.example.com/api/docker-host/install' | bash",
+  );
+  for (const url of [
+    "http://armada.example.com",
+    "ftp://armada.example.com",
+    "https://user:pass@armada.example.com",
+    "not a url",
+  ])
+    expect(hostRegistrationCommand(url)).toBeNull();
 });
 
 test("a host's state reads in plain words and an offline or unregistered host sorts first", () => {

@@ -15,6 +15,7 @@ export interface DockerHostListRequest {
   org: string;
 }
 export interface DockerHostSummary {
+  version?: string | null;
   id: string;
   /** No host naming write exists yet. */
   name: string | null;

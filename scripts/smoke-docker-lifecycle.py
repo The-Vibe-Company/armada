@@ -28,8 +28,13 @@ def main():
     parser.add_argument("--normal-controls", action="store_true", help="Read status/logs and stop/delete through normal sandbox API")
     parser.add_argument("--normal-launch", action="store_true", help="Launch and run the first prompt through the normal API; implies --normal-controls")
     parser.add_argument("--normal-lifecycle", action="store_true", help="Prove normal follow-up and same-host stop/resume with retained history; implies --normal-launch")
+    parser.add_argument("--service-install", action="store_true", help="Restart an installed user service, normal launch and uninstall after cleanup")
     parser.add_argument("--timeout", type=int, default=600, help="Seconds per bounded stage")
     args = parser.parse_args()
+    if args.service_install:
+        if not args.host_id or args.start_host:
+            parser.error("--service-install requires --host-id for the new managed installation, without --start-host")
+        args.normal_launch = True
     if args.normal_lifecycle:
         args.normal_launch = True
         args.follow_up = True
@@ -78,14 +83,16 @@ def main():
                 raise RuntimeError(f"{operation}: timeout; outcome still unknown")
             time.sleep(2)
 
-    def ssh(command, private_input=None):
+    def ssh(command, private_input=None, timeout=60):
         # Do not forward the user's API bearer via an SSH SendEnv configuration.
         env = {k: v for k, v in os.environ.items() if k != "ARMADA_TOKEN"}
         result = subprocess.run(["ssh", "--", args.ssh, command], input=private_input,
-                                env=env, check=False, timeout=60)
+                                env=env, check=False, timeout=timeout)
         if result.returncode:
             raise RuntimeError("SSH host setup failed; inspect private host state")
 
+    if args.service_install:
+        ssh('systemctl --user restart armada-docker-host.service && "$HOME/.local/bin/armada-docker-host" status')
     host_id = args.host_id
     if not host_id:
         registration = api("hosts/register-token", {})
@@ -236,7 +243,11 @@ def main():
         print("PASS: normal Docker status/logs and stop/delete routes confirmed.")
     if args.normal_launch:
         print("PASS: normal Docker launch route created, bootstrapped and admitted one prompt; list/status/logs/answer/stop/delete confirmed.")
-    print("Host remains registered/running for inspection. See docs/docker-host-daemon.md for uninstall.")
+    if args.service_install:
+        ssh('"$HOME/.local/bin/armada-docker-host" uninstall', timeout=660)
+        print("PASS: managed service restarted, normal launch and cleanup confirmed, installation uninstalled; compare Docker inventory with baseline.")
+    else:
+        print("Host remains registered/running for inspection. See docs/docker-host-daemon.md for uninstall.")
 
 
 if __name__ == "__main__":

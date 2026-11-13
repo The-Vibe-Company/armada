@@ -133,7 +133,7 @@ function row(
     meta,
     subtitle: meta,
     state: <StateCell tone={state.tone} label={state.label} detail={state.detail} data-host-state={host.state} />,
-    fact: sandboxCount(host.sandboxes),
+    fact: `${sandboxCount(host.sandboxes)} · v${host.version ?? "unknown"}`,
     detail: (
       <div className="space-y-4">
         <PanelSection title="State">

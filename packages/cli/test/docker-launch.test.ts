@@ -119,3 +119,19 @@ test("unknown Docker launch outcome retains a stable request UUID for exact retr
     expect(result.err).toContain("do not create a replacement");
   }
 });
+
+// CLI must issue one ticket via user authority and show a usable server-hosted installer.
+test("host add prints one verified-installer command and a one-time registration ticket", async () => {
+  let calls = 0;
+  const result = await capture(["host", "add", "--org", org], async (request) => {
+    calls++;
+    expect(new URL(request.url).pathname).toBe("/api/v1/docker/hosts/register-token");
+    expect(await request.json()).toEqual({ org });
+    return Response.json({ hostId: host, registrationToken: "a".repeat(64) });
+  });
+  expect(result.code).toBe(0);
+  expect(calls).toBe(1);
+  expect(result.out).toContain("/api/docker-host/install' | bash");
+  expect(result.out).toContain("Registration token (shown once): " + "a".repeat(64));
+  expect(result.err).toBe("");
+});

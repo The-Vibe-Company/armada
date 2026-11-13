@@ -79,10 +79,8 @@ function AddHostForm({ orgId, onGuard }: { orgId: string; onGuard: (guarded: boo
       <input type="hidden" name="org" value={orgId} />
       <ul className="list-disc space-y-1 pl-5 text-sm text-muted-foreground">
         <li>
-          Install the <code className="font-mono text-foreground">armada-docker-host</code> binary on the machine first,
-          on the PATH of an account with Docker access (see{" "}
-          <code className="font-mono">docs/docker-host-daemon.md</code>
-          in the Armada repository).
+          The next step gives one install command for a Linux machine with Docker access and systemd user services. It
+          downloads and verifies the binary, registers this host and enables a reboot-persistent user service.
         </li>
         <li>Docker access is powerful: add only machines you own and trust.</li>
         <li>The next step shows a registration token once. It works once, for five minutes.</li>

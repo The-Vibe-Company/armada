@@ -3,7 +3,12 @@ import type { CallerResult } from "./caller.ts";
 import { type createDockerHostStore, DockerHostDenied } from "./docker-host-store.ts";
 import type { Route } from "./http.ts";
 
-const machinePaths = ["/api/docker-host/register", "/api/docker-host/poll", "/api/docker-host/results"];
+const machinePaths = [
+  "/api/docker-host/register",
+  "/api/docker-host/poll",
+  "/api/docker-host/results",
+  "/api/docker-host/unregister",
+];
 const ownerPaths = ["/api/v1/docker/hosts/list", "/api/v1/docker/hosts/register-token", "/api/v1/docker/hosts/revoke"];
 const object = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === "object" && !Array.isArray(value);
@@ -61,12 +66,21 @@ export function createDockerHostRoutes(
         body,
         path.endsWith("/results")
           ? ["installationId", "requestId", "expired" in body ? "expired" : "outcome"]
-          : ["installationId"],
+          : path.endsWith("/poll") && "version" in body
+            ? ["installationId", "version"]
+            : ["installationId"],
       );
       const installationId = string(body.installationId);
       if (path.endsWith("/register"))
         return Response.json(await store.exchangeRegistration(token, installationId), { headers });
-      if (path.endsWith("/poll")) return Response.json({ job: await store.poll(token, installationId) }, { headers });
+      if (path.endsWith("/unregister")) {
+        return Response.json({ revoked: await store.unregister(token, installationId) }, { headers });
+      }
+      if (path.endsWith("/poll")) {
+        const version = body.version === undefined ? undefined : string(body.version);
+        if (version !== undefined && !/^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?$/.test(version)) throw new InvalidInput();
+        return Response.json({ job: await store.poll(token, installationId, version) }, { headers });
+      }
       if ("expired" in body) {
         if (body.expired !== true) throw new InvalidInput();
         const requestId = string(body.requestId);
