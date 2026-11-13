@@ -322,11 +322,13 @@ export {
   type ToolCall,
 } from "./provider.ts";
 export { providerRateLimitDetails, providerRateLimitMessage } from "./provider-limit.ts";
+export { goldenCompatibilityIds, goldenResponse } from "./provider-response.ts";
 export {
   parseReadableVariableBindings,
   type ReadableVariableBinding,
   validateReadableVariables,
 } from "./readable-variables.ts";
+export { isRecord } from "./record.ts";
 export { resolveRepositoryDir } from "./repository-context.ts";
 export {
   RESOURCE_ADVICE_VERSION,
@@ -358,7 +360,6 @@ export { canAccessSandboxInterior, idlePauseMessage, type SandboxListMetadata } 
 export {
   COST_BASIS_LABELS,
   type CostBasis,
-  combineCosts,
   costBasis,
   type SandboxCost,
   sandboxCost,
@@ -395,7 +396,6 @@ export {
   type SandboxUsage,
   type SandboxUsageSummary,
   summarizeSandboxUsage,
-  sumSandboxUsage,
   type TokenUsageTotals,
   type TurnTokenUsage,
   USAGE_UNAVAILABLE_CODES,
@@ -404,6 +404,7 @@ export {
   usageUnavailableReason,
   withUsageTotals,
 } from "./sandbox-usage.ts";
+export { shellQuote } from "./shell-quote.ts";
 export type { SkillCatalogItem, SkillCatalogPage, SkillCatalogSource } from "./skill-catalog.ts";
 export { skillRefusalMessage } from "./skill-diagnostics.ts";
 export { SKILL_PIN_PATTERN, validateSkillPins } from "./skill-pins.ts";

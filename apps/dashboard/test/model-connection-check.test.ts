@@ -49,12 +49,11 @@ test("account check client sends no secret/config and closes untrusted result fi
     },
   });
   const result = await control.testConnection({ id: "sandbox", model: "deployment", org: "org" });
-  expect(connectionTestOutcome(result)).toEqual({ ok: false, error: "Connection rejected: HTTP 401 invalid_api_key." });
+  expect(result).toEqual({ ok: false, status: 401, error: "provider_rejected", code: "invalid_api_key" });
   malformed = true;
   await expect(control.testConnection({ id: "sandbox", model: "deployment", org: "org" })).rejects.toThrow(
     "invalid connection-test receipt",
   );
-  expect(connectionTestOutcome({ ok: true, status: 200, error: null, code: null }).ok).toBe(true);
 });
 
 test("dashboard check's deadline includes the runtime's 15-second response", async () => {
@@ -85,4 +84,33 @@ test("dashboard check's deadline includes the runtime's 15-second response", asy
   } finally {
     timer.mockRestore();
   }
+});
+
+test("model checks translate closed diagnostics into readable guidance without HTTP codes", () => {
+  expect(connectionTestOutcome({ ok: true, status: 200, error: null, code: null })).toEqual({
+    ok: true,
+    message: "Connection accepted. Streaming and tool support have not been checked.",
+  });
+  for (const [code, status, message] of [
+    ["invalid_api_key", 401, "The provider did not accept this account. Check its key and access permissions."],
+    ["DeploymentNotFound", 404, "The model or deployment was not found. Check its name in your provider account."],
+    [
+      "rate_limit_error",
+      429,
+      "The provider's usage limit was reached. Check the account's limits before trying again.",
+    ],
+    [null, 503, "The provider could not complete the check. Try again later."],
+  ] as const)
+    expect(connectionTestOutcome({ ok: false, status, error: "provider_rejected", code })).toEqual({
+      ok: false,
+      error: message,
+    });
+  expect(connectionTestOutcome({ ok: false, status: null, error: "connection_failed", code: null })).toEqual({
+    ok: false,
+    error: "The connection could not be reached. Check the provider address and your machine's network access.",
+  });
+  expect(connectionTestOutcome({ ok: false, status: 200, error: "invalid_response", code: null })).toEqual({
+    ok: false,
+    error: "The provider returned an unsupported response. Check that this connection supports the selected agent.",
+  });
 });

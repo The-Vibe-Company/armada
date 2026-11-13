@@ -147,7 +147,7 @@ test("a page past the last one is empty, with a way back", async ({ page }) => {
 test("the logs of a running sandbox refresh without reloading the page", async ({ page }) => {
   await signIn(page, "alice@example.com");
   await page.getByRole("link", { name: LABELS.running }).click();
-  await expect(page.getByRole("heading", { name: "bx_alice_running" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "shared-golden / Claude Code" })).toBeVisible();
   await expect(page.getByText("Fix the failing test")).toBeVisible();
   await expect(page.getByText("Looking at the test suite.")).toBeVisible();
   await expect(page.getByTestId("live-indicator")).toBeVisible();
@@ -378,11 +378,18 @@ test("steer, interrupt and send go to the chosen conversation, and a refused mes
 
   await fetch(`${MOCK}/__test/fail-next-tool`, {
     method: "POST",
-    body: JSON.stringify({ message: "No turn is running." }),
+    body: JSON.stringify({ message: "HTTP 503: request_id invalid; image sha256:abc" }),
   });
   await box.fill("Keep the old behaviour for empty input");
   await page.getByRole("button", { name: "Steer", exact: true }).click();
-  await expect(page.locator('form p[role="alert"]')).toHaveText("No turn is running.");
+  await expect(page.locator('form p[role="alert"]')).toHaveText(
+    "This action could not be confirmed. Check the conversation before trying again.",
+  );
+  await expect(page.locator('form p[role="alert"]')).not.toContainText("request_id");
+  await page.screenshot({ path: "test-results/composer-error-desktop.png", animations: "disabled" });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({ path: "test-results/composer-error-mobile.png", animations: "disabled" });
+  await page.setViewportSize({ width: 1280, height: 720 });
   await expect(box).toHaveValue("Keep the old behaviour for empty input");
 
   await box.press("Control+Enter");
@@ -472,6 +479,32 @@ test("reading the history is never interrupted by new messages, and the latest i
 test("a launch from a golden sends the chosen model and effort, and a send can override them once", async ({
   page,
 }) => {
+  // This scenario switches to Codex; the base mock intentionally has no Codex account.
+  expect(
+    (
+      await fetch(`${MOCK}/__test/accounts`, {
+        method: "POST",
+        body: JSON.stringify({
+          seed: [
+            {
+              id: "00000000-0000-4000-8000-000000000799",
+              scope: "user",
+              owner_id: IDS.alice,
+              kind: "openai",
+              name: "Test Codex",
+              value_enc: "\\x0102",
+              created_at: "2026-11-08T10:00:00Z",
+              updated_at: "2026-11-08T10:00:00Z",
+              is_default: true,
+              version: 1,
+              status: "active",
+              expires_at: null,
+            },
+          ],
+        }),
+      })
+    ).ok,
+  ).toBe(true);
   await signIn(page, "alice@example.com", "/environments");
   await page.getByRole("button", { name: "Launch from shared-golden" }).click();
   await page.screenshot({ path: "test-results/launch-model-desktop.png", animations: "disabled" });
@@ -492,12 +525,12 @@ test("a launch from a golden sends the chosen model and effort, and a send can o
   await expect(page.getByLabel("Project")).toHaveValue("");
   await expect(page.getByRole("radio", { name: "Claude Code" })).toBeChecked();
   await page.getByLabel("Project").selectOption("api");
-  // Switching the agent selects that agent's own defaults, and the summary follows.
+  // Switching the agent selects its own model default; Advanced summarizes only its own settings.
   const summary = page.locator("[data-launch-summary]");
-  await expect(summary).toHaveText("Claude Opus 5.5 · Medium · 1 MCP");
+  await expect(summary).toHaveText("1 MCP");
   await page.getByRole("radio", { name: "Codex" }).check();
   await expect(page.getByLabel("Model")).toHaveValue("gpt-6.1-sol");
-  await expect(summary).toHaveText("GPT-6.1 Sol · Medium · 1 MCP");
+  await expect(summary).toHaveText("1 MCP");
   await page.getByLabel("Model").selectOption("gpt-6-luna");
   await expect(page.getByLabel("Reasoning effort").locator("option[value=ultra]")).toHaveCount(0);
   await page.getByLabel("Reasoning effort").selectOption("high");
@@ -537,6 +570,7 @@ test("a launch from a golden sends the chosen model and effort, and a send can o
       provider: "boat",
       org: expect.any(String),
       harness: "codex",
+      credentialId: "00000000-0000-4000-8000-000000000799",
       model: "gpt-6-luna",
       reasoningEffort: "high",
       // Untouched connections are not sent: the server applies the defaults (#681).

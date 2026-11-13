@@ -5,10 +5,13 @@ import { createSqlVaultStore, decryptSecret, encryptSecret } from "@armada/core/
 import { createDockerBootstrapService, DockerBootstrapDenied } from "../src/docker-bootstrap-service.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
 import { createDockerRuntimeLifecycle } from "../src/docker-runtime-lifecycle.ts";
+import { createDockerSandboxControls } from "../src/docker-sandbox-controls.ts";
 import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
+import { createRuntimeCheckpoint } from "../src/runtime-checkpoint.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
+import { createRuntimeIdle } from "../src/runtime-idle.ts";
 import { migratedDatabase } from "./migrated-database.ts";
 
 let db: Awaited<ReturnType<typeof migratedDatabase>>;
@@ -407,3 +410,156 @@ test.each(["codex", "claude", "opencode"] as const)(
     ).rejects.toThrow();
   },
 );
+
+test("idle checkpoint precedes Docker stop and its restore proof gates readiness without extending expiry", async () => {
+  const f = await fixture();
+  const authority = createRuntimeEnrolments(sql, key);
+  await service.bootstrap(f.actor, f.sandbox.id, f.requestId);
+  const boot = await hosts.poll(f.hostToken, f.installationId);
+  if (boot?.operation !== "bootstrap") throw Error("missing bootstrap");
+  const session = await authority.enrol(boot.bootstrap.enrolmentToken);
+  await hosts.complete(f.hostToken, f.installationId, { requestId: f.requestId, outcome: "completed" });
+  await db.query("update public.docker_hosts set daemon_version='2.28.0' where id=$1", [f.hostId]);
+  await db.query("update public.sandboxes set status='ready' where id=$1", [f.sandbox.id]);
+  const conversationId = randomUUID(),
+    promptId = randomUUID(),
+    turnId = randomUUID();
+  const runtime = createDockerRuntimeLifecycle(sql, key, { enabled: true });
+  const commands = createRuntimeCommands(authority, key);
+  const turn = { requestId: turnId, text: "remember token", conversationId };
+  await db.query("update public.sandboxes set conversation_ids=array[$2]::text[] where id=$1", [
+    f.sandbox.id,
+    conversationId,
+  ]);
+  expect(await runtime.prompt(f.actor, f.sandbox.id, turn)).toEqual({ state: "pending" });
+  const queued = await commands.next(session.runtimeToken, session.epoch);
+  if (queued.command?.op !== "prompt") throw Error("missing prompt");
+  await commands.complete(session.runtimeToken, session.epoch, {
+    epoch: session.epoch,
+    requestId: queued.command.requestId,
+    status: 200,
+    body: { version: 1, requestId: queued.command.requestId, result: { promptId, conversationId, status: "finished" } },
+  });
+  await runtime.prompt(f.actor, f.sandbox.id, turn);
+  const event = {
+    id: randomUUID(),
+    promptId,
+    conversationId,
+    kind: "prompt",
+    text: "remember token",
+    status: "finished",
+    at: 1_000,
+  };
+  await db.query("insert into public.runtime_events(sandbox_id,sequence,epoch,event_enc) values($1,1,$2,$3)", [
+    f.sandbox.id,
+    session.epoch,
+    await encryptSecret(JSON.stringify(event), key),
+  ]);
+  let clock = 600_999;
+  const bridge = createRuntimeCommands(authority, key, {
+    now: () => clock,
+    async wait() {
+      const command = (await commands.next(session.runtimeToken, session.epoch)).command;
+      if (command?.op !== "checkpoint") throw Error("missing checkpoint");
+      expect(
+        (
+          await db.query("select 1 from public.docker_host_jobs where bound_sandbox_id=$1 and bound_operation='stop'", [
+            f.sandbox.id,
+          ])
+        ).rows,
+      ).toHaveLength(0);
+      await expect(
+        commands.enqueue(f.actor.userId, {
+          version: 1,
+          sandboxId: f.sandbox.id,
+          requestId: randomUUID(),
+          op: "prompt",
+          input: { sandboxId: "physical", harness: "codex", text: "race" },
+        }),
+      ).rejects.toThrow();
+      await commands.complete(session.runtimeToken, session.epoch, {
+        epoch: session.epoch,
+        requestId: command.requestId,
+        status: 200,
+        body: {
+          version: 1,
+          requestId: command.requestId,
+          result: { generation: session.epoch, watermark: 1, acknowledgedSequence: 1 },
+        },
+      });
+    },
+  });
+  await expect(
+    hosts.enqueueSandbox(f.actor, f.sandbox.id, {
+      requestId: randomUUID(),
+      operation: "stop",
+      idleCheckpointRequest: randomUUID(),
+    }),
+  ).rejects.toThrow();
+  const checkpoint = createRuntimeCheckpoint(sql, key, bridge, { docker: true });
+  const idle = createRuntimeIdle(sql, key, checkpoint, {
+    now: () => clock,
+    delayMs: 600_000,
+    dockerStop: (actor, id, requestId) =>
+      hosts.enqueueSandbox(actor, id, { requestId, operation: "stop", idleCheckpointRequest: requestId }),
+  });
+  await idle.reconcileOne(new AbortController().signal);
+  expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("running");
+  clock += 60_000;
+  await idle.reconcileOne(new AbortController().signal);
+  const stop = await hosts.poll(f.hostToken, f.installationId);
+  if (stop?.operation !== "stop") throw Error("missing idle stop");
+  expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("stopping");
+  await hosts.complete(f.hostToken, f.installationId, { requestId: stop.requestId, outcome: "completed" });
+  const stored = (
+    await db.query<{ status: string; status_reason: string; expires_at: Date | string }>(
+      "select status,status_reason,expires_at from public.sandboxes where id=$1",
+      [f.sandbox.id],
+    )
+  ).rows[0]!;
+  expect(stored.status).toBe("stopped");
+  expect(stored.status_reason).toBe("idle_paused");
+  const detail = await createDockerSandboxControls(sql, key).invoke(
+    { userId: f.actor.userId, orgs: [{ orgId: f.actor.orgId, role: "member" }], via: "service" },
+    "status",
+    { id: f.sandbox.id },
+  );
+  expect(detail.handled && (detail.result as { statusMessage?: string }).statusMessage).toBe(
+    "Paused — wakes on your next message",
+  );
+  const resumeId = randomUUID();
+  await service.resume(f.actor, f.sandbox.id, resumeId);
+  const resume = await hosts.poll(f.hostToken, f.installationId);
+  if (resume?.operation !== "resume") throw Error("missing resume");
+  const resumed = await authority.enrol(resume.bootstrap.enrolmentToken);
+  const proof = { epoch: session.epoch, watermark: 1, conversationId };
+  expect((resumed.configuration as { restoreCheckpoint: object }).restoreCheckpoint).toMatchObject(proof);
+  await hosts.complete(f.hostToken, f.installationId, { requestId: resumeId, outcome: "completed" });
+  const healthId = randomUUID();
+  expect(await runtime.ready(f.actor, f.sandbox.id, healthId)).toEqual({ state: "pending" });
+  const health = (await commands.next(resumed.runtimeToken, resumed.epoch)).command;
+  if (health?.op !== "health") throw Error("missing health");
+  await commands.complete(resumed.runtimeToken, resumed.epoch, {
+    epoch: resumed.epoch,
+    requestId: health.requestId,
+    status: 200,
+    body: { version: 1, requestId: health.requestId, result: { ready: true, generation: resumed.epoch } },
+  });
+  await expect(runtime.ready(f.actor, f.sandbox.id, healthId)).rejects.toThrow();
+  const verifiedId = randomUUID();
+  await runtime.ready(f.actor, f.sandbox.id, verifiedId);
+  const verified = (await commands.next(resumed.runtimeToken, resumed.epoch)).command;
+  if (verified?.op !== "health") throw Error("missing verified health");
+  await commands.complete(resumed.runtimeToken, resumed.epoch, {
+    epoch: resumed.epoch,
+    requestId: verified.requestId,
+    status: 200,
+    body: {
+      version: 1,
+      requestId: verified.requestId,
+      result: { ready: true, generation: resumed.epoch, restoredFrom: proof },
+    },
+  });
+  expect(await runtime.ready(f.actor, f.sandbox.id, verifiedId)).toEqual({ state: "ready", epoch: resumed.epoch });
+  expect((await reservations.get(f.actor, f.sandbox.id)).expiresAt).toBe(new Date(stored.expires_at).toISOString());
+});

@@ -4,6 +4,7 @@ import { parseDockerHostList } from "../apps/dashboard/src/lib/docker-hosts.ts";
 import { dockerLaunchOption } from "../apps/dashboard/src/lib/docker-launch.ts";
 import { readOtto } from "../apps/dashboard/src/lib/otto.ts";
 import { parseSandboxListMetadata } from "../apps/dashboard/src/lib/sandbox-access.ts";
+import { stagingSmokeCases } from "./staging-smoke-policy.ts";
 
 interface Io {
   fetch: (url: string, init: RequestInit) => Promise<Response>;
@@ -59,10 +60,16 @@ export async function dashboardReadSmoke(env: NodeJS.ProcessEnv, io: Io): Promis
           fail("invalid_configuration");
         serverUrl = url.origin;
         token = env.ARMADA_TOKEN ?? "";
-        const cases: unknown = JSON.parse(env.ARMADA_SMOKE_CASES ?? "");
+        const cases = stagingSmokeCases(JSON.parse(env.ARMADA_SMOKE_CASES ?? ""));
         if (!token || !Array.isArray(cases) || !cases.length) fail("invalid_configuration");
-        orgs = [...new Set(cases.map((item) => item?.org))];
-        if (!orgs.every((org) => typeof org === "string" && UUID.test(org))) fail("invalid_configuration");
+        const selectedOrgs = [
+          ...new Set(
+            cases.map((item) => (typeof item === "object" && item !== null && "org" in item ? item.org : undefined)),
+          ),
+        ];
+        if (!selectedOrgs.every((org): org is string => typeof org === "string" && UUID.test(org)))
+          fail("invalid_configuration");
+        orgs = selectedOrgs;
       } catch {
         fail("invalid_configuration");
       }

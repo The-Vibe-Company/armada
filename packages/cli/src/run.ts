@@ -8,6 +8,7 @@ import {
   type GoldenRecord,
   type GoldenStore,
   goldenBuildFailureText,
+  goldenResponse,
   HARNESSES,
   type Harness,
   isSandboxProvider,
@@ -41,6 +42,7 @@ import {
   tokenList,
   tokenRevoke,
 } from "./auth-commands.ts";
+import { completion, doctor, prepareLaunch } from "./devx.ts";
 import { launchDocker } from "./docker-launch.ts";
 import { dockerSnapshotCommand } from "./docker-snapshots.ts";
 import { hostCommand } from "./host-commands.ts";
@@ -85,6 +87,22 @@ export interface Deps {
 
 const HELP = `armada ${VERSION}: launch coding agents in provider-scoped sandboxes
 
+Exit codes: 0 success; 1 authentication/server/operation failure; 2 invalid usage or missing configuration.
+
+Quick start / common examples:
+  armada login --email you@example.com
+  armada org list
+  armada org use my-team
+  armada doctor
+  armada host add --name my-workstation
+  armada launch
+  armada list
+  armada status SANDBOX_ID
+  armada send SANDBOX_ID "Continue the task"
+  armada logs SANDBOX_ID --tail 20
+  armada stop SANDBOX_ID
+  eval "$(armada completion bash)"
+
 Usage:
   armada host install --server HTTPS_ORIGIN   Install on the Docker machine; one-use token on stdin, no login
   armada host status|uninstall                Local host binary wrappers; no login
@@ -93,6 +111,8 @@ Usage:
   armada host revoke UUID [--org UUID]
   armada launch [prompt] --provider docker [--host UUID|NAME | --golden snapshot-UUID] --agent claude|codex|opencode --credential-id UUID --org UUID [--repo owner/repo[@branch] ...] [--variable KEY:UUID:VERSION ...] [--secret KEY:UUID:VERSION ...] [--request-id UUID] [--json]
                                            Docker launch through the normal Armada API using the official Armada environment.
+  armada doctor [--org UUID] [--json]      Check session, server, hosts and model accounts
+  armada completion bash|zsh|fish           Print a shell completion script
   armada --version                         Print the version
   armada --help                            Show this help
   armada skill install (--project <directory> | --global) --yes [--revision <commit>]
@@ -338,29 +358,33 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
       );
       return ["invalid_config", "invalid_request", "invalid", "usage", "no_credentials"].includes(error.code) ? 2 : 1;
     }
+    const printFailure = (message: string) =>
+      io.err(
+        `armada: ${message}\nNext step: run armada doctor to check setup or armada --help for usage. For uncertain launch outcomes, inspect armada list before retrying.\n`,
+      );
     if (error instanceof GoldenError) {
-      io.err(`armada: ${error.message}\n`);
+      printFailure(error.message);
       return error.code === "invalid_config" ? 2 : 1;
     }
     if (error instanceof LaunchError) {
-      io.err(`armada: ${error.message}\n`);
       if (error.sandboxId) io.err(`Sandbox ${error.sandboxId} is recorded as failed and its machine is stopped.\n`);
+      printFailure(error.message);
       return error.code === "invalid_request" || error.code === "no_credentials" ? 2 : 1;
     }
     if (error instanceof VaultError) {
-      io.err(`armada: ${error.message}\n`);
+      printFailure(error.message);
       return error.code === "invalid" ? 2 : 1;
     }
     if (error instanceof ProviderRoutingError) {
-      io.err(`armada: ${error.message}\n`);
+      printFailure(error.message);
       return 1;
     }
     if (error instanceof ProviderError) {
-      io.err(`armada: ${error.message}\n`);
+      printFailure(error.message);
       return 1;
     }
     if (error instanceof AuthError) {
-      io.err(`armada: ${error.message}\n`);
+      printFailure(error.message);
       return error.code === "usage" ? 2 : 1;
     }
     throw error;
@@ -374,6 +398,8 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
   if (
     command &&
     [
+      "doctor",
+      "completion",
       "golden",
       "launch",
       "list",
@@ -411,6 +437,7 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
   const terminator = rest.indexOf("--");
   const optionArgs = terminator < 0 ? rest : rest.slice(0, terminator);
   const scoped = [
+    "doctor",
     "host",
     "golden",
     "launch",
@@ -458,6 +485,10 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
     case "help":
       io.out(HELP);
       return 0;
+    case "doctor":
+      return doctor(rest, { ...authOf(io, deps), ...io });
+    case "completion":
+      return completion(rest, io);
     case "host":
       return hostCommand(rest, { ...authOf(io, deps), ...io });
     case "golden":
@@ -930,6 +961,7 @@ function decodeLaunchResult(result: LaunchWireResult): LaunchResult {
 }
 
 async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<number> {
+  argv = await prepareLaunch(argv, { ...authOf(io, deps), ...io });
   const args = parseArgs(
     argv,
     [
@@ -1236,22 +1268,7 @@ function line(row: GoldenRecord): string {
 }
 
 function jsonGolden(row: GoldenRecord) {
-  return {
-    id: row.id,
-    orgId: row.orgId,
-    name: row.name,
-    visibility: row.visibility,
-    ownerId: row.ownerId,
-    provider: row.provider,
-    providerSnapshotId: row.providerSnapshotId,
-    providerSandboxId: row.providerSandboxId,
-    modal: row.modal,
-    boatSnapshotId: row.provider === "boat" ? row.providerSnapshotId : null,
-    boatSandboxId: row.provider === "boat" ? row.providerSandboxId : null,
-    repos: row.config.repos.length,
-    config: row.config,
-    buildWarnings: row.buildWarnings ?? [],
-  };
+  return { ...goldenResponse(row), buildWarnings: row.buildWarnings ?? [] };
 }
 
 async function readConfig(args: ReturnType<typeof parseArgs>, deps: Deps): Promise<GoldenConfig> {

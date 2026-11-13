@@ -1,4 +1,4 @@
-import { parseCredentialValue, VaultError } from "@armada/core";
+import { isRecord, parseCredentialValue, VaultError } from "@armada/core";
 
 /**
  * The Skillpack key (#957): the personal access token Armada uses to install private skills. One per
@@ -18,10 +18,6 @@ export type SkillpackScope = "user" | "org";
 export type SkillpackKey = { setAt: string | null; usable: boolean };
 
 export type SkillpackKeys = { user: SkillpackKey | null; org: SkillpackKey | null };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 /** The key among one scope's credentials, or null. An expired or revoked one is still listed, as needing a new key. */
 function keyOf(credentials: unknown, now: number): SkillpackKey | null {

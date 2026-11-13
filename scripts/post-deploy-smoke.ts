@@ -1,4 +1,4 @@
-import { HARNESS_CATALOG, type Harness, isHarness } from "../packages/core/src/harnesses.ts";
+import { type Harness, isHarness } from "../packages/core/src/harnesses.ts";
 import { providerParitySmoke } from "./provider-parity-smoke.ts";
 import {
   deleteSmokeReceipts,
@@ -7,6 +7,7 @@ import {
   STAGING_ORIGIN,
   saveSmokeJournal,
 } from "./smoke-sandbox-cleanup.ts";
+import { BOAT_STAGING_NOTICE, smokeReceiptProvider, stagingSmokeCases } from "./staging-smoke-policy.ts";
 /** API-only smoke; ARMADA_SMOKE=create_real_compute explicitly authorizes compute.
  * ARMADA_URL must be an HTTPS origin; ARMADA_TOKEN is the only credential.
  * ARMADA_SMOKE_CASES is a JSON array of {provider, harness, org, golden, model,
@@ -80,7 +81,7 @@ function fail(code: Code): never {
   throw new SmokeFailure(code);
 }
 interface SmokeCase {
-  provider: "boat" | "modal";
+  provider: "modal";
   harness: Harness;
   org: string;
   golden: string;
@@ -98,7 +99,7 @@ interface SmokeIo {
   sleep: (ms: number) => Promise<void>;
   now: () => number;
   out: (line: string) => void;
-  recordSandbox?: (org: string, id: string, key: string) => Promise<void>;
+  recordSandbox?: (org: string, id: string, key: string, provider?: "modal" | "docker") => Promise<void>;
 }
 const POLLS = 120;
 const PROMPT = "Reply with exactly SMOKE_OK and do not use tools.";
@@ -174,7 +175,6 @@ async function runPostDeploySmoke(
   io: SmokeIo,
   cleanupEnd?: number,
 ): Promise<boolean> {
-  if (args[0] === "--parity") return providerParitySmoke(env, io, args.slice(1));
   function report(index: number, step: string, error?: unknown) {
     io.out(
       JSON.stringify({
@@ -267,9 +267,8 @@ async function runPostDeploySmoke(
       if (
         !item ||
         typeof item !== "object" ||
-        (item.provider !== "boat" && item.provider !== "modal") ||
+        item.provider !== "modal" ||
         !isHarness(item.harness) ||
-        (item.provider === "boat" && HARNESS_CATALOG[item.harness as Harness].boatProvider === null) ||
         ["org", "golden", "model", "modelAccountId", "repo"].some(
           (key) => typeof item[key] !== "string" || !item[key].trim(),
         ) ||
@@ -313,7 +312,7 @@ async function runPostDeploySmoke(
       )
         fail("invalid_configuration");
       const pairs = new Set(parsed.map((item) => `${item.provider}/${item.harness}`));
-      if (parsed.length !== 4 || pairs.size !== 4) fail("invalid_configuration");
+      if (parsed.length !== 2 || pairs.size !== 2) fail("invalid_configuration");
       for (const item of parsed) {
         if (
           typeof item.disposableRepository !== "string" ||
@@ -370,7 +369,21 @@ async function runPostDeploySmoke(
         );
       }
       try {
-        return (await response.json()) as T;
+        const result = (await response.json()) as {
+          sandbox?: { provider?: unknown };
+          state?: unknown;
+          id?: unknown;
+          provider?: unknown;
+        } | null;
+        if (/^sandbox\/launch(?:-access-v1)?$/.test(path) && smokeReceiptProvider(result) !== "modal")
+          fail("invalid_response");
+        if (
+          path === "templates/launch" &&
+          (result?.state === "succeeded" || (typeof result?.id === "string" && result.id)) &&
+          smokeReceiptProvider(result) !== "modal"
+        )
+          fail("invalid_response");
+        return result as T;
       } catch {
         fail("invalid_response");
       }
@@ -481,8 +494,7 @@ async function runPostDeploySmoke(
               () => request<{ status: string; providerState: string }>("sandbox/status", { org: item.org, id }),
               (result) => {
                 if (result.status !== "stopped" && result.status !== "failed") return false;
-                if (result.providerState !== (item.provider === "boat" ? "archived" : "stopped"))
-                  fail("provider_not_stopped");
+                if (result.providerState !== "stopped") fail("provider_not_stopped");
                 return true;
               },
             );
@@ -547,7 +559,7 @@ async function runPostDeploySmoke(
     const scoped = scopedPair
       ? createScopedProbe({ ...item, goldenId: item.goldenId! }, !dirty, {
           request: (path, body) => request(path, { ...body, org: item.org }),
-          recordSandbox: (id, key) => io.recordSandbox?.(item.org, id, key) ?? Promise.resolve(),
+          recordSandbox: (id, key) => io.recordSandbox?.(item.org, id, key, item.provider) ?? Promise.resolve(),
           poll: (read, done) => poll(read, done, 300),
           step,
           withCleanup: async (action) => {
@@ -570,9 +582,7 @@ async function runPostDeploySmoke(
             await poll(
               () => sandbox<{ id: string; status: string; providerState: string }>("status", { id }),
               (status) =>
-                status.id === id &&
-                ["stopped", "failed"].includes(status.status) &&
-                ["archived", "stopped"].includes(status.providerState),
+                status.id === id && ["stopped", "failed"].includes(status.status) && status.providerState === "stopped",
             );
           },
         })
@@ -632,8 +642,7 @@ async function runPostDeploySmoke(
           sandbox<{ status: string; providerState: string; preservationNote?: string }>("status", { id: sandboxId }),
         (status) => {
           if (status.status !== "stopped" && status.status !== "failed") return false;
-          if (status.providerState !== (item.provider === "boat" ? "archived" : "stopped"))
-            fail("provider_not_stopped");
+          if (status.providerState !== "stopped") fail("provider_not_stopped");
           if (
             status.providerState === "stopped" &&
             [preservationNote, status.preservationNote].some((note) =>
@@ -832,34 +841,33 @@ async function runPostDeploySmoke(
             },
           ),
         );
-        if (item.provider === "modal")
-          await step(phase ? `${phase}_usage` : second ? "usage_second" : "usage", () =>
-            poll(
-              () =>
-                sandbox<{
-                  usage?: {
-                    turns?: {
-                      promptId: string;
-                      inputTokens: number | null;
-                      outputTokens: number | null;
-                      cachedTokens?: number | null;
-                    }[];
-                    tokenTotals?: { inputTokens: number | null; outputTokens: number | null; incomplete?: boolean };
-                  };
-                }>("status", { id: sandboxId }),
-              (result) => {
-                const row = result.usage?.turns?.find((row) => row.promptId === turn.promptId);
-                // A resumed prompt must be measured, not an explicit unknown receipt.
-                return (
-                  result.usage?.tokenTotals?.incomplete !== true &&
-                  typeof row?.inputTokens === "number" &&
-                  typeof row.outputTokens === "number" &&
-                  typeof result.usage?.tokenTotals?.inputTokens === "number" &&
-                  typeof result.usage?.tokenTotals?.outputTokens === "number"
-                );
-              },
-            ),
-          );
+        await step(phase ? `${phase}_usage` : second ? "usage_second" : "usage", () =>
+          poll(
+            () =>
+              sandbox<{
+                usage?: {
+                  turns?: {
+                    promptId: string;
+                    inputTokens: number | null;
+                    outputTokens: number | null;
+                    cachedTokens?: number | null;
+                  }[];
+                  tokenTotals?: { inputTokens: number | null; outputTokens: number | null; incomplete?: boolean };
+                };
+              }>("status", { id: sandboxId }),
+            (result) => {
+              const row = result.usage?.turns?.find((row) => row.promptId === turn.promptId);
+              // A resumed prompt must be measured, not an explicit unknown receipt.
+              return (
+                result.usage?.tokenTotals?.incomplete !== true &&
+                typeof row?.inputTokens === "number" &&
+                typeof row.outputTokens === "number" &&
+                typeof result.usage?.tokenTotals?.inputTokens === "number" &&
+                typeof result.usage?.tokenTotals?.outputTokens === "number"
+              );
+            },
+          ),
+        );
         if (github)
           await step(second ? "native_git_second" : "native_git_first", async () => {
             const result = await sandbox<{ exitCode: number | null; timedOut: boolean; stdout?: unknown }>("exec", {
@@ -958,42 +966,23 @@ async function runPostDeploySmoke(
         });
       }
       if (githubRefresh && !dirty) {
-        if (item.provider === "modal") {
-          await step("github_refresh_unsupported", async () => {
-            try {
-              await request("github/refresh", { org: item.org, id: sandboxId });
-            } catch (error) {
-              if (error instanceof SmokeFailure && error.code === "unsupported" && error.status === 400) return;
-              throw error;
-            }
-            fail("invalid_receipt");
-          });
-          io.out(
-            JSON.stringify({ case: index, step: "github_refresh_idempotency", skip: true, reason: "legacy_boat_only" }),
-          );
-        } else {
-          let login: string | undefined;
-          for (const phase of ["first", "second"]) {
-            await step(`github_refresh_${phase}`, async () => {
-              const result = await request<{ id: string; status: string; login: string }>("github/refresh", {
-                org: item.org,
-                id: sandboxId,
-              });
-              if (
-                result?.id !== sandboxId ||
-                result.status !== "connected" ||
-                typeof result.login !== "string" ||
-                !/^[A-Za-z0-9-]{1,39}$/.test(result.login) ||
-                (login !== undefined && result.login !== login)
-              )
-                fail("invalid_receipt");
-              login = result.login;
-            });
-            await step(`github_refresh_access_${phase}`, () =>
-              checkedExec(`${git} ls-remote origin HEAD >/dev/null 2>&1`),
-            );
+        await step("github_refresh_unsupported", async () => {
+          try {
+            await request("github/refresh", { org: item.org, id: sandboxId });
+          } catch (error) {
+            if (error instanceof SmokeFailure && error.code === "unsupported" && error.status === 400) return;
+            throw error;
           }
-        }
+          fail("invalid_receipt");
+        });
+        io.out(
+          JSON.stringify({
+            case: index,
+            step: "github_refresh_idempotency",
+            skip: true,
+            reason: "owner_decision_2026_11_13",
+          }),
+        );
       }
       if (github) {
         await nativeTurn(true);
@@ -1078,8 +1067,7 @@ async function runPostDeploySmoke(
             "status",
             { id: sandboxId },
           );
-          if (after.status !== "stopped" || after.providerState !== (item.provider === "boat" ? "archived" : "stopped"))
-            fail("provider_not_stopped");
+          if (after.status !== "stopped" || after.providerState !== "stopped") fail("provider_not_stopped");
           stopped = true;
           if (dirty ? after.preservationNote !== note : !!after.preservationNote) fail("preservation_failed");
         });
@@ -1175,10 +1163,35 @@ async function runPostDeploySmoke(
   return passed;
 }
 
+async function runAllowedSmoke(
+  env: NodeJS.ProcessEnv,
+  args: readonly string[],
+  io: SmokeIo,
+  cleanupEnd?: number,
+): Promise<boolean> {
+  if (args[0] === "--parity") return providerParitySmoke(env, io, args.slice(1));
+  let cases: unknown[];
+  try {
+    cases = stagingSmokeCases(JSON.parse(env.ARMADA_SMOKE_CASES ?? ""));
+  } catch {
+    io.out(JSON.stringify({ step: "configure", pass: false, code: "invalid_configuration" }));
+    return false;
+  }
+  return runPostDeploySmoke({ ...env, ARMADA_SMOKE_CASES: JSON.stringify(cases) }, args, io, cleanupEnd);
+}
+
 /** Persist handles before callers inspect receipts; cleanup also runs after failed probes. */
 export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[], io: SmokeIo): Promise<boolean> {
+  io.out(BOAT_STAGING_NOTICE);
+  const out = io.out;
+  io = {
+    ...io,
+    out: (line) => {
+      if (line !== BOAT_STAGING_NOTICE) out(line);
+    },
+  };
   const path = env.ARMADA_SMOKE_JOURNAL;
-  if (!path) return runPostDeploySmoke(env, args, io);
+  if (!path) return runAllowedSmoke(env, args, io);
   if (
     env.ARMADA_URL !== STAGING_ORIGIN ||
     !env.ARMADA_TOKEN ||
@@ -1195,36 +1208,35 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
     io.out(JSON.stringify({ step: "smoke_cleanup_journal", pass: false }));
     return false;
   }
+  // Historical receipts did not record provider. Never contact Boat to classify them.
+  const deferred = rows.filter((row) => row.provider !== "modal" && row.provider !== "docker");
+  rows = rows.filter((row) => row.provider === "modal" || row.provider === "docker");
+  if (deferred.length)
+    io.out(
+      JSON.stringify({
+        step: "smoke_cleanup_deferred",
+        count: deferred.length,
+        reason: "provider_unverified_or_excluded",
+        requiresOperator: true,
+      }),
+    );
   const cleanupEnd = io.now() + 40 * 60_000;
   const cleanupIo = { fetch: io.fetch, out: io.out, now: io.now, sleep: io.sleep, deadline: cleanupEnd };
   rows = await deleteSmokeReceipts(STAGING_ORIGIN, env.ARMADA_TOKEN, rows, cleanupIo);
-  await saveSmokeJournal(path, rows);
+  await saveSmokeJournal(path, [...deferred, ...rows]);
   const earlierRows = rows;
   rows = [];
   let passed = false;
   let unknownLaunch = false;
   const trackedIo: SmokeIo = {
     ...io,
-    recordSandbox: async (org, id, requestKey) => {
-      if (!rows.some((row) => row.id === id)) rows.push({ org, id, requestKey });
-      await saveSmokeJournal(path, [...earlierRows, ...rows]);
+    recordSandbox: async (org, id, requestKey, provider) => {
+      if (!rows.some((row) => row.id === id)) rows.push({ org, id, requestKey, ...(provider ? { provider } : {}) });
+      await saveSmokeJournal(path, [...deferred, ...earlierRows, ...rows]);
     },
     fetch: async (url, init) => {
       const launch = /\/api\/v1\/(sandbox\/launch(?:-access-v1)?|templates\/launch)$/.test(url);
-      if (!launch) {
-        // Scoped probe children are attributed by its verified native launch claims,
-        // never by a difference of fleet-wide stopped rows.
-        if (url.endsWith("/api/v1/sandbox/stop")) {
-          const body = JSON.parse(String(init.body));
-          if (typeof body.id === "string" && typeof body.org === "string" && !rows.some((row) => row.id === body.id)) {
-            const row = { requestKey: `post-deploy-smoke:${crypto.randomUUID()}`, org: body.org, id: body.id };
-            rows.push(row);
-            await saveSmokeJournal(path, [...earlierRows, ...rows]);
-            io.out(JSON.stringify({ step: "smoke_sandbox_receipt", ...row }));
-          }
-        }
-        return io.fetch(url, init);
-      }
+      if (!launch) return io.fetch(url, init);
       const requestKey = `post-deploy-smoke:${crypto.randomUUID()}`;
       const org = JSON.parse(String(init.body)).org;
       let response: Response;
@@ -1238,31 +1250,44 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
         .clone()
         .json()
         .catch(() => null)) as {
-        sandbox?: { id?: unknown };
+        sandbox?: { id?: unknown; provider?: unknown };
+        provider?: unknown;
+        manifest?: { definition?: { provider?: unknown } };
         state?: unknown;
         id?: unknown;
       } | null;
-      const id = result?.sandbox?.id ?? (result?.state === "succeeded" ? result.id : undefined);
+      const id = result?.sandbox?.id ?? result?.id;
+      const provider = smokeReceiptProvider(result);
       if (typeof id === "string" && typeof org === "string") {
-        const row = { requestKey, org, id };
+        const row: SmokeSandboxReceipt = {
+          requestKey,
+          org,
+          id,
+          ...(provider === "boat" || provider === "modal" || provider === "docker" ? { provider } : {}),
+        };
+        if (!row.provider || row.provider === "boat") unknownLaunch = true;
         rows.push(row);
-        await saveSmokeJournal(path, [...earlierRows, ...rows]);
+        await saveSmokeJournal(path, [...deferred, ...earlierRows, ...rows]);
         io.out(JSON.stringify({ step: "smoke_sandbox_receipt", ...row }));
       } else if (response.ok) unknownLaunch = true;
       return response;
     },
   };
   try {
-    passed = await runPostDeploySmoke(env, args, trackedIo, cleanupEnd);
+    passed = await runAllowedSmoke(env, args, trackedIo, cleanupEnd);
   } finally {
+    deferred.push(...rows.filter((row) => row.provider !== "modal" && row.provider !== "docker"));
+    rows = rows.filter((row) => row.provider === "modal" || row.provider === "docker");
     rows = await deleteSmokeReceipts(STAGING_ORIGIN, env.ARMADA_TOKEN, rows, cleanupIo, 64);
     rows = [...earlierRows, ...rows];
-    await saveSmokeJournal(path, rows);
+    await saveSmokeJournal(path, [...deferred, ...rows]);
     io.out(
       JSON.stringify({
         step: "smoke_cleanup_summary",
         pass: rows.length === 0 && !unknownLaunch,
         remainingRows: rows.length,
+        deferredRows: deferred.length,
+        scope: "modal_docker_receipts",
         launchOutcomeUnknown: unknownLaunch,
       }),
     );

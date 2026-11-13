@@ -1,4 +1,4 @@
-import { VERSION } from "@armada/core";
+import { isRecord, VERSION } from "@armada/core";
 import { describeFailure } from "./failure.ts";
 import type { SendArgs } from "./model-choice.ts";
 
@@ -146,10 +146,6 @@ async function readMessage(response: Response, id?: number): Promise<Record<stri
   const match = id === undefined ? records[0] : records.find((message) => message.id === id);
   if (!match) throw new GatewayError("The Armada server sent no answer.");
   return match;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /**

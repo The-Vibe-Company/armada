@@ -4,6 +4,7 @@ import type { LaunchProviderOption } from "../packages/core/src/index.ts";
 import type { SandboxUsage } from "../packages/core/src/sandbox-usage.ts";
 import { redactForLog } from "../packages/mcp-server/src/log.ts";
 import { STAGING_ORIGIN } from "./smoke-sandbox-cleanup.ts";
+import { BOAT_STAGING_NOTICE, smokeReceiptProvider, stagingSmokeCases } from "./staging-smoke-policy.ts";
 
 type Provider = "boat" | "modal" | "docker";
 type Diagnostic = { code: string; httpStatus?: number; message: string; quota?: boolean };
@@ -73,8 +74,23 @@ const features = [
   "opencode",
   "scoped-child-access",
 ];
+const accountMatrix = {
+  "codex-openai": "codex",
+  "codex-subscription": "codex",
+  "codex-azure": "codex",
+  "claude-anthropic": "claude",
+  "claude-subscription": "claude",
+  "claude-gateway": "claude",
+  "opencode-deepseek": "opencode",
+  "opencode-openai": "opencode",
+  "opencode-anthropic": "opencode",
+  "opencode-custom": "opencode",
+  "opencode-azure": "opencode",
+} as const;
+
 interface Case {
-  provider: Provider;
+  account?: keyof typeof accountMatrix;
+  provider: Exclude<Provider, "boat">;
   org: string;
   harness: string;
   model: string;
@@ -84,15 +100,25 @@ interface Case {
   image?: string;
 }
 interface Io {
+  accountProbe?: boolean;
   fetch: (url: string, init: RequestInit) => Promise<Response>;
   out: (line: string) => void;
   sleep: (ms: number) => Promise<void>;
   now: () => number;
-  recordSandbox?: (org: string, id: string, key: string) => Promise<void>;
+  recordSandbox?: (org: string, id: string, key: string, provider?: "modal" | "docker") => Promise<void>;
 }
 
 /** Additive staging observation: never replaces the existing deploy-gating smoke. */
 export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: string[] = []): Promise<boolean> {
+  io.out(BOAT_STAGING_NOTICE);
+  const out = io.out;
+  io = {
+    ...io,
+    out: (line) => {
+      if (line !== BOAT_STAGING_NOTICE) out(line);
+    },
+  };
+  if (args.includes("--accounts")) return accountsParity(env, io, args);
   let cases: Case[];
   let only: Provider | undefined;
   let feature: string | undefined;
@@ -108,18 +134,31 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     io.out(JSON.stringify({ step: "configure", pass: false, code: "invalid_parity_filter" }));
     return false;
   }
+  if (only === "boat") {
+    io.out(
+      JSON.stringify({
+        step: "provider_parity",
+        version: 2,
+        starts: 0,
+        features: Object.fromEntries(
+          features.map((name) => [name, { boat: { status: "not-run", reason: "owner_decision_2026_11_13" } }]),
+        ),
+      }),
+    );
+    return false;
+  }
   try {
     if (env.ARMADA_URL !== STAGING_ORIGIN || !env.ARMADA_TOKEN || env.ARMADA_SMOKE !== "create_real_compute")
       throw new Error();
-    cases = JSON.parse(env.ARMADA_SMOKE_CASES ?? "");
+    cases = stagingSmokeCases(JSON.parse(env.ARMADA_SMOKE_CASES ?? "")) as Case[];
     if (!Array.isArray(cases) || cases.length === 0 || new Set(cases.map((c) => c.provider)).size !== cases.length)
       throw new Error();
     if (only) cases = cases.filter((c) => c.provider === only);
-    else if (cases.length !== 3) throw new Error();
+    else if (cases.length !== 2) throw new Error();
     if (cases.length === 0) throw new Error();
     for (const c of cases) {
       if (
-        !["boat", "modal", "docker"].includes(c.provider) ||
+        !["modal", "docker"].includes(c.provider) ||
         !isHarness(c.harness) ||
         [c.org, c.model, c.modelAccountId].some((v) => typeof v !== "string" || !v.trim()) ||
         (c.provider === "docker"
@@ -169,7 +208,10 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         quota: response.status === 429 || ["quota_exceeded", "rate_limited", "start_limit_exceeded"].includes(code),
       });
     }
-    return response.json() as Promise<T>;
+    const result = (await response.json()) as { sandbox?: { provider?: unknown } } | null;
+    if (path === "sandbox/launch" && !["modal", "docker"].includes(String(smokeReceiptProvider(result))))
+      throw new ParityError({ code: "invalid_launch_receipt", message: "Unexpected staging provider" });
+    return result as T;
   }
   async function poll<T>(read: () => Promise<T>, done: (value: T) => boolean, attempts = 120) {
     for (let i = 0; i < attempts && io.now() < deadline; i++) {
@@ -187,7 +229,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     reason: string | null = null,
     detail?: Diagnostic,
   ) => {
-    report[step] ??= {};
+    report[step] ??= { boat: { status: "not-run", reason: "owner_decision_2026_11_13" } };
     report[step][provider] = { status, reason, ...(detail ? { diagnostic: detail } : {}) };
   };
   for (const name of features)
@@ -196,11 +238,13 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         name,
         provider,
         "not-run",
-        only && provider !== only
-          ? "provider_filtered"
-          : feature && name !== feature
-            ? "feature_filtered"
-            : "probe_not_implemented",
+        provider === "boat"
+          ? "owner_decision_2026_11_13"
+          : only && provider !== only
+            ? "provider_filtered"
+            : feature && name !== feature
+              ? "feature_filtered"
+              : "probe_not_implemented",
       );
   let starts = 0;
   for (const c of cases) {
@@ -270,6 +314,21 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         return;
       }
       if (feature === "usage") return;
+      if (io.accountProbe)
+        io.out(
+          JSON.stringify({
+            step: "account_usage",
+            provider: c.provider,
+            afterResume,
+            turns: usage.turns.map((turn) => ({
+              promptId: turn.promptId,
+              model: turn.model,
+              inputTokens: turn.inputTokens,
+              outputTokens: turn.outputTokens,
+            })),
+            cost: usage.cost,
+          }),
+        );
       try {
         // Compare fixed-point integers, never binary floating point or current
         // catalog prices. These are the service's persisted USD quotes.
@@ -279,6 +338,33 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           const [whole, fraction = ""] = value.split(".");
           return BigInt(whole!) * 10n ** 18n + BigInt(fraction.padEnd(18, "0"));
         };
+        if (io.accountProbe && usage.cost?.unknown && usage.cost.usd === null) {
+          const current = new Map<string, string>();
+          let unpriced = 0;
+          const seen = new Set<string>();
+          for (const turn of usage.turns) {
+            const key = JSON.stringify([turn.promptId, turn.model]);
+            if (seen.has(key)) throw new Error("invalid_cost_receipt");
+            seen.add(key);
+            if (!turn.pricing || turn.pricing.unknown !== null) {
+              if (turn.pricing && turn.pricing.usd !== null) throw new Error("invalid_cost_receipt");
+              unpriced++;
+              continue;
+            }
+            units(turn.pricing.usd);
+            current.set(key, JSON.stringify(turn.pricing));
+          }
+          if (
+            usage.cost.currency !== "USD" ||
+            unpriced === 0 ||
+            usage.cost.unpricedTurns !== unpriced ||
+            [...retainedPrices].some(([key, value]) => current.get(key) !== value)
+          )
+            throw new Error("invalid_cost_receipt");
+          for (const [key, value] of current) retainedPrices.set(key, value);
+          observe("exact-cost", "pass", `unknown: ${usage.cost.unknown}`);
+          return;
+        }
         if (usage.cost?.currency !== "USD" || usage.cost.unknown !== null || usage.cost.unpricedTurns !== 0)
           throw new Error("invalid_cost_receipt");
         const current = new Map<string, string>();
@@ -293,7 +379,12 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         if (sum !== units(usage.cost.usd) || [...retainedPrices].some(([key, value]) => current.get(key) !== value))
           throw new Error("invalid_cost_receipt");
         for (const [key, value] of current) retainedPrices.set(key, value);
-        if (report["exact-cost"]?.[c.provider]?.status !== "fail") observe("exact-cost", "pass");
+        if (report["exact-cost"]?.[c.provider]?.status !== "fail")
+          observe(
+            "exact-cost",
+            "pass",
+            io.accountProbe ? `${usage.cost.basis ?? "unknown basis"}: USD ${usage.cost.usd}` : null,
+          );
       } catch (error) {
         const detail = diagnostic(error);
         observe("exact-cost", "fail", detail.code, detail);
@@ -468,13 +559,14 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           });
           if (typeof result.sandbox?.id === "string") {
             id = result.sandbox.id;
-            await io.recordSandbox?.(c.org, id, `post-deploy-smoke:${crypto.randomUUID()}`);
+            await io.recordSandbox?.(c.org, id, `post-deploy-smoke:${crypto.randomUUID()}`, c.provider);
           }
           if (!id || result.sandbox.provider !== c.provider) throw new Error("invalid_launch_receipt");
         } else {
           if (!id) throw new Error("launch_not_available");
           if (step === "send") {
             await runTurn();
+            if (io.accountProbe) await runTurn(true);
           } else if (step === "exec") {
             const result = await api<{ exitCode: number | null; timedOut: boolean; stdout: string }>("sandbox/exec", {
               id,
@@ -590,4 +682,87 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
   if (env.GITHUB_STEP_SUMMARY) await appendFile(env.GITHUB_STEP_SUMMARY, `${table}\n`);
   else io.out(table);
   return Object.values(report).every((providers) => Object.values(providers).every((cell) => cell.status !== "fail"));
+}
+
+/** Same lifecycle probe, isolated report per account; no second provider implementation. */
+async function accountsParity(env: NodeJS.ProcessEnv, io: Io, args: string[]): Promise<boolean> {
+  let cases: Case[];
+  let providers: Array<"modal" | "docker"> = ["modal", "docker"];
+  try {
+    if (
+      args.length === 3 &&
+      args[0] === "--accounts" &&
+      args[1] === "--only" &&
+      (args[2] === "modal" || args[2] === "docker")
+    )
+      providers = [args[2]];
+    else if (args.length !== 1 || args[0] !== "--accounts") throw new Error();
+    if (env.ARMADA_URL !== STAGING_ORIGIN || !env.ARMADA_TOKEN || env.ARMADA_SMOKE !== "create_real_compute")
+      throw new Error();
+    cases = stagingSmokeCases(JSON.parse(env.ARMADA_SMOKE_CASES ?? "[]")) as Case[];
+    if (!Array.isArray(cases)) throw new Error();
+    const seen = new Set<string>();
+    for (const c of cases) {
+      if (
+        !c ||
+        !c.account ||
+        !Object.hasOwn(accountMatrix, c.account) ||
+        accountMatrix[c.account] !== c.harness ||
+        !["modal", "docker"].includes(c.provider) ||
+        [c.org, c.model, c.modelAccountId, c.provider === "docker" ? c.hostId : c.golden].some(
+          (v) => typeof v !== "string" || !v.trim(),
+        )
+      )
+        throw new Error();
+      const key = `${c.provider}:${c.account}`;
+      if (seen.has(key)) throw new Error();
+      seen.add(key);
+    }
+  } catch {
+    io.out(JSON.stringify({ step: "configure", pass: false, code: "invalid_accounts_configuration" }));
+    return false;
+  }
+  const accounts: Record<string, Partial<Record<Provider, unknown>>> = {};
+  let passed = true;
+  const table = ["## Accounts parity", "", "| Account | Provider | Result |", "| --- | --- | --- |"];
+  for (const account of Object.keys(accountMatrix) as Array<keyof typeof accountMatrix>) {
+    accounts[account] = {};
+    for (const provider of providers) {
+      const c = cases.find((c) => c.account === account && c.provider === provider);
+      let result: object = { status: "not-run", reason: "no account on staging" };
+      let status = "not-run: no account on staging";
+      if (c) {
+        let receipt: Record<string, Partial<Record<Provider, Cell>>> | undefined;
+        const ok = await providerParitySmoke(
+          { ...env, ARMADA_SMOKE_CASES: JSON.stringify([c]), GITHUB_STEP_SUMMARY: undefined },
+          {
+            ...io,
+            accountProbe: true,
+            out: (line) => {
+              try {
+                const value = JSON.parse(line);
+                if (value.step === "provider_parity") receipt = value.features;
+                io.out(JSON.stringify({ ...value, account }));
+              } catch {
+                /* The human-readable lifecycle table is replaced by the account table. */
+              }
+            },
+          },
+          ["--only", provider],
+        );
+        passed &&= ok;
+        const required = ["launch", "send", "stop", "resume", "resume-recall", "usage", "exact-cost", "cleanup"];
+        const complete = required.every((name) => receipt?.[name]?.[provider]?.status === "pass");
+        const outcome = !ok ? "fail" : complete ? "pass" : "not-run";
+        result = { status: outcome, features: receipt };
+        status = `${outcome} (see per-feature diagnostics and cost classification)`;
+      }
+      accounts[account]![provider] = result;
+      table.push(`| ${account} | ${provider} | ${status} |`);
+    }
+  }
+  io.out(JSON.stringify({ step: "accounts_parity", version: 1, accounts }));
+  if (env.GITHUB_STEP_SUMMARY) await appendFile(env.GITHUB_STEP_SUMMARY, `${table.join("\n")}\n`);
+  else io.out(table.join("\n"));
+  return passed;
 }
