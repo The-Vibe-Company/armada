@@ -355,12 +355,17 @@ export async function startServer(
       ...(otto
         ? [
             otto.route,
-            createOttoApi(sql, otto.scope, (request) =>
-              authenticateCaller(request.headers.get("authorization"), {
-                store: authStore,
-                supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
-                now: new Date(),
-              }),
+            createOttoApi(
+              sql,
+              otto.scope,
+              (request) =>
+                authenticateCaller(request.headers.get("authorization"), {
+                  store: authStore,
+                  supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
+                  now: new Date(),
+                }),
+              undefined,
+              config.encryptionKey,
             ),
           ]
         : []),

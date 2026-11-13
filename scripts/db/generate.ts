@@ -27,6 +27,7 @@ type Schema = {
 };
 
 const ROW_ALIASES: Record<string, string> = {
+  otto_orphan_days: "OttoOrphanDayRow",
   otto_tasks: "OttoTaskRow",
   otto_resources: "OttoResourceRow",
   otto_facts: "OttoFactRow",
