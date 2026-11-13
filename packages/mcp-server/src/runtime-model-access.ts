@@ -58,12 +58,8 @@ export function createRuntimeModelAccess(
         input.previousRevision as number | undefined,
       );
       return await sql.transaction(async (tx) => {
-        // Same member -> credential -> sandbox -> epoch order as native publication.
-        const member = await tx.query("select user_id from public.members where org_id=$1 and user_id=$2 for update", [
-          actor.orgId,
-          actor.userId,
-        ]);
-        if (!member.rows.length) throw new RuntimeEnrolmentDenied();
+        // Match native publication: all source actors precede credential/source locks.
+        const members = await authority.lockSourceMembers(tx, binding.sandboxId, actor.userId);
         const credential = await tx.query(
           `select id from public.credentials where id=$1 and version=$2 and kind='codex_auth' and status='active'
            and (expires_at is null or expires_at>now()) and ((scope='user' and owner_id=$3) or (scope='org' and owner_id=$4)) for share`,
@@ -71,28 +67,33 @@ export function createRuntimeModelAccess(
         );
         if (!credential.rows.length) throw new RuntimeEnrolmentDenied();
         const scoped: Sql = { query: (q, v) => tx.query(q, v), transaction: (work) => work(tx) };
-        return createRuntimeEnrolments(scoped, key).withSession(token, epoch, async (locked, scope) => {
-          const current = await locked.query(
-            `select id from public.sandboxes where id=$1 and owner_id=$2 and org_id=$3 and harness='codex'
+        return createRuntimeEnrolments(scoped, key).withSession(
+          token,
+          epoch,
+          async (locked, scope) => {
+            const current = await locked.query(
+              `select id from public.sandboxes where id=$1 and owner_id=$2 and org_id=$3 and harness='codex'
              and credential_id=$4 and credential_version=$5
              and exists(select 1 from public.model_auth_state a where a.account_id=$4 and a.account_version=$5 and a.source_generation like 'server:%')`,
-            [scope.sandboxId, actor.userId, actor.orgId, binding.credential_id, binding.credential_version],
-          );
-          if (scope.sandboxId !== binding.sandboxId || !current.rows.length) throw new RuntimeEnrolmentDenied();
-          // Explicit projection: never return refresh tokens or extra broker metadata.
-          return Response.json(
-            {
-              epoch: scope.epoch,
-              access: {
-                accessToken: access.accessToken,
-                chatgptAccountId: access.chatgptAccountId,
-                chatgptPlanType: access.chatgptPlanType,
-                revision: access.revision,
+              [scope.sandboxId, actor.userId, actor.orgId, binding.credential_id, binding.credential_version],
+            );
+            if (scope.sandboxId !== binding.sandboxId || !current.rows.length) throw new RuntimeEnrolmentDenied();
+            // Explicit projection: never return refresh tokens or extra broker metadata.
+            return Response.json(
+              {
+                epoch: scope.epoch,
+                access: {
+                  accessToken: access.accessToken,
+                  chatgptAccountId: access.chatgptAccountId,
+                  chatgptPlanType: access.chatgptPlanType,
+                  revision: access.revision,
+                },
               },
-            },
-            { headers },
-          );
-        });
+              { headers },
+            );
+          },
+          members,
+        );
       });
     } catch (error) {
       const status =
