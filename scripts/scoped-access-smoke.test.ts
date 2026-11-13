@@ -46,6 +46,7 @@ function fixture(enabled = true) {
     notReady: false,
     logsFail: false,
     waitRunning: false,
+    waitReplies: [] as Obj[],
     logsIncomplete: false,
     listPages: 1,
     incomplete: false,
@@ -172,6 +173,7 @@ function fixture(enabled = true) {
       }
       if (path === "sandbox/wait") {
         expect(body).toEqual({ org: item.org, id: parent, prompt_id: "turn", timeout_seconds: 0 });
+        if (state.waitReplies.length) return state.waitReplies.shift() as T;
         return { prompt: { promptId: "turn", state: state.waitRunning ? "running" : "finished" } } as T;
       }
       if (path === "logs/read") {
@@ -471,7 +473,7 @@ describe("ordinary scoped Armada smoke", () => {
     expect(f.stopped).toEqual([child]);
     expect(f.state.sends).toBe(1);
     expect(f.output[0]).toMatchObject({ unknownLaunch: true, operationIds: [operation], claimedSandboxIds: [child] });
-    expect(f.output[0]?.launchRequestKey).toMatch(/^smoke-scoped-/);
+    expect(f.output.at(-1)?.launchRequestKey).toMatch(/^smoke-scoped-/);
   });
 
   test.each(["preexisting", "unmatched", "unclaimed", "parent"])("cleanup never stops unsafe IDs: %s", async (mode) => {
@@ -571,6 +573,56 @@ describe("ordinary scoped Armada smoke", () => {
     expect(f.output[0]).toMatchObject({ unknownEvidence: true });
   });
 
+  test("a fenced parent wait is polled until the accepted turn finishes", async () => {
+    const f = fixture();
+    f.state.waitReplies = [{ prompt: null }, { prompt: { promptId: "turn", state: "running" } }];
+    await run(f);
+    expect(f.state.sends).toBe(1);
+    expect(f.requests.filter((request) => request.path === "sandbox/wait")).toHaveLength(3);
+  });
+
+  test.each(["null", "wrong-id", "failed", "invalid"])(
+    "wait failure retains safe observation fields: %s",
+    async (mode) => {
+      const f = fixture();
+      const reply = {
+        status: "stopping",
+        statusReason: "stop_requested",
+        settled: false,
+        timedOut: true,
+        prompt:
+          mode === "null"
+            ? null
+            : { promptId: mode === "wrong-id" ? "other" : "turn", state: mode === "failed" ? "failed" : "unexpected" },
+      };
+      f.state.waitReplies = [reply, reply, reply];
+      await expect(run(f)).rejects.toThrow(
+        mode === "null" ? "poll exhausted" : mode === "failed" ? "scoped_turn_failed" : "scoped_invalid_wait",
+      );
+      expect(f.output[0]).toMatchObject({ step: "scoped_wait_diagnostic", parentId: parent, ...reply });
+    },
+  );
+
+  test("wait diagnostics redact provider text and discard non-scalar fields", async () => {
+    const f = fixture();
+    const reply = {
+      prompt: null,
+      status: { secret: "private" },
+      statusReason: "Bearer private-token",
+      settled: { secret: "private" },
+      timedOut: [],
+    };
+    f.state.waitReplies = [reply, reply, reply];
+    await expect(run(f)).rejects.toThrow("poll exhausted");
+    expect(f.output[0]).toMatchObject({
+      status: null,
+      statusReason: "Bearer ***",
+      settled: null,
+      timedOut: null,
+      prompt: null,
+    });
+  });
+
   test("an unquiesced parent cannot produce a falsely final clean child inventory", async () => {
     const f = fixture();
     f.state.noTools = true;
@@ -579,13 +631,13 @@ describe("ordinary scoped Armada smoke", () => {
     await expect(run(f)).rejects.toThrow("poll exhausted");
     expect(await f.probe.cleanup(parent, false)).toBe(false);
     expect(f.stopped).toEqual([]);
-    expect(f.output[0]).toMatchObject({
+    expect(f.output.at(-1)).toMatchObject({
       pass: false,
       parentId: parent,
       unknownParent: true,
       unknownFutureChildren: true,
     });
-    expect(f.output[0]?.launchRequestKey).toMatch(/^smoke-scoped-/);
+    expect(f.output.at(-1)?.launchRequestKey).toMatch(/^smoke-scoped-/);
   });
 
   test("snapshot must complete before any native compute; unreadable evidence never becomes cleanup authority", async () => {
