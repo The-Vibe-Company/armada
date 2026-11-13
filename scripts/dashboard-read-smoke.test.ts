@@ -139,3 +139,27 @@ test.each([
   ).toBe(false);
   expect(requests).toBe(0);
 });
+
+test("dashboard reads ignore excluded Boat case configuration", async () => {
+  const requests: string[] = [];
+  expect(
+    await dashboardReadSmoke(
+      {
+        ...env,
+        ARMADA_SMOKE_CASES: JSON.stringify([
+          { provider: "boat", org: "excluded-invalid-org" },
+          ...JSON.parse(env.ARMADA_SMOKE_CASES),
+        ]),
+      },
+      {
+        now: () => 0,
+        out: () => {},
+        fetch: async (url) => {
+          requests.push(url);
+          return Response.json(answer(url));
+        },
+      },
+    ),
+  ).toBe(true);
+  expect(requests.some((url) => url.includes("excluded-invalid-org"))).toBe(false);
+});

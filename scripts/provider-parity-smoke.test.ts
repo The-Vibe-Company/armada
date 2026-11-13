@@ -2,6 +2,9 @@ import { expect, test } from "bun:test";
 import { postDeploySmoke } from "./post-deploy-smoke.ts";
 import { smokeReceipts } from "./smoke-sandbox-cleanup.ts";
 
+const boatNotice = "boat: not run on staging (owner decision 2026-11-13)";
+const boatNotRun = { status: "not-run", reason: "owner_decision_2026_11_13" };
+
 // The CLI boundary owns parity reporting: independent fake HTTP receipts catch
 // route/receipt regressions without provider compute, credentials, or sleeps.
 for (const mode of [
@@ -42,14 +45,15 @@ for (const mode of [
     const turns = new Map<string, string[]>();
     const prompts = new Map<string, string>();
     const states = new Map<string, string>();
-    const providers = ["boat", "modal", "docker"];
+    const providers = ["modal", "docker"];
     const passed = await postDeploySmoke(
       {
         ARMADA_URL: "https://armada-mcp-staging.up.railway.app",
         ARMADA_TOKEN: "fake",
         ARMADA_SMOKE: "create_real_compute",
-        ARMADA_SMOKE_CASES: JSON.stringify(
-          providers.map((provider) => ({
+        ARMADA_SMOKE_CASES: JSON.stringify([
+          { provider: "boat", org: null },
+          ...providers.map((provider) => ({
             provider,
             org: provider,
             harness: "codex",
@@ -58,7 +62,8 @@ for (const mode of [
             golden: "fake-golden",
             hostId: "owned-host",
           })),
-        ),
+          { provider: "boat", harness: "invalid" },
+        ]),
       },
       mode === "usage_filter"
         ? ["--parity", "--only", "docker", "--feature", "exact-cost"]
@@ -73,9 +78,10 @@ for (const mode of [
         now: () => 0,
         sleep: async () => {},
         out: (line) => lines.push(line),
-        recordSandbox: async (org, _id, requestKey) => {
+        recordSandbox: async (org, _id, requestKey, provider) => {
           // Exercise the real journal validator, not a permissive callback.
-          smokeReceipts([{ org, id: "12345678-1234-1234-1234-123456789abc", requestKey }]);
+          expect(String(provider)).toBe(org);
+          smokeReceipts([{ org, id: "12345678-1234-1234-1234-123456789abc", requestKey, provider }]);
           if (mode === "journal_failure") throw new Error("journal_unwritable");
         },
         fetch: async (url, init) => {
@@ -109,14 +115,14 @@ for (const mode of [
               break;
             case "sandbox/launch":
               if (p === "docker") expect(body).not.toHaveProperty("image");
-              if (p === "boat" && (mode === "quota" || mode === "server_failure"))
+              if (p === "modal" && (mode === "quota" || mode === "server_failure"))
                 return Response.json(
                   {
                     error: {
                       code: mode === "quota" ? "rate_limited" : "forbidden",
                       message:
                         mode === "quota"
-                          ? "The Boat plan start limit per day has been reached."
+                          ? "The Modal plan start limit per day has been reached."
                           : "Access denied. token=do-not-print ghp_abcdefghijklmnopqrstuvwxyz0123456789 sk-abcdefghijklmnopqrstuvwxyz eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.c2lnbmF0dXJl",
                       details: { secret: "do-not-print-details" },
                     },
@@ -226,13 +232,17 @@ for (const mode of [
         },
       },
     );
+    expect(lines.filter((line) => line === boatNotice)).toHaveLength(1);
+    expect(calls.some((call) => call.startsWith("boat:"))).toBe(false);
     if (mode === "invalid_filter") {
       expect(passed).toBe(false);
       expect(calls).toHaveLength(0);
-      expect(lines[0]).toContain("invalid_parity_filter");
+      expect(lines.some((line) => line.includes("invalid_parity_filter"))).toBe(true);
       return;
     }
     const report = JSON.parse(lines.find((line) => line.startsWith('{"step":"provider_parity"'))!);
+    for (const cells of Object.values(report.features) as Record<string, unknown>[])
+      expect(cells.boat).toEqual(boatNotRun);
     if (mode === "filtered" || debtFeature) {
       expect(passed).toBe(true);
       if (debtFeature) {
@@ -245,7 +255,7 @@ for (const mode of [
           });
       } else {
         expect(report.features.exec.docker.status).toBe("pass");
-        expect(report.features.exec.boat.reason).toBe("provider_filtered");
+        expect(report.features.exec.boat).toEqual(boatNotRun);
         expect(calls.filter((call) => call.endsWith(":sandbox/launch"))).toEqual(["docker:sandbox/launch"]);
         expect(calls).not.toContain("docker:sandbox/send");
         expect(calls).toContain("docker:sandbox/delete");
@@ -300,13 +310,13 @@ for (const mode of [
       ).toBe(true);
       return;
     }
-    expect(report.starts).toBe(mode === "offline" ? 2 : 3);
+    expect(report.starts).toBe(mode === "offline" ? 1 : 2);
     if (mode === "quota" || mode === "server_failure") {
-      const cell = report.features.launch.boat;
+      const cell = report.features.launch.modal;
       expect(cell.status).toBe(mode === "quota" ? "not-run" : "fail");
       expect(cell.diagnostic.httpStatus).toBe(mode === "quota" ? 429 : 403);
       expect(cell.diagnostic.code).toBe(mode === "quota" ? "rate_limited" : "forbidden");
-      expect(report.features.send.boat.status).toBe(cell.status);
+      expect(report.features.send.modal.status).toBe(cell.status);
       expect(passed).toBe(mode === "quota");
       expect(lines.join("\n")).not.toContain("do-not-print");
       expect(lines.join("\n")).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz");
@@ -324,7 +334,7 @@ for (const mode of [
       return;
     }
     if (mode === "delete_retry") expect(deletes.get("modal")).toBe(2);
-    expect(report.features.launch.boat.status).toBe("pass");
+    expect(report.features.launch.modal.status).toBe("pass");
     expect(report.features.delete.modal.status).toBe("pass");
     expect(passed).toBe(mode === "online" || mode === "unsupported" || mode === "delete_retry");
     expect(lines.at(-1)).toContain("| Feature | Boat | Modal | Docker |");
@@ -340,3 +350,33 @@ for (const mode of [
     else expect(report.features.resume.docker.status).toBe("pass");
   });
 }
+
+test("parity --only boat is an owner-decision not-run report, never allocation or proof", async () => {
+  const lines: string[] = [];
+  const calls: string[] = [];
+  const passed = await postDeploySmoke(
+    {
+      ARMADA_URL: "https://armada-mcp-staging.up.railway.app",
+      ARMADA_TOKEN: "fake",
+      ARMADA_SMOKE: "create_real_compute",
+      ARMADA_SMOKE_CASES: JSON.stringify([{ provider: "boat", org: null, harness: "invalid" }]),
+    },
+    ["--parity", "--only", "boat"],
+    {
+      now: () => 0,
+      sleep: async () => {},
+      out: (line) => lines.push(line),
+      fetch: async (url) => {
+        calls.push(url);
+        throw new Error("Boat staging must never call an API");
+      },
+    },
+  );
+  expect(passed).toBe(false);
+  expect(calls).toHaveLength(0);
+  expect(lines.filter((line) => line === boatNotice)).toHaveLength(1);
+  const report = JSON.parse(lines.find((line) => line.startsWith('{"step":"provider_parity"')) ?? "{}");
+  expect(report.starts).toBe(0);
+  for (const cells of Object.values(report.features) as Record<string, unknown>[])
+    expect(cells.boat).toEqual(boatNotRun);
+});
