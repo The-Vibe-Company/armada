@@ -42,6 +42,7 @@ import { createDockerSnapshots } from "./docker-snapshots.ts";
 import { createGitHubAccountApi } from "./github-account.ts";
 import { configureBoatGitHub } from "./github-boat.ts";
 import { createHandler, providerRegistry, type Route } from "./http.ts";
+import { idlePauseDelayMs } from "./idle-pause-policy.ts";
 import { invitationsFromEnv, startInvitationWorker } from "./invitations.ts";
 import { launchCredentials } from "./launch-credentials.ts";
 import { catalogAuthenticationFromEnv } from "./mcp-catalog-client.ts";
@@ -100,6 +101,7 @@ export async function startServer(
   } = {},
 ) {
   const config = configFromEnv(env);
+  const idleDelayMs = idlePauseDelayMs(env);
   const launch: LaunchOptions = { extensionHeadroomSeconds: config.sandboxExtensionHeadroomSeconds };
   const catalogAuthentication = catalogAuthenticationFromEnv(
     env,
@@ -515,6 +517,7 @@ export async function startServer(
     runtimeResume,
     ...(runtimeGitHub ? { runtimeGitHub } : {}),
     ready: createDatabaseReadiness(sql),
+    idlePauseDelayMs: idleDelayMs,
     ...(env.RAILWAY_GIT_COMMIT_SHA ? { commitSha: env.RAILWAY_GIT_COMMIT_SHA } : {}),
     runtimeProviderFor,
     launch,
@@ -680,7 +683,6 @@ export async function startServer(
   // Only authenticated normal Docker launches opt out; their service deadline
   // remains bounded, and other providers/routes keep their existing timeouts.
   control.configureDockerLaunchRequest = (request) => server.timeout(request, 0);
-  const idleDelayMs = Number(env.ARMADA_RUNTIME_IDLE_MINUTES ?? 10) * 60_000;
   const lifecycle = createSandboxLifecycle(sql, createMcpSandboxProviderResolver(sql, providers), {
     delayMs: idleDelayMs,
   });

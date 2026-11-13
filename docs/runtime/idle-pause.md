@@ -144,3 +144,31 @@ or unknown snapshot outcomes retain the source and refuse destructive cleanup,
 never blindly retry snapshot/create. Explicit and TTL cleanup keep their
 existing default policy. A provider-reported lost workspace is failed, not
 advertised as a resumable paused sandbox.
+
+## Read the effective deployed delay
+
+`/healthz` exposes the non-secret `idlePauseDelayMs` resolved at server startup.
+The native and enrolled workers receive that exact same validated value; this
+is not a second setting. Unset `ARMADA_RUNTIME_IDLE_MINUTES` means 600000 ms
+(10 minutes). Invalid, non-positive or fractional-millisecond configuration
+refuses startup before opening the listener. An environment edit takes effect
+only when the process restarts.
+
+After the normal staging deployment, the coordinator can inspect it without
+provider credentials or a Railway shell:
+
+```sh
+set -o pipefail
+export ARMADA_URL=https://armada-mcp-staging.up.railway.app
+curl --fail --silent --show-error "${ARMADA_URL%/}/healthz" |
+  jq 'if (.idlePauseDelayMs | type) == "number" then
+    {commit, version, idlePauseDelayMs, idleMinutes: (.idlePauseDelayMs / 60000)}
+  else error("server does not expose the applied idle delay; do not assume the default") end'
+```
+
+This reports configuration only. It does not prove any provider paused, retained
+its disk/conversation, or answered a wake message; the coordinator still needs
+those observations. Per the owner decision of 2026-11-13, staging acceptance
+checks only Modal and the owner's Docker host. Boat is **not run on staging**,
+not a pass. Older servers/standalone handlers can omit the field: absence is
+unknown, never evidence that the default is deployed.
