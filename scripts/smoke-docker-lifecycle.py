@@ -26,6 +26,7 @@ def main():
     parser.add_argument("--image", required=True, help="Pulled Linux x64 glibc image@sha256 digest")
     parser.add_argument("--model")
     parser.add_argument("--repository", help="Clone owner/repo before the first prompt and prove git log -1; implies --normal-launch")
+    parser.add_argument("--github", action="store_true", help="Prove gh API credential delivery, explicit refresh and follow-up; requires --repository")
     parser.add_argument("--branch", default="main", help="Repository branch for --repository")
     parser.add_argument("--host-id", help="Reuse an existing host registration")
     parser.add_argument("--start-host", action="store_true", help="Start that stopped host daemon; never remove its lock")
@@ -42,6 +43,10 @@ def main():
     harness = "claude" if args.claude else "opencode" if args.opencode else "codex"
     if args.cost or args.claude or args.opencode:
         args.normal_lifecycle = True
+    if args.github:
+        if not args.repository:
+            parser.error("--github requires --repository")
+        args.follow_up = True
     if args.repository:
         if args.claude or args.opencode:
             parser.error("--repository currently verifies Codex commandExecution evidence only")
@@ -137,6 +142,9 @@ def main():
         launch["repos"] = [{"url": "https://github.com/" + args.repository + ".git",
                             "branch": args.branch, "dir": args.repository.split("/")[1]}]
         initial_task = first + f"Run git -C {shlex.quote(directory)} log -1 --format=%H using your command tool. Then reply with exactly DOCKER_OK."
+    github_task = f"Run gh api repos/{args.repository} --jq .full_name using your command tool. " if args.github else ""
+    if args.github:
+        initial_task = first + f"Run git -C {shlex.quote(directory)} log -1 --format=%H using your command tool. " + github_task + "Then reply with exactly DOCKER_OK."
     cleanup_needed = True
     try:
         launch_receipt = None
@@ -199,7 +207,7 @@ def main():
             except (KeyError, TypeError, ValueError, InvalidOperation):
                 raise RuntimeError("Docker cost proof failed: expected stable priced turns and exact session total") from None
 
-        def turn(text, expected_answer, conversation=None, receipt=None):
+        def turn(text, expected_answer, conversation=None, receipt=None, prove_github=False):
             nonlocal cursor
             if receipt is None:
                 prompt_id = str(uuid.uuid4())
@@ -218,6 +226,7 @@ def main():
             native_prompt = receipt["promptId"]
             deadline = time.monotonic() + args.timeout
             answer, finished = False, False
+            github_proven = not prove_github
             repository_proven = not (args.repository and receipt is launch_receipt)
             while True:
                 if args.normal_controls:
@@ -237,6 +246,15 @@ def main():
                         continue
                     if event.get("kind") == "message" and expected_answer in event.get("text", ""):
                         answer = True
+                    if prove_github and event.get("kind") == "message":
+                        for tool in event.get("tools", []):
+                            command = (tool.get("input") or {}).get("command", "")
+                            result = tool.get("result") or {}
+                            if (tool.get("name") == "commandExecution" and isinstance(command, str)
+                                    and "gh api" in command and "repos/" + args.repository in command
+                                    and result.get("isError") is False
+                                    and args.repository.lower() in str(result.get("output", "")).lower()):
+                                github_proven = True
                     if not repository_proven and event.get("kind") == "message":
                         for tool in event.get("tools", []):
                             command = (tool.get("input") or {}).get("command", "")
@@ -254,7 +272,11 @@ def main():
                 usage = next((t for t in turns if t.get("promptId") == native_prompt
                               and isinstance(t.get("inputTokens"), int)
                               and isinstance(t.get("outputTokens"), int)), None)
-                if answer and finished and usage and repository_proven:
+                if answer and finished and usage and repository_proven and github_proven:
+                    if prove_github:
+                        status = api("github/runtime-status", {"id": sandbox_id}, normal=True)
+                        if not status.get("configured") or status.get("credentialRequests", 0) < 1:
+                            raise RuntimeError("GitHub proof requires current-epoch broker credential delivery")
                     if args.cost:
                         check_cost(page["usage"], native_prompt)
                     print(json.dumps({"answer": expected_answer, "promptId": native_prompt,
@@ -262,6 +284,8 @@ def main():
                                       "inputTokens": usage["inputTokens"], "outputTokens": usage["outputTokens"]}),
                           flush=True)
                     return receipt["conversationId"]
+                if finished and not github_proven and not page["hasMore"]:
+                    raise RuntimeError("GitHub proof missing: successful gh API command result required")
                 if finished and not repository_proven and not page["hasMore"]:
                     raise RuntimeError("Repository proof missing: successful git log -1 command result required")
                 if time.monotonic() >= deadline:
@@ -270,10 +294,14 @@ def main():
                     time.sleep(2)
 
         # Only the first prompt contains the public random marker. Recall proves thread continuity.
-        conversation = turn(initial_task, "DOCKER_OK", receipt=launch_receipt)
+        conversation = turn(initial_task, "DOCKER_OK", receipt=launch_receipt, prove_github=args.github)
         if args.follow_up:
-            turn("Reply with exactly the marker I gave you in my previous message. Do not run tools or modify files.",
-                 marker, conversation)
+            if args.github:
+                refreshed = api("github/refresh", {"id": sandbox_id}, normal=True)
+                if refreshed.get("status") != "connected":
+                    raise RuntimeError("GitHub explicit refresh was not confirmed")
+            turn(github_task + "Reply with exactly the marker I gave you in my previous message.",
+                 marker, conversation, prove_github=args.github)
         if args.normal_lifecycle:
             stopped = api("sandbox/stop", {"id": sandbox_id, "request_id": str(uuid.uuid4())}, normal=True)
             if stopped.get("status") != "stopped":
@@ -284,7 +312,7 @@ def main():
             summary = api("sandbox/detail", {"id": sandbox_id}, normal=True)
             if summary.get("hostId") != host_id or conversation not in summary.get("conversationIds", []):
                 raise RuntimeError("Resume changed host or conversation identity")
-            turn("Reply with exactly the marker I asked you to remember. Do not run tools or modify files.", marker, conversation)
+            turn(github_task + "Reply with exactly the marker I asked you to remember.", marker, conversation, prove_github=args.github)
     finally:
         if cleanup_needed:
             # Never delete an unconfirmed running allocation. Offline cleanup remains honest/pending.

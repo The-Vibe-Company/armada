@@ -381,8 +381,10 @@ export async function startServer(
     env.ARMADA_DOCKER_HOSTS === "1"
       ? createDockerSandboxControls(sql, config.encryptionKey, {
           ...(dockerBootstrap ? { resume: dockerBootstrap } : {}),
+          ...(runtimeGitHub ? { github: runtimeGitHub } : {}),
           send: createDockerNormalSend(sql, config.encryptionKey, {
             enabled: dockerEnabled && Boolean(dockerBootstrap),
+            ...(runtimeGitHub ? { github: runtimeGitHub } : {}),
           }),
         })
       : undefined;

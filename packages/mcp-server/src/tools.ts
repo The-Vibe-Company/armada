@@ -662,7 +662,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     {
       title: "Repair sandbox GitHub access",
       description:
-        "Configure or refresh the owner's GitHub access in a running Boat sandbox without relaunching. Enrolled Armada runtimes use current-epoch private RPC; native Boat keeps its existing setup. Reuses a validated unexpired token; rejection/expiry can require renewal. Only the sandbox owner may request this.",
+        "Configure or refresh the owner's GitHub access in a running Boat or Docker sandbox without relaunching. Enrolled Armada runtimes use current-epoch private RPC; native Boat keeps its existing setup. Reuses a validated unexpired token; rejection/expiry can require renewal. Only the sandbox owner may request this.",
       input: { id },
       output: {
         id: z.string(),

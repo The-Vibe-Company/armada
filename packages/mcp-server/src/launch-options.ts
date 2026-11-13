@@ -79,7 +79,7 @@ export function launchProviderOptions(
     goldens: false,
     repositories: normal && docker.normalLaunch === true && docker.placement === true,
     machineSizes: false,
-    github: false,
+    github: normal && docker.normalLaunch === true && docker.placement === true,
     mcp: false,
     skills: false,
     exec: false,

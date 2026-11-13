@@ -2,6 +2,7 @@ import { ProviderError } from "@armada/core";
 import { decryptSecret, type Sql } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
+import type { RuntimeGitHub } from "./runtime-github.ts";
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 /** Normal send shares the preview's fenced, idempotent native admission boundary. */
@@ -10,6 +11,7 @@ export function createDockerNormalSend(
   key: string,
   options: {
     enabled?: boolean;
+    github?: Pick<RuntimeGitHub, "prepareTurn">;
     clock?: { now(): number; wait(ms: number): Promise<void> };
     timeoutMs?: number;
   } = {},
@@ -44,16 +46,17 @@ export function createDockerNormalSend(
       if (!["ready", "running"].includes(row.status))
         throw failure("conflict", "Docker sandbox must be running before send.");
       let conversationId = args.conversation_id ?? row.conversation_ids.at(-1);
-      // Omitted conversation selection must remain stable on retries of the first send.
-      if (args.conversation_id === undefined) {
-        const previous = (
-          await sql.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
-            "select request_enc from public.runtime_commands where sandbox_id=$1 and request_id=$2",
-            [row.id, `docker_prompt_${args.request_id}`],
-          )
-        ).rows[0];
-        if (previous) conversationId = JSON.parse(await decryptSecret(previous.request_enc, key)).input.conversationId;
-      }
+      const previous = (
+        await sql.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
+          "select request_enc from public.runtime_commands where sandbox_id=$1 and request_id=$2",
+          [row.id, `docker_prompt_${args.request_id}`],
+        )
+      ).rows[0];
+      // Reconcile durable admission without requiring GitHub to be healthy again.
+      // runtime.prompt still validates exact input, current owner and epoch.
+      if (args.conversation_id === undefined && previous)
+        conversationId = JSON.parse(await decryptSecret(previous.request_enc, key)).input.conversationId;
+      if (!previous) await options.github?.prepareTurn(caller, row.id);
       const deadline = clock.now() + (options.timeoutMs ?? 25_000);
       for (;;) {
         let result: Awaited<ReturnType<typeof runtime.prompt>>;

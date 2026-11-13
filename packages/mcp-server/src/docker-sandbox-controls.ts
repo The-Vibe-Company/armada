@@ -18,6 +18,7 @@ import { createDockerHostStore, DockerHostDenied } from "./docker-host-store.ts"
 import type { createDockerNormalSend } from "./docker-normal-send.ts";
 import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
 import { isPrivateModelEvent } from "./model-usage.ts";
+import type { RuntimeGitHub } from "./runtime-github.ts";
 import { createRuntimeHistory } from "./runtime-history.ts";
 import { withServerCost } from "./turn-pricing.ts";
 
@@ -82,6 +83,7 @@ export function createDockerSandboxControls(
   sql: Sql,
   key: string,
   options: {
+    github?: Pick<RuntimeGitHub, "prepare" | "prepareTurn">;
     clock?: Clock;
     timeoutMs?: number;
     send?: ReturnType<typeof createDockerNormalSend>;
@@ -396,7 +398,10 @@ export function createDockerSandboxControls(
       if (state?.outcome === "failed") throw failure("conflict", "Docker resume failed.");
       if (state?.outcome === "completed") {
         const ready = await runtime.ready(actor, row.id, requestId);
-        if (ready.state === "ready") return { id: row.id, status: "ready" as const };
+        if (ready.state === "ready") {
+          await options.github?.prepareTurn(caller, row.id);
+          return { id: row.id, status: "ready" as const };
+        }
       }
       if (clock.now() >= deadline) throw failure("conflict", "Docker resume is pending. Retry the same request_id.");
       await clock.wait(Math.min(250, deadline - clock.now()));
@@ -408,7 +413,8 @@ export function createDockerSandboxControls(
       name: string,
       args: Record<string, unknown>,
     ): Promise<{ handled: false } | { handled: true; result: object }> {
-      if (!["status", "logs", "stop", "delete", "send", "resume"].includes(name)) return { handled: false };
+      if (!["status", "logs", "stop", "delete", "send", "resume", "github_refresh"].includes(name))
+        return { handled: false };
       try {
         if (typeof args.id !== "string" || !UUID.test(args.id)) throw denied();
         if (
@@ -420,6 +426,10 @@ export function createDockerSandboxControls(
           throw invalid();
         const row = await visible(caller, args.id);
         if (row.provider !== "docker") return { handled: false };
+        if (name === "github_refresh") {
+          if (!options.github) throw failure("unavailable", "Docker GitHub refresh is unavailable.");
+          return { handled: true, result: await options.github.prepare(caller, row.id) };
+        }
         if (name === "send") {
           if (!options.send) throw failure("unavailable", "Docker send is unavailable.");
           return { handled: true, result: await options.send.send(caller, args, row) };
