@@ -811,11 +811,14 @@ remain untouched. Offline regression tests cover a late-settling stop/lease,
 bounded parent-first selection, and real-SQL child-before-parent refusal followed
 by successful parent/child deletion under current owner/org authorization.
 
-### Three-provider parity observation (#1467)
+### Three-provider parity observation (#1532)
 
 Run `bun scripts/post-deploy-smoke.ts --parity` against staging with the usual
 `ARMADA_TOKEN`, `ARMADA_SMOKE=create_real_compute`, and `ARMADA_URL` guards.
-`ARMADA_SMOKE_CASES` must contain exactly one Boat, Modal and Docker case. All
+`ARMADA_SMOKE_CASES` must contain exactly one Boat, Modal and Docker case for a full run.
+Use `--parity --only docker --feature exec` to run one provider/feature;
+a provider-filtered run may supply only that provider case. Unknown or duplicate
+filters are rejected before any request. All
 cases supply `org`, `harness`, `model`, and `modelAccountId`. Boat/Modal also
 supply `golden`; Docker instead supplies `hostId` (an already registered owned
 host) and `image` (the pulled immutable image digest). No SSH, registration,
@@ -828,7 +831,22 @@ gate or its flags. No workflow/deploy failure policy changes. The command fails
 if any advertised operation fails; unsupported operations are reported separately
 with the server's `launch/options` reason, never as passes. Dependent operations
 that cannot run are failures with a dependency reason, not unsupported claims.
-Every provider has launch/send/status/logs/stop/resume/delete rows. The final
+The matrix inventories every requested feature. Implemented probes are
+launch/send/status/logs/exec/stop/resume/delete and resume-recall (a random token
+remembered before stop and recovered after resume). Exec checks a fixed stdout
+marker as well as successful exit. Other rows are explicitly
+`not-run: probe_not_implemented`: this is an incremental migration, not proof
+that those features work or are unsupported. The older scripts remain until
+their checks are migrated. A filtered run still executes launch and cleanup
+prerequisites, plus send/stop/resume when recall needs them; these have separate
+`prerequisite:*` rows. Nonselected cells remain `not-run`. Unsupported and
+not-run counts are printed per provider; only failures make the run nonzero.
+There is at most one launch attempt per selected provider, recorded as
+`starts` in JSON; stop/resume can allocate additional provider compute.
+A full run is not bounded to two minutes; a feature filter skips unrelated
+turns, but provider startup time still applies. Client request builders and
+cleanup-row reconciliation are follow-up work; do not treat this runner as
+evidence those acceptance criteria have passed. The final
 `provider_parity` JSON line contains the entire matrix, and the Markdown table is
 appended to `GITHUB_STEP_SUMMARY` (or printed locally). Normal sandbox cleanup
 journaling via `ARMADA_SMOKE_JOURNAL` remains available; retain that journal after

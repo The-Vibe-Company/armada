@@ -3,10 +3,21 @@ import { postDeploySmoke } from "./post-deploy-smoke.ts";
 
 // The CLI boundary owns parity reporting: independent fake HTTP receipts catch
 // route/receipt regressions without provider compute, credentials, or sleeps.
-for (const mode of ["online", "offline", "unsupported", "delete_failure", "resume_failure"] as const) {
+for (const mode of [
+  "online",
+  "offline",
+  "unsupported",
+  "delete_failure",
+  "resume_failure",
+  "filtered",
+  "unimplemented",
+  "invalid_filter",
+  "recall_loss",
+] as const) {
   test(`parity normal lifecycle and honest reporting: ${mode}`, async () => {
     const lines: string[] = [];
     const calls: string[] = [];
+    const prompts = new Map<string, string>();
     const states = new Map<string, string>();
     const providers = ["boat", "modal", "docker"];
     const passed = await postDeploySmoke(
@@ -27,7 +38,13 @@ for (const mode of ["online", "offline", "unsupported", "delete_failure", "resum
           })),
         ),
       },
-      ["--parity"],
+      mode === "filtered"
+        ? ["--parity", "--only", "docker", "--feature", "exec"]
+        : mode === "unimplemented"
+          ? ["--parity", "--feature", "mcp"]
+          : mode === "invalid_filter"
+            ? ["--parity", "--feature", "typo"]
+            : ["--parity"],
       {
         now: () => 0,
         sleep: async () => {},
@@ -46,6 +63,7 @@ for (const mode of ["online", "offline", "unsupported", "delete_failure", "resum
                   harnesses: ["codex"],
                   capabilities: {
                     launch: true,
+                    exec: true,
                     followupPrompts: true,
                     status: true,
                     logs: true,
@@ -66,6 +84,7 @@ for (const mode of ["online", "offline", "unsupported", "delete_failure", "resum
               break;
             case "sandbox/send":
               if (p !== "docker") expect(body.request_id).toBeUndefined();
+              if (body.prompt.includes("Remember this token")) prompts.set(p, body.prompt.match(/PARITY_[a-z0-9]+/)[0]);
               states.set(p, "ready");
               result = { promptId: "turn-1" };
               break;
@@ -73,15 +92,19 @@ for (const mode of ["online", "offline", "unsupported", "delete_failure", "resum
               result = {
                 events: [
                   { kind: "prompt", promptId: "turn-1", status: "finished" },
-                  { kind: "message", promptId: "turn-1", text: "SMOKE_OK" },
+                  { kind: "message", promptId: "turn-1", text: `SMOKE_OK ${prompts.get(p)}` },
                 ],
               };
+              break;
+            case "sandbox/exec":
+              result = { exitCode: 0, timedOut: false, stdout: "PARITY_EXEC_OK" };
               break;
             case "sandbox/status":
               result = { id: p, ...(p === "docker" ? { provider: p } : {}), status: states.get(p) };
               break;
             case "sandbox/stop":
               states.set(p, "stopped");
+              if (mode === "recall_loss") prompts.delete(p);
               result = { status: "stopped" };
               break;
             case "sandbox/resume":
@@ -101,7 +124,28 @@ for (const mode of ["online", "offline", "unsupported", "delete_failure", "resum
         },
       },
     );
+    if (mode === "invalid_filter") {
+      expect(passed).toBe(false);
+      expect(calls).toHaveLength(0);
+      expect(lines[0]).toContain("invalid_parity_filter");
+      return;
+    }
     const report = JSON.parse(lines.find((line) => line.startsWith('{"step":"provider_parity"'))!);
+    if (mode === "filtered" || mode === "unimplemented") {
+      expect(passed).toBe(true);
+      if (mode === "unimplemented") {
+        expect(calls).toHaveLength(0);
+        expect(report.features.mcp.docker).toEqual({ status: "not-run", reason: "probe_not_implemented" });
+      } else {
+        expect(report.features.exec.docker.status).toBe("pass");
+        expect(report.features.exec.boat.reason).toBe("provider_filtered");
+        expect(calls.filter((call) => call.endsWith(":sandbox/launch"))).toEqual(["docker:sandbox/launch"]);
+        expect(calls).not.toContain("docker:sandbox/send");
+        expect(calls).toContain("docker:sandbox/delete");
+      }
+      return;
+    }
+    expect(report.starts).toBe(mode === "offline" ? 2 : 3);
     expect(report.features.launch.boat.status).toBe("pass");
     expect(report.features.delete.modal.status).toBe("pass");
     expect(passed).toBe(mode === "online" || mode === "unsupported");
@@ -114,6 +158,7 @@ for (const mode of ["online", "offline", "unsupported", "delete_failure", "resum
       expect(report.features.resume.docker).toEqual({ status: "unsupported", reason: "Server resume disabled." });
       expect(calls).not.toContain("docker:sandbox/resume");
     } else if (mode === "resume_failure") expect(report.features.resume.docker.status).toBe("fail");
+    else if (mode === "recall_loss") expect(report.features["resume-recall"].modal.status).toBe("fail");
     else if (mode === "delete_failure") expect(report.features.delete.docker.status).toBe("fail");
     else expect(report.features.resume.docker.status).toBe("pass");
   });
