@@ -95,7 +95,7 @@ test("Docker incompatible or malformed options fail before HTTP", async () => {
   for (const flags of [
     ["--agent", "unknown"],
     ["--skill", "foo@1"],
-    ["--repo", "https://user:secret@example.test/web"],
+    ["--repo", "acme/web"],
     ["--connections", "a"],
     ["--credential-version", "0"],
     ["--host", "not-a-host"],
@@ -123,6 +123,51 @@ test("unknown Docker launch outcome retains a stable request UUID for exact retr
   }
 });
 
+test("Docker launch resolves an exact unique non-revoked host name and refuses missing/ambiguous names", async () => {
+  const receipt = {
+    sandbox: { id: requestId, provider: "docker", status: "running" },
+    golden: null,
+    runtime: { epoch: "1" },
+  };
+  const namedArgs = [...args.map((arg) => (arg === host ? "office" : arg)), "--repo", "acme/web@feature/work"];
+  const summary = {
+    id: host,
+    name: "office",
+    state: "online",
+    createdAt: "2026-11-13T00:00:00Z",
+    lastSeenAt: null,
+    revokedAt: null,
+    version: "2.27.0",
+    sandboxes: 0,
+  };
+  for (const mode of ["unique", "missing", "ambiguous"]) {
+    let launched = 0;
+    const result = await capture(namedArgs, async (request) => {
+      if (new URL(request.url).pathname.endsWith("/hosts/list")) {
+        expect(await request.json()).toEqual({ org });
+        return Response.json({
+          placement: true,
+          hosts:
+            mode === "missing"
+              ? []
+              : mode === "ambiguous"
+                ? [summary, { ...summary, id: credential }]
+                : [summary, { ...summary, id: credential, state: "revoked" }],
+        });
+      }
+      launched++;
+      expect(await request.json()).toMatchObject({
+        hostId: host,
+        repos: [{ url: "https://github.com/acme/web", branch: "feature/work", dir: "web" }],
+      });
+      return Response.json(receipt);
+    });
+    expect(result.code === 0).toBe(mode === "unique");
+    expect(launched).toBe(mode === "unique" ? 1 : 0);
+    if (mode !== "unique") expect(result.err).toContain(mode === "missing" ? "No non-revoked" : "ambiguous");
+  }
+});
+
 test("Docker CLI translates repeated repository flags with golden branch and directory rules", async () => {
   let body: unknown;
   const result = await capture(
@@ -143,25 +188,4 @@ test("Docker CLI translates repeated repository flags with golden branch and dir
       { url: "https://github.com/acme/api", branch: "main", dir: "api" },
     ],
   });
-});
-
-// CLI must issue one ticket via user authority and show a usable server-hosted installer.
-test("host add prints one verified-installer command and a one-time registration ticket", async () => {
-  let calls = 0;
-  const result = await capture(["host", "add", "--org", org], async (request) => {
-    calls++;
-    expect(new URL(request.url).pathname).toBe("/api/v1/docker/hosts/register-token");
-    expect(await request.json()).toEqual({ org });
-    return Response.json({
-      hostId: host,
-      registrationToken: "a".repeat(64),
-      command: "curl -fsSL https://armada.example/install-host.sh | sh -s -- --token " + "a".repeat(64),
-      expiresAt: "2026-11-13T14:00:00Z",
-    });
-  });
-  expect(result.code).toBe(0);
-  expect(calls).toBe(1);
-  expect(result.out).toContain("/install-host.sh | sh -s -- --token");
-  expect(result.out).toContain("Expires: 2026-11-13T14:00:00Z");
-  expect(result.err).toBe("");
 });

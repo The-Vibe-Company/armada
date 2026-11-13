@@ -17,13 +17,13 @@ for (const phone of [false, true])
       const toggle = page.getByRole("button", { name: /Navigation/ });
       if (phone) {
         await expect(toggle).toHaveAttribute("aria-expanded", "false");
-        await expect(nav.getByRole("link", { name: "Environments" })).toBeHidden();
+        await expect(nav.getByRole("link", { name: "Snapshots" })).toBeHidden();
         await toggle.click();
       }
       await expect(nav.getByRole("heading", { level: 2 })).toHaveText(["Run", "Library", "Providers", "Account"]);
       for (const [label, items] of [
         ["Run", ["Sandboxes", "Otto", "Routines", "Templates"]],
-        ["Library", ["Environments", "Skills", "Tools", "Variables"]],
+        ["Library", ["Snapshots", "Skills", "Tools", "Variables"]],
         ["Providers", ["Cloud"]],
         ["Account", ["Models", "Settings"]],
       ] as const) {
@@ -33,7 +33,7 @@ for (const phone of [false, true])
       await expect(nav).not.toContainText("Tools, instructions and configuration.");
       await expect(nav).not.toContainText("Templates bring these choices together.");
       await expect(page.locator("html")).toHaveClass(new RegExp(theme));
-      const environment = nav.getByRole("link", { name: "Environments", exact: true });
+      const environment = nav.getByRole("link", { name: "Snapshots", exact: true });
       await expect(environment).toHaveAttribute("aria-current", "page");
       await page.mouse.move(389, 843);
       await page.screenshot({

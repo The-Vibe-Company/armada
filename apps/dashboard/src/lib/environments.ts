@@ -77,7 +77,7 @@ export function environmentBlockers({
       blockers.push({
         key: `connect-${provider}`,
         label: `Connect ${PROVIDER_LABELS[provider]}`,
-        detail: `${count} ${count === 1 ? "environment waits" : "environments wait"} for it.`,
+        detail: `${count} ${count === 1 ? "snapshot waits" : "snapshots wait"} for it.`,
         target: { href: CLOUD_PROVIDERS_PATH },
       });
   }
@@ -110,7 +110,7 @@ export function capacityParts(
     if (state.kind === "unknown") return { provider, kind: state.kind, text: `${label}: no limit` };
     if (state.kind === "unavailable")
       return { provider, kind: state.kind, text: `${label}: capacity unavailable`, reason: state.reason };
-    const held = removed === 0 ? "" : `, ${removed} by removed ${removed === 1 ? "environment" : "environments"}`;
+    const held = removed === 0 ? "" : `, ${removed} by removed ${removed === 1 ? "snapshot" : "snapshots"}`;
     return {
       provider,
       kind: state.kind,

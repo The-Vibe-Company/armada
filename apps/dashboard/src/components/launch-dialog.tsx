@@ -392,7 +392,7 @@ function LaunchForm({ golden, provider, orgId, catalog, connections, accounts, r
                 </Label>
                 <p id={`${id}-armada-access-hint`} className="text-xs text-pretty text-muted-foreground">
                   {canDelegate
-                    ? "Let this private sandbox launch and manage up to 3 child sandboxes in this organization, using the selected environment and account."
+                    ? "Let this private sandbox launch and manage up to 3 child sandboxes in this organization, using the selected snapshot and account."
                     : "Choose Codex and an active account to enable Armada access."}
                 </p>
               </div>
