@@ -18,7 +18,7 @@ def main():
     parser.add_argument("--server", required=True)
     parser.add_argument("--org", required=True)
     parser.add_argument("--credential", required=True)
-    parser.add_argument("--credential-version", type=int, default=1)
+    parser.add_argument("--credential-version", type=int)
     parser.add_argument("--ssh", required=True, help="Existing SSH config name or user@host")
     parser.add_argument("--image", required=True, help="Pulled Linux x64 glibc image@sha256 digest")
     parser.add_argument("--model")
@@ -26,8 +26,13 @@ def main():
     parser.add_argument("--start-host", action="store_true", help="Start that stopped host daemon; never remove its lock")
     parser.add_argument("--follow-up", action="store_true", help="Prove a second prompt recalls the same conversation")
     parser.add_argument("--normal-controls", action="store_true", help="Read status/logs and stop/delete through normal sandbox API")
+    parser.add_argument("--normal-launch", action="store_true", help="Launch and run the first prompt through the normal API; implies --normal-controls")
     parser.add_argument("--timeout", type=int, default=600, help="Seconds per bounded stage")
     args = parser.parse_args()
+    if args.normal_launch:
+        args.normal_controls = True
+        if args.follow_up:
+            parser.error("--normal-launch currently checks the first prompt; normal send is the next slice")
     if args.start_host and not args.host_id:
         parser.error("--start-host requires --host-id")
     origin = urllib.parse.urlsplit(args.server)
@@ -51,7 +56,7 @@ def main():
             data=json.dumps({"org": args.org, **body}).encode(), method="POST",
             headers={"authorization": "Bearer " + token, "content-type": "application/json"})
         try:
-            with opener.open(request, timeout=120 if normal and path in ("sandbox/stop", "sandbox/delete") else 30) as response:
+            with opener.open(request, timeout=600 if normal and path == "sandbox/launch" else 120 if normal and path in ("sandbox/stop", "sandbox/delete") else 30) as response:
                 return json.load(response)
         except urllib.error.HTTPError as error:
             # Do not print response bodies, request headers or private capabilities.
@@ -99,28 +104,50 @@ def main():
     sandbox_id = str(uuid.uuid4())  # Persist this printed identity across unknown HTTP outcomes.
     print("SANDBOX_ID=" + sandbox_id, flush=True)
     launch = {"requestId": sandbox_id, "hostId": host_id, "image": args.image,
-              "credentialId": args.credential, "credentialVersion": args.credential_version}
+              "credentialId": args.credential}
+    if args.credential_version is not None or not args.normal_launch:
+        launch["credentialVersion"] = args.credential_version if args.credential_version is not None else 1
     if args.model:
         launch["model"] = args.model
     cleanup_needed = True
     try:
-        api("sandboxes/launch", launch)
-        wait_for("job", {"sandboxId": sandbox_id, "requestId": sandbox_id}, "completed")
-        bootstrap_id = str(uuid.uuid4())
-        print("BOOTSTRAP_ID=" + bootstrap_id, flush=True)
-        api("sandboxes/bootstrap", {"sandboxId": sandbox_id, "requestId": bootstrap_id})
-        wait_for("ready", {"sandboxId": sandbox_id, "requestId": str(uuid.uuid4())}, "ready")
+        launch_receipt = None
+        if args.normal_launch:
+            options = api("launch/options", {}, normal=True)
+            docker = next((p for p in options.get("providers", []) if p.get("id") == "docker"), {})
+            if docker.get("capabilities", {}).get("launch") is not True:
+                raise RuntimeError("Normal Docker launch is not enabled; check server opt-ins and installed runtime manifest")
+            launch.update({"provider": "docker", "harness": "codex", "visibility": "private",
+                           "prompt": "Reply with exactly DOCKER_OK. Do not run tools or modify files."})
+            launched = api("sandbox/launch", launch, normal=True)
+            if (launched.get("sandbox", {}).get("id") != sandbox_id
+                    or launched.get("sandbox", {}).get("provider") != "docker"
+                    or not launched.get("promptId") or not launched.get("conversationId")):
+                raise RuntimeError("Normal launch outcome unknown; retain sandbox/request ID")
+            launch_receipt = {"promptId": launched["promptId"], "conversationId": launched["conversationId"]}
+            listed = api("sandbox/list", {"owner": "me", "limit": 100}, normal=True)
+            if not any(row.get("id") == sandbox_id and row.get("provider") == "docker"
+                       for row in listed.get("sandboxes", [])):
+                raise RuntimeError("Normal launch did not appear in the normal sandbox list")
+        else:
+            api("sandboxes/launch", launch)
+            wait_for("job", {"sandboxId": sandbox_id, "requestId": sandbox_id}, "completed")
+            bootstrap_id = str(uuid.uuid4())
+            print("BOOTSTRAP_ID=" + bootstrap_id, flush=True)
+            api("sandboxes/bootstrap", {"sandboxId": sandbox_id, "requestId": bootstrap_id})
+            wait_for("ready", {"sandboxId": sandbox_id, "requestId": str(uuid.uuid4())}, "ready")
         cursor = None if args.normal_controls else "0"
 
-        def turn(text, expected_answer, conversation=None):
+        def turn(text, expected_answer, conversation=None, receipt=None):
             nonlocal cursor
-            prompt_id = str(uuid.uuid4())
-            print("PROMPT_REQUEST_ID=" + prompt_id, flush=True)
-            body = {"sandboxId": sandbox_id, "requestId": prompt_id, "text": text}
-            if conversation is not None:
-                body["conversationId"] = conversation
-            admission = wait_for("prompt", body, "admitted")
-            receipt = admission["receipt"]
+            if receipt is None:
+                prompt_id = str(uuid.uuid4())
+                print("PROMPT_REQUEST_ID=" + prompt_id, flush=True)
+                body = {"sandboxId": sandbox_id, "requestId": prompt_id, "text": text}
+                if conversation is not None:
+                    body["conversationId"] = conversation
+                admission = wait_for("prompt", body, "admitted")
+                receipt = admission["receipt"]
             if conversation is not None and receipt["conversationId"] != conversation:
                 raise RuntimeError("Follow-up changed conversation identity")
             native_prompt = receipt["promptId"]
@@ -164,7 +191,7 @@ def main():
         # Only the first prompt contains the public random marker. Recall proves thread continuity.
         marker = "DOCKER_MEMORY_" + uuid.uuid4().hex
         first = (f"Remember this marker for my next message: {marker}. " if args.follow_up else "")
-        conversation = turn(first + "Reply with exactly DOCKER_OK. Do not run tools or modify files.", "DOCKER_OK")
+        conversation = turn(first + "Reply with exactly DOCKER_OK. Do not run tools or modify files.", "DOCKER_OK", receipt=launch_receipt)
         if args.follow_up:
             turn("Reply with exactly the marker I gave you in my previous message. Do not run tools or modify files.",
                  marker, conversation)
@@ -190,6 +217,8 @@ def main():
           if args.follow_up else "PASS: one runtime-journal answer with reported tokens; stop/delete ACKed.")
     if args.normal_controls:
         print("PASS: normal Docker status/logs and stop/delete routes confirmed.")
+    if args.normal_launch:
+        print("PASS: normal Docker launch route created, bootstrapped and admitted one prompt; list/status/logs/answer/stop/delete confirmed.")
     print("Host remains registered/running for inspection. See docs/docker-host-daemon.md for uninstall.")
 
 

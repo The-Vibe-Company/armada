@@ -32,6 +32,7 @@ const ROW_ALIASES: Record<string, string> = {
   runtime_checkpoints: "RuntimeCheckpointRow",
   docker_hosts: "DockerHostRow",
   docker_host_jobs: "DockerHostJobRow",
+  docker_launch_requests: "DockerLaunchRequestRow",
   otto_orphan_days: "OttoOrphanDayRow",
   otto_tasks: "OttoTaskRow",
   otto_resources: "OttoResourceRow",

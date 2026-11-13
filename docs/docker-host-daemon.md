@@ -66,13 +66,94 @@ are returned and no direct user-JWT host-table grant is added.
 
 `POST /api/v1/launch/options` adds typed `providers` entries with id, enabled,
 launchSources, harnesses, capabilities and English unsupportedReasons. These are
-installed-feature discovery, not authorization or account health. Docker's normal
-launch/status/logs/CLI handler remains unavailable: normal launch/stop/delete
-capabilities and list `placement` are **false**, even with the private preview
-on. The UI may show Hosts but must not enable normal launch until the server
-advertises `capabilities.launch:true`. A request field cannot enable it. Docker
-is an image/Codex source with null goldenId/golden and no fabricated Boat alias;
-golden providers remain Boat/Modal. The explicit preview API below is unchanged.
+installed-feature discovery, not authorization or account health. With all three
+staging inputs above and a valid installed runtime manifest, Docker advertises
+`capabilities.launch:true` and the host list advertises `placement:true`.
+Host-only opt-in retains normal list/status/logs/stop/delete without admitting new
+placement. A request field cannot enable placement. Docker is an image/Codex
+source with null goldenId/golden and no fabricated Boat alias; golden providers
+remain Boat/Modal. The explicit preview API below is unchanged.
+
+### Normal dashboard/API/CLI launch
+
+`POST /api/v1/sandbox/launch` accepts the existing dashboard body:
+
+```json
+{
+  "org": "ORG_UUID",
+  "provider": "docker",
+  "hostId": "HOST_UUID",
+  "image": "IMAGE@sha256:DIGEST",
+  "harness": "codex",
+  "credentialId": "MODEL_ACCOUNT_UUID",
+  "requestId": "FRESH_SANDBOX_UUID",
+  "visibility": "private",
+  "model": "gpt-6.1-sol",
+  "reasoningEffort": "medium",
+  "prompt": "Reply with exactly DOCKER_OK."
+}
+```
+
+The account's current version is resolved and frozen on first admission; optional
+`credentialVersion` must match if provided. `prompt` and `ttlSeconds` are optional
+(default TTL four hours, maximum one day). Only private Codex/plain digest-pinned
+images are supported: no golden, repo/size policy, skills, connections or GitHub
+setup is silently applied. The server composes durable create, existing enrolment
+and artifact bootstrap, runtime health and first-prompt admission. It returns the
+existing `DockerLaunchResult`: `sandbox`, null `golden`/`helper`, unavailable
+`github`, `runtime:{kind:"armada",epoch}`, TTL/expiry and optional native
+`promptId`/`conversationId`. Admission is not completion: read the answer through
+normal `/api/v1/logs/read` and status through `/api/v1/sandbox/detail`.
+
+`requestId` is the logical sandbox ID and durable replay key. Identical retries
+resume the original phase IDs; changed input conflicts. Store this UUID before
+launch. A timeout is an unknown outcome, not permission to allocate a replacement.
+The request and receipt are encrypted in a service-only ledger; no model secret
+is copied into it. A completed retry returns its original admission receipt with
+current sandbox metadata (even after stop/delete), never restarts the sandbox.
+
+The API-only CLI uses the same normal route, not the private preview:
+
+```sh
+bun run armada launch --provider docker --org "$ARMADA_ORG" \
+  --host "$DOCKER_HOST_ID" --image "$DOCKER_IMAGE" \
+  --credential-id "$ARMADA_CREDENTIAL" --request-id "$REQUEST_ID" \
+  --agent codex --json 'Reply with exactly DOCKER_OK.'
+```
+
+Normal follow-up send remains unavailable in this slice; the private preview's
+explicit same-conversation follow-up is unchanged.
+
+### Coordinator acceptance: normal launch on the existing host
+
+Deploy this revision and its new `docker_launch_requests` migration through the
+normal staging process, with the three flags above. No new host binary is needed
+for this server-side composition. Keep the daemon stopped before running; the
+helper starts it and never removes a lock. Reuse the passed-check SSH alias,
+staging org/account and image (these are public IDs, not credential values):
+
+```sh
+export ARMADA_STAGING='https://armada-mcp-staging.up.railway.app'
+export DOCKER_HOST_ID='70bde9cd-36c9-40af-b15e-65b2f9d3c2a2'
+export DOCKER_IMAGE='buildpack-deps@sha256:58021c2a0204361b62a23d2e0244d144d74c29af2d678e2a1f7e6611885d6949'
+# DOCKER_SSH, ARMADA_ORG and ARMADA_CREDENTIAL: use the previous passed check.
+read -r -s -p 'Staging org-admin Armada bearer: ' ARMADA_TOKEN; printf '\n'
+export ARMADA_TOKEN
+python3 scripts/smoke-docker-lifecycle.py \
+  --server "$ARMADA_STAGING" --org "$ARMADA_ORG" \
+  --credential "$ARMADA_CREDENTIAL" --ssh "$DOCKER_SSH" --image "$DOCKER_IMAGE" \
+  --host-id "$DOCKER_HOST_ID" --start-host --normal-launch
+unset ARMADA_TOKEN
+```
+
+Expected: launch/options enables Docker launch, and the dashboard's Docker dialog
+can submit unchanged. The helper starts the same registered daemon, sends one
+**normal** launch request (no private launch/bootstrap/prompt calls), confirms
+normal list/status/logs show this sandbox, observes `DOCKER_OK`, a finished turn
+and reported tokens, then normal stop/delete ACKs. It prints
+`PASS: normal Docker launch route created, bootstrapped and admitted one prompt; list/status/logs/answer/stop/delete confirmed.`
+The host remains registered/running. Compare container/volume inventories with
+the baseline; no prune, registration replacement or worker host access.
 
 ## Host authority, ownership and failure recovery
 

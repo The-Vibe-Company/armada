@@ -145,6 +145,9 @@ const MAX_BODY_BYTES = 128 * 1024;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface ControlOptions {
+  dockerLaunch?: import("./docker-normal-launch.ts").DockerNormalLaunch;
+  /** Listener-local keepalive for the bounded synchronous Docker launch pipeline. */
+  configureDockerLaunchRequest?: (request: Request) => void;
   dockerControls?: import("./docker-sandbox-controls.ts").DockerSandboxControls;
   /** Trusted installed-route discovery, never taken from request JSON. */
   docker?: { hosts?: boolean; placement?: boolean; normalApi?: boolean; normalLaunch?: boolean };
@@ -288,6 +291,8 @@ export async function handleControlRequest(request: Request, options: ControlOpt
           route.startsWith("secrets/")
         ? await readVaultBody(request)
         : await readBody(request);
+    if (route === "sandbox/launch" && body.provider === "docker" && options.dockerLaunch)
+      options.configureDockerLaunchRequest?.(request);
     if (route === "account/logout") {
       if (caller.via !== "supabase")
         throw new VaultError("forbidden", "Use a personal login session to sign out remotely.");
@@ -1179,6 +1184,10 @@ async function dispatch(
         throw new VaultError("invalid", "The sized launch route requires sizePolicyVersion 1.");
       return launchRoute(options, caller, body);
     case "sandbox/launch":
+      if (body.provider === "docker") {
+        if (!options.dockerLaunch) throw new VaultError("unavailable", "Normal Docker launch is not configured.");
+        return options.dockerLaunch.launch(await selectedCaller(options, caller, optional(body, "org")), body);
+      }
       return launchRoute(options, caller, body);
     case "launch/resolve":
       throw new VaultError("unavailable", "Client-side credential resolution is retired; use sandbox/launch.");
