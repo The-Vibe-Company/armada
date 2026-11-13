@@ -1,14 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   DEFAULT_LAUNCH_TTL_SECONDS,
-  DOCKER_DEFAULT_IMAGE,
   type DockerLaunchResult,
   type DockerSandboxRecord,
   type GoldenActor,
   HARNESSES,
   type Harness,
-  isDockerImageReference,
   type LaunchCredentialResolver,
+  officialSandboxImage,
   ProviderError,
   resolveModelChoice,
   type SkillReceipt,
@@ -96,6 +95,8 @@ type Row = {
 type Clock = { now(): number; wait(ms: number): Promise<void> };
 type Options = {
   enabled?: boolean;
+  /** Trusted server release configuration, never accepted from a caller. */
+  officialImage?: string;
   credentials: Pick<LaunchCredentialResolver, "resolve" | "skillpackKey">;
   mcp?: RuntimeMcp;
   bootstrap?: ReturnType<typeof createDockerBootstrapService>;
@@ -124,7 +125,7 @@ function identifier(value: unknown): string {
   if (typeof value !== "string" || !uuid.test(value)) throw failure("invalid_request");
   return value.toLowerCase();
 }
-function normalize(body: Record<string, unknown>): Request {
+function normalize(body: Record<string, unknown>, image: string): Request {
   if (
     !body ||
     typeof body !== "object" ||
@@ -135,7 +136,6 @@ function normalize(body: Record<string, unknown>): Request {
           "org",
           "provider",
           "hostId",
-          "image",
           "harness",
           "credentialId",
           "credentialVersion",
@@ -153,7 +153,6 @@ function normalize(body: Record<string, unknown>): Request {
     body.provider !== "docker" ||
     !HARNESSES.includes(body.harness as Harness) ||
     (body.visibility !== undefined && body.visibility !== "private") ||
-    (body.image !== undefined && !isDockerImageReference(body.image)) ||
     (body.credentialVersion !== undefined &&
       (!Number.isSafeInteger(body.credentialVersion) || (body.credentialVersion as number) < 1)) ||
     (body.model !== undefined && typeof body.model !== "string") ||
@@ -196,7 +195,7 @@ function normalize(body: Record<string, unknown>): Request {
     harness: body.harness as Harness,
     visibility: "private",
     hostId: identifier(body.hostId),
-    image: (body.image as string | undefined) ?? DOCKER_DEFAULT_IMAGE,
+    image,
     credentialId: identifier(body.credentialId),
     credentialVersion: (body.credentialVersion as number | undefined) ?? null,
     requestId: identifier(body.requestId),
@@ -210,6 +209,11 @@ function normalize(body: Record<string, unknown>): Request {
       ? {}
       : { connections: [...new Set((body.connections as string[]).map((id) => id.toLowerCase()))].sort() }),
   };
+}
+// The release-selected image is frozen in the manifest, not part of caller retry identity.
+function requestHash(request: Request): string {
+  const { image: _image, ...callerRequest } = request;
+  return createHash("sha256").update(JSON.stringify(callerRequest)).digest("hex");
 }
 const scoped = (tx: Sql): Sql => ({ query: tx.query.bind(tx), transaction: (work) => work(tx) });
 const iso = (date: Date | string) => new Date(date).toISOString();
@@ -262,14 +266,18 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
         [row.id],
       )
     ).rows[0];
-    if (!claim || claim.request_hash !== hash) throw failure("conflict");
+    if (!claim) throw failure("conflict");
     if (claim.actor_epoch !== membership.epoch) throw failure("not_found");
     const manifest = JSON.parse(await decryptSecret(claim.request_enc, key)) as Manifest;
     const receipt = claim.result_enc ? (JSON.parse(await decryptSecret(claim.result_enc, key)) as Receipt) : undefined;
     if (
       !manifest ||
       !manifest.request ||
-      createHash("sha256").update(JSON.stringify(manifest.request)).digest("hex") !== hash ||
+      ![
+        requestHash(manifest.request),
+        createHash("sha256").update(JSON.stringify(manifest.request)).digest("hex"),
+      ].includes(claim.request_hash) ||
+      requestHash(manifest.request) !== hash ||
       !Number.isSafeInteger(manifest.credentialVersion) ||
       manifest.credentialVersion < 1 ||
       ![manifest.bootstrapId, manifest.healthId, manifest.promptId].every(
@@ -355,10 +363,10 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       },
     ): Promise<DockerLaunchResult> {
       try {
-        const request = normalize(body);
+        const request = normalize(body, options.officialImage ?? officialSandboxImage());
         const actor = { userId: identifier(caller.userId), orgId: request.org };
         if (!caller.orgs.some((org) => org.orgId.toLowerCase() === request.org)) throw failure("not_found");
-        const hash = createHash("sha256").update(JSON.stringify(request)).digest("hex");
+        const hash = requestHash(request);
         let state = await transaction((tx) => load(tx, actor, request, hash));
         if (state.row && state.receipt) return envelope(state.row, state.receipt);
         if (options.enabled !== true || !options.bootstrap) throw failure("unavailable");

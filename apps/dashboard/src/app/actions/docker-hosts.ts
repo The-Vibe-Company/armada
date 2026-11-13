@@ -9,7 +9,6 @@ import { isSelectedOrganization, selectedOrganization } from "@/lib/data/selecte
 import { requireViewer } from "@/lib/data/viewer";
 import { connectedHostName, HOSTS_PATH, hostNameInput } from "@/lib/docker-hosts";
 import {
-  chosenImage,
   dockerLaunchBlocker,
   dockerLaunchBody,
   launchedDockerSandbox,
@@ -99,7 +98,7 @@ export async function revokeDockerHost(_previous: ActionResult | null, data: For
 }
 
 /**
- * Launches Codex from a digest-pinned image on one of the organization's Docker hosts, as the signed-in viewer, then
+ * Launches Codex in the official Armada environment on one of the organization's Docker hosts, as the signed-in viewer, then
  * answers the new sandbox's id for the dialog to follow. The form's request key is the server's `requestId`: a retry of the same form
  * (same choices) after an unanswered launch reuses it, so the server reconciles it instead of starting another.
  */
@@ -112,8 +111,6 @@ export async function launchOnDockerHost(
   const requestId = formString(data, LAUNCH_KEY_FIELD);
   if (!isUuid(org) || !isUuid(hostId) || !isUuid(requestId)) return fail("That request is not valid.");
   if (!(await isSelectedOrganization(org))) return fail("Switch to that organization first.");
-  const image = chosenImage(formString(data, "image_choice"), formString(data, "image"));
-  if (!image.ok) return fail(image.error);
   const choice = modelChoice("codex", {
     model: formString(data, "model"),
     otherModel: formString(data, "other_model"),
@@ -148,7 +145,6 @@ export async function launchOnDockerHost(
         dockerLaunchBody({
           org,
           hostId,
-          image: image.image,
           credentialId: account.id,
           requestId,
           model: choice.args.model,

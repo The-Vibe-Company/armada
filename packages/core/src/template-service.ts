@@ -312,7 +312,6 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
     fields(d, [
       "goldenId",
       "hostId",
-      "image",
       "provider",
       "harness",
       "model",
@@ -338,13 +337,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
     if (d.provider === "docker") {
       id(d.hostId);
       if (d.goldenId !== undefined && d.goldenId !== null) invalid();
-      if (
-        typeof d.image !== "string" ||
-        d.image.length > 512 ||
-        !/^[a-z0-9][a-z0-9./:_-]*@sha256:[0-9a-f]{64}$/.test(d.image)
-      )
-        invalid();
-    } else if (d.hostId !== undefined || d.image !== undefined) invalid();
+    } else if (d.hostId !== undefined) invalid();
     const connections: TemplateDefinition["connections"] = [];
     if (d.connections !== undefined && (!Array.isArray(d.connections) || d.connections.length > 100)) invalid();
     for (const connection of (d.connections ?? []) as unknown[]) {
@@ -403,7 +396,6 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
             provider: "docker" as const,
             goldenBinding: null,
             hostId: id(d.hostId),
-            image: d.image as string,
           }),
       harness: d.harness,
       ...choice,
@@ -705,7 +697,6 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
                   org,
                   provider: "docker",
                   hostId: def.hostId,
-                  image: def.image,
                   harness: def.harness,
                   credentialId: m.account.id,
                   credentialVersion: m.account.version,

@@ -5,7 +5,7 @@ import type {
   LaunchProviderCapabilities,
   LaunchProviderOption,
 } from "@armada/core";
-import { DOCKER_DEFAULT_IMAGE, HARNESSES, isDockerImageReference } from "@armada/core";
+import { HARNESSES } from "@armada/core";
 import { isUuid } from "./action.ts";
 import type { DockerHost } from "./docker-hosts.ts";
 
@@ -88,7 +88,7 @@ export function dockerLaunchOption(payload: unknown): DockerLaunchOption | null 
 
 /**
  * Whether this host takes a launch now, or why not. The launch needs the server to say it launches on Docker
- * (`capabilities.launch`, from a plain image, with Codex) and the host list's `placement`; the host itself must be
+ * (`capabilities.launch`, from the official environment, with Codex) and the host list's `placement`; the host itself must be
  * online. The server checks all of it again.
  */
 export function dockerLaunchBlocker(
@@ -102,7 +102,7 @@ export function dockerLaunchBlocker(
     return option.unsupportedReasons.launch ?? "This Armada server does not launch on Docker hosts yet.";
   if (!placement) return "This Armada server does not launch on Docker hosts yet.";
   if (!option.launchSources.includes("image") || !option.harnesses.includes("codex"))
-    return "This Armada server does not launch Codex from an image on Docker hosts.";
+    return "This Armada server does not launch Codex in the official Armada environment on Docker hosts.";
   if (host.state !== "online") return "The host must be online to launch on it.";
   return null;
 }
@@ -127,38 +127,9 @@ export function dockerUnavailable(option: DockerLaunchOption): { name: string; r
   }));
 }
 
-export function checkImage(raw: string): { ok: true; image: string } | { ok: false; error: string } {
-  const image = raw.trim();
-  if (!isDockerImageReference(image))
-    return {
-      ok: false,
-      error: "Enter repository@sha256:<64 lowercase hex> or a host-approved local sha256:<64 lowercase hex> image ID.",
-    };
-  return { ok: true, image };
-}
-
-/**
- * The dialog's image choice (#1507): Armada's default image unless the person opens "Custom image…" and types one.
- * Nobody has to know what an image is to launch.
- */
-export const IMAGE_CHOICES = [
-  { value: "default", label: "Armada default (Debian, recommended)" },
-  { value: "custom", label: "Custom image…" },
-] as const;
-export type ImageChoice = (typeof IMAGE_CHOICES)[number]["value"];
-
-/** The image a launch uses from the dialog's choice; only a typed (custom) image is checked, and only then can it fail. */
-export function chosenImage(choice: string, custom: string): ReturnType<typeof checkImage> {
-  // An empty choice with a typed image is a form from before the choice existed: honour what was typed.
-  if (choice === "custom" || (choice === "" && custom.trim())) return checkImage(custom);
-  if (choice === "default" || choice === "") return { ok: true, image: DOCKER_DEFAULT_IMAGE };
-  return { ok: false, error: "Choose an image." };
-}
-
 export type DockerLaunchArgs = {
   org: string;
   hostId: string;
-  image: string;
   credentialId: string;
   requestId: string;
   model: string;
@@ -166,7 +137,7 @@ export type DockerLaunchArgs = {
   prompt?: string;
 };
 
-/** The `sandbox/launch` body for a Docker host: Codex from a plain image, private, nothing a golden would carry. */
+/** The `sandbox/launch` body for a Docker host: Codex in the official Armada environment, private, with no image override. */
 export function dockerLaunchBody(args: DockerLaunchArgs): DockerLaunchRequest {
   if (![args.org, args.hostId, args.credentialId, args.requestId].every(isUuid))
     throw new Error("Docker launch identifiers must be UUIDs.");
@@ -174,7 +145,6 @@ export function dockerLaunchBody(args: DockerLaunchArgs): DockerLaunchRequest {
     org: args.org,
     provider: "docker",
     hostId: args.hostId,
-    image: args.image,
     harness: "codex",
     credentialId: args.credentialId,
     requestId: args.requestId,

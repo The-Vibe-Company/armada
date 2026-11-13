@@ -72,7 +72,7 @@ def placement_smoke(api, args, host_id, harness):
         raise RuntimeError("Placement native answer/finished/token proof incomplete; retain printed IDs")
 
     try:
-        definition = {"provider": "docker", "hostId": host_id, "image": args.image, "harness": harness,
+        definition = {"provider": "docker", "hostId": host_id, "harness": harness,
                       "modelAccount": {"id": args.credential, "version": args.credential_version},
                       "connections": [args.mcp] if args.mcp else [], "skills": args.skills}
         if args.model:
@@ -195,7 +195,7 @@ def main():
     parser.add_argument("--credential", required=True)
     parser.add_argument("--credential-version", type=int)
     parser.add_argument("--ssh", required=True, help="Existing SSH config name or user@host")
-    parser.add_argument("--image", required=True, help="Linux x64 glibc registry digest or host-approved full local image ID")
+    parser.add_argument("--image", required=True, help="Expected server-selected official image digest (assertion only, never an override)")
     parser.add_argument("--mcp", help="MCP connection UUID to deliver through the scoped runtime gateway")
     parser.add_argument("--mcp-tool", help="Safe read-only tool name on --mcp; its successful native tool result is required")
     parser.add_argument("--skills", action="append", default=[], help="Exact Skillpack pin to install and verify (repeatable)")
@@ -318,8 +318,10 @@ def main():
             '>"$state/daemon.log" 2>&1 </dev/null & echo $! >"$state/smoke.pid"')
     sandbox_id = str(uuid.uuid4())  # Persist this printed identity across unknown HTTP outcomes.
     print("SANDBOX_ID=" + sandbox_id, flush=True)
-    launch = {"requestId": sandbox_id, "hostId": host_id, "image": args.image,
+    launch = {"requestId": sandbox_id, "hostId": host_id,
               "credentialId": args.credential}
+    if not args.normal_launch:
+        launch["image"] = args.image  # Existing operator preview only.
     if args.credential_version is not None or not args.normal_launch:
         launch["credentialVersion"] = args.credential_version if args.credential_version is not None else 1
     if args.model:

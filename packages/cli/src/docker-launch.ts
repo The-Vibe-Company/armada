@@ -1,11 +1,9 @@
 import {
-  DOCKER_DEFAULT_IMAGE,
   type DockerLaunchRequest,
   type DockerLaunchResult,
   GoldenError,
   HARNESSES,
   type Harness,
-  isDockerImageReference,
   resolveModelChoice,
   validateSkillPins,
 } from "@armada/core";
@@ -21,7 +19,6 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
   const allowed = new Set([
     "--provider",
     "--host",
-    "--image",
     "--credential-id",
     "--credential-version",
     "--request-id",
@@ -53,15 +50,6 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
   const selector = single(args, "--host");
   if (!selector || selector.length > 64 || /[\p{C}]/u.test(selector))
     throw new GoldenError("invalid_config", "--host requires a UUID or exact host name.");
-  // Without --image the launch uses Armada's default plain image (#1507), sent explicitly so the request is the same
-  // whichever server version answers it.
-  const imageFlag = single(args, "--image");
-  const image = imageFlag === undefined ? DOCKER_DEFAULT_IMAGE : imageFlag.trim();
-  if (!isDockerImageReference(image))
-    throw new GoldenError(
-      "invalid_config",
-      "--image requires repository@sha256:<64 hex> or a host-approved local sha256:<64 hex> ID; omit it for the default.",
-    );
   const supplied = single(args, "--request-id");
   if (supplied !== undefined && !uuid.test(supplied))
     throw new GoldenError("invalid_config", "--request-id requires a UUID.");
@@ -88,7 +76,6 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
     org,
     provider: "docker",
     hostId,
-    image,
     harness,
     credentialId,
     requestId,

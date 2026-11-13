@@ -3,7 +3,8 @@
 import { MODEL_CATALOG } from "@armada/core";
 import { RocketIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef } from "react";
+import { useFormStatus } from "react-dom";
 import { launchOnDockerHost } from "@/app/actions/docker-hosts";
 import { ActionForm, SubmitButton } from "@/components/action-form";
 import { AccountField } from "@/components/launch-dialog";
@@ -17,20 +18,17 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { NativeSelect } from "@/components/ui/native-select";
 import { Textarea } from "@/components/ui/textarea";
 import type { ActionResult } from "@/lib/action";
-import { dockerLaunchKeyStorage, IMAGE_CHOICES, type ImageChoice, UNKNOWN_DOCKER_LAUNCH } from "@/lib/docker-launch";
+import { dockerLaunchKeyStorage, UNKNOWN_DOCKER_LAUNCH } from "@/lib/docker-launch";
 import { LAUNCH_KEY_FIELD, type LaunchKey, launchKeyFor } from "@/lib/launch-key";
 import { accountProblem, accountsFor, type LaunchAccounts } from "@/lib/model-accounts";
 
 /**
- * Launch a sandbox on one Docker host (#1380): Codex from Armada's default plain image (or a custom digest-pinned one
- * behind "Custom image…", #1507), with a model account and an optional task. A Docker host has no environment (golden) yet, so this launch starts from the host, not from an
- * environment. What Docker cannot do yet is listed with the server's own reasons. A successful launch navigates to
- * the new sandbox.
+ * Launch a sandbox on one Docker host in the official Armada environment, with a model account and an optional
+ * task. What Docker cannot do yet is listed with the server's own reasons. A successful launch navigates to the
+ * new sandbox.
  */
 export function DockerLaunchDialog({
   orgId,
@@ -55,7 +53,9 @@ export function DockerLaunchDialog({
       <DialogContent className="max-h-[calc(100dvh-2rem)] gap-5 overflow-y-auto sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>Launch on {hostName}</DialogTitle>
-          <DialogDescription>Codex in a private sandbox, started from a plain image on this host.</DialogDescription>
+          <DialogDescription>
+            Codex in a private sandbox, using the official Armada environment on this host.
+          </DialogDescription>
         </DialogHeader>
         <DockerLaunchForm orgId={orgId} hostId={hostId} accounts={accounts} unavailable={unavailable} />
       </DialogContent>
@@ -75,7 +75,6 @@ function DockerLaunchForm({
   unavailable: { name: string; reason: string }[];
 }) {
   const id = useId();
-  const [imageChoice, setImageChoice] = useState<ImageChoice>("default");
   const root = useRef<HTMLDivElement>(null);
   const storage = dockerLaunchKeyStorage(hostId);
   const router = useRouter();
@@ -157,40 +156,10 @@ function DockerLaunchForm({
             placeholder="What should the agent do? Leave empty to start idle."
           />
         </div>
-        <div className="space-y-2">
-          <Label htmlFor={`${id}-image-choice`}>Image</Label>
-          <NativeSelect
-            id={`${id}-image-choice`}
-            name="image_choice"
-            value={imageChoice}
-            onChange={(event) => setImageChoice(event.target.value as ImageChoice)}
-            aria-describedby={`${id}-image-hint`}
-          >
-            {IMAGE_CHOICES.map((choice) => (
-              <option key={choice.value} value={choice.value}>
-                {choice.label}
-              </option>
-            ))}
-          </NativeSelect>
-          {imageChoice === "custom" ? (
-            <Input
-              id={`${id}-image`}
-              name="image"
-              required
-              aria-label="Custom image"
-              spellCheck={false}
-              autoComplete="off"
-              className="font-mono text-xs"
-              placeholder="repository@sha256:…"
-              aria-describedby={`${id}-image-hint`}
-            />
-          ) : null}
-          <p id={`${id}-image-hint`} className="text-xs text-muted-foreground">
-            {imageChoice === "custom"
-              ? "A plain Linux image pinned by digest, with HTTPS CA roots. Armada installs its runtime and the agent in it."
-              : "Armada installs its runtime and the agent in it. The host fetches the image if it does not have it yet."}
-          </p>
-        </div>
+        <p className="text-xs text-muted-foreground">
+          The host fetches the official Armada environment automatically the first time. This may take a few minutes.
+        </p>
+        <DockerLaunchProgress />
         <p className="text-sm">
           <span className="text-muted-foreground">Agent:</span> Codex{" "}
           <span className="text-muted-foreground">(the only agent on Docker hosts for now)</span>
@@ -212,6 +181,17 @@ function DockerLaunchForm({
         )}
       </ActionForm>
     </div>
+  );
+}
+
+function DockerLaunchProgress() {
+  const { pending } = useFormStatus();
+  if (!pending) return null;
+  return (
+    <p role="status" className="text-sm text-muted-foreground">
+      Preparing the official Armada environment on your host… The first launch may take a few minutes while the host
+      fetches it.
+    </p>
   );
 }
 
