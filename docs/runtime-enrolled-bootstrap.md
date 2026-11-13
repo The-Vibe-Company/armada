@@ -69,7 +69,8 @@ lifecycle smoke or its required launch-time before/after (>20% owner decision)
 measurement. Those remain required when the launcher opts Boat in.
 
 No migrations or current service deployment prerequisites. Future launch wiring
-must issue this configuration using `createRuntimeEnrolments.issue`, publish
-public selected archive bytes by manifest SHA in `ARMADA_RUNTIME_ARTIFACT_DIR`,
-and deliver the selected compiled binary before invoking this mode. No deployment
+must issue this configuration using `createRuntimeEnrolments.issue`, select the
+matching image build manifest (see [publication](runtime-bootstrap-cache.md)),
+and deliver the selected compiled binary before invoking this mode. The normal
+Docker deploy publishes the public runtime and harness bytes automatically. No deployment
 or remote migration was performed by this worker.
