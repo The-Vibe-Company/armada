@@ -1,6 +1,6 @@
 /** Direct argv execution only; adapters must never invoke a shell or log stdin/output. */
 export interface DockerMachineCli {
-  run(argv: readonly string[], stdin?: string): Promise<{ exitCode: number; stdout: string }>;
+  run(argv: readonly string[], stdin?: string | Uint8Array): Promise<{ exitCode: number; stdout: string }>;
 }
 
 export interface DockerMachineRequest {
@@ -36,8 +36,8 @@ function object(value: unknown): Row {
  * Internal machine-only executor. Callers serialize each generation across host processes and
  * persist its request before allocation. TTL enforcement requires a host scheduler calling
  * stopIfExpired; Docker supplies no timer. This is not a provider or remote arbitrary-exec API.
- * Workspace uid initialization and runtime installation are deliberately deferred; a plain image
- * may leave the fresh named volume root-owned, so this executor alone is not launch-ready.
+ * Runtime installation repairs fresh workspace ownership using a fixed public-artifact archive.
+ * Artifact verification belongs to the caller; installation is not a remote execution API.
  */
 export function createDockerMachineExecutor(options: {
   installationId: string;
@@ -47,7 +47,7 @@ export function createDockerMachineExecutor(options: {
 }) {
   if (!uuid.test(options.installationId) || !uuid.test(options.hostId)) fail("invalid_request");
 
-  async function run(argv: readonly string[], stdin?: string) {
+  async function run(argv: readonly string[], stdin?: string | Uint8Array) {
     try {
       return await options.cli.run(argv, stdin);
     } catch {
@@ -55,7 +55,7 @@ export function createDockerMachineExecutor(options: {
     }
   }
 
-  async function checked(argv: readonly string[], stdin?: string) {
+  async function checked(argv: readonly string[], stdin?: string | Uint8Array) {
     const result = await run(argv, stdin);
     if (result.exitCode !== 0) fail("docker_failed");
     return result.stdout;
@@ -247,6 +247,19 @@ export function createDockerMachineExecutor(options: {
     );
   }
 
+  async function installRuntime(request: DockerMachineRequest, executable: Uint8Array): Promise<void> {
+    if (!(executable instanceof Uint8Array) || executable.byteLength < 1 || executable.byteLength > 512 * 1024 * 1024)
+      fail("invalid_request");
+    const state = await owned(request);
+    if (!state.container || object(state.container.State).Running !== true) fail("not_found");
+    if (state.expiresAt === undefined || state.expiresAt <= now()) fail("expired");
+    // Archive ownership initializes the named-volume root without privileged guest execution.
+    // Only caller-verified public executable bytes belong here, never credentials.
+    const archive = runtimeArchive(executable);
+    if (state.expiresAt <= now()) fail("expired");
+    await checked(["cp", "--archive", "-", `${state.containerName}:/home`], archive);
+  }
+
   async function stop(request: DockerMachineRequest): Promise<void> {
     const state = await owned(request);
     if (state.container) await checked(["container", "stop", "--time", "10", state.containerName]);
@@ -270,9 +283,38 @@ export function createDockerMachineExecutor(options: {
     return true;
   }
 
-  return { create, bootstrap, stop, delete: remove, stopIfExpired };
+  return { create, bootstrap, installRuntime, stop, delete: remove, stopIfExpired };
 }
 
 function labelArgs(labels: Row): string[] {
   return Object.entries(labels).flatMap(([key, value]) => ["--label", `${key}=${String(value)}`]);
+}
+
+/** Fixed USTAR members only: no caller-controlled paths, owners, metadata or links. */
+function runtimeArchive(executable: Uint8Array): Uint8Array {
+  const block = 512;
+  const archive = new Uint8Array(4 * block + Math.ceil(executable.byteLength / block) * block);
+  const encoder = new TextEncoder();
+  function header(offset: number, name: string, size: number, type: "0" | "5") {
+    const bytes = archive.subarray(offset, offset + block);
+    const text = (start: number, value: string) => bytes.set(encoder.encode(value), start);
+    const octal = (start: number, width: number, value: number) =>
+      text(start, `${value.toString(8).padStart(width - 1, "0")}\0`);
+    text(0, name);
+    octal(100, 8, 0o700);
+    octal(108, 8, 1000);
+    octal(116, 8, 1000);
+    octal(124, 12, size);
+    octal(136, 12, 0);
+    bytes.fill(32, 148, 156);
+    text(156, type);
+    text(257, "ustar\0");
+    text(263, "00");
+    const checksum = bytes.reduce((sum, byte) => sum + byte, 0);
+    text(148, `${checksum.toString(8).padStart(6, "0")}\0 `);
+  }
+  header(0, "user/", 0, "5");
+  header(block, "user/armada-runtime", executable.byteLength, "0");
+  archive.set(executable, 2 * block);
+  return archive;
 }
