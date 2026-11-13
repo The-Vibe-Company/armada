@@ -264,6 +264,7 @@ export async function handleControlRequest(request: Request, options: ControlOpt
       ? options.githubAccount.callback(request)
       : fail(503, "dependency_unavailable", "GitHub account authorization is not configured.");
   }
+  if (route === "auth/methods") return authMethodsRoute(request, options);
   if (route === "auth/authorize") return authorizeRoute(request, options);
   if (route === "auth/exchange") return exchangeRoute(request, options);
   if (route === "auth/email/start") return emailStartRoute(request, options);
@@ -571,6 +572,24 @@ async function tokenListRoute(request: Request, options: ControlOptions): Promis
   }
 }
 
+/** Expose only supported sign-in methods, never upstream configuration. */
+async function authMethodsRoute(request: Request, options: ControlOptions): Promise<Response> {
+  if (request.method !== "GET") return fail(405, "invalid", "Use GET.");
+  try {
+    const response = await (options.supabase.fetch ?? fetch)(
+      new URL("/auth/v1/settings", options.supabase.supabaseUrl),
+      { headers: { apikey: options.supabase.anonKey }, signal: AbortSignal.timeout(10_000) },
+    );
+    if (!response.ok) throw new Error();
+    const settings = (await response.json()) as { external?: Record<string, unknown> };
+    if (!settings.external || typeof settings.external !== "object") throw new Error();
+    const methods = ["email", "github", "google"].filter((method) => settings.external?.[method] === true);
+    return Response.json({ methods }, { headers: { "cache-control": "no-store" } });
+  } catch {
+    return fail(503, "unavailable", "Sign-in methods are unavailable; try again later.");
+  }
+}
+
 async function emailVerifyRoute(request: Request, options: ControlOptions): Promise<Response> {
   if (request.method !== "POST") return fail(405, "invalid", "Use POST.");
   try {
@@ -797,6 +816,7 @@ async function dispatch(
         followupVersion: options.runtimeSend ? 1 : 0,
         resumeVersion: options.runtimeResume && options.modalRuntimeLaunch ? 1 : 0,
         mcpVersion: options.runtimeMcp ? 2 : 0,
+        skillsVersion: options.modalRuntimeLaunch ? 1 : 0,
       },
       boatRuntime: {
         defaultPath: options.launch?.boatRuntimeDefault ? "runtime" : "native",
@@ -1203,16 +1223,11 @@ async function dispatch(
         body.harness !== "codex" ||
         body.boatRuntime !== undefined ||
         body.armadaAccess ||
-        body.skipSkillDefaults !== true ||
         (body.connections !== undefined && !Array.isArray(body.connections)) ||
-        (body.skills !== undefined && (!Array.isArray(body.skills) || body.skills.length)) ||
         (body.helperCapabilities !== undefined &&
           (!Array.isArray(body.helperCapabilities) || body.helperCapabilities.length))
       )
-        throw new VaultError(
-          "invalid",
-          "Modal runtime v1 requires explicit Codex launch; skills and helpers are unavailable.",
-        );
+        throw new VaultError("invalid", "Modal runtime v1 requires explicit Codex launch; helpers are unavailable.");
       if (!options.modalRuntimeLaunch || !options.modalRuntimeHostFor)
         throw new VaultError("unavailable", "Modal runtime staging opt-in is disabled.");
       required(body, "prompt");

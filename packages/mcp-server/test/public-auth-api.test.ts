@@ -189,6 +189,29 @@ test("public email start validates input and valid start and verify use the prov
   expect(await calls[1]?.json()).toEqual({ type: "email", email: "person@example.test", token: "123456" });
 });
 
+test("public method discovery filters upstream settings and exposes no configuration", async () => {
+  const handler = publicHandler((request) => {
+    expect(request.url).toBe("https://supabase.test/auth/v1/settings");
+    expect(request.headers.get("apikey")).toBe("anon-secret");
+    return Response.json({
+      external: { email: true, github: false, google: true, discord: true },
+      secret: "provider-secret",
+    });
+  });
+  const response = await handler(request("auth/methods"));
+  expect(response.status).toBe(200);
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  expect(await response.json()).toEqual({ methods: ["email", "google"] });
+});
+
+test("public method discovery fails closed when upstream settings cannot be read", async () => {
+  const handler = publicHandler(() => Response.json({ secret: "provider-secret" }, { status: 500 }));
+  const response = await handler(request("auth/methods"));
+  expect(response.status).toBe(503);
+  expect(await response.text()).not.toContain("provider-secret");
+  expect((await handler(request("auth/methods", { method: "POST" }))).status).toBe(405);
+});
+
 test("CLI email-link opt-in binds the loopback callback to state without changing code-only clients", async () => {
   const calls: Request[] = [];
   const handler = publicHandler((request) => {

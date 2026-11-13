@@ -244,6 +244,7 @@ export {
   type ModelOption,
   resolveModelChoice,
 } from "./models.ts";
+export { OFFICIAL_SANDBOX_IMAGE, officialSandboxImage } from "./official-sandbox-image.ts";
 export {
   CONNECTION_MODEL_ID,
   MAX_CONNECTION_MODELS,
