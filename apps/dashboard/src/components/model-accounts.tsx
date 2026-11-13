@@ -91,6 +91,7 @@ import {
   type UsageView,
   usageView,
 } from "@/lib/model-accounts";
+import { connectionModelsNote } from "@/lib/model-picker";
 import { cn } from "@/lib/utils";
 
 type Action = (previous: ActionResult | null, data: FormData) => Promise<ActionResult>;
@@ -167,8 +168,18 @@ function ConnectionTestForm({ account, orgId }: { account: ModelAccount; orgId: 
           maxLength={200}
           autoComplete="off"
           spellCheck={false}
+          // The connection's declared models are offered; any other deployment can still be typed.
+          defaultValue={account.models?.[0]?.model ?? ""}
+          list={account.models?.length ? `${id}-models` : undefined}
           placeholder="Your endpoint's deployment/model"
         />
+        {account.models?.length ? (
+          <datalist id={`${id}-models`}>
+            {account.models.map((info) => (
+              <option key={info.model} value={info.model} />
+            ))}
+          </datalist>
+        ) : null}
       </div>
       <p className="text-xs text-muted-foreground">
         Only your sandbox in this organization, bound to this account and version. No keys or URLs are accepted. A
@@ -465,7 +476,13 @@ export function AccountRow({
               Updated <time dateTime={account.updatedAt}>{relativeTime(account.updatedAt, now)}</time>
             </span>
           </p>
-          {info.billing === "api" && account.status === "active" && (
+          {account.models?.length ? (
+            <p data-account-models className="text-xs text-muted-foreground">
+              {connectionModelsNote(account.models.map((info) => info.model))}
+            </p>
+          ) : null}
+          {/* The check runs Codex and Claude endpoints only; an OpenCode account would always be refused. */}
+          {info.billing === "api" && account.kind !== "opencode" && account.status === "active" && (
             <div className="pt-1.5">
               <ConnectionTestDialog account={account} orgId={orgId} />
             </div>
