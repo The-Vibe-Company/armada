@@ -35,6 +35,11 @@ Owner-facing orchestrators have been removed, with no compatibility route or fea
 ## CI: what we test and what we do not
 
 One verdict, under two minutes. A pull request has a single required check, `Lint, typecheck and test`. If it takes more than two minutes, that is a defect to fix before anything else merges.
+No blocking PR or merge-queue check may exceed two minutes. The only slow gated
+path is a publishing release: release → exact-commit staging deployment/smoke →
+production. Staging smoke otherwise runs only after deploying a main commit,
+never from PR, gh-readonly-queue/* or release-please branch deployment events
+and never as a pull-request check. Do not subscribe smoke to deployment_status.
 
 **CI proves the code is sound on its own. Staging proves it works.**
 

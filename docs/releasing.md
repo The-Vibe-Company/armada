@@ -261,13 +261,12 @@ use environment-specific settings.
   freeze/drain merges before cutting the intended release. Never repair/remove
   migration history just to force an older release through smoke.
 - Missing configuration fails closed in opted-in mode; failed staging visibly blocks
-  production and npm. Manual smoke remains diagnostic only and uses the separate
-  post-deploy-smoke-staging lock, so it can overlap a gated staging deployment.
-  Run diagnostics only after the pinned staging run completes and while no next
-  deployment is queued (freeze merges if needed); never treat their result as
-  release evidence. Independent staging
-  migrations/deployment-event smoke and standalone production migration applies
-  are disabled in gate mode; history/repair/preview remain operator tools.
+  production and npm. The main-only manual Post-deploy smoke entry point delegates
+  to the same pinned deployment workflow and shares its lock. It redeploys and
+  smokes main, never an arbitrary deployment event; only Release's own exact-SHA
+  dependency is release evidence. Independent deployment-event smoke is removed.
+  Standalone production migration applies are removed regardless of opt-ins;
+  history/repair/preview remain operator tools.
 
 Existing smoke lifecycle expansion remains tracked by #819/#826/#827. This ticket
 gates on the existing sandbox smoke contract, not an unimplemented quality claim.
@@ -508,3 +507,32 @@ staging service when Actions owns it), retaining domains/runtime variables,
 root Dockerfile and /healthz checks. That provider cutover and mandatory exact-SHA
 staging smoke/pending-main supersession remain in the final policy slice; no
 claim is made that removing the SQL writer alone establishes release-only hosts.
+
+
+## Smoke only deployed main or a publishing release (#1547)
+
+The old Post-deploy smoke deployment-event subscriber is removed. In particular,
+a provider's successful merge-queue/PR/release-please deployment must never start
+compute smoke or attach a slow smoke check to that SHA. Do not use environment
+name alone as authorization: a queue deployment can use the staging environment.
+Main push smoke stays inside Pinned staging smoke, after its pinned staging
+migration/server/dashboard deployment. The Post-deploy smoke manual entry point
+now delegates to that same workflow **only on main**, redeploying the selected
+main SHA before smoke. It inherits the existing fail-closed staging configuration
+requirements; it is not an independent deployment-status listener or cached proof.
+
+The publishing release may call the exact validated release SHA on staging and
+wait for its smoke before production. That release → staging smoke → production
+chain is the only intentionally slow gated path. PR/merge-queue verdicts remain
+Lint, typecheck and test under two minutes; no new check or browser/provider test
+is added to PR CI. A main post-merge staging run is not a PR required check.
+
+Owner operations: remove obsolete required Post-deploy smoke checks from GitHub
+branch rules if present, preserving the single fast Armada verdict. Already
+running/queued jobs and old workflow reruns are not cancelled by a source change;
+inspect existing runs and their live compute cleanup rather than cancelling
+blindly. No agent stops compute or changes rules/provider settings here. Confirm
+an updated PR/queue deployment produces no Post-deploy smoke workflow run, while
+a main staging deployment smokes its own SHA. This is deployment validation,
+not claimed proved by static lint. Deployment defaults/concurrency changes remain
+in the final policy slice.

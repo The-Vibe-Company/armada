@@ -102,19 +102,22 @@ Use a separate staging Boat account/key shared by its Claude/Codex cases; Boat's
 one-golden account limit does not justify pair-specific extra goldens. Provider/model
 keys remain in Armada's vault, never cases or workflow arguments.
 
-The **Post-deploy smoke** workflow can be dispatched on main. It also runs after
-a successful GitHub `deployment_status` for environment exactly `armada / staging`
-(Railway's GitHub deployment name, not the GitHub secrets environment). To
-override the accepted name, set the repository variable
-`ARMADA_SMOKE_DEPLOYMENT_ENVIRONMENT` to the exact staging deployment name.
-Leave it unset or empty to use the default; never set it to a production name.
-Use repository scope: environment-scoped variables are unavailable when GitHub
-evaluates the job's `if` condition, before the `staging` environment is attached.
-Your deployment system must publish that GitHub status; a Railway/Vercel deploy
-alone is not assumed to produce it. It uses reviewed main code, not arbitrary
-deployment refs. Missing any required secret produces a notice and makes no
-API calls. Production/preview deployment events are ignored. Runs are serialized
-and not cancelled by a newer deploy, allowing cleanup to finish.
+The **Post-deploy smoke** workflow is a manual **main-only** entry point to the
+same pinned staging deployment-and-smoke workflow used after main merges. It
+first deploys the dispatch's main SHA, then smokes that deployment; it no longer
+accepts `deployment_status` events. PR, merge-queue (`gh-readonly-queue/*`) and
+release-please branch deployments cannot trigger smoke or attach its slow check
+to those branches. Dispatch from any other ref is skipped. The publishing Release
+workflow remains the only slow gated path: exact release commit staging deploy
+and smoke, then production. Main post-merge smoke is not a PR/merge-queue gate.
+
+The manual alias requires the existing staging-gated configuration (currently
+both repository deployment opt-ins and all staging secrets/cases); missing or
+disabled configuration fails before smoke rather than producing a successful
+no-op attestation. Set ARMADA_ORIGIN, ARMADA_SMOKE_TOKEN and ARMADA_SMOKE_CASES
+in staging as documented above. Do not restore deployment-event smoke as a
+fallback. The pinned deployment and smoke stay serialized together and are not
+cancelled by a newer deploy, allowing cleanup to finish.
 
 Each step emits a fixed diagnostic line; failures exit nonzero. API bodies,
 command output, tokens and provider error messages are never printed. Requests
