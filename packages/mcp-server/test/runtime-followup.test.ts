@@ -5,13 +5,17 @@ import { callSharedTool } from "../src/tool-api.ts";
 import { runtimeFixture as fixture } from "./runtime-fixture.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
 
-describe("shared runtime send", () => {
+describe.each(["boat", "modal"] as const)("%s shared runtime send", (provider) => {
   let f: Awaited<ReturnType<typeof fixture>>;
   // Cold PGlite WASM startup, all migrations, fixture seeding and the initial
   // Runner turn are setup, not send/replay behavior. Keep them out of the test's
   // 5s budget; the real SQL/Runner/epoch assertions below remain unchanged.
   beforeAll(async () => {
-    f = await fixture();
+    f = await fixture(undefined, provider);
+    if (provider === "modal")
+      f.context.runtimeSend = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, async () => {
+        throw Error("No Boat MCP setup on model-only Modal follow-up");
+      });
   }, 20_000);
   afterAll(async () => {
     await f?.close();

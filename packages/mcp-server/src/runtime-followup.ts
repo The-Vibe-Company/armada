@@ -35,9 +35,11 @@ export function createRuntimeFollowup(
     if (
       !found ||
       found.ownerId !== caller.userId ||
-      !found.boatRuntime ||
-      found.harness !== "codex" ||
-      found.provider !== "boat"
+      !(
+        (found.provider === "boat" && found.boatRuntime) ||
+        (found.provider === "modal" && found.runtimeTransport === "dialout")
+      ) ||
+      found.harness !== "codex"
     )
       throw new VaultError("not_found", "No owned runtime sandbox.");
     if (
@@ -197,7 +199,7 @@ export function createRuntimeFollowup(
       {},
       async (signal) => {
         const existing = await commands.result(caller.userId, found.id, commandId, admitted.epoch);
-        if (existing.state === "missing") await prepareMcp?.(caller, found.id, signal);
+        if (existing.state === "missing" && found.provider === "boat") await prepareMcp?.(caller, found.id, signal);
         const accepted = await submit(signal);
         try {
           await store.recordTurnModel?.(found.id, accepted.promptId, found.model);

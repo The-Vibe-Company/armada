@@ -774,7 +774,11 @@ async function dispatch(
     return {
       ...launchOptions,
       providers: launchProviderOptions(options.docker),
-      modalRuntime: { version: 1, enabled: Boolean(options.modalRuntimeLaunch) },
+      modalRuntime: {
+        version: 1,
+        enabled: Boolean(options.modalRuntimeLaunch),
+        followupVersion: options.runtimeSend ? 1 : 0,
+      },
       boatRuntime: {
         version: 1,
         diagnosticsVersion: 1,
