@@ -14,7 +14,7 @@ import { Button } from "@/components/ui/button";
 import { readDockerLaunchOption, readSelectedDockerHosts } from "@/lib/data/docker-hosts";
 import { launchAccounts, listSelectedAccounts } from "@/lib/data/model-accounts";
 import { selectedOrganization } from "@/lib/data/selected-org";
-import { type DockerHost, HOSTS_PATH, hostName, hostState, sandboxCount } from "@/lib/docker-hosts";
+import { type DockerHost, HOSTS_PATH, hostFact, hostName, hostState, sandboxCount } from "@/lib/docker-hosts";
 import { type DockerLaunchOption, dockerLaunchBlocker, dockerUnavailable } from "@/lib/docker-launch";
 import type { LaunchAccounts } from "@/lib/model-accounts";
 import { relativeAge } from "@/lib/relative-time";
@@ -128,12 +128,16 @@ function row(
     key: host.id,
     name,
     bucket: state.bucket,
-    search: [name, host.id, host.state].join(" "),
+    search: [name, host.id, host.state, host.version ?? ""].join(" "),
     mark: <HostMark />,
     meta,
     subtitle: meta,
     state: <StateCell tone={state.tone} label={state.label} detail={state.detail} data-host-state={host.state} />,
-    fact: `${sandboxCount(host.sandboxes)} · v${host.version ?? "unknown"}`,
+    fact: hostFact(host),
+    action:
+      isAdmin && host.state !== "revoked" ? (
+        <RevokeHost orgId={orgId} hostId={host.id} name={name} sandboxes={host.sandboxes} />
+      ) : undefined,
     detail: (
       <div className="space-y-4">
         <PanelSection title="State">
@@ -171,13 +175,10 @@ function row(
             <dd>{seen ?? "Never"}</dd>
             <dt className="text-muted-foreground">Sandboxes</dt>
             <dd>{sandboxCount(host.sandboxes)}</dd>
+            <dt className="text-muted-foreground">Daemon version</dt>
+            <dd>{host.version ?? "Unknown"}</dd>
           </dl>
         </PanelSection>
-        {isAdmin && host.state !== "revoked" && (
-          <PanelSection title="Manage">
-            <RevokeHost orgId={orgId} hostId={host.id} name={name} sandboxes={host.sandboxes} />
-          </PanelSection>
-        )}
       </div>
     ),
     attrs: { "data-host": host.id },

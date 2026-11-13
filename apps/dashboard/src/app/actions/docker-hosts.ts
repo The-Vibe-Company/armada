@@ -7,7 +7,7 @@ import { readDockerLaunchOption, readSelectedDockerHosts, viewerDockerHosts } fr
 import { listSelectedAccounts } from "@/lib/data/model-accounts";
 import { isSelectedOrganization, selectedOrganization } from "@/lib/data/selected-org";
 import { requireViewer } from "@/lib/data/viewer";
-import { HOSTS_PATH, hasCheckedIn } from "@/lib/docker-hosts";
+import { connectedHostName, HOSTS_PATH, hostNameInput } from "@/lib/docker-hosts";
 import {
   checkImage,
   dockerLaunchBlocker,
@@ -36,21 +36,24 @@ async function adminControl(org: string) {
 }
 
 export type HostRegistrationResult =
-  | { ok: true; hostId: string; registrationToken: string; command: string }
+  | { ok: true; hostId: string; command: string; expiresAt: string }
   | { ok: false; error: string };
 
 /**
- * Issues a one-use registration ticket. The token goes back to the dialog that asked, once: it is not stored, logged
- * or put in a URL here, and the server keeps only its hash.
+ * Asks the server for a host's one install command, with an optional name. The command carries a one-use token and
+ * goes back to the dialog that asked, once: it is not stored, logged or put in a URL here, and the server keeps only
+ * the token's hash.
  */
 export async function registerDockerHost(
   _previous: HostRegistrationResult | null,
   data: FormData,
 ): Promise<HostRegistrationResult> {
+  const name = hostNameInput(formString(data, "name"));
+  if (!name.ok) return name;
   const control = await adminControl(formString(data, "org"));
   if ("ok" in control) return control as { ok: false; error: string };
   try {
-    const registration = await control.register(formString(data, "org"));
+    const registration = await control.register(formString(data, "org"), name.name);
     revalidatePath(HOSTS_PATH);
     return { ok: true, ...registration };
   } catch (error) {
@@ -59,17 +62,21 @@ export async function registerDockerHost(
   }
 }
 
-/** Whether the host the dialog registered has checked in; null when that cannot be read now. */
-export async function dockerHostCheckedIn(org: string, hostId: string): Promise<boolean | null> {
+/**
+ * Whether the host the dialog registered has connected: its name once it has, false while it has not, null when
+ * that cannot be read now.
+ */
+export async function dockerHostConnected(org: string, hostId: string): Promise<{ name: string } | false | null> {
   if (!isUuid(org) || !isUuid(hostId)) return null;
   const selected = await selectedOrganization();
   if (!selected || selected.org.id !== org) return null;
   const control = await viewerDockerHosts();
   if (!control) return null;
   try {
-    const checkedIn = hasCheckedIn(await control.list(org), hostId);
-    if (checkedIn) revalidatePath(HOSTS_PATH);
-    return checkedIn;
+    const name = connectedHostName(await control.list(org), hostId);
+    if (name === null) return false;
+    revalidatePath(HOSTS_PATH);
+    return { name };
   } catch (error) {
     if (error instanceof ControlError) return null;
     throw error;

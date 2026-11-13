@@ -6,8 +6,9 @@ allocation, proves a model answer and same-conversation recall through the commo
 runtime archive, performs an acknowledged checkpoint, and requests compute stop
 once. The `--resume` extension activates that same logical sandbox once from its
 retained filesystem image, proves a new-epoch same-conversation recall, then
-checkpoints and stops it again. No GitHub, MCP, skills or harness parity is
-claimed. This remains model-only: the golden checkout is used as-is.
+checkpoints and stops it again. Optional `--github` and `--mcp` add the scoped
+checks below; they do not claim skills or full harness/setup parity. The golden
+checkout remains as-is (no pull/init).
 The existing Modal tunnel path remains the default.
 
 ## Prerequisites
@@ -47,8 +48,8 @@ before allocating. With `--resume`, it also requires `resumeVersion:1`; an old
 server refuses before any allocation. Omit `--resume` only to run the original
 first-answer/follow-up/checkpoint/stop subset. It sends one `sandbox/launch-modal-runtime-v1` request with
 `runtimeVersion:1`, `runtimeTransport:"dialout"`, `provider:"modal"`,
-`harness:"codex"`, a 900-second TTL, empty connections/skills and skill defaults
-skipped. The golden checkout is used as-is. The first prompt stores a random
+`harness:"codex"`, a 900-second TTL, empty skills and skill defaults skipped.
+Connections are empty unless `--mcp` explicitly selects one existing connection. The golden checkout is used as-is. The first prompt stores a random
 memory token and asks for a separate literal
 nonce answer, without tools or file changes. After verifying that archived first
 answer, the script sends exactly one follow-up on the same conversation asking
@@ -141,5 +142,53 @@ archived successful command provenance AND current-epoch broker acquisition coun
 with the same delivered revision are required. A literal answer or a configured
 receipt alone is not proof. After restore, the old configuration must be absent;
 a new revision is delivered and a fourth same-conversation prompt proves a fresh
-current-epoch acquisition. No token/capability is printed or archived. This flag
-does not pull/init the golden, enable MCP/skills/variables, or authorize cutover.
+current-epoch acquisition. No token/capability is printed or archived. This flag alone does not pull/init the golden, enable skills/variables, or
+authorize cutover. Add `--mcp` below to verify the selected remote tool in the
+same allocation.
+
+
+## Automatic remote MCP delivery (`--mcp`)
+
+Reuse the existing Boat coordinator inputs; do not create new credentials or
+supply skill references:
+
+- `ARMADA_RUNTIME_MCP_CONNECTION_ID`: existing connected remote MCP connection UUID.
+- `ARMADA_RUNTIME_MCP_TOOL`: a read-only tool on that connection.
+- `ARMADA_RUNTIME_MCP_ARGS_JSON`: non-secret JSON object arguments (defaults to `{}`).
+- `ARMADA_RUNTIME_MCP_EXPECT`: a non-secret expected substring from its successful result.
+
+The selected connection must be visible to the staging owner/organization and use
+HTTP or SSE transport. Pinned stdio connections are not supported by this slice.
+Before allocation, `launch/options.modalRuntime.mcpVersion` must be `2`, the
+script resolves the selected Modal golden's organization once (shared with
+GitHub preflight), and `sandbox/mcp-preflight-v1` must accept the one connection.
+The launch names it explicitly in `connections:[<UUID>]`; it does not rely on
+another user's defaults. **There is no manual MCP configuration call:** the
+server delivers the current selection and current-epoch leases privately before
+launch, follow-up and resumed turns.
+
+### Single combined coordinator check
+
+```sh
+ARMADA_RUNTIME_SMOKE=one_real_modal_launch bun scripts/check-modal-runtime.ts --mcp --github --resume
+```
+
+ONE logical allocation, ONE resume activation, FOUR prompts and TWO stops remain.
+Omit `--github` if only testing MCP/resume: that uses three prompts and the same
+allocation/activation/stops. No extra staging secrets or skill inputs are needed.
+
+Every tested prompt (initial answer, initial follow-up, first resumed answer and
+GitHub's extra post-resume follow-up when enabled) must contain actual archived
+MCP tool provenance: exact server `armada_<connection UUID with underscores>`,
+exact tool name, canonical-equal JSON arguments, successful result and the
+expected non-secret substring. This provenance is the common `ToolCall.server`
+field, not an assistant's text naming a server. Nested/retracted evidence, another
+prompt's tool, a missing/error result, a shell substitute or an old prompt replay
+after resume cannot pass. First/stopped history is re-read without reusing a
+cached evidence flag. The archive must also contain each prompt's exact assistant
+answer and finished event, and the epoch/checkpoint/stop proofs remain unchanged.
+
+Initial receipts add `mcp:"verified"`; final successful resumed cleanup adds
+`mcpAfterResume:"verified"`. This proves the selected remote tool and automatic
+new-epoch delivery, not all MCP server types or default-selection policies. Record
+the exact revision and result on #1421. Workers do not run billable staging checks.

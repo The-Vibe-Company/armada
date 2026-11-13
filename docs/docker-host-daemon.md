@@ -607,3 +607,18 @@ Armada bearer privately through `ARMADA_TOKEN`, never argv.
 Each flag uses normal launch/status/logs/send/stop/resume routes, and cleans up
 with normal stop/delete. These are coordinator acceptance procedures, not claims
 that the real-host runs passed. No worker needs staging or host access.
+
+
+### Dashboard server contract (#1380 / #1481)
+
+`POST /api/v1/docker/hosts/register-token` accepts `{org,name?}` and returns
+`{hostId,registrationToken,command,expiresAt}`. The dashboard consumes
+`{hostId,command,expiresAt}` and discards the extra bare registration token.
+`command` uses the configured public origin and POSIX `/install-host.sh` with
+`--token` containing only the five-minute single-use registration capability.
+`expiresAt` is the database expiry, ISO UTC. Optional names are trimmed visible
+strings up to64 characters. The host credential is never in command/argv/public
+responses. Additional migration: `20261113160000_docker_host_names.sql`, applied
+only by the authorized coordinator after the host-version migration. This server
+contract is included here so the merged dashboard does not wait on the stacked
+CLI follow-up. Existing `--service-install` real-host acceptance remains pending.
