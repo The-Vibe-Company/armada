@@ -1,10 +1,13 @@
 import { expect, test } from "bun:test";
+import { CodexDriver, type DriverEvent } from "@armada/agent-runtime";
 import { encryptSecret, type GoldenActor, type Sql } from "@armada/core/server";
 import { createModelAuthOwnership } from "../src/model-auth.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { createRuntimeNativeAuth } from "../src/runtime-native-auth.ts";
 import { database, ENCRYPTION_KEY } from "./support.ts";
+
+const nativeTest = process.platform === "linux" ? test : test.skip;
 
 const native = (revision: number, account = "offline-account") =>
   JSON.stringify({
@@ -14,7 +17,7 @@ const native = (revision: number, account = "offline-account") =>
       refresh_token: `offline-refresh-${revision}`,
     },
   });
-async function fixture(boatRuntime = false) {
+async function fixture(boatRuntime = false, authJson = native(0)) {
   const { db, people } = await database();
   const sql: Sql = {
     query: (q, v) => db.query(q, v),
@@ -23,7 +26,7 @@ async function fixture(boatRuntime = false) {
   const account = (
     await db.query<{ id: string }>(
       "insert into credentials(scope,owner_id,kind,value_enc) values('user',$1,'codex_auth',$2) returning id",
-      [people.owner, await encryptSecret(native(0), ENCRYPTION_KEY)],
+      [people.owner, await encryptSecret(authJson, ENCRYPTION_KEY)],
     )
   ).rows[0];
   if (!account) throw Error("missing fixture account");
@@ -286,18 +289,31 @@ test.each(["epoch", "membership", "pin", "stop", "ownership", "upstream"] as con
   },
 );
 
-test("two Boat runtime guests share server renewal and a replacement epoch reads the persisted revision", async () => {
+nativeTest("Boat guests share native-requested renewal across epoch replacement", async () => {
   const { createRuntimeModelAccess } = await import("../src/runtime-model-access.ts");
   const { RuntimeDialout, runtimeSubscriptionAccess } = await import("../../agent-runtime/src/dialout.ts");
-  const f = await fixture(true);
+  const f = await fixture(
+    true,
+    JSON.stringify({
+      tokens: {
+        account_id: "synthetic-account",
+        access_token: "synthetic-initial-access",
+        refresh_token: "synthetic-initial-refresh",
+      },
+    }),
+  );
+  let driver: CodexDriver | undefined;
   try {
     let renewals = 0;
     const ownership = createModelAuthOwnership(f.sql, ENCRYPTION_KEY, undefined, undefined, {
       origin: "https://armada.example",
       fetch: (async (_url, init) => {
-        expect(JSON.parse(String(init?.body)).refresh_token).toBe("offline-refresh-0");
+        expect(JSON.parse(String(init?.body)).refresh_token).toBe("synthetic-initial-refresh");
         renewals++;
-        return Response.json({ access_token: "renewed-access", refresh_token: "renewed-refresh" });
+        return Response.json({
+          access_token: "synthetic-refreshed-access",
+          refresh_token: "synthetic-refreshed-refresh",
+        });
       }) as typeof fetch,
     });
     if (!ownership.broker) throw Error("missing broker");
@@ -321,8 +337,8 @@ test("two Boat runtime guests share server renewal and a replacement epoch reads
           const response = await route(new Request(url.href, options));
           if (!response) throw Error("missing model access route");
           const body = await response.clone().text();
-          expect(body).not.toContain("offline-refresh-0");
-          expect(body).not.toContain("renewed-refresh");
+          expect(body).not.toContain("synthetic-initial-refresh");
+          expect(body).not.toContain("synthetic-refreshed-refresh");
           return response;
         },
         socket() {
@@ -341,14 +357,45 @@ test("two Boat runtime guests share server renewal and a replacement epoch reads
     const a = connect(first, route),
       b = connect(second, route);
     const [initialA, initialB] = await Promise.all([a.access(false), b.access(false)]);
-    expect(initialA.accessToken).toBe("offline-access-0");
-    expect(initialB.accessToken).toBe("offline-access-0");
-    const refreshed = await a.access(true, initialA.accessToken);
+    expect(initialA.accessToken).toBe("synthetic-initial-access");
+    expect(initialB.accessToken).toBe("synthetic-initial-access");
+    // Drive the real private JSONL login and an active-turn native refresh request
+    // through the epoch client and SQL broker, rather than calling refresh ourselves.
+    const events: DriverEvent[] = [];
+    driver = new CodexDriver({
+      executable: `${import.meta.dir}/../../agent-runtime/test/fixtures/app-server.ts`,
+      cwd: import.meta.dir,
+      env: { PATH: process.env.PATH ?? "/usr/bin:/bin", ARMADA_EXTERNAL_AUTH: "1" },
+      subscriptionAccess: a.access,
+    });
+    expect(
+      await driver.start({
+        request: { sandboxId: f.id, harness: "codex", text: "continue through renewal" },
+        signal: new AbortController().signal,
+        session() {},
+        emit: (event) => events.push(event),
+      }).done,
+    ).toBe("finished");
+    expect(events).toContainEqual({
+      kind: "message",
+      text: "renewed turn completed",
+      partial: false,
+      tools: [],
+      messageId: "renewed",
+      textMode: "snapshot",
+    });
+    expect(JSON.stringify(events)).not.toContain("synthetic-refreshed-access");
+    expect(JSON.stringify(events)).not.toContain("synthetic-refreshed-refresh");
+    expect(JSON.stringify(events)).not.toContain("account/chatgptAuthTokens/refresh");
     // A second guest's stale refresh request must reuse the already committed rotation.
-    expect(await b.access(true, initialB.accessToken)).toEqual(refreshed);
+    const refreshed = await b.access(true, initialB.accessToken);
     expect(renewals).toBe(1);
-    expect(a.registered).toEqual(["offline-access-0", "renewed-access"]);
-    expect(b.registered).toEqual(["offline-access-0", "renewed-access"]);
+    expect(a.registered).toEqual([
+      "synthetic-initial-access",
+      "synthetic-initial-access",
+      "synthetic-refreshed-access",
+    ]);
+    expect(b.registered).toEqual(["synthetic-initial-access", "synthetic-refreshed-access"]);
     const replacement = await f.enrol();
     await expect(a.access(false)).rejects.toThrow("runtime_channel_revoked");
     const restarted = createModelAuthOwnership(f.sql, ENCRYPTION_KEY, undefined, undefined, {
@@ -360,9 +407,10 @@ test("two Boat runtime guests share server renewal and a replacement epoch reads
     expect(await b.access(false)).toEqual(refreshed);
     const state = await restarted.state.read(f.actor, f.account.id, 1, f.id);
     expect(state).toMatchObject({ sourceGeneration: "server:ready", revision: 1 });
-    expect(JSON.parse(state?.authJson ?? "{}").tokens.refresh_token).toBe("renewed-refresh");
+    expect(JSON.parse(state?.authJson ?? "{}").tokens.refresh_token).toBe("synthetic-refreshed-refresh");
     expect((await f.db.query("select sequence from runtime_events")).rows).toEqual([]);
   } finally {
+    await driver?.close();
     await f.db.close();
   }
 });
