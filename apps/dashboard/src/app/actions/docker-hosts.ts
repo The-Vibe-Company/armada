@@ -1,5 +1,6 @@
 "use server";
 
+import { DOCKER_DEFAULT_IMAGE } from "@armada/core";
 import { revalidatePath } from "next/cache";
 import { type ActionResult, done, fail, formString, isUuid } from "@/lib/action";
 import { ControlError, controlPost } from "@/lib/control";
@@ -9,7 +10,6 @@ import { isSelectedOrganization, selectedOrganization } from "@/lib/data/selecte
 import { requireViewer } from "@/lib/data/viewer";
 import { connectedHostName, HOSTS_PATH, hostNameInput } from "@/lib/docker-hosts";
 import {
-  chosenImage,
   dockerLaunchBlocker,
   dockerLaunchBody,
   launchedDockerSandbox,
@@ -112,8 +112,6 @@ export async function launchOnDockerHost(
   const requestId = formString(data, LAUNCH_KEY_FIELD);
   if (!isUuid(org) || !isUuid(hostId) || !isUuid(requestId)) return fail("That request is not valid.");
   if (!(await isSelectedOrganization(org))) return fail("Switch to that organization first.");
-  const image = chosenImage(formString(data, "image_choice"), formString(data, "image"));
-  if (!image.ok) return fail(image.error);
   const choice = modelChoice("codex", {
     model: formString(data, "model"),
     otherModel: formString(data, "other_model"),
@@ -148,7 +146,8 @@ export async function launchOnDockerHost(
         dockerLaunchBody({
           org,
           hostId,
-          image: image.image,
+          // The person never chooses an image: Armada's official one (#1507, #1528).
+          image: DOCKER_DEFAULT_IMAGE,
           credentialId: account.id,
           requestId,
           model: choice.args.model,

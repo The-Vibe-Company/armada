@@ -5,7 +5,7 @@ import type {
   LaunchProviderCapabilities,
   LaunchProviderOption,
 } from "@armada/core";
-import { DOCKER_DEFAULT_IMAGE, HARNESSES, isDockerImageReference } from "@armada/core";
+import { HARNESSES } from "@armada/core";
 import { isUuid } from "./action.ts";
 import type { DockerHost } from "./docker-hosts.ts";
 
@@ -125,66 +125,6 @@ export function dockerUnavailable(option: DockerLaunchOption): { name: string; r
     name: CAPABILITY_LABELS[name],
     reason: option.unsupportedReasons[name] ?? "Not available on Docker hosts yet.",
   }));
-}
-
-export function checkImage(raw: string): { ok: true; image: string } | { ok: false; error: string } {
-  const image = raw.trim();
-  if (!isDockerImageReference(image))
-    return {
-      ok: false,
-      error: "Enter repository@sha256:<64 lowercase hex> or a host-approved local sha256:<64 lowercase hex> image ID.",
-    };
-  return { ok: true, image };
-}
-
-/** An image already used for a sandbox on a host, as the dialog proposes it: the pinned reference and a readable name. */
-export type HostImage = { image: string; label: string };
-
-/** How many used images the dialog proposes after the default. */
-const RECENT_IMAGES = 5;
-
-/**
- * A readable name for a pinned image: the repository and tag without Docker Hub's `docker.io/` and `library/` prefixes,
- * followed by the digest's first 12 characters, so two versions of one image stay distinguishable.
- */
-export function imageLabel(image: string): string {
-  // A host-approved local image ID has no repository name (#1523).
-  if (image.startsWith("sha256:")) return `Local image (${image.slice(7, 19)})`;
-  const at = image.lastIndexOf("@sha256:");
-  const name = (at < 0 ? image : image.slice(0, at)).replace(/^docker\.io\//, "").replace(/^library\//, "");
-  return at < 0 ? name : `${name} (${image.slice(at + 8, at + 20)})`;
-}
-
-/**
- * The images already used for sandboxes on `hostId`, from sandbox rows sorted newest first: each image once, at its
- * newest use, without Armada's default (always offered first) or a malformed reference, at most RECENT_IMAGES.
- */
-export function recentHostImages(
-  rows: readonly { docker_host_id: string | null; docker_image: string | null }[],
-  hostId: string,
-): HostImage[] {
-  const seen = new Set([DOCKER_DEFAULT_IMAGE]);
-  const images: HostImage[] = [];
-  for (const row of rows) {
-    const image = row.docker_image;
-    if (row.docker_host_id !== hostId || !image || seen.has(image) || !isDockerImageReference(image)) continue;
-    seen.add(image);
-    images.push({ image, label: imageLabel(image) });
-    if (images.length === RECENT_IMAGES) break;
-  }
-  return images;
-}
-
-/**
- * The image a launch uses from the dialog's choice: the default, an image already used on the host (its pinned
- * reference is the choice) or a typed custom image. Every non-default image is checked again here.
- */
-export function chosenImage(choice: string, custom: string): ReturnType<typeof checkImage> {
-  // An empty choice with a typed image is a form from before the choice existed: honour what was typed.
-  if (choice === "custom" || (choice === "" && custom.trim())) return checkImage(custom);
-  if (isDockerImageReference(choice)) return checkImage(choice);
-  if (choice === "default" || choice === "") return { ok: true, image: DOCKER_DEFAULT_IMAGE };
-  return { ok: false, error: "Choose an image." };
 }
 
 export type DockerLaunchArgs = {
