@@ -12,8 +12,9 @@ import { createRuntimeFollowup } from "../src/runtime-followup.ts";
 import type { ToolContext } from "../src/tools.ts";
 import { database, ENCRYPTION_KEY } from "./support.ts";
 
-export async function runtimeFixture() {
-  const { db, people } = await database();
+/** Caller-supplied seeded rows stay caller-owned; journal/outbox/root cleanup always stays here. */
+export async function runtimeFixture(fixture?: Awaited<ReturnType<typeof database>>) {
+  const { db, people } = fixture ?? (await database());
   const root = await mkdtemp(join(tmpdir(), "runtime-followup-"));
   let journal = new Journal(join(root, "journal"), (value) => value);
   const sql: Sql = {
@@ -325,7 +326,7 @@ export async function runtimeFixture() {
     async close() {
       await runner.flushOutbox().catch(() => {});
       journal.close();
-      await db.close();
+      if (!fixture) await db.close();
       await rm(root, { recursive: true, force: true });
     },
   };
