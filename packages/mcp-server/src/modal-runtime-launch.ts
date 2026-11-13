@@ -25,6 +25,8 @@ export function modalRuntimeLaunch(options: {
       const { model, reasoningEffort } = sandbox;
       if (!model || !reasoningEffort) throw Error("runtime_model_required");
       const plan = await runtimeConfiguration({ ...options, actor, sandbox, credentials }, "modal");
+      // Restored native sessions cannot resurrect old upstream defaults before current-epoch delivery.
+      Object.assign(plan.configuration, { mcp: { revision: "modal_runtime_empty_v1", servers: {} } });
       if (restoreCheckpoint)
         Object.assign(plan.configuration, { restoreCheckpoint: { ...restoreCheckpoint, model, reasoningEffort } });
       signal.throwIfAborted();

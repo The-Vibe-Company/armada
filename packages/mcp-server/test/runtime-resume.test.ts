@@ -52,6 +52,7 @@ describe.each([
   test("resume reopens the same journal into a new attested epoch; stable replay never activates or starts a turn twice", async () => {
     const old = f.active;
     let activations = 0;
+    let preparations = 0;
     const resume = createRuntimeResume(
       f.sql,
       ENCRYPTION_KEY,
@@ -67,7 +68,8 @@ describe.each([
       }),
       provider === "modal"
         ? async () => {
-            throw Error("No Boat MCP preparation on model-only Modal resume");
+            preparations++;
+            return undefined;
           }
         : undefined,
     );
@@ -87,6 +89,7 @@ describe.each([
     await expect(f.authority.withSession(old.runtimeToken, old.epoch, async () => true)).rejects.toThrow();
     expect(await resume(f.caller, request)).toEqual(result);
     expect(activations).toBe(1);
+    if (provider === "modal") expect(preparations).toBe(1);
     expect(f.starts).toEqual([undefined, "native-thread"]);
     const row = (await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))!;
     expect(row.status).toBe("running");

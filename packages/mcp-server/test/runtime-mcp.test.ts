@@ -17,8 +17,8 @@ import { createRuntimeResume } from "../src/runtime-resume.ts";
 import { runtimeFixture } from "./runtime-fixture.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
 
-async function fixture() {
-  const f = await runtimeFixture(),
+async function fixture(provider: "boat" | "modal" = "boat") {
+  const f = await runtimeFixture(undefined, provider),
     registry = createSqlMcpRegistry(f.sql, ENCRYPTION_KEY);
   const secret = `upstream-private-${crypto.randomUUID()}`;
   const c = await registry.save(f.people.owner, f.people.org, {
@@ -96,10 +96,10 @@ async function fixture() {
   };
 }
 
-describe("enrolled runtime remote MCP", () => {
+describe.each(["boat", "modal"] as const)("enrolled runtime remote MCP (%s)", (provider) => {
   let x: Awaited<ReturnType<typeof fixture>>;
   beforeAll(async () => {
-    x = await fixture();
+    x = await fixture(provider);
   }, 20_000);
   afterAll(async () => {
     await x?.f.close();
@@ -120,6 +120,10 @@ describe("enrolled runtime remote MCP", () => {
     expect(f.journal.redact(raw).includes(raw)).toBe(false);
     expect(f.journal.redact(server.headers!.Authorization!).includes(server.headers!.Authorization!)).toBe(false);
     expect(await createSqlMcpLeasePort(f.sql).validate(hash, "tools")).not.toBeNull();
+    expect(
+      (await f.db.query<{ epoch: string }>("select runtime_epoch::text as epoch from mcp_leases where hash=$1", [hash]))
+        .rows[0]?.epoch,
+    ).toBe("1");
     await expect(x.service.prepare({ ...f.caller, userId: f.people.admin }, f.row.id)).rejects.toThrow();
     const servers: McpServer[] = [],
       transports = new Map<string, WebStandardStreamableHTTPServerTransport>();
@@ -183,60 +187,73 @@ describe("enrolled runtime remote MCP", () => {
   });
 });
 
-test("checkpoint durably revokes MCP leases; a fresh epoch explicitly reauthorizes the same fixed selection", async () => {
-  const x = await fixture(),
-    { f } = x;
-  try {
-    await x.send(f.caller, f.input());
-    const old = x.configuration();
-    const cp = await createRuntimeCheckpoint(
-      f.sql,
-      ENCRYPTION_KEY,
-      f.bridge,
-    )(f.caller, { id: f.row.id, request_id: crypto.randomUUID(), runtimeVersion: 1 });
-    expect(
-      (
-        await f.db.query<{ revoked: boolean }>(
-          "select revoked_at is not null as revoked from mcp_leases where hash=$1",
-          [old.hash],
-        )
-      ).rows[0]?.revoked,
-    ).toBe(true);
-    expect(await createSqlMcpLeasePort(f.sql).validate(old.hash, "tools")).toBeNull();
-    await expect(x.service.prepare(f.caller, f.row.id)).rejects.toThrow();
-    await f.db.query("update sandboxes set status='stopping',stop_requested_at=now() where id=$1", [f.row.id]);
-    await f.db.query("update sandboxes set status='stopped',stop_requested_at=null,stopped_at=now() where id=$1", [
-      f.row.id,
-    ]);
-    const resume = createRuntimeResume(
-      f.sql,
-      ENCRYPTION_KEY,
-      f.bridge,
-      async () => ({
-        start: async (_signal, restore) => f.reboot(restore),
-        stop: async () => {
-          throw Error("Healthy resume must not stop");
-        },
-      }),
-      x.service.prepare,
-    );
-    const refreshed = await resume(f.caller, {
-      id: f.row.id,
-      request_id: crypto.randomUUID(),
-      runtimeVersion: 1,
-      conversation_id: f.first.conversationId,
-      prompt: "first resumed MCP turn",
-    });
-    const next = x.configuration();
-    expect(refreshed.sourceCheckpoint.watermark).toBe(cp.checkpoint.watermark);
-    expect(refreshed.runtime.epoch).toBe("2");
-    expect(next.hash === old.hash).toBe(false);
-    expect(await createSqlMcpLeasePort(f.sql).validate(old.hash, "tools")).toBeNull();
-    expect(await createSqlMcpLeasePort(f.sql).validate(next.hash, "tools")).not.toBeNull();
-  } finally {
-    await f.close();
-  }
-});
+test.each(["boat", "modal"] as const)(
+  "checkpoint durably revokes MCP leases; a fresh epoch explicitly reauthorizes the same fixed selection (%s)",
+  async (provider) => {
+    const x = await fixture(provider),
+      { f } = x;
+    try {
+      await x.send(f.caller, f.input());
+      const old = x.configuration();
+      const cp = await createRuntimeCheckpoint(
+        f.sql,
+        ENCRYPTION_KEY,
+        f.bridge,
+      )(f.caller, { id: f.row.id, request_id: crypto.randomUUID(), runtimeVersion: 1 });
+      expect(
+        (
+          await f.db.query<{ revoked: boolean }>(
+            "select revoked_at is not null as revoked from mcp_leases where hash=$1",
+            [old.hash],
+          )
+        ).rows[0]?.revoked,
+      ).toBe(true);
+      expect(await createSqlMcpLeasePort(f.sql).validate(old.hash, "tools")).toBeNull();
+      await expect(x.service.prepare(f.caller, f.row.id)).rejects.toThrow();
+      await f.db.query("update sandboxes set status='stopping',stop_requested_at=now() where id=$1", [f.row.id]);
+      await f.db.query("update sandboxes set status='stopped',stop_requested_at=null,stopped_at=now() where id=$1", [
+        f.row.id,
+      ]);
+      const resume = createRuntimeResume(
+        f.sql,
+        ENCRYPTION_KEY,
+        f.bridge,
+        async () => ({
+          start: async (_signal, restore) => f.reboot(restore),
+          stop: async () => {
+            throw Error("Healthy resume must not stop");
+          },
+        }),
+        x.service.prepare,
+      );
+      const refreshed = await resume(f.caller, {
+        id: f.row.id,
+        request_id: crypto.randomUUID(),
+        runtimeVersion: 1,
+        conversation_id: f.first.conversationId,
+        prompt: "first resumed MCP turn",
+      });
+      const next = x.configuration();
+      expect(refreshed.sourceCheckpoint.watermark).toBe(cp.checkpoint.watermark);
+      expect(refreshed.runtime.epoch).toBe("2");
+      expect(next.hash === old.hash).toBe(false);
+      expect(await createSqlMcpLeasePort(f.sql).validate(old.hash, "tools")).toBeNull();
+      expect(await createSqlMcpLeasePort(f.sql).validate(next.hash, "tools")).not.toBeNull();
+      await f.db.query("update sandboxes set status='stopping',stop_requested_at=now() where id=$1", [f.row.id]);
+      expect(await createSqlMcpLeasePort(f.sql).validate(next.hash, "tools")).toBeNull();
+      expect(
+        (
+          await f.db.query<{ revoked: boolean }>(
+            "select revoked_at is not null as revoked from mcp_leases where hash=$1",
+            [next.hash],
+          )
+        ).rows[0]?.revoked,
+      ).toBe(true);
+    } finally {
+      await f.close();
+    }
+  },
+);
 
 test("epoch replacement after capability evidence cannot queue configuration in another epoch", async () => {
   const x = await fixture(),
@@ -374,7 +391,7 @@ test("connection admission rejects unsupported stdio before launch binding or co
       x.service.connections.validate({ userId: f.people.owner, orgId: f.people.org }, [local.id], "org"),
     ).rejects.toMatchObject({
       code: "invalid",
-      message: "Boat runtime does not support pinned stdio MCP; no native fallback.",
+      message: "Enrolled runtimes do not support pinned stdio MCP; no native fallback.",
     });
     expect(
       (
@@ -384,6 +401,69 @@ test("connection admission rejects unsupported stdio before launch binding or co
         )
       ).rows[0]?.n,
     ).toBe(0);
+  } finally {
+    await f.close();
+  }
+});
+
+test.each(["boat", "modal"] as const)(
+  "epoch replacement durably revokes an already delivered MCP lease (%s)",
+  async (provider) => {
+    const x = await fixture(provider),
+      { f } = x;
+    try {
+      await x.send(f.caller, f.input());
+      const old = x.configuration();
+      await f.authority.enrol(
+        (await f.authority.issue({ sandboxId: f.row.id, ownerId: f.people.owner, configuration: {} })).enrolmentToken,
+      );
+      expect(
+        (
+          await f.db.query<{ revoked: boolean }>(
+            "select revoked_at is not null as revoked from mcp_leases where hash=$1",
+            [old.hash],
+          )
+        ).rows[0]?.revoked,
+      ).toBe(true);
+      expect(await createSqlMcpLeasePort(f.sql).validate(old.hash, "tools")).toBeNull();
+    } finally {
+      await f.close();
+    }
+  },
+);
+
+test("native Modal MCP leases stay epoch-free and usable without an enrolled runtime", async () => {
+  const x = await fixture("modal"),
+    { f } = x;
+  try {
+    const native = await createSqlData(f.sql)(f.caller).sandboxes.insert({
+      id: crypto.randomUUID(),
+      provider: "modal",
+      providerSandboxId: "native-modal",
+      goldenId: f.row.goldenId,
+      orgId: f.people.org,
+      ownerId: f.people.owner,
+      harness: "codex",
+      status: "ready",
+      visibility: "org",
+      model: "gpt-5.4",
+      reasoningEffort: "high",
+    });
+    await x.service.connections.bind(native.id, [x.c.id]);
+    const leases = createSqlMcpLeasePort(f.sql),
+      hash = createHash("sha256").update(crypto.randomUUID()).digest("hex");
+    await leases.issue({
+      sandboxId: native.id,
+      connectionId: x.c.id,
+      tokenHash: hash,
+      operations: ["tools"],
+      expiresAt: new Date(Date.now() + 60000),
+    });
+    expect(
+      (await f.db.query<{ runtime_epoch: string | null }>("select runtime_epoch from mcp_leases where hash=$1", [hash]))
+        .rows[0]?.runtime_epoch,
+    ).toBeNull();
+    expect(await leases.validate(hash, "tools")).not.toBeNull();
   } finally {
     await f.close();
   }
