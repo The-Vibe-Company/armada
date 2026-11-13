@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { postDeploySmoke } from "./post-deploy-smoke.ts";
 
-const boatNotice = "boat: not run on staging (owner decision 2026-11-13)";
+const boatNotice = "boat: not part of the release gate";
 
 const selected = {
   provider: "modal",
@@ -1541,7 +1541,7 @@ test("GitHub refresh reports Modal's shipped refusal without losing launch acces
       case: 0,
       step: "github_refresh_idempotency",
       skip: true,
-      reason: "owner_decision_2026_11_13",
+      reason: "not_part_of_release_gate",
     });
     expect(JSON.stringify(reports)).not.toContain('"login"');
   }

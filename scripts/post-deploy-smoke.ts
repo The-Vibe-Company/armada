@@ -980,7 +980,7 @@ async function runPostDeploySmoke(
             case: index,
             step: "github_refresh_idempotency",
             skip: true,
-            reason: "owner_decision_2026_11_13",
+            reason: "not_part_of_release_gate",
           }),
         );
       }
