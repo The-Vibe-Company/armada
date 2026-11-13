@@ -322,6 +322,7 @@ export {
   type ToolCall,
 } from "./provider.ts";
 export { providerRateLimitDetails, providerRateLimitMessage } from "./provider-limit.ts";
+export { goldenCompatibilityIds, goldenResponse } from "./provider-response.ts";
 export {
   parseReadableVariableBindings,
   type ReadableVariableBinding,

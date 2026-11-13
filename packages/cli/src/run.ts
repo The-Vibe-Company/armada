@@ -8,6 +8,7 @@ import {
   type GoldenRecord,
   type GoldenStore,
   goldenBuildFailureText,
+  goldenResponse,
   HARNESSES,
   type Harness,
   isSandboxProvider,
@@ -1266,22 +1267,7 @@ function line(row: GoldenRecord): string {
 }
 
 function jsonGolden(row: GoldenRecord) {
-  return {
-    id: row.id,
-    orgId: row.orgId,
-    name: row.name,
-    visibility: row.visibility,
-    ownerId: row.ownerId,
-    provider: row.provider,
-    providerSnapshotId: row.providerSnapshotId,
-    providerSandboxId: row.providerSandboxId,
-    modal: row.modal,
-    boatSnapshotId: row.provider === "boat" ? row.providerSnapshotId : null,
-    boatSandboxId: row.provider === "boat" ? row.providerSandboxId : null,
-    repos: row.config.repos.length,
-    config: row.config,
-    buildWarnings: row.buildWarnings ?? [],
-  };
+  return { ...goldenResponse(row), buildWarnings: row.buildWarnings ?? [] };
 }
 
 async function readConfig(args: ReturnType<typeof parseArgs>, deps: Deps): Promise<GoldenConfig> {
