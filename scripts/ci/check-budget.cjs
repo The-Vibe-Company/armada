@@ -7,6 +7,7 @@ const names = new Set([
   "Classify expensive checks",
   "Migration versions",
   "Lint and typecheck",
+  "Native runtime contracts",
   "Golden PostgreSQL concurrency",
   "Golden OS recipe (actual provider image)",
   "Binary (linux-x64)",
