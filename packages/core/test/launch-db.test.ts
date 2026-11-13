@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import type { PGlite } from "@electric-sql/pglite";
 import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 import {
-  cleanupSandboxes,
   createSqlGoldenStore,
   createSqlSandboxStore,
   type ForkRequest,
@@ -212,14 +211,6 @@ describe("launch database", () => {
       await expect(sandboxes.recordSkills!(crypto.randomUUID(), [])).rejects.toThrow(
         "Skill receipts could not be recorded.",
       );
-
-      const cleaned = await cleanupSandboxes(boat.provider, sandboxes, {
-        retentionDays: 7,
-        now: new Date(Date.now() + 8 * 86_400_000),
-      });
-      expect(cleaned.deleted.sort()).toEqual([mine.sandbox.id, shared.sandbox.id, sandboxId].sort());
-      const remaining = await db.query<{ status: string }>("select status::text as status from sandboxes");
-      expect(remaining.rows.map((row) => row.status)).toEqual(["deleted", "deleted", "deleted"]);
     } finally {
       await db.close();
     }

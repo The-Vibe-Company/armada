@@ -70,7 +70,7 @@ import { sandboxActivity } from "./sandbox-activity.ts";
 import { extendSandbox } from "./sandbox-extend.ts";
 import {
   collectSandboxUsage,
-  isInterruptedLaunch,
+  isStatusReadFenced,
   latestPrompt,
   readStatus,
   type StatusReport,
@@ -647,12 +647,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     const found = await measure("sandbox_read", () => visible(sandboxId));
     const useStored = stored && found.provider === "modal" && context.storedProvider !== undefined;
     const provider =
-      found.status === "deleted" ||
-      found.status === "starting" ||
-      found.status === "stopping" ||
-      found.stopRequestedAt ||
-      isInterruptedLaunch(found) ||
-      (found.status === "failed" && found.stoppedAt !== null)
+      found.status === "deleted" || isStatusReadFenced(found)
         ? null
         : useStored
           ? await context.storedProvider!(found)

@@ -1208,7 +1208,7 @@ const SUBSCRIPTION_KINDS = ACCOUNT_KINDS.filter((value) => KIND_INFO[value].bill
 /** A subscription kind, or a provider preset; a plain-key kind's id is also its preset's id. */
 type AddChoice = AccountKind | ConnectionPresetId;
 
-/** Adds subscriptions and API keys in one short form, with equal-weight connection choices. */
+/** One provider choice leads to the existing sign-in or key form, without a wall of connection cards. */
 export function AddAccountDialog({
   orgId,
   orgName,
@@ -1300,34 +1300,34 @@ export function AddAccountDialog({
             <input type="hidden" name="kind" value={kind} />
             {preset?.models === "choose" && <input type="hidden" name="preset" value={preset.id} />}
             <input type="hidden" name="scope" value={scope} />
-            <fieldset className="space-y-2">
-              <legend className="text-sm font-medium">Connection</legend>
-              <RadioGroup
+            <div className="space-y-2">
+              <Label htmlFor={`${id}-provider`}>Provider</Label>
+              <NativeSelect
+                id={`${id}-provider`}
                 value={choice}
-                onValueChange={(value) => setChoice(value as AddChoice)}
-                aria-label="Connection"
-                className="sm:grid-cols-2"
+                onChange={(event) => setChoice(event.target.value as AddChoice)}
+                aria-describedby={`${id}-provider-hint`}
               >
-                {SUBSCRIPTION_KINDS.map((value) => (
-                  <ChoiceCard
-                    key={value}
-                    value={value}
-                    icon={<StarIcon />}
-                    title={KIND_INFO[value].label}
-                    hint={`For ${KIND_INFO[value].harnessLabel}`}
-                  />
-                ))}
-                {CONNECTION_PRESETS.map((option) => (
-                  <ChoiceCard
-                    key={option.id}
-                    value={option.id}
-                    icon={<KeyRoundIcon />}
-                    title={option.label}
-                    hint={`For ${KIND_INFO[option.kind].harnessLabel} · ${option.hint}`}
-                  />
-                ))}
-              </RadioGroup>
-            </fieldset>
+                <optgroup label="Subscriptions">
+                  {SUBSCRIPTION_KINDS.map((value) => (
+                    <option key={value} value={value}>
+                      {KIND_INFO[value].label}
+                    </option>
+                  ))}
+                </optgroup>
+                <optgroup label="API keys and connections">
+                  {CONNECTION_PRESETS.map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.label}
+                    </option>
+                  ))}
+                </optgroup>
+              </NativeSelect>
+              <p id={`${id}-provider-hint`} className="text-xs text-muted-foreground">
+                For {info.harnessLabel}
+                {preset ? ` · ${preset.hint}` : " using your subscription"}.
+              </p>
+            </div>
 
             {isAdmin && (
               <fieldset className="space-y-2">
