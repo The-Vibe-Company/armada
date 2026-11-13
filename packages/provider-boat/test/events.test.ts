@@ -186,9 +186,9 @@ test("Boat preserves supplied message semantics and leaves historical responses 
   ]);
 });
 
-test.each(["delta", "snapshot"] as const)(
-  "backward %s-seeded pages anchor older history separately from forward follow",
-  async (seed) => {
+test.each((["delta", "snapshot"] as const).flatMap((seed) => [2, 500, 1000].map((limit) => ({ seed, limit }))))(
+  "backward $seed-seeded pages preserve anchors with requested limit $limit",
+  async ({ seed, limit }) => {
     const event = (n: number) => ({
       id: `e${n}`,
       timestamp: n,
@@ -212,7 +212,7 @@ test.each(["delta", "snapshot"] as const)(
       response([event(5)]),
       response([]),
     );
-    const tail = await boat.provider.events({ sandboxId: ID, direction: "backward", limit: 2, coalesce: true });
+    const tail = await boat.provider.events({ sandboxId: ID, direction: "backward", limit, coalesce: true });
     expect(tail.events).toMatchObject([
       { text: "3", textMode: "delta" },
       { text: "4", textMode: "delta" },
@@ -222,10 +222,10 @@ test.each(["delta", "snapshot"] as const)(
       sandboxId: ID,
       direction: "backward",
       cursor: tail.olderCursor!,
-      limit: 2,
+      limit,
       coalesce: true,
     });
-    const follow = await boat.provider.events({ sandboxId: ID, cursor: tail.cursor! });
+    const follow = await boat.provider.events({ sandboxId: ID, cursor: tail.cursor!, limit });
     expect(older.events.map((e) => e.id)).toEqual(seed === "snapshot" ? ["e2"] : ["e1", "e2"]);
     if (seed === "snapshot") expect(older.events).toMatchObject([{ text: "12", textMode: "snapshot" }]);
     expect(
@@ -236,6 +236,9 @@ test.each(["delta", "snapshot"] as const)(
       ),
     ).toBe("1234");
     expect(follow.events.map((e) => e.id)).toEqual(["e5"]);
+    // Boat's documented physical page maximum is 200, even though Armada's
+    // logical history contract permits larger requested pages (the smoke uses 500).
+    expect(boat.requests.map((r) => r.query.get("limit"))).toEqual(Array(3).fill(String(Math.min(limit, 200))));
     expect(boat.requests.map((r) => r.query.get("sort"))).toEqual(["desc", "desc", "asc"]);
     expect(boat.requests[1]?.query.get("cursor")).toBe(Buffer.from("3:e3").toString("base64url"));
     expect(boat.requests[2]?.query.get("cursor")).toBe(Buffer.from("4:e4").toString("base64url"));

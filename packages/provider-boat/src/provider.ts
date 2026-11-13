@@ -840,7 +840,9 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
             sort: backward ? "desc" : "asc",
             ...(request.cursor ? { cursor: request.cursor } : {}),
             ...(request.conversationId ? { conversation: request.conversationId } : {}),
-            limit,
+            // Boat's physical page limit is 200; preserve its cursor/hasMore
+            // rather than forwarding Armada's larger logical history budget.
+            limit: Math.min(limit, 200),
           },
           request.signal ? { signal: request.signal } : undefined,
         ),
