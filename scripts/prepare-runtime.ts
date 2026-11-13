@@ -6,12 +6,16 @@ import { OPENCODE_ARTIFACT } from "../packages/agent-runtime/src/opencode-artifa
 if (Bun.version !== "1.4.2") throw new Error("Prepare the runtime with pinned Bun 1.4.2.");
 const root = join(import.meta.dir, "../packages/agent-runtime");
 await mkdir(join(root, "dist"), { recursive: true });
-const result = await Bun.build({
-  entrypoints: [join(root, "src/main.ts"), join(root, "src/github-boat-main.ts")],
-  target: "bun",
-  outdir: join(root, "dist"),
-});
-if (!result.success) throw new AggregateError(result.logs, "Runtime bundle failed.");
+// Build separate graphs: a multi-entry build retains main-runtime-only Core
+// dependencies in the small SSH broker, which has a strict transport budget.
+for (const entry of ["main.ts", "github-boat-main.ts"]) {
+  const result = await Bun.build({
+    entrypoints: [join(root, "src", entry)],
+    target: "bun",
+    outdir: join(root, "dist"),
+  });
+  if (!result.success) throw new AggregateError(result.logs, "Runtime bundle failed.");
+}
 await Bun.write(
   join(root, "dist/manifest.json"),
   JSON.stringify({
