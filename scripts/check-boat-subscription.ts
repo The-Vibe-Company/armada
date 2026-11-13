@@ -1,10 +1,11 @@
-/** Coordinator-only: one canonical Boat lifecycle, with strict ChatGPT/cost acceptance. */
+/** Coordinator-only: one canonical Boat lifecycle, with strict subscription/cost acceptance. */
 import { fileURLToPath } from "node:url";
 
 class Refused extends Error {}
 const recoveryIds = new Set<string>();
 const record = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
-const positiveCount = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v > 0;
+const count = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
+const positiveCount = (v: unknown): v is number => count(v) && v > 0;
 const uuid = (v: unknown): v is string =>
   typeof v === "string" && /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(v);
 const epoch = (v: unknown): v is string => typeof v === "string" && /^[1-9][0-9]{0,18}$/.test(v);
@@ -36,8 +37,9 @@ function proof(receipt: Record<string, unknown>) {
     !positiveCount(usage.turnCount) ||
     usage.admission !== "frozen" ||
     !record(usage.tokenTotals) ||
-    !positiveCount(usage.tokenTotals.inputTokens) ||
-    !positiveCount(usage.tokenTotals.outputTokens) ||
+    !count(usage.tokenTotals.inputTokens) ||
+    !count(usage.tokenTotals.outputTokens) ||
+    usage.tokenTotals.inputTokens + usage.tokenTotals.outputTokens === 0 ||
     !record(usage.cost) ||
     usage.cost.status !== "priced" ||
     usage.cost.basis !== "api_equivalent" ||
@@ -50,8 +52,10 @@ function proof(receipt: Record<string, unknown>) {
 async function main() {
   if (process.env.ARMADA_RUNTIME_SMOKE !== "one_real_boat_launch")
     throw new Refused("Explicit one-launch acknowledgement required.");
-  if (process.env.ARMADA_RUNTIME_HARNESS && process.env.ARMADA_RUNTIME_HARNESS !== "codex")
-    throw new Refused("This check requires Codex ChatGPT authentication; no launch attempted.");
+  const harness = process.env.ARMADA_RUNTIME_HARNESS ?? "codex";
+  if (harness !== "codex" && harness !== "claude")
+    throw new Refused("This check requires Codex ChatGPT or Claude token authentication; no launch attempted.");
+  const kind = harness === "codex" ? "codex_auth" : "claude_oauth";
   const origin = new URL(process.env.ARMADA_URL ?? "");
   const token = process.env.ARMADA_TOKEN,
     org = process.env.ARMADA_RUNTIME_ORG,
@@ -90,20 +94,18 @@ async function main() {
   if (
     matches.length !== 1 ||
     !record(account) ||
-    account.kind !== "codex_auth" ||
+    account.kind !== kind ||
     account.status !== "active" ||
     !positiveCount(account.version) ||
     (account.expiresAt != null &&
       (typeof account.expiresAt !== "string" || !(Date.parse(account.expiresAt) > Date.now())))
   )
-    throw new Refused(
-      "Select one active codex_auth account; API keys do not prove subscriptions. No launch attempted.",
-    );
+    throw new Refused(`Select one active ${kind} account; API keys do not prove subscriptions. No launch attempted.`);
   // One existing allocator/cleanup owner. No retry, second launch, or new product selection.
   const child = Bun.spawn(
     [process.execPath, fileURLToPath(new URL("./check-boat-runtime.ts", import.meta.url)), "--usage", "--resume"],
     {
-      env: { ...process.env, ARMADA_RUNTIME_HARNESS: "codex" },
+      env: { ...process.env, ARMADA_RUNTIME_HARNESS: harness },
       stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",
@@ -194,8 +196,9 @@ async function main() {
       typeof turn.promptId !== "string" ||
       !turn.promptId ||
       quotes.has(turn.promptId) ||
-      !positiveCount(turn.inputTokens) ||
-      !positiveCount(turn.outputTokens) ||
+      !count(turn.inputTokens) ||
+      !count(turn.outputTokens) ||
+      turn.inputTokens + turn.outputTokens === 0 ||
       !record(turn.pricing) ||
       turn.pricing.basis !== "api_equivalent" ||
       turn.pricing.unknown !== null ||
@@ -224,7 +227,8 @@ async function main() {
     JSON.stringify({
       sandboxId: first.sandboxId,
       source: "armada-runtime",
-      subscription: "codex_auth",
+      harness,
+      subscription: kind,
       basis: "api_equivalent",
       firstPhaseUsd: before.usd,
       firstTurnUsd: quotes.get(first.promptId),
