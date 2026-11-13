@@ -46,7 +46,11 @@ printf started > '${marker}'
         bytes: Buffer.byteLength(executable),
       };
       const preload = join(root, "peer.cjs");
-      await writeFile(preload, `global.fetch=async()=>new Response(${JSON.stringify(executable)});`);
+      const progress = join(root, "progress");
+      await writeFile(progress, "", { mode: 0o600 }); // Root bootstrap appends under umask 077; keep fixture readable by its owner.
+      const peer = (artifact: string) =>
+        `global.fetch=async(url,options)=>{if(String(url).endsWith('/progress')){require('node:fs').appendFileSync(${JSON.stringify(progress)},JSON.parse(options.body).stage+'\\n');return new Response('{}');}return new Response(${JSON.stringify(artifact)});};`;
+      await writeFile(preload, peer(executable));
       const cache = join(root, "cache");
       const script = boatRuntimeBootstrapScript("https://armada.invalid", artifact, cache);
       const run = () =>
@@ -91,12 +95,17 @@ printf started > '${marker}'
       const warmStarted = started();
       expect(run().status).toBe(0);
       await warmStarted;
+      expect((await readFile(progress, "utf8")).trim().split("\n")).toEqual(["bootstrap_started", "artifact_verified"]);
       const corrupt = "x".repeat(artifact.bytes);
       await writeFile(join(cache, artifact.sha256), corrupt);
-      await writeFile(preload, `global.fetch=async()=>new Response(${JSON.stringify("y".repeat(artifact.bytes))});`);
+      await writeFile(preload, peer("y".repeat(artifact.bytes)));
       const bad = run();
       expect([bad.status, bad.stdout, bad.stderr]).toEqual([1, "", ""]);
       expect(await readFile(join(cache, artifact.sha256), "utf8")).toBe(corrupt);
+      expect((await readFile(progress, "utf8")).trim().split("\n").slice(-2)).toEqual([
+        "bootstrap_started",
+        "bootstrap_failed",
+      ]);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

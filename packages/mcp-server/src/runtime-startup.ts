@@ -1,6 +1,7 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { ProviderError } from "@armada/core";
 import { type createRuntimeEnrolments, RuntimeEnrolmentDenied } from "./runtime-enrolment.ts";
+import { logRuntimeStage } from "./runtime-progress.ts";
 
 interface BootstrapInput {
   sandboxId: string;
@@ -59,9 +60,12 @@ export function createRuntimeStartup(
       });
     const { ownerId, sandboxId, providerSandboxId, serverUrl, cacheDir, signal } = input;
     const artifact = { ...input.artifact };
+    let phase: "bootstrap" | "enrolment" | "readiness" = "bootstrap";
+    let epoch = "0";
     try {
       signal?.throwIfAborted();
       const ticket = await authority.issue({ ownerId, sandboxId, configuration: input.configuration });
+      epoch = ticket.epoch;
       signal?.throwIfAborted();
       await ports.bootstrap({
         sandboxId: providerSandboxId,
@@ -71,6 +75,7 @@ export function createRuntimeStartup(
         enrolmentToken: ticket.enrolmentToken,
       });
       signal?.throwIfAborted();
+      phase = "enrolment";
       const deadline = time.now() + timeout;
       const budget = AbortSignal.timeout(timeout);
       const admission = signal ? AbortSignal.any([signal, budget]) : budget;
@@ -93,6 +98,7 @@ export function createRuntimeStartup(
           continue;
         }
         if (epoch !== ticket.epoch) throw Error("runtime_startup_replaced");
+        phase = "readiness";
         const ready = await ports.health(admission);
         admission.throwIfAborted();
         if (time.now() >= deadline || ready.runtime !== "armada" || ready.epoch !== ticket.epoch)
@@ -111,11 +117,12 @@ export function createRuntimeStartup(
         return { runtime: "armada", epoch: ticket.epoch };
       }
     } catch {
+      logRuntimeStage({ sandboxId, epoch }, `startup_failed_${phase}`);
       // Bootstrap/configuration/transport diagnostics may contain credentials.
       throw new ProviderError({
         provider: "boat",
         code: "sandbox_not_ready",
-        message: "Armada runtime startup failed.",
+        message: `Armada runtime startup failed (${phase}).`,
         retryable: false,
       });
     }

@@ -213,8 +213,8 @@ test("private archive grants and bounded event validation refuse malformed batch
   }
 });
 
-test.each(["plain", "unicode-head"] as const)(
-  "lost HTTP ACK leaves the real journal pending; restart retries without duplicate archive or usage (%s)",
+test.each(["runtime", "server", "unicode-head"] as const)(
+  "lost HTTP ACK leaves the journal pending; runtime/server restart retries without duplicate archive or usage (%s)",
   async (kind) => {
     const { RuntimeDialout } = await import("../../agent-runtime/src/dialout.ts");
     const { Journal, Runner } = await import("../../agent-runtime/src/index.ts");
@@ -227,6 +227,7 @@ test.each(["plain", "unicode-head"] as const)(
     try {
       const active = await f.enrol();
       let lost = true;
+      let handler = f.route();
       const channel = new RuntimeDialout("https://armada.example", active, {
         socket() {
           throw Error("unused");
@@ -238,10 +239,13 @@ test.each(["plain", "unicode-head"] as const)(
           throw Error("unused");
         },
         async fetch(url, options) {
-          const response = await f.route()(new Request(url.href, options));
+          const response = await handler(new Request(url.href, options));
           if (!response) throw Error("event wire path mismatch");
           if (response.status === 200 && lost) {
             lost = false;
+            // Lose the HTTP response after commit, then destroy ALL server-local
+            // session/ingest state. The same runtime must replay on the new replica.
+            handler = createRuntimeEvents(createRuntimeEnrolments(f.sql, ENCRYPTION_KEY), ENCRYPTION_KEY).route;
             throw Error("lost_ack_after_commit");
           }
           return response;
@@ -274,13 +278,28 @@ test.each(["plain", "unicode-head"] as const)(
       await expect(runner.flushOutbox()).rejects.toThrow("lost_ack_after_commit");
       expect(journal.ack).toBe(0);
       expect(await f.rows()).toHaveLength(count);
-      journal.close();
-      journal = new Journal(join(root, "journal"), (value) => value);
-      runner = new Runner(journal, grant, { codex: driver, claude: driver }, channel);
+      if (kind !== "server") {
+        journal.close();
+        journal = new Journal(join(root, "journal"), (value) => value);
+        runner = new Runner(journal, grant, { codex: driver, claude: driver }, channel);
+      }
       await runner.flushOutbox();
       expect(journal.ack).toBe(count);
       expect(await f.rows()).toHaveLength(count);
       expect(await f.aggregate()).toMatchObject({ turnCount: 1, turns: [{ inputTokens: 100, outputTokens: 20 }] });
+      if (kind === "server") {
+        journal.append({
+          id: "after-restart",
+          at: 4,
+          kind: "prompt",
+          promptId: "prompt-a",
+          text: "fixture",
+          status: "finished",
+        });
+        await runner.flushOutbox();
+        expect(journal.ack).toBe(count + 1);
+        expect(await f.rows()).toHaveLength(count + 1);
+      }
     } finally {
       journal.close();
       await f.db.close();

@@ -18,11 +18,46 @@ concurrency:
   cancel-in-progress: ${{ github.event_name != 'merge_group' }}
 
 jobs:
+  changed-paths:
+    name: Detect iOS changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      ios: ${{ steps.paths.outputs.ios }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - id: paths
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
+        run: |
+          # Keep the workflow reporting; skip only the expensive macOS job.
+          # Compare the entire PR/queue candidate, not just its last commit.
+          if [ "$EVENT_NAME" = pull_request ] || [ "$EVENT_NAME" = merge_group ]; then
+            git diff --no-renames --name-only "$BASE_SHA" HEAD > /tmp/changed-paths
+            ios=false
+            if grep -Eq '^(apps/ios/|\.github/workflows/apple-quality\.yml$)' /tmp/changed-paths; then
+              ios=true
+            fi
+            echo "ios=$ios" >> "$GITHUB_OUTPUT"
+          else
+            echo 'ios=true' >> "$GITHUB_OUTPUT"
+          fi
+
   ios:
+    needs: changed-paths
+    if: ${{ !cancelled() && (needs.changed-paths.result != 'success' || needs.changed-paths.outputs.ios != 'false') }}
     name: Swift package tests and iOS simulator compile
     runs-on: macos-26
     timeout-minutes: 10
     steps:
+      - name: Require successful path detection
+        env:
+          DETECTION_RESULT: ${{ needs.changed-paths.result }}
+          IOS_CHANGED: ${{ needs.changed-paths.outputs.ios }}
+        run: test "$DETECTION_RESULT" = success && test "$IOS_CHANGED" = true
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install project generator
         run: brew install xcodegen

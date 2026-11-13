@@ -1,6 +1,7 @@
 import { createInterface } from "node:readline";
 import { codexPlanLimit, planLimitFromMessage, planLimitMessage } from "@armada/core";
 import { ChildOwner } from "./children.ts";
+import { codexResumeUsage } from "./codex-resume-usage.ts";
 import type { ReasoningEffort } from "./codex-schema/ReasoningEffort.ts";
 import type { LoginAccountParams } from "./codex-schema/v2/LoginAccountParams.ts";
 import type { LoginAccountResponse } from "./codex-schema/v2/LoginAccountResponse.ts";
@@ -25,6 +26,7 @@ export class CodexDriver implements Driver {
       cwd: string;
       env: Record<string, string>;
       refreshSecrets?: () => void;
+      onStarted?: () => void;
       exclusiveAuth?: boolean;
       subscriptionAccess?: (
         refresh: boolean,
@@ -397,6 +399,12 @@ export class CodexDriver implements Driver {
         capabilities: { experimentalApi: true },
       });
       child.stdin.write(`${JSON.stringify({ method: "initialized", params: {} })}\n`);
+      // Handshake proves an actual app-server, not merely a spawned process.
+      try {
+        this.options.onStarted?.();
+      } catch {
+        /* Observability is best effort. */
+      }
       if (this.options.subscriptionAccess) {
         const access = await subscriptionAccess(false);
         const result = await rpc<LoginAccountResponse>("account/login/start", {
@@ -444,6 +452,12 @@ export class CodexDriver implements Driver {
       c.session(threadId);
       resumeUsage.verified = true;
       adoptResumeUsage();
+      if (c.sessionId && !baseline && !resumeUsage.invalid) {
+        const persisted = await codexResumeUsage(result.thread.path, threadId);
+        // Notifications can arrive while disk I/O is pending. They retain precedence,
+        // including an invalidated candidate; never resurrect an invalid baseline.
+        if (!resumeUsage.seen && !resumeUsage.invalid) baseline = persisted;
+      }
       if (!this.options.env.OPENAI_API_KEY && this.options.env.CODEX_HOME) {
         // Existing native ChatGPT session only: this documented RPC never starts inference.
         // Optional quota failure cannot turn a normal coding request into a harness failure.

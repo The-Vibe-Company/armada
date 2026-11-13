@@ -447,6 +447,8 @@ export interface EventsRequest {
 export interface EventPage {
   /** Only an authenticated Armada journal archive reader sets this provenance. */
   source?: "armada-runtime";
+  /** Server lifecycle failure, not an entry in the guest journal or proof of inference. */
+  runtimeFailure?: { status: "failed"; reason: string };
   events: AgentEvent[];
   /** Exclusive oldest boundary for the next backward read. Events are always chronological. */
   olderCursor?: string;

@@ -4,6 +4,7 @@ import { createSqlData } from "./data.ts";
 import type { Route } from "./http.ts";
 import { type createRuntimeEnrolments, RuntimeEnrolmentDenied } from "./runtime-enrolment.ts";
 import type { RuntimeNativePublication } from "./runtime-native-auth.ts";
+import { logRuntimeStage } from "./runtime-progress.ts";
 
 class InvalidEvents extends Error {}
 class ConflictingEvent extends Error {}
@@ -104,7 +105,8 @@ export function createRuntimeEvents(
         expectedRevision: value.nativeAuth.expectedRevision as number,
       });
     }
-    return authority.withSession(token, epoch, async (tx, scope) => {
+    let first: { sandboxId: string; epoch: string } | undefined;
+    const result = await authority.withSession(token, epoch, async (tx, scope) => {
       if (value.sandboxId !== scope.sandboxId || value.generation !== scope.epoch) throw new RuntimeEnrolmentDenied();
       if (value.nativeAuth !== undefined) throw new UnsupportedNativeAuth();
       if (
@@ -141,6 +143,7 @@ export function createRuntimeEvents(
           )
         ).rows[0]?.ack ?? "0",
       );
+      const initialAck = ack;
       const references = [...new Set(items.flatMap((item) => (item.event.promptId ? [item.event.promptId] : [])))];
       const known = new Set(
         (references.length
@@ -209,8 +212,11 @@ export function createRuntimeEvents(
         if (!data.sandboxes.recordUsage) throw Error("runtime_usage_projection_unavailable");
         await data.sandboxes.recordUsage(scope.sandboxId, usage);
       }
+      if (initialAck === 0 && fresh.length) first = scope;
       return { acknowledgedSequence: ack };
     });
+    if (first) logRuntimeStage(first, "first_event"); // Only after encrypted archive/usage commit.
+    return result;
   }
   const route: Route = async (request) => {
     if (new URL(request.url).pathname !== "/api/runtime/events") return null;

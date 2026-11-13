@@ -24,6 +24,7 @@ export function createRuntimeHistory(sql: Sql, key: string) {
     const authorize = async () => {
       const row = await data(caller).sandboxes.get(sandboxId);
       if (!row || row.boatRuntime !== true) throw denied();
+      return row;
     };
     await authorize();
     const { limit, backward } = eventPageOptions(request, "boat");
@@ -67,9 +68,12 @@ export function createRuntimeHistory(sql: Sql, key: string) {
     request.signal?.throwIfAborted();
     const page = buildEventPage(entries, request, rows.length > limit, "boat");
     // Scope is revalidated after decryption, not merely before the archive query.
-    await authorize();
+    const latest = await authorize();
     request.signal?.throwIfAborted();
     return {
+      ...(latest.status === "failed"
+        ? { runtimeFailure: { status: "failed" as const, reason: latest.statusReason ?? "Armada runtime failed." } }
+        : {}),
       ...page,
       // Raw cursor/limit anchors include inspected unrelated conversation entries.
       // Filter after bounding to preserve forward progress on empty filtered pages.

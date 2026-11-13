@@ -90,6 +90,7 @@ async function proveEnrolledStart(
           polls++;
           return Response.json({ epoch, command: requests[next] ?? null });
         }
+        if (path === "/api/runtime/progress") return Response.json({ accepted: true });
         if (path === "/api/runtime/results") {
           const result = (await request.json()) as {
             requestId: string;

@@ -873,21 +873,9 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
                 }>("status", { id: sandboxId }),
               (result) => {
                 const row = result.usage?.turns?.find((row) => row.promptId === turn.promptId);
-                // A cold Codex resume may have no verified pre-dispatch baseline.
-                // Require an explicit unknown snapshot for THIS prompt, never absent usage
-                // or aggregate totals from an earlier turn. Verified deltas remain valid.
-                if (
-                  phase === "resume" &&
-                  item.harness === "codex" &&
-                  row?.inputTokens === null &&
-                  row.outputTokens === null &&
-                  row.cachedTokens === null &&
-                  result.usage?.tokenTotals?.incomplete === true &&
-                  typeof result.usage.tokenTotals.inputTokens === "number" &&
-                  typeof result.usage.tokenTotals.outputTokens === "number"
-                )
-                  return true;
+                // A resumed prompt must be measured, not an explicit unknown receipt.
                 return (
+                  result.usage?.tokenTotals?.incomplete !== true &&
                   typeof row?.inputTokens === "number" &&
                   typeof row.outputTokens === "number" &&
                   typeof result.usage?.tokenTotals?.inputTokens === "number" &&
