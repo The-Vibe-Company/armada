@@ -24,6 +24,102 @@ export async function runGitHubInstallMode(): Promise<void> {
   process.stdout.write("github_tools_installed\n");
 }
 
+/** Runtime-local installation: no system binary replacement or privilege escalation.
+ * The sandbox owner already owns this runtime and its repository-scoped GitHub authority.
+ * Socket, executable shims and helper config remain owner-only; no token is persisted.
+ */
+export async function installUserGitHubTools(input: {
+  root: string;
+  activation: string;
+  socket: string;
+  gh: string;
+  git: string;
+  homes: readonly string[];
+  identity?: { name: string; email: string };
+}): Promise<void> {
+  await mkdir(input.root, { recursive: true, mode: 0o700 });
+  const directory = await lstat(input.root);
+  if (
+    !directory.isDirectory() ||
+    directory.isSymbolicLink() ||
+    directory.uid !== process.getuid?.() ||
+    directory.mode & 0o077
+  )
+    throw Error("github_tools_denied");
+  const bin = join(input.root, "bin");
+  await mkdir(bin, { mode: 0o700, recursive: true });
+  const binInfo = await lstat(bin);
+  if (!binInfo.isDirectory() || binInfo.isSymbolicLink() || binInfo.uid !== directory.uid || binInfo.mode & 0o077)
+    throw Error("github_tools_denied");
+  const q = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+  async function replace(path: string, content: string, mode: number) {
+    const existing = await lstat(path).catch(() => undefined);
+    if (existing && (existing.isSymbolicLink() || !existing.isFile() || existing.uid !== directory.uid))
+      throw Error("github_tools_denied");
+    const temporary = `${path}.${crypto.randomUUID()}`;
+    await writeFile(temporary, content, { mode, flag: "wx" });
+    await rename(temporary, path);
+  }
+  const original = async (path: string) => {
+    const saved = await lstat(`${path}.armada-original`).catch(() => undefined);
+    if (saved && (saved.isSymbolicLink() || !saved.isFile())) throw Error("github_tools_denied");
+    return saved ? `${path}.armada-original` : path;
+  };
+  const git = await original(input.git),
+    gh = await original(input.gh);
+  const client = join(input.root, "client.py");
+  await replace(client, `REQUIRE_ROOT=False\nGIT_EXECUTABLE=${JSON.stringify(git)}\n${GITHUB_CLIENT}`, 0o600);
+  for (const [name, executable, mode] of [
+    ["git", git, "git-run"],
+    ["gh", gh, "gh"],
+  ] as const) {
+    await replace(
+      join(bin, name),
+      `#!/bin/sh\nexec /usr/bin/python3 -I ${q(client)} ${mode} ${q(input.socket)} ${q(executable)} "$@"\n`,
+      0o700,
+    );
+  }
+  for (const home of new Set(input.homes)) {
+    const homeInfo = await lstat(home);
+    if (!homeInfo.isDirectory() || homeInfo.isSymbolicLink() || homeInfo.uid !== directory.uid)
+      throw Error("github_tools_denied");
+    const config = join(home, ".gitconfig");
+    const existing = await lstat(config).catch(() => undefined);
+    if (existing && (existing.isSymbolicLink() || !existing.isFile() || existing.uid !== directory.uid))
+      throw Error("github_tools_denied");
+    for (const args of [
+      ...(input.identity
+        ? [
+            ["user.name", input.identity.name],
+            ["user.email", input.identity.email],
+          ]
+        : []),
+      ["--replace-all", "credential.https://github.com.helper", ""],
+      ["--add", "credential.https://github.com.helper", `!/usr/bin/python3 -I ${q(client)} git ${q(input.socket)}`],
+      ["credential.https://github.com.useHttpPath", "true"],
+    ]) {
+      const command = Bun.spawn([git, "config", "--file", config, ...args], {
+        env: { HOME: home, PATH: "/usr/bin:/bin", GIT_CONFIG_NOSYSTEM: "1" },
+        stdout: "ignore",
+        stderr: "ignore",
+      });
+      if (await command.exited) throw Error("github_tools_denied");
+    }
+  }
+  const response = await fetch("http://private/activate", {
+    unix: input.socket,
+    method: "POST",
+    body: JSON.stringify({ key: input.activation }),
+  });
+  if (!response.ok) throw Error("github_tools_denied");
+  await replace(join(input.root, "..", "github-socket"), join(input.root, "redact.sock"), 0o600);
+  await replace(
+    join(input.root, "..", "github-native-proxy"),
+    `#!/bin/sh\nexec /usr/bin/python3 -I ${q(client)} native ${q(join(input.root, "redact.sock"))} "$@"\n`,
+    0o700,
+  );
+}
+
 /** Code and socket address only. Credential bytes arrive exclusively on owner-private IPC. */
 export async function installGitHubTools(input: {
   root: string;
@@ -203,7 +299,7 @@ if len(sys.argv)>1 and sys.argv[1]=='git-run':
         os.execve(sys.argv[3],[sys.argv[3]]+sys.argv[4:],env)
 # sudo-rs supports named preservation, not preserving the entire environment.
 # Only variable NAMES cross argv; values remain in the inherited private environment.
-if len(sys.argv)>1 and (sys.argv[1]=='elevate' or (sys.argv[1]=='git-run' and os.getuid()!=0)):
+if globals().get('REQUIRE_ROOT',True) and len(sys.argv)>1 and (sys.argv[1]=='elevate' or (sys.argv[1]=='git-run' and os.getuid()!=0)):
     names=','.join(key for key in os.environ if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*',key) and not key.startswith('SUDO_'))
     os.execv('/usr/bin/sudo',['sudo','-n','--preserve-env='+names,'/usr/bin/python3','-I',os.path.abspath(__file__)]+(sys.argv[2:] if sys.argv[1]=='elevate' else sys.argv[1:]))
 local_secrets=set(value.encode() for key,value in os.environ.items() if key in ("GH_TOKEN","GITHUB_TOKEN") and value)

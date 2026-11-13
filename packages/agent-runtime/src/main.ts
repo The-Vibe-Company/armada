@@ -8,7 +8,7 @@ import { enrolRuntime, RuntimeDialout, runtimeSubscriptionAccess } from "./dialo
 import { prepareEnrolledHarness } from "./enrolled-harness.ts";
 import { execCredentialValues, validateExecEnvironment } from "./exec-env.ts";
 import { GitHubBroker, type GitHubBrokerConfiguration } from "./github-broker.ts";
-import { type installGitHubTools, prepareGitHubTools, runGitHubInstallMode } from "./github-tools.ts";
+import { installUserGitHubTools, runGitHubInstallMode } from "./github-tools.ts";
 import { runHarnessInstallMode } from "./harness-cache.ts";
 import { checkpointIdentityKey } from "./identity.ts";
 import { ClaudeDriver, CodexDriver, type Grant, Journal, type McpConfiguration, Runner } from "./index.ts";
@@ -340,22 +340,34 @@ async function main(dialout = false) {
     subscriptionAccess = runtimeSubscriptionAccess(channel, (values) => journal.registerSecrets(values));
   const github = new GitHubBroker((values) => journal.registerSecrets(values));
   const githubRoot = `${config.root}/github-${createHash("sha256").update(config.grant.generation).digest("hex").slice(0, 16)}`;
+  const githubBin = `${githubRoot}/bin`;
+  // Fixed before drivers/exec capture their environments. Installation contains no secrets.
+  for (const env of [config.claudeEnv, config.codexEnv, opencodeEnv])
+    env.PATH = `${githubBin}:${env.PATH ?? "/usr/local/bin:/usr/bin:/bin"}`;
+  process.env.PATH = `${githubBin}:${process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin"}`;
   let githubSocket: Awaited<ReturnType<GitHubBroker["listen"]>> | undefined;
   let githubConfiguration = Promise.resolve();
   const ensureGitHubTools = async (identity?: { name: string; email: string }) => {
     githubSocket ??= await github.listen(githubRoot);
-    const tools: Parameters<typeof installGitHubTools>[0] = {
+    const tools: Parameters<typeof installUserGitHubTools>[0] = {
       root: githubRoot,
       socket: githubSocket.socket,
       gh: "/usr/bin/gh",
       git: "/usr/bin/git",
-      ghWrapper: "/usr/local/bin/gh",
-      gitWrapper: "/usr/local/bin/git",
-      homes: ["/home/user", config.claudeEnv.HOME!, config.codexEnv.HOME!, opencodeEnv.HOME!],
+      homes: [
+        ...new Set(
+          [
+            execEnv.HOME ?? process.env.HOME ?? "/home/user",
+            config.claudeEnv.HOME,
+            config.codexEnv.HOME,
+            opencodeEnv.HOME,
+          ].filter((home): home is string => !!home),
+        ),
+      ],
       activation: githubSocket.activation,
       ...(identity ? { identity } : {}),
     };
-    await prepareGitHubTools(tools);
+    await installUserGitHubTools(tools);
   };
   const configureGitHub = (value: GitHubBrokerConfiguration | null): Promise<void> => {
     const work = githubConfiguration.then(async () => {
@@ -472,7 +484,7 @@ async function main(dialout = false) {
           );
         throw Error("model_connection_test_denied");
       },
-      execEnv: fenced ? {} : execEnv,
+      execEnv: { ...(fenced ? {} : execEnv), PATH: `${githubBin}:${execEnv.PATH ?? "/usr/local/bin:/usr/bin:/bin"}` },
       refreshNativeSecrets,
       publishNativeAuth,
       exclusiveNativeAuth: config.nativeAuthRevision !== undefined,
