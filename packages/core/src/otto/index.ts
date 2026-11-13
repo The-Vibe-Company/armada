@@ -24,7 +24,15 @@ export interface OttoResource {
   kind: "pr" | "sandbox";
   externalId: string;
   taskIssue: number | null;
-  owner: { state: "owned" | "orphan" | "unknown"; userId: string | null };
+  owner: {
+    state: "owned" | "candidate" | "orphan" | "unknown";
+    userId: string | null;
+    sandboxId?: string;
+    candidateSandboxIds?: string[];
+    confirmation?: "confirmed" | "candidate";
+  };
+  activity?: { state: "live" | "idle" | "not_live" | "unknown"; observedAt: string | null; since?: string | null };
+  needsWork?: OttoTruth;
   reason: string;
   observedAt: string | null;
   evidence: Record<string, unknown>;
@@ -33,11 +41,14 @@ export interface OttoTask {
   issueNumber: number;
   title: string;
   state: "open" | "unknown";
-  factId: string;
+  factId: string | null;
 }
 export interface OttoOrphan {
   resource: OttoResource;
   state: "orphan" | "unknown";
   reason: string;
   day: string;
+  firstSeenAt?: string;
+  lastSeenAt?: string;
+  current?: boolean | null;
 }

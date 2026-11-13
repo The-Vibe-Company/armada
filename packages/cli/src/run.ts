@@ -113,7 +113,7 @@ Usage:
                                            clear defaults. Scoped to this provider golden, future launches only.
   armada golden list [--provider boat|modal] [--json]
                                            Goldens you can see
-  armada launch <golden> --agent claude|codex ["prompt"] [--model <id>] [--reasoning-effort <level>]
+  armada launch <golden> --agent ${HARNESSES.join("|")} ["prompt"] [--model <id>] [--reasoning-effort <level>]
                                            [--armada-access --credential-id <id> [--max-active-children <1..100>]]
                 [--provider boat|modal] [--repo <configured-dir|owner/repo>] [--size small|medium|large|xlarge | --sized] [--ttl 4h] [--json]
                 [--skill org/slug@version|slug@version ...] [--connections <id,...> | --no-connections] [--org <org>]
@@ -132,7 +132,7 @@ Usage:
                                            Defaults:
                                            ${modelDefaults()}
                                            --repo prepares native agent cwd in the selected repository, including when idle; not confinement.
-  armada list [--status STATUS] [--agent|--harness claude|codex] [--golden UUID] [--owner UUID|me]
+  armada list [--status STATUS] [--agent|--harness ${HARNESSES.join("|")}] [--golden UUID] [--owner UUID|me]
               [--page N] [--limit 1..200] [--org UUID] [--json] [--page-info]
                                            Default page size 25; --json keeps {sandboxes:[...]}; --page-info adds exact totals
   armada mcp sandbox-connections <sandbox-uuid> [--org UUID] [--json]

@@ -10,6 +10,7 @@ const pinned = {
   claudeSdk: "0.3.322",
   claude: "2.1.322",
   codex: "0.167.0",
+  opencode: { version: "1.19.5", sha256: "7df4e4136301f16589b0f30bf91a61380fca5f8ef22dd36570f5ebe1d4ec802c" },
   architecture: "x64",
 };
 const digest = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
@@ -21,14 +22,14 @@ test("disk loader validates bytes, pins, architecture and native resources", asy
     await Bun.write(join(root, "main.js"), "");
     await expect(loadRunnerArtifact(root)).rejects.toThrow("empty");
     await Bun.write(join(root, "main.js"), "abc");
-    for (const field of ["protocol", "bun", "claudeSdk", "claude", "codex"]) {
+    for (const field of ["protocol", "bun", "claudeSdk", "claude", "codex", "opencode"]) {
       await Bun.write(join(root, "manifest.json"), JSON.stringify({ ...pinned, [field]: "wrong" }));
       await expect(loadRunnerArtifact(root)).rejects.toThrow("pinned");
     }
     await Bun.write(join(root, "manifest.json"), JSON.stringify({ ...pinned, architecture: "unsupported" }));
     await expect(loadRunnerArtifact(root)).rejects.toThrow("pinned");
     await Bun.write(join(root, "manifest.json"), JSON.stringify(pinned));
-    for (const path of ["claude", "codex", "codex-runtime/bin/codex"]) {
+    for (const path of ["claude", "codex", "codex-runtime/bin/codex", "opencode"]) {
       await expect(loadRunnerArtifact(root)).rejects.toThrow("native resources missing");
       await Bun.write(join(root, path), "fixture");
     }
@@ -47,6 +48,10 @@ test("embedded portable loader rejects empty/unpinned artifacts without requirin
     for (const file of ["embedded.ts", "artifact-validation.ts", "errors.ts", "ports.ts"])
       await Bun.write(join(src, file), Bun.file(join(import.meta.dir, "../src", file)));
     await symlink(join(import.meta.dir, "../node_modules"), join(root, "node_modules"), "dir");
+    await Bun.write(
+      join(root, "packages/agent-runtime/src/opencode-artifact.ts"),
+      Bun.file(join(import.meta.dir, "../../agent-runtime/src/opencode-artifact.ts")),
+    );
     const dist = join(root, "packages/agent-runtime/dist");
     await Bun.write(
       join(root, "check.ts"),

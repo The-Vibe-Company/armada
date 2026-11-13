@@ -198,6 +198,30 @@ test.skipIf(!process.env.CODEX_NATIVE_TEST_BINARY)(
     const upstream = Bun.serve({
       port: 0,
       async fetch(request) {
+        // A completed local Responses turn is the durable-rollout fixture. Keep this exact
+        // route separate from MCP authorization; it never contacts a model service.
+        if (request.method === "POST" && new URL(request.url).pathname === "/v1/responses") {
+          const responseId = `offline-response-${crypto.randomUUID()}`;
+          const body = [
+            "event: response.created\n",
+            `data: ${JSON.stringify({ type: "response.created", response: { id: responseId } })}\n\n`,
+            "event: response.completed\n",
+            `data: ${JSON.stringify({
+              type: "response.completed",
+              response: {
+                id: responseId,
+                usage: {
+                  input_tokens: 0,
+                  input_tokens_details: null,
+                  output_tokens: 0,
+                  output_tokens_details: null,
+                  total_tokens: 0,
+                },
+              },
+            })}\n\n`,
+          ].join("");
+          return new Response(body, { headers: { "content-type": "text/event-stream" } });
+        }
         const sessionId = request.headers.get("mcp-session-id");
         const session = sessionId ? sessions.get(sessionId) : undefined;
         if (request.headers.get("authorization") !== expected) {
@@ -250,31 +274,34 @@ test.skipIf(!process.env.CODEX_NATIVE_TEST_BINARY)(
       await installProtocolWrapper(path, install);
       const script = `
 import json, subprocess, sys, os
-p=subprocess.Popen([sys.argv[1],"app-server","--listen","stdio://","-c",'model_provider="offline"',"-c",'model_providers.offline={name="offline",base_url="http://127.0.0.1:1",wire_api="responses",requires_openai_auth=false,request_max_retries=0,stream_max_retries=0}'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
+p=subprocess.Popen([sys.argv[1],"app-server","--listen","stdio://","-c",'model_provider="offline"',"-c",'model_providers.offline={name="offline",base_url="http://127.0.0.1:${upstream.port}/v1",wire_api="responses",requires_openai_auth=false,request_max_retries=0,stream_max_retries=0}'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
 completed=False
-def rpc(id,method,params):
+def receive():
     global completed
+    line=p.stdout.readline()
+    if not line:raise RuntimeError("native process exited")
+    m=json.loads(line)
+    if m.get("method")=="turn/completed":completed=True
+    return m
+def rpc(id,method,params):
     p.stdin.write((json.dumps(dict(id=id,method=method,params=params))+"\\n").encode());p.stdin.flush()
     while True:
-        line=p.stdout.readline()
-        if not line:raise RuntimeError("native process exited")
-        m=json.loads(line)
-        if m.get("method")=="turn/completed":completed=True
+        m=receive()
         if m.get("id")==id:
-            if "error" in m:raise RuntimeError(method+":"+str(m["error"].get("code")))
+            if "error" in m:
+                error=m["error"]
+                detail=(":"+str(error.get("message",""))[:256]) if error.get("code")==-32601 else ""
+                raise RuntimeError(method+":"+str(error.get("code"))+detail)
             return m["result"]
 try:
     rpc(1,"initialize",{"clientInfo":{"name":"armada-mcp-proof","version":"1"},"capabilities":{"experimentalApi":True}})
     p.stdin.write(b'{"method":"initialized"}\\n');p.stdin.flush()
     params={"cwd":sys.argv[2],"approvalPolicy":"never","sandbox":"danger-full-access"}
     thread=rpc(2,"thread/start",params)["thread"]["id"]
-    # A real local failed turn creates the rollout required by thread/resume.
-    # The synthetic provider points only at loopback port 1: no model API/auth.
-    turn=rpc(7,"turn/start",{"threadId":thread,"input":[{"type":"text","text":"offline persistence"}]})
-    try:
-        rpc(9,"turn/interrupt",{"threadId":thread,"turnId":turn["turn"]["id"]})
-    except RuntimeError as error:
-        if str(error)!="turn/interrupt:-32600":raise
+    # A local completed Responses turn creates the durable rollout required by thread/resume.
+    # The owned loopback fixture performs no model inference or authentication.
+    rpc(7,"turn/start",{"threadId":thread,"input":[{"type":"text","text":"offline persistence"}]})
+    while not completed:receive()
     state=rpc(8,"thread/read",{"threadId":thread,"includeTurns":False})
     assert state["thread"]["status"]["type"]!="active"
 

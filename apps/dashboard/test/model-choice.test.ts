@@ -32,6 +32,10 @@ describe("model choice from the dashboard forms", () => {
   });
 
   test("a launch the model cannot run is refused with what it accepts", () => {
+    expect(launchArgs({ ...form, provider: "modal", harness: "opencode" })).toMatchObject({
+      ok: true,
+      args: { model: "armada/deepseek-flash", reasoning_effort: "default" },
+    });
     const refused = launchArgs({ ...form, harness: "codex", model: "gpt-6-luna", reasoningEffort: "ultra" });
     expect(refused).toMatchObject({ ok: false });
     expect(refused.ok ? "" : refused.error).toContain("low, medium, high, xhigh, max");

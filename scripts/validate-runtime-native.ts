@@ -6,6 +6,7 @@ if (process.platform !== "linux" || Bun.version !== "1.4.2")
 for (const [name, expected] of [
   ["claude", "2.1.322 (Claude Code)"],
   ["codex", "codex-cli 0.167.0"],
+  ["opencode", "1.19.5"],
 ]) {
   const result = Bun.spawnSync([join(import.meta.dir, "../packages/agent-runtime/dist", name!), "--version"]);
   if (result.exitCode !== 0 || result.stdout.toString().trim() !== expected)

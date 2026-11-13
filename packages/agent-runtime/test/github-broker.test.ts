@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Subprocess } from "bun";
 import { GitHubBroker } from "../src/github-broker.ts";
 
 // Use Git's installed executable, not a PATH launcher that can inject a real
@@ -36,6 +37,9 @@ test("existing native children use new GitHub material and register it before gh
     expiresAt: Date.now() + 60000,
   });
   const socket = await broker.listen(join(root, "private"));
+  let child: Subprocess<"pipe", "pipe", "pipe"> | undefined;
+  let releaseReader: (() => Promise<void>) | undefined;
+  let cleanupFailure: unknown;
   try {
     const home = join(root, "home"),
       bin = join(root, "bin");
@@ -45,7 +49,8 @@ test("existing native children use new GitHub material and register it before gh
     const git = installedGit();
     if (!gh || !git) throw Error("Actual gh and git executables required for credential-boundary verification");
     const observer = join(root, "observe-gh");
-    await writeFile(observer, `#!/bin/sh\n${gh} "$@" | sha256sum\n`, { mode: 0o700 });
+    // A consumer may read stdin: it must see EOF, never the shell control pipe.
+    await writeFile(observer, `#!/bin/sh\ncat >/dev/null\n${gh} "$@" | sha256sum\n`, { mode: 0o700 });
     const gitObserver = join(root, "observe-git");
     await writeFile(gitObserver, `#!/bin/sh\nexec "${git}" "$@"\n`, { mode: 0o700 });
     const tools = {
@@ -82,21 +87,76 @@ test("existing native children use new GitHub material and register it before gh
       GH_REPO: "acme/repo",
       GH_TOKEN: "inherited-stale",
       GITHUB_TOKEN: "inherited-stale",
+      GH_NO_UPDATE_NOTIFIER: "1",
+      GH_NO_EXTENSION_UPDATE_NOTIFIER: "1",
+      GH_PROMPT_DISABLED: "1",
+      GIT_TERMINAL_PROMPT: "0",
       GIT_CONFIG_NOSYSTEM: "1",
       GIT_CONFIG_COUNT: "1",
       GIT_CONFIG_KEY_0: "armada.probe",
       GIT_CONFIG_VALUE_0: "preserved",
     };
-    const child = Bun.spawn(["bash"], { env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
-    const reader = child.stdout.getReader();
+    const commands = `
+exec 3<&0 </dev/null
+while IFS= read -r phase <&3; do
+  case "$phase" in
+    consume)
+      # Independent read-only consumers share a token epoch, not output pipes.
+      exec 4< <(gh auth token --hostname github.com 3<&-)
+      gh_pid=$!
+      exec 5< <(printf 'protocol=https\nhost=github.com\npath=acme/repo.git\n\n' | git credential fill 3<&-)
+      git_pid=$!
+      exec 6< <(git -c alias.creds=credential creds fill 3<&- <<'CREDENTIAL_INPUT'
+protocol=https
+host=github.com
+path=acme/repo.git
+
+CREDENTIAL_INPUT
+      )
+      alias_pid=$!
+      cat <&4 3<&-
+      cat <&5 3<&-
+      cat <&6 3<&-
+      exec 4<&- 5<&- 6<&-
+      wait "$gh_pid" "$git_pid" "$alias_pid"
+      git config --get armada.probe 3<&-
+      ;;
+    denied)
+      gh pr view https://github.com/foreign/repo/pull/1 3<&-; echo URL_STATUS:$?
+      gh repo view foreign/repo 3<&-; echo REPO_STATUS:$?
+      ;;
+    *) exit 64 ;;
+  esac
+  printf 'PHASE_DONE\n'
+done
+`;
+    const shell = Bun.spawn(["bash", "-c", commands], {
+      env,
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+      detached: true,
+    });
+    child = shell;
+    const output = shell.stdout.getReader();
+    releaseReader = async () => {
+      await output.cancel().catch(() => {});
+      output.releaseLock();
+    };
+    // Drain immediately so diagnostics cannot backpressure a native command.
+    const errors = new Response(shell.stderr).text().catch(() => undefined);
+    async function errorText() {
+      const text = await errors;
+      if (text === undefined) throw Error("fixture stderr failed");
+      return text;
+    }
     let pending = "";
-    async function phase() {
-      child.stdin.write(
-        "gh auth token --hostname github.com\nprintf 'protocol=https\\nhost=github.com\\npath=acme/repo.git\\n\\n' | git credential fill\ngit -c alias.creds=credential creds fill <<'CREDENTIAL_INPUT'\nprotocol=https\nhost=github.com\npath=acme/repo.git\n\nCREDENTIAL_INPUT\ngit config --get armada.probe\necho PHASE_DONE\n",
-      );
+    async function phase(name: "consume" | "denied" = "consume") {
+      shell.stdin.write(`${name}\n`);
+      await shell.stdin.flush();
       while (!pending.includes("PHASE_DONE\n")) {
-        const item = await reader.read();
-        if (item.done) throw Error("fixture exited");
+        const item = await output.read();
+        if (item.done) throw Error(`fixture exited before ${name} completed`);
         pending += new TextDecoder().decode(item.value);
       }
       const at = pending.indexOf("PHASE_DONE\n"),
@@ -106,9 +166,9 @@ test("existing native children use new GitHub material and register it before gh
     }
     const first = await phase();
     if (!first.includes("password=***") || !first.includes("preserved")) {
-      child.stdin.end();
-      await child.exited;
-      let diagnostic = await new Response(child.stderr).text();
+      shell.stdin.end();
+      await shell.exited;
+      let diagnostic = await errorText();
       for (const secret of [current, next, "inherited-stale"]) diagnostic = diagnostic.replaceAll(secret, "***");
       throw Error(diagnostic);
     }
@@ -126,25 +186,31 @@ test("existing native children use new GitHub material and register it before gh
     expect(second.split("\n")[0]).toBe(`${createHash("sha256").update(`${next}\n`).digest("hex")}  -`);
     expect(second).not.toContain("inherited-stale");
     expect(second).not.toContain(current);
-    child.stdin.write(
-      "gh pr view https://github.com/foreign/repo/pull/1; echo URL_STATUS:$?; gh repo view foreign/repo; echo REPO_STATUS:$?; echo PHASE_DONE\n",
-    );
-    while (!pending.includes("PHASE_DONE\n")) {
-      const item = await reader.read();
-      if (item.done) throw Error("fixture exited");
-      pending += new TextDecoder().decode(item.value);
-    }
-    expect(pending).toContain("URL_STATUS:1");
-    expect(pending).toContain("REPO_STATUS:1");
-    child.stdin.end();
-    await child.exited;
-    expect(await new Response(child.stderr).text()).toBe(
+    const denied = await phase("denied");
+    expect(denied).toContain("URL_STATUS:1");
+    expect(denied).toContain("REPO_STATUS:1");
+    shell.stdin.end();
+    await shell.exited;
+    expect(await errorText()).toBe(
       "Managed GitHub credentials unavailable (request: invalid_response).\nManaged GitHub credentials unavailable (request: invalid_response).\n",
     );
   } finally {
+    if (child) {
+      child.stdin.end();
+      if (child.exitCode === null) {
+        try {
+          process.kill(-child.pid, "SIGTERM");
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ESRCH") cleanupFailure = error;
+        }
+      }
+      await child.exited;
+    }
+    await releaseReader?.();
     socket.close();
     await rm(root, { recursive: true, force: true });
   }
+  if (cleanupFailure !== undefined) throw cleanupFailure;
 });
 
 test("late acquisition cannot publish across replacement/scrub and retired values stay registered", async () => {

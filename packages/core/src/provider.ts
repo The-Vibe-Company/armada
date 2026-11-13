@@ -83,7 +83,7 @@ export interface Provider {
   readonly id: string;
   readonly harnesses: readonly Harness[];
   /** What each harness can do here. Callers branch on this, never on the harness name. */
-  readonly capabilities: Readonly<Record<Harness, HarnessCapabilities>>;
+  readonly capabilities: Readonly<Partial<Record<Harness, HarnessCapabilities>>>;
   /** Maximum independent goldens supported by this backend; omitted means no backend limit. */
   readonly maxGoldens?: number;
   /** Stable non-secret backend account identity, when supported. */
@@ -445,6 +445,8 @@ export interface EventsRequest {
 }
 
 export interface EventPage {
+  /** Only an authenticated Armada journal archive reader sets this provenance. */
+  source?: "armada-runtime";
   events: AgentEvent[];
   /** Exclusive oldest boundary for the next backward read. Events are always chronological. */
   olderCursor?: string;

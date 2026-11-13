@@ -32,8 +32,10 @@ export function modalLaunchEnvironment(options: ModalLaunchEnvironmentOptions) {
     if (machine.golden) throw new VaultError("forbidden", "Golden builders cannot resolve launch credentials.");
     const claude = Boolean(env.CLAUDE_CODE_OAUTH_TOKEN || env.ANTHROPIC_API_KEY);
     const codex = Boolean(env.OPENAI_API_KEY || env.ARMADA_CODEX_AUTH_JSON || env.ARMADA_SERVER_CODEX);
-    if (claude && codex) throw new VaultError("invalid", "A launch must select exactly one harness.");
-    const initialHarness: Harness | undefined = claude ? "claude" : codex ? "codex" : undefined;
+    const opencode = Boolean(env.OPENCODE_API_KEY);
+    if ([claude, codex, opencode].filter(Boolean).length > 1)
+      throw new VaultError("invalid", "A launch must select exactly one harness.");
+    const initialHarness: Harness | undefined = claude ? "claude" : codex ? "codex" : opencode ? "opencode" : undefined;
     if (env.GH_TOKEN && env.GITHUB_TOKEN && env.GH_TOKEN !== env.GITHUB_TOKEN)
       throw new VaultError("invalid", "Launch GitHub aliases disagree.");
     const selectedId = machine.info.labels.credentialId;
@@ -160,6 +162,10 @@ export function modalLaunchEnvironment(options: ModalLaunchEnvironmentOptions) {
     return {
       ...(subscription ? { subscription } : {}),
       ...(native ? { nativeAuthRevision: native.revision, nativeAuthSecrets: native.secrets } : {}),
+      opencodeEnv:
+        stored.harness === "opencode"
+          ? { HOME: "/home/user", PATH: execEnv.PATH!, ...credentials.env, ...githubEnv }
+          : {},
       claudeEnv:
         stored.harness === "claude"
           ? { HOME: "/home/user", PATH: execEnv.PATH!, ...credentials.env, ...githubEnv }

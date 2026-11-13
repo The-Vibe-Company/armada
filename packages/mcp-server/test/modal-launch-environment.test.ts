@@ -359,3 +359,74 @@ test("shared Codex Modal bootstrap contains only the private access grant, never
     await db.close();
   }
 });
+
+// Modal bootstrap owns selected-harness isolation and immutable account binding across restores.
+test("OpenCode Modal bootstrap restores its pinned endpoint privately without lending keys to exec or native harnesses", async () => {
+  const { db, people } = await database();
+  try {
+    const scope: Scope = {
+      orgId: people.org,
+      userId: people.owner,
+      visibility: "private",
+      binding: { workspace: "ws", environment: "main", appId: "ap-bound" },
+    };
+    await db.query("insert into modal_server_scopes(scope,context) values($1,$2::jsonb)", [
+      scopeKey(scope),
+      JSON.stringify(scope),
+    ]);
+    const account = await mutateCredentialAccount(createSqlVaultStore(db), ENCRYPTION_KEY, people.owner, {
+      action: "set",
+      scope: "user",
+      kind: "opencode",
+      name: "DeepSeek",
+      value: JSON.stringify({
+        apiKey: "fake-opencode-key",
+        endpoint: { version: 1, baseUrl: "https://api.deepseek.com/v1", models: ["deepseek-flash"] },
+      }),
+    });
+    const machine: Machine = {
+      info: {
+        id: "opencode-logical",
+        name: "OpenCode",
+        state: "ready",
+        providerState: "active",
+        labels: { sandbox: crypto.randomUUID(), credentialId: account.id!, credentialVersion: "1" },
+      },
+      launchUserId: people.owner,
+      golden: false,
+      phase: "active",
+      generation: 1,
+      ttlSeconds: 60,
+      physicalName: "native",
+    };
+    const resolver = modalLaunchEnvironment({
+      sql: db,
+      vault: createSqlVaultStore(db),
+      encryptionKey: ENCRYPTION_KEY,
+      scope,
+      scopeKey: scopeKey(scope),
+      callerUserId: people.owner,
+    });
+    const initial = await resolver(machine, { OPENCODE_API_KEY: "admission-marker" });
+    const restored = await resolver({ ...machine, generation: 2 }, {});
+    for (const configured of [initial, restored]) {
+      expect(configured.opencodeEnv).toMatchObject({ OPENCODE_API_KEY: "fake-opencode-key" });
+      expect(JSON.parse(configured.opencodeEnv!.ARMADA_OPENCODE_ENDPOINT!)).toMatchObject({
+        models: ["deepseek-flash"],
+      });
+      expect(configured.claudeEnv).toEqual({});
+      expect(configured.codexEnv).toEqual({});
+      expect(JSON.stringify(configured.execEnv)).not.toContain("fake-opencode-key");
+    }
+    const metadata = (
+      await db.query(
+        "select harness,credential_id,credential_version from modal_server_harnesses where machine_id=$1",
+        [machine.info.id],
+      )
+    ).rows;
+    expect(metadata).toEqual([{ harness: "opencode", credential_id: account.id, credential_version: 1 }]);
+    expect(JSON.stringify(metadata)).not.toContain("fake-opencode-key");
+  } finally {
+    await db.close();
+  }
+});

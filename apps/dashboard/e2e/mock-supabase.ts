@@ -1,4 +1,11 @@
-import { type MachineSizePolicy, ROUTINE_REASON_HELP, resolveMachineSize } from "@armada/core";
+import {
+  type Harness,
+  harnessForCredential,
+  type MachineSizePolicy,
+  MODEL_CREDENTIAL_KINDS,
+  ROUTINE_REASON_HELP,
+  resolveMachineSize,
+} from "@armada/core";
 
 /**
  * A stand-in for Supabase Auth, PostgREST and the Armada MCP server, for the browser tests.
@@ -2488,12 +2495,9 @@ function orgProvider(route: string, body: Row, request: Request): Response {
 
 /* Named model accounts (#603): creds/list and creds/accounts/{set,rename,default,remove}, user JWT as the bearer. */
 
-const MODEL_KINDS: Record<string, "claude" | "codex"> = {
-  claude_oauth: "claude",
-  anthropic: "claude",
-  openai: "codex",
-  codex_auth: "codex",
-};
+const MODEL_KINDS: Record<string, Harness | undefined> = Object.fromEntries(
+  MODEL_CREDENTIAL_KINDS.map((kind) => [kind, harnessForCredential(kind)]),
+);
 
 /** The safe DTO: never `value_enc`, never the owner. Scope is where the row sits in `creds/list`. */
 function accountDto(row: Row): Row {

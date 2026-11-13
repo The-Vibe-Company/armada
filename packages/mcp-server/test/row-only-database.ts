@@ -8,6 +8,17 @@ import { seedDatabase } from "./support.ts";
  * Reset per fixture, not per test: a single test can build several fixtures.
  */
 export function rowOnlyDatabase() {
+  const connection = rowOnlyConnection();
+  return async () => seedDatabase(await connection());
+}
+
+/**
+ * One raw database connection per serial row-only suite. Callers own fixture
+ * seeding; this helper only resets rows before each fixture and closes the
+ * connection from the suite's afterAll hook. The same no-schema/settings-mutation
+ * and no-overlapping-fixture restrictions apply.
+ */
+export function rowOnlyConnection() {
   let db: Awaited<ReturnType<typeof openMigratedDatabase>>;
   let reset: string;
   beforeAll(async () => {
@@ -22,6 +33,6 @@ export function rowOnlyDatabase() {
   });
   return async () => {
     await resetMigratedDatabaseRows(db, reset);
-    return seedDatabase(db);
+    return db;
   };
 }

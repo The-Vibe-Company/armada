@@ -548,7 +548,8 @@ describe("credential values", () => {
   test("kinds are named the way the CLI spells them", () => {
     expect(parseCredentialKind("claude-oauth")).toBe("claude_oauth");
     expect(parseCredentialKind("Codex-Auth")).toBe("codex_auth");
-    expect(() => parseCredentialKind("opencode")).toThrow(/Unknown credential 'opencode'/);
+    expect(parseCredentialKind("opencode")).toBe("opencode");
+    expect(() => parseCredentialKind("unknown")).toThrow(/Unknown credential 'unknown'/);
   });
 });
 
@@ -770,3 +771,64 @@ async function withIsolatedVault(run: VaultRun): Promise<void> {
 
 // Token resolution in these fixtures must not leak audit records to stdout.
 captureGitHubAuditLogs();
+
+// Real migrated vault is the owner of credential grouping, encrypted delivery and user-JWT fences.
+test("OpenCode accounts keep independent defaults, sealed endpoints and the model-account RLS fence", async () => {
+  await withIsolatedVault(async ({ store, people, db }) => {
+    const org = await createOrg(store, people.stan, "OpenCode accounts");
+    const apiKey = crypto.randomUUID();
+    const codex = await mutateCredentialAccount(store, KEY, people.stan, {
+      action: "set",
+      scope: "user",
+      kind: "openai",
+      value: "fake-codex-key",
+      name: "Codex",
+    });
+    const account = await mutateCredentialAccount(store, KEY, people.stan, {
+      action: "set",
+      scope: "user",
+      kind: "opencode",
+      name: "DeepSeek",
+      value: JSON.stringify({
+        endpoint: { version: 1, baseUrl: "https://api.deepseek.com/v1", models: ["deepseek-flash"] },
+        apiKey,
+      }),
+    });
+    for (const id of [codex.id!, account.id!])
+      await mutateCredentialAccount(store, KEY, people.stan, { action: "default", scope: "user", id });
+    expect(
+      (await listCredentials(store, people.stan, undefined)).user
+        .filter((c) => c.isDefault)
+        .map((c) => c.id)
+        .sort(),
+    ).toEqual([codex.id!, account.id!].sort());
+    const actor = { userId: people.stan, orgId: org.id, harness: "opencode" as const, credentialId: account.id! };
+    const resolved = await resolveCredentials(store, KEY, actor);
+    expect(resolved.env.OPENCODE_API_KEY).toBe(apiKey);
+    expect(resolved.env.OPENAI_API_KEY).toBeUndefined();
+    expect(JSON.parse(resolved.env.ARMADA_OPENCODE_ENDPOINT!)).toMatchObject({
+      baseUrl: "https://api.deepseek.com/v1",
+      models: ["deepseek-flash"],
+    });
+    await expect(resolveCredentials(store, KEY, { ...actor, harness: "codex" })).rejects.toThrow(/incompatible/);
+    const encrypted = (
+      await db.query<{ value_enc: Uint8Array }>("select value_enc from credentials where id=$1", [account.id])
+    ).rows[0]!.value_enc;
+    expect(Buffer.from(encrypted).toString()).not.toContain(apiKey);
+    await db.query("select set_config('request.jwt.claim.sub',$1,false)", [people.stan]);
+    await db.exec("set role authenticated");
+    try {
+      await expect(db.query("select value_enc from credentials where id=$1", [account.id])).rejects.toThrow(
+        /permission denied/,
+      );
+      await expect(
+        db.query("insert into credentials(scope,owner_id,kind,value_enc) values('user',$1,'opencode',$2)", [
+          people.stan,
+          encrypted,
+        ]),
+      ).rejects.toThrow(/row-level security/);
+    } finally {
+      await db.exec("reset role");
+    }
+  });
+});

@@ -136,7 +136,7 @@ export function createUsagePricingContext(input: {
 }): UsagePricingContext {
   const provider = input.harness === "claude" ? "anthropic" : "openai";
   const prices: Record<string, PriceSnapshot> = {};
-  if (!input.customEndpoint) {
+  if (!input.customEndpoint && input.harness !== "opencode") {
     for (const key of Object.keys(table.models)) {
       if (!key.startsWith(`${provider}/`)) continue;
       const model = key.slice(provider.length + 1);
@@ -149,7 +149,7 @@ export function createUsagePricingContext(input: {
     capturedAt: new Date().toISOString(),
     catalogRevision: table.sha256,
     provider,
-    basis: costBasis(input.credentialKind),
+    basis: input.harness === "opencode" && !input.customEndpoint ? "api_equivalent" : costBasis(input.credentialKind),
     credentialId: input.credentialId ?? null,
     credentialVersion: input.credentialVersion ?? null,
     customEndpoint: input.customEndpoint,

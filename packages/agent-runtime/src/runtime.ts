@@ -43,7 +43,7 @@ export class Runner {
   constructor(
     readonly journal: Journal,
     readonly grant: Grant,
-    readonly drivers: Record<Harness, Driver>,
+    readonly drivers: Partial<Record<Harness, Driver>>,
     private ingest?: IngestClient,
     mcp?: McpConfiguration,
     private stripTransientAuth?: () => Promise<void>,
@@ -194,7 +194,7 @@ export class Runner {
         if (previous !== undefined && previous !== digest) throw Error("invalid_request");
         if (previous === digest)
           return Response.json({ version: 1, requestId: r.requestId, result: { acknowledged: true } });
-        const bootstrap = this.drivers[r.harness].configureReadableVariables;
+        const bootstrap = this.drivers[r.harness]?.configureReadableVariables;
         if (!bootstrap) throw Error("invalid_request");
         bootstrap.call(this.drivers[r.harness], variables);
         this.readableDigests.set(r.harness, digest);
@@ -400,7 +400,7 @@ export class Runner {
         .get(r.conversationId) as { harness: string; session: string } | null;
       if (!saved || saved.harness !== r.input.harness || saved.session !== r.expectedSessionId)
         throw Error("native_session_identity_changed");
-      const resume = this.drivers[r.input.harness].resumeSession?.bind(this.drivers[r.input.harness]);
+      const resume = this.drivers[r.input.harness]?.resumeSession?.bind(this.drivers[r.input.harness]);
       if (!resume) throw Error("native_resume_unsupported");
       this.resumingNative = true;
       // Consume actual604's sync redactor refresh and async private publication
@@ -607,7 +607,9 @@ export class Runner {
     this.journal.transition(p, "running");
     try {
       const sessionId = this.journal.session(p.conversationId);
-      const turn = this.drivers[p.request.harness].start({
+      const driver = this.drivers[p.request.harness];
+      if (!driver) throw Error("unsupported_harness");
+      const turn = driver.start({
         request: p.request,
         signal: controller.signal,
         ...(sessionId ? { sessionId } : {}),

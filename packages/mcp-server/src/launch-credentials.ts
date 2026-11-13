@@ -10,6 +10,8 @@ import {
   type Harness,
   type HarnessCredentials,
   type LaunchCredentialResolver,
+  MODEL_CREDENTIAL_KINDS,
+  OPENCODE_ENDPOINT_ENV,
   parseCredentialValue,
   resolveCredentials,
   resolveGitHubAccess,
@@ -30,7 +32,7 @@ import type { ModelAuthOwnership } from "./model-auth.ts";
 import { configureBoatSubscription } from "./subscription-boat.ts";
 
 /** The stored kinds whose value must never reach a command's output. */
-const SECRET_KINDS: readonly CredentialKind[] = ["claude_oauth", "anthropic", "openai", "codex_auth"];
+const SECRET_KINDS: readonly CredentialKind[] = MODEL_CREDENTIAL_KINDS;
 
 /** The GitHub App and the connections it refreshes. Without it a launch reports GitHub as not connected. */
 export interface GitHubLaunchOptions {
@@ -158,7 +160,9 @@ export function launchCredentials(
         harness,
         credentialKind: resolved.sources[0]?.kind ?? null,
         ...(result.binding ?? {}),
-        customEndpoint: Boolean(result.env[CODEX_ENDPOINT_ENV] || result.env[CLAUDE_ENDPOINT_ENV]),
+        customEndpoint: Boolean(
+          result.env[CODEX_ENDPOINT_ENV] || result.env[CLAUDE_ENDPOINT_ENV] || result.env[OPENCODE_ENDPOINT_ENV],
+        ),
       });
       if (ownership?.broker && result.codexAuthJson) {
         delete result.env.ARMADA_CODEX_AUTH_JSON;
@@ -186,7 +190,7 @@ export async function exposedSecrets(
     for (const row of await reader.credentials(scope, owner)) {
       if (!SECRET_KINDS.includes(row.kind)) continue;
       const value = await decryptSecret(new Uint8Array(row.valueEnc), encryptionKey);
-      if ((row.kind === "openai" || row.kind === "anthropic") && value.startsWith("{")) {
+      if ((row.kind === "openai" || row.kind === "anthropic" || row.kind === "opencode") && value.startsWith("{")) {
         const connection = JSON.parse(parseCredentialValue(row.kind, value));
         // Keep full-secret and endpoint/key redaction, not unrelated non-secret numeric prices.
         values.push(

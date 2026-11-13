@@ -11,7 +11,7 @@ export async function loadRunnerArtifact(dist: string): Promise<{ bundle: Uint8A
   const artifact = validateRunnerArtifact(manifest, bundle);
   if (!["x64", "arm64"].includes(manifest.architecture))
     throw refusal("invalid_request", "Runtime artifact manifest does not match pinned toolchain.");
-  for (const path of ["claude", "codex", "codex-runtime/bin/codex"])
+  for (const path of ["claude", "codex", "codex-runtime/bin/codex", "opencode"])
     if (!(await Bun.file(join(dist, path)).exists()))
       throw refusal("invalid_request", "Runtime native resources missing.");
   return artifact;

@@ -51,6 +51,7 @@ import { createRuntimeArtifactRoute } from "./runtime-artifacts.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import { createRuntimeEvents } from "./runtime-events.ts";
+import { createRuntimeModelAccess } from "./runtime-model-access.ts";
 import { createRuntimeNativeAuth } from "./runtime-native-auth.ts";
 import { createRuntimeSockets, type RuntimeSocketData } from "./runtime-sockets.ts";
 import { createSandboxArmadaAccess } from "./sandbox-armada-access.ts";
@@ -354,17 +355,23 @@ export async function startServer(
       ...(otto
         ? [
             otto.route,
-            createOttoApi(sql, otto.scope, (request) =>
-              authenticateCaller(request.headers.get("authorization"), {
-                store: authStore,
-                supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
-                now: new Date(),
-              }),
+            createOttoApi(
+              sql,
+              otto.scope,
+              (request) =>
+                authenticateCaller(request.headers.get("authorization"), {
+                  store: authStore,
+                  supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
+                  now: new Date(),
+                }),
+              undefined,
+              config.encryptionKey,
             ),
           ]
         : []),
       createRuntimeArtifactRoute(env.ARMADA_RUNTIME_ARTIFACT_DIR),
       runtimeEnrolments.route,
+      createRuntimeModelAccess(sql, config.encryptionKey, modelAuth.broker),
       runtimeEvents.route,
       runtimeCommands.route,
       ...(orchestrators && "scopedToolsRoute" in orchestrators

@@ -4,9 +4,9 @@
  * refresh token or auth state, and the parsers keep only the named fields, so nothing else is ever rendered.
  */
 import type { Harness } from "@armada/core";
-import { HARNESSES } from "@armada/core";
+import { HARNESS_CATALOG, HARNESSES, harnessForCredential, MODEL_CREDENTIAL_KINDS } from "@armada/core";
 
-export const ACCOUNT_KINDS = ["claude_oauth", "anthropic", "openai", "codex_auth"] as const;
+export const ACCOUNT_KINDS = MODEL_CREDENTIAL_KINDS;
 /** #603's account statuses; any other value reads as `unknown` rather than as working. */
 export const ACCOUNT_STATUSES = ["active", "revoked", "deleted", "unknown"] as const;
 export const ACCOUNT_SCOPES = ["user", "org"] as const;
@@ -40,40 +40,46 @@ export type KindInfo = {
   hint: string;
 };
 
-export const KIND_INFO: Record<AccountKind, KindInfo> = {
+const KIND_PRESENTATION: Record<AccountKind, Omit<KindInfo, "harness" | "harnessLabel">> = {
   claude_oauth: {
     label: "Claude subscription",
-    harness: "claude",
-    harnessLabel: "Claude Code",
     billing: "subscription",
     valueLabel: "OAuth token",
     hint: "Run claude setup-token on your machine, sign in, and paste the token it prints.",
   },
   anthropic: {
     label: "Anthropic API key",
-    harness: "claude",
-    harnessLabel: "Claude Code",
     billing: "api",
     valueLabel: "API key",
     hint: "From console.anthropic.com. Billed per token.",
   },
   codex_auth: {
     label: "ChatGPT subscription",
-    harness: "codex",
-    harnessLabel: "Codex",
     billing: "subscription",
     valueLabel: "auth.json",
     hint: "Run codex login on your machine, sign in with ChatGPT, and paste the content of ~/.codex/auth.json.",
   },
   openai: {
     label: "OpenAI API key",
-    harness: "codex",
-    harnessLabel: "Codex",
     billing: "api",
     valueLabel: "API key",
     hint: "From platform.openai.com. Billed per token.",
   },
+  opencode: {
+    label: "OpenCode API key",
+    billing: "api",
+    valueLabel: "API key",
+    hint: "OpenCode plan key, or use armada creds set opencode --base-url to create a custom endpoint connection. Modal only.",
+  },
 };
+
+export const KIND_INFO = Object.fromEntries(
+  ACCOUNT_KINDS.map((kind) => {
+    const harness = harnessForCredential(kind);
+    if (!harness) throw Error("Unknown model credential");
+    return [kind, { ...KIND_PRESENTATION[kind], harness, harnessLabel: HARNESS_CATALOG[harness].label }];
+  }),
+) as Record<AccountKind, KindInfo>;
 
 export const STATUS_INFO: Record<AccountStatus, { label: string; tone: "ok" | "warn" | "error" | "muted" }> = {
   active: { label: "Active", tone: "ok" },
@@ -238,12 +244,14 @@ export const HARNESS_ORDER: readonly Harness[] = HARNESSES;
 export type Billing = KindInfo["billing"];
 
 /** The account kind that signs `harness` in with `billing`: a subscription (the default) or an API key. */
-export function kindFor(harness: Harness, billing: Billing = "subscription"): AccountKind {
+export function kindFor(harness: Harness, billing?: Billing): AccountKind {
   const kind = ACCOUNT_KINDS.find(
-    (value) => KIND_INFO[value].harness === harness && KIND_INFO[value].billing === billing,
+    (value) => KIND_INFO[value].harness === harness && KIND_INFO[value].billing === (billing ?? "subscription"),
   );
-  if (!kind) throw new Error(`no ${billing} kind for ${harness}`);
-  return kind;
+  const selected =
+    kind ?? (billing === undefined ? ACCOUNT_KINDS.find((value) => KIND_INFO[value].harness === harness) : undefined);
+  if (!selected) throw new Error(`no ${billing} kind for ${harness}`);
+  return selected;
 }
 
 export function accountsFor(accounts: readonly ModelAccount[], harness: Harness): ModelAccount[] {

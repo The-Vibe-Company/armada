@@ -4,7 +4,7 @@ import { CODEX_ENDPOINT_ENV, parseCodexEndpoint } from "@armada/core";
 import { runArtifactInstallMode } from "./artifact-cache.ts";
 import { configureClaudeEndpoint } from "./claude-endpoint.ts";
 import { configureCodexEndpoint } from "./codex-endpoint.ts";
-import { enrolRuntime, RuntimeDialout } from "./dialout.ts";
+import { enrolRuntime, RuntimeDialout, runtimeSubscriptionAccess } from "./dialout.ts";
 import { prepareEnrolledHarness } from "./enrolled-harness.ts";
 import { execCredentialValues, validateExecEnvironment } from "./exec-env.ts";
 import { GitHubBroker, type GitHubBrokerConfiguration } from "./github-broker.ts";
@@ -14,6 +14,9 @@ import { checkpointIdentityKey } from "./identity.ts";
 import { ClaudeDriver, CodexDriver, type Grant, Journal, type McpConfiguration, Runner } from "./index.ts";
 import { testModelConnection } from "./model-connection-test.ts";
 import { quiesceNativeCodex, readNativeCodexAuth, removeNativeCodexAuth } from "./native-auth.ts";
+import { OpenCodeDriver } from "./opencode.ts";
+import { configureOpenCodeEndpoint } from "./opencode-endpoint.ts";
+import { prepareOpenCode } from "./opencode-install.ts";
 import type { ExecEnvironment } from "./protocol.ts";
 import { createRedactor, HarnessState } from "./state.ts";
 
@@ -27,6 +30,8 @@ async function main(dialout = false) {
     cwd: string;
     port: number;
     grant: Grant;
+    opencodeExecutable?: string;
+    opencodeEnv?: Record<string, string>;
     claudeExecutable: string;
     codexExecutable: string;
     selectedHarness?: unknown;
@@ -36,6 +41,7 @@ async function main(dialout = false) {
     mcp?: McpConfiguration;
     ingestUrl: string;
     codexAuthJson?: string;
+    runtimeSubscription?: boolean;
     subscription?: { url: string; capability: string };
     nativeAuthRevision?: number;
     nativeAuthSecrets?: string[];
@@ -53,8 +59,23 @@ async function main(dialout = false) {
       expiresAt: config.grant.expiresAt,
     };
   }
+  const opencodeEnv = config.opencodeEnv ?? {};
   if (config.credentialFreeBuilder !== undefined && typeof config.credentialFreeBuilder !== "boolean")
     throw Error("invalid_exec_environment");
+  if (config.runtimeSubscription !== undefined && typeof config.runtimeSubscription !== "boolean")
+    throw Error("invalid_runtime_subscription");
+  if (
+    config.runtimeSubscription &&
+    (!channel ||
+      config.selectedHarness !== "codex" ||
+      config.credentialFreeBuilder ||
+      config.subscription ||
+      config.codexAuthJson ||
+      config.nativeAuthRevision !== undefined ||
+      config.codexEnv.OPENAI_API_KEY ||
+      config.codexEnv[CODEX_ENDPOINT_ENV])
+  )
+    throw Error("invalid_runtime_subscription");
   if (config.subscription && config.codexAuthJson) throw Error("subscription_auth_modes_conflict");
   const codexEndpoint = config.codexEnv[CODEX_ENDPOINT_ENV]
     ? parseCodexEndpoint(JSON.parse(config.codexEnv[CODEX_ENDPOINT_ENV]!))
@@ -67,8 +88,9 @@ async function main(dialout = false) {
     config.credentialFreeBuilder &&
     (codexEndpoint ||
       config.codexAuthJson ||
-      [config.claudeEnv, config.codexEnv].some((env) =>
+      [config.claudeEnv, config.codexEnv, opencodeEnv].some((env) =>
         [
+          "OPENCODE_API_KEY",
           "OPENAI_API_KEY",
           "ANTHROPIC_API_KEY",
           "ANTHROPIC_AUTH_TOKEN",
@@ -89,8 +111,8 @@ async function main(dialout = false) {
         : [];
   const modelSecrets = [
     config.grant.token,
-    ...[config.claudeEnv, config.codexEnv].flatMap((env) =>
-      ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"]
+    ...[config.claudeEnv, config.codexEnv, opencodeEnv].flatMap((env) =>
+      ["OPENCODE_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"]
         .map((key) => env[key])
         .filter((v): v is string => typeof v === "string"),
     ),
@@ -104,6 +126,9 @@ async function main(dialout = false) {
     config.grant.token,
     ...execCredentialValues(execEnv),
     ...(config.codexAuthJson ? [config.codexAuthJson, ...authStrings(JSON.parse(config.codexAuthJson))] : []),
+    ...Object.entries(opencodeEnv)
+      .filter(([key]) => /TOKEN|KEY|SECRET|PASSWORD/.test(key))
+      .map(([, value]) => value),
     ...Object.entries(config.claudeEnv)
       .filter(([key]) => /TOKEN|KEY|SECRET|PASSWORD/.test(key))
       .map(([, value]) => value),
@@ -119,6 +144,7 @@ async function main(dialout = false) {
     .filter((v) => v.length > 0)
     .sort((a, b) => b.length - a.length);
   const redact = createRedactor(secrets);
+  configureOpenCodeEndpoint(opencodeEnv);
   const journal = new Journal(`${config.root}/journal.sqlite`, redact);
   let lastAuth: string | undefined;
   const refreshNativeSecrets = () => {
@@ -194,7 +220,7 @@ async function main(dialout = false) {
   const sourceIdentity = journal.assertRestoreSource(config.grant);
   const fenced = journal.checkpointPending(config.grant);
   let survivingAuth: string | undefined;
-  if (!fenced && config.subscription) {
+  if (!fenced && (config.subscription || config.runtimeSubscription)) {
     await quiesceNativeCodex(config.root, config.codexExecutable);
     readNativeCodexAuth(config.root, (values) => journal.registerSecrets(values));
     journal.sanitize();
@@ -218,6 +244,7 @@ async function main(dialout = false) {
     await mkdir(`${config.root}/exec-transient/gh`, { recursive: true, mode: 0o700 });
     // Private HOME catches legacy ~/.claude.json, XDG caches and refreshed native auth.
     for (const [harness, env] of [
+      ["opencode", opencodeEnv],
       ["claude", config.claudeEnv],
       ["codex", config.codexEnv],
     ] as const) {
@@ -227,17 +254,21 @@ async function main(dialout = false) {
       env.XDG_DATA_HOME = `${env.HOME}/.local/share`;
       await mkdir(env.HOME, { recursive: true, mode: 0o700 });
     }
+    opencodeEnv.XDG_DATA_HOME = `${config.root}/opencode/data`;
+    opencodeEnv.XDG_CONFIG_HOME = `${config.root}/opencode/config`;
+    opencodeEnv.XDG_CACHE_HOME = `${config.root}/opencode/cache`;
+    opencodeEnv.XDG_STATE_HOME = `${config.root}/opencode/state`;
     config.claudeEnv.CLAUDE_CONFIG_DIR = `${config.root}/claude`;
     config.codexEnv.CODEX_HOME = `${config.root}/codex`;
     await configureCodexEndpoint(config.codexEnv.CODEX_HOME, codexEndpoint);
-    if (config.subscription) {
+    if (config.subscription || config.runtimeSubscription) {
       removeNativeCodexAuth(config.root, (values) => journal.registerSecrets(values));
       journal.sanitize();
     } else if (config.codexAuthJson)
       await writeFile(`${config.root}/codex/auth.json`, config.codexAuthJson, { mode: 0o600 });
   }
   const subscriptionRevisions = new Map<string, number>();
-  const subscriptionAccess = config.subscription
+  let subscriptionAccess = config.subscription
     ? async (refresh: boolean, previousAccessToken?: string) => {
         const response = await fetch(config.subscription!.url, {
           method: "POST",
@@ -269,6 +300,8 @@ async function main(dialout = false) {
         };
       }
     : undefined;
+  if (config.runtimeSubscription && channel)
+    subscriptionAccess = runtimeSubscriptionAccess(channel, (values) => journal.registerSecrets(values));
   const github = new GitHubBroker((values) => journal.registerSecrets(values));
   const githubRoot = `${config.root}/github-${createHash("sha256").update(config.grant.generation).digest("hex").slice(0, 16)}`;
   let githubSocket: Awaited<ReturnType<GitHubBroker["listen"]>> | undefined;
@@ -286,7 +319,7 @@ async function main(dialout = false) {
           git: "/usr/bin/git",
           ghWrapper: "/usr/local/bin/gh",
           gitWrapper: "/usr/local/bin/git",
-          homes: ["/home/user", config.claudeEnv.HOME!, config.codexEnv.HOME!],
+          homes: ["/home/user", config.claudeEnv.HOME!, config.codexEnv.HOME!, opencodeEnv.HOME!],
           activation: githubSocket.activation,
         };
         await prepareGitHubTools(tools);
@@ -298,10 +331,25 @@ async function main(dialout = false) {
     githubConfiguration = work.catch(() => {});
     return work;
   };
+  const opencodeExecutable =
+    opencodeEnv.OPENCODE_CONFIG_CONTENT || opencodeEnv.OPENCODE_API_KEY
+      ? await prepareOpenCode({
+          candidate: config.opencodeExecutable ?? "/usr/local/bin/opencode",
+          serverUrl: new URL(config.ingestUrl).origin,
+          cacheDir: `${config.root}/.harness-cache`,
+        })
+      : (config.opencodeExecutable ?? "/usr/local/bin/opencode");
   const runner = new Runner(
     journal,
     config.grant,
     {
+      opencode: new OpenCodeDriver({
+        executable: opencodeExecutable,
+        root: `${config.root}/opencode`,
+        cwd: config.cwd,
+        env: opencodeEnv,
+        redact,
+      }),
       claude: new ClaudeDriver({ cwd: config.cwd, executable: config.claudeExecutable, env: config.claudeEnv }),
       codex: new CodexDriver({
         cwd: config.cwd,

@@ -1748,7 +1748,7 @@ export type Database = {
           scope: string;
           machine_id: string;
           github_enabled: boolean;
-          harness: string;
+          harness: Database["public"]["Enums"]["harness"];
           credential_id: string | null;
           credential_version: number | null;
         };
@@ -1756,7 +1756,7 @@ export type Database = {
           scope: string;
           machine_id: string;
           github_enabled?: boolean;
-          harness: string;
+          harness: Database["public"]["Enums"]["harness"];
           credential_id?: string | null;
           credential_version?: number | null;
         };
@@ -1764,7 +1764,7 @@ export type Database = {
           scope?: string;
           machine_id?: string;
           github_enabled?: boolean;
-          harness?: string;
+          harness?: Database["public"]["Enums"]["harness"];
           credential_id?: string | null;
           credential_version?: number | null;
         };
@@ -2814,6 +2814,60 @@ export type Database = {
           },
         ];
       };
+      otto_orphan_days: {
+        Row: {
+          org_id: string;
+          repository: string;
+          observer_id: string;
+          day: string;
+          kind: string;
+          external_id: string;
+          reason: string;
+          first_seen_at: string;
+          last_seen_at: string;
+          resource: Json;
+        };
+        Insert: {
+          org_id: string;
+          repository: string;
+          observer_id: string;
+          day: string;
+          kind: string;
+          external_id: string;
+          reason: string;
+          first_seen_at: string;
+          last_seen_at: string;
+          resource: Json;
+        };
+        Update: {
+          org_id?: string;
+          repository?: string;
+          observer_id?: string;
+          day?: string;
+          kind?: string;
+          external_id?: string;
+          reason?: string;
+          first_seen_at?: string;
+          last_seen_at?: string;
+          resource?: Json;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "otto_orphan_days_observer_id_fkey";
+            columns: ["observer_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "otto_orphan_days_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       otto_resources: {
         Row: {
           org_id: string;
@@ -3498,6 +3552,7 @@ export type Database = {
           stop_generation: number;
           preservation_stop_generation: number | null;
           application_secret_tainted: boolean;
+          boat_runtime: boolean;
         };
         Insert: {
           id?: string;
@@ -3551,6 +3606,7 @@ export type Database = {
           stop_generation?: number;
           preservation_stop_generation?: number | null;
           application_secret_tainted?: boolean;
+          boat_runtime?: boolean;
         };
         Update: {
           id?: string;
@@ -3604,6 +3660,7 @@ export type Database = {
           stop_generation?: number;
           preservation_stop_generation?: number | null;
           application_secret_tainted?: boolean;
+          boat_runtime?: boolean;
         };
         Relationships: [
           {
@@ -3773,9 +3830,17 @@ export type Database = {
       can_open_sandbox: { Args: { target_org: string; target_owner: string }; Returns: boolean };
     };
     Enums: {
-      credential_kind: "anthropic" | "openai" | "claude_oauth" | "boat" | "codex_auth" | "modal" | "skillpack";
+      credential_kind:
+        | "anthropic"
+        | "openai"
+        | "claude_oauth"
+        | "boat"
+        | "codex_auth"
+        | "modal"
+        | "skillpack"
+        | "opencode";
       credential_scope: "user" | "org";
-      harness: "claude" | "codex";
+      harness: "claude" | "codex" | "opencode";
       member_role: "admin" | "member";
       notify_status: "finished" | "failed";
       sandbox_provider: "boat" | "modal";
@@ -3847,6 +3912,7 @@ export type OrganizationInvitationRow = Database["public"]["Tables"]["organizati
 export type Org = Database["public"]["Tables"]["orgs"]["Row"];
 export type OttoFactRow = Database["public"]["Tables"]["otto_facts"]["Row"];
 export type OttoGitHubPageRow = Database["public"]["Tables"]["otto_github_pages"]["Row"];
+export type OttoOrphanDayRow = Database["public"]["Tables"]["otto_orphan_days"]["Row"];
 export type OttoResourceRow = Database["public"]["Tables"]["otto_resources"]["Row"];
 export type OttoTaskRow = Database["public"]["Tables"]["otto_tasks"]["Row"];
 export type PersonalSkillDefaultsRow = Database["public"]["Tables"]["personal_skill_defaults"]["Row"];
