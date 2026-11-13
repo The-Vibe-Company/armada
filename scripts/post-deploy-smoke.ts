@@ -1,4 +1,5 @@
 import { HARNESS_CATALOG, type Harness, isHarness } from "../packages/core/src/harnesses.ts";
+import { providerParitySmoke } from "./provider-parity-smoke.ts";
 import {
   deleteSmokeReceipts,
   readSmokeJournal,
@@ -173,6 +174,7 @@ async function runPostDeploySmoke(
   io: SmokeIo,
   cleanupEnd?: number,
 ): Promise<boolean> {
+  if (args.length === 1 && args[0] === "--parity") return providerParitySmoke(env, io);
   function report(index: number, step: string, error?: unknown) {
     io.out(
       JSON.stringify({

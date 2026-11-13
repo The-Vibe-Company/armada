@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, watch } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AUTH_HEADER, type Driver, type Grant, Journal, Runner } from "../src/index.ts";
@@ -253,3 +253,37 @@ test.skipIf(process.platform !== "linux")(
     }
   },
 );
+
+test("revoking a dial-out request kills its synchronous exec before returning", async () => {
+  const s = setup();
+  const stop = new AbortController();
+  const ready = join(s.dir, "ready");
+  const watcher = watch(s.dir, () => {
+    if (existsSync(ready)) stop.abort();
+  });
+  try {
+    const reply = await s.runner.handle(
+      new Request("https://runner/v1", {
+        method: "POST",
+        signal: stop.signal,
+        headers: { [AUTH_HEADER]: grant.token },
+        body: JSON.stringify({
+          version: 1,
+          sandboxId: "logical",
+          requestId: crypto.randomUUID(),
+          op: "exec",
+          input: { sandboxId: "logical", command: `printf ready > '${ready}'; exec sleep 600` },
+        }),
+      }),
+    );
+    expect(stop.signal.aborted).toBe(true);
+    expect(reply.status).toBe(200);
+    const row = s.journal.db.query("SELECT body FROM processes").get() as { body: string };
+    expect(JSON.parse(row.body).status).toBe("exited");
+    expect(JSON.parse(row.body).exitCode).toBeNull();
+  } finally {
+    watcher.close();
+    stop.abort();
+    s.close();
+  }
+});

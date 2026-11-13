@@ -63,13 +63,10 @@ test("sealed builder cloned into a new logical sandbox at generation1 admits pro
     expect(
       ((await (await call(live.runner, base, "health")).json()) as { result: { ready: boolean } }).result.ready,
     ).toBe(true);
-    live.journal.flush();
-    const unsafe = join(root, "not-quiescent");
-    await cp(source, unsafe, { recursive: true });
-    await expect(open(unsafe, { ...base, sandboxId: "unsafe-new-id" })).rejects.toThrow(
+    // Rejection is owned by the journal; only the successful adoption needs a disk clone.
+    expect(() => live?.journal.assertRestoreSource({ ...base, sandboxId: "unsafe-new-id" })).toThrow(
       "checkpoint_source_not_quiescent",
     );
-    expect((await call(live.runner, base, "checkpoint")).status).toBe(200);
     expect((await call(live.runner, base, "checkpoint")).status).toBe(200);
     live.journal.close();
     live = undefined;
@@ -94,13 +91,11 @@ test("sealed builder cloned into a new logical sandbox at generation1 admits pro
       generation: "1",
     });
     expect((await call(live.runner, cloneGrant, "checkpoint")).status).toBe(200);
-    live.journal.close();
-    live = undefined;
-    const dirty = join(root, "not-a-golden");
-    await cp(fork, dirty, { recursive: true });
-    await expect(open(dirty, { ...base, sandboxId: "history-fork" })).rejects.toThrow(
+    expect(() => live?.journal.assertRestoreSource({ ...base, sandboxId: "history-fork" })).toThrow(
       "golden_runner_history_not_empty",
     );
+    live.journal.close();
+    live = undefined;
     live = await open(source, base);
     expect(
       ((await (await call(live.runner, base, "health")).json()) as { result: { ready: boolean } }).result.ready,
@@ -112,7 +107,6 @@ test("sealed builder cloned into a new logical sandbox at generation1 admits pro
         })
       ).status,
     ).toBe(409);
-    expect((await call(live.runner, base, "checkpoint")).status).toBe(200);
     live.journal.close();
     live = undefined;
     const next = { ...base, generation: "2", token: "next-generation-fixture-private-grant" };

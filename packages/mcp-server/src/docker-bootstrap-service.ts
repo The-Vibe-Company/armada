@@ -1,5 +1,7 @@
 import type { GoldenActor, LaunchCredentialResolver, Sql } from "@armada/core";
+import { HARNESS_KINDS } from "@armada/core";
 import { decryptSecret } from "@armada/core/server";
+import { requirePublishedRuntimeArchitecture } from "../../agent-runtime/src/publication.ts";
 import { type BootstrapDescriptor, parseDockerHostJob } from "../../core/src/docker-host-job.ts";
 import { createDockerHostStore } from "./docker-host-store.ts";
 import { dockerRuntimeConfiguration } from "./docker-runtime-configuration.ts";
@@ -35,6 +37,7 @@ const scopedSql = (tx: Sql): Sql => ({ query: tx.query.bind(tx), transaction: (w
 
 /** Private opt-in composition, not a placement provider or a public launch route. */
 export function createDockerBootstrapService(sql: Sql, key: string, options: Options) {
+  requirePublishedRuntimeArchitecture(options.architecture);
   // Freeze trusted launch inputs across asynchronous credential admission.
   const manifest = structuredClone(options.manifest);
   const serverUrl = options.serverUrl;
@@ -80,7 +83,7 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
         if (resume && (snapshot.status !== "stopped" || snapshot.deletedAt !== null)) deny();
         const credentials = await options.credentials.resolve(
           launchActor,
-          "codex",
+          snapshot.harness,
           snapshot.credentialId,
           snapshot.credentialVersion,
         );
@@ -113,10 +116,16 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
         // Credential locking precedes host/sandbox/runtime locks. Historical retries need no account.
         if (!known) {
           const credential = await tx.query(
-            `select id from public.credentials where id=$1 and version=$2 and kind in ('openai','codex_auth')
+            `select id from public.credentials where id=$1 and version=$2 and kind = any($5::public.credential_kind[])
                and status='active' and (expires_at is null or expires_at>now())
                and ((scope='user' and owner_id=$3) or (scope='org' and owner_id=$4)) for share`,
-            [snapshot.credentialId, snapshot.credentialVersion, actor.userId, actor.orgId],
+            [
+              snapshot.credentialId,
+              snapshot.credentialVersion,
+              actor.userId,
+              actor.orgId,
+              HARNESS_KINDS[snapshot.harness],
+            ],
           );
           if (!credential.rows.length) deny();
         }

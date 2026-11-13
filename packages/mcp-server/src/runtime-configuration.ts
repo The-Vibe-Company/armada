@@ -4,8 +4,10 @@ import {
   CODEX_ENDPOINT_ENV,
   type GoldenActor,
   type HarnessCredentials,
+  OPENCODE_ENDPOINT_ENV,
   parseClaudeEndpoint,
   parseCodexEndpoint,
+  parseOpenCodeEndpoint,
   type SandboxRecord,
 } from "@armada/core";
 import { VaultError } from "@armada/core/server";
@@ -14,6 +16,7 @@ import type { ModelAuthOwnership } from "./model-auth.ts";
 const record = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === "object" && !Array.isArray(value);
 const claudeAllowed = new Set(["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", CLAUDE_ENDPOINT_ENV]);
+const opencodeAllowed = new Set(["OPENCODE_API_KEY", OPENCODE_ENDPOINT_ENV]);
 const codexAllowed = new Set(["OPENAI_API_KEY", CODEX_ENDPOINT_ENV, CODEX_AUTH_ENV, "ARMADA_SERVER_CODEX"]);
 
 /** Only metadata consumed by the private harness projection, without a provider DTO or golden. */
@@ -63,7 +66,9 @@ export async function runtimeConfiguration(
     if (
       sandbox.provider !== expectedProvider ||
       (expectedProvider === "docker" && (sandbox.visibility !== "private" || sandbox.repositoryDir !== null)) ||
-      (sandbox.harness !== "codex" && (expectedProvider !== "boat" || sandbox.harness !== "claude")) ||
+      (sandbox.harness !== "codex" &&
+        !(expectedProvider !== "modal" && sandbox.harness === "claude") &&
+        !(expectedProvider === "docker" && sandbox.harness === "opencode")) ||
       sandbox.ownerId !== actor.userId ||
       sandbox.orgId !== actor.orgId ||
       !["starting", "ready", "running"].includes(sandbox.status) ||
@@ -78,7 +83,14 @@ export async function runtimeConfiguration(
       binding.credentialId !== sandbox.credentialId ||
       binding.credentialVersion !== sandbox.credentialVersion ||
       Object.keys(credentials.env).some(
-        (key) => !(sandbox.harness === "claude" ? claudeAllowed : codexAllowed).has(key),
+        (key) =>
+          !(
+            sandbox.harness === "claude"
+              ? claudeAllowed
+              : sandbox.harness === "opencode"
+                ? opencodeAllowed
+                : codexAllowed
+          ).has(key),
       )
     )
       throw Error();
@@ -99,13 +111,17 @@ export async function runtimeConfiguration(
       (manifest.runtime.bytes as number) < 1 ||
       (manifest.runtime.bytes as number) > 512 * 1024 * 1024 ||
       !record(manifest.harnesses) ||
-      !record(manifest.harnesses[sandbox.harness])
+      (sandbox.harness !== "opencode" && !record(manifest.harnesses[sandbox.harness]))
     )
       throw Error();
     const harnessArtifact = manifest.harnesses[sandbox.harness];
-    if (!record(harnessArtifact) || !Array.isArray(harnessArtifact.files) || !harnessArtifact.files.length)
+    if (
+      sandbox.harness !== "opencode" &&
+      (!record(harnessArtifact) || !Array.isArray(harnessArtifact.files) || !harnessArtifact.files.length)
+    )
       throw Error();
     const codexEnv: Record<string, string> = { HOME: "/home/user", PATH: "/usr/local/bin:/usr/bin:/bin" };
+    const opencodeEnv: Record<string, string> = { HOME: "/home/user", PATH: "/usr/local/bin:/usr/bin:/bin" };
     const claudeEnv: Record<string, string> = { HOME: "/home/user", PATH: "/usr/local/bin:/usr/bin:/bin" };
     let auth: {
       runtimeSubscription?: true;
@@ -125,6 +141,11 @@ export async function runtimeConfiguration(
       if (apiKey) claudeEnv.ANTHROPIC_API_KEY = apiKey;
       if (token) claudeEnv.CLAUDE_CODE_OAUTH_TOKEN = token;
       if (endpoint) claudeEnv[CLAUDE_ENDPOINT_ENV] = JSON.stringify(parseClaudeEndpoint(JSON.parse(endpoint)));
+    } else if (sandbox.harness === "opencode") {
+      if (!credentials.env.OPENCODE_API_KEY || credentials.codexAuthJson) throw Error();
+      opencodeEnv.OPENCODE_API_KEY = credentials.env.OPENCODE_API_KEY;
+      const endpoint = credentials.env[OPENCODE_ENDPOINT_ENV];
+      if (endpoint) opencodeEnv[OPENCODE_ENDPOINT_ENV] = JSON.stringify(parseOpenCodeEndpoint(JSON.parse(endpoint)));
     } else if (credentials.codexAuthJson) {
       if (key || endpoint || !modelAuth) throw Error();
       const native = await modelAuth.state.read(actor, binding.credentialId, binding.credentialVersion, sandbox.id);
@@ -160,6 +181,7 @@ export async function runtimeConfiguration(
         codexExecutable: "",
         claudeEnv: sandbox.harness === "claude" ? claudeEnv : {},
         codexEnv,
+        opencodeEnv: sandbox.harness === "opencode" ? opencodeEnv : {},
         ...auth,
       },
     };

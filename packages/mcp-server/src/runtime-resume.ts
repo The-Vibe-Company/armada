@@ -75,8 +75,10 @@ export function createRuntimeResume(
     if (
       !found ||
       found.ownerId !== caller.userId ||
-      !found.boatRuntime ||
-      found.provider !== "boat" ||
+      !(
+        (found.provider === "boat" && found.boatRuntime) ||
+        (found.provider === "modal" && found.runtimeTransport === "dialout")
+      ) ||
       (found.harness !== "codex" && found.harness !== "claude") ||
       found.deletedAt
     )
@@ -282,7 +284,7 @@ export function createRuntimeResume(
             `resume_${requestId}`,
             admitted.op.target_epoch,
           );
-          if (existing.state === "missing") await prepareMcp?.(caller, found.id, signal);
+          if (existing.state === "missing" && found.provider === "boat") await prepareMcp?.(caller, found.id, signal);
           const accepted = await agent.prompt(
             {
               sandboxId: found.providerSandboxId,

@@ -3,6 +3,7 @@ import {
   type AgentEvent,
   type DockerSandboxStatus,
   GoldenError,
+  type Harness,
   PROMPT_STATUSES,
   ProviderError,
   type SandboxRecord,
@@ -29,6 +30,7 @@ type Row = {
   provider: string;
   docker_host_id: string;
   docker_image: string;
+  harness: Harness;
   status: SandboxRecord["status"];
   status_reason: string | null;
   stopped_at: string | Date | null;
@@ -91,7 +93,7 @@ export function createDockerSandboxControls(
     if (!UUID.test(id) || !UUID.test(caller.userId) || caller.orgs.some((org) => !UUID.test(org.orgId))) throw denied();
     const row = (
       await sql.query<Row>(
-        `select s.id,s.org_id,s.owner_id,s.provider,s.docker_host_id,s.docker_image,s.status,s.status_reason,
+        `select s.id,s.org_id,s.owner_id,s.provider,s.docker_host_id,s.docker_image,s.harness,s.status,s.status_reason,
         s.stopped_at,s.model,s.reasoning_effort,s.conversation_ids,s.expires_at,s.usage_turns,m.role,
        (select coalesce(max(c.sequence),0)::text from public.runtime_commands c where c.sandbox_id=s.id and starts_with(c.request_id,'docker_prompt_')) as prompt_sequence,
        (select coalesce(max(e.sequence),0)::text from public.runtime_events e where e.sandbox_id=s.id) as journal_sequence
@@ -232,7 +234,7 @@ export function createDockerSandboxControls(
       id: row.id,
       golden: null,
       visibility: "private",
-      harness: "codex",
+      harness: row.harness,
       repositoryDir: null,
       machineSize: null,
       model: row.model,
@@ -249,7 +251,7 @@ export function createDockerSandboxControls(
               : null,
       conversationIds: [...conversations],
       expiresAt: row.expires_at === null ? null : new Date(row.expires_at).toISOString(),
-      usage: withServerCost(usage(row.usage_turns), "codex"),
+      usage: withServerCost(usage(row.usage_turns), row.harness),
       prompt,
       settled:
         terminal(row) ||

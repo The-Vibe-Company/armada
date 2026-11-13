@@ -1,11 +1,13 @@
-# Modal: enrolled Codex prompt and follow-up (#1421)
+# Modal: enrolled Codex lifecycle (#1421)
 
 This is a coordinator-owned, **billable staging check**, not a worker task or a
 production cutover. It creates exactly one Modal sandbox, never retries an
 allocation, proves a model answer and same-conversation recall through the common
 runtime archive, performs an acknowledged checkpoint, and requests compute stop
-exactly once. No resume, filesystem preservation, GitHub, MCP, skills or harness
-parity is claimed. This remains model-only: the golden checkout is used as-is.
+once. The `--resume` extension activates that same logical sandbox once from its
+retained filesystem image, proves a new-epoch same-conversation recall, then
+checkpoints and stops it again. No GitHub, MCP, skills or harness parity is
+claimed. This remains model-only: the golden checkout is used as-is.
 The existing Modal tunnel path remains the default.
 
 ## Prerequisites
@@ -37,11 +39,13 @@ In the coordinator's secure environment, supply:
 ## Single coordinator check
 
 ```sh
-ARMADA_RUNTIME_SMOKE=one_real_modal_launch bun scripts/check-modal-runtime.ts
+ARMADA_RUNTIME_SMOKE=one_real_modal_launch bun scripts/check-modal-runtime.ts --resume
 ```
 
 The script preflights `launch/options.modalRuntime {version:1,enabled:true,followupVersion:1}`
-before allocating. It sends one `sandbox/launch-modal-runtime-v1` request with
+before allocating. With `--resume`, it also requires `resumeVersion:1`; an old
+server refuses before any allocation. Omit `--resume` only to run the original
+first-answer/follow-up/checkpoint/stop subset. It sends one `sandbox/launch-modal-runtime-v1` request with
 `runtimeVersion:1`, `runtimeTransport:"dialout"`, `provider:"modal"`,
 `harness:"codex"`, a 900-second TTL, empty connections/skills and skill defaults
 skipped. The golden checkout is used as-is. The first prompt stores a random
@@ -79,8 +83,63 @@ If launch transport fails or its receipt omits the sandbox ID, allocation outcom
 is unknown: **inspect existing allocations before doing anything that retries**.
 The script does not create a replacement. If cleanup is unconfirmed, inspect the
 reported sandbox immediately. A known first failure is not a reason to skip
-cleanup, and cleanup is not evidence of resume or disk preservation.
+cleanup, and cleanup alone is not evidence of resume or disk preservation.
+
+## Retained stop/resume proof (`--resume`)
+
+After the first confirmed stop, the script re-reads the **same checkpoint request
+UUID** and requires its original epoch/watermark/ACK, then re-reads both original
+answers from the common archive while compute remains stopped. It dispatches one
+`sandbox/resume-runtime-v1` using a fresh printed request UUID, the original
+conversation ID and a recall prompt that does not contain the memory nonce.
+There is no allocation or activation retry.
+
+The resume receipt must identify that UUID, `resumed:true`, a new prompt ID,
+the same conversation, **epoch exactly previous + 1**, and the exact source
+checkpoint epoch/watermark. The resumed prompt must return the remembered nonce
+and finished event through `source:"armada-runtime"`; both old prompt answers
+must still be readable. A second acknowledged checkpoint then precedes the second
+and final stop. Final output adds `resume:"verified"` only after cleanup is
+confirmed. Exactly one logical allocation, one resume activation, three prompts,
+two new checkpoint intents (plus the stopped readback), and two stops are expected.
+
+The server's resume acknowledgement is gated on actual native-session restore
+attestation: its new runtime must read the retained journal and original Codex
+session from the SDK filesystem image before admitting the same conversation.
+An epoch number or host-ready metadata alone is not this proof. The recalled
+nonce supplies real model continuity evidence; the source-checkpoint checks tie
+it to the retained disk rather than a new logical sandbox.
+
+If the resume response is lost or invalid, its known sandbox may nevertheless
+have activated. The script dispatches the second cleanup stop **once**, without
+retrying resume, then fails with the original request UUID available for
+reconciliation. If the stopped readback/history fails before resume dispatch,
+there is no second activation or unnecessary second stop. No new inputs or
+staging secrets are needed for this extension. Workers do not run this check.
 
 Record the exact server revision, receipt and observed result on #1421's parity
 table. Local fixtures and green CI are not real Modal inference evidence. Do not
 flip defaults or delete the tunnel path until the later parity and cutover gates.
+
+## GitHub delivery (`--github`)
+
+Reuse the existing staging `ARMADA_RUNTIME_GITHUB_REPOSITORY=owner/repo` input
+and connected GitHub account/App, with that repository in the selected Modal
+golden's recipe. No new credentials are requested. The script resolves the
+selected visible Modal golden's organization, preflights repository access and
+requires an explicit `provider:"modal"` receipt **before allocation**. Old servers
+or ambiguous same-name provider goldens refuse rather than preflighting Boat.
+
+```sh
+ARMADA_RUNTIME_SMOKE=one_real_modal_launch bun scripts/check-modal-runtime.ts --github --resume
+```
+
+Still ONE allocation, ONE restore activation and TWO stops. Before the initial
+follow-up it delivers GitHub configuration via the existing common private RPC.
+The follow-up must actually run `gh api repos/<repository> --jq .full_name`:
+archived successful command provenance AND current-epoch broker acquisition count
+with the same delivered revision are required. A literal answer or a configured
+receipt alone is not proof. After restore, the old configuration must be absent;
+a new revision is delivered and a fourth same-conversation prompt proves a fresh
+current-epoch acquisition. No token/capability is printed or archived. This flag
+does not pull/init the golden, enable MCP/skills/variables, or authorize cutover.

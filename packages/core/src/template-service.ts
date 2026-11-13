@@ -663,14 +663,10 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
               return releaseFence;
             },
           },
-          credentials: {
-            ...runtime.stores.credentials,
-            resolve: async () =>
-              runtime.stores.credentials.resolve(selection.a, def.harness, m.account.id, m.account.version),
-          },
         },
         selection.a,
         {
+          credentialId: m.account.id,
           golden: m.golden.name,
           provider: m.golden.provider,
           harness: def.harness,
@@ -686,6 +682,8 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
         },
         {
           ...runtime.options,
+          credentialVersion: m.account.version,
+          nativeEnvironmentBindings: Boolean(def.variables.length || def.secrets?.length),
           newId: () => request.sandbox_id,
           beforeFork: async (sandboxId) => {
             await revalidate(actor, org, m);

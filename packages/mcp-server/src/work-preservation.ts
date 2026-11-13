@@ -170,16 +170,7 @@ async function captureAndStore(
       );
       return;
     }
-    if (stop.runtime_transport === "dialout") {
-      await writeNote(
-        sql,
-        id,
-        "Experimental Modal runtime stop: disk retention, resume and Git work preservation are unavailable.",
-        stop.stop_token,
-      );
-      return;
-    }
-    if (stop.boat_runtime) {
+    if (stop.boat_runtime || stop.runtime_transport === "dialout") {
       const checkpoint = (
         await sql.query<{ epoch: string; watermark: string }>(
           `select p.epoch::text,p.watermark::text from public.runtime_checkpoints p
@@ -194,7 +185,9 @@ async function captureAndStore(
         id,
         checkpoint
           ? `Armada runtime checkpoint acknowledged for epoch ${checkpoint.epoch} through event ${checkpoint.watermark}; disk retention requires confirmed host stop. No Git work archive is claimed.`
-          : "Experimental runtime stop: no acknowledged runtime checkpoint; resume and Git work preservation are unavailable.",
+          : stop.runtime_transport === "dialout"
+            ? "Experimental Modal runtime stop: disk retention, resume and Git work preservation are unavailable."
+            : "Experimental runtime stop: no acknowledged runtime checkpoint; resume and Git work preservation are unavailable.",
         stop.stop_token,
       );
       return;
