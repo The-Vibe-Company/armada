@@ -428,28 +428,19 @@ export function SandboxChat(props: Props) {
           </div>
         </div>
 
-        {/* The latest turn's model shows only when there is something to say about it (#1526): turn and conversation
-            ids, or models nobody recorded, are noise above the conversation. */}
         {turnModel?.modelSelectionReason && (
-          <div className="px-4 py-2 text-sm" role="status">
-            {(turnModel.requestedModel || turnModel.observedModel) && (
-              <p>
-                Requested: {turnModel.requestedModel ?? "unknown"} · Observed: {turnModel.observedModel ?? "unknown"}
-              </p>
-            )}
-            <p
-              className={
-                turnModel.modelSelectionReason === "model_selection_mismatch"
-                  ? "text-destructive"
-                  : "text-muted-foreground"
-              }
-            >
+          <details className="border-b px-4 py-2 text-sm sm:px-6">
+            <summary className="cursor-pointer text-muted-foreground">
               {turnModel.modelSelectionReason === "model_selection_mismatch"
-                ? "Model selection changed"
-                : "Model not verified"}
-              : {turnModel.modelSelectionMessage}
-            </p>
-          </div>
+                ? "The agent used a different model"
+                : "The model could not be verified"}
+            </summary>
+            <div className="space-y-1 pt-2 text-muted-foreground">
+              {turnModel.requestedModel && <p>Requested model: {turnModel.requestedModel}</p>}
+              {turnModel.observedModel && <p>Reported model: {turnModel.observedModel}</p>}
+              {turnModel.modelSelectionMessage && <p>{turnModel.modelSelectionMessage}</p>}
+            </div>
+          </details>
         )}
         <Notices status={status} reason={reason} poll={poll} onRetry={retryPolling} />
 

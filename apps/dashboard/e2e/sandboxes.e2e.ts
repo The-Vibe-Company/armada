@@ -147,7 +147,7 @@ test("a page past the last one is empty, with a way back", async ({ page }) => {
 test("the logs of a running sandbox refresh without reloading the page", async ({ page }) => {
   await signIn(page, "alice@example.com");
   await page.getByRole("link", { name: LABELS.running }).click();
-  await expect(page.getByRole("heading", { name: "bx_alice_running" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "shared-golden / Claude Code" })).toBeVisible();
   await expect(page.getByText("Fix the failing test")).toBeVisible();
   await expect(page.getByText("Looking at the test suite.")).toBeVisible();
   await expect(page.getByTestId("live-indicator")).toBeVisible();
