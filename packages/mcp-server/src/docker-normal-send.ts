@@ -1,7 +1,7 @@
 import { ProviderError } from "@armada/core";
 import { decryptSecret, type Sql } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
-import { createDockerLaunchVariables } from "./docker-launch-variables.ts";
+import { createDockerLaunchEnvironment } from "./docker-launch-environment.ts";
 import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
 
@@ -58,7 +58,7 @@ export function createDockerNormalSend(
       if (args.conversation_id === undefined && previous)
         conversationId = JSON.parse(await decryptSecret(previous.request_enc, key)).input.conversationId;
       if (!previous) {
-        await createDockerLaunchVariables(sql, key, clock)(caller, row.id);
+        await createDockerLaunchEnvironment(sql, key, clock)(caller, row.id);
         await options.github?.prepareTurn(caller, row.id);
       }
       const deadline = clock.now() + (options.timeoutMs ?? 25_000);

@@ -12,7 +12,7 @@ export interface TemplateDefinition {
   connections: string[];
   variables: import("./readable-variables.ts").ReadableVariableBinding[];
   /** Value-free references; optional for revisions published before secret bindings. */
-  secrets?: { key: string; secretId: string; version: number }[];
+  secrets?: import("./application-secret-bindings.ts").ApplicationSecretBinding[];
   skills: string[];
 }
 export interface LaunchTemplate {

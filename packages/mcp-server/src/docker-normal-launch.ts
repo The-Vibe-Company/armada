@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
+  type ApplicationSecretBinding,
   DEFAULT_LAUNCH_TTL_SECONDS,
   type DockerLaunchResult,
   type DockerSandboxRecord,
@@ -10,16 +11,24 @@ import {
   type LaunchCredentialResolver,
   normalizeGitHubGoldenConfig,
   ProviderError,
+  parseApplicationSecretBindings,
   parseGoldenConfig,
   parseReadableVariableBindings,
   type ReadableVariableBinding,
   resolveModelChoice,
   type Sql,
+  validateReadableVariables,
 } from "@armada/core";
-import { createSqlSandboxStore, decryptSecret, encryptSecret, resolveLaunchVariables } from "@armada/core/server";
+import {
+  createSqlSandboxStore,
+  decryptSecret,
+  encryptSecret,
+  resolveLaunchSecrets,
+  resolveLaunchVariables,
+} from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import type { createDockerBootstrapService } from "./docker-bootstrap-service.ts";
-import { createDockerLaunchVariables } from "./docker-launch-variables.ts";
+import { createDockerLaunchEnvironment } from "./docker-launch-environment.ts";
 import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
@@ -29,6 +38,7 @@ import type { RuntimeGitHub } from "./runtime-github.ts";
 type Request = {
   repos?: GoldenRepo[];
   variables?: ReadableVariableBinding[];
+  secrets?: ApplicationSecretBinding[];
   org: string;
   provider: "docker";
   harness: Harness;
@@ -129,6 +139,7 @@ function normalize(body: Record<string, unknown>): Request {
         ![
           "repos",
           "variables",
+          "secrets",
           "org",
           "provider",
           "hostId",
@@ -178,6 +189,19 @@ function normalize(body: Record<string, unknown>): Request {
       throw failure("invalid_request");
     }
   }
+  let secrets: ApplicationSecretBinding[] | undefined;
+  if (body.secrets !== undefined) {
+    try {
+      secrets = parseApplicationSecretBindings(body.secrets);
+    } catch {
+      throw failure("invalid_request");
+    }
+  }
+  if (
+    (variables?.length ?? 0) + (secrets?.length ?? 0) > 64 ||
+    secrets?.some((secret) => variables?.some((variable) => variable.key === secret.key))
+  )
+    throw failure("invalid_request");
   let repos: GoldenRepo[] | undefined;
   if (body.repos !== undefined) {
     try {
@@ -194,6 +218,7 @@ function normalize(body: Record<string, unknown>): Request {
   return {
     ...(repos ? { repos } : {}),
     ...(variables ? { variables } : {}),
+    ...(secrets ? { secrets } : {}),
     org: identifier(body.org),
     provider: "docker",
     harness: body.harness as Harness,
@@ -394,6 +419,11 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
               );
             if (request.variables?.length)
               manifest.variables = await resolveLaunchVariables(scoped(tx), actor, request.variables);
+            if (request.secrets?.length)
+              validateReadableVariables({
+                ...manifest.variables,
+                ...(await resolveLaunchSecrets(scoped(tx), actor, request.secrets, key)),
+              });
             const encrypted = await encryptSecret(JSON.stringify(manifest), key);
             const current = await member(tx, actor);
             await tx.query(
@@ -440,7 +470,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
           }
           await wait();
         }
-        await createDockerLaunchVariables(sql, key, clock)(caller, request.requestId);
+        await createDockerLaunchEnvironment(sql, key, clock)(caller, request.requestId);
         if (manifest.request.repos) {
           if (!options.github) throw failure("unavailable");
           const github = await options.github.prepare(caller, request.requestId);

@@ -929,3 +929,83 @@ test("Docker variable admission rejects unsafe names and inaccessible personal r
     await rejected(f.service().launch(f.caller, { ...f.body, variables }), "invalid_request");
   expect(await counts(f)).toEqual({ sandboxes: 0, claims: 0, jobs: 0, commands: 0 });
 });
+
+test("Docker delivers value-free secret references through native environment and refuses new delivery after revocation", async () => {
+  const f = await fixture();
+  const canary = `offline-application-secret-${randomUUID()}`;
+  const secretId = randomUUID();
+  await db.query(
+    `insert into public.application_secrets(id,org_id,owner_id,scope,name,value_enc) values($1,$2,$3,'personal','APP_TOKEN',$4)`,
+    [secretId, f.actor.orgId, f.actor.userId, await encryptSecret(canary, key)],
+  );
+  const body = { ...f.body, secrets: [{ key: "APP_TOKEN", secretId, version: 1 }] };
+  const launched = await f.service().launch(f.caller, body);
+  expect((f.native as { op: string }[]).map((command) => command.op)).toEqual([
+    "health",
+    "configureReadableVariables",
+    "prompt",
+  ]);
+  expect(f.native[1]).toMatchObject({ variables: { APP_TOKEN: canary } });
+  expect(JSON.stringify(launched)).not.toContain(canary);
+  expect(JSON.stringify(f.jobs)).not.toContain(canary);
+  const claim = (
+    await db.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
+      "select request_enc from public.docker_launch_requests where sandbox_id=$1",
+      [f.body.requestId],
+    )
+  ).rows[0];
+  if (!claim) throw Error("missing manifest");
+  const manifest = JSON.parse(await decryptSecret(claim.request_enc, key));
+  expect(manifest.request.secrets).toEqual(body.secrets);
+  expect(JSON.stringify(manifest)).not.toContain(canary);
+  const controls = createDockerSandboxControls(sql, key, { clock: f.clock, resume: bootstrap });
+  await controls.invoke(f.caller, "stop", { id: f.body.requestId });
+  await controls.invoke(f.caller, "resume", { id: f.body.requestId, request_id: randomUUID() });
+  expect((f.native as { op: string }[]).filter((command) => command.op === "configureReadableVariables")).toHaveLength(
+    2,
+  );
+  const row = (
+    await db.query<{ id: string; org_id: string; owner_id: string; status: string; conversation_ids: string[] }>(
+      "select id,org_id,owner_id,status,conversation_ids from public.sandboxes where id=$1",
+      [f.body.requestId],
+    )
+  ).rows[0];
+  if (!row) throw Error("missing sandbox");
+  const send = createDockerNormalSend(sql, key, { enabled: true, clock: f.clock });
+  const args = { request_id: randomUUID(), prompt: "Continue" };
+  const sent = await send.send(f.caller, args, row);
+  await db.query("update public.application_secrets set status='revoked',value_enc=null where id=$1", [secretId]);
+  expect(await send.send(f.caller, args, row)).toEqual(sent);
+  const before = f.native.length;
+  await expect(send.send(f.caller, { request_id: randomUUID(), prompt: "New turn" }, row)).rejects.toThrow();
+  expect(f.native).toHaveLength(before);
+});
+
+test("Docker secret admission rolls back inaccessible, stale, expired and oversized environments", async () => {
+  const f = await fixture();
+  const secretId = randomUUID();
+  await db.query(
+    `insert into public.application_secrets(id,org_id,owner_id,scope,name,value_enc) values($1,$2,$3,'personal','APP_TOKEN',$4)`,
+    [secretId, f.actor.orgId, f.otherId, await encryptSecret("x".repeat(8192), key)],
+  );
+  const binding = { key: "APP_TOKEN", secretId, version: 1 };
+  const launch = (secrets: unknown) => f.service().launch(f.caller, { ...f.body, secrets });
+  await rejected(launch([binding]), "unavailable");
+  await db.query("update public.application_secrets set owner_id=$2 where id=$1", [secretId, f.actor.userId]);
+  await rejected(launch([{ ...binding, version: 2 }]), "unavailable");
+  await db.query("update public.application_secrets set expires_at=now()-interval '1 second' where id=$1", [secretId]);
+  await rejected(launch([binding]), "unavailable");
+  await db.query("update public.application_secrets set expires_at=null where id=$1", [secretId]);
+  await rejected(launch(Array.from({ length: 9 }, (_, i) => ({ ...binding, key: `APP_TOKEN_${i}` }))), "unavailable");
+  for (const key of ["PATH", "OPENAI_API_KEY", "PUBLIC_TOKEN"])
+    await rejected(launch([{ ...binding, key }]), "invalid_request");
+  await rejected(
+    f.service().launch(f.caller, {
+      ...f.body,
+      variables: [{ key: "APP_TOKEN", variableId: secretId, version: 1 }],
+      secrets: [binding],
+    }),
+    "invalid_request",
+  );
+  expect(await counts(f)).toEqual({ sandboxes: 0, claims: 0, jobs: 0, commands: 0 });
+});

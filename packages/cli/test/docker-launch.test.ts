@@ -97,6 +97,8 @@ test("Docker incompatible or malformed options fail before HTTP", async () => {
     ["--variable", "PATH:33333333-3333-4333-8333-333333333333:1"],
     ["--variable", "APP_REGION:not-a-uuid:1"],
     ["--skill", "foo@1"],
+    ["--secret", `OPENAI_API_KEY:${credential}:1`],
+    ["--secret", `APP_TOKEN:${credential}:0`],
     ["--repo", "https://user:secret@example.test/web"],
     ["--connections", "a"],
     ["--credential-version", "0"],
@@ -128,7 +130,17 @@ test("unknown Docker launch outcome retains a stable request UUID for exact retr
 test("Docker CLI translates repeated repository flags with golden branch and directory rules", async () => {
   let body: unknown;
   const result = await capture(
-    [...args, "--repo", "acme/web@feature/work", "--repo", "acme/api@main", "--variable", `APP_REGION:${credential}:2`],
+    [
+      ...args,
+      "--repo",
+      "acme/web@feature/work",
+      "--repo",
+      "acme/api@main",
+      "--variable",
+      `APP_REGION:${credential}:2`,
+      "--secret",
+      `APP_TOKEN:${requestId}:1`,
+    ],
     async (request) => {
       body = await request.json();
       return Response.json({
@@ -141,6 +153,7 @@ test("Docker CLI translates repeated repository flags with golden branch and dir
   expect(result.code).toBe(0);
   expect(body).toMatchObject({
     variables: [{ key: "APP_REGION", variableId: credential, version: 2 }],
+    secrets: [{ key: "APP_TOKEN", secretId: requestId, version: 1 }],
     repos: [
       { url: "https://github.com/acme/web", branch: "feature/work", dir: "web" },
       { url: "https://github.com/acme/api", branch: "main", dir: "api" },

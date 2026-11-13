@@ -81,7 +81,7 @@ export interface Deps {
 const HELP = `armada ${VERSION}: launch coding agents in provider-scoped sandboxes
 
 Usage:
-  armada launch [prompt] --provider docker --host UUID --image digest-ref --agent claude|codex|opencode --credential-id UUID --org UUID [--repo owner/repo[@branch] ...] [--variable KEY:UUID:VERSION ...] [--request-id UUID] [--json]
+  armada launch [prompt] --provider docker --host UUID --image digest-ref --agent claude|codex|opencode --credential-id UUID --org UUID [--repo owner/repo[@branch] ...] [--variable KEY:UUID:VERSION ...] [--secret KEY:UUID:VERSION ...] [--request-id UUID] [--json]
                                            Opt-in plain-image Docker launch through the normal Armada API.
   armada --version                         Print the version
   armada --help                            Show this help
@@ -863,6 +863,7 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
       "--request-id",
       "--credential-version",
       "--variable",
+      "--secret",
     ],
     ["--sized", "--armada-access"],
   );
@@ -871,7 +872,7 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
     return launchDocker(args, io, { ...auth, fetch: deps.fetch ?? auth.fetch });
   }
   if (
-    ["--host", "--image", "--request-id", "--credential-version", "--variable"].some(
+    ["--host", "--image", "--request-id", "--credential-version", "--variable", "--secret"].some(
       (key) => single(args, key) !== undefined,
     )
   )

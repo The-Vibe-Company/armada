@@ -6,6 +6,7 @@ export {
   type GitHubHydrationPhase,
   githubHydrationPhase,
 } from "./api-failure.ts";
+export { type ApplicationSecretBinding, parseApplicationSecretBindings } from "./application-secret-bindings.ts";
 export { CLAUDE_ENDPOINT_ENV, type ClaudeEndpoint, parseClaudeEndpoint } from "./claude-endpoint.ts";
 export { CLIENT_CONFIG_PATH, type ClientConfig } from "./client-config.ts";
 export { CODEX_ENDPOINT_ENV, type CodexEndpoint, parseCodexEndpoint } from "./codex-endpoint.ts";

@@ -1,13 +1,14 @@
 import { createHash } from "node:crypto";
+import { parseApplicationSecretBindings } from "./application-secret-bindings.ts";
 import type { ApplicationVaultActor } from "./application-vault.ts";
 import { HARNESS_KINDS } from "./credentials.ts";
-import { decryptSecret } from "./crypto.ts";
 import type { GoldenActor, GoldenOperation, GoldenRecord } from "./golden.ts";
 import { GoldenError } from "./golden-config.ts";
 import { GOLDEN_SELECT, type GoldenRow, mapGoldenRow, type Sql } from "./golden-store.ts";
 import { isHarness } from "./harnesses.ts";
 import { type LaunchOptions, type LaunchStores, launchSandbox } from "./launch.ts";
 import { LaunchError } from "./launch-error.ts";
+import { assertLaunchSecretBindings, resolveLaunchSecrets } from "./launch-secrets.ts";
 import { resolveLaunchVariables } from "./launch-variables.ts";
 import { parseMachineSize } from "./machine-size.ts";
 import { resolveModelChoice } from "./models.ts";
@@ -221,17 +222,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
     ).rows.length;
     if (retired) unavailable("environment_snapshot_unavailable");
     const values = await resolveLaunchVariables(tx, actor, def.variables, scope === "org");
-    // Metadata only: publication and admission must never fetch ciphertext or plaintext.
-    for (const binding of def.secrets ?? []) {
-      const secret = (
-        await tx.query<{ version: number; scope: string }>(
-          "select version,scope from public.application_secrets where id=$1 and org_id=$2 and status='active' and (expires_at is null or expires_at>now()) and (scope='org' or owner_id=$3) for share",
-          [binding.secretId, actor.orgId, actor.userId],
-        )
-      ).rows[0];
-      if (!secret || (scope === "org" && secret.scope !== "org")) unavailable("secret_unavailable");
-      if (secret.version !== binding.version) unavailable("secret_version_changed");
-    }
+    await assertLaunchSecretBindings(tx, actor, def.secrets ?? [], scope === "org");
     try {
       validateReadableVariables(values);
     } catch {
@@ -305,21 +296,13 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
     } catch {
       invalid();
     }
-    const secrets: NonNullable<TemplateDefinition["secrets"]> = [];
-    if (d.secrets !== undefined && (!Array.isArray(d.secrets) || d.secrets.length > 64)) invalid();
-    for (const binding of (d.secrets ?? []) as unknown[]) {
-      const b = object(binding);
-      fields(b, ["key", "secretId", "version"]);
-      const key = text(b.key, 128);
-      if (/^(NEXT_PUBLIC_|VITE_|PUBLIC_)/i.test(key)) invalid();
-      try {
-        validateReadableVariables({ [key]: "" });
-      } catch {
-        invalid();
-      }
-      if (variables.some((v) => v.key === key) || secrets.some((v) => v.key === key)) invalid();
-      secrets.push({ key, secretId: id(b.secretId), version: integer(b.version) });
+    let secrets: NonNullable<TemplateDefinition["secrets"]>;
+    try {
+      secrets = parseApplicationSecretBindings(d.secrets === undefined ? [] : d.secrets);
+    } catch {
+      invalid();
     }
+    if (secrets.some((secret) => variables.some((variable) => variable.key === secret.key))) invalid();
     if (variables.length + secrets.length > 64) unavailable("environment_limits_exceeded");
     const skills = (d.skills ?? []) as string[];
     if (!Array.isArray(skills)) invalid();
@@ -802,23 +785,11 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
   }
   // Resolve only into a short-lived provider call; never put plaintext in the durable manifest.
   async function resolveSecrets(actor: { userId: string; orgId: string }, def: TemplateDefinition) {
-    const values: Record<string, string> = {};
-    if (!def.secrets?.length) return values;
-    await transaction(async (tx) => {
+    if (!def.secrets?.length) return {};
+    return transaction(async (tx) => {
       await member(tx, { userId: actor.userId, orgs: [{ orgId: actor.orgId }] }, actor.orgId);
-      for (const binding of def.secrets ?? []) {
-        const row = (
-          await tx.query<{ value_enc: Uint8Array; version: number }>(
-            "select value_enc,version from public.application_secrets where id=$1 and org_id=$2 and status='active' and (expires_at is null or expires_at>now()) and (scope='org' or owner_id=$3) for share",
-            [binding.secretId, actor.orgId, actor.userId],
-          )
-        ).rows[0];
-        if (!row) unavailable("secret_unavailable");
-        if (row.version !== binding.version) unavailable("secret_version_changed");
-        values[binding.key] = await decryptSecret(new Uint8Array(row.value_enc), encryptionKey);
-      }
+      return resolveLaunchSecrets(tx, actor, def.secrets ?? [], encryptionKey);
     });
-    return values;
   }
   /** Later turns need current sandbox authority, NOT the mutable sources of a frozen readable launch. */
   async function prepare(

@@ -5,6 +5,7 @@ import {
   GoldenError,
   HARNESSES,
   type Harness,
+  parseApplicationSecretBindings,
   parseReadableVariableBindings,
   resolveModelChoice,
 } from "@armada/core";
@@ -19,6 +20,7 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
   const allowed = new Set([
     "--repo",
     "--variable",
+    "--secret",
     "--provider",
     "--host",
     "--image",
@@ -72,7 +74,25 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
   } catch {
     throw new GoldenError("invalid_config", "Invalid readable variable bindings.");
   }
+  let secretBindings: ReturnType<typeof parseApplicationSecretBindings>;
+  try {
+    secretBindings = parseApplicationSecretBindings(
+      values(args, "--secret").map((binding) => {
+        const [key, secretId, version, extra] = binding.split(":");
+        if (extra !== undefined || !version || !/^[1-9][0-9]*$/.test(version)) throw Error("Invalid secret binding.");
+        return { key, secretId, version: Number(version) };
+      }),
+    );
+    if (
+      variableBindings.length + secretBindings.length > 64 ||
+      secretBindings.some((secret) => variableBindings.some((variable) => secret.key === variable.key))
+    )
+      throw Error("Invalid environment bindings.");
+  } catch {
+    throw new GoldenError("invalid_config", "Invalid application secret bindings. Use --secret KEY:UUID:VERSION.");
+  }
   const body: DockerLaunchRequest = {
+    ...(secretBindings.length ? { secrets: secretBindings } : {}),
     ...(variableBindings.length ? { variables: variableBindings } : {}),
     ...(repos.length
       ? {
