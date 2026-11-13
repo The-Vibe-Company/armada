@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { createSqlAuthStore } from "@armada/auth";
 import {
   type AgentEvent,
+  DOCKER_IMAGE_UNAVAILABLE_MESSAGE,
   type DockerLaunchResult,
   type DockerSandboxStatus,
   type Harness,
@@ -118,7 +119,7 @@ async function fixture(options: { lifecycleGenerationAfterCreate?: number; harne
   };
   let now = 0,
     drive = true,
-    failCreate = false,
+    failCreate: false | "plain" | "image" = false,
     malformedSkills = false;
   let session: Awaited<ReturnType<typeof authority.enrol>> | undefined;
   const receipt = { promptId: randomUUID(), conversationId: randomUUID(), status: "queued" };
@@ -130,9 +131,11 @@ async function fixture(options: { lifecycleGenerationAfterCreate?: number; harne
       jobs.push(job);
       if (job.operation === "bootstrap" || job.operation === "resume")
         session = await authority.enrol(job.bootstrap.enrolmentToken);
+      const failed = failCreate && job.operation === "create";
       await hosts.complete(host.hostToken, installationId, {
         requestId: job.requestId,
-        outcome: failCreate && job.operation === "create" ? "failed" : "completed",
+        outcome: failed ? "failed" : "completed",
+        ...(failed && failCreate === "image" ? { reason: "image_unavailable" as const } : {}),
       });
       if (job.operation === "create" && options.lifecycleGenerationAfterCreate !== undefined) {
         await db.query(`update public.sandboxes set lifecycle_generation=$2 where id=$1`, [
@@ -227,8 +230,8 @@ async function fixture(options: { lifecycleGenerationAfterCreate?: number; harne
     setDrive(value: boolean) {
       drive = value;
     },
-    setFailure() {
-      failCreate = true;
+    setFailure(kind: "plain" | "image" = "plain") {
+      failCreate = kind;
     },
     resolutions: () => resolutions,
     session: () => session,
@@ -485,6 +488,17 @@ test("failed startup returns a safe failure without claiming stopped, and pendin
   await cleanup.invoke(f.caller, "stop", { id: f.body.requestId });
   await cleanup.invoke(f.caller, "delete", { id: f.body.requestId });
   expect((await createDockerSandboxService(sql, key).get(f.actor, f.body.requestId)).status).toBe("deleted");
+});
+
+test("a launch whose host could not fetch the image says so in plain words, at launch and in status", async () => {
+  const f = await fixture();
+  f.setFailure("image");
+  await rejected(f.service().launch(f.caller, f.body), "sandbox_not_ready");
+  await expect(f.service().launch(f.caller, f.body)).rejects.toThrow(DOCKER_IMAGE_UNAVAILABLE_MESSAGE);
+  const status = await createDockerSandboxControls(sql, key, { clock: f.clock }).invoke(f.caller, "status", {
+    id: f.body.requestId,
+  });
+  expect(status).toMatchObject({ result: { status: "failed", statusReason: DOCKER_IMAGE_UNAVAILABLE_MESSAGE } });
 });
 
 test("prompt-free launch normalizes UUIDs, honors TTL and stops at runtime readiness", async () => {

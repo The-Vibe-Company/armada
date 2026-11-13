@@ -4,9 +4,13 @@ import { chmod, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BootstrapDescriptor } from "../../core/src/docker-host-job.ts";
-import { createDockerMachineExecutor } from "../../core/src/docker-machine.ts";
+import { createDockerMachineExecutor, DockerMachineError } from "../../core/src/docker-machine.ts";
 import { type Api, type Executor, type Job, register, type State, type Store, tick } from "../src/daemon.ts";
 import { fileStore, httpApi } from "../src/native.ts";
+
+function fail(): never {
+  throw new Error("missing receipt");
+}
 
 function fixture(
   operation: Exclude<Job["operation"], "bootstrap" | "resume"> = "create",
@@ -31,7 +35,7 @@ function fixture(
   };
   let deny = false;
   let failSave = false;
-  let failure = false;
+  let failure: false | Error = false;
   const executed: string[] = [];
   const swept: string[] = [];
   const acknowledgements: string[] = [];
@@ -48,7 +52,7 @@ function fixture(
     // Receipt comes from the actual store write, not a fixture-supplied pending record.
     expect(state.receipts.some((r) => r.requestId === job.requestId && !r.outcome)).toBe(true);
     executed.push(job.operation);
-    if (failure) throw new Error("uncertain side effect");
+    if (failure) throw failure;
   };
   const executor: Executor = {
     startRuntime: run,
@@ -87,8 +91,8 @@ function fixture(
     failSave: (v: boolean) => {
       failSave = v;
     },
-    failExecution: () => {
-      failure = true;
+    failExecution: (error: Error = new Error("uncertain side effect")) => {
+      failure = error;
     },
   };
 }
@@ -157,6 +161,34 @@ test("rejects changed request identity, generation inputs, and fresh create iden
   f.job.request = original.request;
   await expect(tick(f.store, f.api, f.executor)).rejects.toThrow("Changed machine generation");
   expect(f.executed).toHaveLength(1);
+});
+
+test("a failed image fetch is reported with its reason, and an older server still gets the plain outcome", async () => {
+  const f = fixture();
+  f.failExecution(new DockerMachineError("image_unavailable"));
+  await tick(f.store, f.api, f.executor);
+  expect(f.state().receipts[0]).toMatchObject({ outcome: "failed", reason: "image_unavailable" });
+  const generic = fixture();
+  generic.failExecution(new DockerMachineError("docker_failed"));
+  await tick(generic.store, generic.api, generic.executor);
+  expect(generic.state().receipts[0]?.reason).toBeUndefined();
+
+  for (const server of ["current", "older"] as const) {
+    const bodies: Record<string, unknown>[] = [];
+    const api = httpApi((async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      bodies.push(body);
+      // An older server refuses any field it does not know.
+      return new Response(null, { status: server === "older" && "reason" in body ? 400 : 204 });
+    }) as typeof fetch);
+    await api.result(f.state(), f.state().receipts[0] ?? fail());
+    const plain = { installationId: f.state().installationId, requestId: f.job.requestId, outcome: "failed" };
+    expect(bodies).toEqual(
+      server === "current"
+        ? [{ ...plain, reason: "image_unavailable" }]
+        : [{ ...plain, reason: "image_unavailable" }, plain],
+    );
+  }
 });
 
 test("uncertain execution fails durably, never replays, and TTL sweep still runs on denied polling", async () => {

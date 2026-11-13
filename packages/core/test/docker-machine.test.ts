@@ -3,7 +3,11 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createDockerMachineExecutor, type DockerMachineRequest } from "../src/docker-machine.ts";
+import {
+  createDockerMachineExecutor,
+  DOCKER_IMAGE_PULL_TIMEOUT_MS,
+  type DockerMachineRequest,
+} from "../src/docker-machine.ts";
 
 const request: DockerMachineRequest = {
   sandboxId: "33333333-3333-3333-3333-333333333333",
@@ -17,16 +21,28 @@ const request: DockerMachineRequest = {
 function fixture() {
   const containers = new Map<string, any>();
   const volumes = new Map<string, any>();
-  const calls: { argv: readonly string[]; stdin: string | Uint8Array | undefined }[] = [];
+  const calls: {
+    argv: readonly string[];
+    stdin: string | Uint8Array | undefined;
+    options?: { timeoutMs?: number };
+  }[] = [];
   const copies = new Map<string, Uint8Array>();
   let time = 1000;
   let failCommand = "";
   let retainRemoved = false;
+  // Images present on the host, and those its registry can serve.
+  const images = new Set([request.image]);
+  const registry = new Set<string>();
   const cli = {
-    async run(argv: readonly string[], stdin?: string | Uint8Array) {
-      calls.push({ argv, stdin });
+    async run(argv: readonly string[], stdin?: string | Uint8Array, options?: { timeoutMs?: number }) {
+      calls.push({ argv, stdin, ...(options ? { options } : {}) });
       const [kind, action] = argv;
       if (`${kind} ${action}` === failCommand) return { exitCode: 1, stdout: "SECRET Docker diagnostic" };
+      if (kind === "image") {
+        const image = argv.at(-1) ?? "";
+        if (action === "pull" && registry.has(image)) images.add(image);
+        return { exitCode: images.has(image) ? 0 : 1, stdout: "" };
+      }
       if (kind === "cp") {
         const [name, destination] = (argv.at(-1) ?? "").split(":");
         if (!name || !containers.get(name)?.State.Running || destination !== "/home" || !(stdin instanceof Uint8Array))
@@ -97,10 +113,40 @@ function fixture() {
     retainRemoved: () => {
       retainRemoved = true;
     },
+    images,
+    registry,
+    cli,
   };
 }
 
 describe("Docker machine executor", () => {
+  test("fetches an image the host does not have with a pull's own bound, and names a failed fetch", async () => {
+    const fresh = { ...request, image: `buildpack-deps@sha256:${"b".repeat(64)}` };
+    const pulled = fixture();
+    pulled.registry.add(fresh.image);
+    await pulled.executor.create(fresh);
+    expect(pulled.images.has(fresh.image)).toBe(true);
+    const pull = pulled.calls.find((call) => call.argv[0] === "image" && call.argv[1] === "pull");
+    expect(pull?.options).toEqual({ timeoutMs: DOCKER_IMAGE_PULL_TIMEOUT_MS });
+    expect(pulled.containers.size).toBe(1);
+    // Present images are never pulled again.
+    const present = fixture();
+    await present.executor.create(request);
+    expect(present.calls.some((call) => call.argv[1] === "pull")).toBe(false);
+
+    const missing = fixture();
+    await expect(missing.executor.create(fresh)).rejects.toMatchObject({ code: "image_unavailable" });
+    expect(missing.containers.size).toBe(0);
+    const broken = fixture();
+    broken.registry.add(fresh.image);
+    const run = broken.cli.run;
+    broken.cli.run = async (argv, stdin, options) => {
+      if (argv[1] === "pull") throw new Error("killed after its bound");
+      return run(argv, stdin, options);
+    };
+    await expect(broken.executor.create(fresh)).rejects.toMatchObject({ code: "image_unavailable" });
+  });
+
   test("installs the fixed runtime archive with private modes and numeric workspace ownership", async () => {
     const f = fixture();
     const receipt = await f.executor.create(request);

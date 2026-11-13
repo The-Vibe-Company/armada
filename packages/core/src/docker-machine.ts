@@ -1,7 +1,15 @@
 /** Direct argv execution only; adapters must never invoke a shell or log stdin/output. */
 export interface DockerMachineCli {
-  run(argv: readonly string[], stdin?: string | Uint8Array): Promise<{ exitCode: number; stdout: string }>;
+  /** `timeoutMs` lengthens the CLI's default bound for a slow command (an image pull). */
+  run(
+    argv: readonly string[],
+    stdin?: string | Uint8Array,
+    options?: { timeoutMs?: number },
+  ): Promise<{ exitCode: number; stdout: string }>;
 }
+
+/** How long a host may take to fetch an image it does not have yet; the launch's own deadline is 10 minutes. */
+export const DOCKER_IMAGE_PULL_TIMEOUT_MS = 8 * 60_000;
 
 export interface DockerMachineRequest {
   sandboxId: string;
@@ -14,7 +22,15 @@ export interface DockerMachineRequest {
 }
 
 export class DockerMachineError extends Error {
-  constructor(readonly code: "invalid_request" | "docker_failed" | "ownership_mismatch" | "expired" | "not_found") {
+  constructor(
+    readonly code:
+      | "invalid_request"
+      | "docker_failed"
+      | "image_unavailable"
+      | "ownership_mismatch"
+      | "expired"
+      | "not_found",
+  ) {
     super(`Docker machine ${code}`);
     this.name = "DockerMachineError";
   }
@@ -212,6 +228,18 @@ export function createDockerMachineExecutor(options: {
     if (state.expiresAt === undefined) fail("ownership_mismatch");
     if (state.expiresAt <= now()) fail("expired");
     if (!state.container) {
+      // An image the host does not have is fetched first, with a pull's own bound, so a failure says the image could
+      // not be fetched instead of a generic Docker failure (#1507).
+      if ((await run(["image", "inspect", "--format", "{{.Id}}", request.image])).exitCode !== 0) {
+        let pulled = false;
+        try {
+          const pull = ["image", "pull", "--quiet", request.image];
+          pulled = (await options.cli.run(pull, undefined, { timeoutMs: DOCKER_IMAGE_PULL_TIMEOUT_MS })).exitCode === 0;
+        } catch {
+          // A pull that could not run or outlived its bound is a fetch failure too.
+        }
+        if (!pulled) fail("image_unavailable");
+      }
       const result = await run([
         "container",
         "create",
