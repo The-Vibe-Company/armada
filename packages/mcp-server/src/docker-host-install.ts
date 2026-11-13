@@ -52,6 +52,13 @@ case "$(uname -m)" in
 esac
 server=$(printf '%s' '${origin}' | base64 -d)
 binary="$HOME/.local/bin/armada-docker-host"
+mkdir -p "$HOME/.local/bin"
+tmp=$(mktemp -d "$HOME/.local/bin/.armada-host-install.XXXXXX")
+trap 'rm -rf "$tmp"' EXIT
+curl --fail --silent --show-error --proto '=https' "$server/api/runtime/artifacts/$digest" -o "$tmp/host"
+printf '%s  %s\\n' "$digest" "$tmp/host" | sha256sum --check --status
+chmod 700 "$tmp/host"
+
 [ ! -L "$binary" ] || { echo 'Refusing a symbolic link at the host binary path.' >&2; exit 1; }
 if [ -e "$binary" ]; then
   [ -f "$binary" ] && [ -x "$binary" ] || { echo 'The host binary path must be an executable file.' >&2; exit 1; }
@@ -61,8 +68,12 @@ if [ -e "$binary" ]; then
   printf 'Existing Docker host: %s\\n' "$status"
   case "$status" in
     *'"registered":true'*)
+      "$tmp/host" upgrade --server "$server"
+      if ! printf '%s\\n' "$token" | "$tmp/host" reuse-registration --server "$server"; then
+        echo 'This machine is already registered. Could not look up its name; use armada host list. The unused ticket expires automatically.'
+      fi
       unset token
-      echo 'Keeping the existing registration; the new one-use token has not been consumed.'
+      echo 'Keeping the existing registration. Ctrl-C stops host add waiting if the unused ticket could not be canceled.'
       case "$status" in *'"connected":true'*) echo 'connected'; exit 0 ;; esac
       echo 'Restarting the existing user service and waiting for it to reconnect.'
       systemctl --user restart armada-docker-host.service
@@ -79,12 +90,6 @@ if [ -e "$binary" ]; then
     *) echo 'Unrecognized host status; registration and token preserved.' >&2; exit 1 ;;
   esac
 fi
-mkdir -p "$HOME/.local/bin"
-tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
-curl --fail --silent --show-error --proto '=https' "$server/api/runtime/artifacts/$digest" -o "$tmp/host"
-printf '%s  %s\\n' "$digest" "$tmp/host" | sha256sum --check --status
-chmod 700 "$tmp/host"
 install -m 700 "$tmp/host" "$binary"
 printf '%s\\n' "$token" | "$binary" install --server "$server"
 unset token

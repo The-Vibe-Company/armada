@@ -2,7 +2,7 @@
 import { join } from "node:path";
 import { createDockerMachineExecutor } from "../../core/src/docker-machine.ts";
 import { VERSION } from "../../core/src/version.ts";
-import { register, tick } from "./daemon.ts";
+import { register, serverOrigin, tick, validToken } from "./daemon.ts";
 import { dockerCli, fileStore, httpApi } from "./native.ts";
 import { dockerRuntimeStarter } from "./runtime-install.ts";
 import {
@@ -13,6 +13,7 @@ import {
   stateDirectory,
   stopService,
   uninstallPreflight,
+  upgradeService,
   validateInstallation,
 } from "./service.ts";
 
@@ -20,6 +21,8 @@ const usage = `Usage:
   armada-docker-host register --server https://ARMADA_ORIGIN --state-dir /absolute/private/directory
   armada-docker-host run --state-dir /absolute/private/directory
   armada-docker-host install --server https://ARMADA_ORIGIN
+  armada-docker-host reuse-registration --server https://ARMADA_ORIGIN
+  armada-docker-host upgrade --server https://ARMADA_ORIGIN
   armada-docker-host status
   armada-docker-host uninstall
   armada-docker-host --help
@@ -35,7 +38,7 @@ async function main(args: string[]) {
     args.length === 0 ||
     (args.length === 1 && ["--help", "-h"].includes(args[0] ?? "")) ||
     (args.length === 2 &&
-      ["register", "run", "install", "status", "uninstall"].includes(args[0] ?? "") &&
+      ["register", "run", "install", "upgrade", "reuse-registration", "status", "uninstall"].includes(args[0] ?? "") &&
       ["--help", "-h"].includes(args[1] ?? ""))
   ) {
     console.log(usage);
@@ -54,13 +57,16 @@ async function main(args: string[]) {
       throw new Error("Invalid arguments");
     options.set(key, value);
   }
-  if (!command || !["register", "run", "install", "status", "uninstall"].includes(command))
+  if (
+    !command ||
+    !["register", "run", "install", "upgrade", "reuse-registration", "status", "uninstall"].includes(command)
+  )
     throw new Error("Invalid arguments");
-  const managed = ["install", "status", "uninstall"].includes(command);
+  const managed = ["install", "upgrade", "reuse-registration", "status", "uninstall"].includes(command);
   if (
     (managed && options.has("--state-dir")) ||
     (!managed && !options.has("--state-dir")) ||
-    ["register", "install"].includes(command) !== options.has("--server")
+    ["register", "install", "upgrade", "reuse-registration"].includes(command) !== options.has("--server")
   )
     throw new Error("Invalid arguments");
   const directory = managed ? stateDirectory() : (options.get("--state-dir") ?? "");
@@ -83,6 +89,25 @@ async function main(args: string[]) {
         runningSandboxes: local.running,
       }),
     );
+    return;
+  }
+  if (command === "upgrade") {
+    await upgradeService(store, options.get("--server") ?? "");
+    console.log("Upgraded Armada Docker host binary; registration, workloads and user service preserved.");
+    return;
+  }
+  if (command === "reuse-registration") {
+    const state = await store.load();
+    if (state.server !== serverOrigin(options.get("--server") ?? ""))
+      throw new Error("Registration server does not match the existing host; registration and new token preserved.");
+    const token = (await Bun.stdin.text()).trim();
+    if (!validToken(token))
+      throw new Error("Invalid one-use registration token; pipe it on stdin, never as an argument.");
+    const identity = await httpApi().reuseRegistration(state, token);
+    console.log(
+      `This machine is already registered under its existing name: ${JSON.stringify(identity.name ?? identity.hostId)} (${identity.hostId}).`,
+    );
+    console.log("The unused registration ticket was canceled; its token was not exchanged for a machine credential.");
     return;
   }
   if (command === "install") await servicePreflight();

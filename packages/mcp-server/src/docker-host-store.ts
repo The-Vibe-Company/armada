@@ -305,7 +305,9 @@ export function createDockerHostStore(sql: Sql, key: string) {
             (select count(*)::integer from public.sandboxes s
               where s.org_id=h.org_id and s.docker_host_id=h.id
                 and s.provider='docker' and s.status<>'deleted') as sandboxes
-          from public.docker_hosts h where h.org_id=$1 order by h.created_at,h.id`,
+          from public.docker_hosts h where h.org_id=$1
+            and (h.installation_id is not null or h.revoked_at is not null or h.registration_expires_at>now())
+          order by h.created_at,h.id`,
           [actor.orgId],
         );
         return hosts.rows.map((host) => ({
@@ -365,6 +367,43 @@ export function createDockerHostStore(sql: Sql, key: string) {
           hash(hostToken),
         ]);
         return { hostId: host.id, hostToken };
+      });
+    },
+    reuseRegistration(registrationToken: string, existingHostId: string) {
+      return transaction(async (tx) => {
+        id(existingHostId);
+        const tokenHash = hash(registrationToken);
+        const pending = await tx.query<Host>(
+          `select id,org_id,owner_id from public.docker_hosts
+           where registration_hash=$1 and registration_expires_at>now() and revoked_at is null
+             and installation_id is null and hash is null`,
+          [tokenHash],
+        );
+        const ticket = pending.rows[0] ?? deny();
+        // Match exchangeRegistration's membership -> host lock order and recheck
+        // after locking: concurrent token exchange/revocation cannot reuse authority.
+        await admin(tx, { userId: ticket.owner_id, orgId: ticket.org_id });
+        const locked = await tx.query<Host>(
+          `select id,org_id,owner_id from public.docker_hosts
+           where id=$1 and org_id=$2 and owner_id=$3 and registration_hash=$4
+             and registration_expires_at>now() and revoked_at is null
+             and installation_id is null and hash is null for update`,
+          [ticket.id, ticket.org_id, ticket.owner_id, tokenHash],
+        );
+        if (!locked.rows.length) deny();
+        const target = await tx.query<{ id: string; name: string | null }>(
+          `select id,name from public.docker_hosts
+           where id=$1 and org_id=$2 and owner_id=$3 and installation_id is not null
+             and hash is not null and registration_hash is null and revoked_at is null for update`,
+          [existingHostId, ticket.org_id, ticket.owner_id],
+        );
+        const host = target.rows[0] ?? deny();
+        // Cancel only the unused ticket. Existing machine authority is immutable.
+        await tx.query(
+          `update public.docker_hosts set registration_hash=null,registration_expires_at=now() where id=$1`,
+          [ticket.id],
+        );
+        return { hostId: host.id, name: host.name };
       });
     },
     revoke(actor: Actor, hostId: string) {

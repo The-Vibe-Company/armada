@@ -41,7 +41,7 @@ test("one-line installer verifies bytes, delivers the one-use token privately an
     await mkdir(tools);
     const artifact = join(home, "artifact");
     const host =
-      '#!/bin/sh\ncase "$1" in install) cat > "$HOME/registration" ;; status) printf \'{"registered":true,"connected":true,"hostId":"22222222-2222-4222-8222-222222222222"}\\n\' ;; *) exit 1 ;; esac\n';
+      '#!/bin/sh\ncase "$1" in reuse-registration) cat > "$HOME/reuse-input"; echo "This machine is already registered under its existing name: owner-machine" ;; upgrade) exit 0 ;; install) cat > "$HOME/registration" ;; status) printf \'{"registered":true,"connected":true,"hostId":"22222222-2222-4222-8222-222222222222"}\\n\' ;; *) exit 1 ;; esac\n';
     await writeFile(artifact, host);
     const digest = createHash("sha256").update(host).digest("hex");
     await Bun.write(join(home, "docker-host.json"), JSON.stringify({ x64: digest, arm64: digest }));
@@ -50,7 +50,7 @@ test("one-line installer verifies bytes, delivers the one-use token privately an
       docker: "exit 0",
       systemctl: 'case "$*" in *restart*) touch "$HOME/restarted" ;; esac',
       loginctl: 'case "$1" in show-user) echo yes ;; esac',
-      curl: 'for arg do target=$arg; done; cp "$FIXTURE_ARTIFACT" "$target"',
+      curl: 'for arg do target=$arg; done; case "$target" in *reuse-registration) cat > "$HOME/reuse-header"; echo \'{"hostId":"22222222-2222-4222-8222-222222222222","name":"owner-machine"}\' ;; *) cp "$FIXTURE_ARTIFACT" "$target" ;; esac',
     }))
       await writeFile(join(tools, name), `#!/bin/sh\n${body}\n`, { mode: 0o700 });
     const route = createDockerHostInstallRoute(home, "https://armada.example");
@@ -76,6 +76,8 @@ test("one-line installer verifies bytes, delivers the one-use token privately an
     const reused = run("c".repeat(64));
     expect(reused.exitCode).toBe(0);
     expect(reused.stdout.toString()).toContain("Keeping the existing registration");
+    expect(reused.stdout.toString()).toContain("owner-machine");
+    expect(await readFile(join(home, "reuse-input"), "utf8")).toContain("c".repeat(64));
     expect(reused.stdout.toString()).toContain("22222222-2222-4222-8222-222222222222");
     expect((await readFile(join(home, "registration"), "utf8")).trim()).toBe(token);
 

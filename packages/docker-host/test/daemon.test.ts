@@ -561,3 +561,40 @@ test("unregister distinguishes a pending drain from confirmed revocation and rej
     ).rejects.toThrow("Invalid host revocation response");
   }
 });
+
+// The no-Node fallback must not label arbitrary HTTP output as a canceled ticket/name.
+test("HTTP reuse authenticates only with the fresh ticket and validates public identity before confirmation", async () => {
+  const state = fixture().state();
+  const token = "c".repeat(64);
+  const before = JSON.stringify(state);
+  for (const name of ["owner-machine", null]) {
+    const api = httpApi((async (url, options) => {
+      expect(String(url)).toBe(`${state.server}/api/docker-host/reuse-registration`);
+      expect(options?.redirect).toBe("error");
+      expect(new Headers(options?.headers).get("authorization")).toBe(`Bearer ${token}`);
+      expect(JSON.parse(String(options?.body))).toEqual({ hostId: state.hostId });
+      expect(String(options?.body)).not.toContain(state.hostToken);
+      return Response.json({ hostId: state.hostId, name });
+    }) as typeof fetch);
+    expect(await api.reuseRegistration(state, token)).toEqual({ hostId: state.hostId, name });
+  }
+  for (const value of [
+    null,
+    {},
+    { hostId: state.hostId },
+    { hostId: crypto.randomUUID(), name: "wrong" },
+    { hostId: state.hostId, name: "bad\nname" },
+    { hostId: state.hostId, name: "x", secret: "unexpected" },
+  ])
+    await expect(
+      httpApi((async (_url: string | URL | Request, _options?: RequestInit) =>
+        Response.json(value)) as typeof fetch).reuseRegistration(state, token),
+    ).rejects.toThrow("Invalid existing host identity");
+  await expect(
+    httpApi(
+      (async (_url: string | URL | Request, _options?: RequestInit) =>
+        new Response(null, { status: 302 })) as typeof fetch,
+    ).reuseRegistration(state, token),
+  ).rejects.toThrow("Host request denied");
+  expect(JSON.stringify(state)).toBe(before);
+});

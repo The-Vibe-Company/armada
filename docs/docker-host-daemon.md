@@ -169,9 +169,11 @@ reads the five-minute, single-use registration token **only from stdin**. It nee
 no Armada login or organization selection. Use the one-line command from
 `armada host add` or the dashboard rather than putting a token in CLI arguments.
 
-A follow-up bootstrap slice will prefer the published CLI through bunx, then npx,
-pinned to the server's exact Armada version (not `latest`), retain the standalone
-no-Node fallback and offer an optional global CLI installation.
+The bootstrap prefers `bun x --bun`, then `npx -y`, pinned to the server's
+exact published Armada version (not `latest`), retains the standalone no-Node
+fallback and offers an optional global CLI installation. The `--bun` flag lets
+Bun-only machines run the npm launcher's Node shebang. The bare globally installed
+`armada` launcher requires Node; Bun-only users can use `bun x --bun` instead.
 
 The CLI fetches the public `/api/docker-host/install.json` manifest and the
 selected Linux x64/arm64 artifact from the same HTTPS origin, rejects redirects,
@@ -182,10 +184,21 @@ installation. The CLI waits up to 60 seconds for a connected status; timeout is
 not permission to exchange another registration token blindly.
 
 Re-running reports the existing host ID, version and connectivity. Registered
-hosts keep their existing binary and registration; the new token is not consumed.
-An offline registered host restarts its existing user service and gets the same
-bounded reconnect wait. In-place registered-binary upgrades are deliberately not
-performed: the managed install records the binary digest for safe uninstall.
+hosts keep their registration while a verified temporary host binary upgrades the
+managed executable in place and updates its ownership digest. Upgrade never exchanges
+or deletes machine credentials. An interrupted executable replacement leaves a pending
+digest in the private marker so validation accepts either the old or new verified
+bytes; retrying upgrades reconciles it. The existing user service is restarted and
+gets the same bounded reconnect wait.
+
+A fresh registration token can cancel its own unused ticket and resolve an existing
+registered host's name through `POST /api/docker-host/reuse-registration`. It cannot
+read or alter another owner's or organization's machine. The response contains only
+host ID and name; no long-lived machine credential is read by the CLI. The canceled
+ticket disappears from the list, allowing `host add` to stop waiting. Expired unused
+registrations are hidden too; registered/offline and revoked host records remain.
+If cancellation or name lookup is unavailable, local registration is preserved,
+the ticket expires naturally, and the installer gives Ctrl-C/list guidance.
 Unregistered binaries without retained installation files can be replaced;
 unreadable or partially registered state is preserved for diagnosis.
 
