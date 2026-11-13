@@ -32,10 +32,12 @@ case "$token" in *[!a-f0-9]*|'') echo 'Invalid one-time token.' >&2; exit 1 ;; e
 [ "\${#token}" -eq 64 ] || { echo 'Invalid one-time token.' >&2; exit 1; }
 umask 077
 [ "$(uname -s)" = Linux ] || { echo 'Linux with systemd user services is required.' >&2; exit 1; }
-command -v curl >/dev/null
-command -v sha256sum >/dev/null
-command -v systemctl >/dev/null
-systemctl --user show-environment >/dev/null
+for tool in curl sha256sum systemctl loginctl docker; do
+  command -v "$tool" >/dev/null 2>&1 || { echo "Missing $tool; install it before adding this Docker host." >&2; exit 1; }
+done
+systemctl --user show-environment >/dev/null 2>&1 || {
+  echo 'A working systemd user session is required. Log in as the user who will run the host service.' >&2; exit 1;
+}
 if ! docker info >/dev/null 2>&1; then
   echo 'Docker must be usable by this user. Ask the administrator to configure rootless Docker or grant Docker access (equivalent to root authority).' >&2; exit 1
 fi
@@ -51,6 +53,47 @@ case "$(uname -m)" in
   *) echo 'Unsupported host architecture.' >&2; exit 1 ;;
 esac
 server=$(printf '%s' '${origin}' | base64 -d)
+# The CLI and optional global install are pinned to this server release, not latest.
+package='@the-vibe-company/armada@${VERSION}'
+offer_cli() {
+  if command -v bun >/dev/null 2>&1; then
+    global_command="bun add -g $package"
+  else
+    global_command="npm install -g $package"
+  fi
+  if [ -t 1 ] && [ -r /dev/tty ] && ( : </dev/tty ) 2>/dev/null; then
+    printf 'Install the armada command on this machine? [y/N] ' >/dev/tty
+    answer=n
+    IFS= read -r answer </dev/tty || answer=n
+    if command -v bun >/dev/null 2>&1 && ! command -v node >/dev/null 2>&1; then
+      echo 'This npm launcher needs Node for the bare armada command. With Bun only, use: bun x --bun '"$package"
+    fi
+    case "$answer" in
+      y|Y|yes|YES)
+        if command -v bun >/dev/null 2>&1; then
+          bun add -g "$package" || echo "Host is installed; global CLI installation failed. Try: $global_command" >&2
+        else
+          npm install -g "$package" || echo "Host is installed; global CLI installation failed. Try: $global_command" >&2
+        fi
+        ;;
+      *) echo "To install the CLI later: $global_command" ;;
+    esac
+  else
+    echo "To install the CLI later (requires Bun or Node/npm): $global_command"
+  fi
+}
+if command -v bun >/dev/null 2>&1; then
+  printf '%s\\n' "$token" | bun x --bun "$package" host install --server "$server"
+  unset token
+  offer_cli
+  exit 0
+elif command -v npm >/dev/null 2>&1 && command -v npx >/dev/null 2>&1; then
+  printf '%s\\n' "$token" | npx -y "$package" host install --server "$server"
+  unset token
+  offer_cli
+  exit 0
+fi
+echo 'Bun and npm/npx are unavailable; using the pinned standalone host binary (Node is not required).'
 binary="$HOME/.local/bin/armada-docker-host"
 mkdir -p "$HOME/.local/bin"
 tmp=$(mktemp -d "$HOME/.local/bin/.armada-host-install.XXXXXX")
@@ -74,12 +117,12 @@ if [ -e "$binary" ]; then
       fi
       unset token
       echo 'Keeping the existing registration. Ctrl-C stops host add waiting if the unused ticket could not be canceled.'
-      case "$status" in *'"connected":true'*) echo 'connected'; exit 0 ;; esac
+      case "$status" in *'"connected":true'*) echo 'connected'; offer_cli; exit 0 ;; esac
       echo 'Restarting the existing user service and waiting for it to reconnect.'
       systemctl --user restart armada-docker-host.service
       attempt=0
       while [ "$attempt" -lt 60 ]; do
-        if "$binary" status | grep -q '"connected":true'; then echo 'connected'; exit 0; fi
+        if "$binary" status | grep -q '"connected":true'; then echo 'connected'; offer_cli; exit 0; fi
         attempt=$((attempt + 1))
         sleep 1
       done
@@ -95,7 +138,7 @@ printf '%s\\n' "$token" | "$binary" install --server "$server"
 unset token
 attempt=0
 while [ "$attempt" -lt 60 ]; do
-  if "$binary" status | grep -q '"connected":true'; then echo 'connected'; exit 0; fi
+  if "$binary" status | grep -q '"connected":true'; then echo 'connected'; offer_cli; exit 0; fi
   attempt=$((attempt + 1))
   sleep 1
 done
