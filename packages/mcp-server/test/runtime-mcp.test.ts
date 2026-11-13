@@ -11,7 +11,9 @@ import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { createMcpHttpIntegration } from "../src/mcp-http-integration.ts";
 import { createRuntimeCheckpoint } from "../src/runtime-checkpoint.ts";
+import { createRuntimeFollowup } from "../src/runtime-followup.ts";
 import { createRuntimeMcp } from "../src/runtime-mcp.ts";
+import { createRuntimeResume } from "../src/runtime-resume.ts";
 import { runtimeFixture } from "./runtime-fixture.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
 
@@ -36,6 +38,9 @@ async function fixture() {
     commands: f.bridge,
   });
   const input = { id: f.row.id, connections: [c.id] };
+  await service.connections.validate({ userId: f.people.owner, orgId: f.people.org }, [c.id], "org");
+  await service.connections.bind(f.row.id, [c.id]);
+  const send = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, service.prepare);
   const authStore = createMemoryAuthStore();
   authStore.addMembership(f.people.owner, { orgId: f.people.org, name: "Fixture", role: "member" });
   const bearer = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: f.people.owner })).replace(/=+$/, "")}.sig`;
@@ -46,6 +51,7 @@ async function fixture() {
     service,
     input,
     registry,
+    send,
     authStore,
     async api(path: string, body: object) {
       const response = await handleControlRequest(
@@ -65,6 +71,7 @@ async function fixture() {
           },
           data: createSqlData(f.sql),
           runtimeMcp: service,
+          runtimeSend: send,
           providers: {
             async resolve() {
               throw Error("MCP must not resolve native/provider tools");
@@ -102,19 +109,18 @@ describe("enrolled runtime remote MCP", () => {
     expect(
       (await x.api("sandbox/mcp-preflight-v1", { runtimeVersion: 1, org: f.people.org, connections: [x.c.id] })).status,
     ).toBe(200);
-    const response = await x.api("sandbox/configure-mcp-runtime-v1", x.input);
+    const response = await x.api("sandbox/send", f.input("use configured MCP"));
     expect(response.status).toBe(200);
-    const result = (await response.json()) as Awaited<ReturnType<typeof x.service.refresh>>;
-    expect(result).toMatchObject({ runtime: { kind: "armada", epoch: "1" }, connections: [x.c.id] });
+    const result = (await response.json()) as Awaited<ReturnType<typeof x.send>>;
+    expect(result).toMatchObject({ runtime: { kind: "armada", epoch: "1" } });
     expect(/armada_gw_|upstream-private/.test(JSON.stringify(result))).toBe(false);
-    await f.send(f.caller, f.input("use configured MCP"));
     const { snapshot, server, hash } = x.configuration();
     expect(JSON.stringify(snapshot).includes(x.secret)).toBe(false);
     const raw = server.headers!.Authorization!.slice(7);
     expect(f.journal.redact(raw).includes(raw)).toBe(false);
     expect(f.journal.redact(server.headers!.Authorization!).includes(server.headers!.Authorization!)).toBe(false);
     expect(await createSqlMcpLeasePort(f.sql).validate(hash, "tools")).not.toBeNull();
-    await expect(x.service.refresh({ ...f.caller, userId: f.people.admin }, x.input)).rejects.toThrow();
+    await expect(x.service.prepare({ ...f.caller, userId: f.people.admin }, f.row.id)).rejects.toThrow();
     const servers: McpServer[] = [],
       transports = new Map<string, WebStandardStreamableHTTPServerTransport>();
     let calls = 0;
@@ -167,11 +173,8 @@ describe("enrolled runtime remote MCP", () => {
           key: ENCRYPTION_KEY,
           origin: "https://armada.test",
           commands: f.bridge,
-        }).refresh(f.caller, x.input),
-      ).toEqual(result);
-      await f.db.query("update mcp_grants set generation=generation+1 where connection_id=$1", [x.c.id]);
-      await expect(x.service.refresh(f.caller, x.input)).rejects.toMatchObject({ code: "conflict" });
-      expect(await createSqlMcpLeasePort(f.sql).validate(hash, "tools")).toBeNull();
+        }).prepare(f.caller, f.row.id),
+      ).toMatchObject({ revision: snapshot.revision });
     } finally {
       await client.close().catch(() => {});
       await gateway.close();
@@ -184,8 +187,7 @@ test("checkpoint durably revokes MCP leases; a fresh epoch explicitly reauthoriz
   const x = await fixture(),
     { f } = x;
   try {
-    await x.service.refresh(f.caller, x.input);
-    await f.send(f.caller, f.input());
+    await x.send(f.caller, f.input());
     const old = x.configuration();
     const cp = await createRuntimeCheckpoint(
       f.sql,
@@ -201,13 +203,32 @@ test("checkpoint durably revokes MCP leases; a fresh epoch explicitly reauthoriz
       ).rows[0]?.revoked,
     ).toBe(true);
     expect(await createSqlMcpLeasePort(f.sql).validate(old.hash, "tools")).toBeNull();
-    await expect(x.service.refresh(f.caller, x.input)).rejects.toThrow();
-    await f.db.query("update sandboxes set status='starting' where id=$1", [f.row.id]);
-    await f.reboot({ epoch: "1", watermark: cp.checkpoint.watermark, conversationId: f.first.conversationId });
-    await f.db.query("update sandboxes set status='running' where id=$1", [f.row.id]);
-    const refreshed = await x.service.refresh(f.caller, x.input);
-    await f.send(f.caller, f.input());
+    await expect(x.service.prepare(f.caller, f.row.id)).rejects.toThrow();
+    await f.db.query("update sandboxes set status='stopping',stop_requested_at=now() where id=$1", [f.row.id]);
+    await f.db.query("update sandboxes set status='stopped',stop_requested_at=null,stopped_at=now() where id=$1", [
+      f.row.id,
+    ]);
+    const resume = createRuntimeResume(
+      f.sql,
+      ENCRYPTION_KEY,
+      f.bridge,
+      async () => ({
+        start: async (_signal, restore) => f.reboot(restore),
+        stop: async () => {
+          throw Error("Healthy resume must not stop");
+        },
+      }),
+      x.service.prepare,
+    );
+    const refreshed = await resume(f.caller, {
+      id: f.row.id,
+      request_id: crypto.randomUUID(),
+      runtimeVersion: 1,
+      conversation_id: f.first.conversationId,
+      prompt: "first resumed MCP turn",
+    });
     const next = x.configuration();
+    expect(refreshed.sourceCheckpoint.watermark).toBe(cp.checkpoint.watermark);
     expect(refreshed.runtime.epoch).toBe("2");
     expect(next.hash === old.hash).toBe(false);
     expect(await createSqlMcpLeasePort(f.sql).validate(old.hash, "tools")).toBeNull();
@@ -217,7 +238,7 @@ test("checkpoint durably revokes MCP leases; a fresh epoch explicitly reauthoriz
   }
 });
 
-test("epoch replacement before RPC enqueue cannot install old configuration; old gateway replicas see durable revocation", async () => {
+test("epoch replacement after capability evidence cannot queue configuration in another epoch", async () => {
   const x = await fixture(),
     { f } = x;
   try {
@@ -228,27 +249,17 @@ test("epoch replacement before RPC enqueue cannot install old configuration; old
       commands: {
         ...f.bridge,
         async call(owner, command, options) {
-          if (command.op === "configureMcp") {
-            // First delivery, not an already-recorded request whose replay guard
-            // could mask a missing expected-epoch admission fence.
+          const reply = await f.bridge.call(owner, command, options);
+          if (command.op === "health")
             await f.authority.enrol(
               (await f.authority.issue({ sandboxId: f.row.id, ownerId: f.people.owner, configuration: {} }))
                 .enrolmentToken,
             );
-          }
-          return f.bridge.call(owner, command, options);
+          return reply;
         },
       },
     });
-    await expect(raced.refresh(f.caller, x.input)).rejects.toThrow();
-    expect(
-      (
-        await f.db.query<{ revoked: boolean }>(
-          "select revoked_at is not null as revoked from mcp_leases where sandbox_id=$1",
-          [f.row.id],
-        )
-      ).rows[0]?.revoked,
-    ).toBe(true);
+    await expect(raced.prepare(f.caller, f.row.id)).rejects.toThrow();
     expect(
       (
         await f.db.query<{ n: number }>(
@@ -256,6 +267,10 @@ test("epoch replacement before RPC enqueue cannot install old configuration; old
           [f.row.id],
         )
       ).rows[0]?.n,
+    ).toBe(0);
+    expect(
+      (await f.db.query<{ n: number }>("select count(*)::int as n from mcp_leases where sandbox_id=$1", [f.row.id]))
+        .rows[0]?.n,
     ).toBe(0);
   } finally {
     await f.close();
@@ -281,9 +296,91 @@ test("old runtime health cannot receive newly enabled MCP capabilities", async (
         },
       },
     });
-    await expect(old.refresh(f.caller, x.input)).rejects.toMatchObject({ code: "sandbox_not_ready" });
+    await expect(old.prepare(f.caller, f.row.id)).rejects.toMatchObject({ code: "unavailable" });
     expect(ops).toEqual(["health"]);
     expect(f.mcpSnapshots.at(-1)).toBeUndefined();
+  } finally {
+    await f.close();
+  }
+});
+
+describe("automatic MCP authority updates", () => {
+  let x: Awaited<ReturnType<typeof fixture>>;
+  beforeAll(async () => {
+    x = await fixture();
+    await x.send(x.f.caller, x.f.input());
+  }, 20_000);
+  afterAll(async () => {
+    await x?.f.close();
+  });
+  test("ordinary turns adopt reconnected grants and clear deleted bindings without a setup API", async () => {
+    const { f } = x,
+      old = x.configuration();
+    await f.db.query("update mcp_grants set generation=generation+1 where connection_id=$1", [x.c.id]);
+    await x.send(f.caller, f.input("after grant replacement"));
+    expect(x.configuration().snapshot.revision === old.snapshot.revision).toBe(false);
+    expect(await createSqlMcpLeasePort(f.sql).validate(old.hash, "tools")).toBeNull();
+    await x.registry.revoke(f.people.owner, f.people.org, x.c.id, true);
+    await x.send(f.caller, f.input("after connection removal"));
+    expect(f.mcpSnapshots.at(-1)?.servers).toEqual({});
+  });
+});
+
+test("configuration preparation commits queue order before waiting; an older ACK cannot overwrite the winning snapshot", async () => {
+  const x = await fixture(),
+    { f } = x;
+  let newer: Awaited<ReturnType<typeof x.service.prepare>>;
+  let updated = false;
+  try {
+    const competing = createRuntimeMcp({
+      sql: f.sql,
+      key: ENCRYPTION_KEY,
+      origin: "https://armada.test",
+      commands: {
+        ...f.bridge,
+        async call(owner, command, options) {
+          if (command.op === "configureMcp" && !updated) {
+            updated = true;
+            await f.db.query("update mcp_grants set generation=generation+1 where connection_id=$1", [x.c.id]);
+            newer = await x.service.prepare(f.caller, f.row.id);
+          }
+          return f.bridge.call(owner, command, options);
+        },
+      },
+    });
+    await expect(competing.prepare(f.caller, f.row.id)).rejects.toThrow();
+    expect(updated).toBe(true);
+    await x.send(f.caller, f.input("use the latest configuration"));
+    expect(x.configuration().snapshot.revision).toBe(newer?.revision ?? "missing newer receipt");
+    expect(await createSqlMcpLeasePort(f.sql).validate(x.configuration().hash, "tools")).not.toBeNull();
+  } finally {
+    await f.close();
+  }
+});
+
+test("connection admission rejects unsupported stdio before launch binding or compute", async () => {
+  const x = await fixture(),
+    { f } = x;
+  try {
+    const local = await x.registry.save(f.people.owner, f.people.org, {
+      name: "local",
+      scope: "personal",
+      transport: "stdio",
+      command: "npx",
+      args: ["-y", "@example/mcp@1.2.3", "/workspace"],
+      authType: "none",
+    });
+    await expect(
+      x.service.connections.validate({ userId: f.people.owner, orgId: f.people.org }, [local.id], "org"),
+    ).rejects.toThrow();
+    expect(
+      (
+        await f.db.query<{ n: number }>(
+          "select count(*)::int as n from mcp_bindings where sandbox_id=$1 and connection_id=$2",
+          [f.row.id, local.id],
+        )
+      ).rows[0]?.n,
+    ).toBe(0);
   } finally {
     await f.close();
   }

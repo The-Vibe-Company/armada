@@ -74,6 +74,13 @@ No worker holds staging/production credentials or deploys this design PR.
 
 ## Implementation order and staging gates
 
+Owner update (2026-11-13): converge production-used parity first (MCP/tools,
+skills, usage/cost, subscriptions, Claude). The owner flips staging, then
+production; delete native Boat only in a separate PR after one production day.
+The [issue parity table](https://github.com/The-Vibe-Company/armada/issues/1161#issuecomment-6848248708)
+is the live gate. Do not add product modes or compatibility layers; ask the owner
+to identify unused native-only features instead of automatically porting them.
+
 Every later branch starts at fresh `origin/main`, uses `codex/1161-<slug>` and
 `Refs #1161`. Split the following into small independently mergeable PRs; each
 states its exact coordinator-owned staging check. Prove each programme step on

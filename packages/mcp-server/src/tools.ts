@@ -61,7 +61,6 @@ import { summarizeResourceHistory } from "./resource-advice.ts";
 import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
-import type { RuntimeMcp } from "./runtime-mcp.ts";
 import type { RuntimeResume } from "./runtime-resume.ts";
 import { sandboxActivity } from "./sandbox-activity.ts";
 import { extendSandbox } from "./sandbox-extend.ts";
@@ -77,7 +76,6 @@ import { recordStopDispatch } from "./work-preservation.ts";
 
 /** Everything a tool call may use, for one authenticated request. */
 export interface ToolContext {
-  runtimeMcp?: RuntimeMcp;
   runtimeGitHub?: RuntimeGitHub;
   runtimeResume?: RuntimeResume;
   runtimeCheckpoint?: RuntimeCheckpoint;
@@ -1313,27 +1311,6 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       if (!data.sandboxes.reportTaskOutcome) throw new ToolError("conflict", "Task reporting is unavailable.");
       await data.sandboxes.reportTaskOutcome(args.id, found.taskPromptId!, args.outcome, found.lifecycleGeneration);
       return { id: args.id, taskOutcome: args.outcome };
-    },
-  );
-
-  tool(
-    "runtime_mcp_refresh",
-    {
-      title: "Configure enrolled runtime MCP connections",
-      description:
-        "Owner-only explicit remote MCP setup through the current enrolled Boat Codex runtime. No native provider hooks. Selection is fixed per sandbox; reauthorize after each resume. Configuration changes within an epoch require checkpoint/stop/resume.",
-      input: { id, connections: z.array(z.string().uuid()).min(1).max(32) },
-      output: {
-        id: z.string(),
-        runtime: z.object({ kind: z.literal("armada"), epoch: z.string() }),
-        revision: z.string(),
-        connections: z.array(z.string()),
-        servers: z.array(z.string()),
-      },
-    },
-    async (args) => {
-      if (!context.runtimeMcp) throw new ToolError("unsupported", "Runtime MCP is unavailable.");
-      return context.runtimeMcp.refresh(caller, args);
     },
   );
 

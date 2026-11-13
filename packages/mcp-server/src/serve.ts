@@ -99,7 +99,6 @@ export async function startServer(
   const sql = bunSql(config.databaseUrl, config.databasePoolMax);
   const runtimeEnrolments = createRuntimeEnrolments(sql, config.encryptionKey);
   const runtimeCommands = createRuntimeCommands(runtimeEnrolments, config.encryptionKey);
-  const runtimeSend = createRuntimeFollowup(sql, config.encryptionKey, runtimeCommands);
   const runtimeCheckpoint = createRuntimeCheckpoint(sql, config.encryptionKey, runtimeCommands);
   let subscriptionMigration: ReturnType<typeof createSubscriptionMigration>;
   const modelAuth = createModelAuthOwnership(sql, config.encryptionKey, undefined, undefined, {
@@ -152,6 +151,7 @@ export async function startServer(
     commands: runtimeCommands,
     probe: (userId, orgId, connectionId) => mcp.controlBroker.status({ userId, orgId, connectionId }),
   });
+  const runtimeSend = createRuntimeFollowup(sql, config.encryptionKey, runtimeCommands, runtimeMcp.prepare);
   try {
     await retryDatabaseBoot(async () => {
       await requireDatabaseSchema(sql);
@@ -322,6 +322,7 @@ export async function startServer(
     runtimeLaunch
       ? boatRuntimeResume({ sql, vault: store, key: config.encryptionKey, policy: runtimeLaunch, modelAuth })
       : undefined,
+    runtimeMcp.prepare,
   );
   const control: ConfiguredControlOptions = {
     docker: { hosts: env.ARMADA_DOCKER_HOSTS === "1", placement: dockerEnabled, normalApi: false },
@@ -411,7 +412,6 @@ export async function startServer(
     runtimeCheckpoint,
     runtimeResume,
     ...(runtimeGitHub ? { runtimeGitHub } : {}),
-    runtimeMcp,
     ready: createDatabaseReadiness(sql),
     runtimeProviderFor,
     launch,
