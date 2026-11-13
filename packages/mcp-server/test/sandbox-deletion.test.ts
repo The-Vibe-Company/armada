@@ -147,6 +147,39 @@ test("sandbox deletion authorizes live owners/admins, fences activity, and prese
       expect((await state(managed)).status).toBe("stopped");
     }
 
+    // Ordinary delegated children keep their history, but become removable only
+    // after permanent parent deletion has fenced all future delegated authority.
+    const delegatedParent = await insert();
+    const delegatedChild = await insert();
+    await db.query(
+      "insert into armada_access_parents(id,kind,org_id,owner_id,sandbox_id,state) values($1,'sandbox',$2,$3,$1,'stopped')",
+      [delegatedParent, p.org, p.owner],
+    );
+    await db.query(
+      "insert into orchestrator_children(sandbox_id,orchestrator_id,org_id,owner_id) values($1,$2,$3,$4)",
+      [delegatedChild, delegatedParent, p.org, p.owner],
+    );
+    boat.provider.delete = async ({ sandboxId }) => {
+      calls.push(sandboxId);
+      return { status: "deleted" };
+    };
+    const beforeDelegatedDeletion = calls.length;
+    expect((await request(delegatedChild)).status).toBe(409);
+    expect(calls).toHaveLength(beforeDelegatedDeletion);
+    expect((await request(delegatedParent)).status).toBe(200);
+    expect((await state(delegatedParent)).status).toBe("deleted");
+    const otherOrgToken = await server.token(p.member, p.otherOrg);
+    for (const token of [memberToken, otherOrgToken]) {
+      expect((await request(delegatedChild, token)).status).toBe(404);
+    }
+    expect(calls).toHaveLength(beforeDelegatedDeletion + 1);
+    expect((await request(delegatedChild)).status).toBe(200);
+    expect((await state(delegatedChild)).status).toBe("deleted");
+    expect(calls).toHaveLength(beforeDelegatedDeletion + 2);
+    expect(
+      (await db.query("select sandbox_id from orchestrator_children where sandbox_id=$1", [delegatedChild])).rows,
+    ).toEqual([{ sandbox_id: delegatedChild }]);
+
     const cliId = await insert();
     boat.provider.delete = async () => ({ status: "deleted" });
     let output = "",
