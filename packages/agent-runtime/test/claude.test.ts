@@ -386,3 +386,62 @@ nativeTest.each([false, true])(
     }
   },
 );
+
+// Native 2.1.322 process restart capture against a loopback protocol fixture.
+// The SDK result is cumulative; only the pre-query cost-state is a safe baseline.
+nativeTest.each(["saved", "missing", "corrupt", "wrong-session"])("Claude cold resume accounting: %s", async (mode) => {
+  const recording = (await import("./fixtures/claude-resume-recorded.json")).default;
+  const root = await mkdtemp(join(tmpdir(), "claude-usage-"));
+  const project = join(root, "projects", "project");
+  await mkdir(project, { recursive: true });
+  const id = recording.baseline.sessionId;
+  if (mode !== "missing")
+    await Bun.write(
+      join(project, id + ".jsonl"),
+      mode === "corrupt"
+        ? "not-json\n"
+        : JSON.stringify({ ...recording.baseline, sessionId: mode === "wrong-session" ? "other" : id }) + "\n",
+    );
+  const driver = new ClaudeDriver({
+    executable: `${import.meta.dir}/fixtures/claude-process.ts`,
+    cwd: import.meta.dir,
+    env: { PATH: process.env.PATH ?? "/usr/bin:/bin", CLAUDE_CONFIG_DIR: root },
+  });
+  const events: DriverEvent[] = [];
+  try {
+    expect(
+      await driver.start({
+        request: { sandboxId: "s", harness: "claude", text: "usage-recorded" },
+        sessionId: id,
+        signal: new AbortController().signal,
+        session() {},
+        emit: (e) => events.push(e),
+      }).done,
+    ).toBe("finished");
+    const result = events.find((e) => e.kind === "other" && e.type === "result");
+    expect(result).toMatchObject({
+      data: {
+        total_cost_usd: mode === "saved" ? 0.0000598 : null,
+        modelUsage: {
+          "claude-sonnet-5": {
+            inputTokens: mode === "saved" ? 12 : null,
+            outputTokens: mode === "saved" ? 3 : null,
+            cacheReadInputTokens: mode === "saved" ? 4 : null,
+            cacheCreationInputTokens: mode === "saved" ? 2 : null,
+          },
+        },
+      },
+    });
+    if (mode === "saved")
+      expect(
+        reportedTurnUsage(
+          events.flatMap((e) =>
+            e.kind === "other" && e.type === "result" ? [{ ...e, id: "r", at: 1, promptId: "resumed" }] : [],
+          ),
+        ).turns,
+      ).toMatchObject([{ inputTokens: 12, outputTokens: 3, cachedTokens: 4, cacheWriteTokens: 2, reasoningTokens: 0 }]);
+  } finally {
+    await driver.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});

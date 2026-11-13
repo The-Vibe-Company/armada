@@ -1,6 +1,7 @@
 import type { Options, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk/core";
 import { query } from "@anthropic-ai/claude-agent-sdk/core";
 import { ChildOwner } from "./children.ts";
+import { claudeResumeUsage, claudeUsageDelta } from "./claude-resume-usage.ts";
 import { validateHarnessCwd } from "./cwd.ts";
 import { bounded } from "./deadline.ts";
 import { HarnessError, type HarnessErrorCode } from "./errors.ts";
@@ -29,7 +30,8 @@ export class ClaudeDriver implements Driver {
     let privateUsage = false;
     // The SDK restores cumulative modelUsage from resumed transcripts. No verified pre-prompt
     // snapshot is available here; treating the first returned totals as deltas would count history.
-    let usageBaselineUnknown = Boolean(c.sessionId);
+    const baseline = c.sessionId ? claudeResumeUsage(c.sessionId, this.options.env, cwd) : null;
+    let usageBaselineUnknown = Boolean(c.sessionId) && !baseline;
     let nativeSession: string | undefined;
     const privateInputs = new Set<string>();
     let terminalError: HarnessErrorCode | undefined;
@@ -131,7 +133,11 @@ export class ClaudeDriver implements Driver {
       try {
         for await (const event of q) {
           if ("session_id" in event) {
-            if (!event.session_id || (nativeSession !== undefined && nativeSession !== event.session_id))
+            if (
+              !event.session_id ||
+              (c.sessionId && c.sessionId !== event.session_id) ||
+              (nativeSession !== undefined && nativeSession !== event.session_id)
+            )
               usageBaselineUnknown = true;
             nativeSession = event.session_id;
             c.session(event.session_id);
@@ -222,6 +228,11 @@ export class ClaudeDriver implements Driver {
           } else if (event.type === "result") {
             const consumed = event.user_message_uuids ?? (event.user_message_uuid ? [event.user_message_uuid] : []);
             const intermediate = !interrupted && !consumed.includes(latest) && (steered || consumed.length > 0);
+            const measured =
+              baseline && !usageBaselineUnknown && !intermediate && !privateUsage
+                ? claudeUsageDelta(event.modelUsage, event.total_cost_usd, baseline)
+                : null;
+            if (baseline && !intermediate && !privateUsage && !measured) usageBaselineUnknown = true;
             c.emit({
               kind: "other",
               type: "result",
@@ -229,6 +240,7 @@ export class ClaudeDriver implements Driver {
                 ? { subtype: event.subtype, is_error: event.is_error }
                 : {
                     ...event,
+                    ...(measured ?? {}),
                     ...(intermediate
                       ? {
                           // Do not publish measured shares before the final native turn of this prompt.
