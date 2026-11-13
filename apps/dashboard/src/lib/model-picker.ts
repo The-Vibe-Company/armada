@@ -103,3 +103,20 @@ export function filterPicker(groups: readonly PickerGroup[], query: string, keep
     }))
     .filter((group) => group.options.length > 0);
 }
+
+/**
+ * The model to select after the billing account changes: the new account's first declared model when it declares
+ * any; otherwise the agent's default in place of another connection's model; otherwise the current choice.
+ */
+export function modelForAccount(
+  current: string,
+  account: string | undefined,
+  connections: readonly ConnectionChoices[] | undefined,
+  defaultModel: string,
+): string {
+  const declared = connections?.find((connection) => connection.accountId === account)?.models[0];
+  if (declared && account) {
+    return decodeModelValue(current).accountId === account ? current : connectionValue(account, declared.model);
+  }
+  return decodeModelValue(current).accountId ? defaultModel : current;
+}

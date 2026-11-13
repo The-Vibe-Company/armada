@@ -11,6 +11,7 @@ import {
   connectionValue,
   decodeModelValue,
   filterPicker,
+  modelForAccount,
   pickerGroups,
 } from "@/lib/model-picker";
 
@@ -89,6 +90,14 @@ export function ModelFields({
 
   useEffect(() => onChoice?.({ model: selectedModel ?? "", effort }), [onChoice, selectedModel, effort]);
 
+  // Another account was chosen: a connection model never stays selected for an account it does not belong to.
+  const accountSeen = useRef(account);
+  useEffect(() => {
+    if (accountSeen.current === account) return;
+    accountSeen.current = account;
+    setModel((current) => modelForAccount(current, account, connections, entry.defaultModel));
+  }, [account, connections, entry.defaultModel]);
+
   // Native reset changes DOM fields; the controlled state must reset with them.
   useEffect(() => {
     const form = group.current?.closest("form");
@@ -124,6 +133,10 @@ export function ModelFields({
             autoComplete="off"
             spellCheck={false}
             placeholder="Search models and connections"
+            // Enter searches; it never submits (and so never launches) the form around it.
+            onKeyDown={(event) => {
+              if (event.key === "Enter") event.preventDefault();
+            }}
           />
         )}
         <NativeSelect

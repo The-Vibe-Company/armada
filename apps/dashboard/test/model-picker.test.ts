@@ -2,7 +2,13 @@ import { expect, test } from "bun:test";
 import { HARNESS_CATALOG } from "@armada/core";
 import { connectionModelsFrom } from "../src/lib/model-accounts";
 import { chosenConnection, launchArgs } from "../src/lib/model-choice";
-import { connectionValue, decodeModelValue, filterPicker, pickerGroups } from "../src/lib/model-picker";
+import {
+  connectionValue,
+  decodeModelValue,
+  filterPicker,
+  modelForAccount,
+  pickerGroups,
+} from "../src/lib/model-picker";
 
 const ACCOUNT = "11111111-1111-4111-8111-111111111111";
 
@@ -94,4 +100,17 @@ test("declared connection models are read strictly: malformed rows and prices ar
     ],
   ]);
   expect(connectionModelsFrom(null).size).toBe(0);
+});
+
+test("changing the account never leaves another connection's model selected", () => {
+  const other = "22222222-2222-4222-8222-222222222222";
+  const connections = [
+    { accountId: ACCOUNT, label: "Foundry", models: [{ model: "team-gpt", input: null, output: null }] },
+  ];
+  const foundry = connectionValue(ACCOUNT, "team-gpt");
+  // To a plain account: back to the agent default. To a connection: its first model, unless one is already chosen.
+  expect(modelForAccount(foundry, other, connections, "gpt-6-sol")).toBe("gpt-6-sol");
+  expect(modelForAccount("gpt-6-luna", ACCOUNT, connections, "gpt-6-sol")).toBe(foundry);
+  expect(modelForAccount(foundry, ACCOUNT, connections, "gpt-6-sol")).toBe(foundry);
+  expect(modelForAccount("gpt-6-luna", other, connections, "gpt-6-sol")).toBe("gpt-6-luna");
 });

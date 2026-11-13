@@ -592,6 +592,7 @@ export async function listConnectionModels(
     for (const row of await reader.credentials(scope, ownerId)) {
       if (!row.id || (row.kind !== "opencode" && row.kind !== "openai")) continue;
       if (row.status !== undefined && row.status !== "active") continue;
+      if (row.expiresAt && new Date(row.expiresAt).getTime() <= Date.now()) continue;
       let plaintext: string;
       try {
         plaintext = await open(row.valueEnc, encryptionKey);
