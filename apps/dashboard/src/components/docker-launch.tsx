@@ -2,6 +2,7 @@
 
 import { MODEL_CATALOG } from "@armada/core";
 import { RocketIcon } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useId, useRef } from "react";
 import { launchOnDockerHost } from "@/app/actions/docker-hosts";
 import { ActionForm, SubmitButton } from "@/components/action-form";
@@ -75,8 +76,7 @@ function DockerLaunchForm({
   const id = useId();
   const root = useRef<HTMLDivElement>(null);
   const storage = dockerLaunchKeyStorage(hostId);
-  // The key of the submission in flight, so its answer decides whether the key is kept.
-  const sent = useRef<LaunchKey | null>(null);
+  const router = useRouter();
   const usable =
     accounts.state === "ready" &&
     accountsFor(accounts.accounts, "codex").some((account) => accountProblem(account, accounts.now) === null);
@@ -95,7 +95,6 @@ function DockerLaunchForm({
     const keyed = (event: Event) => {
       if (!(event instanceof FormDataEvent)) return;
       const key = launchKeyFor(readKey(storage), event.formData.entries());
-      sent.current = key;
       // Kept from now until a definite answer: a reload, a lost connection or a closed tab mid-launch keeps it too.
       writeKey(storage, key);
       event.formData.set(LAUNCH_KEY_FIELD, key.key);
@@ -112,11 +111,12 @@ function DockerLaunchForm({
     async (previous: ActionResult | null, data: FormData) => {
       // A thrown call (connection lost) is no answer: the stored key stays for the retry.
       const result = await launchOnDockerHost(previous, data);
-      // A definite refusal: the next launch is a new request. A success navigates away; its key expires.
+      // A definite answer: the next launch is a new request.
       if (result.ok || result.error !== UNKNOWN_DOCKER_LAUNCH) writeKey(storage, null);
+      if (result.ok && result.sandboxId) router.push(`/sandboxes/${result.sandboxId}`);
       return result;
     },
-    [storage],
+    [storage, router],
   );
 
   return (

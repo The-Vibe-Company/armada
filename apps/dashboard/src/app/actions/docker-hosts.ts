@@ -1,7 +1,6 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { redirect } from "next/navigation";
 import { type ActionResult, done, fail, formString, isUuid } from "@/lib/action";
 import { ControlError, controlPost } from "@/lib/control";
 import { readDockerLaunchOption, readSelectedDockerHosts, viewerDockerHosts } from "@/lib/data/docker-hosts";
@@ -96,10 +95,13 @@ export async function revokeDockerHost(_previous: ActionResult | null, data: For
 
 /**
  * Launches Codex from a digest-pinned image on one of the organization's Docker hosts, as the signed-in viewer, then
- * follows the launch to its sandbox. The form's request key is the server's `requestId`: a retry of the same form
+ * answers the new sandbox's id for the dialog to follow. The form's request key is the server's `requestId`: a retry of the same form
  * (same choices) after an unanswered launch reuses it, so the server reconciles it instead of starting another.
  */
-export async function launchOnDockerHost(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
+export async function launchOnDockerHost(
+  _previous: ActionResult | null,
+  data: FormData,
+): Promise<ActionResult & { sandboxId?: string }> {
   const org = formString(data, "org");
   const hostId = formString(data, "hostId");
   const requestId = formString(data, LAUNCH_KEY_FIELD);
@@ -158,5 +160,6 @@ export async function launchOnDockerHost(_previous: ActionResult | null, data: F
   }
   if (!id) return fail("The Armada server did not answer with a Docker sandbox.");
   revalidatePath("/sandboxes");
-  redirect(`/sandboxes/${id}`);
+  // The dialog navigates once it has forgotten this launch's request key, so a later launch is a new request.
+  return { ok: true, message: "Launched. Opening the sandbox…", sandboxId: id };
 }
