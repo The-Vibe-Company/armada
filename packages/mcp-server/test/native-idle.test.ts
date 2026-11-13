@@ -196,7 +196,7 @@ test("native idle uses the quiet deadline, preserves work without interrupt and 
       sleep: async () => {},
     },
     "send",
-    { id: f.id, prompt: "continue" },
+    { id: f.id, prompt: "continue", request_id: crypto.randomUUID() },
   );
   expect(receipt).toMatchObject({ promptId: "next", conversationId: "conversation" });
   const woke = (await f.data.sandboxes.get(f.id))!;

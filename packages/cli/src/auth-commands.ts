@@ -26,6 +26,8 @@ export interface AuthIo {
   confirmSignIn?: () => Promise<boolean>;
   chooseMethod?: (methods: string[], defaultMethod: string) => Promise<string>;
   emailPreferences?: Preferences;
+  launchPreferences?: Preferences;
+  chooseLaunch?: (title: string, options: { value: string; label: string }[], preferred?: string) => Promise<string>;
 }
 
 export function defaultSessionPath(env: NodeJS.ProcessEnv = process.env): string {
@@ -54,6 +56,16 @@ export function productionAuthIo(
     emailPreferences: filePreferences(
       join(env.XDG_CONFIG_HOME || join(homedir(), ".config"), "armada", "login-email.json"),
     ),
+    launchPreferences: filePreferences(
+      join(env.XDG_CONFIG_HOME || join(homedir(), ".config"), "armada", "launch-preferences.json"),
+    ),
+    chooseLaunch: async (title, options, preferred) => {
+      io.err(
+        `${title}:\n${options.map((o, i) => `  ${i + 1}. ${o.label}${o.value === preferred ? " (default)" : ""}`).join("\n")}\n`,
+      );
+      const answer = await promptLine("Choose a number (Enter for default): ");
+      return answer ? (options[Number(answer) - 1]?.value ?? "") : (preferred ?? "");
+    },
     readCode: promptCode,
     readEmail: (previous) => promptLine("Email: ", previous),
   };
@@ -143,6 +155,9 @@ export async function loginCommand(
     await io.session.write({ loginId: crypto.randomUUID(), armadaUrl: origin, ...result });
     await io.emailPreferences?.write(origin, email);
     io.out("Logged in.\n");
+    io.err(
+      "Next: run armada launch for guided setup, or armada host add to connect your own machine. Check setup with armada doctor.\n",
+    );
     return;
   }
   // Browser login is Armada-hosted: the CLI never contacts a native provider.
@@ -164,6 +179,9 @@ export async function loginCommand(
         expiresAt: result.expiresAt,
       });
       io.out("Logged in.\n");
+      io.err(
+        "Next: run armada launch for guided setup, or armada host add to connect your own machine. Check setup with armada doctor.\n",
+      );
       return;
     } catch {
       throw new AuthError("Armada browser login failed.", "unauthorized");

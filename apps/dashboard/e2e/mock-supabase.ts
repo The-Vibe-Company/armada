@@ -525,6 +525,7 @@ function sandbox(
 }
 
 let state = seed();
+let dockerHosts: Row[] | null = null;
 let sequence = 100;
 const sessions = new Map<string, string>();
 
@@ -2666,6 +2667,7 @@ function control(url: URL, body: Row): Response {
   if (url.pathname === "/__test/reset") {
     for (const release of state.routineCreateWaiters) release();
     state = seed();
+    dockerHosts = Array.isArray(body.dockerHosts) ? body.dockerHosts : null;
     // Keep a visible header but make its current revision unreadable, as a partial control API read can be.
     if (body.missingTemplateRevision)
       state.templateRevisions = state.templateRevisions.filter((row) => row.templateId !== id(91));
@@ -3228,6 +3230,12 @@ const server = Bun.serve({
     if (url.pathname.startsWith("/oauth/")) return oauth(url);
     if (url.pathname.startsWith("/api/v1/")) {
       const route = url.pathname.slice("/api/v1/".length);
+      if (route === "docker/hosts/list" && dockerHosts !== null) {
+        const caller = viewer(request);
+        if (!caller || !isMember(body.org, caller))
+          return controlFail(403, "forbidden", "Only organization members can list hosts.");
+        return json({ placement: true, hosts: dockerHosts });
+      }
       if (route === "auth/email/start") return json({ ok: true });
       if (route === "skillpack/catalog" || route === "skillpack/versions")
         return skillCatalogRoute(route, body, request);

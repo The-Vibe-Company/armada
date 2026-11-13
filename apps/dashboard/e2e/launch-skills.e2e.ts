@@ -9,7 +9,7 @@ async function post(path: string, body: object) {
 test("search metadata, select exact workspace and public versions, then launch", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 960 });
   await signIn(page, "alice@example.com", "/environments");
-  const launch = await openLaunch(page, "shared-golden", { advanced: false });
+  const launch = await openLaunch(page, "shared-golden");
   await launch.getByRole("button", { name: "Add skills", exact: true }).click();
   const picker = page.getByRole("dialog", { name: "Choose additional skills" });
   await expect(picker.getByRole("option", { name: /Code review/ })).toBeVisible();
@@ -44,7 +44,7 @@ test("search metadata, select exact workspace and public versions, then launch",
 test("unavailable discovery retains exact-pin fallback and rejects floating versions", async ({ page }) => {
   await post("/__test/skill-catalog-unavailable", { unavailable: true });
   await signIn(page, "alice@example.com", "/environments");
-  const launch = await openLaunch(page, "shared-golden", { advanced: false });
+  const launch = await openLaunch(page, "shared-golden");
   await launch.getByRole("button", { name: "Add skills", exact: true }).click();
   const picker = page.getByRole("dialog", { name: "Choose additional skills" });
   await expect(picker.getByRole("alert")).toContainText("unavailable");
@@ -103,7 +103,7 @@ for (const [name, viewport] of [
 
 test("malformed version responses stay inside the picker and preserve exact-pin fallback", async ({ page }) => {
   await signIn(page, "alice@example.com", "/environments");
-  const launch = await openLaunch(page, "shared-golden", { advanced: false });
+  const launch = await openLaunch(page, "shared-golden");
   await launch.getByRole("button", { name: "Add skills", exact: true }).click();
   const picker = page.getByRole("dialog", { name: "Choose additional skills" });
   await expect(picker.getByRole("option", { name: /Code review/ })).toBeVisible();
@@ -121,7 +121,7 @@ test("long metadata stays bounded and keeps version confirmation visible on a ph
   await page.setViewportSize({ width: 390, height: 844 });
   await post("/__test/skill-catalog-long-description", { enabled: true });
   await signIn(page, "alice@example.com", "/environments");
-  const launch = await openLaunch(page, "shared-golden", { advanced: false });
+  const launch = await openLaunch(page, "shared-golden");
   await launch.getByRole("button", { name: "Add skills", exact: true }).click();
   const picker = page.getByRole("dialog", { name: "Choose additional skills" });
   await picker.getByRole("option", { name: /Code review/ }).click();

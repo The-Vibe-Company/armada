@@ -13,13 +13,13 @@ type Fault =
   | "changed"
   | "physical"
   | "lost_launch"
-  | "wrong_provider"
+  | "invalid_launch_receipt"
   | "cleanup_lost"
   | "cleanup_failed"
   | "ttl"
   | "list_missing"
   | "list_identity";
-function fixture(provider: "boat" | "modal", fault: Fault = "none") {
+function fixture(provider: "modal", fault: Fault = "none") {
   let clock = 1_800_000_000_000;
   let expiry = clock + 180_000;
   let manualStop = false;
@@ -31,7 +31,9 @@ function fixture(provider: "boat" | "modal", fault: Fault = "none") {
     sleep: async (ms: number) => {
       clock += ms;
     },
-    out: (line: string) => reports.push(JSON.parse(line)),
+    out: (line: string) => {
+      if (line !== "boat: not part of the release gate") reports.push(JSON.parse(line));
+    },
     fetch: async (url: string, init: RequestInit) => {
       expect(new URL(url).origin).toBe(origin);
       expect(new Headers(init.headers).get("authorization")).toBe("Bearer canary-token");
@@ -47,7 +49,8 @@ function fixture(provider: "boat" | "modal", fault: Fault = "none") {
         clock += 2000;
         if (fault === "lost_launch") throw new Error("secret transport detail");
         return Response.json({
-          sandbox: { id: "owned-worker", provider: fault === "wrong_provider" ? "wrong" : provider },
+          sandbox: { id: "owned-worker", provider },
+          ...(fault === "invalid_launch_receipt" ? { promptId: "unexpected" } : {}),
         });
       }
       if (path === "sandbox/list") {
@@ -104,14 +107,7 @@ function fixture(provider: "boat" | "modal", fault: Fault = "none") {
         return Response.json({
           id: "owned-worker",
           status,
-          providerState:
-            status === "failed"
-              ? null
-              : stopped && fault !== "physical"
-                ? provider === "boat"
-                  ? "archived"
-                  : "stopped"
-                : "active",
+          providerState: status === "failed" ? null : stopped && fault !== "physical" ? "stopped" : "active",
           statusReason: fault === "reason" ? "other" : "expired",
           expiresAt: new Date(expiry + (fault === "changed" && statusCalls > 2 ? 1000 : 0)).toISOString(),
         });
@@ -138,28 +134,27 @@ function fixture(provider: "boat" | "modal", fault: Fault = "none") {
   return { calls, reports, io, env };
 }
 
-test("each provider expires through the ordinary stop lane without a manual stop or model turn", async () => {
-  for (const provider of ["boat", "modal"] as const) {
-    const fake = fixture(provider);
-    expect(await postDeploySmoke(fake.env, ["--expiry"], fake.io)).toBe(true);
-    expect(fake.calls.filter((call) => call.path === "sandbox/launch")).toHaveLength(1);
-    expect(fake.calls.some((call) => ["sandbox/stop", "sandbox/send"].includes(call.path))).toBe(false);
-    for (const step of ["expiry_launch", "expiry_ready", "expiry_deadline", "expiry_as_stop"])
-      expect(fake.reports).toContainEqual({ case: 0, step, pass: true });
-    expect(fake.reports).toContainEqual({
-      case: 0,
-      step: "expiry_time_to_ready",
-      pass: true,
-      provider,
-      harness: "codex",
-      elapsedMs: 3000,
-    });
-    expect(fake.reports.find((line) => line.step === "expiry_cleanup_summary")).toMatchObject({
-      pass: true,
-      leftoverSandboxIds: [],
-      launchOutcomeUnknown: false,
-    });
-  }
+test("Modal expires through the ordinary stop lane without a manual stop or model turn", async () => {
+  const provider = "modal";
+  const fake = fixture(provider);
+  expect(await postDeploySmoke(fake.env, ["--expiry"], fake.io)).toBe(true);
+  expect(fake.calls.filter((call) => call.path === "sandbox/launch")).toHaveLength(1);
+  expect(fake.calls.some((call) => ["sandbox/stop", "sandbox/send"].includes(call.path))).toBe(false);
+  for (const step of ["expiry_launch", "expiry_ready", "expiry_deadline", "expiry_as_stop"])
+    expect(fake.reports).toContainEqual({ case: 0, step, pass: true });
+  expect(fake.reports).toContainEqual({
+    case: 0,
+    step: "expiry_time_to_ready",
+    pass: true,
+    provider,
+    harness: "codex",
+    elapsedMs: 3000,
+  });
+  expect(fake.reports.find((line) => line.step === "expiry_cleanup_summary")).toMatchObject({
+    pass: true,
+    leftoverSandboxIds: [],
+    launchOutcomeUnknown: false,
+  });
 });
 
 test("expiry false receipts and timeouts fail closed; cleanup cannot turn a manual stop into proof", async () => {
@@ -178,7 +173,7 @@ test("expiry false receipts and timeouts fail closed; cleanup cannot turn a manu
     "list_missing",
     "list_identity",
   ] as const) {
-    const fake = fixture("boat", fault);
+    const fake = fixture("modal", fault);
     expect(await postDeploySmoke(fake.env, ["--expiry"], fake.io)).toBe(false);
     expect(fake.calls.filter((call) => call.path === "sandbox/stop")).toHaveLength(1);
     expect(fake.calls.length).toBeLessThan(500);
@@ -193,7 +188,7 @@ test("expiry false receipts and timeouts fail closed; cleanup cannot turn a manu
 });
 
 test("ambiguous expiry launch is not replayed and retained IDs still get cleanup after invalid launch receipt", async () => {
-  for (const fault of ["lost_launch", "wrong_provider"] as const) {
+  for (const fault of ["lost_launch", "invalid_launch_receipt"] as const) {
     const fake = fixture("modal", fault);
     expect(await postDeploySmoke(fake.env, ["--expiry"], fake.io)).toBe(false);
     expect(fake.calls.filter((call) => call.path === "sandbox/launch")).toHaveLength(1);
@@ -205,7 +200,7 @@ test("ambiguous expiry launch is not replayed and retained IDs still get cleanup
 
 test("expiry admission refuses production and combinations that bypass its ordinary worker checks", async () => {
   for (const args of [["--expiry"], ["--expiry", "--templates-skills"]]) {
-    const fake = fixture("boat");
+    const fake = fixture("modal");
     expect(
       await postDeploySmoke(
         { ...fake.env, ...(args.length === 1 ? { ARMADA_URL: "https://production.invalid" } : {}) },

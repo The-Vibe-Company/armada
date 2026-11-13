@@ -126,7 +126,7 @@ test("old Fleet acknowledgement cookies migrate once without restoring stale ack
 test("attention refreshes while status stays running, so an approaching deadline is not missed", async ({ page }) => {
   await page.clock.install();
   await signIn(page, "alice@example.com", `/sandboxes/${BUSY.working}`);
-  await expect(page.getByRole("heading", { name: BUSY_LABELS.working, exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "shared-golden / Claude Code", exact: true })).toBeVisible();
   await expect(page.locator("[data-sandbox-attention]")).toHaveCount(0);
   const response = await fetch(`${MOCK}/__test/sandbox-lifecycle`, {
     method: "POST",

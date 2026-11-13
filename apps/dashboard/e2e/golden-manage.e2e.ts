@@ -680,7 +680,7 @@ test("removing a golden asks first, retires only the golden, and keeps its sandb
   // metadata names no golden, #680).
   await page.goto("/sandboxes");
   await page.getByRole("link", { name: LABELS.running }).click();
-  await expect(page.getByRole("heading", { name: "bx_alice_running" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "shared-golden / Claude Code" })).toBeVisible();
   await expect(page.locator("dl").first()).toContainText("shared-golden (removed)");
   await expect(page.getByText("Fix the failing test")).toBeVisible();
 });
