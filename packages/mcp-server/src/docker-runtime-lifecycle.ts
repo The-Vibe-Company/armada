@@ -45,7 +45,7 @@ function result(
     deny();
   return reply.body.result;
 }
-/** A deliberately one-prompt lane. No provider projection and no network/waiting in this service. */
+/** One native conversation per allocation. No provider projection or network/waiting in this service. */
 export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { enabled?: boolean } = {}) {
   async function transaction<T>(work: (tx: Sql) => Promise<T>): Promise<T> {
     try {
@@ -153,11 +153,13 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
         true,
       );
     },
-    prompt(actor: Actor, sandboxId: string, input: { requestId: string; text: string }) {
+    prompt(actor: Actor, sandboxId: string, input: { requestId: string; text: string; conversationId?: string }) {
       return admitted(actor, sandboxId, async (tx, authority, sandbox) => {
         if (
-          !input ||
-          Object.keys(input).sort().join() !== "requestId,text" ||
+          !object(input) ||
+          Object.keys(input).some((field) => !["requestId", "text", "conversationId"].includes(field)) ||
+          (Object.hasOwn(input, "conversationId") &&
+            (typeof input.conversationId !== "string" || !uuid.test(input.conversationId))) ||
           !uuid.test(input.requestId) ||
           typeof input.text !== "string" ||
           !input.text.trim() ||
@@ -166,11 +168,32 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
         )
           deny();
         const id = `docker_prompt_${input.requestId}`;
-        const previous = await tx.query<{ request_id: string }>(
-          `select request_id from public.runtime_commands where sandbox_id=$1 and request_id like 'docker_prompt_%'`,
-          [sandboxId],
+        // Exact retries keep their original canonical payload, including the first
+        // request's absent conversationId, even after its receipt is reconciled.
+        const previous = await tx.query(
+          `select request_id from public.runtime_commands where sandbox_id=$1 and request_id=$2`,
+          [sandboxId, id],
         );
-        if (previous.rows.some((row) => row.request_id !== id)) deny();
+        const saved =
+          (
+            await tx.query<{ conversation_ids: string[] }>(
+              `select conversation_ids from public.sandboxes where id=$1 and org_id=$2 and owner_id=$3`,
+              [sandboxId, actor.orgId, actor.userId],
+            )
+          ).rows[0]?.conversation_ids ?? deny();
+        if (!previous.rows.length) {
+          if (saved.length > 1 || saved.some((conversationId) => !uuid.test(conversationId))) deny();
+          if (saved.length ? input.conversationId !== saved[0] : input.conversationId !== undefined) deny();
+          const blocked = await tx.query(
+            `select 1 from public.runtime_commands where sandbox_id=$1
+             and starts_with(request_id,'docker_prompt_')
+             and (result_enc is null or $2::boolean) limit 1`,
+            [sandboxId, saved.length === 0],
+          );
+          // An unresolved RPC has not established native admission yet. Once it
+          // replies, the runner alone owns busy/refusal; no journal scheduler here.
+          if (blocked.rows.length) deny();
+        }
         const commands = createRuntimeCommands(authority, key);
         const queued = await commands.enqueue(actor.userId, {
           version: 1,
@@ -181,6 +204,7 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
             sandboxId,
             harness: "codex",
             text: input.text,
+            ...(input.conversationId === undefined ? {} : { conversationId: input.conversationId }),
             model: sandbox.model,
             reasoningEffort: sandbox.reasoningEffort,
             cwd: "/home/user",
@@ -196,9 +220,19 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
           !uuid.test(receipt.promptId) ||
           typeof receipt.conversationId !== "string" ||
           !uuid.test(receipt.conversationId) ||
-          !PROMPT_STATUSES.some((status) => status === receipt.status)
+          !PROMPT_STATUSES.some((status) => status === receipt.status) ||
+          (input.conversationId !== undefined && receipt.conversationId !== input.conversationId) ||
+          saved.length > 1 ||
+          (saved.length === 1 && receipt.conversationId !== saved[0])
         )
           deny();
+        if (!saved.length) {
+          // This service-owned projection must not advance lifecycle_generation.
+          await tx.query(`update public.sandboxes set conversation_ids=array[$2]::text[] where id=$1`, [
+            sandboxId,
+            receipt.conversationId,
+          ]);
+        }
         return {
           state: "admitted" as const,
           epoch: queued.epoch,
