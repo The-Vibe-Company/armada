@@ -209,11 +209,15 @@ test("one durable conversation survives lost responses and admits only exact ret
   await denied(service.prompt(f.actor, f.sandbox.id, { ...input, requestId: randomUUID() }));
   expect((await commands.next(session.runtimeToken, session.epoch)).command).toBeNull();
   expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("running");
-  const projection = await db.query<{ conversation_ids: string[]; lifecycle_generation: string }>(
-    `select conversation_ids,lifecycle_generation::text from public.sandboxes where id=$1`,
-    [f.sandbox.id],
-  );
+  const projection = await db.query<{
+    task_prompt_id: string;
+    conversation_ids: string[];
+    lifecycle_generation: string;
+  }>(`select task_prompt_id,conversation_ids,lifecycle_generation::text from public.sandboxes where id=$1`, [
+    f.sandbox.id,
+  ]);
   expect(projection.rows[0]).toEqual({
+    task_prompt_id: receipt.promptId,
     conversation_ids: [receipt.conversationId],
     lifecycle_generation: session.epoch,
   });
@@ -242,6 +246,13 @@ test("one durable conversation survives lost responses and admits only exact ret
   expect(await service.prompt(f.actor, f.sandbox.id, followup)).toEqual(nextExpected);
   // Initial request replay still omits the now-persisted conversation in its payload.
   expect(await service.prompt(f.actor, f.sandbox.id, input)).toEqual(expected);
+  expect(
+    (
+      await db.query<{ task_prompt_id: string }>("select task_prompt_id from public.sandboxes where id=$1", [
+        f.sandbox.id,
+      ])
+    ).rows[0]?.task_prompt_id,
+  ).toBe(nextReceipt.promptId);
 
   const foreign = await fixture(),
     foreignSession = await ready(foreign);

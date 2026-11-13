@@ -192,8 +192,10 @@ the source version. Only then does it build/upload the dashboard. Vercel waits
 for Ready. npm only follows successful production for publishing releases.
 No deploy hook or moving main checkout substitutes for the validated source.
 
-Deployment/smoke and release queues retain waiting runs with queue:max and
-cancellation disabled, preserving cleanup and queued release calls. Immediately
+The main workflow retains only one latest pending main, with active-work
+cancellation disabled. Release calls use separate outer groups; the shared
+deployment/smoke job lock and release publication queue retain waiters FIFO
+with queue:max, so ordinary main cannot evict pending release evidence. Immediately
 before the first mutation, an ordinary main run resolves current main over Git
 and skips migration/provider builds/deployment/smoke if a newer SHA superseded
 it. This avoids stale deployments without evicting a pending release. Resolution

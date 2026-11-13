@@ -16,6 +16,7 @@ const ownerPaths = [
   "/api/v1/docker/snapshots/list",
   "/api/v1/docker/snapshots/get",
   "/api/v1/docker/snapshots/create",
+  "/api/v1/docker/snapshots/rebuild",
   "/api/v1/docker/hosts/list",
   "/api/v1/docker/hosts/register-token",
   "/api/v1/docker/hosts/revoke",

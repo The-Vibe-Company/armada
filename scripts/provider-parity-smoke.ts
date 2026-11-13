@@ -1,6 +1,7 @@
 import { appendFile } from "node:fs/promises";
 import { isHarness } from "../packages/core/src/harnesses.ts";
 import type { LaunchProviderOption } from "../packages/core/src/index.ts";
+import type { SandboxUsage } from "../packages/core/src/sandbox-usage.ts";
 import { redactForLog } from "../packages/mcp-server/src/log.ts";
 import { STAGING_ORIGIN } from "./smoke-sandbox-cleanup.ts";
 
@@ -19,6 +20,8 @@ const localCodes = new Set([
   "logs_not_available",
   "invalid_turn_receipt",
   "turn_failed",
+  "invalid_usage_receipt",
+  "invalid_cost_receipt",
   "missing_provider_options",
   "harness_not_advertised",
   "invalid_launch_receipt",
@@ -202,16 +205,100 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
   let starts = 0;
   for (const c of cases) {
     // A not-yet-implemented row must not allocate compute merely to print debt.
-    if (feature && !Object.hasOwn(steps, feature) && feature !== "resume-recall") continue;
+    if (feature && !Object.hasOwn(steps, feature) && !["resume-recall", "usage", "exact-cost"].includes(feature))
+      continue;
     let option: LaunchProviderOption | undefined;
     let id: string | undefined;
     let stopped = false;
     let deleted = false;
     let stopRequested = false;
     const memory = `PARITY_${crypto.randomUUID().replaceAll("-", "")}`;
+    let afterResume = false;
+    const measuredPrompts = new Set<string>();
+    const retainedPrices = new Map<string, string>();
     let blocked: string | undefined;
     let blockedDiagnostic: Diagnostic | undefined;
     const api = <T>(path: string, body: object = {}) => request<T>(path, { org: c.org, ...body });
+    async function checkUsage(promptId: string) {
+      if (feature && !["usage", "exact-cost"].includes(feature)) return;
+      const observe = (name: string, status: Cell["status"], reason: string | null = null, detail?: Diagnostic) => {
+        record(`${name}-${afterResume ? "after" : "before"}-resume`, c.provider, status, reason, detail);
+        // A before-resume observation alone is not proof of resume retention.
+        if (status === "pass" && !afterResume && report[name]?.[c.provider]?.status !== "fail")
+          record(name, c.provider, "not-run", "resume_not_observed");
+        if (status !== "pass" || afterResume) {
+          if (report[name]?.[c.provider]?.status !== "fail") {
+            if (status === "pass" && report[`${name}-before-resume`]?.[c.provider]?.status !== "pass")
+              record(name, c.provider, "not-run", "baseline_not_observed");
+            else record(name, c.provider, status, reason, detail);
+          }
+        }
+      };
+      measuredPrompts.add(promptId);
+      let usage: SandboxUsage | undefined;
+      try {
+        await poll(
+          async () => {
+            const page = await api<{ usage?: SandboxUsage }>("sandbox/detail", { id });
+            usage = page.usage;
+            return usage;
+          },
+          (value) => {
+            return (
+              !!value &&
+              [...measuredPrompts].every((prompt) =>
+                value.turns?.some(
+                  (turn) =>
+                    turn.promptId === prompt &&
+                    Number.isSafeInteger(turn.inputTokens) &&
+                    (turn.inputTokens ?? -1) >= 0 &&
+                    Number.isSafeInteger(turn.outputTokens) &&
+                    (turn.outputTokens ?? -1) >= 0,
+                ),
+              )
+            );
+          },
+        );
+        if (!usage || usage.turnCount !== new Set(usage.turns.map((turn) => turn.promptId)).size)
+          throw new Error("invalid_usage_receipt");
+        if (report.usage?.[c.provider]?.status !== "fail") observe("usage", "pass");
+      } catch (error) {
+        const detail = diagnostic(error);
+        observe("usage", detail.quota ? "not-run" : "fail", detail.code, detail);
+        if (!feature || feature === "exact-cost")
+          observe("exact-cost", detail.quota ? "not-run" : "fail", "usage_unavailable", detail);
+        return;
+      }
+      if (feature === "usage") return;
+      try {
+        // Compare fixed-point integers, never binary floating point or current
+        // catalog prices. These are the service's persisted USD quotes.
+        const units = (value: unknown) => {
+          if (typeof value !== "string" || !/^\d{1,30}(?:\.\d{1,18})?$/.test(value))
+            throw new Error("invalid_cost_receipt");
+          const [whole, fraction = ""] = value.split(".");
+          return BigInt(whole!) * 10n ** 18n + BigInt(fraction.padEnd(18, "0"));
+        };
+        if (usage.cost?.currency !== "USD" || usage.cost.unknown !== null || usage.cost.unpricedTurns !== 0)
+          throw new Error("invalid_cost_receipt");
+        const current = new Map<string, string>();
+        let sum = 0n;
+        for (const turn of usage.turns) {
+          const key = JSON.stringify([turn.promptId, turn.model]);
+          if (current.has(key) || !turn.pricing || turn.pricing.unknown !== null)
+            throw new Error("invalid_cost_receipt");
+          sum += units(turn.pricing.usd);
+          current.set(key, JSON.stringify(turn.pricing));
+        }
+        if (sum !== units(usage.cost.usd) || [...retainedPrices].some(([key, value]) => current.get(key) !== value))
+          throw new Error("invalid_cost_receipt");
+        for (const [key, value] of current) retainedPrices.set(key, value);
+        if (report["exact-cost"]?.[c.provider]?.status !== "fail") observe("exact-cost", "pass");
+      } catch (error) {
+        const detail = diagnostic(error);
+        observe("exact-cost", "fail", detail.code, detail);
+      }
+    }
     async function runTurn(recall = false) {
       if (!id) throw new Error("launch_not_available");
       const turn = await api<{ promptId: string }>("sandbox/send", {
@@ -254,6 +341,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           return finished && answered;
         },
       );
+      await checkUsage(turn.promptId);
     }
     async function deleteKnown() {
       if (!id) throw new Error("launch_not_available");
@@ -339,7 +427,8 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         step === "launch" ||
         step === "stop" ||
         step === "delete" ||
-        ((feature === "resume" || feature === "resume-recall") && ["send", "resume"].includes(step));
+        (["resume", "resume-recall", "usage", "exact-cost"].includes(feature ?? "") &&
+          ["send", "resume"].includes(step));
       if (!needed) continue;
       const selected = !feature || step === feature;
       if (option?.capabilities[capability] === false) {
@@ -408,6 +497,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           } else {
             const expected = step === "resume" ? "ready" : step === "stop" ? "stopped" : "deleted";
             if (step === "resume") {
+              afterResume = true;
               stopped = false;
               stopRequested = false;
             }
@@ -428,7 +518,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
               );
             else if (receipt.status !== "deleted") throw new Error("delete_unconfirmed");
             stopped = step !== "resume";
-            if (step === "resume" && (!feature || feature === "resume-recall")) {
+            if (step === "resume" && (!feature || ["resume-recall", "usage", "exact-cost"].includes(feature))) {
               if (c.provider === "docker") await runTurn(true);
               record("resume-recall", c.provider, "pass");
             }
@@ -446,7 +536,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         );
         blocked = `${step}_failed`;
         blockedDiagnostic = detail;
-        if (step === "resume" && (!feature || feature === "resume-recall"))
+        if (step === "resume" && (!feature || ["resume-recall", "usage", "exact-cost"].includes(feature)))
           record(
             "resume-recall",
             c.provider,

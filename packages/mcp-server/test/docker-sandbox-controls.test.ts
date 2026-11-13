@@ -722,6 +722,84 @@ test("normal Docker send continues the saved native conversation and retries exa
   await rejected(invoke(caller(f.admin, "admin"), "send", args, controller), "conflict");
 });
 
+test("ordinary Docker send resumes once and never wakes a stopped sandbox for a prior prompt UUID", async () => {
+  const f = await fixture();
+  let session = await ready(f);
+  const conversationId = randomUUID();
+  const first = { requestId: randomUUID(), text: "first" };
+  await service.prompt(f.actor, f.sandbox.id, first);
+  await complete(session, { promptId: randomUUID(), conversationId, status: "finished" });
+  await service.prompt(f.actor, f.sandbox.id, first);
+  await db.query("update public.docker_hosts set daemon_version='2.28.0' where id=$1", [f.hostId]);
+  const stop = async () => {
+    const requestId = randomUUID();
+    await reservations.stop(f.actor, f.sandbox.id, requestId);
+    await hosts.complete(f.hostToken, f.installationId, { requestId, outcome: "completed" });
+  };
+  await stop();
+  let now = 0,
+    resumes = 0,
+    prompts = 0;
+  const promptId = randomUUID();
+  const clock = {
+    now: () => now,
+    async wait(ms: number) {
+      now += ms;
+      const job = await hosts.poll(f.hostToken, f.installationId);
+      if (job) {
+        if (job.operation !== "resume") throw Error("expected resume");
+        resumes++;
+        await hosts.complete(f.hostToken, f.installationId, { requestId: job.requestId, outcome: "completed" });
+        session = await authority.enrol(job.bootstrap.enrolmentToken);
+      }
+      const next = await commands.next(session.runtimeToken, session.epoch);
+      if (!next.command) return;
+      const command = next.command;
+      if (command.op === "prompt") {
+        expect(command.input).toMatchObject({ text: "continue after stop", conversationId });
+        prompts++;
+      } else if (command.op !== "health") throw Error("unexpected runtime command");
+      await commands.complete(session.runtimeToken, session.epoch, {
+        epoch: session.epoch,
+        requestId: command.requestId,
+        status: 200,
+        body: {
+          version: 1,
+          requestId: command.requestId,
+          result:
+            command.op === "health"
+              ? { ready: true, generation: session.epoch }
+              : { promptId, conversationId, status: "queued" },
+        },
+      });
+    },
+  };
+  const send = createDockerNormalSend(sql, key, { enabled: true, clock });
+  const controller = createDockerSandboxControls(sql, key, { send, resume: bootstrap, clock });
+  const args = { id: f.sandbox.id, request_id: randomUUID(), prompt: "continue after stop" };
+  // An unknown outcome retries the same bound resume, not a second host instruction.
+  const pending = createDockerSandboxControls(sql, key, { send, resume: bootstrap, clock, timeoutMs: 0 });
+  await rejected(invoke(caller(f.actor), "send", args, pending), "conflict");
+  await rejected(invoke(caller(f.actor), "send", { ...args, request_id: randomUUID() }, controller), "conflict");
+  const result = await invoke(caller(f.actor), "send", args, controller);
+  expect(result).toMatchObject({ id: f.sandbox.id, promptId, conversationId, status: "queued" });
+  expect(await invoke(caller(f.actor), "send", args, controller)).toEqual(result);
+  expect({ resumes, prompts }).toEqual({ resumes: 1, prompts: 1 });
+  await stop();
+  await rejected(invoke(caller(f.actor), "send", args, controller), "conflict");
+  await rejected(invoke(caller(f.actor), "send", { ...args, prompt: "changed" }, controller), "conflict");
+  expect(await hosts.poll(f.hostToken, f.installationId)).toBeNull();
+  expect((await invoke(caller(f.actor), "status", { id: f.sandbox.id })).status).toBe("stopped");
+  expect(
+    (
+      await db.query(
+        `select request_id from public.docker_host_jobs where bound_sandbox_id=$1 and bound_operation='resume'`,
+        [f.sandbox.id],
+      )
+    ).rows,
+  ).toEqual([{ request_id: args.request_id }]);
+});
+
 test("Docker mutations reuse the fenced runtime mailbox and reconcile identical request IDs", async () => {
   const f = await fixture();
   const session = await ready(f);

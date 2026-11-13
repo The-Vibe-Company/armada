@@ -27,11 +27,11 @@ permissions:
   contents: read
   actions: read
 
-# Lock staging deployment and smoke together. A newer merge cannot
-# replace staging under an active smoke or evict an already queued release.
+# Coalesce ordinary main work: preserve the active workflow and keep only the
+# latest pending main. Release calls use separate outer groups and the FIFO job
+# lock below, so replacing a queued main can never evict a release smoke.
 concurrency:
-  group: staging-gated-production
-  queue: max
+  group: ${{ inputs.release_gate && format('staging-release-{0}', github.run_id) || 'staging-main-latest' }}
   cancel-in-progress: false
 
 jobs:
@@ -76,6 +76,7 @@ jobs:
     environment: staging
     concurrency:
       group: post-deploy-smoke-staging
+      queue: max
       cancel-in-progress: false
     env:
       SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
@@ -91,7 +92,7 @@ jobs:
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
       ARMADA_SERVER_URL: ${{ secrets.ARMADA_SERVER_URL }}
       RELEASE_SHA: ${{ inputs.source_sha || github.sha }}
-      STAGING_LATEST_ONLY: ${{ inputs.source_sha == '' && 'true' || 'false' }}
+      STAGING_LATEST_ONLY: ${{ inputs.release_gate && 'false' || 'true' }}
       ARMADA_URL: ${{ vars.ARMADA_ORIGIN }}
       ARMADA_TOKEN: ${{ secrets.ARMADA_SMOKE_TOKEN }}
       ARMADA_SMOKE_CASES: ${{ secrets.ARMADA_SMOKE_CASES }}

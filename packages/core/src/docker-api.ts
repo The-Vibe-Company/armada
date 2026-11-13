@@ -167,6 +167,8 @@ export interface DockerLaunchResult {
   promptId?: string;
 }
 export interface DockerSandboxStatus {
+  /** Additive idle-pause wording; canonical status remains stopped. */
+  statusMessage?: string | null;
   provider: "docker";
   hostId: string;
   image: string;

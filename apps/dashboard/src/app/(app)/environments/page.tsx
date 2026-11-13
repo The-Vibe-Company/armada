@@ -23,7 +23,7 @@ import { setGoldenVisibility } from "@/app/actions/goldens";
 import { ActionForm, SubmitButton } from "@/components/action-form";
 import { CopyButton } from "@/components/copy-button";
 import { Disclosure } from "@/components/disclosure";
-import { SnapshotBuildRefresh, SnapshotCreateChoice } from "@/components/docker-snapshot-forms";
+import { SnapshotBuildRefresh, SnapshotCreateChoice, SnapshotRebuildDialog } from "@/components/docker-snapshot-forms";
 import { EnvironmentTemplates } from "@/components/environment-templates";
 import { GoldenCreateDialog } from "@/components/golden-create-dialog";
 import { GoldenForm } from "@/components/golden-form";
@@ -55,7 +55,7 @@ import { selectedOrganization } from "@/lib/data/selected-org";
 import { listSelectedTemplates, lookupsFrom, type TemplateList } from "@/lib/data/templates";
 import { listSelectedVault } from "@/lib/data/variables";
 import { displayUser, listMemberships, type Membership, memberDirectory, requireViewer } from "@/lib/data/viewer";
-import { hasDockerHost, snapshotLaunchEnabled, snapshotState } from "@/lib/docker-snapshots";
+import { hasDockerHost, snapshotLaunchEnabled, snapshotRebuildAvailable, snapshotState } from "@/lib/docker-snapshots";
 import { mcpUrl } from "@/lib/env";
 import {
   boatFull,
@@ -207,6 +207,10 @@ export default async function GoldensPage({ searchParams }: Props) {
         snapshot,
         context,
         snapshotLaunchEnabled(dockerOption, hostRead.state === "ready" && hostRead.list.placement),
+        snapshotRead.state === "ready" ? snapshotRead.currentVersion : null,
+        hostRead.state === "ready" &&
+          hostRead.list.placement &&
+          Boolean(dockerOption?.enabled && dockerOption.capabilities.goldens),
       ),
     ),
   ]);
@@ -852,8 +856,16 @@ function dockerSnapshotRow(
   snapshot: DockerSnapshotRecord,
   context: RowContext,
   launchEnabled: boolean,
+  currentVersion: string | null,
+  canBuild: boolean,
 ): ResourceRow & { bucket: Bucket; tie: string } {
   const state = snapshotState(snapshot, launchEnabled);
+  const canRebuild = snapshotRebuildAvailable(
+    snapshot,
+    currentVersion,
+    { id: context.viewerId, isAdmin: context.orgs.get(snapshot.orgId)?.role === "admin" },
+    canBuild,
+  );
   const action =
     state.bucket === "ready" ? (
       <LaunchDialog
@@ -894,10 +906,13 @@ function dockerSnapshotRow(
       </span>
     ),
     tags: (
-      <RowTag>
-        {snapshot.visibility === "private" ? <LockIcon aria-hidden /> : <GlobeIcon aria-hidden />}
-        {snapshot.visibility === "private" ? "Private" : "Org"}
-      </RowTag>
+      <>
+        <RowTag>
+          {snapshot.visibility === "private" ? <LockIcon aria-hidden /> : <GlobeIcon aria-hidden />}
+          {snapshot.visibility === "private" ? "Private" : "Org"}
+        </RowTag>
+        {canRebuild && <RowTag>New Armada version available</RowTag>}
+      </>
     ),
     meta,
     subtitle: meta,
@@ -913,6 +928,19 @@ function dockerSnapshotRow(
         <StateCell tone={state.tone} label={state.label} />
         <p className="text-sm text-muted-foreground">{detailText}</p>
         {action}
+        {canRebuild && currentVersion && (
+          <PanelSection title="New Armada version available">
+            <p className="text-sm text-muted-foreground">
+              Rebuild with Armada {currentVersion}. Your saved snapshot remains unchanged.
+            </p>
+            <SnapshotRebuildDialog
+              orgId={snapshot.orgId}
+              snapshotId={snapshot.id}
+              name={snapshot.name}
+              currentVersion={currentVersion}
+            />
+          </PanelSection>
+        )}
         <PanelSection title="Repositories">
           <ul className="space-y-2 text-sm">
             {repos.map((repo) => (

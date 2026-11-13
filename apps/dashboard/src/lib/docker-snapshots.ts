@@ -1,4 +1,4 @@
-import type { DockerSnapshotRecord } from "@armada/core";
+import { type DockerSnapshotRecord, snapshotUpdateAvailable } from "@armada/core";
 import type { ResourceState } from "./resource-list";
 
 /** A saved artifact remains visible when its installation is offline, but cannot start new work. */
@@ -30,5 +30,26 @@ export function snapshotLaunchEnabled(
       option.capabilities.goldens &&
       option.launchSources.includes("golden") &&
       option.harnesses.length,
+  );
+}
+
+/** Older servers omit this field; malformed or non-stable versions cannot advertise an update. */
+export function snapshotCurrentVersion(value: unknown): string | null {
+  return typeof value === "string" && /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(value) ? value : null;
+}
+
+/** Rebuilding is additive and restricted to the original private owner or an organization admin. */
+export function snapshotRebuildAvailable(
+  row: Pick<DockerSnapshotRecord, "status" | "hostAvailable" | "visibility" | "ownerId" | "builtOnVersion">,
+  currentVersion: string | null,
+  viewer: { id: string; isAdmin: boolean },
+  buildEnabled: boolean,
+): boolean {
+  return Boolean(
+    buildEnabled &&
+      row.status === "ready" &&
+      row.hostAvailable &&
+      (row.visibility === "private" ? row.ownerId === viewer.id : viewer.isAdmin) &&
+      snapshotUpdateAvailable(row.builtOnVersion, currentVersion),
   );
 }

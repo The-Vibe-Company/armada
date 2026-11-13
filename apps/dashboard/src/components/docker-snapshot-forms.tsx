@@ -2,10 +2,18 @@
 
 import { parseGoldenConfig } from "@armada/core";
 import { useRouter } from "next/navigation";
-import { type ReactNode, useActionState, useEffect, useId, useRef, useState } from "react";
-import { buildDockerSnapshot } from "@/app/actions/docker-snapshots";
+import { type ReactNode, useActionState, useCallback, useEffect, useId, useRef, useState } from "react";
+import { buildDockerSnapshot, rebuildDockerSnapshot } from "@/app/actions/docker-snapshots";
 import { Button } from "@/components/ui/button";
-import { DialogClose } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
@@ -202,4 +210,101 @@ export function SnapshotBuildRefresh({ building }: { building: boolean }) {
       Building on your host. This list checks progress for two minutes; refresh to check again later.
     </p>
   ) : null;
+}
+
+/** One explicit confirmation, with the same request identity kept across an uncertain response or a reopened dialog. */
+export function SnapshotRebuildDialog({
+  orgId,
+  snapshotId,
+  name,
+  currentVersion,
+}: {
+  orgId: string;
+  snapshotId: string;
+  name: string;
+  currentVersion: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const accepted = useCallback(() => setOpen(false), []);
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button variant="outline">Rebuild</Button>
+      </DialogTrigger>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Rebuild {name}?</DialogTitle>
+          <DialogDescription>
+            Repositories and setup commands run again on the original host using Armada {currentVersion}. This creates a
+            new snapshot entry. The old snapshot stays unchanged and available to launch.
+          </DialogDescription>
+        </DialogHeader>
+        <SnapshotRebuildForm orgId={orgId} snapshotId={snapshotId} onAccepted={accepted} />
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function SnapshotRebuildForm({
+  orgId,
+  snapshotId,
+  onAccepted,
+}: {
+  orgId: string;
+  snapshotId: string;
+  onAccepted: () => void;
+}) {
+  const [result, action, pending] = useActionState(rebuildDockerSnapshot, null);
+  const [requestId, setRequestId] = useState("");
+  const form = useRef<HTMLFormElement>(null);
+  const router = useRouter();
+  const param = `snapshot-rebuild-key.${orgId}.${snapshotId}`;
+  useEffect(() => {
+    const stored = new URL(window.location.href).searchParams.get(param);
+    setRequestId(stored && isUuid(stored) ? stored : crypto.randomUUID());
+    const keep = (event: Event) => event.preventDefault();
+    const node = form.current;
+    node?.addEventListener("reset", keep);
+    return () => node?.removeEventListener("reset", keep);
+  }, [param]);
+  useEffect(() => {
+    if (!result?.ok) return;
+    const url = new URL(window.location.href);
+    url.searchParams.delete(param);
+    url.searchParams.set("item", result.snapshotId);
+    window.history.replaceState(window.history.state, "", url);
+    onAccepted();
+    router.refresh();
+  }, [result, param, router, onAccepted]);
+  return (
+    <form
+      ref={form}
+      action={action}
+      className="space-y-4"
+      onSubmit={() => {
+        const url = new URL(window.location.href);
+        url.searchParams.set(param, requestId);
+        window.history.replaceState(window.history.state, "", url);
+      }}
+    >
+      <input type="hidden" name="org" value={orgId} />
+      <input type="hidden" name="snapshotId" value={snapshotId} />
+      <input type="hidden" name="requestId" value={requestId} />
+      {result && !result.ok && (
+        <p role="alert" className="text-sm text-destructive">
+          {result.error}
+        </p>
+      )}
+      <div className="flex justify-end gap-2">
+        <DialogClose asChild>
+          <Button type="button" variant="outline" disabled={pending}>
+            Cancel
+          </Button>
+        </DialogClose>
+        <Button type="submit" disabled={!requestId || pending || result?.ok}>
+          {pending ? "Starting rebuild…" : "Rebuild"}
+        </Button>
+      </div>
+    </form>
+  );
 }

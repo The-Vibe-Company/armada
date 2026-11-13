@@ -7,6 +7,7 @@ import {
   HARNESS_CAPABILITIES,
   HARNESS_KINDS,
   type Harness,
+  idlePauseMessage,
   PROMPT_STATUSES,
   ProviderError,
   type SandboxRecord,
@@ -18,6 +19,7 @@ import type { Caller } from "./caller.ts";
 import { createSqlData } from "./data.ts";
 import type { createDockerBootstrapService } from "./docker-bootstrap-service.ts";
 import { createDockerHostStore, DockerHostDenied } from "./docker-host-store.ts";
+import { dockerHostSupportsResume } from "./docker-host-version.ts";
 import { createDockerLaunchEnvironment } from "./docker-launch-environment.ts";
 import type { createDockerNormalSend } from "./docker-normal-send.ts";
 import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
@@ -65,6 +67,7 @@ const invalid = () => failure("invalid_request", "Invalid Docker sandbox request
 const terminal = (row: Row) => ["stopped", "deleted", "failed"].includes(row.status);
 function reason(row: Row) {
   if (row.status_reason === "expired") return "expired";
+  if (row.status_reason === "idle_paused" && ["stopping", "stopped"].includes(row.status)) return "idle_paused";
   if (row.status !== "failed") return null;
   return row.status_reason === DOCKER_IMAGE_UNAVAILABLE_MESSAGE ? row.status_reason : "Docker sandbox failed.";
 }
@@ -255,6 +258,14 @@ export function createDockerSandboxControls(
       reasoningEffort: row.reasoning_effort,
       status: row.status,
       statusReason: reason(row),
+      statusMessage: idlePauseMessage(
+        {
+          status: row.status,
+          statusReason: reason(row),
+          expiresAt: row.expires_at === null ? null : new Date(row.expires_at).toISOString(),
+        },
+        new Date(clock.now()),
+      ),
       providerState:
         row.status === "deleted"
           ? null
@@ -401,16 +412,7 @@ export function createDockerSandboxControls(
         [row.docker_host_id, row.org_id],
       )
     ).rows[0];
-    const version = host?.daemon_version?.match(/^(\d+)\.(\d+)\.(\d+)(?:[-+][A-Za-z0-9.-]+)?$/);
-    const major = Number(version?.[1]),
-      minor = Number(version?.[2]);
-    // Initial create/bootstrap is compatible with 2.27; the resume opcode first shipped in 2.28.
-    if (
-      !version ||
-      !Number.isSafeInteger(major) ||
-      !Number.isSafeInteger(minor) ||
-      !(major > 2 || (major === 2 && minor >= 28))
-    )
+    if (!dockerHostSupportsResume(host?.daemon_version))
       throw failure(
         "conflict",
         "Update this Docker host daemon to Armada 2.28.0 or later before resuming. Keep its existing registration, then retry. No resume job was sent.",
@@ -596,7 +598,13 @@ export function createDockerSandboxControls(
           return { handled: true, result: await control(caller, row, name, args) };
         if (name === "send") {
           if (!options.send) throw failure("unavailable", "Docker send is unavailable.");
-          return { handled: true, result: await options.send.send(caller, args, row) };
+          return {
+            handled: true,
+            result: await options.send.send(caller, args, row, async () => {
+              await resume(caller, row, args.request_id as string | undefined);
+              return visible(caller, row.id);
+            }),
+          };
         }
         if (name === "resume")
           return { handled: true, result: await resume(caller, row, args.request_id as string | undefined) };

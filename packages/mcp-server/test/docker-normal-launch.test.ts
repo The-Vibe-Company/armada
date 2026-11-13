@@ -1742,3 +1742,55 @@ test("old or unreported Docker daemons get an actionable resume refusal before a
     expect((await createDockerSandboxService(sql, key).get(f.actor, f.body.requestId)).status).toBe("stopped");
   }
 });
+
+test.each(["private", "org"] as const)(
+  "snapshot rebuild %s publishes a new immutable build and retains its source and retry receipt",
+  async (visibility) => {
+    const f = await snapshotFixture(),
+      id = randomUUID(),
+      requestId = randomUUID();
+    const creator = visibility === "private" ? f.caller : f.adminCaller;
+    await f.snapshots.command(creator, "create", {
+      org: f.actor.orgId,
+      hostId: f.hostId,
+      requestId: id,
+      name: "rebuild-source",
+      visibility,
+      config: f.config,
+    });
+    const job = await hosts.poll(f.hostToken, f.installationId);
+    if (job?.operation !== "buildSnapshot") throw Error("Missing source build");
+    await hosts.complete(f.hostToken, f.installationId, {
+      requestId: id,
+      outcome: "completed",
+      imageId: `sha256:${"d".repeat(64)}`,
+    });
+    const source = await f.snapshots.command(creator, "get", { org: f.actor.orgId, id });
+    const input = { org: f.actor.orgId, id, requestId };
+    const unauthorized = visibility === "private" ? f.adminCaller : f.caller;
+    await expect(f.snapshots.command(unauthorized, "rebuild", input)).rejects.toMatchObject({
+      code: visibility === "private" ? "not_found" : "forbidden",
+    });
+    await expect(f.snapshots.command(creator, "rebuild", { ...input, image: officialImage })).rejects.toMatchObject({
+      code: "invalid",
+    });
+    const rebuilt = await f.snapshots.command(creator, "rebuild", input);
+    expect(rebuilt).toMatchObject({
+      snapshot: { id: requestId, status: "building", builtOnVersion: VERSION, name: "rebuild-source" },
+    });
+    expect(await f.snapshots.command(creator, "get", { org: f.actor.orgId, id })).toEqual(source);
+    const build = await hosts.poll(f.hostToken, f.installationId);
+    expect(build).toMatchObject({
+      operation: "buildSnapshot",
+      request: { image: officialSandboxImage() },
+      build: { id: requestId, config: f.config, armadaVersion: VERSION },
+    });
+    await db.query("update docker_hosts set last_seen_at=now()-interval '5 minutes' where id=$1", [f.hostId]);
+    expect(await f.snapshots.command(creator, "rebuild", input)).toMatchObject({
+      snapshot: { id: requestId, status: "building", builtOnVersion: VERSION },
+    });
+    expect(
+      (await db.query("select request_id from docker_host_jobs where request_id=$1", [requestId])).rows,
+    ).toHaveLength(1);
+  },
+);

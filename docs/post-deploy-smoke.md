@@ -920,6 +920,24 @@ Any shortened staging-only global idle setting and its restoration require
 coordinator/operator control. This procedure neither changes that setting nor
 adds a new script, CI job, provider call or staging success claim.
 
+#### Usage and exact-cost parity rows
+
+`--parity --only docker --feature usage` checks measured input/output counters
+for each observed prompt before and after stop/resume. `--feature exact-cost`
+also requires persisted, fully priced USD turn quotes, an exact session sum,
+unique prompt/model rows and unchanged earlier quotes after resume. Both filters
+reuse one sandbox and run the necessary send/stop/resume/cleanup prerequisites.
+A pre-resume pass alone leaves the aggregate feature not-run; phase rows show
+the before/after observations separately.
+
+Amounts are compared as 18-decimal fixed-point integers, matching the server's
+USD precision; the runner does not recalculate prices from a current catalog or
+compare binary floating-point sums. Unknown pricing or missing counters fail,
+never silently become zero/unsupported. Quotes and counters are not printed.
+These probes migrate the older Docker cost check without deleting that script;
+its other checks and the remaining feature rows still need migration. A full
+staging run, not fixture tests, is the evidence that a provider/harness passes.
+
 
 ## Main smoke cadence and provider quota (#1547)
 
@@ -937,8 +955,12 @@ skips the entire deployment job if the interval has not opened or that SHA has
 a retained attempt slot; it avoids rebuilding an unchanged tip on each tick. Delays
 are possible because GitHub cron is best-effort. Non-default intervals are still
 checked on pushes/manual dispatch and at the half-hour scheduled ticks. Stale
-ordinary main sources are rejected before mutation as before. A newer commit
-wins before a queued deployment starts; running smoke is not cancelled. Slots are retained for two days (longer than the maximum one-day interval).
+ordinary main sources are rejected before mutation as before. The outer main
+workflow lock keeps only the latest pending main without cancelling active work.
+Explicit releases use separate outer groups and a shared FIFO deployment/smoke
+job lock, so replacing pending main never evicts release evidence. If an active
+main workflow waited behind a release, its pre-mutation SHA check skips stale
+work as well. Running deployment/smoke is never cancelled. Slots are retained for two days (longer than the maximum one-day interval).
 After expiry, cron may re-attempt a quiet latest tip, still subject to the same
 interval; this is bounded suppression, not an indefinite cache. Manual main
 dispatch may retry after the interval. Do not delete admission artifacts early:

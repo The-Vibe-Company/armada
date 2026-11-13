@@ -124,7 +124,8 @@ Usage:
                                            Version 1: {"version":1,"golden":null,"repositories":{}}
                                            Repository keys are configured directories. null golden and an empty map
                                            clear defaults. Scoped to this provider golden, future launches only.
-  armada golden list [--provider boat|modal] [--json]
+  armada golden list [--provider boat|modal|docker] [--json]
+  armada golden rebuild UUID --provider docker --org UUID [--request-id UUID] [--json]
                                            Goldens you can see
   armada launch <golden> --agent ${HARNESSES.join("|")} ["prompt"] [--model <id>] [--reasoning-effort <level>]
                                            [--armada-access --credential-id <id> [--max-active-children <1..100>]]

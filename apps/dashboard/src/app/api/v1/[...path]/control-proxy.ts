@@ -88,6 +88,7 @@ const PRIVATE_POST_PATHS = new Set([
   "docker/snapshots/list",
   "docker/snapshots/get",
   "docker/snapshots/create",
+  "docker/snapshots/rebuild",
   "docker/hosts/revoke",
   "launch/options",
   "sandbox/launch",
