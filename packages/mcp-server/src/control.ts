@@ -150,7 +150,14 @@ export interface ControlOptions {
   configureDockerLaunchRequest?: (request: Request) => void;
   dockerControls?: import("./docker-sandbox-controls.ts").DockerSandboxControls;
   /** Trusted installed-route discovery, never taken from request JSON. */
-  docker?: { hosts?: boolean; placement?: boolean; normalApi?: boolean; normalLaunch?: boolean };
+  docker?: {
+    hosts?: boolean;
+    placement?: boolean;
+    normalApi?: boolean;
+    normalLaunch?: boolean;
+    normalSend?: boolean;
+    normalResume?: boolean;
+  };
   runtimeMcp?: RuntimeMcp;
   runtimeGitHub?: RuntimeGitHub;
   runtimeResume?: RuntimeResume;
@@ -898,6 +905,7 @@ async function dispatch(
       "sandbox/recovery": "work_recovery",
       "sandbox/advice": "resource_advice",
       "sandbox/send": "send",
+      "sandbox/resume": "resume",
       "sandbox/checkpoint-runtime-v1": "runtime_checkpoint",
       "sandbox/resume-runtime-v1": "runtime_resume",
       "sandbox/report": "report",

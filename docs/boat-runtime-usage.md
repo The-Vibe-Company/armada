@@ -110,3 +110,31 @@ refresh acceptance needs non-secret server revision evidence, never raw tokens.
 
 Normal server/runtime deployment only; no migration or manual artifact publishing
 for this check. Workers do not run it against staging or claim real inference.
+
+### Coordinator configuration before the strict subscription check
+
+- Wait for Boat start quota to be available. A provider `429` from the daily
+  starts limit is not a runtime failure or permission to retry allocations.
+- Connect a real ChatGPT login model account through the existing account flow,
+  in the smoke caller's user scope or an authorized organization scope. It must
+  appear as active `codex_auth` with a valid version and non-expired login. An
+  `openai` API-key account is not interchangeable for this acceptance check.
+  Store credentials through the existing encrypted flow, never argv/logs.
+- Set the existing `ARMADA_URL` to the Armada **server** HTTPS origin,
+  `ARMADA_TOKEN` to the authorized caller's bearer, `ARMADA_RUNTIME_ORG` to the
+  organization UUID, `ARMADA_RUNTIME_GOLDEN` to its snapshotted Boat golden, and
+  `ARMADA_RUNTIME_CREDENTIAL_ID` to that ChatGPT account UUID. Optional existing
+  `ARMADA_RUNTIME_MODEL` must be supported by the account. Leave
+  `ARMADA_RUNTIME_HARNESS` unset or `codex`; acknowledge the run with the command
+  above. The deployed server/runtime must have the merged usage/pricing and
+  epoch-fenced subscription support; no new setting or manual publication.
+- **No default skills or MCP/GitHub inputs are required by this narrow check.**
+  It invokes `--usage --resume` with the canonical no-skills/defaults-skipped
+  path. For the separate broader skills parity check, configure at least one
+  exact published skill pin in the existing golden/org/personal default policy;
+  empty defaults must remain a pre-allocation refusal, not an empty-policy pass.
+
+Keep the usage/cost/subscription and skills parity rows orange until their actual
+coordinator lifecycle evidence exists. A quota blocker, missing account, missing
+skill defaults or successful offline test cannot turn a row green. Do not spend
+another start merely to reproduce a known quota/configuration refusal.
