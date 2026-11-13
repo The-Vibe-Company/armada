@@ -24,13 +24,42 @@ Owner-facing orchestrators have been removed, with no compatibility route or fea
 
 - `bun install`
 - `bun scripts/prepare-runtime.ts`: prepare the portable runtime before local server tests. Linux CI builds and validates the native runtime with `bun packages/agent-runtime/build.ts` and `bun scripts/validate-runtime-native.ts` instead.
-- `bun run verify`: lint (Biome), typecheck (`tsc`, strict) and tests (`bun test`). CI runs the same as "Lint, typecheck and test".
+- `bun run verify`: lint (Biome), typecheck (`tsc`, strict) and tests (`bun test`). CI exposes one required aggregate, "Lint, typecheck and test", over lint/typecheck (including migration and native contract steps) and unit shards.
 - `bun run format`: apply Biome formatting and safe fixes.
 - `bun run build` (this machine), `bun run build --target <os-arch>`, `bun run build:all`: the binary in `dist/`.
 - `bun run armada <args>`: the CLI from source.
 - `bun run dashboard`, `bun run dashboard:build`, `bun run e2e`: the dashboard (dev, production build, browser tests). `bun run verify` typechecks it and runs its unit tests, not the e2e.
 - `bun run db:types`: regenerate `packages/core/src/database.types.ts` after a migration change.
 - `scripts/aeom/install.sh`: install All Eyes On Me at its pinned commit to redesign or review the public landing (`.aeom/`, `docs/aeom.md`).
+
+## CI: what we test and what we do not
+
+One verdict, under two minutes. A pull request has a single required check, `Lint, typecheck and test`. If it takes more than two minutes, that is a defect to fix before anything else merges.
+
+**CI proves the code is sound on its own. Staging proves it works.**
+
+What CI runs on every pull request and in the merge queue:
+- lint and format (Biome), strict typecheck (`tsc`), the migration-version guard;
+- the unit tests (`bun test`), in as few shards as the two-minute limit allows.
+
+What runs only when its files change: the iOS checks (`apps/ios`), the migration dry-run (`supabase/migrations`).
+
+What runs after a merge, not before: the deploy to staging and the post-deploy smoke, which launches real sandboxes on every enabled provider, builds goldens and exercises the whole lifecycle. Binaries are built by the release workflow when a version is published.
+
+What CI does not do, and must not be added back:
+- no binary builds per pull request;
+- no golden, image or provider build, no real PostgreSQL service, no browser test;
+- nothing that calls the network or a provider;
+- no "informational" job: a check either gates the merge or does not exist;
+- no timing or budget check: the coordinator measures the verdict time.
+
+Rules for a test:
+- one test per behaviour, at the cheapest boundary that proves it; no network, no wall-clock wait, no child process when a function call proves the same thing;
+- a test that takes more than one second is rewritten or deleted;
+- a test that fails intermittently is deleted the day it is seen, not retried, not quarantined; if the behaviour matters, a cheaper deterministic test replaces it;
+- CI has no retries.
+
+Adding a CI job or a required check is the owner's decision, never an agent's. Where something is tested: logic in a unit test; a provider, a golden, a full lifecycle in the post-deploy smoke; a screen by opening it on staging.
 
 ## Rules
 

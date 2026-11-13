@@ -316,28 +316,24 @@ export async function startServer(
   const dockerEnabled = env.ARMADA_DOCKER_HOSTS === "1" && env.ARMADA_DOCKER_PLACEMENT === "1";
   let dockerBootstrap: ReturnType<typeof createDockerBootstrapService> | undefined;
   if (dockerEnabled) {
-    try {
-      if (!env.ARMADA_DOCKER_RUNTIME_MANIFEST) throw Error();
-      const dockerManifest = await Bun.file(env.ARMADA_DOCKER_RUNTIME_MANIFEST).json();
-      if (
-        dockerManifest?.protocol !== 1 ||
-        dockerManifest.platform !== "linux" ||
-        dockerManifest.libc !== "glibc" ||
-        !["x64", "arm64"].includes(dockerManifest.architecture)
-      )
-        throw Error();
-      dockerBootstrap = createDockerBootstrapService(sql, config.encryptionKey, {
-        enabled: true,
-        serverUrl: config.publicUrl,
-        manifest: dockerManifest,
-        architecture: dockerManifest.architecture,
-        // Plain-image launches resolve only the model account, not GitHub or host credentials.
-        credentials: dockerCredentials,
-        modelAuth,
-      });
-    } catch {
+    if (!env.ARMADA_DOCKER_RUNTIME_MANIFEST) throw Error("Docker runtime manifest required.");
+    const dockerManifest = await Bun.file(env.ARMADA_DOCKER_RUNTIME_MANIFEST).json();
+    if (
+      dockerManifest?.protocol !== 1 ||
+      dockerManifest.platform !== "linux" ||
+      dockerManifest.libc !== "glibc" ||
+      !["x64", "arm64"].includes(dockerManifest.architecture)
+    )
       throw Error("Invalid Docker runtime deployment manifest.");
-    }
+    dockerBootstrap = createDockerBootstrapService(sql, config.encryptionKey, {
+      enabled: true,
+      serverUrl: config.publicUrl,
+      manifest: dockerManifest,
+      architecture: dockerManifest.architecture,
+      // Plain-image launches resolve only the model account, not GitHub or host credentials.
+      credentials: dockerCredentials,
+      modelAuth,
+    });
   }
   const modalRuntimeHostFor = async (
     target: import("@armada/core").ProviderTarget,
