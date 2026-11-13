@@ -18,6 +18,10 @@ export function configureOpenCodeEndpoint(env: Record<string, string>): void {
   const endpoint = parseOpenCodeEndpoint(JSON.parse(raw));
   const apiKey = env.OPENCODE_API_KEY;
   if (!apiKey) throw Error("opencode_endpoint_key_missing");
+  const baseUrl = new URL(endpoint.baseUrl);
+  // Pinned Azure SDK appends /v1 itself on *.openai.azure.com, but not on Foundry hosts.
+  if (endpoint.protocol === "azure" && baseUrl.hostname.endsWith(".openai.azure.com"))
+    baseUrl.pathname = baseUrl.pathname.replace(/\/v1$/, "");
   env.OPENCODE_CONFIG_CONTENT = JSON.stringify({
     $schema: "https://opencode.ai/config.json",
     // Armada owns names; avoid unreported title traffic and uncheckpointed native child sessions.
@@ -25,9 +29,17 @@ export function configureOpenCodeEndpoint(env: Record<string, string>): void {
     enabled_providers: [OPENCODE_CONNECTION_PROVIDER],
     provider: {
       [OPENCODE_CONNECTION_PROVIDER]: {
-        npm: endpoint.protocol === "anthropic" ? "@ai-sdk/anthropic" : "@ai-sdk/openai-compatible",
+        npm:
+          endpoint.protocol === "anthropic"
+            ? "@ai-sdk/anthropic"
+            : endpoint.protocol === "azure"
+              ? "@ai-sdk/azure"
+              : "@ai-sdk/openai-compatible",
         name: "Armada model connection",
-        options: { baseURL: endpoint.baseUrl, apiKey },
+        options: {
+          baseURL: endpoint.protocol === "azure" ? baseUrl.toString().replace(/\/+$/, "") : endpoint.baseUrl,
+          apiKey,
+        },
         models: Object.fromEntries(endpoint.models.map((id) => [id, { name: id }])),
       },
     },

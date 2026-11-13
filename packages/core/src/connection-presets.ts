@@ -20,6 +20,7 @@ export type ConnectionPresetId =
   | "opencode"
   | "deepseek"
   | "azure-foundry"
+  | "opencode-azure"
   | "openrouter"
   | "openai-compatible";
 
@@ -44,7 +45,7 @@ export interface ConnectionPreset {
   /** Azure's optional api-version query parameter. */
   apiVersion?: boolean;
   /** Runtime protocol, fixed by the preset rather than free-form SDK/package input. */
-  protocol?: "anthropic";
+  protocol?: "anthropic" | "azure";
   /** The models.dev provider whose agent-capable models are offered. */
   catalog?: CatalogProvider;
   /** Where the key is created. */
@@ -112,6 +113,19 @@ export const CONNECTION_PRESETS: readonly ConnectionPreset[] = [
     apiVersion: true,
     catalog: "azure",
     keyHint: "From your Foundry resource's Keys and Endpoint page.",
+  },
+  {
+    id: "opencode-azure",
+    label: "Azure for OpenCode",
+    kind: "opencode",
+    hint: "Azure OpenAI or Foundry v1 Responses API with OpenCode",
+    models: "choose",
+    baseUrl: null,
+    protocol: "azure",
+    catalog: "azure",
+    addressPlaceholder: "https://<resource>.openai.azure.com/openai/v1",
+    addressHint: "Your Azure OpenAI or Foundry OpenAI v1 address. Model names are your deployment names.",
+    keyHint: "From your Azure resource's Keys and Endpoint page. API key only; no interactive Entra login.",
   },
   {
     id: "openrouter",

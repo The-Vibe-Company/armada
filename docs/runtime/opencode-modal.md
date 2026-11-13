@@ -162,3 +162,28 @@ cost classification and cleanup. This procedure is not evidence of a successful
 real Anthropic request; deterministic tests cover sealed credential validation
 and native adapter selection, not the live provider. Azure-specific endpoint
 support remains a separate #1579 slice.
+
+## Azure v1 connections for OpenCode (#1579)
+
+Choose **Azure for OpenCode** in the shared connection presets. Supply the
+resource's OpenAI v1 address, its API key and deployment names (not the underlying
+model names). Azure OpenAI and Foundry addresses ending in `/openai/v1` are
+accepted, as is a pasted `/openai/v1/responses` URL. The native Azure SDK handles
+Azure API-key authentication and Responses requests; the generic chat-completions
+adapter is not used. Existing generic connections are not silently converted.
+See Microsoft's [endpoint and deployment-name guidance](https://learn.microsoft.com/en-us/azure/ai-foundry/openai/how-to/switching-endpoints).
+
+The sealed endpoint uses `protocol: "azure"`. For the pinned Azure SDK, the
+runtime strips the final `/v1` only on `*.openai.azure.com`, where the SDK appends
+it itself; Foundry's full path is preserved. No user has to know this adjustment.
+The SDK's v1 behavior owns any API-version query; the form does not expose a
+legacy version field. Legacy deployment-scoped endpoints, arbitrary versioned
+query strings, and interactive Entra authentication are unsupported in this
+slice (tracked by #1579). Use the v1 resource address and an API key instead.
+
+Coordinator verification uses the same command above with
+`account: "opencode-azure"` cases for Modal and the owned Docker host, and models
+`armada/<deployment-name>`. Verify answer, follow-up, stop/resume recall, tokens,
+honest estimated/unknown costs and cleanup. Azure deployment names may have no
+catalog price; unknown cost is not a free request. No live Azure request has been
+proved by the deterministic adapter-selection tests.

@@ -26,6 +26,7 @@ test("every preset names a model credential kind and offers its catalog's models
     "opencode",
     "deepseek",
     "azure-foundry",
+    "opencode-azure",
     "openrouter",
     "openai-compatible",
   ]);
@@ -197,4 +198,26 @@ test("Anthropic for OpenCode saves a Messages connection rather than a chat-comp
       JSON.stringify({ ...value, endpoint: { ...value.endpoint, protocol: "arbitrary-package" } }),
     ),
   ).toThrow(VaultError);
+});
+
+test("Azure for OpenCode saves v1 deployment names and refuses legacy versioned URLs", () => {
+  const make = (baseUrl: string) =>
+    presetConnectionValue(preset("opencode-azure"), {
+      apiKey: "fake-azure-key",
+      baseUrl,
+      models: ["my-deployment"],
+    });
+  const value = JSON.parse(make("https://resource.services.ai.azure.com/openai/v1/responses"));
+  expect(value.endpoint).toEqual({
+    version: 1,
+    protocol: "azure",
+    baseUrl: "https://resource.services.ai.azure.com/openai/v1",
+    models: ["my-deployment"],
+  });
+  expect(value.apiKey).toBe("fake-azure-key");
+  for (const url of [
+    "https://resource.openai.azure.com/openai/deployments/model",
+    "https://resource.openai.azure.com/openai/v1?api-version=preview",
+  ])
+    expect(() => make(url)).toThrow(VaultError);
 });
