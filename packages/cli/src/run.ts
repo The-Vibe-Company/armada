@@ -85,8 +85,8 @@ Usage:
   armada host add [--name NAME] [--org UUID]
   armada host list [--json] [--org UUID]
   armada host revoke UUID [--org UUID]
-  armada launch [prompt] --provider docker --host UUID|NAME --image digest-ref --agent claude|codex|opencode --credential-id UUID --org UUID [--repo owner/repo[@branch] ...] [--request-id UUID] [--json]
-                                           Opt-in plain-image Docker launch through the normal Armada API.
+  armada launch [prompt] --provider docker --host UUID|NAME [--image digest-ref] --agent claude|codex|opencode --credential-id UUID --org UUID [--repo owner/repo[@branch] ...] [--request-id UUID] [--json]
+                                           Plain-image Docker launch through the normal Armada API (Armada's default image without --image).
   armada --version                         Print the version
   armada --help                            Show this help
   armada skill install (--project <directory> | --global) --yes [--revision <commit>]
@@ -169,7 +169,7 @@ Usage:
   armada logs <sandbox-id> [--tail [n]] [--all] [--follow] [--json]
                                            Read agent events; --all drains available pages, --follow waits for new pages until settled
   armada login [--url <url>] [--provider github|google | --email <address>]
-                                           --email sends a sign-in link; click it, or type the code it contains
+                                           --email: open the emailed link on this machine, or type its code (use one, not both)
   armada logout
   armada token create [--org <name>] [--label <label>]
   armada token list

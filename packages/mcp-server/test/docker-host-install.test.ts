@@ -37,14 +37,14 @@ test("one-line installer verifies bytes, delivers the one-use token privately an
     await mkdir(tools);
     const artifact = join(home, "artifact");
     const host =
-      '#!/bin/sh\ncase "$1" in install) cat > "$HOME/registration" ;; status) printf \'{"connected":true}\\n\' ;; *) exit 1 ;; esac\n';
+      '#!/bin/sh\ncase "$1" in install) cat > "$HOME/registration" ;; status) printf \'{"registered":true,"connected":true,"hostId":"22222222-2222-4222-8222-222222222222"}\\n\' ;; *) exit 1 ;; esac\n';
     await writeFile(artifact, host);
     const digest = createHash("sha256").update(host).digest("hex");
     await Bun.write(join(home, "docker-host.json"), JSON.stringify({ x64: digest, arm64: digest }));
     for (const [name, body] of Object.entries({
       uname: 'case "$1" in -s) echo Linux ;; -m) echo x86_64 ;; esac',
       docker: "exit 0",
-      systemctl: "exit 0",
+      systemctl: 'case "$*" in *restart*) touch "$HOME/restarted" ;; esac',
       loginctl: 'case "$1" in show-user) echo yes ;; esac',
       curl: 'for arg do target=$arg; done; cp "$FIXTURE_ARTIFACT" "$target"',
     }))
@@ -68,6 +68,41 @@ test("one-line installer verifies bytes, delivers the one-use token privately an
     expect(result.stdout.toString().trim()).toBe("connected");
     expect(result.stdout.toString() + result.stderr.toString()).not.toContain(token);
     expect((await readFile(join(home, "registration"), "utf8")).trim()).toBe(token);
+    // Reusing a healthy registration must not exchange the fresh token.
+    const reused = run("c".repeat(64));
+    expect(reused.exitCode).toBe(0);
+    expect(reused.stdout.toString()).toContain("Keeping the existing registration");
+    expect(reused.stdout.toString()).toContain("22222222-2222-4222-8222-222222222222");
+    expect((await readFile(join(home, "registration"), "utf8")).trim()).toBe(token);
+
+    // A disconnected registration is restarted, not replaced.
+    await writeFile(
+      join(home, ".local/bin/armada-docker-host"),
+      `#!/bin/sh
+if [ -f "$HOME/restarted" ]; then
+  echo '{"registered":true,"connected":true}'
+else
+  echo '{"registered":true,"connected":false,"hostId":"22222222-2222-4222-8222-222222222222"}'
+fi
+`,
+      { mode: 0o700 },
+    );
+    const restarted = run("e".repeat(64));
+    expect(restarted.exitCode).toBe(0);
+    expect(restarted.stdout.toString()).toContain("Restarting the existing user service");
+    expect((await readFile(join(home, "registration"), "utf8")).trim()).toBe(token);
+    // An abandoned download with no registration can be replaced.
+    await writeFile(
+      join(home, ".local/bin/armada-docker-host"),
+      `#!/bin/sh
+echo '{"registered":false,"connected":false}'
+`,
+      { mode: 0o700 },
+    );
+    const replaced = run("d".repeat(64));
+    expect(replaced.exitCode).toBe(0);
+    expect(replaced.stdout.toString()).toContain("Replacing the unregistered host binary");
+    expect((await readFile(join(home, "registration"), "utf8")).trim()).toBe("d".repeat(64));
   } finally {
     await rm(home, { recursive: true, force: true });
   }

@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { DOCKER_DEFAULT_IMAGE } from "@armada/core";
 import { run } from "../src/run.ts";
 import { memorySessionStore } from "../src/session.ts";
 
@@ -89,6 +90,24 @@ test.each(["codex", "claude", "opencode"] as const)(
     });
   },
 );
+
+test("Docker launch without --image sends Armada's default image", async () => {
+  const calls: Request[] = [];
+  const withoutImage = args.filter((arg, index) => arg !== "--image" && args[index - 1] !== "--image");
+  const result = await capture([...withoutImage, "--repo", "acme/web@feature/work"], async (request) => {
+    calls.push(request);
+    return Response.json({
+      sandbox: { id: requestId, provider: "docker", status: "running" },
+      golden: null,
+      runtime: { epoch: "1" },
+    });
+  });
+  expect(result.code).toBe(0);
+  expect(await calls[0]?.json()).toMatchObject({
+    image: DOCKER_DEFAULT_IMAGE,
+    repos: [{ url: "https://github.com/acme/web", branch: "feature/work", dir: "web" }],
+  });
+});
 
 test("Docker incompatible or malformed options fail before HTTP", async () => {
   const calls: Request[] = [];

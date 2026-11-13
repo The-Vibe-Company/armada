@@ -123,6 +123,9 @@ export async function hostCommand(argv: readonly string[], auth: AuthIo): Promis
   auth.out(
     `Run this command on the Docker machine (one-use registration):\n${ticket.command}\nHost: ${ticket.hostId}\nExpires: ${ticket.expiresAt}\n`,
   );
+  auth.out(
+    `Waiting for the machine to connect… (Ctrl-C to stop waiting; the command stays valid until ${new Date(ticket.expiresAt).toISOString().slice(11, 16)} UTC).\n`,
+  );
   const deadline = Math.min(auth.now().getTime() + 300_000, Date.parse(ticket.expiresAt));
   let slept = 0;
   const initialBudget = Math.max(0, deadline - auth.now().getTime());

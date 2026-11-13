@@ -301,7 +301,10 @@ export async function handleControlRequest(request: Request, options: ControlOpt
           route.startsWith("secrets/")
         ? await readVaultBody(request)
         : await readBody(request);
-    if (route === "sandbox/launch" && body.provider === "docker" && options.dockerLaunch)
+    if (
+      ((route === "sandbox/launch" && body.provider === "docker") || route === "templates/launch") &&
+      options.dockerLaunch
+    )
       options.configureDockerLaunchRequest?.(request);
     if (route === "account/logout") {
       if (caller.via !== "supabase")
@@ -601,6 +604,8 @@ async function emailStartRoute(request: Request, options: ControlOptions): Promi
     const challenge = required(body, "code_challenge");
     const state = required(body, "state");
     const callback = new URL(redirectTo);
+    if (body.cli_email_link !== undefined && typeof body.cli_email_link !== "boolean") throw new Error();
+    const cliEmailLink = body.cli_email_link === true;
     if (
       callback.protocol !== "http:" ||
       !["127.0.0.1", "localhost"].includes(callback.hostname) ||
@@ -608,17 +613,21 @@ async function emailStartRoute(request: Request, options: ControlOptions): Promi
       callback.username ||
       callback.password ||
       callback.hash ||
+      (cliEmailLink && (callback.pathname !== "/callback" || callback.search)) ||
       !/^[A-Za-z0-9._~-]{43,128}$/.test(challenge) ||
       !/^[A-Za-z0-9._~-]{8,512}$/.test(state)
     )
       throw new Error();
+    if (cliEmailLink) callback.searchParams.set("state", state);
     await sendEmailLink({
       fetch: options.supabase.fetch ?? fetch,
       supabaseUrl: options.supabase.supabaseUrl,
       anonKey: options.supabase.anonKey,
       email,
-      // API email clients consume the numeric code, not a browser callback.
-      redirectTo: new URL("/login?flow=code", options.publicUrl ?? "https://armada.thevibecompany.co").toString(),
+      // Existing clients (including iOS) remain numeric-code-only unless explicitly opted in.
+      redirectTo: cliEmailLink
+        ? callback.toString()
+        : new URL("/login?flow=code", options.publicUrl ?? "https://armada.thevibecompany.co").toString(),
       challenge,
     });
     return Response.json({ ok: true }, { headers: { "cache-control": "no-store" } });
@@ -1757,6 +1766,17 @@ export function templateRuntime(options: ControlOptions, caller: Caller) {
       ),
       ...(options.connections ? { connections: options.connections } : {}),
     },
+    ...(options.dockerLaunch
+      ? {
+          launchDocker: (
+            body: Record<string, unknown>,
+            admission: {
+              beforeReserve(tx: import("@armada/core").Sql): Promise<void>;
+              beforeStart(): Promise<void>;
+            },
+          ) => options.dockerLaunch!.launch(caller, body, admission),
+        }
+      : {}),
     provider: (golden: GoldenRecord) => providerForGolden(options, caller, golden),
     ...(options.launch ? { options: options.launch } : {}),
   };
