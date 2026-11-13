@@ -305,6 +305,10 @@ export type Database = {
           outcome: string | null;
           created_at: string;
           completed_at: string | null;
+          bound_sandbox_id: string | null;
+          bound_actor_id: string | null;
+          bound_actor_epoch: number | null;
+          bound_operation: string | null;
         };
         Insert: {
           request_id: string;
@@ -314,6 +318,10 @@ export type Database = {
           outcome?: string | null;
           created_at?: string;
           completed_at?: string | null;
+          bound_sandbox_id?: string | null;
+          bound_actor_id?: string | null;
+          bound_actor_epoch?: number | null;
+          bound_operation?: string | null;
         };
         Update: {
           request_id?: string;
@@ -323,8 +331,26 @@ export type Database = {
           outcome?: string | null;
           created_at?: string;
           completed_at?: string | null;
+          bound_sandbox_id?: string | null;
+          bound_actor_id?: string | null;
+          bound_actor_epoch?: number | null;
+          bound_operation?: string | null;
         };
         Relationships: [
+          {
+            foreignKeyName: "docker_host_jobs_bound_actor_id_fkey";
+            columns: ["bound_actor_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "docker_host_jobs_bound_sandbox_id_fkey";
+            columns: ["bound_sandbox_id"];
+            isOneToOne: false;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
           {
             foreignKeyName: "docker_host_jobs_host_id_fkey";
             columns: ["host_id"];
