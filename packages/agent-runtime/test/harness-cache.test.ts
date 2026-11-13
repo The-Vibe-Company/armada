@@ -78,7 +78,7 @@ test("selected pinned harness installs private verified files, reuses image cach
 test("invalid selected manifest/path/architecture is refused before fetching, and wrong contents never publish a harness", async () => {
   const f = await fixture();
   try {
-    await expect(installSelectedHarness({ ...f.input, harness: "claude" }, f.fetcher)).rejects.toThrow(
+    await expect(installSelectedHarness({ ...f.input, harness: "opencode" }, f.fetcher)).rejects.toThrow(
       "unsupported_harness_artifact",
     );
     await expect(

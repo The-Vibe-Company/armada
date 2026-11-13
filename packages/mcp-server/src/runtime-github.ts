@@ -6,6 +6,7 @@ import {
   type GitHubResolveDeps,
   gitIdentity,
   resolveGitHubAccess,
+  type SandboxProviderId,
   type Sql,
   VaultError,
 } from "@armada/core/server";
@@ -38,8 +39,9 @@ const snapshot = `select jsonb_build_object('sandboxId',s.id,'ownerId',s.owner_i
  join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
  join public.mcp_actor_epochs e on e.org_id=m.org_id and e.user_id=m.user_id
  join public.github_connections c on c.user_id=s.owner_id and c.revoked_at is null
- where s.id=$1 and s.boat_runtime and s.provider='boat' and s.harness='codex'
- and (s.status in ('ready','running') or (s.status='starting' and s.activity_lease_id is not null and s.activity_until>now())) and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>now()
+ where s.id=$1 and ((s.provider='boat' and s.boat_runtime) or (s.provider='modal' and s.runtime_transport='dialout'))
+ and g.provider=s.provider and s.harness in ('codex','claude')
+ and (s.status in ('ready','running') or (s.provider='boat' and s.boat_runtime and s.status='starting' and s.activity_lease_id is not null and s.activity_until>now())) and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>now()
  and not exists(select 1 from public.runtime_checkpoints p where p.sandbox_id=s.id and p.epoch=r.epoch)`;
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 function allowed(binding: Pick<Binding, "repositories">, repo: string) {
@@ -56,7 +58,7 @@ function allowed(binding: Pick<Binding, "repositories">, repo: string) {
 }
 export type RuntimeGitHub = ReturnType<typeof createRuntimeGitHub>;
 /** Separate from the legacy/native broker: no boot-id exec, provider lookup, SSH
- * or changes to Modal authority. Tokens leave only the reviewed private response. */
+ * or changes to host authority. Tokens leave only the reviewed private response. */
 export function createRuntimeGitHub(options: {
   sql: Sql;
   key: string;
@@ -71,9 +73,8 @@ export function createRuntimeGitHub(options: {
     if (
       !s ||
       s.ownerId !== caller.userId ||
-      !s.boatRuntime ||
-      s.provider !== "boat" ||
-      s.harness !== "codex" ||
+      !((s.provider === "boat" && s.boatRuntime) || (s.provider === "modal" && s.runtimeTransport === "dialout")) ||
+      (s.harness !== "codex" && s.harness !== "claude") ||
       s.deletedAt
     )
       return denied();
@@ -104,14 +105,14 @@ export function createRuntimeGitHub(options: {
   async function preflight(caller: Caller, input: { org: string; golden: string; repository: string }) {
     if (!caller.orgs.some((m) => m.orgId === input.org) || !options.github.app) return denied();
     const golden = (
-      await sql.query<{ repositories: { url: string }[] }>(
-        `select g.config->'repos' as repositories from public.goldens g
-      join public.members m on m.org_id=g.org_id and m.user_id=$1 where g.org_id=$2 and g.name=$3 and g.provider='boat'
-      and (g.visibility='org' or g.owner_id=$1) and g.boat_snapshot_id is not null`,
+      await sql.query<{ provider: SandboxProviderId; snapshot_id: string | null; repositories: { url: string }[] }>(
+        `select g.provider::text as provider,g.provider_snapshot_id as snapshot_id,g.config->'repos' as repositories from public.goldens g
+      join public.members m on m.org_id=g.org_id and m.user_id=$1 where g.org_id=$2 and g.name=$3 and g.provider in ('boat','modal')
+      and (g.visibility='org' or g.owner_id=$1) and g.removed_at is null`,
         [caller.userId, input.org, input.golden],
       )
     ).rows;
-    if (golden.length !== 1 || !golden[0] || !allowed(golden[0], input.repository)) return denied();
+    if (golden.length !== 1 || !golden[0]?.snapshot_id || !allowed(golden[0], input.repository)) return denied();
     const access = await resolveGitHubAccess({ ...options.github, caller: "managed_runtime" }, caller.userId);
     if (access.status !== "connected") return denied();
     const response = await (options.github.fetch ?? fetch)(`https://api.github.com/repos/${input.repository}`, {
@@ -134,7 +135,12 @@ export function createRuntimeGitHub(options: {
       repository.full_name.toLowerCase() !== input.repository.toLowerCase()
     )
       return denied();
-    return { githubReady: true, repository: input.repository, login: access.identity.login };
+    return {
+      githubReady: true,
+      provider: golden[0].provider,
+      repository: input.repository,
+      login: access.identity.login,
+    };
   }
   async function status(caller: Caller, id: string) {
     const s = await owner(caller, id);
@@ -204,6 +210,7 @@ export function createRuntimeGitHub(options: {
     const retired = await Promise.all(history.map((row) => decryptSecret(row.token_enc, key)));
     if (!s.model || !s.reasoningEffort) return denied();
     const agent = createRuntimeAgent(options.commands, {
+      harness: s.harness,
       ownerId: s.ownerId,
       sandboxId: id,
       providerSandboxId: s.providerSandboxId,

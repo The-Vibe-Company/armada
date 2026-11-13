@@ -591,6 +591,15 @@ export function createSqlData(sql: Sql): DataSource {
         if (patch.deleteRequested)
           fence += ` and s.status in ('stopped','failed')
             and not ${SANDBOX_DELETION_MANAGED}`;
+        // A read-only reconciler may overlap list readiness. Admission can supersede
+        // that observation, but never a claimed stop or an expired/starting sandbox.
+        // The generation CAS also fences its stop-claim and late publication.
+        const supersedeObservation =
+          patch.advanceGeneration && patch.activityToken && patch.expectedGeneration !== undefined;
+        const observationFence = supersedeObservation
+          ? "(s.reconcile_lease_until is null or s.reconcile_lease_until < now() or (s.status in ('ready','running') and s.stop_requested_at is null and s.expires_at > clock_timestamp()))"
+          : "(s.reconcile_lease_until is null or s.reconcile_lease_until < now())";
+        if (supersedeObservation) sets.push("reconcile_lease = null", "reconcile_lease_until = null");
         const ownsActivity = !!patch.activityToken && (patch.finishActivity || patch.renewActivity);
         if (ownsActivity) {
           params.push(patch.activityToken);
@@ -599,7 +608,7 @@ export function createSqlData(sql: Sql): DataSource {
         const result = await sql.query<{ id: string }>(
           `${patch.status === "deleted" ? "with updated as (" : ""}update public.sandboxes s set ${sets.join(", ")} from public.goldens g
            where s.id = $3 and g.id = s.golden_id and ${SANDBOX_VISIBLE}
-             and (${ownsActivity && patch.expectedGeneration !== undefined ? "true" : "(s.reconcile_lease_until is null or s.reconcile_lease_until < now()) and (s.activity_until is null or s.activity_until < now())"}) ${fence} returning s.id${patch.status === "deleted" ? "), purged as (delete from public.sandbox_work_recovery r using updated u where r.sandbox_id=u.id) select id from updated" : ""}`,
+             and (${ownsActivity && patch.expectedGeneration !== undefined ? "true" : `${observationFence} and (s.activity_until is null or s.activity_until < now())`}) ${fence} returning s.id${patch.status === "deleted" ? "), purged as (delete from public.sandbox_work_recovery r using updated u where r.sandbox_id=u.id) select id from updated" : ""}`,
           params,
         );
         if (!result.rows[0])

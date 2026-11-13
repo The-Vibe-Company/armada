@@ -372,3 +372,19 @@ describe("Docker machine executor", () => {
     ).rejects.toThrow("Docker machine docker_failed");
   });
 });
+
+test("resume starts only the retained owned stopped machine without reallocating or extending TTL", async () => {
+  const f = fixture();
+  const original = await f.executor.create(request);
+  await f.executor.stop(request);
+  f.calls.length = 0;
+  await f.executor.resume(request);
+  expect(f.containers.get(original.containerName).State.Running).toBe(true);
+  expect(f.volumes.size).toBe(1);
+  expect(f.calls.filter((call) => call.argv[1] === "create")).toHaveLength(0);
+  await f.executor.stop(request);
+  f.setTime(original.expiresAt);
+  await expect(f.executor.resume(request)).rejects.toThrow("expired");
+  await f.executor.delete(request);
+  await expect(f.executor.resume(request)).rejects.toThrow("not_found");
+});

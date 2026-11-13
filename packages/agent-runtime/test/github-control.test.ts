@@ -1,13 +1,11 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { GitHubBroker } from "../src/github-broker.ts";
 import { AUTH_HEADER, type Driver, type DriverContext, Journal, Runner } from "../src/index.ts";
 
+// Owns authenticated renewal, broker registration and scrub through the real Runner.
+// Inspect SQLite image bytes without repeating configure-mcp.test.ts WAL coverage.
 test("authenticated GitHub control renews during an active turn without receipts/leaks and checkpoint scrubs", async () => {
-  const root = await mkdtemp(join(tmpdir(), "gh-control-"));
-  const journal = new Journal(join(root, "journal"), (text) => text);
+  const journal = new Journal(":memory:", (text) => text);
   const issued = [`offline-${crypto.randomUUID()}`, `offline-${crypto.randomUUID()}`];
   let token = issued[0]!;
   const broker = new GitHubBroker((values) => journal.registerSecrets(values), (async () =>
@@ -94,15 +92,12 @@ test("authenticated GitHub control renews during an active turn without receipts
     await expect(broker.acquire("acme/repo", "git")).rejects.toThrow("github_credentials_denied");
     journal.flush();
     const ack = await renewal.text();
-    for (const file of await readdir(root)) {
-      const bytes = await readFile(join(root, file));
-      for (const secret of [...issued, configuration.capability, `armada_gh_${"b".repeat(64)}`])
-        expect(bytes.includes(Buffer.from(secret))).toBe(false);
-    }
+    const bytes = journal.db.serialize();
+    for (const secret of [...issued, configuration.capability, `armada_gh_${"b".repeat(64)}`])
+      expect(bytes.includes(Buffer.from(secret))).toBe(false);
     for (const secret of issued) expect(ack).not.toContain(secret);
   } finally {
     finish();
     journal.close();
-    await rm(root, { recursive: true, force: true });
   }
 });

@@ -9,8 +9,12 @@ import { createRuntimeGitHub } from "../src/runtime-github.ts";
 import { runtimeFixture } from "./runtime-fixture.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
 
-async function fixture() {
-  const f = await runtimeFixture();
+async function fixture(provider: "boat" | "modal" = "boat") {
+  const f = await runtimeFixture(undefined, provider);
+  await f.db.query("update goldens set provider_snapshot_id='offline-snapshot',config=$2::jsonb where id=$1", [
+    f.row.goldenId,
+    JSON.stringify({ repos: [{ url: "https://github.com/example/web.git", branch: "main", dir: "web" }], init: [] }),
+  ]);
   await f.db.query("update sandboxes set expires_at=now()+interval '45 seconds' where id=$1", [f.row.id]);
   const access = `ghu_offline_${crypto.randomUUID().replaceAll("-", "")}`;
   await f.db.query(
@@ -22,6 +26,7 @@ async function fixture() {
     ],
   );
   let repositoryAccessible = true;
+  let githubRequests = 0;
   let userHook: (() => Promise<void>) | undefined;
   const service = createRuntimeGitHub({
     sql: f.sql,
@@ -33,6 +38,7 @@ async function fixture() {
       encryptionKey: ENCRYPTION_KEY,
       app: { clientId: "app", clientSecret: "offline-app-secret" },
       fetch: (async (url: string | URL | Request) => {
+        githubRequests++;
         if (String(url).includes("/repos/"))
           return repositoryAccessible
             ? Response.json({ full_name: "example/web" })
@@ -86,6 +92,7 @@ async function fixture() {
       if (!response) throw Error("Missing API response");
       return response;
     },
+    requests: () => githubRequests,
     repositoryAccess(value: boolean) {
       repositoryAccessible = value;
     },
@@ -114,29 +121,17 @@ async function fixture() {
   };
 }
 
-// Database migration/cache/bootstrap is fixture setup, not a five-second
-// behavior budget. Scope it explicitly; each behavior keeps its normal timeout.
-function runtimeCase(name: string, action: (x: Awaited<ReturnType<typeof fixture>>) => Promise<void>) {
-  describe("runtime GitHub fixture", () => {
-    let prepared: Awaited<ReturnType<typeof fixture>>;
-    beforeAll(async () => {
-      prepared = await fixture();
-    }, 20_000);
-    test(name, () => action(prepared));
-  });
-}
-
-runtimeCase(
-  "runtime GitHub uses durable private RPC, owner identity and epoch/repository broker fencing without host/native hooks",
-  async (x) => {
-    const { f, service } = x;
+test.each(["boat", "modal"] as const)(
+  "runtime GitHub uses durable private RPC, owner identity and epoch/repository broker fencing without host/native hooks (%s)",
+  async (provider) => {
+    const x = await fixture(provider),
+      { f, service } = x;
     try {
       const golden = (await f.db.query<{ name: string }>("select name from goldens where id=$1", [f.row.goldenId]))
         .rows[0]!;
-      await f.db.query("update goldens set boat_snapshot_id='offline-snapshot' where id=$1", [f.row.goldenId]);
       expect(
         await service.preflight(f.caller, { org: f.people.org, golden: golden.name, repository: "example/web" }),
-      ).toMatchObject({ githubReady: true });
+      ).toMatchObject({ githubReady: true, provider });
       await expect(
         service.preflight(f.caller, { org: f.people.org, golden: golden.name, repository: "foreign/repo" }),
       ).rejects.toThrow();
@@ -194,10 +189,11 @@ runtimeCase(
   },
 );
 
-runtimeCase(
-  "checkpoint revokes acquisition immediately and a fresh epoch requires a new GitHub configuration",
-  async (x) => {
-    const { f, service } = x;
+test.each(["boat", "modal"] as const)(
+  "checkpoint revokes acquisition immediately and a fresh epoch requires a new GitHub configuration (%s)",
+  async (provider) => {
+    const x = await fixture(provider),
+      { f, service } = x;
     try {
       await service.prepare(f.caller, f.row.id);
       const old = x.config().capability;
@@ -224,6 +220,43 @@ runtimeCase(
   },
 );
 
+test("GitHub preflight rejects a cross-provider ambiguous golden name before requesting GitHub credentials", async () => {
+  const x = await fixture("modal"),
+    { f, service } = x;
+  try {
+    const golden = (await f.db.query<{ name: string }>("select name from goldens where id=$1", [f.row.goldenId]))
+      .rows[0]!;
+    await f.db.query(
+      `insert into goldens(org_id,owner_id,name,visibility,provider,provider_sandbox_id,provider_snapshot_id,config)
+      values($1,$2,$3,'org','boat','other-master','other-image',$4::jsonb)`,
+      [
+        f.people.org,
+        f.people.owner,
+        golden.name,
+        JSON.stringify({
+          repos: [{ url: "https://github.com/example/web.git", branch: "main", dir: "web" }],
+          init: [],
+        }),
+      ],
+    );
+    await expect(
+      service.preflight(f.caller, { org: f.people.org, golden: golden.name, repository: "example/web" }),
+    ).rejects.toThrow();
+    expect(x.requests()).toBe(0);
+  } finally {
+    await f.close();
+  }
+});
+
+function runtimeCase(name: string, action: (x: Awaited<ReturnType<typeof fixture>>) => Promise<void>) {
+  describe("launch GitHub fixture", () => {
+    let prepared: Awaited<ReturnType<typeof fixture>>;
+    beforeAll(async () => {
+      prepared = await fixture();
+    }, 20000);
+    test(name, () => action(prepared));
+  });
+}
 runtimeCase(
   "launch GitHub authority works only in an actively leased starting sandbox before private repository setup",
   async (x) => {

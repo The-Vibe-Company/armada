@@ -43,7 +43,7 @@ export function createRuntimeMcp(options: {
     for (const id of selected) {
       const c = await registry.get(caller.userId, org, id);
       if (!["http", "sse"].includes(c.transport))
-        throw new VaultError("invalid", "Boat runtime does not support pinned stdio MCP; no native fallback.");
+        throw new VaultError("invalid", "Enrolled runtimes do not support pinned stdio MCP; no native fallback.");
       if (c.status !== "connected") return deny();
       result.push(c);
     }
@@ -59,7 +59,12 @@ export function createRuntimeMcp(options: {
   }
   async function owner(caller: Caller, id: string) {
     const s = await createSqlData(sql)(caller).sandboxes.get(id);
-    if (!s || s.ownerId !== caller.userId || s.provider !== "boat" || !s.boatRuntime || s.harness !== "codex")
+    if (
+      !s ||
+      s.ownerId !== caller.userId ||
+      !((s.provider === "boat" && s.boatRuntime) || (s.provider === "modal" && s.runtimeTransport === "dialout")) ||
+      (s.harness !== "codex" && s.harness !== "claude")
+    )
       return deny();
     return s;
   }

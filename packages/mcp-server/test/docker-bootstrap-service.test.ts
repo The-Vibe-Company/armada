@@ -1,11 +1,13 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import type { Sql } from "@armada/core";
+import type { Harness, Sql } from "@armada/core";
 import { createSqlVaultStore, decryptSecret, encryptSecret } from "@armada/core/server";
 import { createDockerBootstrapService, DockerBootstrapDenied } from "../src/docker-bootstrap-service.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
+import { createDockerRuntimeLifecycle } from "../src/docker-runtime-lifecycle.ts";
 import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
+import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { migratedDatabase } from "./migrated-database.ts";
 
@@ -21,7 +23,7 @@ const manifest = {
   architecture: "x64",
   libc: "glibc",
   runtime: { sha256: "b".repeat(64), bytes: 42 },
-  harnesses: { codex: { files: [{ path: "bin/codex" }] } },
+  harnesses: { codex: { files: [{ path: "bin/codex" }] }, claude: { files: [{ path: "bin/claude" }] } },
 };
 const credentials = launchCredentials(createSqlVaultStore(sql), key);
 const options = {
@@ -40,7 +42,7 @@ beforeAll(async () => {
 afterAll(async () => {
   await db.close();
 });
-async function fixture(ack = true) {
+async function fixture(ack = true, harness: Harness = "codex") {
   const orgId = randomUUID(),
     userId = randomUUID(),
     adminId = randomUUID();
@@ -59,10 +61,11 @@ async function fixture(ack = true) {
   // Generated offline value, not an actual credential or an externally usable fixture secret.
   const secret = `offline-bootstrap-${randomUUID()}`,
     credentialId = randomUUID();
-  await db.query(`insert into public.credentials(id,scope,owner_id,kind,value_enc) values($1,'user',$2,'openai',$3)`, [
+  await db.query(`insert into public.credentials(id,scope,owner_id,kind,value_enc) values($1,'user',$2,$4,$3)`, [
     credentialId,
     userId,
     await encryptSecret(secret, key),
+    harness === "claude" ? "anthropic" : harness === "opencode" ? "opencode" : "openai",
   ]);
   const sandbox = await reservations.reserve(actor, {
     requestId: randomUUID(),
@@ -70,6 +73,7 @@ async function fixture(ack = true) {
     image: `worker@sha256:${"a".repeat(64)}`,
     credentialId,
     credentialVersion: 1,
+    harness,
   });
   if (ack) await hosts.complete(host.hostToken, installationId, { requestId: sandbox.id, outcome: "completed" });
   return { actor, admin, secret, credentialId, sandbox, installationId, ...host, requestId: randomUUID() };
@@ -314,3 +318,92 @@ test("new issuance rechecks current pin, lifecycle, host authority and original 
   await denied(service.bootstrap(occupied.actor, occupied.sandbox.id, occupied.requestId));
   expect(await pending(occupied.sandbox.id)).toEqual(original);
 });
+
+test.each(["codex", "claude", "opencode"] as const)(
+  "%s resume retains allocation and conversation, fences old epoch and issues fresh enrolment",
+  async (harness) => {
+    const f = await fixture(true, harness);
+    await service.bootstrap(f.actor, f.sandbox.id, f.requestId);
+    const first = await hosts.poll(f.hostToken, f.installationId);
+    if (first?.operation !== "bootstrap") throw Error("missing initial bootstrap");
+    const authority = createRuntimeEnrolments(sql, key);
+    const initial = await authority.enrol(first.bootstrap.enrolmentToken);
+    await hosts.complete(f.hostToken, f.installationId, { requestId: f.requestId, outcome: "completed" });
+    const conversationId = randomUUID();
+    await db.query(`update public.sandboxes set status='ready',conversation_ids=array[$2]::text[] where id=$1`, [
+      f.sandbox.id,
+      conversationId,
+    ]);
+    const runtime = createDockerRuntimeLifecycle(sql, key, { enabled: true });
+    const commands = createRuntimeCommands(authority, key);
+    const oldPromptRequest = randomUUID();
+    expect(
+      await runtime.prompt(f.actor, f.sandbox.id, {
+        requestId: oldPromptRequest,
+        text: "Interrupted follow-up",
+        conversationId,
+      }),
+    ).toEqual({ state: "pending" });
+    const stopId = randomUUID();
+    await reservations.stop(f.actor, f.sandbox.id, stopId);
+    await hosts.complete(f.hostToken, f.installationId, { requestId: stopId, outcome: "completed" });
+    const resumeId = randomUUID();
+    await denied(service.resume(f.admin, f.sandbox.id, resumeId));
+    expect(await service.resume(f.actor, f.sandbox.id, resumeId)).toEqual({
+      requestId: resumeId,
+      operation: "resume",
+      state: "pending",
+    });
+    const resumed = await hosts.poll(f.hostToken, f.installationId);
+    if (resumed?.operation !== "resume") throw Error("missing resumed bootstrap");
+    expect(resumed.request).toEqual(first.request);
+    expect(resumed.bootstrap.enrolmentToken).not.toBe(first.bootstrap.enrolmentToken);
+    await expect(authority.withSession(initial.runtimeToken, initial.epoch, async () => true)).rejects.toThrow();
+    const enrolled = await authority.enrol(resumed.bootstrap.enrolmentToken);
+    expect(BigInt(enrolled.epoch)).toBeGreaterThan(BigInt(initial.epoch));
+    expect((enrolled.configuration as { selectedHarness: string }).selectedHarness).toBe(harness);
+    expect(
+      (
+        await db.query<{ conversation_ids: string[] }>(`select conversation_ids from public.sandboxes where id=$1`, [
+          f.sandbox.id,
+        ])
+      ).rows[0]?.conversation_ids,
+    ).toEqual([conversationId]);
+    await hosts.complete(f.hostToken, f.installationId, { requestId: resumeId, outcome: "completed" });
+    expect(await service.resume(f.actor, f.sandbox.id, resumeId)).toEqual({
+      requestId: resumeId,
+      operation: "resume",
+      state: "completed",
+    });
+    expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("starting");
+    const healthId = randomUUID();
+    expect(await runtime.ready(f.actor, f.sandbox.id, healthId)).toEqual({ state: "pending" });
+    const health = await commands.next(enrolled.runtimeToken, enrolled.epoch);
+    if (health.command?.op !== "health") throw Error("missing resumed health command");
+    await commands.complete(enrolled.runtimeToken, enrolled.epoch, {
+      epoch: enrolled.epoch,
+      requestId: health.command.requestId,
+      status: 200,
+      body: { version: 1, requestId: health.command.requestId, result: { ready: true, generation: enrolled.epoch } },
+    });
+    expect(await runtime.ready(f.actor, f.sandbox.id, healthId)).toEqual({ state: "ready", epoch: enrolled.epoch });
+    const newPromptRequest = randomUUID();
+    expect(
+      await runtime.prompt(f.actor, f.sandbox.id, {
+        requestId: newPromptRequest,
+        text: "Continue the conversation after resume",
+        conversationId,
+      }),
+    ).toEqual({ state: "pending" });
+    const next = await commands.next(enrolled.runtimeToken, enrolled.epoch);
+    expect(next.command?.requestId).toBe(`docker_prompt_${newPromptRequest}`);
+    await expect(
+      commands.complete(initial.runtimeToken, initial.epoch, {
+        epoch: initial.epoch,
+        requestId: `docker_prompt_${oldPromptRequest}`,
+        status: 200,
+        body: { version: 1, requestId: `docker_prompt_${oldPromptRequest}`, result: {} },
+      }),
+    ).rejects.toThrow();
+  },
+);

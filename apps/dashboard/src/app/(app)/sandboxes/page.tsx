@@ -31,7 +31,7 @@ import { displayUser, listMemberships, memberDirectory, requireViewer } from "@/
 import { HARNESS_LABELS } from "@/lib/labels";
 import { type LifecycleView, lifecycleView, readLifecycle } from "@/lib/lifecycle";
 import { preservationView, settledOutcome } from "@/lib/outcome";
-import { PROVIDER_SETTINGS_PATH } from "@/lib/provider-setup";
+import { CLOUD_PROVIDERS_PATH } from "@/lib/provider-setup";
 import { machineSizeLabel, sandboxName, skippedRowsNote } from "@/lib/sandbox-access";
 import { costFigure } from "@/lib/sandbox-cost";
 import {
@@ -80,13 +80,13 @@ async function SandboxesContent({ searchParams }: Props) {
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const now = new Date();
   const filtered = hasSandboxFilters(filters);
-  // An organization without a sandbox provider goes to Settings to connect one; one with sandboxes to manage stays here.
+  // An organization without a sandbox provider goes to the Cloud providers page to connect one; one with sandboxes to manage stays here.
   const setupPending = selected !== null && setup?.state === "pending";
-  if (setupPending && !filtered && inventoryTotal === 0 && skipped === 0) redirect(PROVIDER_SETTINGS_PATH);
+  if (setupPending && !filtered && inventoryTotal === 0 && skipped === 0) redirect(CLOUD_PROVIDERS_PATH);
 
   const launchAction = setupPending ? (
     <Button asChild>
-      <Link href={PROVIDER_SETTINGS_PATH}>Connect a provider</Link>
+      <Link href={CLOUD_PROVIDERS_PATH}>Connect a provider</Link>
     </Button>
   ) : selected ? (
     <Button asChild>

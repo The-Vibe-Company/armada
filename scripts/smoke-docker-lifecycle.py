@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Coordinator-only staging smoke. No secrets in argv, files or output."""
 import argparse
+from decimal import Decimal, InvalidOperation, getcontext
 import json
 import os
 import shlex
@@ -14,6 +15,7 @@ import uuid
 
 
 def main():
+    getcontext().prec = 80  # Exact addition of fixed-scale server USD amounts.
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--server", required=True)
     parser.add_argument("--org", required=True)
@@ -27,12 +29,31 @@ def main():
     parser.add_argument("--follow-up", action="store_true", help="Prove a second prompt recalls the same conversation")
     parser.add_argument("--normal-controls", action="store_true", help="Read status/logs and stop/delete through normal sandbox API")
     parser.add_argument("--normal-launch", action="store_true", help="Launch and run the first prompt through the normal API; implies --normal-controls")
+    parser.add_argument("--normal-lifecycle", action="store_true", help="Prove normal follow-up and same-host stop/resume with retained history; implies --normal-launch")
+    parser.add_argument("--service-install", action="store_true", help="Restart an installed user service, normal launch and uninstall after cleanup")
+    parser.add_argument("--cost", action="store_true", help="Prove exact per-turn and total USD before/after resume; implies --normal-lifecycle")
+    parser.add_argument("--exec", action="store_true", help="Prove normal runtime exec and stable request replay")
+    parser.add_argument("--steer", action="store_true", help="Redirect an active native turn through normal control")
+    parser.add_argument("--interrupt", action="store_true", help="Interrupt an active native turn through normal control")
+    harnesses = parser.add_mutually_exclusive_group()
+    harnesses.add_argument("--claude", action="store_true", help="Prove Claude launch/follow-up/stop/resume via normal routes")
+    harnesses.add_argument("--opencode", action="store_true", help="Prove OpenCode with the supplied custom OpenAI-compatible connection via normal routes")
     parser.add_argument("--timeout", type=int, default=600, help="Seconds per bounded stage")
     args = parser.parse_args()
+    harness = "claude" if args.claude else "opencode" if args.opencode else "codex"
+    if args.exec or args.steer or args.interrupt:
+        args.normal_launch = True
+    if args.cost or args.claude or args.opencode:
+        args.normal_lifecycle = True
+    if args.service_install:
+        if not args.host_id or args.start_host:
+            parser.error("--service-install requires --host-id for the new managed installation, without --start-host")
+        args.normal_launch = True
+    if args.normal_lifecycle:
+        args.normal_launch = True
+        args.follow_up = True
     if args.normal_launch:
         args.normal_controls = True
-        if args.follow_up:
-            parser.error("--normal-launch currently checks the first prompt; normal send is the next slice")
     if args.start_host and not args.host_id:
         parser.error("--start-host requires --host-id")
     origin = urllib.parse.urlsplit(args.server)
@@ -56,7 +77,7 @@ def main():
             data=json.dumps({"org": args.org, **body}).encode(), method="POST",
             headers={"authorization": "Bearer " + token, "content-type": "application/json"})
         try:
-            with opener.open(request, timeout=600 if normal and path == "sandbox/launch" else 120 if normal and path in ("sandbox/stop", "sandbox/delete") else 30) as response:
+            with opener.open(request, timeout=600 if normal and path == "sandbox/launch" else 120 if normal and path in ("sandbox/stop", "sandbox/delete", "sandbox/resume") else 30) as response:
                 return json.load(response)
         except urllib.error.HTTPError as error:
             # Do not print response bodies, request headers or private capabilities.
@@ -76,14 +97,16 @@ def main():
                 raise RuntimeError(f"{operation}: timeout; outcome still unknown")
             time.sleep(2)
 
-    def ssh(command, private_input=None):
+    def ssh(command, private_input=None, timeout=60):
         # Do not forward the user's API bearer via an SSH SendEnv configuration.
         env = {k: v for k, v in os.environ.items() if k != "ARMADA_TOKEN"}
         result = subprocess.run(["ssh", "--", args.ssh, command], input=private_input,
-                                env=env, check=False, timeout=60)
+                                env=env, check=False, timeout=timeout)
         if result.returncode:
             raise RuntimeError("SSH host setup failed; inspect private host state")
 
+    if args.service_install:
+        ssh('systemctl --user restart armada-docker-host.service && "$HOME/.local/bin/armada-docker-host" status')
     host_id = args.host_id
     if not host_id:
         registration = api("hosts/register-token", {})
@@ -109,6 +132,8 @@ def main():
         launch["credentialVersion"] = args.credential_version if args.credential_version is not None else 1
     if args.model:
         launch["model"] = args.model
+    marker = "DOCKER_MEMORY_" + uuid.uuid4().hex
+    first = (f"Remember this marker for my next message: {marker}. " if args.follow_up else "")
     cleanup_needed = True
     try:
         launch_receipt = None
@@ -117,8 +142,10 @@ def main():
             docker = next((p for p in options.get("providers", []) if p.get("id") == "docker"), {})
             if docker.get("capabilities", {}).get("launch") is not True:
                 raise RuntimeError("Normal Docker launch is not enabled; check server opt-ins and installed runtime manifest")
-            launch.update({"provider": "docker", "harness": "codex", "visibility": "private",
-                           "prompt": "Reply with exactly DOCKER_OK. Do not run tools or modify files."})
+            if harness not in docker.get("harnesses", []):
+                raise RuntimeError("Requested Docker harness is not advertised by launch/options")
+            launch.update({"provider": "docker", "harness": harness, "visibility": "private",
+                           "prompt": first + "Reply with exactly DOCKER_OK. Do not run tools or modify files."})
             launched = api("sandbox/launch", launch, normal=True)
             if (launched.get("sandbox", {}).get("id") != sandbox_id
                     or launched.get("sandbox", {}).get("provider") != "docker"
@@ -138,6 +165,37 @@ def main():
             wait_for("ready", {"sandboxId": sandbox_id, "requestId": str(uuid.uuid4())}, "ready")
         cursor = None if args.normal_controls else "0"
 
+        priced_turns = {}
+
+        def check_cost(usage, prompt_id):
+            try:
+                turns = usage["turns"]
+                cost = usage["cost"]
+                total = Decimal(cost["usd"])
+                if (cost["currency"] != "USD" or cost["unknown"] is not None
+                        or cost["unpricedTurns"] != 0 or not total.is_finite() or total < 0
+                        or usage["turnCount"] != len({t["promptId"] for t in turns})):
+                    raise ValueError()
+                current = {}
+                summed = Decimal(0)
+                for t in turns:
+                    price = t["pricing"]
+                    amount = Decimal(price["usd"])
+                    if price["unknown"] is not None or not amount.is_finite() or amount < 0:
+                        raise ValueError()
+                    identity = (t["promptId"], t["model"])
+                    if identity in current:
+                        raise ValueError()
+                    current[identity] = price
+                    summed += amount
+                if summed != total or not any(k[0] == prompt_id for k in current):
+                    raise ValueError()
+                if any(current.get(k) != v for k, v in priced_turns.items()):
+                    raise ValueError()
+                priced_turns.update(current)
+            except (KeyError, TypeError, ValueError, InvalidOperation):
+                raise RuntimeError("Docker cost proof failed: expected stable priced turns and exact session total") from None
+
         def turn(text, expected_answer, conversation=None, receipt=None):
             nonlocal cursor
             if receipt is None:
@@ -146,8 +204,12 @@ def main():
                 body = {"sandboxId": sandbox_id, "requestId": prompt_id, "text": text}
                 if conversation is not None:
                     body["conversationId"] = conversation
-                admission = wait_for("prompt", body, "admitted")
-                receipt = admission["receipt"]
+                if args.normal_controls:
+                    receipt = api("sandbox/send", {"id": sandbox_id, "request_id": prompt_id,
+                                  "prompt": text, **({"conversation_id": conversation} if conversation else {})}, normal=True)
+                else:
+                    admission = wait_for("prompt", body, "admitted")
+                    receipt = admission["receipt"]
             if conversation is not None and receipt["conversationId"] != conversation:
                 raise RuntimeError("Follow-up changed conversation identity")
             native_prompt = receipt["promptId"]
@@ -171,13 +233,15 @@ def main():
                         answer = True
                     if event.get("kind") == "prompt":
                         if event.get("status") in ("failed", "interrupted"):
-                            raise RuntimeError("Codex turn failed/interrupted; inspect retained journal")
+                            raise RuntimeError("Agent turn failed/interrupted; inspect retained journal")
                         finished |= event.get("status") == "finished"
                 turns = (page.get("usage") or {}).get("turns", [])
                 usage = next((t for t in turns if t.get("promptId") == native_prompt
                               and isinstance(t.get("inputTokens"), int)
                               and isinstance(t.get("outputTokens"), int)), None)
                 if answer and finished and usage:
+                    if args.cost:
+                        check_cost(page["usage"], native_prompt)
                     print(json.dumps({"answer": expected_answer, "promptId": native_prompt,
                                       "conversationId": receipt["conversationId"],
                                       "inputTokens": usage["inputTokens"], "outputTokens": usage["outputTokens"]}),
@@ -189,12 +253,55 @@ def main():
                     time.sleep(2)
 
         # Only the first prompt contains the public random marker. Recall proves thread continuity.
-        marker = "DOCKER_MEMORY_" + uuid.uuid4().hex
-        first = (f"Remember this marker for my next message: {marker}. " if args.follow_up else "")
         conversation = turn(first + "Reply with exactly DOCKER_OK. Do not run tools or modify files.", "DOCKER_OK", receipt=launch_receipt)
         if args.follow_up:
             turn("Reply with exactly the marker I gave you in my previous message. Do not run tools or modify files.",
                  marker, conversation)
+        if args.exec:
+            command = {"id": sandbox_id, "request_id": str(uuid.uuid4()), "command": "printf DOCKER_EXEC_OK", "timeout_seconds": 10}
+            result = api("sandbox/exec", command, normal=True)
+            replay = api("sandbox/exec", command, normal=True)
+            if (result.get("exitCode") != 0 or result.get("stdout") != "DOCKER_EXEC_OK"
+                    or result.get("timedOut") or result != replay):
+                raise RuntimeError("Normal Docker exec or stable replay failed")
+            print("PASS: runtime exec returned expected output; identical request replay matched.")
+        for operation, enabled in (("steer", args.steer), ("interrupt", args.interrupt)):
+            if not enabled:
+                continue
+            receipt = api("sandbox/send", {"id": sandbox_id, "request_id": str(uuid.uuid4()),
+                "conversation_id": conversation,
+                "prompt": "Run the shell command sleep 120, then reply DOCKER_NOT_REDIRECTED. Wait for the command to finish."}, normal=True)
+            control = {"id": sandbox_id, "request_id": str(uuid.uuid4()), "conversation_id": conversation}
+            if operation == "steer":
+                control["text"] = "Stop waiting. Reply with exactly DOCKER_STEER_OK. Do not run more tools."
+            redirected = api("sandbox/" + operation, control, normal=True)
+            if operation == "steer":
+                if (redirected.get("conversationId") != conversation or redirected.get("promptId") != receipt["promptId"]):
+                    raise RuntimeError("Steering changed turn identity")
+                turn("", "DOCKER_STEER_OK", conversation, receipt)
+            else:
+                if redirected.get("interrupted") is not True:
+                    raise RuntimeError("Interrupt was not acknowledged")
+                deadline = time.monotonic() + args.timeout
+                while True:
+                    summary = api("sandbox/detail", {"id": sandbox_id, "prompt_id": receipt["promptId"]}, normal=True)
+                    if summary.get("prompt", {}).get("state") == "interrupted":
+                        break
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError("Interrupted native turn was not confirmed in retained history")
+                    time.sleep(2)
+            print("PASS: normal Docker " + operation + " acknowledged by the native turn.")
+        if args.normal_lifecycle:
+            stopped = api("sandbox/stop", {"id": sandbox_id, "request_id": str(uuid.uuid4())}, normal=True)
+            if stopped.get("status") != "stopped":
+                raise RuntimeError("Normal stop was not confirmed")
+            resumed = api("sandbox/resume", {"id": sandbox_id, "request_id": str(uuid.uuid4())}, normal=True)
+            if resumed.get("status") != "ready":
+                raise RuntimeError("Normal resume readiness was not confirmed")
+            summary = api("sandbox/detail", {"id": sandbox_id}, normal=True)
+            if summary.get("hostId") != host_id or conversation not in summary.get("conversationIds", []):
+                raise RuntimeError("Resume changed host or conversation identity")
+            turn("Reply with exactly the marker I asked you to remember. Do not run tools or modify files.", marker, conversation)
     finally:
         if cleanup_needed:
             # Never delete an unconfirmed running allocation. Offline cleanup remains honest/pending.
@@ -219,7 +326,15 @@ def main():
         print("PASS: normal Docker status/logs and stop/delete routes confirmed.")
     if args.normal_launch:
         print("PASS: normal Docker launch route created, bootstrapped and admitted one prompt; list/status/logs/answer/stop/delete confirmed.")
-    print("Host remains registered/running for inspection. See docs/docker-host-daemon.md for uninstall.")
+    if args.cost:
+        print("PASS: exact per-turn/session USD and immutable prior quotes survived follow-up and resume.")
+    if args.claude or args.opencode:
+        print("PASS: " + harness + " normal launch/follow-up/stop/resume confirmed.")
+    if args.service_install:
+        ssh('"$HOME/.local/bin/armada-docker-host" uninstall', timeout=660)
+        print("PASS: managed service restarted, normal launch and cleanup confirmed, installation uninstalled; compare Docker inventory with baseline.")
+    else:
+        print("Host remains registered/running for inspection. See docs/docker-host-daemon.md for uninstall.")
 
 
 if __name__ == "__main__":

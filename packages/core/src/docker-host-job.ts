@@ -7,7 +7,7 @@ export type BootstrapDescriptor = {
 };
 export type DockerHostJob = { requestId: string; request: DockerMachineRequest } & (
   | { operation: "create" | "stop" | "delete" }
-  | { operation: "bootstrap"; bootstrap: BootstrapDescriptor }
+  | { operation: "bootstrap" | "resume"; bootstrap: BootstrapDescriptor }
 );
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 function invalid(): never {
@@ -24,10 +24,13 @@ function id(value: unknown): asserts value is string {
 /** Shared strict mailbox admission, with no network, cryptography or filesystem dependencies. */
 export function parseDockerHostJob(value: unknown): DockerHostJob {
   if (!value || typeof value !== "object") invalid();
-  const bootstrap = "operation" in value && value.operation === "bootstrap";
+  const bootstrap = "operation" in value && (value.operation === "bootstrap" || value.operation === "resume");
   exact(value, ["requestId", "operation", "request", ...(bootstrap ? ["bootstrap"] : [])]);
   id(value.requestId);
-  if (typeof value.operation !== "string" || !["create", "stop", "delete", "bootstrap"].includes(value.operation))
+  if (
+    typeof value.operation !== "string" ||
+    !["create", "stop", "delete", "bootstrap", "resume"].includes(value.operation)
+  )
     invalid();
   const r = value.request;
   const absolute = r !== null && typeof r === "object" && Object.hasOwn(r, "expiresAt");
@@ -83,7 +86,7 @@ export function parseDockerHostJob(value: unknown): DockerHostJob {
     invalid();
   return {
     requestId: value.requestId,
-    operation: "bootstrap",
+    operation: value.operation as "bootstrap" | "resume",
     request,
     bootstrap: {
       serverUrl: url.origin,
@@ -98,6 +101,6 @@ export function canonicalDockerHostJob(value: unknown): string {
   return JSON.stringify({
     operation: job.operation,
     request: job.request,
-    ...(job.operation === "bootstrap" ? { bootstrap: job.bootstrap } : {}),
+    ...(job.operation === "bootstrap" || job.operation === "resume" ? { bootstrap: job.bootstrap } : {}),
   });
 }

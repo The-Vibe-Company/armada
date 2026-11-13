@@ -16,13 +16,14 @@ export interface DockerHostListRequest {
 }
 export interface DockerHostSummary {
   id: string;
-  /** No host naming write exists yet. */
   name: string | null;
   /** Online means a recent heartbeat, not a launch/readiness guarantee. */
   state: "pending" | "online" | "offline" | "revoked";
   createdAt: string;
   lastSeenAt: string | null;
   revokedAt: string | null;
+  /** The daemon version the host last reported (#1453); absent or null until a host has reported one. */
+  version?: string | null;
   /** Retained sandboxes, including stopped/failed, excluding deleted. */
   sandboxes: number;
 }
@@ -33,11 +34,15 @@ export interface DockerHostListResponse {
 }
 export interface DockerHostRegistrationRequest {
   org: string;
+  name?: string;
 }
 export interface DockerHostRegistrationResponse {
   hostId: string;
   /** Single-use, five-minute capability. Show once, never persist or log it. */
   registrationToken: string;
+  /** One-click shell command containing only the short-lived registration capability. */
+  command: string;
+  expiresAt: string;
 }
 export interface DockerHostRevokeRequest {
   org: string;
@@ -80,7 +85,13 @@ export interface LaunchOptionsResponse {
   machineSizes: readonly MachineSize[];
   ttl: { defaultSeconds: number; maxSeconds: Partial<Record<SandboxPlacementProviderId, number>> };
   providers: LaunchProviderOption[];
-  modalRuntime?: { version: number; enabled: boolean };
+  modalRuntime?: {
+    version: number;
+    enabled: boolean;
+    followupVersion?: number;
+    resumeVersion?: number;
+    mcpVersion?: number;
+  };
   boatRuntime: {
     defaultPath?: "native" | "runtime";
     version: number;
@@ -92,6 +103,7 @@ export interface LaunchOptionsResponse {
     mcpVersion: number;
     skillsVersion?: number;
     workspaceVersion?: number;
+    controlsVersion?: number;
     enabled: boolean;
   };
 }
@@ -102,7 +114,7 @@ export interface DockerLaunchRequest {
   provider: "docker";
   hostId: string;
   image: string;
-  harness: "codex";
+  harness: Harness;
   credentialId: string;
   credentialVersion?: number;
   requestId: string;
@@ -115,7 +127,7 @@ export interface DockerLaunchRequest {
 export interface DockerSandboxRecord extends Omit<SandboxRecord, "provider" | "goldenId" | "harness"> {
   provider: "docker";
   goldenId: null;
-  harness: "codex";
+  harness: Harness;
   hostId: string;
   image: string;
 }
@@ -137,7 +149,7 @@ export interface DockerSandboxStatus {
   id: string;
   golden: null;
   visibility: "private";
-  harness: "codex";
+  harness: Harness;
   repositoryDir: null;
   machineSize: MachineSizeEvidence | null;
   model: string | null;

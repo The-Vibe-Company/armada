@@ -98,15 +98,6 @@ async function fixture() {
       ],
     );
   }
-  for (let n = 1; n <= 30; n++) await seed(n);
-  await seed(31, "ready", "claude", other);
-  await seed(32, "stopped", "codex", other, "org", secondGolden);
-  await seed(33, "deleted");
-  await seed(34, "ready", "claude", other, "private");
-  await seed(35, "ready", "claude", me, "private");
-  await seed(36, "ready", "codex", me, "org", sid(100), secondOrg);
-  await seed(37, "ready", "codex", other, "org", sid(101), alienOrg);
-  await seed(38, "ready", "codex", me, "org", modalGolden, org, "modal");
   const authStore = createMemoryAuthStore();
   authStore.addMembership(me, { orgId: org, name: "Selected", role: "admin" });
   authStore.addMembership(me, { orgId: secondOrg, name: "Other", role: "admin" });
@@ -171,6 +162,7 @@ async function fixture() {
     db,
     options,
     requests,
+    seed,
     async setActor(userId: string) {
       await auth.session.write({
         accessToken: `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: userId })).replace(/=+$/, "")}.sig`,
@@ -194,6 +186,15 @@ async function fixture() {
 test("CLI list matches scoped web filters, exact totals and stable pages with safe metadata for legacy private rows but no foreign rows", async () => {
   const f = await fixture();
   try {
+    for (let n = 1; n <= 30; n++) await f.seed(n);
+    await f.seed(31, "ready", "claude", other);
+    await f.seed(32, "stopped", "codex", other, "org", secondGolden);
+    await f.seed(33, "deleted");
+    await f.seed(34, "ready", "claude", other, "private");
+    await f.seed(35, "ready", "claude", me, "private");
+    await f.seed(36, "ready", "codex", me, "org", sid(100), secondOrg);
+    await f.seed(37, "ready", "codex", other, "org", sid(101), alienOrg);
+    await f.seed(38, "ready", "codex", me, "org", modalGolden, org, "modal");
     const defaultList = await f.cli(["list", "--json"]);
     expect(defaultList.code).toBe(0);
     const defaultEnvelope = JSON.parse(defaultList.out);
@@ -335,6 +336,8 @@ test("CLI golden list preserves discoverable UUIDs and provider-neutral metadata
 test("CLI sandbox-connections reads authorized persisted bindings without hidden mutations", async () => {
   const f = await fixture();
   try {
+    await f.seed(34, "ready", "claude", other, "private");
+    await f.seed(35, "ready", "claude", me, "private");
     const registry = createSqlMcpRegistry(f.db, key);
     f.options.mcp = { registry };
     const connection = await registry.save(me, org, {

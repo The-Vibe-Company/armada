@@ -1237,16 +1237,44 @@ describe("tools", () => {
   });
 
   test("steer reports restart for Codex and native for Claude, and asks for send when nothing runs", async () => {
-    const { token, client, people, boat } = await start();
+    const { token, client, people, boat, db } = await start();
     const mcp = await client(await token(people.member));
     const codex = await call(mcp, "launch", { golden: "shared", harness: "codex", prompt: "go" });
     expect((await call(mcp, "steer", { id: codex.data.id, text: "Use bun" })).data).toMatchObject({
       delivery: "restart",
     });
     const claude = await call(mcp, "launch", { golden: "shared", harness: "claude" });
-    const refused = await call(mcp, "steer", { id: claude.data.id, text: "Use bun" });
-    expect(refused.isError).toBe(true);
-    expect(refused.text).toContain("Use send");
+    // The list can see ready while a background observation owns the SQL lease.
+    expect((await call(mcp, "list")).data.sandboxes).toContainEqual(
+      expect.objectContaining({ id: claude.data.id, status: "ready" }),
+    );
+    const observing = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    await db.query("update sandboxes set reconcile_after=now()+interval '1 hour' where id<>$1", [claude.data.id]);
+    const lifecycle = createSandboxLifecycle(bunLikeSql(db), async () => ({
+      ...boat.provider,
+      get: async (id) => {
+        const info = await boat.provider.get(id);
+        observing.resolve();
+        await release.promise;
+        return { ...info, state: "stopped" as const };
+      },
+    }));
+    const tick = lifecycle.reconcileOne();
+    try {
+      await observing.promise;
+      const refused = await call(mcp, "steer", { id: claude.data.id, text: "Use bun" });
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain("Use send");
+    } finally {
+      release.resolve();
+      await tick;
+      await lifecycle.drain();
+    }
+    // The superseded observation cannot publish its stale terminal result.
+    expect((await db.query("select status from sandboxes where id=$1", [claude.data.id])).rows[0]).toEqual({
+      status: "ready",
+    });
     await call(mcp, "send", { id: claude.data.id, prompt: "go" });
     expect((await call(mcp, "steer", { id: claude.data.id, text: "Use bun" })).data).toMatchObject({
       delivery: "native",
@@ -1655,6 +1683,7 @@ test("public MCP schemas protect secret boundaries and mutation contracts", asyn
       "secret_delete",
       "report",
       "resource_advice",
+      "resume",
       "send",
       "runtime_checkpoint",
       "runtime_resume",
@@ -1666,6 +1695,8 @@ test("public MCP schemas protect secret boundaries and mutation contracts", asyn
     ].sort(),
   );
   for (const tool of tools) expect(tool.outputSchema).toBeDefined();
+  const resume = tools.find((tool) => tool.name === "resume");
+  expect(resume?.inputSchema.required).toEqual(["id", "request_id"]);
   const secretCommit = tools.find((tool) => tool.name === "secret_commit");
   expect(secretCommit?.inputSchema.required).toEqual(["org", "uploadReference"]);
   expect(secretCommit?.inputSchema.properties?.uploadReference).toMatchObject({ type: "string" });

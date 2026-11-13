@@ -68,6 +68,7 @@ function fixture(
   let lookupError: Error | undefined;
   let onLookup: (() => Promise<void>) | undefined;
   let onScrub: (() => Promise<void>) | undefined;
+  let onTerminate: (() => Promise<void>) | undefined;
   let onRpc: ((row: Machine, op: string, input: object) => Promise<unknown>) | undefined;
   let provisioned = false;
   let ownershipOverride: Record<string, string> | undefined;
@@ -160,6 +161,7 @@ function fixture(
             return { imageId: `im_${id}` };
           },
           terminate: async () => {
+            await onTerminate?.();
             log.push("terminate");
             state.exit = 0;
           },
@@ -260,6 +262,9 @@ function fixture(
     },
     onRpc(work: (row: Machine, op: string, input: object) => Promise<unknown>) {
       onRpc = work;
+    },
+    onTerminate(work: () => Promise<void>) {
+      onTerminate = work;
     },
     onScrub(work: () => Promise<void>) {
       onScrub = work;
@@ -724,6 +729,108 @@ test("enrolled Modal host forks never start or call the tunnel and stop without 
     f.provider.prompt({ sandboxId: row.id, harness: "codex", text: "no implicit resume" }),
   ).rejects.toMatchObject({ code: "invalid_request" });
   expect(f.creates).toBe(2);
+});
+
+test("retained enrolled Modal stop snapshots only after quiescence and resumes its exact checkpoint without tunnel or history purge", async () => {
+  const f = fixture(scope, db, undefined, undefined, true);
+  const worker = await runningFork(f);
+  const original = await f.store.get(worker.id);
+  const bootstrap = {
+    sandboxId: worker.id,
+    serverUrl: "https://armada.example",
+    enrolmentToken: `armada_enrol_${"a".repeat(64)}`,
+    cacheDir: "/home/user/.armada-runtime-bootstrap",
+    artifact: { sha256: "b".repeat(64), bytes: 1 },
+  };
+  await f.provider.startRuntime(bootstrap);
+  const afterLaunch = f.log.length;
+  f.onScrub(async () => {
+    expect(await f.store.get(worker.id)).toMatchObject({
+      phase: "checkpoint",
+      runtimeCheckpoint: { epoch: "7", watermark: 2, physicalId: original.physicalId, generation: 1 },
+    });
+  });
+  f.onTerminate(async () => {
+    expect(await f.store.get(worker.id)).toMatchObject({
+      phase: "terminate",
+      quiesced: true,
+      recoveryImageId: `im_${original.physicalId}`,
+    });
+  });
+  await expect(
+    f.provider.stopRuntime({ sandboxId: worker.id, physicalGeneration: "2", epoch: "7", watermark: 2 }),
+  ).rejects.toMatchObject({ code: "conflict" });
+  await f.provider.stopRuntime({ sandboxId: worker.id, physicalGeneration: "1", epoch: "7", watermark: 2 });
+  await f.provider.stopRuntime({ sandboxId: worker.id, physicalGeneration: "1", epoch: "7", watermark: 2 });
+  expect(f.log.slice(afterLaunch)).toEqual(["scrub", "snapshot", "terminate"]);
+  await expect(
+    f.provider.resumeRuntime({ sandboxId: worker.id, ttlSeconds: 900, checkpoint: { epoch: "7", watermark: 3 } }),
+  ).rejects.toMatchObject({ code: "conflict" });
+  expect(f.creates).toBe(2);
+  const request = { sandboxId: worker.id, ttlSeconds: 900, checkpoint: { epoch: "7", watermark: 2 } };
+  f.failCreate(true);
+  await expect(f.provider.resumeRuntime(request)).rejects.toThrow();
+  expect(f.creates).toBe(3);
+  f.failCreate(false);
+  const resumed = await f.provider.resumeRuntime(request);
+  expect(resumed).toMatchObject({ id: worker.id, state: "ready", physicalGeneration: "2" });
+  const restored = await f.store.get(worker.id);
+  expect(restored.physicalId).not.toBe(original.physicalId);
+  expect(restored.imageId).toBe(`im_${original.physicalId}`);
+  expect(restored.runtimeStartAttempted).toBeUndefined();
+  expect((await f.provider.resumeRuntime(request)).physicalGeneration).toBe("2");
+  expect(f.creates).toBe(3);
+  expect(f.log.slice(afterLaunch)).toEqual(["scrub", "snapshot", "terminate"]);
+  await f.provider.startRuntime(bootstrap);
+  f.onTerminate(async () => {
+    const stopping = await f.store.get(worker.id);
+    expect(stopping.runtimeCheckpoint).toBeUndefined();
+    expect(stopping.recoveryImageId).toBeUndefined();
+  });
+  await f.provider.stop({ sandboxId: worker.id });
+  await expect(f.provider.resumeRuntime(request)).rejects.toMatchObject({ code: "conflict" });
+});
+
+test("cleanup reconciles an unknown enrolled Modal resume create without activating or allocating again", async () => {
+  const f = fixture(scope, db, undefined, undefined, true);
+  const worker = await runningFork(f);
+  await f.provider.stopRuntime({ sandboxId: worker.id, physicalGeneration: "1", epoch: "1", watermark: 2 });
+  f.failCreate(true);
+  await expect(
+    f.provider.resumeRuntime({ sandboxId: worker.id, ttlSeconds: 900, checkpoint: { epoch: "1", watermark: 2 } }),
+  ).rejects.toThrow();
+  expect(await f.store.get(worker.id)).toMatchObject({ phase: "creating", generation: 2 });
+  expect((await f.store.get(worker.id)).physicalId).toBeUndefined();
+  expect(f.creates).toBe(3);
+  const beforeCleanup = f.log.length;
+  // Production failure cleanup calls stop, not another resume/admission attempt.
+  await f.provider.stop({ sandboxId: worker.id });
+  expect(f.log.slice(beforeCleanup)).toEqual(["terminate"]);
+  expect(f.creates).toBe(3);
+  const stopped = await f.store.get(worker.id);
+  expect(stopped.phase).toBe("stopped");
+  expect(stopped.physicalId).toBeDefined();
+  expect(stopped.runtimeCheckpoint).toBeUndefined();
+  expect(stopped.recoveryImageId).toBeUndefined();
+  expect(await f.provider.get(worker.id)).toMatchObject({ state: "stopped" });
+});
+
+test("uncertain enrolled Modal snapshot refuses retry or resume and compute fallback drops retention", async () => {
+  const f = fixture(scope, db, undefined, undefined, true);
+  const worker = await runningFork(f);
+  const proof = { sandboxId: worker.id, physicalGeneration: "1", epoch: "1", watermark: 2 };
+  const afterLaunch = f.log.length;
+  f.failSnapshot(true);
+  await expect(f.provider.stopRuntime(proof)).rejects.toThrow();
+  await expect(f.provider.stopRuntime(proof)).rejects.toMatchObject({ code: "conflict" });
+  expect(f.log.slice(afterLaunch)).toEqual(["scrub", "snapshot"]);
+  await expect(
+    f.provider.resumeRuntime({ sandboxId: worker.id, ttlSeconds: 900, checkpoint: { epoch: "1", watermark: 2 } }),
+  ).rejects.toMatchObject({ code: "conflict" });
+  await f.provider.stop({ sandboxId: worker.id });
+  expect((await f.store.get(worker.id)).runtimeCheckpoint).toBeUndefined();
+  expect((await f.store.get(worker.id)).recoveryImageId).toBeUndefined();
+  expect(f.log.slice(afterLaunch)).toEqual(["scrub", "snapshot", "terminate"]);
 });
 
 function deferred() {

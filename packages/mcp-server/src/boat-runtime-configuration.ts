@@ -17,7 +17,7 @@ export async function boatRuntimeConfiguration(input: {
   };
 }) {
   const plan = await runtimeConfiguration(input, "boat");
-  // A retained Codex thread must not resurrect old MCP defaults before explicit
+  // A retained harness session must not resurrect old MCP defaults before explicit
   // current-epoch configuration. Upstream credentials remain gateway-owned.
   return { ...plan, configuration: { ...plan.configuration, mcp: { revision: "boat_runtime_empty_v1", servers: {} } } };
 }

@@ -6,7 +6,7 @@ import { validateHarnessCwd } from "./cwd.ts";
 import { bounded } from "./deadline.ts";
 import { HarnessError, type HarnessErrorCode } from "./errors.ts";
 import { PrivateMcpFile } from "./mcp-file.ts";
-import type { Driver, DriverContext, Turn } from "./protocol.ts";
+import type { Driver, DriverContext, DriverResumeContext, Turn } from "./protocol.ts";
 /** Each query owns its process and input stream; no global interrupt. */
 export class ClaudeDriver implements Driver {
   private children = new ChildOwner();
@@ -15,6 +15,62 @@ export class ClaudeDriver implements Driver {
   constructor(private options: { cwd: string; executable: string; env: Record<string, string> }) {}
   configureReadableVariables(variables: Record<string, string>): void {
     Object.assign(this.options.env, variables);
+  }
+  /** The native CLI loads --resume before acknowledging initialize; no user input is sent. */
+  async resumeSession(c: DriverResumeContext): Promise<{ sessionId: string }> {
+    if (!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(c.sessionId) || !c.request.model)
+      throw Error("invalid_native_resume");
+    c.signal.throwIfAborted();
+    const cwd = validateHarnessCwd(c.request.cwd ?? this.options.cwd);
+    let finish!: () => void;
+    const stopped = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const input = async function* (): AsyncGenerator<SDKUserMessage> {
+      await stopped;
+      yield* [];
+    };
+    let child: ReturnType<ChildOwner["spawn"]> | undefined;
+    const q = query({
+      prompt: input(),
+      options: {
+        cwd,
+        pathToClaudeCodeExecutable: this.options.executable,
+        env: this.options.env,
+        resume: c.sessionId,
+        model: c.request.model,
+        settingSources: [],
+        strictMcpConfig: true,
+        permissionMode: "bypassPermissions",
+        allowDangerouslySkipPermissions: true,
+        spawnClaudeCodeProcess: (options) => {
+          child = this.children.spawn(options.command, options.args, {
+            cwd,
+            env: this.options.env,
+            signal: options.signal,
+          });
+          // Never publish private startup diagnostics.
+          child.stderr.resume();
+          return child;
+        },
+      },
+    });
+    this.queries.add(q);
+    const abort = () => q.close();
+    c.signal.addEventListener("abort", abort, { once: true });
+    try {
+      await bounded(q.initializationResult(), 90000);
+      c.signal.throwIfAborted();
+      return { sessionId: c.sessionId };
+    } catch {
+      throw Error("native_session_unverified");
+    } finally {
+      finish();
+      q.close();
+      this.queries.delete(q);
+      c.signal.removeEventListener("abort", abort);
+      if (child) await this.children.release(child);
+    }
   }
   start(c: DriverContext): Turn {
     const cwd = validateHarnessCwd(c.request.cwd ?? this.options.cwd);

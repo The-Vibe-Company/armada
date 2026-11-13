@@ -1,5 +1,6 @@
 import { type LaunchOptions, prepareLaunchWorkspace, type Sql } from "@armada/core/server";
 import { startBoatRuntime } from "@armada/provider-boat";
+import { requirePublishedRuntimeArchitecture } from "../../agent-runtime/src/publication.ts";
 import { boatRuntimeConfiguration } from "./boat-runtime-configuration.ts";
 import { createRuntimeAgent } from "./runtime-agent.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
@@ -18,6 +19,7 @@ export function boatRuntimeLaunch(options: {
   github?: Pick<import("./runtime-github.ts").RuntimeGitHub, "prepareLaunch">;
   modelAuth?: Parameters<typeof boatRuntimeConfiguration>[0]["modelAuth"];
 }): NonNullable<LaunchOptions["boatRuntime"]> {
+  requirePublishedRuntimeArchitecture(options.architecture);
   const server = new URL(options.serverUrl);
   if (server.protocol !== "https:" || server.href !== `${server.origin}/`) throw Error("invalid_runtime_origin");
   const manifest = structuredClone(options.manifest);
@@ -43,6 +45,7 @@ export function boatRuntimeLaunch(options: {
       await activate?.(signal);
       signal.throwIfAborted();
       const agent = createRuntimeAgent(commands, {
+        harness: sandbox.harness,
         ownerId: actor.userId,
         sandboxId: sandbox.id,
         providerSandboxId: sandbox.providerSandboxId,

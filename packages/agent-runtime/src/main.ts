@@ -234,7 +234,7 @@ async function main(dialout = false) {
   if (restore) {
     if (
       !enrolled ||
-      config.selectedHarness !== "codex" ||
+      !["codex", "claude", "opencode"].includes(config.selectedHarness as string) ||
       !/^[1-9][0-9]{0,18}$/.test(restore.epoch) ||
       typeof restore.conversationId !== "string" ||
       !restore.conversationId ||
@@ -378,7 +378,7 @@ async function main(dialout = false) {
     opencodeEnv.OPENCODE_CONFIG_CONTENT || opencodeEnv.OPENCODE_API_KEY
       ? await prepareOpenCode({
           candidate: config.opencodeExecutable ?? "/usr/local/bin/opencode",
-          serverUrl: new URL(config.ingestUrl).origin,
+          serverUrl: enrolled ? input.serverUrl : new URL(config.ingestUrl).origin,
           cacheDir: `${config.root}/.harness-cache`,
         })
       : (config.opencodeExecutable ?? "/usr/local/bin/opencode");
@@ -496,7 +496,7 @@ async function main(dialout = false) {
           expectedSessionId: session,
           input: {
             sandboxId: config.grant.sandboxId,
-            harness: "codex",
+            harness: config.selectedHarness,
             model: restore.model,
             reasoningEffort: restore.reasoningEffort,
             cwd: config.cwd,
@@ -530,7 +530,8 @@ async function main(dialout = false) {
         stop.abort();
         github.configure(null);
         githubSocket?.close();
-        await Promise.all([...Object.values(runner.drivers).map((driver) => driver.close()), ...requests]);
+        await runner.close();
+        await Promise.allSettled([...requests]);
       });
       return closing;
     };
@@ -549,18 +550,7 @@ async function main(dialout = false) {
                   : undefined;
           if (harness !== undefined && harness !== config.selectedHarness)
             return Promise.resolve(Response.json({ error: "unselected_runtime_harness" }, { status: 409 }));
-          // Exec ownership/termination is a separate parity slice. Never start a detached
-          // shell that could outlive this initial dial-out client on revocation.
-          if (request.op === "exec")
-            return Promise.resolve(Response.json({ error: "dialout_exec_not_supported" }, { status: 409 }));
-          const work = runner.handle(
-            new Request("http://runtime/v1", {
-              signal: stop.signal,
-              method: "POST",
-              headers: { "x-armada-runner-grant": config.grant.token },
-              body: JSON.stringify(request),
-            }),
-          );
+          const work = runner.handleDialout(request, stop.signal);
           requests.add(work);
           void work.then(
             () => requests.delete(work),

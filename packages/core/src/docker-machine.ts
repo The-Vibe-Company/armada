@@ -245,6 +245,18 @@ export function createDockerMachineExecutor(options: {
     return { containerName: state.containerName, volumeName: state.volumeName, expiresAt: state.expiresAt };
   }
 
+  async function resume(request: DockerMachineRequest): Promise<void> {
+    const state = await owned(request);
+    if (!state.container || !state.volume) fail("not_found");
+    if (state.expiresAt === undefined || state.expiresAt <= now()) fail("expired");
+    const status = object(state.container.State);
+    // Only the retained, ownership-verified allocation may resume; never recreate it.
+    if (status.Running !== true) {
+      if (status.Status !== "exited") fail("ownership_mismatch");
+      await checked(["container", "start", state.containerName]);
+    }
+  }
+
   async function bootstrap(
     request: DockerMachineRequest,
     input: { command: readonly string[]; stdin: string },
@@ -301,7 +313,7 @@ export function createDockerMachineExecutor(options: {
     return true;
   }
 
-  return { create, bootstrap, installRuntime, stop, delete: remove, stopIfExpired };
+  return { resume, create, bootstrap, installRuntime, stop, delete: remove, stopIfExpired };
 }
 
 function labelArgs(labels: Row): string[] {

@@ -3,7 +3,11 @@ import type { RunnerRequest } from "@armada/agent-runtime";
 import {
   type EventPage,
   type EventsRequest,
+  type ExecRequest,
+  type ExecResult,
   type GitHubRuntimeConfiguration,
+  type Harness,
+  type InterruptRequest,
   type ModelChoice,
   type PromptReceipt,
   type PromptRequest,
@@ -12,12 +16,15 @@ import {
   type ProviderErrorCode,
   resolveModelChoice,
   type SkillReceipt,
+  type SteerReceipt,
+  type SteerRequest,
 } from "@armada/core";
 import { PRIVATE_SKILL_FAILURES, PrivateSkillError } from "../../core/src/private-skill-error.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
 
 const errors: Record<string, ProviderErrorCode> = {
   not_found: "not_found",
+  no_running_turn: "no_running_turn",
   invalid_request: "invalid_request",
   invalid_cursor: "invalid_request",
   invalid_cwd: "invalid_request",
@@ -29,9 +36,13 @@ const errors: Record<string, ProviderErrorCode> = {
   checkpoint_in_progress: "sandbox_not_ready",
   request_outcome_unknown: "conflict",
 };
-function refusal(code: ProviderErrorCode, requestId?: string): ProviderError {
+function runtimeRefusal(
+  provider: "boat" | "modal" | "docker",
+  code: ProviderErrorCode,
+  requestId?: string,
+): ProviderError {
   return new ProviderError({
-    provider: "boat",
+    provider,
     code,
     message: "Armada runtime operation refused.",
     retryable: false,
@@ -45,6 +56,8 @@ function refusal(code: ProviderErrorCode, requestId?: string): ProviderError {
 export function createRuntimeAgent(
   commands: Pick<ReturnType<typeof createRuntimeCommands>, "call">,
   binding: {
+    provider?: "boat" | "modal" | "docker";
+    harness: Harness;
     ownerId: string;
     sandboxId: string;
     providerSandboxId: string;
@@ -53,19 +66,27 @@ export function createRuntimeAgent(
   },
 ) {
   const { ownerId, sandboxId, providerSandboxId, cwd } = binding;
+  const refusal = (code: ProviderErrorCode, requestId?: string) =>
+    runtimeRefusal(binding.provider ?? "boat", code, requestId);
   const defaults = { ...binding.defaults };
   function target(id: string) {
     if (id !== providerSandboxId) throw refusal("invalid_request");
   }
-  async function invoke<T>(command: RunnerRequest, signal?: AbortSignal, expectedEpoch?: string): Promise<T> {
+  async function invoke<T>(
+    command: RunnerRequest,
+    signal?: AbortSignal,
+    expectedEpoch?: string,
+    timeoutMs?: number,
+  ): Promise<T> {
     let reply: Awaited<ReturnType<typeof commands.call>>;
     try {
       reply = await commands.call(ownerId, command, {
         ...(signal ? { signal } : {}),
-        ...(command.op === "workspaceExec" ? { timeoutMs: 610_000 } : {}),
+        ...(command.op === "workspaceExec" ? { timeoutMs: 610_000 } : timeoutMs ? { timeoutMs } : {}),
         ...(expectedEpoch !== undefined ? { expectedEpoch } : {}),
       });
-    } catch {
+    } catch (error) {
+      if (error instanceof ProviderError) throw error;
       // A lost wait is not proof of non-execution. Preserve the exact identity for
       // reconciliation; never include transport errors or private payloads.
       throw refusal("conflict", command.requestId);
@@ -180,7 +201,7 @@ export function createRuntimeAgent(
         {
           ...identity(`skills_${sandboxId}`),
           op: "installSkills",
-          input: { harness: "codex", references, cwd, ...(key ? { key } : {}) },
+          input: { harness: binding.harness, references, cwd, ...(key ? { key } : {}) },
         },
         signal,
         epoch,
@@ -243,15 +264,15 @@ export function createRuntimeAgent(
       expectedEpoch?: string,
     ): Promise<PromptReceipt> {
       target(request.sandboxId);
-      if (request.harness !== "codex" || !request.text.trim()) throw refusal("invalid_request");
-      const choice = resolveModelChoice("codex", request, defaults);
+      if (request.harness !== binding.harness || !request.text.trim()) throw refusal("invalid_request");
+      const choice = resolveModelChoice(binding.harness, request, defaults);
       return invoke(
         {
           ...identity(requestId),
           op: "prompt",
           input: {
             sandboxId,
-            harness: "codex",
+            harness: binding.harness,
             text: request.text,
             ...choice,
             cwd,
@@ -262,6 +283,82 @@ export function createRuntimeAgent(
         request.signal,
         expectedEpoch,
       );
+    },
+    async steer(request: SteerRequest, requestId: string = randomUUID()): Promise<SteerReceipt> {
+      target(request.sandboxId);
+      if (!request.conversationId || !request.text.trim() || Buffer.byteLength(request.text) > 262144)
+        throw refusal("invalid_request");
+      const receipt = await invoke<SteerReceipt>({
+        ...identity(requestId),
+        op: "steer",
+        conversationId: request.conversationId,
+        text: request.text,
+      });
+      if (
+        !receipt ||
+        receipt.conversationId !== request.conversationId ||
+        typeof receipt.promptId !== "string" ||
+        !receipt.promptId
+      )
+        throw refusal("unavailable", requestId);
+      return {
+        conversationId: receipt.conversationId,
+        promptId: receipt.promptId,
+        ...(typeof receipt.mode === "string" ? { mode: receipt.mode } : {}),
+      };
+    },
+    async interrupt(request: InterruptRequest, requestId: string = randomUUID()): Promise<void> {
+      target(request.sandboxId);
+      await invoke({
+        ...identity(requestId),
+        op: "interrupt",
+        ...(request.conversationId ? { conversationId: request.conversationId } : {}),
+      });
+    },
+    async exec(request: ExecRequest, requestId: string = randomUUID()): Promise<ExecResult> {
+      target(request.sandboxId);
+      if (
+        !request.command.trim() ||
+        Buffer.byteLength(request.command) > 262144 ||
+        request.detached ||
+        (request.timeoutSeconds !== undefined &&
+          (!Number.isInteger(request.timeoutSeconds) || request.timeoutSeconds < 1 || request.timeoutSeconds > 600))
+      )
+        throw refusal("invalid_request");
+      const { signal, ...input } = request;
+      const result = await invoke<ExecResult>(
+        {
+          ...identity(requestId),
+          op: "exec",
+          input: {
+            ...input,
+            sandboxId,
+            command: request.command,
+            cwd: request.cwd ?? cwd,
+            timeoutSeconds: request.timeoutSeconds ?? 120,
+          },
+        },
+        signal,
+        undefined,
+        ((request.timeoutSeconds ?? 120) + 30) * 1000,
+      );
+      if (
+        result?.detached !== false ||
+        (result.exitCode !== null && !Number.isInteger(result.exitCode)) ||
+        typeof result.stdout !== "string" ||
+        typeof result.stderr !== "string" ||
+        typeof result.timedOut !== "boolean" ||
+        typeof result.truncated !== "boolean"
+      )
+        throw refusal("unavailable", requestId);
+      return {
+        detached: false,
+        exitCode: result.exitCode,
+        stdout: result.stdout.slice(0, 65536),
+        stderr: result.stderr.slice(0, 65536),
+        timedOut: result.timedOut,
+        truncated: result.truncated || result.stdout.length > 65536 || result.stderr.length > 65536,
+      };
     },
     async getPrompt(request: { sandboxId: string; promptId: string; signal?: AbortSignal }): Promise<PromptState> {
       target(request.sandboxId);

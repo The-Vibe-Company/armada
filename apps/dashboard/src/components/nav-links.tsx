@@ -5,14 +5,15 @@ import {
   CalendarClockIcon,
   CameraIcon,
   ChevronDownIcon,
+  CloudIcon,
   KeyRoundIcon,
   LayoutTemplateIcon,
+  type LucideIcon,
   PackageIcon,
   PlugIcon,
   RadarIcon,
   ServerIcon,
   SettingsIcon,
-  UsersIcon,
   VariableIcon,
 } from "lucide-react";
 import Link from "next/link";
@@ -31,44 +32,30 @@ import {
   SidebarTrigger,
   useSidebar,
 } from "@/components/ui/sidebar";
+import { isActiveLink, NAV_GROUPS, type NavIcon, type NavOptIn } from "@/lib/navigation";
 import { cn } from "@/lib/utils";
 
-/** The menu contains group labels and destinations only; relationships belong on the pages. */
-const GROUPS = [
-  {
-    label: "Run",
-    links: [
-      { href: "/sandboxes", label: "Sandboxes", icon: BoxesIcon },
-      { href: "/routines", label: "Routines", icon: CalendarClockIcon },
-      { href: "/templates", label: "Templates", icon: LayoutTemplateIcon },
-      { href: "/otto", label: "Otto", icon: RadarIcon },
-    ],
-  },
-  {
-    label: "Library",
-    links: [
-      { href: "/environments", label: "Environments", icon: CameraIcon },
-      { href: "/hosts", label: "Hosts", icon: ServerIcon, optIn: "dockerHosts" },
-      { href: "/skills", label: "Skills", icon: PackageIcon },
-      { href: "/tools", label: "Tools", icon: PlugIcon },
-      { href: "/variables", label: "Variables", icon: VariableIcon },
-    ],
-  },
-  {
-    label: "Account",
-    links: [
-      { href: "/harness", label: "Models", icon: KeyRoundIcon },
-      { href: "/orgs", label: "Organizations", icon: UsersIcon },
-      { href: "/settings", label: "Settings", icon: SettingsIcon },
-    ],
-  },
-] as const;
+/** Each destination's glyph; the order and labels live in `NAV_GROUPS`. */
+const ICONS: Record<NavIcon, LucideIcon> = {
+  sandboxes: BoxesIcon,
+  otto: RadarIcon,
+  routines: CalendarClockIcon,
+  templates: LayoutTemplateIcon,
+  environments: CameraIcon,
+  skills: PackageIcon,
+  tools: PlugIcon,
+  variables: VariableIcon,
+  selfHosted: ServerIcon,
+  cloud: CloudIcon,
+  models: KeyRoundIcon,
+  settings: SettingsIcon,
+};
 
 /**
  * Destinations behind a server opt-in. The shell passes the server's answer as a promise and does not wait for it:
  * only the entry itself appears once the answer says the server offers it.
  */
-export type NavOptIns = { dockerHosts: Promise<boolean> };
+export type NavOptIns = Record<NavOptIn, Promise<boolean>>;
 
 function OptIn({ when, children }: { when: Promise<boolean>; children: ReactNode }) {
   return use(when) ? children : null;
@@ -77,9 +64,7 @@ function OptIn({ when, children }: { when: Promise<boolean>; children: ReactNode
 export function NavMobileTrigger() {
   const pathname = usePathname();
   const { openMobile } = useSidebar();
-  const current = GROUPS.flatMap((group) => [...group.links]).find(
-    (link) => pathname === link.href || pathname.startsWith(`${link.href}/`),
-  );
+  const current = NAV_GROUPS.flatMap((group) => group.links).find((link) => isActiveLink(pathname, link.href));
   return (
     <SidebarTrigger
       variant="ghost"
@@ -102,7 +87,7 @@ export function NavLinks({ className, optIns }: { className?: string; optIns: Na
   return (
     <SidebarContent className={cn("gap-0", className)}>
       <nav id="main-navigation-links" aria-label="Main">
-        {GROUPS.map((group) => (
+        {NAV_GROUPS.map((group) => (
           <SidebarGroup key={group.label} className="p-0 pt-4 first:pt-0" role="region" aria-label={group.label}>
             <SidebarGroupLabel
               asChild
@@ -113,8 +98,9 @@ export function NavLinks({ className, optIns }: { className?: string; optIns: Na
             <SidebarGroupContent>
               <SidebarMenu className="gap-0.5">
                 {group.links.map((link) => {
-                  const { href, label, icon: Icon } = link;
-                  const active = pathname === href || pathname.startsWith(`${href}/`);
+                  const { href, label } = link;
+                  const Icon = ICONS[link.icon];
+                  const active = isActiveLink(pathname, href);
                   const item = (
                     <SidebarMenuItem key={href}>
                       <SidebarMenuButton
@@ -141,7 +127,7 @@ export function NavLinks({ className, optIns }: { className?: string; optIns: Na
                       </SidebarMenuButton>
                     </SidebarMenuItem>
                   );
-                  if (!("optIn" in link)) return item;
+                  if (!link.optIn) return item;
                   return (
                     <Suspense key={href} fallback={null}>
                       <OptIn when={optIns[link.optIn]}>{item}</OptIn>

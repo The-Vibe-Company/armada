@@ -1,5 +1,5 @@
 import type { AgentEvent, Sql } from "@armada/core";
-import { PROMPT_STATUSES } from "@armada/core";
+import { HARNESS_KINDS, PROMPT_STATUSES } from "@armada/core";
 import { decryptSecret } from "@armada/core/server";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
@@ -62,6 +62,7 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
       tx: Sql,
       authority: ReturnType<typeof createRuntimeEnrolments>,
       sandbox: Awaited<ReturnType<ReturnType<typeof createDockerSandboxService>["get"]>>,
+      epoch: string,
     ) => Promise<T>,
     allowPending = false,
   ) {
@@ -76,10 +77,10 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
       // then account, then host/sandbox/runtime. withOwner reuses this transaction.
       const source = await authority.lockSourceMembers(tx, sandboxId, actor.userId);
       const credential = await tx.query(
-        `select id from public.credentials where id=$1 and version=$2 and kind in ('openai','codex_auth')
+        `select id from public.credentials where id=$1 and version=$2 and kind = any($5::public.credential_kind[])
          and status='active' and (expires_at is null or expires_at>now())
          and ((scope='user' and owner_id=$3) or (scope='org' and owner_id=$4)) for share`,
-        [snapshot.credentialId, snapshot.credentialVersion, actor.userId, actor.orgId],
+        [snapshot.credentialId, snapshot.credentialVersion, actor.userId, actor.orgId, HARNESS_KINDS[snapshot.harness]],
       );
       if (!credential.rows.length) deny();
       if (allowPending) {
@@ -103,7 +104,7 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
          where j.bound_sandbox_id=$1 and j.bound_actor_id=$2 and j.host_id=$4
          and j.bound_operation='create' and j.outcome='completed'
          and exists(select 1 from public.docker_host_jobs b where b.bound_sandbox_id=$1
-           and b.bound_operation='bootstrap' and b.bound_actor_id=$2 and b.host_id=$4
+           and b.bound_operation in ('bootstrap','resume') and b.bound_actor_id=$2 and b.host_id=$4
            and b.bound_actor_epoch=e.epoch and b.outcome is distinct from 'failed')`,
         [sandboxId, actor.userId, actor.orgId, snapshot.hostId],
       );
@@ -118,10 +119,10 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
         );
         if (pending.rows.length) return { state: "pending" as const };
       }
-      return authority.withOwner(sandboxId, actor.userId, async () => {
+      return authority.withOwner(sandboxId, actor.userId, async (_fenced, scope) => {
         const current = await createDockerSandboxService(scoped, key).get(actor, sandboxId);
         if (JSON.stringify(current) !== JSON.stringify(snapshot)) deny();
-        return work(scoped, authority, current);
+        return work(scoped, authority, current, scope.epoch);
       });
     });
   }
@@ -154,7 +155,7 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
       );
     },
     prompt(actor: Actor, sandboxId: string, input: { requestId: string; text: string; conversationId?: string }) {
-      return admitted(actor, sandboxId, async (tx, authority, sandbox) => {
+      return admitted(actor, sandboxId, async (tx, authority, sandbox, epoch) => {
         if (
           !object(input) ||
           Object.keys(input).some((field) => !["requestId", "text", "conversationId"].includes(field)) ||
@@ -187,8 +188,8 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
           const blocked = await tx.query(
             `select 1 from public.runtime_commands where sandbox_id=$1
              and starts_with(request_id,'docker_prompt_')
-             and (result_enc is null or $2::boolean) limit 1`,
-            [sandboxId, saved.length === 0],
+             and ((epoch=$3::bigint and result_enc is null) or $2::boolean) limit 1`,
+            [sandboxId, saved.length === 0, epoch],
           );
           // An unresolved RPC has not established native admission yet. Once it
           // replies, the runner alone owns busy/refusal; no journal scheduler here.
@@ -202,7 +203,7 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
           op: "prompt",
           input: {
             sandboxId,
-            harness: "codex",
+            harness: sandbox.harness,
             text: input.text,
             ...(input.conversationId === undefined ? {} : { conversationId: input.conversationId }),
             model: sandbox.model,

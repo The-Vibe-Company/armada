@@ -32,8 +32,8 @@ export const SETUP_PROVIDER_INFO: Record<SandboxProviderId, { label: string; doc
   },
 };
 
-/** Where the active organization's sandbox providers are connected, replaced and disconnected. */
-export const PROVIDER_SETTINGS_PATH = "/settings";
+/** Where the active organization's cloud sandbox providers (Boat, Modal) are connected, replaced and disconnected (#1474). */
+export const CLOUD_PROVIDERS_PATH = "/providers/cloud";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);

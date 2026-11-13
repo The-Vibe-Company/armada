@@ -9,7 +9,12 @@ import {
   type SandboxListMetadata,
   type Sql,
 } from "@armada/core";
-import { createSqlVaultStore, encryptSecret } from "@armada/core/server";
+import {
+  createSqlSandboxStore,
+  createSqlVaultStore,
+  createUsagePricingContext,
+  encryptSecret,
+} from "@armada/core/server";
 import { parseSandboxListMetadata } from "../../../apps/dashboard/src/lib/sandbox-access.ts";
 import { sandboxListText } from "../../cli/src/sandbox-list.ts";
 import type { Caller } from "../src/caller.ts";
@@ -17,6 +22,7 @@ import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { createDockerBootstrapService } from "../src/docker-bootstrap-service.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
+import { createDockerNormalSend } from "../src/docker-normal-send.ts";
 import { createDockerRuntimeLifecycle } from "../src/docker-runtime-lifecycle.ts";
 import { createDockerSandboxControls } from "../src/docker-sandbox-controls.ts";
 import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
@@ -182,6 +188,16 @@ test("normal Docker reads authorize owner/admin with live membership, preserve n
     prompt: { promptId, conversationId, state: "running" },
     settled: false,
   });
+  await createSqlSandboxStore(sql, { turnModels: true }).recordUsagePricingContext?.(
+    f.sandbox.id,
+    createUsagePricingContext({
+      harness: "codex",
+      credentialKind: "openai",
+      customEndpoint: false,
+      credentialId: f.sandbox.credentialId,
+      credentialVersion: f.sandbox.credentialVersion,
+    }),
+  );
   await publish(f, session, [
     { id: "p-start", at: 1, kind: "prompt", promptId, conversationId, text: "begin", status: "running" },
     { id: "p-done", at: 2, kind: "prompt", promptId, conversationId, text: "begin", status: "finished" },
@@ -191,7 +207,14 @@ test("normal Docker reads authorize owner/admin with live membership, preserve n
       kind: "other",
       promptId,
       type: "armada/turnUsage",
-      data: { model: f.sandbox.model, inputTokens: 50, outputTokens: 8, cachedTokens: 5 },
+      data: {
+        model: f.sandbox.model,
+        inputTokens: 50,
+        outputTokens: 8,
+        cachedTokens: 5,
+        cacheWriteTokens: 0,
+        reasoningTokens: 0,
+      },
     },
   ]);
   const settled = await invoke<DockerSandboxStatus>(admin, "status", { id: f.sandbox.id, prompt_id: promptId });
@@ -206,7 +229,7 @@ test("normal Docker reads authorize owner/admin with live membership, preserve n
       tokenTotals: { inputTokens: 50, outputTokens: 8 },
     },
   });
-  expect(settled.usage?.cost).toBeUndefined();
+  expect(settled.usage?.cost).toMatchObject({ usd: expect.any(String), unknown: null, unpricedTurns: 0 });
   const busy = { requestId: randomUUID(), text: "busy", conversationId };
   await service.prompt(f.actor, f.sandbox.id, busy);
   const busyCommand = (await commands.next(session.runtimeToken, session.epoch)).command;
@@ -663,4 +686,150 @@ test("Docker child deletion requires permanent delegated parent deletion before 
   expect(
     (await db.query(`select sandbox_id from orchestrator_children where sandbox_id=$1`, [f.sandbox.id])).rows,
   ).toEqual([{ sandbox_id: f.sandbox.id }]);
+});
+
+// Admission is exercised through the real SQL/runtime boundary, not a receipt mock.
+test("normal Docker send continues the saved native conversation and retries exactly once", async () => {
+  const f = await fixture(),
+    session = await ready(f);
+  const conversationId = randomUUID(),
+    firstPrompt = randomUUID();
+  const first = { requestId: randomUUID(), text: "first" };
+  await service.prompt(f.actor, f.sandbox.id, first);
+  await complete(session, { promptId: firstPrompt, conversationId, status: "finished" });
+  await service.prompt(f.actor, f.sandbox.id, first);
+  const promptId = randomUUID();
+  let deliveries = 0;
+  const send = createDockerNormalSend(sql, key, {
+    enabled: true,
+    clock: {
+      now: () => 0,
+      async wait() {
+        const command = await complete(session, { promptId, conversationId, status: "queued" });
+        expect(command).toMatchObject({ op: "prompt", input: { text: "continue", conversationId } });
+        deliveries++;
+      },
+    },
+  });
+  const controller = createDockerSandboxControls(sql, key, { send });
+  const args = { id: f.sandbox.id, request_id: randomUUID(), prompt: "continue" };
+  const result = await invoke(caller(f.actor), "send", args, controller);
+  expect(result).toMatchObject({ id: f.sandbox.id, promptId, conversationId, status: "queued" });
+  expect(await invoke(caller(f.actor), "send", args, controller)).toEqual(result);
+  expect(deliveries).toBe(1);
+  await rejected(invoke(caller(f.actor), "send", { ...args, prompt: "changed" }, controller), "conflict");
+  await rejected(invoke(caller(f.actor), "send", { ...args, model: "different" }, controller), "invalid_request");
+  await rejected(invoke(caller(f.admin, "admin"), "send", args, controller), "conflict");
+});
+
+test("Docker mutations reuse the fenced runtime mailbox and reconcile identical request IDs", async () => {
+  const f = await fixture();
+  const session = await ready(f);
+  const conversationId = randomUUID(),
+    promptId = randomUUID();
+  await db.query("update public.sandboxes set conversation_ids=array[$2]::text[] where id=$1", [
+    f.sandbox.id,
+    conversationId,
+  ]);
+  let now = 0,
+    delivered = 0;
+  const controller = createDockerSandboxControls(sql, key, {
+    clock: {
+      now: () => now,
+      async wait(ms) {
+        now += ms;
+        const next = await commands.next(session.runtimeToken, session.epoch);
+        if (!next.command) throw Error("missing runtime command");
+        delivered++;
+        const command = next.command;
+        const result =
+          command.op === "steer"
+            ? { conversationId, promptId }
+            : command.op === "exec"
+              ? {
+                  detached: false,
+                  exitCode: 0,
+                  stdout: "runtime-output",
+                  stderr: "",
+                  timedOut: false,
+                  truncated: false,
+                }
+              : {};
+        expect(["steer", "interrupt", "exec"]).toContain(command.op);
+        if (command.op === "exec")
+          expect(command.input).toEqual({
+            sandboxId: f.sandbox.id,
+            command: "printf runtime-output",
+            cwd: "/home/user",
+            timeoutSeconds: 120,
+          });
+        await complete(session, result);
+      },
+    },
+  });
+  for (const [name, input, expected] of [
+    ["steer", { text: "redirect" }, { id: f.sandbox.id, promptId, conversationId, delivery: "restart", mode: null }],
+    ["interrupt", {}, { id: f.sandbox.id, interrupted: true }],
+    [
+      "exec",
+      { command: "printf runtime-output" },
+      {
+        id: f.sandbox.id,
+        exitCode: 0,
+        stdout: "runtime-output",
+        stderr: "",
+        timedOut: false,
+        truncated: false,
+      },
+    ],
+  ] as const) {
+    const args = { id: f.sandbox.id, request_id: randomUUID(), ...input };
+    expect(await invoke(caller(f.actor), name, args, controller)).toEqual(expected);
+    expect(await invoke(caller(f.actor), name, args, controller)).toEqual(expected);
+  }
+  expect(delivered).toBe(3);
+  expect(await invoke(caller(f.actor), "interrupt", { id: f.sandbox.id }, controller)).toEqual({
+    id: f.sandbox.id,
+    interrupted: true,
+  });
+  expect(delivered).toBe(4);
+  await expect(
+    invoke(
+      caller(f.actor),
+      "exec",
+      { id: f.sandbox.id, request_id: randomUUID(), command: "true", timeout_seconds: 601 },
+      controller,
+    ),
+  ).rejects.toMatchObject({ code: "invalid_request" });
+  await expect(
+    invoke(caller(f.admin, "admin"), "interrupt", { id: f.sandbox.id, request_id: randomUUID() }, controller),
+  ).rejects.toMatchObject({ code: "not_found" });
+  const refusing = createDockerSandboxControls(sql, key, {
+    clock: {
+      now: () => now,
+      async wait(ms) {
+        now += ms;
+        const next = await commands.next(session.runtimeToken, session.epoch);
+        if (!next.command) throw Error("missing steer request");
+        await commands.complete(session.runtimeToken, session.epoch, {
+          epoch: session.epoch,
+          requestId: next.command.requestId,
+          status: 400,
+          body: { version: 1, requestId: next.command.requestId, error: "no_running_turn" },
+        });
+      },
+    },
+  });
+  await expect(
+    invoke(caller(f.actor), "steer", { id: f.sandbox.id, request_id: randomUUID(), text: "late" }, refusing),
+  ).rejects.toMatchObject({ provider: "docker", code: "no_running_turn" });
+  await db.query("update public.sandboxes set application_secret_tainted=true where id=$1", [f.sandbox.id]);
+  await expect(
+    invoke(caller(f.actor), "exec", { id: f.sandbox.id, request_id: randomUUID(), command: "true" }, controller),
+  ).rejects.toMatchObject({ code: "conflict" });
+  await db.query("update public.credentials set status='revoked' where id=$1", [f.credentialId]);
+  await expect(
+    invoke(caller(f.actor), "interrupt", { id: f.sandbox.id, request_id: randomUUID() }, controller),
+  ).rejects.toMatchObject({ code: "conflict" });
+  expect(delivered).toBe(4);
 });

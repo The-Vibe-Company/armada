@@ -47,7 +47,7 @@ export function createRuntimeStartup(
   }): Promise<{ runtime: "armada"; epoch: string }> => {
     const timeout = input.readinessTimeoutMs ?? 90_000;
     if (
-      input.configuration.selectedHarness !== "codex" ||
+      (input.configuration.selectedHarness !== "codex" && input.configuration.selectedHarness !== "claude") ||
       !Number.isSafeInteger(timeout) ||
       timeout < 1 ||
       timeout > 120_000

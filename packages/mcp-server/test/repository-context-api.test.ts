@@ -178,25 +178,17 @@ test("CLI/shared launch prepares persisted native repo cwd before idle/first pro
     expect((await call(client, "list")).data.sandboxes).toEqual(
       expect.arrayContaining([expect.objectContaining({ id: launched.id, canOpen: true })]),
     );
-    // MCP first-prompt launch uses the identical persisted field and native preparation.
+    // One MCP first-prompt launch also proves case-insensitive owner/repo compatibility.
     const immediate = await call(client, "launch", {
       golden: "shared",
       harness: "codex",
-      repo: "web",
+      repo: "EXAMPLE/web",
       prompt: "start",
     });
+    expect(immediate.isError).toBe(false);
     expect(immediate.data.repositoryDir).toBe("web");
-    expect(boat.prompts.at(-1)?.text).toBe("start");
-    const legacySelector = await call(client, "launch", {
-      golden: "shared",
-      harness: "codex",
-      repo: "EXAMPLE/web",
-      prompt: "legacy selector",
-    });
-    expect(legacySelector.isError).toBe(false);
-    expect(legacySelector.data.repositoryDir).toBe("web");
     expect(boat.preparations.at(-1)).toMatchObject({ harness: "codex", cwd: "/home/user/web" });
-    expect(boat.prompts.at(-1)?.text).toBe("legacy selector");
+    expect(boat.prompts.at(-1)?.text).toBe("start");
     const preparedCount = boat.preparations.length;
     const legacy = await call(client, "launch", { golden: "shared", harness: "codex", prompt: "plain" });
     expect(legacy.data.repositoryDir).toBeNull();
@@ -218,22 +210,7 @@ test("CLI/shared launch prepares persisted native repo cwd before idle/first pro
     }
     expect((await call(client, "launch", { golden: "mine", harness: "codex", repo: "web" })).isError).toBe(true);
     expect(boat.forks).toHaveLength(forks);
-    await db.query("update goldens set config = $1::jsonb where name = 'shared'", [
-      JSON.stringify({
-        repos: [
-          { url: "https://github.com/example/web.git", branch: "main", dir: "left" },
-          { url: "https://github.com/example/web.git", branch: "main", dir: "right" },
-        ],
-        init: [],
-      }),
-    ]);
-    const ambiguous = await call(client, "launch", { golden: "shared", harness: "codex", repo: "example/web" });
-    expect(ambiguous.isError).toBe(true);
-    expect(ambiguous.text).toContain("ambiguous");
-    expect(boat.forks).toHaveLength(forks);
-    await db.query("update goldens set config = $1::jsonb where name = 'shared'", [
-      JSON.stringify({ repos: [{ url: "https://github.com/example/web.git", branch: "main", dir: "web" }], init: [] }),
-    ]);
+    // Pure owner/repo ambiguity is covered by core/test/launch-workdir.test.ts.
     delete boat.provider.prepareNativeHarnessCwd;
     expect((await call(client, "launch", { golden: "shared", harness: "codex", repo: "web" })).isError).toBe(true);
     expect(boat.forks).toHaveLength(forks);

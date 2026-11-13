@@ -39,7 +39,7 @@ function artifact(value: unknown, empty = false): RuntimeArtifact {
   return { sha256: value.sha256, bytes: value.bytes as number };
 }
 function selected(manifest: unknown, harness: string): Harness {
-  if (harness !== "codex") throw Error("unsupported_harness_artifact");
+  if (harness !== "codex" && harness !== "claude") throw Error("unsupported_harness_artifact");
   if (
     !record(manifest) ||
     manifest.protocol !== 1 ||
@@ -143,7 +143,7 @@ export async function installSelectedHarness(
   const cache = await lstat(input.cacheDir);
   if (!cache.isDirectory() || cache.isSymbolicLink() || (cache.mode & 0o777) !== 0o700)
     throw Error("invalid_harness_cache");
-  const root = join(input.cacheDir, `codex-${harness.archive.sha256}`);
+  const root = join(input.cacheDir, `${input.harness}-${harness.archive.sha256}`);
   const existing = await lstat(root).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return undefined;
     throw error;
@@ -152,7 +152,7 @@ export async function installSelectedHarness(
   const receipt = () => ({
     root,
     executable: join(root, harness.executable),
-    pathEntries: [join(root, "codex-path")],
+    pathEntries: input.harness === "codex" ? [join(root, "codex-path")] : [],
     version: harness.version,
     sha256: harness.archive.sha256,
   });
@@ -161,7 +161,7 @@ export async function installSelectedHarness(
     { serverUrl: input.serverUrl, cacheDir: join(input.cacheDir, "archives"), artifact: harness.archive },
     fetcher,
   );
-  const temporary = await mkdtemp(join(input.cacheDir, ".codex-install-"));
+  const temporary = await mkdtemp(join(input.cacheDir, `.${input.harness}-install-`));
   try {
     // files() only returns regular files. Never call extract(): write verified blobs
     // ourselves into a new private directory, so archive symlinks cannot escape it.

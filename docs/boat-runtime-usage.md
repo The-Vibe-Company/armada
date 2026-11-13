@@ -94,8 +94,8 @@ activation, three prompts, two stops; no allocation/activation retries. The
 canonical check owns archived answers, memory, own per-turn usage, frozen quotes,
 checkpoints and cleanup. This narrow check does not also claim MCP/skills parity.
 
-Success requires matching runtime-source/epoch receipts, positive measured input
-and output, positive `api_equivalent` session USD before and after resume, and an
+Success requires matching runtime-source/epoch receipts, measured input/output with nonzero token activity, positive `api_equivalent`
+session USD before and after resume, and an
 increase in both turns and USD after resume. A stopped-status read additionally
 requires positive first/resumed turn quotes pinned to that account/version and
 an exact per-turn sum matching the session. Unknown/zero/API-key cost, missing
@@ -110,3 +110,59 @@ refresh acceptance needs non-secret server revision evidence, never raw tokens.
 
 Normal server/runtime deployment only; no migration or manual artifact publishing
 for this check. Workers do not run it against staging or claim real inference.
+
+### Coordinator configuration before the strict subscription check
+
+- Wait for Boat start quota to be available. A provider `429` from the daily
+  starts limit is not a runtime failure or permission to retry allocations.
+- Connect a real ChatGPT login model account through the existing account flow,
+  in the smoke caller's user scope or an authorized organization scope. It must
+  appear as active `codex_auth` with a valid version and non-expired login. An
+  `openai` API-key account is not interchangeable for this acceptance check.
+  Store credentials through the existing encrypted flow, never argv/logs.
+- Set the existing `ARMADA_URL` to the Armada **server** HTTPS origin,
+  `ARMADA_TOKEN` to the authorized caller's bearer, `ARMADA_RUNTIME_ORG` to the
+  organization UUID, `ARMADA_RUNTIME_GOLDEN` to its snapshotted Boat golden, and
+  `ARMADA_RUNTIME_CREDENTIAL_ID` to that ChatGPT account UUID. Optional existing
+  `ARMADA_RUNTIME_MODEL` must be supported by the account. Leave
+  `ARMADA_RUNTIME_HARNESS` unset or `codex` for this Codex check (Claude is
+  covered below); acknowledge the run with the command
+  above. The deployed server/runtime must have the merged usage/pricing and
+  epoch-fenced subscription support; no new setting or manual publication.
+- **No default skills or MCP/GitHub inputs are required by this narrow check.**
+  It invokes `--usage --resume` with the canonical no-skills/defaults-skipped
+  path. For the separate broader skills parity check, configure at least one
+  exact published skill pin in the existing golden/org/personal default policy;
+  empty defaults must remain a pre-allocation refusal, not an empty-policy pass.
+
+Keep the usage/cost/subscription and skills parity rows orange until their actual
+coordinator lifecycle evidence exists. A quota blocker, missing account, missing
+skill defaults or successful offline test cannot turn a row green. Do not spend
+another start merely to reproduce a known quota/configuration refusal.
+
+### Claude-token acceptance (same entrypoint, existing harness setting)
+
+After the Claude Boat lifecycle (#1428) and its normal schema/server/runtime
+artifacts are delivered, connect an active non-expired `claude_oauth` account via
+the existing model-account flow. Set its UUID in the same
+`ARMADA_RUNTIME_CREDENTIAL_ID` (and, if set, choose a supported Claude model in
+the existing `ARMADA_RUNTIME_MODEL`) and run **one** lifecycle:
+
+```sh
+ARMADA_RUNTIME_HARNESS=claude ARMADA_RUNTIME_SMOKE=one_real_boat_launch \
+  bun scripts/check-boat-subscription.ts
+```
+
+The entrypoint checks the selected harness's account kind before allocation:
+`codex_auth` for Codex, `claude_oauth` for Claude. An Anthropic API key or ChatGPT
+account does not establish Claude-token acceptance. Both paths require the same
+positive `api_equivalent` per-turn/session USD, own measured tokens, archived
+answers and cold-resume proof. No skills/MCP defaults are needed and no new
+runtime/authentication option is introduced. The underlying Claude lifecycle
+remains owned by #1428, not copied here. `refresh:not_claimed` remains explicit;
+a Claude setup token is not a refresh-token bundle. Quota/account blockers keep
+the parity rows orange until the coordinator supplies real evidence.
+
+Claude's reported uncached input may legitimately be **zero** on a cached turn.
+The checker accepts measured nonnegative input/output with nonzero combined
+activity and positive admitted USD; it never converts a missing count into zero.

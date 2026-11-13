@@ -4,12 +4,14 @@ import {
   type DockerLaunchResult,
   type DockerSandboxRecord,
   type GoldenActor,
+  HARNESSES,
+  type Harness,
   type LaunchCredentialResolver,
   ProviderError,
   resolveModelChoice,
   type Sql,
 } from "@armada/core";
-import { decryptSecret, encryptSecret } from "@armada/core/server";
+import { createSqlSandboxStore, decryptSecret, encryptSecret } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import type { createDockerBootstrapService } from "./docker-bootstrap-service.ts";
 import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
@@ -19,7 +21,7 @@ import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 type Request = {
   org: string;
   provider: "docker";
-  harness: "codex";
+  harness: Harness;
   visibility: "private";
   hostId: string;
   image: string;
@@ -50,6 +52,7 @@ type Row = {
   org_id: string;
   owner_id: string;
   provider: string;
+  harness: Harness;
   provider_sandbox_id: string;
   docker_host_id: string;
   docker_image: string;
@@ -123,7 +126,7 @@ function normalize(body: Record<string, unknown>): Request {
         ].includes(field),
     ) ||
     body.provider !== "docker" ||
-    body.harness !== "codex" ||
+    !HARNESSES.includes(body.harness as Harness) ||
     (body.visibility !== undefined && body.visibility !== "private") ||
     typeof body.image !== "string" ||
     body.image.length > 512 ||
@@ -141,7 +144,7 @@ function normalize(body: Record<string, unknown>): Request {
     throw failure("invalid_request");
   let choice: ReturnType<typeof resolveModelChoice>;
   try {
-    choice = resolveModelChoice("codex", {
+    choice = resolveModelChoice(body.harness as Harness, {
       model: body.model as string | undefined,
       reasoningEffort: body.reasoningEffort as string | undefined,
     });
@@ -151,7 +154,7 @@ function normalize(body: Record<string, unknown>): Request {
   return {
     org: identifier(body.org),
     provider: "docker",
-    harness: "codex",
+    harness: body.harness as Harness,
     visibility: "private",
     hostId: identifier(body.hostId),
     image: body.image,
@@ -199,7 +202,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
     const membership = await member(tx, actor);
     const row = (
       await tx.query<Row>(
-        `select id,org_id,owner_id,provider,provider_sandbox_id,docker_host_id,docker_image,status,
+        `select id,org_id,owner_id,provider,harness,provider_sandbox_id,docker_host_id,docker_image,status,
         conversation_ids,created_at,stopped_at,deleted_at,stop_requested_at,expires_at,effective_ttl_seconds,
         lifecycle_generation,requested_ttl_seconds,credential_id,credential_version,model,reasoning_effort,
         expires_at<=now() as expired from public.sandboxes where id=$1`,
@@ -251,7 +254,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       goldenId: null,
       orgId: row.org_id,
       ownerId: row.owner_id,
-      harness: "codex",
+      harness: row.harness,
       visibility: "private",
       hostId: row.docker_host_id,
       image: row.docker_image,
@@ -297,7 +300,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
           // Resolve outside the reservation transaction; only the binding is retained.
           const resolved = await options.credentials.resolve(
             { ...actor, role: state.membership.role },
-            "codex",
+            request.harness,
             request.credentialId,
             request.credentialVersion ?? undefined,
           );
@@ -331,12 +334,18 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
               requestId: request.requestId,
               hostId: request.hostId,
               image: request.image,
+              harness: request.harness,
               credentialId: request.credentialId,
               credentialVersion: manifest.credentialVersion,
               model: request.model,
               reasoningEffort: request.reasoningEffort,
               ...(body.ttlSeconds === undefined ? {} : { ttlSeconds: request.ttlSeconds }),
             });
+            if (resolved.usagePricing)
+              await createSqlSandboxStore(scoped(tx), { turnModels: true }).recordUsagePricingContext?.(
+                request.requestId,
+                resolved.usagePricing,
+              );
             const current = await member(tx, actor);
             await tx.query(
               `insert into public.docker_launch_requests(sandbox_id,actor_epoch,request_hash,request_enc) values($1,$2,$3,$4)`,

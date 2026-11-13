@@ -23,7 +23,16 @@ test.each([
   "zero-first",
   "wrong-account",
   "no-status",
+  "claude-success",
+  "claude-zero-input",
+  "claude-missing-input",
+  "claude-key",
+  "claude-codex-account",
+  "unsupported-harness",
 ] as const)("single subscription acceptance entrypoint fails closed (%s)", async (mode) => {
+  const harness = mode.startsWith("claude-") ? "claude" : mode === "unsupported-harness" ? "opencode" : "codex";
+  const kind = harness === "claude" ? "claude_oauth" : "codex_auth";
+  const success = mode === "success" || mode === "claude-success" || mode === "claude-zero-input";
   const root = await mkdtemp(join(tmpdir(), "subscription-check-"));
   const secret = `synthetic-${crypto.randomUUID()}`;
   try {
@@ -32,23 +41,24 @@ test.each([
       preload,
       `
 const mode=${JSON.stringify(mode)};
+const harness=${JSON.stringify(harness)}, kind=${JSON.stringify(kind)};
 let spawns=0;
 process.on('exit',()=>console.log('SPAWNS '+spawns));
 globalThis.fetch=async(url,init)=>{
  if(JSON.parse(init.body).org!=='org'||init.redirect!=='error')throw Error('unexpected request');
  if(String(url)==='https://armada.example/api/v1/sandbox/status'){
   if(mode==='no-status')return new Response('',{status:503});
-  return Response.json({usage:{turnCount:3,turns:['first','followup','resumed'].map((promptId,i)=>({promptId,inputTokens:100,outputTokens:10,pricing:{basis:'api_equivalent',unknown:null,credentialId:mode==='wrong-account'?'replacement':'11111111-1111-4111-8111-111111111111',credentialVersion:2,usd:mode==='zero-first'&&i===0?'0':'0.001'}})),cost:{currency:'USD',usd:'0.003',basis:'api_equivalent',unknown:null,unpricedTurns:0}}});
+  return Response.json({usage:{turnCount:3,turns:['first','followup','resumed'].map((promptId,i)=>({promptId,inputTokens:mode==='claude-missing-input'?null:mode==='claude-zero-input'?0:100,outputTokens:10,pricing:{basis:'api_equivalent',unknown:null,credentialId:mode==='wrong-account'?'replacement':'11111111-1111-4111-8111-111111111111',credentialVersion:2,usd:mode==='zero-first'&&i===0?'0':'0.001'}})),cost:{currency:'USD',usd:'0.003',basis:'api_equivalent',unknown:null,unpricedTurns:0}}});
  }
  if(String(url)!=='https://armada.example/api/v1/creds/list')throw Error('unexpected request');
  if(mode==='inventory-denied')return new Response('',{status:403});
- return Response.json({user:mode==='missing'?[]:[{id:'11111111-1111-4111-8111-111111111111',kind:mode==='key'?'openai':'codex_auth',status:'active',version:2,expiresAt:mode==='expired'?'2000-01-01T00:00:00Z':null,value:${JSON.stringify(secret)}}],orgs:[]});
+ return Response.json({user:mode==='missing'?[]:[{id:'11111111-1111-4111-8111-111111111111',kind:mode==='key'?'openai':mode==='claude-key'?'anthropic':mode==='claude-codex-account'?'codex_auth':kind,status:'active',version:2,expiresAt:mode==='expired'?'2000-01-01T00:00:00Z':null,value:${JSON.stringify(secret)}}],orgs:[]});
 };
 Bun.spawn=(args,options)=>{
  spawns++;
- if(spawns!==1||!args[1].endsWith('/check-boat-runtime.ts')||JSON.stringify(args.slice(2))!==JSON.stringify(['--usage','--resume'])||options.env.ARMADA_RUNTIME_HARNESS!=='codex'||args.includes(${JSON.stringify(secret)}))throw Error('wrong canonical invocation');
+ if(spawns!==1||!args[1].endsWith('/check-boat-runtime.ts')||JSON.stringify(args.slice(2))!==JSON.stringify(['--usage','--resume'])||options.env.ARMADA_RUNTIME_HARNESS!==harness||args.includes(${JSON.stringify(secret)}))throw Error('wrong canonical invocation');
  const cost=(later)=>({status:mode==='unknown'?'unknown':'priced',usd:mode==='unknown'?null:mode==='zero'?'0':later&&mode!=='historical-cost'?'0.003':'0.002',basis:mode==='estimated'?'estimated':'api_equivalent',unknown:mode==='unknown'?'tokens':null});
- const usage=(later)=>({turnCount:later?3:2,admission:'frozen',tokenTotals:{inputTokens:later?300:200,outputTokens:later?30:20},cost:cost(later)});
+ const usage=(later)=>({turnCount:later?3:2,admission:'frozen',tokenTotals:{inputTokens:mode==='claude-missing-input'?null:mode==='claude-zero-input'?0:later?300:200,outputTokens:later?30:20},cost:cost(later)});
  const first={sandboxId:'22222222-2222-4222-8222-222222222222',source:'armada-runtime',epoch:'1',promptId:'first',answer:'verified',usage:'verified',usageProof:usage(false)};
  const last={sandboxId:first.sandboxId,source:'armada-runtime',previousEpoch:'1',epoch:mode==='same-epoch'?'1':'2',promptId:'resumed',resume:'verified',usageAfterResume:'verified',costAfterResume:'priced',usageProof:usage(true)};
  const text=${JSON.stringify(secret)}+'\\n'+JSON.stringify(first)+'\\n'+(mode==='no-resume'?'':JSON.stringify(last))+'\\nRuntime resume and stopped history verified.\\n';
@@ -67,7 +77,7 @@ Bun.spawn=(args,options)=>{
           ARMADA_RUNTIME_ORG: "org",
           ARMADA_RUNTIME_GOLDEN: "golden",
           ARMADA_RUNTIME_CREDENTIAL_ID: "11111111-1111-4111-8111-111111111111",
-          ARMADA_RUNTIME_HARNESS: "codex",
+          ARMADA_RUNTIME_HARNESS: harness,
           ARMADA_RUNTIME_SMOKE: "one_real_boat_launch",
         },
         stdout: "pipe",
@@ -80,13 +90,16 @@ Bun.spawn=(args,options)=>{
       new Response(child.stderr).text(),
     ]);
     expect(out + err).not.toContain(secret);
-    expect(code).toBe(mode === "success" ? 0 : 1);
-    expect(out).toContain(`SPAWNS ${["key", "missing", "expired", "inventory-denied"].includes(mode) ? 0 : 1}`);
+    expect(code).toBe(success ? 0 : 1);
+    expect(out).toContain(
+      `SPAWNS ${["key", "missing", "expired", "inventory-denied", "claude-key", "claude-codex-account", "unsupported-harness"].includes(mode) ? 0 : 1}`,
+    );
     if (["child-failed", "stop-only"].includes(mode))
       expect(err).toContain("Recovery sandbox IDs: 22222222-2222-4222-8222-222222222222");
-    if (mode === "success")
+    if (success)
       expect(JSON.parse(out.split("\n")[0]!)).toMatchObject({
-        subscription: "codex_auth",
+        harness,
+        subscription: kind,
         basis: "api_equivalent",
         firstPhaseUsd: "0.002",
         firstTurnUsd: "0.001",

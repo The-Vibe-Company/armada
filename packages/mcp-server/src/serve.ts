@@ -29,9 +29,11 @@ import { retryDatabaseBoot } from "./database-boot.ts";
 import { createDatabaseReadiness } from "./database-readiness.ts";
 import { requireDatabaseSchema } from "./database-schema.ts";
 import { createDockerBootstrapService } from "./docker-bootstrap-service.ts";
+import { createDockerHostInstallRoute } from "./docker-host-install.ts";
 import { createDockerHostRoutes } from "./docker-host-routes.ts";
 import { createDockerHostStore } from "./docker-host-store.ts";
 import { createDockerNormalLaunch } from "./docker-normal-launch.ts";
+import { createDockerNormalSend } from "./docker-normal-send.ts";
 import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
 import { createDockerSandboxControls } from "./docker-sandbox-controls.ts";
 import { createDockerSandboxRoutes } from "./docker-sandbox-routes.ts";
@@ -47,6 +49,7 @@ import { bootstrapBoatMcp } from "./mcp-native.ts";
 import { createHistoricalSandboxProviderResolver, createMcpSandboxProviderResolver } from "./mcp-sandbox-provider.ts";
 import { createModalIntegration } from "./modal-integration.ts";
 import { modalRuntimeLaunch } from "./modal-runtime-launch.ts";
+import { modalRuntimeResume } from "./modal-runtime-resume.ts";
 import { createModelAuthOwnership } from "./model-auth.ts";
 import { createModelUsageApi } from "./model-usage.ts";
 import type { NamedLaunchCredentials } from "./named-credentials.ts";
@@ -314,40 +317,71 @@ export async function startServer(
   const dockerEnabled = env.ARMADA_DOCKER_HOSTS === "1" && env.ARMADA_DOCKER_PLACEMENT === "1";
   let dockerBootstrap: ReturnType<typeof createDockerBootstrapService> | undefined;
   if (dockerEnabled) {
-    try {
-      if (!env.ARMADA_DOCKER_RUNTIME_MANIFEST) throw Error();
-      const dockerManifest = await Bun.file(env.ARMADA_DOCKER_RUNTIME_MANIFEST).json();
-      if (
-        dockerManifest?.protocol !== 1 ||
-        dockerManifest.platform !== "linux" ||
-        dockerManifest.libc !== "glibc" ||
-        !["x64", "arm64"].includes(dockerManifest.architecture)
-      )
-        throw Error();
-      dockerBootstrap = createDockerBootstrapService(sql, config.encryptionKey, {
-        enabled: true,
-        serverUrl: config.publicUrl,
-        manifest: dockerManifest,
-        architecture: dockerManifest.architecture,
-        // Plain-image launches resolve only the model account, not GitHub or host credentials.
-        credentials: dockerCredentials,
-        modelAuth,
-      });
-    } catch {
+    if (!env.ARMADA_DOCKER_RUNTIME_MANIFEST) throw Error("Docker runtime manifest required.");
+    const dockerManifest = await Bun.file(env.ARMADA_DOCKER_RUNTIME_MANIFEST).json();
+    if (
+      dockerManifest?.protocol !== 1 ||
+      dockerManifest.platform !== "linux" ||
+      dockerManifest.libc !== "glibc" ||
+      !["x64", "arm64"].includes(dockerManifest.architecture)
+    )
       throw Error("Invalid Docker runtime deployment manifest.");
-    }
+    dockerBootstrap = createDockerBootstrapService(sql, config.encryptionKey, {
+      enabled: true,
+      serverUrl: config.publicUrl,
+      manifest: dockerManifest,
+      architecture: dockerManifest.architecture,
+      // Plain-image launches resolve only the model account, not GitHub or host credentials.
+      credentials: dockerCredentials,
+      modelAuth,
+    });
   }
+  const modalRuntimeHostFor = async (
+    target: import("@armada/core").ProviderTarget,
+    caller: import("./caller.ts").Caller,
+  ) => {
+    if (!target.modal) throw Error("Modal binding required.");
+    const tokens = await modal.modalTokensFor(target, caller);
+    return (await modal.modalProviderFor({ tokenId: tokens.tokenId, tokenSecret: tokens.tokenSecret }, target.modal, {
+      target,
+      caller,
+      credentialScope: tokens.scope,
+    })) as import("@armada/provider-modal").ModalProvider;
+  };
+  const boatResume = runtimeLaunch
+    ? boatRuntimeResume({ sql, vault: store, key: config.encryptionKey, policy: runtimeLaunch, modelAuth })
+    : undefined;
+  const modalResume = modalRuntimePolicy
+    ? modalRuntimeResume({
+        sql,
+        vault: store,
+        key: config.encryptionKey,
+        policy: modalRuntimePolicy,
+        hostFor: modalRuntimeHostFor,
+      })
+    : undefined;
   const runtimeResume = createRuntimeResume(
     sql,
     config.encryptionKey,
     runtimeCommands,
-    runtimeLaunch
-      ? boatRuntimeResume({ sql, vault: store, key: config.encryptionKey, policy: runtimeLaunch, modelAuth })
+    boatResume || modalResume
+      ? (caller, sandbox) => {
+          const prepare = sandbox.provider === "modal" ? modalResume : boatResume;
+          if (!prepare) throw new VaultError("unavailable", "Runtime resume policy unavailable.");
+          return prepare(caller, sandbox);
+        }
       : undefined,
     runtimeMcp.prepare,
   );
   const dockerControls =
-    env.ARMADA_DOCKER_HOSTS === "1" ? createDockerSandboxControls(sql, config.encryptionKey) : undefined;
+    env.ARMADA_DOCKER_HOSTS === "1"
+      ? createDockerSandboxControls(sql, config.encryptionKey, {
+          ...(dockerBootstrap ? { resume: dockerBootstrap } : {}),
+          send: createDockerNormalSend(sql, config.encryptionKey, {
+            enabled: dockerEnabled && Boolean(dockerBootstrap),
+          }),
+        })
+      : undefined;
   const dockerLaunchEnabled = dockerEnabled && Boolean(dockerBootstrap);
   const dockerLaunch =
     env.ARMADA_DOCKER_HOSTS === "1"
@@ -365,6 +399,8 @@ export async function startServer(
       placement: dockerEnabled,
       normalApi: Boolean(dockerControls),
       normalLaunch: dockerLaunchEnabled,
+      normalSend: dockerLaunchEnabled,
+      normalResume: dockerLaunchEnabled,
     },
     runtimeSend,
     runtimeCheckpoint,
@@ -374,18 +410,7 @@ export async function startServer(
     ...(modalRuntimePolicy
       ? {
           modalRuntimeLaunch: modalRuntimePolicy,
-          modalRuntimeHostFor: async (
-            target: import("@armada/core").ProviderTarget,
-            caller: import("./caller.ts").Caller,
-          ) => {
-            if (!target.modal) throw Error("Modal binding required.");
-            const tokens = await modal.modalTokensFor(target, caller);
-            return modal.modalProviderFor({ tokenId: tokens.tokenId, tokenSecret: tokens.tokenSecret }, target.modal, {
-              target,
-              caller,
-              credentialScope: tokens.scope,
-            });
-          },
+          modalRuntimeHostFor,
         }
       : {}),
     ...(runtimeLaunch
@@ -523,7 +548,7 @@ export async function startServer(
                   supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
                   now: new Date(),
                 }),
-              { placement: dockerLaunchEnabled },
+              { placement: dockerLaunchEnabled, publicUrl: config.publicUrl },
             ),
           ]
         : []),
@@ -544,6 +569,7 @@ export async function startServer(
             ),
           ]
         : []),
+      createDockerHostInstallRoute(env.ARMADA_RUNTIME_ARTIFACT_DIR, config.publicUrl),
       createRuntimeArtifactRoute(env.ARMADA_RUNTIME_ARTIFACT_DIR),
       runtimeEnrolments.route,
       createRuntimeProgress(runtimeEnrolments),

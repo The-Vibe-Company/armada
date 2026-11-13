@@ -68,7 +68,7 @@ import {
 } from "@/lib/golden-form";
 import { goldenSizing, sizePolicyBlocker } from "@/lib/machine-size";
 import type { LaunchAccounts } from "@/lib/model-accounts";
-import { connectedProviders, PROVIDER_SETTINGS_PATH } from "@/lib/provider-setup";
+import { CLOUD_PROVIDERS_PATH, connectedProviders } from "@/lib/provider-setup";
 import { relativeAge } from "@/lib/relative-time";
 import { goldenRepositoryDirs } from "@/lib/repository-context";
 import { type Bucket, ITEM_PARAM, sortResources } from "@/lib/resource-list";
@@ -135,7 +135,7 @@ export default async function GoldensPage({ searchParams }: Props) {
     goldens.filter((golden) => tracked(`rebuild.${golden.id}`)).map((golden) => golden.id),
   );
   if (setupPending && goldens.length === 0 && !createTracked && rebuildsTracked.size === 0)
-    redirect(PROVIDER_SETTINGS_PATH);
+    redirect(CLOUD_PROVIDERS_PATH);
   const orgs = new Map(memberships.map((item) => [item.org.id, item]));
   // Usage comes only from caller-visible server bindings, never historical row counts.
   const capacities = capabilities
@@ -556,7 +556,7 @@ function environmentRow(golden: Golden, context: RowContext, now: number): Envir
       </SelectItem>
     ) : state.action === "connect" ? (
       <Button variant="outline" size="sm" asChild>
-        <Link href={PROVIDER_SETTINGS_PATH} aria-label={`Connect ${label} to launch ${golden.name}`}>
+        <Link href={CLOUD_PROVIDERS_PATH} aria-label={`Connect ${label} to launch ${golden.name}`}>
           Connect {label}
         </Link>
       </Button>

@@ -13,6 +13,9 @@ if (origin.protocol !== "https:" || origin.href !== `${origin.origin}/`)
 const token = process.env.ARMADA_TOKEN;
 const golden = process.env.ARMADA_RUNTIME_GOLDEN;
 const org = process.env.ARMADA_RUNTIME_ORG;
+const harness = process.env.ARMADA_RUNTIME_HARNESS ?? "codex";
+if (harness !== "codex" && harness !== "claude")
+  throw Error("ARMADA_RUNTIME_HARNESS must be codex or claude; no launch attempted.");
 const credentialId = process.env.ARMADA_RUNTIME_CREDENTIAL_ID;
 if (!token || !golden || !org || !credentialId) throw Error("Missing coordinator staging inputs.");
 const usageMode = process.argv.includes("--usage");
@@ -29,6 +32,7 @@ interface Reply {
     mcpVersion?: number;
     skillsVersion?: number;
     workspaceVersion?: number;
+    controlsVersion?: number;
   };
   githubReady?: boolean;
   mcpReady?: boolean;
@@ -121,6 +125,11 @@ function observeWorkspace(event: AgentEvent) {
     workspaceLocked = true;
   }
 }
+const steerMode = process.argv.includes("--steer");
+const interruptMode = process.argv.includes("--interrupt");
+const execMode = process.argv.includes("--exec");
+if ((steerMode || interruptMode || execMode) && options.boatRuntime.controlsVersion !== 1)
+  throw Error("Server has no Boat runtime controls v1; no launch attempted.");
 const skillsMode = process.argv.includes("--skills");
 let defaultPins: string[] = [];
 let defaultGoldenId: string | undefined;
@@ -294,7 +303,7 @@ try {
     runtimeVersion: 1,
     boatRuntime: true,
     provider: "boat",
-    harness: "codex",
+    harness,
     golden,
     org,
     credentialId,
@@ -320,7 +329,7 @@ try {
   if (skillsMode && goldenId !== defaultGoldenId)
     throw Error("Launch used a different golden than the defaults preflight.");
   await verifySkillStatus();
-  const verify = async (promptId: string, expected: string) => {
+  const verify = async (promptId: string, expected: string, requireMcp = mcpMode) => {
     const deadline = Date.now() + 300000;
     let cursor: string | undefined;
     let answer = false,
@@ -328,7 +337,10 @@ try {
     mcpToolPrompts.delete(promptId);
     while (
       Date.now() < deadline &&
-      (!answer || !finished || (usageMode && !usageCheck.has(promptId)) || (mcpMode && !mcpToolPrompts.has(promptId)))
+      (!answer ||
+        !finished ||
+        (usageMode && !usageCheck.has(promptId)) ||
+        (requireMcp && !mcpToolPrompts.has(promptId)))
     ) {
       const page = await api("logs/read", { id, all: true, ...(cursor ? { cursor } : {}) });
       if (page.runtimeFailure?.status === "failed")
@@ -340,7 +352,7 @@ try {
         observeWorkspace(event);
         if (event.promptId !== promptId) continue;
         if (usageMode) usageCheck.observe(event);
-        if (mcpMode && event.kind === "message") {
+        if (requireMcp && event.kind === "message") {
           for (const tool of event.tools)
             if (
               tool.server === mcpServer &&
@@ -378,17 +390,22 @@ try {
           throw Error("Runtime prompt did not finish successfully.");
       }
       cursor = page.cursor ?? cursor;
-      if (finished && answer && mcpMode && !mcpToolPrompts.has(promptId))
+      if (finished && answer && requireMcp && !mcpToolPrompts.has(promptId))
         throw Error("Missing this prompt's automatic MCP tool evidence.");
       if (
         !answer ||
         !finished ||
         (usageMode && !usageCheck.has(promptId)) ||
-        (mcpMode && !mcpToolPrompts.has(promptId))
+        (requireMcp && !mcpToolPrompts.has(promptId))
       )
         await Bun.sleep(1000);
     }
-    if (!answer || !finished || (usageMode && !usageCheck.has(promptId)) || (mcpMode && !mcpToolPrompts.has(promptId)))
+    if (
+      !answer ||
+      !finished ||
+      (usageMode && !usageCheck.has(promptId)) ||
+      (requireMcp && !mcpToolPrompts.has(promptId))
+    )
       throw Error("Missing archived runtime answer, terminal event, MCP tool or harness usage evidence.");
     await verifyUsageStatus();
   };
@@ -397,6 +414,81 @@ try {
   firstPrompt = launched.promptId;
   await verify(launched.promptId, marker);
   if (mcpMode) mcpProof = verifyMcp(launched.promptId, launched.runtime.epoch ?? "");
+  if (execMode) {
+    const expected = crypto.randomUUID();
+    const result = await api<{
+      stdout: string;
+      stderr: string;
+      exitCode: number;
+      timedOut: boolean;
+      truncated: boolean;
+    }>("sandbox/exec", { id, command: `printf '%s' '${expected}'`, timeout_seconds: 10 });
+    if (
+      result.stdout !== expected ||
+      result.stderr !== "" ||
+      result.exitCode !== 0 ||
+      result.timedOut ||
+      result.truncated
+    )
+      throw Error("Runtime exec output did not match.");
+    console.log(JSON.stringify({ sandboxId: id, exec: "verified" }));
+  }
+  for (const operation of [...(steerMode ? ["steer"] : []), ...(interruptMode ? ["interrupt"] : [])]) {
+    const control = await api("sandbox/send", {
+      id,
+      request_id: crypto.randomUUID(),
+      conversation_id: launched.conversationId,
+      prompt: "Run the shell command sleep 90, then reply WAITED. Do not change files or forget the remembered token.",
+    });
+    if (!control.promptId || control.conversationId !== launched.conversationId)
+      throw Error("Missing control turn receipt.");
+    const deadline = Date.now() + 60000;
+    let running = false;
+    while (Date.now() < deadline && !running) {
+      const page = await api("logs/read", { id, all: true });
+      if (page.source !== "armada-runtime") throw Error("Control history is not runtime-owned.");
+      running = (page.events ?? []).some(
+        (event) => event.kind === "prompt" && event.promptId === control.promptId && event.status === "running",
+      );
+      if (!running) await Bun.sleep(500);
+    }
+    if (!running) throw Error("Control turn did not start.");
+    const expected = `STEER_${crypto.randomUUID()}`;
+    const receipt = await api<{ interrupted?: boolean; delivery?: string; promptId?: string; conversationId?: string }>(
+      `sandbox/${operation}`,
+      {
+        id,
+        conversation_id: launched.conversationId,
+        ...(operation === "steer"
+          ? { text: `Stop waiting and reply exactly ${expected}. Do not use more tools.` }
+          : {}),
+      },
+    );
+    if (operation === "steer") {
+      if (
+        receipt.delivery !== (harness === "codex" ? "restart" : "native") ||
+        receipt.promptId !== control.promptId ||
+        receipt.conversationId !== launched.conversationId
+      )
+        throw Error("Steering receipt did not identify the runtime turn and delivery semantics.");
+      await verify(control.promptId, expected, false);
+    } else {
+      if (receipt.interrupted !== true) throw Error("Interrupt was not acknowledged.");
+      let interrupted = false;
+      const until = Date.now() + 60000;
+      while (Date.now() < until && !interrupted) {
+        const page = await api("logs/read", { id, all: true });
+        if (page.source !== "armada-runtime") throw Error("Interrupt history is not runtime-owned.");
+        interrupted = (page.events ?? []).some(
+          (event) => event.kind === "prompt" && event.promptId === control.promptId && event.status === "interrupted",
+        );
+        if (!interrupted) await Bun.sleep(500);
+      }
+      if (!interrupted) throw Error("Missing archived interrupted terminal event.");
+    }
+    console.log(JSON.stringify({ sandboxId: id, promptId: control.promptId, [operation]: "verified" }));
+  }
+
   let nextPromptId: string | undefined;
   if (followup) {
     if (!launched.conversationId) throw Error("Launch did not return a conversation ID.");

@@ -14,8 +14,8 @@ import { ENCRYPTION_KEY } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
 
-async function stopped() {
-  const f = await runtimeFixture(await sharedDatabase());
+async function stopped(harness: "codex" | "claude" = "codex", provider: "boat" | "modal" = "boat") {
+  const f = await runtimeFixture(await sharedDatabase(), provider, harness);
   const cp = await createRuntimeCheckpoint(
     f.sql,
     ENCRYPTION_KEY,
@@ -34,12 +34,16 @@ const input = (id: string) => ({
   prompt: "continue the previous conversation",
 });
 
-describe("retained runtime resume", () => {
+describe.each([
+  ["boat", "codex"],
+  ["boat", "claude"],
+  ["modal", "codex"],
+] as const)("retained runtime resume (%s/%s)", (provider, harness) => {
   let f: Awaited<ReturnType<typeof stopped>>;
   // Cold WASM/migrations and building the stopped checkpoint are prerequisites,
   // not resume/replay work. Keep the behavior timeout and real assertions intact.
   beforeAll(async () => {
-    f = await stopped();
+    f = await stopped(harness, provider);
   }, 20_000);
   afterAll(async () => {
     await f?.close();
@@ -48,15 +52,27 @@ describe("retained runtime resume", () => {
   test("resume reopens the same journal into a new attested epoch; stable replay never activates or starts a turn twice", async () => {
     const old = f.active;
     let activations = 0;
-    const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, async () => ({
-      async start(_signal, restore) {
-        activations++;
-        return f.reboot(restore);
-      },
-      async stop() {
-        throw Error("Healthy resume must not stop compute");
-      },
-    }));
+    let preparations = 0;
+    const resume = createRuntimeResume(
+      f.sql,
+      ENCRYPTION_KEY,
+      f.bridge,
+      async () => ({
+        async start(_signal, restore) {
+          activations++;
+          return f.reboot(restore);
+        },
+        async stop() {
+          throw Error("Healthy resume must not stop compute");
+        },
+      }),
+      provider === "modal"
+        ? async () => {
+            preparations++;
+            return undefined;
+          }
+        : undefined,
+    );
     const request = input(f.row.id);
     const result = (await callSharedTool(
       { ...f.context, runtimeResume: resume },
@@ -73,6 +89,7 @@ describe("retained runtime resume", () => {
     await expect(f.authority.withSession(old.runtimeToken, old.epoch, async () => true)).rejects.toThrow();
     expect(await resume(f.caller, request)).toEqual(result);
     expect(activations).toBe(1);
+    if (provider === "modal") expect(preparations).toBe(1);
     expect(f.starts).toEqual([undefined, "native-thread"]);
     const row = (await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))!;
     expect(row.status).toBe("running");
@@ -224,6 +241,57 @@ test.each([false, true])(
       expect(f.starts).toHaveLength(1);
     } finally {
       network.mockRestore();
+      await f.close();
+    }
+  },
+);
+
+// The Modal preparation adapter must resolve fresh credentials before activation
+// and recheck the admitted SQL fence, not merely trust a retained host receipt.
+test.each([false, true])(
+  "Modal activation uses the source checkpoint only while disk remains untainted (%s)",
+  async (taint) => {
+    const f = await stopped("codex", "modal");
+    const { modalRuntimeResume } = await import("../src/modal-runtime-resume.ts");
+    try {
+      const activations: unknown[] = [];
+      const host = {
+        id: "modal",
+        get: async () => ({ id: "physical", state: "stopped" }),
+        resumeRuntime: async (input: unknown) => {
+          activations.push(input);
+        },
+        stop: async () => {},
+      } as unknown as import("@armada/provider-modal").ModalProvider;
+      const prepare = modalRuntimeResume({
+        sql: f.sql,
+        vault: createSqlVaultStore(f.sql),
+        key: ENCRYPTION_KEY,
+        hostFor: async () => host,
+        policy: {
+          async start(value) {
+            if (taint) await f.db.query("update sandboxes set application_secret_tainted=true where id=$1", [f.row.id]);
+            await value.activate?.(value.signal);
+            throw Error("Fixture ends after Modal activation boundary");
+          },
+        },
+      });
+      await expect(
+        createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, prepare)(f.caller, input(f.row.id)),
+      ).rejects.toThrow();
+      expect(activations).toEqual(
+        taint
+          ? []
+          : [
+              {
+                sandboxId: "physical",
+                ttlSeconds: (f.row.effectiveTtlSeconds ?? 14400) + 300,
+                checkpoint: { epoch: "1", watermark: f.cp.checkpoint.watermark },
+              },
+            ],
+      );
+      expect(f.starts).toHaveLength(1);
+    } finally {
       await f.close();
     }
   },

@@ -875,7 +875,11 @@ describe("control API", () => {
       const discovery = await call({ method: "POST", headers, body: JSON.stringify({ docker: { normalApi: true } }) });
       const publicOptions = (await discovery?.json()) as LaunchOptionsResponse;
       const docker = publicOptions.providers.find((provider) => provider.id === "docker");
-      expect(docker).toMatchObject({ enabled: true, launchSources: ["image"], harnesses: ["codex"] });
+      expect(docker).toMatchObject({
+        enabled: true,
+        launchSources: ["image"],
+        harnesses: ["codex", "claude", "opencode"],
+      });
       expect(docker?.capabilities).toMatchObject({
         launch: false,
         stop: false,
@@ -2541,7 +2545,7 @@ test("versioned runtime launch is explicit/default-off and never selects native 
     for (const bad of [
       { ...body, runtimeVersion: 0 },
       { ...body, boatRuntime: false },
-      { ...body, harness: "claude" },
+      { ...body, harness: "opencode" },
       { ...body, provider: "modal" },
       { ...body, connections: "invalid" },
       { ...body, skills: ["not-a-pin"] },
@@ -2745,80 +2749,114 @@ test("versioned runtime launch is explicit/default-off and never selects native 
 
 // Public HTTP admission owns the opt-in: no allocation when disabled/malformed,
 // and no native agent/configuration fallback on the accepted model-only path.
-test("Modal runtime launch is explicit and persists dial-out selection before its first prompt", async () => {
-  await withServer(async ({ db, options }) => {
-    const org = await options.store.createOrg("Modal runtime", STAN);
-    options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
-    await db.query("insert into credentials(scope,owner_id,kind,value_enc) values('user',$1,'openai',$2)", [
-      STAN,
-      await encryptSecret("fixture-model-key", KEY),
-    ]);
-    await db.query(
-      `insert into goldens(org_id,owner_id,name,visibility,provider,provider_sandbox_id,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config)
+test.each([false, true])(
+  "Modal runtime launch prepares explicit/default MCP selection before its first prompt (%s)",
+  async (fromDefaults) => {
+    await withServer(async ({ db, options }) => {
+      const org = await options.store.createOrg("Modal runtime", STAN);
+      options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
+      await db.query("insert into credentials(scope,owner_id,kind,value_enc) values('user',$1,'openai',$2)", [
+        STAN,
+        await encryptSecret("fixture-model-key", KEY),
+      ]);
+      await db.query(
+        `insert into goldens(org_id,owner_id,name,visibility,provider,provider_sandbox_id,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config)
        values($1,$2,'modal-runtime','org','modal','master','image','workspace','main','app','{"repos":[{"url":"https://github.com/example/web.git","branch":"main","dir":"web"}],"init":["must not run"]}')`,
-      [org.id, STAN],
-    );
-    const bearer = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`;
-    const request = (body: object) =>
-      handleControlRequest(
-        new Request("https://armada.test/api/v1/sandbox/launch-modal-runtime-v1", {
-          method: "POST",
-          headers: { authorization: `Bearer ${bearer}` },
-          body: JSON.stringify(body),
-        }),
-        options,
+        [org.id, STAN],
       );
-    const body = {
-      org: org.id,
-      golden: "modal-runtime",
-      provider: "modal",
-      harness: "codex",
-      prompt: "reply",
-      runtimeVersion: 1,
-      runtimeTransport: "dialout",
-      skipSkillDefaults: true,
-      connections: [],
-    };
-    const fake = fakeBoat();
-    const host = { ...fake.provider, id: "modal" as const };
-    let starts = 0;
-    options.providerFor = () => {
-      throw Error("No Boat provider for Modal");
-    };
-    expect((await request(body))?.status).toBe(503);
-    expect(fake.forks).toHaveLength(0);
-    options.modalRuntimeHostFor = async () => host;
-    options.modalRuntimeLaunch = {
-      async start(input) {
-        starts++;
-        expect(input.sandbox.provider).toBe("modal");
-        expect(input.sandbox.runtimeTransport).toBe("dialout");
-        expect(input.sandbox.boatRuntime).toBeUndefined();
-        return {
-          epoch: "1",
-          prompt: async () => ({ promptId: "modal-initial", conversationId: "modal-conversation", status: "running" }),
-        };
-      },
-    };
-    for (const bad of [
-      { ...body, skipSkillDefaults: false },
-      { ...body, connections: [crypto.randomUUID()] },
-      { ...body, harness: "claude" },
-      { ...body, runtimeTransport: undefined },
-    ])
-      expect((await request(bad))?.status).toBe(400);
-    expect(fake.forks).toHaveLength(0);
-    const response = await request(body);
-    if (response?.status !== 200) throw Error(JSON.stringify(await response?.json()));
-    expect(response?.status).toBe(200);
-    expect(await response?.json()).toMatchObject({
-      runtime: { kind: "armada", epoch: "1" },
-      sandbox: { provider: "modal", runtimeTransport: "dialout" },
-      promptId: "modal-initial",
+      const bearer = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`;
+      const request = (body: object) =>
+        handleControlRequest(
+          new Request("https://armada.test/api/v1/sandbox/launch-modal-runtime-v1", {
+            method: "POST",
+            headers: { authorization: `Bearer ${bearer}` },
+            body: JSON.stringify(body),
+          }),
+          options,
+        );
+      const body = {
+        org: org.id,
+        golden: "modal-runtime",
+        provider: "modal",
+        harness: "codex",
+        prompt: "reply",
+        runtimeVersion: 1,
+        runtimeTransport: "dialout",
+        skipSkillDefaults: true,
+        connections: [],
+      };
+      const fake = fakeBoat();
+      const host = { ...fake.provider, id: "modal" as const };
+      let starts = 0;
+      let mcpPrepared = false;
+      const connection = crypto.randomUUID();
+      options.providerFor = () => {
+        throw Error("No Boat provider for Modal");
+      };
+      expect((await request(body))?.status).toBe(503);
+      expect(fake.forks).toHaveLength(0);
+      options.modalRuntimeHostFor = async () => host;
+      options.modalRuntimeLaunch = {
+        async start(input) {
+          starts++;
+          expect(input.sandbox.provider).toBe("modal");
+          expect(input.sandbox.runtimeTransport).toBe("dialout");
+          expect(input.sandbox.boatRuntime).toBeUndefined();
+          return {
+            epoch: "1",
+            prompt: async () => {
+              expect(mcpPrepared).toBe(true);
+              return { promptId: "modal-initial", conversationId: "modal-conversation", status: "running" };
+            },
+          };
+        },
+      };
+      for (const bad of [
+        { ...body, skipSkillDefaults: false },
+        { ...body, connections: ["invalid"] },
+        { ...body, harness: "claude" },
+        { ...body, runtimeTransport: undefined },
+      ])
+        expect((await request(bad))?.status).toBe(400);
+      expect(fake.forks).toHaveLength(0);
+      options.runtimeMcp = {
+        async preflight() {
+          throw Error("No live preflight in launch");
+        },
+        async prepare() {
+          throw Error("Connection lifecycle owns preparation");
+        },
+        connections: {
+          async defaults() {
+            expect(fromDefaults).toBe(true);
+            return [connection];
+          },
+          async validate(_actor, ids) {
+            expect(ids).toEqual([connection]);
+            expect(fake.forks).toHaveLength(0);
+          },
+          async bind(_id, ids) {
+            expect(ids).toEqual([connection]);
+          },
+          async prepare(_provider, sandbox) {
+            expect(starts).toBe(1);
+            expect(sandbox).toMatchObject({ runtimeTransport: "dialout", provider: "modal" });
+            mcpPrepared = true;
+          },
+        },
+      };
+      const response = await request({ ...body, connections: fromDefaults ? undefined : [connection] });
+      if (response?.status !== 200) throw Error(JSON.stringify(await response?.json()));
+      expect(response?.status).toBe(200);
+      expect(await response?.json()).toMatchObject({
+        runtime: { kind: "armada", epoch: "1" },
+        sandbox: { provider: "modal", runtimeTransport: "dialout" },
+        promptId: "modal-initial",
+      });
+      expect(starts).toBe(1);
+      expect(fake.forks).toHaveLength(1);
+      expect(fake.prompts).toHaveLength(0);
+      expect(fake.execs).toHaveLength(0);
     });
-    expect(starts).toBe(1);
-    expect(fake.forks).toHaveLength(1);
-    expect(fake.prompts).toHaveLength(0);
-    expect(fake.execs).toHaveLength(0);
-  });
-});
+  },
+);

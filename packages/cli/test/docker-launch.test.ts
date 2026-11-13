@@ -51,46 +51,49 @@ async function capture(argv: string[], fetcher: (request: Request) => Promise<Re
 }
 
 // CLI owns translating flags and preserving recovery identity, not host/runtime sequencing.
-test("Docker plain-image CLI uses the normal authenticated launch without golden or provider secrets", async () => {
-  const calls: Request[] = [];
-  const receipt = {
-    sandbox: { id: requestId, provider: "docker", providerSandboxId: "docker-logical", status: "running" },
-    golden: null,
-    runtime: { kind: "armada", epoch: "1" },
-    promptId: "prompt",
-    conversationId: "conversation",
-  };
-  const result = await capture(
-    [...args, "--agent", "codex", "--ttl", "30m", "answer once", "--json"],
-    async (request) => {
-      calls.push(request);
-      return Response.json(receipt);
-    },
-  );
-  expect(result.code).toBe(0);
-  expect(JSON.parse(result.out)).toEqual(receipt);
-  expect(calls).toHaveLength(1);
-  expect(calls[0]?.url).toBe("https://armada.thevibecompany.co/api/v1/sandbox/launch");
-  expect(calls[0]?.headers.get("authorization")).toStartWith("Bearer armada_sk_");
-  expect(await calls[0]?.json()).toEqual({
-    org,
-    provider: "docker",
-    hostId: host,
-    image,
-    harness: "codex",
-    credentialId: credential,
-    requestId,
-    model: "gpt-6.1-sol",
-    reasoningEffort: "medium",
-    ttlSeconds: 1800,
-    prompt: "answer once",
-  });
-});
+test.each(["codex", "claude", "opencode"] as const)(
+  "Docker %s CLI uses normal authenticated launch without golden or provider secrets",
+  async (harness) => {
+    const calls: Request[] = [];
+    const receipt = {
+      sandbox: { id: requestId, provider: "docker", providerSandboxId: "docker-logical", status: "running" },
+      golden: null,
+      runtime: { kind: "armada", epoch: "1" },
+      promptId: "prompt",
+      conversationId: "conversation",
+    };
+    const result = await capture(
+      [...args, "--agent", harness, "--ttl", "30m", "answer once", "--json"],
+      async (request) => {
+        calls.push(request);
+        return Response.json(receipt);
+      },
+    );
+    expect(result.code).toBe(0);
+    expect(JSON.parse(result.out)).toEqual(receipt);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toBe("https://armada.thevibecompany.co/api/v1/sandbox/launch");
+    expect(calls[0]?.headers.get("authorization")).toStartWith("Bearer armada_sk_");
+    expect(await calls[0]?.json()).toEqual({
+      org,
+      provider: "docker",
+      hostId: host,
+      image,
+      harness,
+      credentialId: credential,
+      requestId,
+      model: harness === "codex" ? "gpt-6.1-sol" : harness === "claude" ? "claude-opus-5-5" : "armada/deepseek-flash",
+      reasoningEffort: harness === "opencode" ? "default" : "medium",
+      ttlSeconds: 1800,
+      prompt: "answer once",
+    });
+  },
+);
 
 test("Docker incompatible or malformed options fail before HTTP", async () => {
   const calls: Request[] = [];
   for (const flags of [
-    ["--agent", "claude"],
+    ["--agent", "unknown"],
     ["--skill", "foo@1"],
     ["--repo", "acme/web"],
     ["--connections", "a"],
@@ -118,4 +121,25 @@ test("unknown Docker launch outcome retains a stable request UUID for exact retr
     expect(result.err).toContain(`--request-id ${requestId}`);
     expect(result.err).toContain("do not create a replacement");
   }
+});
+
+// CLI must issue one ticket via user authority and show a usable server-hosted installer.
+test("host add prints one verified-installer command and a one-time registration ticket", async () => {
+  let calls = 0;
+  const result = await capture(["host", "add", "--org", org], async (request) => {
+    calls++;
+    expect(new URL(request.url).pathname).toBe("/api/v1/docker/hosts/register-token");
+    expect(await request.json()).toEqual({ org });
+    return Response.json({
+      hostId: host,
+      registrationToken: "a".repeat(64),
+      command: "curl -fsSL https://armada.example/install-host.sh | sh -s -- --token " + "a".repeat(64),
+      expiresAt: "2026-11-13T14:00:00Z",
+    });
+  });
+  expect(result.code).toBe(0);
+  expect(calls).toBe(1);
+  expect(result.out).toContain("/install-host.sh | sh -s -- --token");
+  expect(result.out).toContain("Expires: 2026-11-13T14:00:00Z");
+  expect(result.err).toBe("");
 });

@@ -1,5 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { DEFAULT_LAUNCH_TTL_SECONDS, resolveModelChoice, type SandboxRecord, type Sql } from "@armada/core";
+import {
+  DEFAULT_LAUNCH_TTL_SECONDS,
+  HARNESS_KINDS,
+  HARNESSES,
+  type Harness,
+  resolveModelChoice,
+  type SandboxRecord,
+  type Sql,
+} from "@armada/core";
 import { createDockerHostStore } from "./docker-host-store.ts";
 
 type Actor = { userId: string; orgId: string };
@@ -7,6 +15,7 @@ type Reservation = {
   requestId: string;
   hostId: string;
   image: string;
+  harness?: Harness;
   credentialId: string;
   credentialVersion: number;
   model?: string;
@@ -23,7 +32,7 @@ type Row = {
   docker_installation_id: string;
   docker_generation: string;
   docker_image: string;
-  harness: string;
+  harness: Harness;
   visibility: string;
   status: SandboxRecord["status"];
   deleted_at: Date | string | null;
@@ -65,6 +74,7 @@ function normalize(input: Reservation) {
           "requestId",
           "hostId",
           "image",
+          "harness",
           "credentialId",
           "credentialVersion",
           "model",
@@ -87,9 +97,11 @@ function normalize(input: Reservation) {
     (input.reasoningEffort !== undefined && typeof input.reasoningEffort !== "string")
   )
     deny();
+  const harness = input.harness ?? "codex";
+  if (!HARNESSES.includes(harness)) deny();
   const ttlSeconds = input.ttlSeconds === undefined ? DEFAULT_LAUNCH_TTL_SECONDS : input.ttlSeconds;
   if (!Number.isInteger(ttlSeconds) || ttlSeconds < 1 || ttlSeconds > 86400) deny();
-  return { ...input, ...resolveModelChoice("codex", input), ttlSeconds };
+  return { ...input, ...resolveModelChoice(harness, input), harness, ttlSeconds };
 }
 function record(row: Row) {
   return {
@@ -102,7 +114,7 @@ function record(row: Row) {
     image: row.docker_image,
     ownerId: row.owner_id,
     orgId: row.org_id,
-    harness: "codex" as const,
+    harness: row.harness,
     visibility: "private" as const,
     status: row.status,
     deletedAt: row.deleted_at === null ? null : new Date(row.deleted_at).toISOString(),
@@ -177,10 +189,16 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
         // Revalidate before host/sandbox locks, without consulting account values.
         if (!existing) {
           const credential = await tx.query(
-            `select id from public.credentials where id=$1 and version=$2 and kind in ('openai','codex_auth')
+            `select id from public.credentials where id=$1 and version=$2 and kind = any($5::public.credential_kind[])
              and status='active' and (expires_at is null or expires_at>now())
              and ((scope='user' and owner_id=$3) or (scope='org' and owner_id=$4)) for share`,
-            [request.credentialId, request.credentialVersion, actor.userId, actor.orgId],
+            [
+              request.credentialId,
+              request.credentialVersion,
+              actor.userId,
+              actor.orgId,
+              HARNESS_KINDS[request.harness],
+            ],
           );
           if (!credential.rows.length) deny();
         }
@@ -188,7 +206,7 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
           (
             await tx.query<{ installation_id: string }>(
               `select installation_id from public.docker_hosts where id=$1 and org_id=$2 and owner_id=$3
-           and installation_id=$4 and hash is not null and registration_hash is null and revoked_at is null for update`,
+           and draining_at is null and installation_id=$4 and hash is not null and registration_hash is null and revoked_at is null for update`,
               [request.hostId, actor.orgId, hint.owner_id, hint.installation_id],
             )
           ).rows[0] ?? deny();
@@ -205,6 +223,7 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
             row.docker_image !== request.image ||
             row.credential_id !== request.credentialId ||
             row.credential_version !== request.credentialVersion ||
+            row.harness !== request.harness ||
             row.model !== request.model ||
             row.reasoning_effort !== request.reasoningEffort ||
             row.effective_ttl_seconds !== request.ttlSeconds
@@ -228,7 +247,7 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
               `insert into public.sandboxes(id,org_id,owner_id,provider,provider_sandbox_id,harness,status,visibility,access_owner_id,
            docker_host_id,docker_installation_id,docker_generation,docker_image,model,reasoning_effort,
            credential_id,credential_version,effective_ttl_seconds,expires_at,requested_ttl_seconds)
-           values($1,$2,$3,'docker',$4,'codex','starting','private',$3,$5,$6,$7,$8,$9,$10,$11,$12,$13,
+           values($1,$2,$3,'docker',$4,$15,'starting','private',$3,$5,$6,$7,$8,$9,$10,$11,$12,$13,
            now()+$13::integer*interval '1 second',$14) returning *`,
               [
                 request.requestId,
@@ -245,6 +264,7 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
                 request.credentialVersion,
                 request.ttlSeconds,
                 input.ttlSeconds ?? null,
+                request.harness,
               ],
             )
           ).rows[0] ?? deny();

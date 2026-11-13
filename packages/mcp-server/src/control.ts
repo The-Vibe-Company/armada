@@ -150,7 +150,14 @@ export interface ControlOptions {
   configureDockerLaunchRequest?: (request: Request) => void;
   dockerControls?: import("./docker-sandbox-controls.ts").DockerSandboxControls;
   /** Trusted installed-route discovery, never taken from request JSON. */
-  docker?: { hosts?: boolean; placement?: boolean; normalApi?: boolean; normalLaunch?: boolean };
+  docker?: {
+    hosts?: boolean;
+    placement?: boolean;
+    normalApi?: boolean;
+    normalLaunch?: boolean;
+    normalSend?: boolean;
+    normalResume?: boolean;
+  };
   runtimeMcp?: RuntimeMcp;
   runtimeGitHub?: RuntimeGitHub;
   runtimeResume?: RuntimeResume;
@@ -774,7 +781,13 @@ async function dispatch(
     return {
       ...launchOptions,
       providers: launchProviderOptions(options.docker),
-      modalRuntime: { version: 1, enabled: Boolean(options.modalRuntimeLaunch) },
+      modalRuntime: {
+        version: 1,
+        enabled: Boolean(options.modalRuntimeLaunch),
+        followupVersion: options.runtimeSend ? 1 : 0,
+        resumeVersion: options.runtimeResume && options.modalRuntimeLaunch ? 1 : 0,
+        mcpVersion: options.runtimeMcp ? 2 : 0,
+      },
       boatRuntime: {
         defaultPath: options.launch?.boatRuntimeDefault ? "runtime" : "native",
         version: 1,
@@ -786,6 +799,7 @@ async function dispatch(
         mcpVersion: options.runtimeMcp ? 2 : 0,
         skillsVersion: options.boatRuntimeLaunch ? 1 : 0,
         workspaceVersion: options.boatRuntimeLaunch ? 1 : 0,
+        controlsVersion: options.runtimeHostFor ? 1 : 0,
         enabled: Boolean(options.boatRuntimeLaunch && options.runtimeHostFor),
       },
     } satisfies import("@armada/core").LaunchOptionsResponse;
@@ -900,6 +914,7 @@ async function dispatch(
       "sandbox/recovery": "work_recovery",
       "sandbox/advice": "resource_advice",
       "sandbox/send": "send",
+      "sandbox/resume": "resume",
       "sandbox/checkpoint-runtime-v1": "runtime_checkpoint",
       "sandbox/resume-runtime-v1": "runtime_resume",
       "sandbox/report": "report",
@@ -1174,15 +1189,14 @@ async function dispatch(
         body.boatRuntime !== undefined ||
         body.armadaAccess ||
         body.skipSkillDefaults !== true ||
-        !Array.isArray(body.connections) ||
-        body.connections.length ||
+        (body.connections !== undefined && !Array.isArray(body.connections)) ||
         (body.skills !== undefined && (!Array.isArray(body.skills) || body.skills.length)) ||
         (body.helperCapabilities !== undefined &&
           (!Array.isArray(body.helperCapabilities) || body.helperCapabilities.length))
       )
         throw new VaultError(
           "invalid",
-          "Modal runtime v1 requires explicit model-only Codex launch, no setup capabilities.",
+          "Modal runtime v1 requires explicit Codex launch; skills and helpers are unavailable.",
         );
       if (!options.modalRuntimeLaunch || !options.modalRuntimeHostFor)
         throw new VaultError("unavailable", "Modal runtime staging opt-in is disabled.");
@@ -1192,13 +1206,13 @@ async function dispatch(
       if (
         body.runtimeVersion !== 1 ||
         body.boatRuntime !== true ||
-        body.harness !== "codex" ||
+        (body.harness !== "codex" && body.harness !== "claude") ||
         (body.provider !== undefined && body.provider !== "boat") ||
         body.armadaAccess ||
         (body.helperCapabilities !== undefined &&
           (!Array.isArray(body.helperCapabilities) || body.helperCapabilities.length))
       )
-        throw new VaultError("invalid", "Runtime v1 requires explicit Boat/Codex snapshot launch.");
+        throw new VaultError("invalid", "Runtime v1 requires explicit Boat Codex or Claude snapshot launch.");
       if (!options.boatRuntimeLaunch || !options.runtimeHostFor)
         throw new VaultError("unavailable", "Experimental Boat runtime launch is not configured.");
       required(body, "prompt");
@@ -1639,11 +1653,7 @@ async function launchRoute(
               ? { ...golden, visibility: "private", sourceGoldenVisibility: golden.visibility }
               : golden,
         );
-  const connectionLifecycle = modalRuntime
-    ? undefined
-    : runtime
-      ? options.runtimeMcp?.connections
-      : options.connections;
+  const connectionLifecycle = runtime ? options.runtimeMcp?.connections : options.connections;
   const result = await launchSandbox(
     provider,
     {

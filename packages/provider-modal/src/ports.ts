@@ -57,6 +57,8 @@ export interface Machine {
   commonRuntime?: true;
   /** One detached bootstrap attempt per physical incarnation; uncertainty cannot spawn twice. */
   runtimeStartAttempted?: true;
+  /** Trusted common checkpoint bound to the physical incarnation retained on stop. */
+  runtimeCheckpoint?: { epoch: string; watermark: number; physicalId: string; generation: number };
   info: SandboxInfo;
   generation: number;
   /** Assigned only when reserving a NEW managed launch; legacy/unknown rows stay unknown. */

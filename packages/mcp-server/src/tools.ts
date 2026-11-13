@@ -618,9 +618,13 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     if (!found) throw new ToolError("not_found", `No sandbox with id '${sandboxId}' that you can see.`);
     return found;
   };
-  const live = async (sandboxId: string, allowUnbound = false, known?: SandboxView) => {
+  const live = async (sandboxId: string, allowUnbound = false, known?: SandboxView, runtimeControl = false) => {
     const found = known ?? (await visible(sandboxId));
-    if ((found.boatRuntime || found.runtimeTransport === "dialout") && !allowUnbound)
+    if (
+      (found.boatRuntime || found.runtimeTransport === "dialout") &&
+      !allowUnbound &&
+      !(runtimeControl && found.boatRuntime)
+    )
       throw new ToolError(
         "unsupported",
         "Experimental runtime supports initial launch, reads and compute stop/delete only.",
@@ -662,7 +666,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     {
       title: "Repair sandbox GitHub access",
       description:
-        "Configure or refresh the owner's GitHub access in a running Boat sandbox without relaunching. Enrolled Armada runtimes use current-epoch private RPC; native Boat keeps its existing setup. Reuses a validated unexpired token; rejection/expiry can require renewal. Only the sandbox owner may request this.",
+        "Configure or refresh the owner's GitHub access in a running sandbox without relaunching. Enrolled Armada runtimes use current-epoch private RPC; native Boat keeps its existing setup. Reuses a validated unexpired token; rejection/expiry can require renewal. Only the sandbox owner may request this.",
       input: { id },
       output: {
         id: z.string(),
@@ -674,7 +678,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     },
     async (args) => {
       const selected = await visible(args.id);
-      if (selected.boatRuntime) {
+      if (selected.boatRuntime || selected.runtimeTransport === "dialout") {
         if (!context.runtimeGitHub) throw new ToolError("unsupported", "Runtime GitHub is unavailable.");
         return context.runtimeGitHub.prepare(caller, args.id);
       }
@@ -1404,6 +1408,20 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
   );
 
   tool(
+    "resume",
+    {
+      title: "Resume a stopped Docker sandbox",
+      description:
+        "Owner-only. Restarts the same Docker allocation with fresh runtime enrolment, keeping history and the original TTL. Reuse request_id after uncertainty.",
+      input: { id, request_id: z.string().uuid() },
+      output: { id: z.string(), status: z.literal("ready") },
+    },
+    async () => {
+      throw new ToolError("unsupported", "Normal resume is currently available only for Docker sandboxes.");
+    },
+  );
+
+  tool(
     "send",
     {
       title: "Send a prompt",
@@ -1436,7 +1454,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     },
     async (args) => {
       const selected = await visible(args.id);
-      if (selected.boatRuntime) {
+      if (selected.boatRuntime || selected.runtimeTransport === "dialout") {
         if (!context.runtimeSend) throw new ToolError("unsupported", "Runtime follow-up is unavailable.");
         return context.runtimeSend(caller, args);
       }
@@ -1537,7 +1555,16 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         "Redirects the turn that is running now. delivery says how: native joins the turn (Claude Code); " +
         "restart interrupts it and continues the same conversation with this text (Codex). Refused when no " +
         "turn runs: use send then.",
-      input: { id, text: z.string().min(1), conversation_id: conversationId },
+      input: {
+        id,
+        text: z.string().min(1),
+        conversation_id: conversationId,
+        request_id: z
+          .string()
+          .uuid()
+          .optional()
+          .describe("Optional durable runtime request ID; reuse identical input after uncertain delivery."),
+      },
       output: {
         id: z.string(),
         promptId: z.string(),
@@ -1547,16 +1574,32 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       },
     },
     async (args) => {
-      const { sandbox: found, provider } = await live(args.id);
+      if (args.request_id !== undefined)
+        throw new ToolError("invalid_request", "request_id is supported only for runtime control.");
+      const { sandbox: found, provider } = await live(args.id, false, undefined, true);
+      if (found.runtimeTransport === "dialout" && !found.boatRuntime)
+        throw new ToolError("unsupported", "This runtime operation is unavailable.");
+      if (found.boatRuntime && found.ownerId !== caller.userId)
+        throw new ToolError("forbidden", "Only the runtime owner may control this sandbox.");
       const delivery = provider.capabilities[found.harness]?.steer ?? "none";
       if (delivery === "none") throw new ToolError("unsupported", `${found.harness} cannot be steered here.`);
-      if (delivery === "restart" && found.credentialId)
+      if (!found.boatRuntime && delivery === "restart" && found.credentialId)
         await context.launchCredentials.resolve(
           { userId: caller.userId, orgId: found.orgId, role: "member" },
           found.harness,
           found.credentialId,
           found.credentialVersion ?? undefined,
         );
+      if (found.boatRuntime) {
+        const receipt = await provider
+          .steer({
+            sandboxId: found.providerSandboxId,
+            text: args.text,
+            ...(args.conversation_id ? { conversationId: args.conversation_id } : {}),
+          })
+          .catch(unknownMutationOutcome);
+        return { id: found.id, ...receipt, delivery, mode: receipt.mode ?? null };
+      }
       const member = caller.orgs.find((entry) => entry.orgId === found.orgId);
       if (!member) throw new ToolError("forbidden", "No current organization membership.");
       let acknowledged = false;
@@ -1565,11 +1608,12 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         found,
         { clearTaskOutcome: true },
         async () => {
-          await context.connections?.prepare?.(provider, found, {
-            userId: caller.userId,
-            orgId: found.orgId,
-            role: member.role,
-          });
+          if (!found.boatRuntime)
+            await context.connections?.prepare?.(provider, found, {
+              userId: caller.userId,
+              orgId: found.orgId,
+              role: member.role,
+            });
 
           const receipt = await provider
             .steer({
@@ -1626,11 +1670,25 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     {
       title: "Interrupt the running turn",
       description: "Stops the running turn of one conversation, or of all. The sandbox stays up for the next send.",
-      input: { id, conversation_id: conversationId },
+      input: {
+        id,
+        conversation_id: conversationId,
+        request_id: z
+          .string()
+          .uuid()
+          .optional()
+          .describe("Optional durable runtime request ID; reuse identical input after uncertain delivery."),
+      },
       output: { id: z.string(), interrupted: z.boolean() },
     },
     async (args) => {
-      const { sandbox: found, provider } = await live(args.id);
+      if (args.request_id !== undefined)
+        throw new ToolError("invalid_request", "request_id is supported only for runtime control.");
+      const { sandbox: found, provider } = await live(args.id, false, undefined, true);
+      if (found.runtimeTransport === "dialout" && !found.boatRuntime)
+        throw new ToolError("unsupported", "This runtime operation is unavailable.");
+      if (found.boatRuntime && found.ownerId !== caller.userId)
+        throw new ToolError("forbidden", "Only the runtime owner may control this sandbox.");
       if (!provider.capabilities[found.harness]?.interrupt) {
         throw new ToolError("unsupported", `${found.harness} cannot be interrupted here.`);
       }
@@ -1653,6 +1711,11 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         "contains the agent's credentials is redacted. Use it to inspect the repos, not to drive the agent.",
       input: {
         id,
+        request_id: z
+          .string()
+          .uuid()
+          .optional()
+          .describe("Optional durable runtime request ID; reuse identical input after uncertain delivery."),
         command: z.string().min(1),
         cwd: z.string().min(1).optional(),
         timeout_seconds: z.number().int().min(1).max(600).optional().describe("Default 120."),
@@ -1667,32 +1730,43 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       },
     },
     async (args) => {
-      const { sandbox: found, provider } = await live(args.id);
+      if (args.request_id !== undefined)
+        throw new ToolError("invalid_request", "request_id is supported only for runtime control.");
+      const { sandbox: found, provider } = await live(args.id, false, undefined, true);
+      if (found.runtimeTransport === "dialout" && !found.boatRuntime)
+        throw new ToolError("unsupported", "This runtime operation is unavailable.");
+      if (found.boatRuntime && found.ownerId !== caller.userId)
+        throw new ToolError("forbidden", "Only the runtime owner may control this sandbox.");
       // Applies to managed and ordinary exec before any native preparation or
       // provider command can implicitly resume a retained disk.
       await data.sandboxes.assertExecAllowed?.(found.id);
-      const managedNative = await context.launchCredentials.assertExec?.(
-        { userId: found.ownerId, orgId: found.orgId, role: "member" },
-        found.id,
-      );
+      const managedNative =
+        !found.boatRuntime &&
+        (await context.launchCredentials.assertExec?.(
+          { userId: found.ownerId, orgId: found.orgId, role: "member" },
+          found.id,
+        ));
       let acknowledged = false;
       const execute = async () => {
         const membership = caller.orgs.find((member) => member.orgId === found.orgId);
         if (!membership) throw new ToolError("forbidden", "No current organization membership.");
-        await context.connections?.prepare?.(provider, found, {
-          userId: caller.userId,
-          orgId: found.orgId,
-          role: membership.role,
-        });
+        if (!found.boatRuntime)
+          await context.connections?.prepare?.(provider, found, {
+            userId: caller.userId,
+            orgId: found.orgId,
+            role: membership.role,
+          });
         const nativeActor = { userId: found.ownerId, orgId: found.orgId, role: "member" as const };
         const nativeBefore =
-          (await context.launchCredentials.nativeSecrets?.(
-            nativeActor,
-            found.id,
-            provider,
-            found.providerSandboxId,
-            "before",
-          )) ?? [];
+          (!found.boatRuntime &&
+            (await context.launchCredentials.nativeSecrets?.(
+              nativeActor,
+              found.id,
+              provider,
+              found.providerSandboxId,
+              "before",
+            ))) ||
+          [];
         const result = await provider
           .exec({
             sandboxId: found.providerSandboxId,
@@ -1709,13 +1783,15 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           );
         try {
           const nativeAfter =
-            (await context.launchCredentials.nativeSecrets?.(
-              nativeActor,
-              found.id,
-              provider,
-              found.providerSandboxId,
-              "after",
-            )) ?? [];
+            (!found.boatRuntime &&
+              (await context.launchCredentials.nativeSecrets?.(
+                nativeActor,
+                found.id,
+                provider,
+                found.providerSandboxId,
+                "after",
+              ))) ||
+            [];
           const secrets = [...(await context.exposedSecrets(found.orgId)), ...nativeBefore, ...nativeAfter];
           const clip = (text: string) => {
             const safe = redact(text, secrets);

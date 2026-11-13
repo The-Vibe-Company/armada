@@ -39,7 +39,14 @@ export const launchOptions = {
  * normal operations remain dark until their handler is actually supplied.
  */
 export function launchProviderOptions(
-  docker: { hosts?: boolean; placement?: boolean; normalApi?: boolean; normalLaunch?: boolean } = {},
+  docker: {
+    hosts?: boolean;
+    placement?: boolean;
+    normalApi?: boolean;
+    normalLaunch?: boolean;
+    normalSend?: boolean;
+    normalResume?: boolean;
+  } = {},
 ): LaunchProviderOption[] {
   const supported: LaunchProviderCapabilities = {
     launch: true,
@@ -65,19 +72,19 @@ export function launchProviderOptions(
     launch: normal && docker.normalLaunch === true && docker.placement === true,
     status: normal,
     logs: normal,
-    followupPrompts: false,
+    followupPrompts: normal && docker.normalSend === true && docker.placement === true,
     stop: normal,
     delete: normal,
-    resume: false,
+    resume: normal && docker.normalResume === true && docker.placement === true,
     goldens: false,
     repositories: false,
     machineSizes: false,
     github: false,
     mcp: false,
     skills: false,
-    exec: false,
-    steer: false,
-    interrupt: false,
+    exec: normal,
+    steer: normal,
+    interrupt: normal,
   };
   const unsupportedReasons: LaunchProviderOption["unsupportedReasons"] = {};
   const reasons: Record<keyof LaunchProviderCapabilities, string> = {
@@ -125,6 +132,13 @@ export function launchProviderOptions(
       capabilities: { ...supported },
       unsupportedReasons: {},
     },
-    { id: "docker", enabled: hosts, launchSources: ["image"], harnesses: ["codex"], capabilities, unsupportedReasons },
+    {
+      id: "docker",
+      enabled: hosts,
+      launchSources: ["image"],
+      harnesses: ["codex", "claude", "opencode"],
+      capabilities,
+      unsupportedReasons,
+    },
   ];
 }

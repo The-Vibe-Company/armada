@@ -29,7 +29,7 @@ export function createRuntimeCheckpoint(sql: Sql, key: string, commands: ReturnT
       row.ownerId !== caller.userId ||
       (!row.boatRuntime && row.runtimeTransport !== "dialout") ||
       !["boat", "modal"].includes(row.provider) ||
-      row.harness !== "codex" ||
+      (row.harness !== "codex" && !(row.provider === "boat" && row.harness === "claude")) ||
       row.deletedAt
     )
       throw new VaultError("not_found", "No owned runtime checkpoint target.");

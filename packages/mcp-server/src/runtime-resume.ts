@@ -75,9 +75,11 @@ export function createRuntimeResume(
     if (
       !found ||
       found.ownerId !== caller.userId ||
-      !found.boatRuntime ||
-      found.provider !== "boat" ||
-      found.harness !== "codex" ||
+      !(
+        (found.provider === "boat" && found.boatRuntime) ||
+        (found.provider === "modal" && found.runtimeTransport === "dialout")
+      ) ||
+      (found.harness !== "codex" && found.harness !== "claude") ||
       found.deletedAt
     )
       throw new VaultError("not_found", "No owned runtime resume target.");
@@ -106,9 +108,15 @@ export function createRuntimeResume(
       if (
         !(
           await tx.query(
-            `select id from public.credentials where id=$1 and version=$2 and status='active' and kind in ('openai','codex_auth')
+            `select id from public.credentials where id=$1 and version=$2 and status='active' and kind = any($5::public.credential_kind[])
         and (expires_at is null or expires_at>now()) and ((scope='user' and owner_id=$3) or (scope='org' and owner_id=$4)) for update`,
-            [found.credentialId, found.credentialVersion, caller.userId, found.orgId],
+            [
+              found.credentialId,
+              found.credentialVersion,
+              caller.userId,
+              found.orgId,
+              found.harness === "claude" ? ["anthropic", "claude_oauth"] : ["openai", "codex_auth"],
+            ],
           )
         ).rows[0]
       )
@@ -227,6 +235,7 @@ export function createRuntimeResume(
       conversationId: conversation,
     };
     const agent = createRuntimeAgent(commands, {
+      harness: found.harness,
       ownerId: caller.userId,
       sandboxId: found.id,
       providerSandboxId: found.providerSandboxId,
@@ -279,7 +288,7 @@ export function createRuntimeResume(
           const accepted = await agent.prompt(
             {
               sandboxId: found.providerSandboxId,
-              harness: "codex",
+              harness: found.harness,
               conversationId: conversation,
               text: input.prompt,
               signal,
