@@ -210,7 +210,7 @@ describe("launch", () => {
         owner,
         {
           golden: "web",
-          harness: failure === "harness" ? "claude" : "codex",
+          harness: failure === "harness" ? "opencode" : "codex",
           prompt: "answer",
           ...(["mcp", "mcp-prepare"].includes(failure) ? { connections: [ORG] } : {}),
           ...(failure === "skills" ? { skills: ["not-a-pin"] } : {}),
