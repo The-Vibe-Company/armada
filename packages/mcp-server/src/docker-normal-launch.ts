@@ -39,6 +39,7 @@ import {
 } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import type { createDockerBootstrapService } from "./docker-bootstrap-service.ts";
+import { resolveDockerLaunchAccount } from "./docker-launch-account.ts";
 import { createDockerLaunchEnvironment } from "./docker-launch-environment.ts";
 import { dockerLaunchRequestHash, matchesDockerLaunchRequestHash } from "./docker-launch-identity.ts";
 import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
@@ -61,7 +62,7 @@ type Request = {
   visibility: "private";
   hostId: string;
   image: string;
-  credentialId: string;
+  credentialId: string | null;
   credentialVersion: number | null;
   requestId: string;
   model: string;
@@ -76,6 +77,8 @@ type Manifest = {
   variables?: Record<string, string>;
   snapshotConfig?: import("@armada/core").GoldenConfig;
   request: Request;
+  /** Resolved pin stays separate from the caller identity used by retries. */
+  credentialId?: string;
   credentialVersion: number;
   bootstrapId: string;
   healthId: string;
@@ -279,7 +282,7 @@ function normalize(body: Record<string, unknown>, image: string): Request {
     visibility: "private",
     hostId: identifier(body.hostId),
     image,
-    credentialId: identifier(body.credentialId),
+    credentialId: body.credentialId === undefined ? null : identifier(body.credentialId),
     credentialVersion: (body.credentialVersion as number | undefined) ?? null,
     requestId: identifier(body.requestId),
     model: choice.model,
@@ -362,6 +365,10 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       !manifest.request ||
       !matchesDockerLaunchRequestHash(manifest.request, claim.request_hash) ||
       dockerLaunchRequestHash(manifest.request) !== hash ||
+      (manifest.credentialId !== undefined && !uuid.test(manifest.credentialId)) ||
+      (!claim.result_enc &&
+        (row.credential_version !== manifest.credentialVersion ||
+          row.credential_id !== (manifest.credentialId ?? manifest.request.credentialId))) ||
       !Number.isSafeInteger(manifest.credentialVersion) ||
       manifest.credentialVersion < 1 ||
       ![manifest.bootstrapId, manifest.healthId, manifest.promptId].every(
@@ -504,21 +511,11 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
           await options.github.preflightRepositories(caller, request.org, request.repos ?? source?.config.repos ?? []);
         }
         // Resolve outside the reservation transaction; only the binding is retained.
-        const resolved = await options.credentials.resolve(
+        const { resolved, binding } = await resolveDockerLaunchAccount(
+          options.credentials,
           { ...actor, role: state.membership.role },
-          request.harness,
-          request.credentialId,
-          request.credentialVersion ?? undefined,
+          request,
         );
-        const binding = resolved.binding;
-        if (
-          !binding ||
-          binding.credentialId !== request.credentialId ||
-          !Number.isSafeInteger(binding.credentialVersion) ||
-          binding.credentialVersion < 1 ||
-          (request.credentialVersion !== null && binding.credentialVersion !== request.credentialVersion)
-        )
-          throw failure("not_found");
         const launchActor = { ...actor, role: state.membership.role };
         const defaults = request.skipSkillDefaults
           ? { org: [], personal: [] }
@@ -539,6 +536,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
         const manifest: Manifest = {
           ...(source ? { snapshotConfig: source.config } : {}),
           request,
+          credentialId: binding.credentialId,
           credentialVersion: binding.credentialVersion,
           bootstrapId: randomUUID(),
           healthId: randomUUID(),
@@ -562,7 +560,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
               hostId: request.hostId,
               image: request.image,
               harness: request.harness,
-              credentialId: request.credentialId,
+              credentialId: binding.credentialId,
               credentialVersion: manifest.credentialVersion,
               model: request.model,
               reasoningEffort: request.reasoningEffort,
@@ -847,11 +845,12 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       }, 10000);
       try {
         const manifest = JSON.parse(await decryptSecret(candidate.request_enc, key)) as Manifest;
-        const { image: _image, credentialVersion, prompt, ...body } = manifest.request;
+        const { image: _image, credentialId, credentialVersion, prompt, ...body } = manifest.request;
         await launch(
           { userId: candidate.owner_id, orgs: [{ orgId: candidate.org_id, role: candidate.role }], via: "service" },
           {
             ...body,
+            ...(credentialId === null ? {} : { credentialId }),
             ...(credentialVersion === null ? {} : { credentialVersion }),
             ...(prompt === null ? {} : { prompt }),
           },

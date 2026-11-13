@@ -49,8 +49,8 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
       throw new GoldenError("invalid_config", `${flag} requires a UUID for Docker launch.`);
     return value.toLowerCase();
   };
-  const org = requiredId("--org"),
-    credentialId = requiredId("--credential-id");
+  const org = requiredId("--org");
+  const credentialId = single(args, "--credential-id") === undefined ? undefined : requiredId("--credential-id");
   const snapshotId = single(args, "--golden");
   if (snapshotId !== undefined && !uuid.test(snapshotId))
     throw new GoldenError("invalid_config", "--golden requires a Docker snapshot UUID.");
@@ -66,6 +66,8 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
   const version = single(args, "--credential-version");
   if (version !== undefined && (!/^[1-9][0-9]*$/.test(version) || !Number.isSafeInteger(Number(version))))
     throw new GoldenError("invalid_config", "--credential-version must be a positive integer.");
+  if (version !== undefined && credentialId === undefined)
+    throw new GoldenError("invalid_config", "--credential-version requires --credential-id.");
   const ttl = single(args, "--ttl");
   const repos = values(args, "--repo");
   const variables = values(args, "--variable").map((binding) => {
@@ -129,7 +131,7 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
     ...(hostId ? { hostId } : {}),
     ...(snapshotId ? { snapshotId } : {}),
     harness,
-    credentialId,
+    ...(credentialId === undefined ? {} : { credentialId }),
     requestId,
     ...resolveModelChoice(harness, {
       model: single(args, "--model"),

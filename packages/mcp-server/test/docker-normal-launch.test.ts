@@ -859,8 +859,17 @@ for (const scenario of ["success", "checkout-failed", "missing-github", "github-
        values($1,123,'owner','Owner',$2,$3,now()+interval '1 hour')`,
         [f.actor.userId, await encryptSecret("offline-refresh", key), await encryptSecret("offline-github-token", key)],
       );
+    const laterAccount = randomUUID();
+    if (scenario === "success") {
+      await db.query("update public.credentials set is_default=true where id=$1", [f.body.credentialId]);
+      await db.query(
+        "insert into public.credentials(id,version,scope,owner_id,kind,name,value_enc,is_default) values($1,1,'user',$2,'openai','Later API',$3,false)",
+        [laterAccount, f.actor.userId, await encryptSecret("offline-later-default", key)],
+      );
+    }
+    const { credentialId: _explicitAccount, ...omittedAccount } = f.body;
     const body = {
-      ...f.body,
+      ...(scenario === "success" ? omittedAccount : f.body),
       repos: [{ url: "https://github.com/example/project.git", branch: "main", dir: "project" }],
     };
     const first = f.service(sql, true, 10000, officialImage, true);
@@ -872,6 +881,9 @@ for (const scenario of ["success", "checkout-failed", "missing-github", "github-
     // A fresh server instance resumes the durable manifest, not an HTTP continuation.
     const restarted = f.service(sql, true, 10000, officialImage, true);
     if (scenario === "success") {
+      expect(accepted.sandbox.credentialId).toBe(f.body.credentialId);
+      await db.query("update public.credentials set is_default=false where id=$1", [f.body.credentialId]);
+      await db.query("update public.credentials set is_default=true where id=$1", [laterAccount]);
       await db.query(
         "update public.docker_launch_requests set worker_id=$2,worker_expires_at=now()+interval '1 hour' where sandbox_id=$1",
         [body.requestId, randomUUID()],
@@ -886,6 +898,9 @@ for (const scenario of ["success", "checkout-failed", "missing-github", "github-
     await restarted.drain();
     const completed = await restarted.launch(f.caller, body);
     if (scenario === "success") {
+      expect(completed.sandbox.credentialId).toBe(f.body.credentialId);
+      expect(f.session()?.configuration).toMatchObject({ codexEnv: { OPENAI_API_KEY: f.secret } });
+      expect(f.resolutions()).toBe(1);
       expect(f.checkoutStatuses).toEqual(["starting"]);
       expect(completed.promptId).toBe(f.receipt.promptId);
       expect(completed.runtime?.epoch).toBe(f.session()?.epoch);
