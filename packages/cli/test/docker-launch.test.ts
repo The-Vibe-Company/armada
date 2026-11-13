@@ -308,6 +308,24 @@ test("Docker snapshots build through the normal golden command and launch throug
     expect(listed.code).toBe(0);
     expect(listed.out).toContain(`Built on Armada ${builtOnVersion ?? "unknown version"}`);
   }
+  const offered = await capture(["golden", "list", "--provider", "docker", "--org", org], async () =>
+    Response.json({
+      currentVersion: "2.29.0",
+      snapshots: [{ ...snapshot, status: "ready", image: `sha256:${"a".repeat(64)}` }],
+    }),
+  );
+  expect(offered.out).toContain(`armada golden rebuild ${id} --provider docker --org ${org}`);
+  const rebuilt = await capture(
+    ["golden", "rebuild", id, "--provider", "docker", "--org", org, "--request-id", requestId],
+    async (request) => {
+      expect(new URL(request.url).pathname).toBe("/api/v1/docker/snapshots/rebuild");
+      expect(await request.json()).toEqual({ org, id, requestId });
+      return Response.json({ snapshot: { ...snapshot, id: requestId, builtOnVersion: "2.29.0" } });
+    },
+  );
+  expect(rebuilt.code).toBe(0);
+  expect(rebuilt.out).toContain(`Original snapshot unchanged: ${id}`);
+  expect(rebuilt.err).toContain(requestId);
   const sourceArgs = args.filter(
     (arg, index) => !["--image", "--host"].includes(arg) && !["--image", "--host"].includes(args[index - 1] ?? ""),
   );

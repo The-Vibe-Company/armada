@@ -1,12 +1,14 @@
 import { type DockerSnapshotRecord, parseDockerSnapshotRecord } from "@armada/core";
 import { cache } from "react";
 import { ControlError, controlPost } from "@/lib/control";
+import { snapshotCurrentVersion } from "@/lib/docker-snapshots";
 import { mcpUrl } from "@/lib/env";
 import { selectedOrganization } from "./selected-org";
 import { requireViewer } from "./viewer";
 export const readSelectedDockerSnapshots = cache(
   async (): Promise<
-    { state: "ready"; snapshots: DockerSnapshotRecord[] } | { state: "unavailable"; message: string }
+    | { state: "ready"; snapshots: DockerSnapshotRecord[]; currentVersion: string | null }
+    | { state: "unavailable"; message: string }
   > => {
     const selected = await selectedOrganization(),
       viewer = await requireViewer(),
@@ -21,7 +23,11 @@ export const readSelectedDockerSnapshots = cache(
         "reading host snapshots",
       );
       if (!Array.isArray(body.snapshots)) throw new ControlError("The server returned an unexpected snapshot list.");
-      return { state: "ready", snapshots: body.snapshots.map(parseDockerSnapshotRecord) };
+      return {
+        state: "ready",
+        snapshots: body.snapshots.map(parseDockerSnapshotRecord),
+        currentVersion: snapshotCurrentVersion(body.currentVersion),
+      };
     } catch (error) {
       return {
         state: "unavailable",

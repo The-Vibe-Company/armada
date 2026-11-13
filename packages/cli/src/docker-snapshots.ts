@@ -1,4 +1,4 @@
-import { type GoldenConfig, GoldenError, parseDockerSnapshotRecord } from "@armada/core";
+import { type GoldenConfig, GoldenError, parseDockerSnapshotRecord, snapshotUpdateAvailable } from "@armada/core";
 import { type Args, flag, single } from "./args.ts";
 import { createArmadaApiClient } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
@@ -14,6 +14,7 @@ export async function dockerSnapshotCommand(
     "--org",
     "--provider",
     "--json",
+    ...(operation === "rebuild" ? ["--request-id"] : []),
     ...(operation === "create" ? ["--host", "--request-id", "--private", "--config", "--repo", "--init"] : []),
   ]);
   if ([...args.options.keys()].some((key) => !allowed.has(key)))
@@ -33,15 +34,41 @@ export async function dockerSnapshotCommand(
     const data = await post("list", {});
     if (!Array.isArray(data.snapshots)) throw Error("Invalid snapshot response.");
     const rows = data.snapshots.map(parseDockerSnapshotRecord);
+    const currentVersion = typeof data.currentVersion === "string" ? data.currentVersion : null;
     io.out(
       flag(args, "--json")
         ? JSON.stringify(rows, null, 2) + "\n"
         : rows
             .map(
               (r) =>
-                `${r.id}\t${r.name}\t${r.status}\t${r.visibility}\t${r.hostName ?? r.hostId}\tBuilt on Armada ${r.builtOnVersion ?? "unknown version"}`,
+                `${r.id}\t${r.name}\t${r.status}\t${r.visibility}\t${r.hostName ?? r.hostId}\tBuilt on Armada ${r.builtOnVersion ?? "unknown version"}${snapshotUpdateAvailable(r.builtOnVersion, currentVersion) ? ` · Update to ${currentVersion}: armada golden rebuild ${r.id} --provider docker --org ${org}` : ""}`,
             )
             .join("\n") + "\n",
+    );
+    return 0;
+  }
+  if (operation === "rebuild") {
+    const id = args.positionals[0],
+      requestId = single(args, "--request-id") ?? crypto.randomUUID();
+    const uuid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
+    if (args.positionals.length !== 1 || !id || !uuid.test(id) || !uuid.test(requestId) || id === requestId)
+      throw new GoldenError(
+        "invalid_config",
+        "Use golden rebuild SNAPSHOT_UUID --provider docker [--request-id UUID].",
+      );
+    io.err(
+      `Rebuild request ${requestId}. The old snapshot stays usable. Retry with the same --request-id after an unknown outcome.\n`,
+    );
+    const row = parseDockerSnapshotRecord((await post("rebuild", { id, requestId })).snapshot);
+    if (row.id !== requestId)
+      throw new GoldenError(
+        "invalid_config",
+        "Rebuild outcome unknown: the server returned a different snapshot. Inspect the printed request ID before retrying.",
+      );
+    io.out(
+      flag(args, "--json")
+        ? JSON.stringify(row, null, 2) + "\n"
+        : `New Docker snapshot: ${row.id}\nBuild: ${row.status}\nBuilt on Armada: ${row.builtOnVersion ?? "unknown version"}\nOriginal snapshot unchanged: ${id}\n`,
     );
     return 0;
   }

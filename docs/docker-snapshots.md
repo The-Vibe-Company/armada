@@ -105,3 +105,29 @@ to the following #1528 update-offer slice; nothing automatically rebuilds or
 invalidates an old snapshot on upgrade. The coordinator's existing `--snapshot`
 check above also requires the archived build receipt's version to match catalog
 metadata; no label preparation is necessary.
+
+## Updating an older snapshot (#1528)
+
+Lists retain **Built on Armada** from the immutable build record. The API also
+reports its current server version. For a known older stable version, dashboard
+snapshot details offer **Rebuild** and CLI lists show the exact command:
+
+```sh
+armada golden rebuild SNAPSHOT_UUID --provider docker --org ORG_UUID
+# After an uncertain response, repeat with the same printed --request-id UUID.
+```
+
+Rebuild reuses the saved repositories, branches, setup, visibility and original
+host, with fresh caller GitHub authorization and the server's currently selected
+base/version. It creates a **new** snapshot; the old snapshot and launched
+sandboxes remain unchanged. Nothing rebuilds automatically. Unknown historical
+versions, prereleases, equal versions or newer snapshots do not get a guessed
+update offer. The CLI uses the server version, not its own installed version.
+
+Private rebuilds require the owner; shared rebuilds require an organization
+admin. The original host installation must be available for a new build. An
+exact admitted retry retains its existing build even if that host later goes
+offline or the server version changes. The rebuild endpoint accepts only
+`org`, source `id` and a new `requestId`, never caller image/config/version fields.
+Existing scan, unprivileged initialization, publication and epoch checks apply.
+A failed new build does not retire the original snapshot.
