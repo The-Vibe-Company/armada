@@ -712,6 +712,8 @@ original caller request remains the retry identity; later default changes do not
 repin an admitted sandbox or change a retry's billing account. The resolved pin
 is stored separately from an omitted caller choice in the encrypted launch
 manifest and the sandbox row. No template/delegated-access grant rules change.
+Scoped children and Armada-access parents still require explicit account pins;
+omission on those paths is refused, not silently billed to another account (#1579).
 
 Coordinator verification after normal deployment: mark a personal Codex
 subscription default while retaining a personal API-key account, launch on the
