@@ -134,6 +134,11 @@ test("the dialog proposes each image already used on the host once, newest first
     many.slice(0, 5).map((row) => row.docker_image),
   );
   expect(chosenImage(other, "")).toEqual({ ok: true, image: other });
+  const local = `sha256:${"e".repeat(64)}`;
+  expect(recentHostImages([{ docker_host_id: HOST, docker_image: local }], HOST)).toEqual([
+    { image: local, label: `Local image (${"e".repeat(12)})` },
+  ]);
+  expect(chosenImage(local, "")).toEqual({ ok: true, image: local });
   expect(chosenImage("evil@sha256:short", "").ok).toBe(false);
 });
 

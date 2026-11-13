@@ -148,6 +148,8 @@ const RECENT_IMAGES = 5;
  * followed by the digest's first 12 characters, so two versions of one image stay distinguishable.
  */
 export function imageLabel(image: string): string {
+  // A host-approved local image ID has no repository name (#1523).
+  if (image.startsWith("sha256:")) return `Local image (${image.slice(7, 19)})`;
   const at = image.lastIndexOf("@sha256:");
   const name = (at < 0 ? image : image.slice(0, at)).replace(/^docker\.io\//, "").replace(/^library\//, "");
   return at < 0 ? name : `${name} (${image.slice(at + 8, at + 20)})`;
@@ -165,7 +167,7 @@ export function recentHostImages(
   const images: HostImage[] = [];
   for (const row of rows) {
     const image = row.docker_image;
-    if (row.docker_host_id !== hostId || !image || seen.has(image) || !IMAGE.test(image)) continue;
+    if (row.docker_host_id !== hostId || !image || seen.has(image) || !isDockerImageReference(image)) continue;
     seen.add(image);
     images.push({ image, label: imageLabel(image) });
     if (images.length === RECENT_IMAGES) break;
@@ -180,7 +182,7 @@ export function recentHostImages(
 export function chosenImage(choice: string, custom: string): ReturnType<typeof checkImage> {
   // An empty choice with a typed image is a form from before the choice existed: honour what was typed.
   if (choice === "custom" || (choice === "" && custom.trim())) return checkImage(custom);
-  if (choice.includes("@sha256:")) return checkImage(choice);
+  if (isDockerImageReference(choice)) return checkImage(choice);
   if (choice === "default" || choice === "") return { ok: true, image: DOCKER_DEFAULT_IMAGE };
   return { ok: false, error: "Choose an image." };
 }
