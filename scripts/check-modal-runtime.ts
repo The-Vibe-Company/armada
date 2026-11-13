@@ -95,8 +95,9 @@ let followupPromptId: string | undefined;
 let checkpointRequestId: string | undefined;
 let checkpointReceipt: Reply | undefined;
 let shouldStop = false;
+let initialGitHubRevision: string | undefined;
 const githubToolPrompts = new Set<string>();
-const githubInstruction = `Run gh api repos/${repository} --jq .full_name successfully. After the tool succeeds, reply exactly with the token I originally asked you to remember. Do not change files.`;
+const githubInstruction = `Run exactly: gh api repos/${repository} --jq .full_name successfully. After the tool succeeds, reply exactly with the token I originally asked you to remember. Do not change files.`;
 const configureGitHub = async (expectedEpoch: string) => {
   const receipt = await api("github/refresh", { id });
   if (
@@ -138,11 +139,16 @@ const verifyPrompt = async (expectedPromptId: string, expectedAnswer: string) =>
           if (
             tool.name === "commandExecution" &&
             typeof command === "string" &&
-            command.includes("gh api") &&
-            command.includes(`repos/${repository}`) &&
+            [
+              `gh api repos/${repository} --jq .full_name`,
+              ...["/bin/bash", "/usr/bin/bash", "bash", "/bin/sh", "sh"].flatMap((shell) => [
+                `${shell} -lc 'gh api repos/${repository} --jq .full_name'`,
+                `${shell} -lc "gh api repos/${repository} --jq .full_name"`,
+              ]),
+            ].includes(command.trim()) &&
             tool.result?.isError === false &&
             typeof tool.result.output === "string" &&
-            tool.result.output.toLowerCase().includes(repository.toLowerCase())
+            tool.result.output.trim().toLowerCase() === repository.toLowerCase()
           )
             githubToolPrompts.add(expectedPromptId);
         }
@@ -220,7 +226,7 @@ try {
   )
     throw Error("Missing Modal enrolled launch acknowledgement; reconcile existing allocation, never launch again.");
   await verifyPrompt(promptId, answer);
-  const githubRevision = githubMode ? await configureGitHub(epoch ?? "") : undefined;
+  initialGitHubRevision = githubMode ? await configureGitHub(epoch ?? "") : undefined;
   const followupRequestId = crypto.randomUUID();
   console.log(
     JSON.stringify({
@@ -250,7 +256,7 @@ try {
       "Missing same-conversation/current-epoch Modal follow-up acknowledgement; reconcile request_id, never send again.",
     );
   await verifyPrompt(followed.promptId, memory);
-  if (githubRevision) await verifyGitHub(followed.promptId, epoch ?? "", githubRevision);
+  if (initialGitHubRevision) await verifyGitHub(followed.promptId, epoch ?? "", initialGitHubRevision);
   followupPromptId = followed.promptId;
   const firstCheckpoint = await checkpoint(epoch ?? "");
   checkpointRequestId = firstCheckpoint.requestId;
@@ -363,6 +369,7 @@ if (
       if (before.configured !== false || before.runtime?.epoch !== currentEpoch)
         throw Error("Old GitHub configuration survived the runtime epoch change.");
       const revision = await configureGitHub(currentEpoch);
+      if (revision === initialGitHubRevision) throw Error("Resume reused the previous GitHub revision.");
       const requestId = crypto.randomUUID();
       console.log(JSON.stringify({ operation: "runtime_github_followup", sandboxId: id, conversationId, requestId }));
       const sent = await api("sandbox/send", {

@@ -43,6 +43,10 @@ test.each([
   "github-stale-revision",
   "github-wrong-epoch",
   "github-resume-old-config",
+  "github-resume-reused-revision",
+  "github-echo-mask",
+  "github-wrong-output",
+  "github-wrapper",
 ])("Modal one-allocation check is fail-closed (%s)", async (mode) => {
   const github = mode.startsWith("github");
   const resume = mode.startsWith("resume") || mode === "old-resume" || mode.startsWith("github-resume");
@@ -61,10 +65,10 @@ globalThis.fetch=async(url,options)=>{
  if(path.endsWith('/launch/options'))return Response.json({modalRuntime:{version:1,enabled:${mode !== "disabled"},followupVersion:${mode === "old-followup" ? 0 : 1},resumeVersion:${mode === "old-resume" ? 0 : 1}}});
  if(path.endsWith('/golden/list'))return Response.json({goldens:[{id:'golden-id',name:'golden',provider:'modal',orgId:'org-id'}]});
  if(path.endsWith('/sandbox/github-preflight-v1')){if(body.org!=='org-id'||body.repository!=='example/web')throw Error('bad preflight');return Response.json({githubReady:true,provider:${mode === "github-old-preflight"}?undefined:'modal'});}
- if(path.endsWith('/github/refresh'))return Response.json({status:'connected',runtime:{kind:'armada',epoch:${mode === "github-wrong-epoch"}?'99':resumes?'2':'1'},revision:String(++githubRevision)});
+ if(path.endsWith('/github/refresh'))return Response.json({status:'connected',runtime:{kind:'armada',epoch:${mode === "github-wrong-epoch"}?'99':resumes?'2':'1'},revision:${mode === "github-resume-reused-revision"}?(githubRevision++,'1'):String(++githubRevision)});
  if(path.endsWith('/github/runtime-status')){
   const configured=!resumes||githubRevision>1||${mode === "github-resume-old-config"};
-  return Response.json({configured,runtime:{kind:'armada',epoch:resumes?'2':'1'},revision:${mode === "github-stale-revision"}?'foreign':String(githubRevision),credentialRequests:${mode === "github-no-acquisition"}?0:1});
+  return Response.json({configured,runtime:{kind:'armada',epoch:resumes?'2':'1'},revision:${mode === "github-stale-revision"}?'foreign':${mode === "github-resume-reused-revision"}?'1':String(githubRevision),credentialRequests:${mode === "github-no-acquisition"}?0:1});
  }
  if(path.endsWith('/sandbox/launch-modal-runtime-v1')){
   launches++;if(launches!==1||body.provider!=='modal'||body.runtimeTransport!=='dialout'||body.runtimeVersion!==1||body.harness!=='codex'||body.ttlSeconds!==900||body.skipSkillDefaults!==true||body.skills.length||body.connections.length)throw Error('unsafe launch');
@@ -83,7 +87,7 @@ globalThis.fetch=async(url,options)=>{
   if(${github} && sends && !${mode === "github-missing-tool"}){
     const toolPrompt=resumes&&sends>1?'github-resumed':'followup';
     events.push(...pair('github-resumed',memory).filter(()=>resumes&&sends>1));
-    events.push({id:'gh-tool',at:3,kind:'message',promptId:toolPrompt,partial:false,text:'',tools:[{id:'gh',name:'commandExecution',input:{command:'gh api repos/example/web --jq .full_name'},result:{isError:false,output:'example/web'}}]});
+    events.push({id:'gh-tool',at:3,kind:'message',promptId:toolPrompt,partial:false,text:'',tools:[{id:'gh',name:'commandExecution',input:{command:${JSON.stringify(mode === "github-wrapper" ? "/bin/bash -lc 'gh api repos/example/web --jq .full_name'" : "gh api repos/example/web --jq .full_name" + (mode === "github-echo-mask" ? " || echo example/web" : ""))}},result:{isError:false,output:'${mode === "github-wrong-output" ? "echo example/web" : "example/web"}'}}]});
   }
   if(sends&&${mode === "replayed-answer"})events=pair('prompt',memory);
   if((stops===1&&!resumes&&${mode === "resume-lost-stopped-history"})||(resumes&&${mode === "resume-lost-old-history"}))events=events.filter(event=>event.promptId==='resumed');
@@ -134,15 +138,20 @@ globalThis.fetch=async(url,options)=>{
       new Response(child.stdout).text(),
       new Response(child.stderr).text(),
     ]);
-    expect(status === 0).toBe(["success", "resume", "github", "github-resume"].includes(mode));
+    expect(status === 0).toBe(["success", "resume", "github", "github-resume", "github-wrapper"].includes(mode));
     const counters = JSON.parse(stdout.match(/COUNTERS (.+)/)?.[1] ?? "null");
     expect(counters).toEqual(
       github
         ? {
             launches: mode === "github-old-preflight" ? 0 : 1,
             stops: mode === "github-old-preflight" ? 0 : resume ? 2 : 1,
-            checkpoints:
-              mode === "github" ? 1 : mode === "github-resume" ? 3 : mode === "github-resume-old-config" ? 2 : 0,
+            checkpoints: ["github", "github-wrapper"].includes(mode)
+              ? 1
+              : mode === "github-resume"
+                ? 3
+                : ["github-resume-old-config", "github-resume-reused-revision"].includes(mode)
+                  ? 2
+                  : 0,
             resumes: resume ? 1 : 0,
             sends:
               mode === "github-old-preflight" || mode === "github-wrong-epoch" ? 0 : mode === "github-resume" ? 2 : 1,
@@ -182,7 +191,7 @@ globalThis.fetch=async(url,options)=>{
     );
     expect(stdout + stderr).not.toContain("fixture-token");
     expect(stdout + stderr).not.toContain("private transport diagnostics");
-    if (["success", "resume", "github", "github-resume"].includes(mode)) {
+    if (["success", "resume", "github", "github-resume", "github-wrapper"].includes(mode)) {
       expect(stdout).toContain('"answer":"verified"');
       expect(stdout).toContain('"checkpoint":"verified"');
       expect(stdout).toContain('"followup":"verified"');
@@ -191,7 +200,13 @@ globalThis.fetch=async(url,options)=>{
     expect(stdout.includes('"resume":"verified"')).toBe(mode === "resume" || mode === "github-resume");
     if (github)
       expect(stdout.includes('"github":"verified"')).toBe(
-        ["github", "github-resume", "github-resume-old-config"].includes(mode),
+        [
+          "github",
+          "github-wrapper",
+          "github-resume",
+          "github-resume-old-config",
+          "github-resume-reused-revision",
+        ].includes(mode),
       );
     expect(stdout.includes('"githubAfterResume":"verified"')).toBe(mode === "github-resume");
   } finally {
