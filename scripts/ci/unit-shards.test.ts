@@ -45,9 +45,16 @@ test("SQL worker merging keeps every file once and leaves native or global-mock 
     ...unsafe.map((_, i) => `packages/mcp-server/test/unsafe-${i}.test.ts`),
     "scripts/other.test.ts",
   ];
-  const source = "const db = await migratedDatabase();";
+  const owners = [
+    "const db = await migratedDatabase();",
+    'import { database, harness } from "./support.ts"; await database();',
+    'import { runtimeFixture as fixture } from "./runtime-fixture.ts"; await fixture();',
+  ];
   const sources = Object.fromEntries(
-    files.map((file, i) => [file, i < sql.length ? source : `${source} ${unsafe[i - sql.length] ?? ""}`]),
+    files.map((file, i) => [
+      file,
+      `${owners[i % owners.length]} ${i < sql.length ? "" : (unsafe[i - sql.length] ?? "")}`,
+    ]),
   );
   const batches = workerBatches(files, sources);
   expect(batches.flat().sort()).toEqual([...files].sort());

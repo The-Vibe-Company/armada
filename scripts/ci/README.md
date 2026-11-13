@@ -4,7 +4,7 @@
 and assigns every file exactly once to six nonempty shards. Stage new files
 before checking locally. Run a shard with `bun scripts/ci/unit-shards.ts 1`
 (through `6`). Shard 1 also runs static checks, sharing checkout/Bun/dependencies;
-the planner reserves 30 seconds for their measured work and extra full-history setup before placing tests.
+the planner reserves 24 seconds for their measured work and extra full-history setup before placing tests.
 The required aggregate remains exactly `Lint, typecheck and test`.
 
 ## Worker isolation
@@ -23,8 +23,12 @@ separate isolated files.
 
 A merged worker logs its actual total (`Completed SQL worker in ...: files`),
 not invented per-file durations. Single-file measurements retain the original
-`Completed <file> in <seconds>s` format. Recorded weights are from completed CI,
-not local runs; shared-worker savings require new hosted measurements.
+`Completed <file> in <seconds>s` format. Recorded weights are raw isolated-file observations from completed CI, not local runs.
+The planner subtracts a conservative 1.5-second cold-schema estimate for eligible
+SQL files (floor 0.1 seconds); this estimate is never logged as a measurement.
+Reviewed SQL owners include the direct migrated/row-only helpers and the existing
+`database`, `harness`, and aliased `runtimeFixture` wrappers. Imported helpers must
+remain free of global hooks/mocks. Shared-worker savings require hosted measurements.
 
 ## Runner demand and cancellation
 
