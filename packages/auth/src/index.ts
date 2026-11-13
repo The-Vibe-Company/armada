@@ -2,19 +2,11 @@ export { BodyTooLargeError, readBoundedText } from "./bounded-body.ts";
 export { assertHash, bearerKind, generateToken, sha256Hex } from "./codec.ts";
 export { AuthError } from "./errors.ts";
 export { ACCESS_TOKEN_TTL_MS, OAUTH_SCOPE, REFRESH_TOKEN_TTL_MS, resourceUrl } from "./limits.ts";
-export { type EmailLoginOptions, type LoginOptions, loginWithBrowser, loginWithEmail } from "./login.ts";
 export { createMemoryAuthStore, type MemoryAuthStore } from "./memory.ts";
 export { handleOAuthRequest, type OAuthServerOptions, oauthOptionsFromEnv } from "./oauth.ts";
 export { createPkce } from "./pkce.ts";
 export { createServiceToken, listServiceTokens, resolveOrg, revokeServiceToken } from "./service-tokens.ts";
-export {
-  ensureFreshSession,
-  fileSessionStore,
-  memorySessionStore,
-  refreshSession,
-  type Session,
-  type SessionStore,
-} from "./session.ts";
+export { memorySessionStore, type Session, type SessionStore } from "./session.ts";
 export { createSqlAuthStore, type SqlQuery } from "./sql.ts";
 export {
   assertEmail,
