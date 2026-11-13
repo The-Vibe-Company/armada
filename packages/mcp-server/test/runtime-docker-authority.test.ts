@@ -1,5 +1,15 @@
 import { expect, test } from "bun:test";
-import { decryptSecret, encryptSecret, type Sql } from "@armada/core/server";
+import { CODEX_AUTH_ENV } from "@armada/core";
+import {
+  createSqlVaultStore,
+  decryptSecret,
+  encryptSecret,
+  resolveCredentials,
+  type Sql,
+  toHarnessCredentials,
+} from "@armada/core/server";
+import { dockerRuntimeConfiguration } from "../src/docker-runtime-configuration.ts";
+import { runtimeConfiguration } from "../src/runtime-configuration.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { createRuntimeModelAccess } from "../src/runtime-model-access.ts";
@@ -260,6 +270,134 @@ test("source membership prelocks cannot authorize a later transaction after issu
       ),
     ).rejects.toThrow("runtime_enrolment_denied");
     expect(committed).toBe(false);
+  } finally {
+    await f.db.close();
+  }
+});
+
+async function configurationFixture(f: Awaited<ReturnType<typeof fixture>>) {
+  const key = `offline-docker-${crypto.randomUUID()}`;
+  const account = (
+    await f.db.query<{ id: string; version: number }>(
+      "insert into credentials(scope,owner_id,kind,value_enc) values('user',$1,'openai',$2) returning id,version",
+      [f.people.owner, await encryptSecret(key, ENCRYPTION_KEY)],
+    )
+  ).rows[0];
+  if (!account) throw Error("missing account");
+  await f.db.query("update sandboxes set credential_id=$2,credential_version=$3 where id=$1", [
+    f.id,
+    account.id,
+    account.version,
+  ]);
+  const sandbox = (
+    await f.db.query<Parameters<typeof dockerRuntimeConfiguration>[0]["sandbox"]>(
+      `select id,owner_id as "ownerId",org_id as "orgId",provider,harness,visibility,status,
+       deleted_at::text as "deletedAt",stop_requested_at::text as "stopRequestedAt",
+       expires_at::text as "expiresAt",repository_dir as "repositoryDir",
+       credential_id as "credentialId",credential_version as "credentialVersion" from sandboxes where id=$1`,
+      [f.id],
+    )
+  ).rows[0];
+  if (!sandbox) throw Error("missing Docker target");
+  const actor = { userId: f.people.owner, orgId: f.people.org, role: "member" as const };
+  const credentials = toHarnessCredentials(
+    await resolveCredentials(createSqlVaultStore(f.sql), ENCRYPTION_KEY, {
+      ...actor,
+      harness: "codex",
+      credentialId: sandbox.credentialId,
+      credentialVersion: sandbox.credentialVersion,
+    }),
+  );
+  // Trusted descriptor: archive inventory validation belongs to the runtime artifact boundary.
+  const manifest = {
+    protocol: 1,
+    platform: "linux",
+    architecture: "x64",
+    libc: "glibc",
+    runtime: { sha256: "a".repeat(64), bytes: 10 },
+    harnesses: { codex: { files: [{ path: "bin/codex" }] } },
+  };
+  return { key, actor, sandbox, credentials, manifest, architecture: "x64" as const };
+}
+
+// The shared Boat matrix owns auth selection; Docker owns its no-golden target and sealed delivery.
+test("Docker current account projection reaches only encrypted enrolment under owner and host scope", async () => {
+  const f = await fixture();
+  try {
+    const input = await configurationFixture(f);
+    const plan = await dockerRuntimeConfiguration(input);
+    expect(plan.configuration.cwd).toBe("/home/user");
+    expect(plan.configuration.grant.expiresAt).toBe(Date.parse(input.sandbox.expiresAt));
+    expect(JSON.stringify({ artifact: plan.artifact, cacheDir: plan.cacheDir })).not.toContain(input.key);
+    await expect(
+      f.issuer.issue({ sandboxId: f.id, ownerId: f.people.member, configuration: plan.configuration }),
+    ).rejects.toThrow("runtime_enrolment_denied");
+    const ticket = await f.issuer.issue({
+      sandboxId: f.id,
+      ownerId: f.people.owner,
+      configuration: plan.configuration,
+    });
+    expect(JSON.stringify(ticket)).not.toContain(input.key);
+    const pending = (
+      await f.db.query<{ configuration_enc: Uint8Array<ArrayBuffer> }>(
+        "select configuration_enc from runtime_enrolments where sandbox_id=$1",
+        [f.id],
+      )
+    ).rows[0];
+    if (!pending) throw Error("missing sealed configuration");
+    expect(Buffer.from(pending.configuration_enc).includes(Buffer.from(input.key))).toBe(false);
+    const active = await f.validator.enrol(ticket.enrolmentToken);
+    expect(active.configuration).toEqual(plan.configuration);
+    expect(active.configuration).toMatchObject({ codexEnv: { OPENAI_API_KEY: input.key } });
+    const next = await f.issuer.issue({ sandboxId: f.id, ownerId: f.people.owner, configuration: plan.configuration });
+    await f.db.query("update docker_hosts set revoked_at=now() where id=$1", [f.host]);
+    await expect(f.validator.enrol(next.enrolmentToken)).rejects.toThrow("runtime_enrolment_denied");
+  } finally {
+    await f.db.close();
+  }
+});
+
+test("Docker projection rejects repository, provider, visibility, pin and environment escalation without effects", async () => {
+  const f = await fixture();
+  try {
+    const original = await configurationFixture(f);
+    let reads = 0;
+    for (const reason of ["repository", "provider", "visibility", "binding", "environment", "selector"]) {
+      const input = structuredClone(original);
+      // A missed admission guard would reach native state; denied inputs must not do so.
+      input.credentials.codexAuthJson = true;
+      input.credentials.env = { [CODEX_AUTH_ENV]: original.key };
+      if (reason === "repository") Object.assign(input.sandbox, { repositoryDir: "project" });
+      if (reason === "provider") Object.assign(input.sandbox, { provider: "boat" });
+      if (reason === "selector") Object.assign(input.sandbox, { provider: original.key });
+      if (reason === "visibility") Object.assign(input.sandbox, { visibility: "org" });
+      if (reason === "binding") input.credentials.binding = { credentialId: crypto.randomUUID(), credentialVersion: 1 };
+      if (reason === "environment") input.credentials.env.ANTHROPIC_API_KEY = original.key;
+      const configured = {
+        ...input,
+        modelAuth: {
+          state: {
+            async read() {
+              reads++;
+              throw Error(original.key);
+            },
+          },
+        },
+      };
+      const projection =
+        reason === "selector"
+          ? runtimeConfiguration(configured, original.key as "docker")
+          : dockerRuntimeConfiguration(configured);
+      await expect(projection).rejects.toMatchObject({
+        code: "unavailable",
+        message:
+          reason === "selector"
+            ? "Runtime configuration is unavailable."
+            : "Docker runtime configuration is unavailable.",
+      });
+    }
+    expect(reads).toBe(0);
+    expect((await f.db.query("select 1 from runtime_enrolments where sandbox_id=$1", [f.id])).rows).toEqual([]);
   } finally {
     await f.db.close();
   }
