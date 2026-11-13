@@ -30,7 +30,8 @@ export function parseDockerHostJob(value: unknown): DockerHostJob {
   if (typeof value.operation !== "string" || !["create", "stop", "delete", "bootstrap"].includes(value.operation))
     invalid();
   const r = value.request;
-  exact(r, ["sandboxId", "generation", "image", "ttlSeconds"]);
+  const absolute = r !== null && typeof r === "object" && Object.hasOwn(r, "expiresAt");
+  exact(r, ["sandboxId", "generation", "image", "ttlSeconds", ...(absolute ? ["expiresAt"] : [])]);
   id(r.sandboxId);
   id(r.generation);
   if (
@@ -43,7 +44,17 @@ export function parseDockerHostJob(value: unknown): DockerHostJob {
     r.ttlSeconds > 86_400
   )
     invalid();
-  const request = { sandboxId: r.sandboxId, generation: r.generation, image: r.image, ttlSeconds: r.ttlSeconds };
+  const request: DockerMachineRequest = {
+    sandboxId: r.sandboxId,
+    generation: r.generation,
+    image: r.image,
+    ttlSeconds: r.ttlSeconds,
+  };
+  if (absolute) {
+    const end = r.expiresAt;
+    if (typeof end !== "number" || !Number.isSafeInteger(end) || end <= 0 || end > 8_640_000_000_000_000) invalid();
+    request.expiresAt = end;
+  }
   if (!bootstrap)
     return { requestId: value.requestId, operation: value.operation as "create" | "stop" | "delete", request };
   const b = value.bootstrap;

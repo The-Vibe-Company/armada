@@ -170,10 +170,21 @@ async function captureAndStore(
       return;
     }
     if (stop.boat_runtime) {
+      const checkpoint = (
+        await sql.query<{ epoch: string; watermark: string }>(
+          `select p.epoch::text,p.watermark::text from public.runtime_checkpoints p
+        join public.runtime_enrolments r on r.sandbox_id=p.sandbox_id and r.epoch=p.epoch
+        where p.sandbox_id=$1 and p.watermark is not null
+        and p.watermark=(select coalesce(max(sequence),0) from public.runtime_events e where e.sandbox_id=p.sandbox_id)`,
+          [id],
+        )
+      ).rows[0];
       await writeNote(
         sql,
         id,
-        "Experimental runtime stop: work preservation and resumable checkpoint are unavailable.",
+        checkpoint
+          ? `Armada runtime checkpoint acknowledged for epoch ${checkpoint.epoch} through event ${checkpoint.watermark}; disk retention requires confirmed host stop. No Git work archive is claimed.`
+          : "Experimental runtime stop: no acknowledged runtime checkpoint; resume and Git work preservation are unavailable.",
         stop.stop_token,
       );
       return;

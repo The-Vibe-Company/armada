@@ -241,3 +241,41 @@ test("bootstrap tickets are sealed, strictly admitted, immutable and redelivered
   await denied(store.complete(a.hostToken, a.installationId, { ...result, outcome: "failed" }));
   expect(await store.poll(a.hostToken, a.installationId)).toBeNull();
 });
+
+test("frozen machine expiry survives mailbox delivery and cannot change under an admitted request ID", async () => {
+  const a = await fixture();
+  const task = job();
+  const absolute = { ...task, request: { ...task.request, expiresAt: 1_700_000_000_000 } };
+  await store.enqueue(a.actor, a.hostId, absolute);
+  expect(await store.poll(a.hostToken, a.installationId)).toEqual(absolute);
+  await denied(
+    store.enqueue(a.actor, a.hostId, {
+      ...absolute,
+      request: { ...absolute.request, expiresAt: absolute.request.expiresAt + 1 },
+    }),
+  );
+  for (const expiresAt of [null, undefined, "1700000000000", 0, -1, 1.5, NaN, Infinity, 8_640_000_000_000_001]) {
+    await denied(
+      store.enqueue(a.actor, a.hostId, {
+        ...task,
+        requestId: randomUUID(),
+        request: { ...task.request, expiresAt },
+      } as never),
+    );
+  }
+  // Unbounded legacy jobs retain their exact persisted identity/bytes.
+  const legacy = job();
+  await store.enqueue(a.actor, a.hostId, legacy);
+  const row = await db.query<{ input_enc: Uint8Array<ArrayBuffer> }>(
+    "select input_enc from docker_host_jobs where request_id=$1",
+    [legacy.requestId],
+  );
+  const stored = row.rows[0];
+  if (!stored) throw new Error("Missing stored legacy job");
+  expect(await decryptSecret(stored.input_enc, key)).toBe(
+    JSON.stringify({
+      operation: legacy.operation,
+      request: legacy.request,
+    }),
+  );
+});

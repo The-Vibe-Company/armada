@@ -51,6 +51,7 @@ import { createProviderMetadata } from "./provider-metadata.ts";
 import { pruneServerRetention } from "./retention-maintenance.ts";
 import { startRoutineWorker } from "./routine-worker.ts";
 import { createRuntimeArtifactRoute } from "./runtime-artifacts.ts";
+import { createRuntimeCheckpoint } from "./runtime-checkpoint.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import { createRuntimeEvents } from "./runtime-events.ts";
@@ -110,6 +111,7 @@ export async function startServer(
   const runtimeEnrolments = createRuntimeEnrolments(sql, config.encryptionKey);
   const runtimeCommands = createRuntimeCommands(runtimeEnrolments, config.encryptionKey);
   const runtimeSend = createRuntimeFollowup(sql, config.encryptionKey, runtimeCommands);
+  const runtimeCheckpoint = createRuntimeCheckpoint(sql, config.encryptionKey, runtimeCommands);
   let subscriptionMigration: ReturnType<typeof createSubscriptionMigration>;
   const modelAuth = createModelAuthOwnership(sql, config.encryptionKey, undefined, undefined, {
     origin: config.publicUrl,
@@ -281,6 +283,7 @@ export async function startServer(
   }
   const control: ConfiguredControlOptions = {
     runtimeSend,
+    runtimeCheckpoint,
     ...(runtimeLaunch
       ? { boatRuntimeLaunch: runtimeLaunch, runtimeHostFor: (apiKey: string) => createBoatProvider({ apiKey }) }
       : {}),
@@ -374,6 +377,7 @@ export async function startServer(
   const runtimeSockets = createRuntimeSockets(runtimeEnrolments, runtimeCommands);
   const handler = createHandler({
     runtimeSend,
+    runtimeCheckpoint,
     ready: createDatabaseReadiness(sql),
     runtimeProviderFor,
     launch,
