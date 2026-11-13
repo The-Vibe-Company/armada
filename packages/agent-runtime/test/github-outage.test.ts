@@ -112,7 +112,12 @@ for line in sys.stdin:
       // The standalone Git wrapper has no harness-specific behavior; prove its refusal once.
       if (harness === "claude") {
         expect((await run([git, "-C", join(base, "work"), "status", "-sb"])).stdout).toContain("##");
-        const credential = Bun.spawn([git, "credential", "fill"], { env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+        const credential = Bun.spawn([git, "credential", "fill"], {
+          env,
+          stdin: "pipe",
+          stdout: "pipe",
+          stderr: "pipe",
+        });
         credential.stdin.write("protocol=https\nhost=github.com\npath=acme/repo.git\n\n");
         credential.stdin.end();
         expect(await credential.exited).toBe(1);
