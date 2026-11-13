@@ -13,6 +13,15 @@ not aliases for foreign provider snapshots. Snapshot builds require GitHub acces
 not a model account. The product applies host/installation, owner, visibility,
 source-definition and generation labels automatically.
 
+The host provides the checkout credential to the Docker build client through a
+per-build child environment variable and an explicit BuildKit `type=env` secret.
+The Dockerfile still reads only the private `github` secret mount; no token is
+stored in the context, arguments, Dockerfile `ENV`/`ARG`, labels, or image. The
+reserved environment variable is removed from ordinary Docker commands and the
+daemon's environment is never mutated. Reopening `/dev/stdin` is not supported
+by every Docker buildx client/plugin transport, so it is not used as a secret
+source.
+
 Create `armada.golden.json` locally (use repositories your GitHub connection can
 access; setup runs as the unprivileged sandbox user):
 

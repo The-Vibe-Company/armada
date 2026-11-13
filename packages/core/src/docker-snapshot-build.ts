@@ -34,8 +34,17 @@ export async function buildDockerSnapshot(
       .digest("hex"),
   };
   let directory: string | undefined;
-  const checked = async (args: string[], stdin?: string, timeoutMs?: number) => {
-    const result = await options.cli.run(args, stdin, timeoutMs === undefined ? undefined : { timeoutMs });
+  const checked = async (args: string[], stdin?: string, timeoutMs?: number, githubBuildToken?: string) => {
+    const result = await options.cli.run(
+      args,
+      stdin,
+      timeoutMs === undefined
+        ? undefined
+        : {
+            timeoutMs,
+            ...(githubBuildToken === undefined ? {} : { githubBuildToken }),
+          },
+    );
     if (result.exitCode !== 0) throw Error("Snapshot build failed.");
     return result.stdout;
   };
@@ -124,14 +133,15 @@ USER 1000:1000
         "--tag",
         tag,
         "--secret",
-        "id=github,src=/dev/stdin",
+        "id=github,type=env,env=ARMADA_SNAPSHOT_GITHUB_TOKEN",
         "--build-arg",
         `ARMADA_SNAPSHOT_BUILD_ID=${job.requestId}`,
         ...Object.entries(labels).flatMap(([key, value]) => ["--label", `${key}=${value}`]),
         directory,
       ],
-      job.build.token,
+      undefined,
       Math.min(3600000, remaining),
+      job.build.token,
     );
     return await verify();
   } catch {

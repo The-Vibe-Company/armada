@@ -13,7 +13,7 @@ export interface DockerMachineCli {
   run(
     argv: readonly string[],
     stdin?: string | Uint8Array,
-    options?: { timeoutMs?: number },
+    options?: { timeoutMs?: number; githubBuildToken?: string },
   ): Promise<{ exitCode: number; stdout: string }>;
 }
 

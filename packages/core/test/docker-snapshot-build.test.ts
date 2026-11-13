@@ -49,10 +49,10 @@ test("snapshot builds mount credentials privately, publish automatic ownership l
         builds++;
         try {
           directory = argv.at(-1)!;
-          expect(stdin).toBe(token);
+          expect(stdin).toBeUndefined();
           expect(argv.join(" ")).not.toContain(token);
-          expect(timeout).toEqual({ timeoutMs: 60000 });
-          expect(argv).toContain("id=github,src=/dev/stdin");
+          expect(timeout).toEqual({ timeoutMs: 60000, githubBuildToken: token });
+          expect(argv).toContain("id=github,type=env,env=ARMADA_SNAPSHOT_GITHUB_TOKEN");
           expect((await lstat(directory)).mode & 0o777).toBe(0o700);
           for (const path of [
             "Dockerfile",
