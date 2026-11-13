@@ -1,17 +1,8 @@
 # Deployed checks
 
-> **Release-only production gate:** With repository variables
-> RELEASE_SYNCED_DEPLOYS=true and STAGING_GATED_DEPLOYS=true,
-> [Staging-gated releases](releasing.md#staging-gated-releases-owner-opt-in)
-> continuously deploy/migrate/smoke main on staging. Release calls that same staging
-> workflow for its exact validated SHA before production migrations/server/dashboard/npm.
-> Independent automatic migration applies and deployment-event smoke below are disabled.
-> Manual diagnostic smoke/history/repair/preview remain available. Missing gate config
-> blocks promotion. Owner cutover, emergency bypass and rollback are in the runbook.
-> Manual diagnostic smoke has a separate lock: wait for pinned staging deployment/
-> smoke to finish and ensure no next deployment is queued before running it.
-> It can otherwise observe staging mid-deploy and never authorizes a release.
-> With both variables absent/false, legacy behavior below is unchanged.
+> **Mandatory deployment gate:** Main staging deployments and exact-SHA publishing
+> release calls own smoke. No opt-in or deployment-event fallback exists. Release
+> requires its staging smoke before production. See [deployment policy](releasing.md#deployment-policy-1547).
 
 `scripts/post-deploy-smoke.ts` allocates **real, billable compute**. It uses only
 an Armada bearer token and the deployed server's `/api/v1/` API. It does not
@@ -102,19 +93,21 @@ Use a separate staging Boat account/key shared by its Claude/Codex cases; Boat's
 one-golden account limit does not justify pair-specific extra goldens. Provider/model
 keys remain in Armada's vault, never cases or workflow arguments.
 
-The **Post-deploy smoke** workflow can be dispatched on main. It also runs after
-a successful GitHub `deployment_status` for environment exactly `armada / staging`
-(Railway's GitHub deployment name, not the GitHub secrets environment). To
-override the accepted name, set the repository variable
-`ARMADA_SMOKE_DEPLOYMENT_ENVIRONMENT` to the exact staging deployment name.
-Leave it unset or empty to use the default; never set it to a production name.
-Use repository scope: environment-scoped variables are unavailable when GitHub
-evaluates the job's `if` condition, before the `staging` environment is attached.
-Your deployment system must publish that GitHub status; a Railway/Vercel deploy
-alone is not assumed to produce it. It uses reviewed main code, not arbitrary
-deployment refs. Missing any required secret produces a notice and makes no
-API calls. Production/preview deployment events are ignored. Runs are serialized
-and not cancelled by a newer deploy, allowing cleanup to finish.
+The **Post-deploy smoke** workflow is a manual **main-only** entry point to the
+same pinned staging deployment-and-smoke workflow used after main merges. It
+first deploys the dispatch's main SHA, then smokes that deployment; it no longer
+accepts `deployment_status` events. PR, merge-queue (`gh-readonly-queue/*`) and
+release-please branch deployments cannot trigger smoke or attach its slow check
+to those branches. Dispatch from any other ref is skipped. The publishing Release
+workflow remains the only slow gated path: exact release commit staging deploy
+and smoke, then production. Main post-merge smoke is not a PR/merge-queue gate.
+
+The manual alias requires all staging deployment secrets and smoke cases; missing
+configuration fails before smoke rather than producing a successful no-op
+attestation. The old deployment opt-in variables are ignored. Set ARMADA_ORIGIN, ARMADA_SMOKE_TOKEN and ARMADA_SMOKE_CASES
+in staging as documented above. Do not restore deployment-event smoke as a
+fallback. The pinned deployment and smoke stay serialized together and are not
+cancelled by a newer deploy, allowing cleanup to finish.
 
 Each step emits a fixed diagnostic line; failures exit nonzero. API bodies,
 command output, tokens and provider error messages are never printed. Requests
@@ -811,11 +804,14 @@ remain untouched. Offline regression tests cover a late-settling stop/lease,
 bounded parent-first selection, and real-SQL child-before-parent refusal followed
 by successful parent/child deletion under current owner/org authorization.
 
-### Three-provider parity observation (#1467)
+### Three-provider parity observation (#1532)
 
 Run `bun scripts/post-deploy-smoke.ts --parity` against staging with the usual
 `ARMADA_TOKEN`, `ARMADA_SMOKE=create_real_compute`, and `ARMADA_URL` guards.
-`ARMADA_SMOKE_CASES` must contain exactly one Boat, Modal and Docker case. All
+`ARMADA_SMOKE_CASES` must contain exactly one Boat, Modal and Docker case for a full run.
+Use `--parity --only docker --feature exec` to run one provider/feature;
+a provider-filtered run may supply only that provider case. Unknown or duplicate
+filters are rejected before any request. All
 cases supply `org`, `harness`, `model`, and `modelAccountId`. Boat/Modal also
 supply `golden`; Docker instead supplies `hostId` (an already registered owned
 host) and `image` (the pulled immutable image digest). No SSH, registration,
@@ -828,9 +824,72 @@ gate or its flags. No workflow/deploy failure policy changes. The command fails
 if any advertised operation fails; unsupported operations are reported separately
 with the server's `launch/options` reason, never as passes. Dependent operations
 that cannot run are failures with a dependency reason, not unsupported claims.
-Every provider has launch/send/status/logs/stop/resume/delete rows. The final
+The matrix inventories every requested feature. Implemented probes are
+launch/send/status/logs/exec/stop/resume/delete and resume-recall (a random token
+remembered before stop and recovered after resume). Exec checks a fixed stdout
+marker as well as successful exit. Other rows are explicitly
+`not-run: probe_not_implemented`: this is an incremental migration, not proof
+that those features work or are unsupported. The older scripts remain until
+their checks are migrated. A filtered run still executes launch and cleanup
+prerequisites, plus send/stop/resume when recall needs them; these have separate
+`prerequisite:*` rows. Nonselected cells remain `not-run`. Unsupported and
+not-run counts are printed per provider; only failures make the run nonzero.
+There is at most one launch attempt per selected provider, recorded as
+`starts` in JSON; stop/resume can allocate additional provider compute.
+A full run is not bounded to two minutes; a feature filter skips unrelated
+turns, but provider startup time still applies. Client request builders and
+cleanup-row reconciliation are follow-up work; do not treat this runner as
+evidence those acceptance criteria have passed. The final
 `provider_parity` JSON line contains the entire matrix, and the Markdown table is
 appended to `GITHUB_STEP_SUMMARY` (or printed locally). Normal sandbox cleanup
 journaling via `ARMADA_SMOKE_JOURNAL` remains available; retain that journal after
 unknown outcomes for reconciliation. This command creates real staging compute;
 a procedure or fake-API test is not evidence of a successful staging run.
+
+#### First staging findings (#1532, 2026-11-13)
+
+Failure cells now include the public API error code, HTTP status, and bounded
+credential-redacted server message (never the envelope/details). Local validation
+and transport failures have fixed diagnostics. HTTP 429 / explicit quota codes
+are `not-run: quota`; dependent cells inherit that diagnostic, not a defect.
+No automatic launch retry is made.
+
+Docker's send path sets the persisted machine state to `running`
+(`docker-runtime-lifecycle.ts`); status returns that persisted state even after a
+prompt finishes. The old Python runner checks host/conversation identity rather
+than demanding `ready`. Parity now accepts both live states, with turn completion
+proved independently by the logs. The provider field is optional in the shared
+status schema; launch already checks provider identity. This is a runner
+assertion mismatch, not evidence of a provider regression.
+
+Modal delete was a single attempt here. The adapter can report pending termination
+or recovery-image removal; cleanup can retain a two-minute activity lease.
+Parity now reconciles the same delete/request ID with a bounded retry, without
+replaying stop, and retains the last server diagnostic if confirmation never
+arrives. The older Modal runtime script **only stops**, never deletes; its success
+does not contradict a delete failure. Because the historical run hid its error,
+we cannot assert which server refusal it received; the next staging run will
+identify it. No staging result is claimed by these code-level corrections.
+
+#### Parity cleanup receipts and failure paths
+
+Parity uses the same `post-deploy-smoke:<uuid>` journal request-key format as
+the other smoke probes. The previous callback key `parity:<uuid>` was
+incompatible with `smokeReceipts`. The normal journal wrapper records the launch
+first and deduplicates this callback, so this mismatch is not evidence of the
+historical `remainingRows:5` cause. It is now safe for receipt consumers that
+validate the callback directly. A journal-write error after a known allocation
+still requires cleanup, regardless of the callback key.
+
+Every known allocation now has an independent final cleanup attempt, including
+journal-write failure and unknown resume outcomes. Cleanup confirms stop before
+deleting, reconciles a lost stop acknowledgement by reading status (without
+replaying stop), and requires the delete receipt's ID and terminal status.
+The table includes a `cleanup` cell and `parity_cleanup` JSON reports the ID and
+whether deletion was confirmed. A failed cleanup is a failure even if another
+probe was already failed or not-run. Keep the journal for unconfirmed resources;
+a lost launch response without an ID still requires operator reconciliation.
+The parity probe's shared 35-minute polling deadline still applies; exhausted
+budget can leave cleanup unconfirmed. The journal-enabled wrapper additionally
+runs its own reserved cleanup phase. This slice does not prove the cause of the
+historical five remaining rows or guarantee deletion after provider refusal.

@@ -107,11 +107,12 @@ describe("credentials", () => {
         kind: "claude_oauth",
         value: `${CLAUDE}\n`,
       });
-      await setCredential(store, KEY, people.stan, {
+      const largeAuth = JSON.stringify({ ...JSON.parse(AUTH_JSON), padding: "x".repeat(65000) });
+      await mutateCredentialAccount(store, KEY, people.stan, {
+        action: "set",
         scope: "user",
-        org: undefined,
         kind: "codex_auth",
-        value: AUTH_JSON,
+        value: largeAuth,
       });
       await setCredential(store, KEY, people.stan, {
         scope: "user",
@@ -133,6 +134,10 @@ describe("credentials", () => {
       expect(sizes.rows.every((row) => row.n > 12 + 16)).toBe(true);
 
       const org = (await listOrgs(store, people.stan))[0];
+      expect(
+        (await resolveCredentials(store, KEY, { userId: people.stan, orgId: org?.id ?? "", harness: "codex" })).files[0]
+          ?.content,
+      ).toBe(largeAuth);
       expect(
         await resolveCredentials(store, KEY, { userId: people.stan, orgId: org?.id ?? "", harness: "claude" }),
       ).toMatchObject({

@@ -141,8 +141,18 @@ export async function fileStore(
   };
 }
 
+/** A host request the server answered with an error status. */
+class HostRequestDenied extends Error {
+  constructor(readonly status: number) {
+    super("Host request denied");
+  }
+}
+
 /** Outbound HTTPS only. Redirects cannot forward host credentials to another origin. */
-export function httpApi(request: typeof fetch = fetch): Api & { unregister(state: State): Promise<boolean> } {
+export function httpApi(request: typeof fetch = fetch): Api & {
+  unregister(state: State): Promise<boolean>;
+  reuseRegistration(state: State, token: string): Promise<{ hostId: string; name: string | null }>;
+} {
   async function post(server: string, endpoint: string, token: string, body: unknown): Promise<unknown> {
     const response = await request(`${serverOrigin(server)}/api/docker-host/${endpoint}`, {
       method: "POST",
@@ -153,7 +163,7 @@ export function httpApi(request: typeof fetch = fetch): Api & { unregister(state
     });
     if (!response.ok) {
       await response.body?.cancel();
-      throw new Error("Host request denied");
+      throw new HostRequestDenied(response.status);
     }
     if (endpoint === "results") {
       await response.body?.cancel();
@@ -178,6 +188,28 @@ export function httpApi(request: typeof fetch = fetch): Api & { unregister(state
     return JSON.parse(Buffer.concat(parts).toString("utf8"));
   }
   return {
+    async reuseRegistration(state, token) {
+      if (!validToken(token)) throw new Error("Invalid registration token");
+      const result = await post(state.server, "reuse-registration", token, { hostId: state.hostId });
+      if (
+        !result ||
+        typeof result !== "object" ||
+        Array.isArray(result) ||
+        Object.keys(result).length !== 2 ||
+        !("hostId" in result) ||
+        result.hostId !== state.hostId ||
+        !("name" in result) ||
+        !(
+          result.name === null ||
+          (typeof result.name === "string" &&
+            result.name.length > 0 &&
+            result.name.length <= 64 &&
+            !/[\p{C}]/u.test(result.name))
+        )
+      )
+        throw new Error("Invalid existing host identity");
+      return { hostId: state.hostId, name: result.name as string | null };
+    },
     async unregister(state) {
       const result = await post(state.server, "unregister", state.hostToken, { installationId: state.installationId });
       if (
@@ -204,19 +236,28 @@ export function httpApi(request: typeof fetch = fetch): Api & { unregister(state
       };
     },
     async result(state, receipt, expired) {
-      await post(state.server, "results", state.hostToken, {
+      const body = {
         installationId: state.installationId,
         requestId: receipt.requestId,
         ...(expired ? { expired: true } : { outcome: receipt.outcome }),
         ...(receipt.operation === "buildSnapshot" && receipt.imageId ? { imageId: receipt.imageId } : {}),
-      });
+      };
+      if (expired || !receipt.reason) return void (await post(state.server, "results", state.hostToken, body));
+      try {
+        await post(state.server, "results", state.hostToken, { ...body, reason: receipt.reason });
+      } catch (error) {
+        // Only a server older than failure reasons refuses the field (400): the plain outcome is still the machine
+        // fact. Any other failure is retried with the reason on the next tick.
+        if (!(error instanceof HostRequestDenied) || error.status !== 400) throw error;
+        await post(state.server, "results", state.hostToken, body);
+      }
     },
   };
 }
 
 /** Never a shell, never inherited output; inspect can contain secrets. */
 export const dockerCli: DockerMachineCli = {
-  run(argv, stdin, timeoutMs = 30_000) {
+  run(argv, stdin, options) {
     return new Promise((resolve, reject) => {
       const child = spawn("docker", [...argv], { stdio: ["pipe", "pipe", "ignore"] });
       let output = "";
@@ -226,7 +267,7 @@ export const dockerCli: DockerMachineCli = {
         failed = true;
         child.kill("SIGKILL");
       };
-      const timer = setTimeout(fail, Math.min(3_600_000, Math.max(1, timeoutMs)));
+      const timer = setTimeout(fail, options?.timeoutMs ?? 30_000);
       child.stdout.on("data", (data: Buffer) => {
         bytes += data.length;
         if (bytes > 1024 * 1024) fail();

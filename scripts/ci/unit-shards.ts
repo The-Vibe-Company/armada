@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url";
 import durations from "./test-durations.json";
 
-export const SHARD_COUNT = 6;
+export const SHARD_COUNT = 8;
 const root = fileURLToPath(new URL("../../", import.meta.url));
 
 // Bun's default discovery names; explicit ./ paths below are exact files, not filters.

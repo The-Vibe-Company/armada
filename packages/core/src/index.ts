@@ -101,7 +101,14 @@ export type {
   LaunchProviderOption,
   SandboxPlacementProviderId,
 } from "./docker-api.ts";
-export { DOCKER_DEFAULT_IMAGE, DOCKER_SNAPSHOT_STATUSES, type DockerSnapshotRecord } from "./docker-api.ts";
+export {
+  DOCKER_DEFAULT_IMAGE,
+  DOCKER_IMAGE_UNAVAILABLE_MESSAGE,
+  DOCKER_JOB_FAILURE_REASONS,
+  DOCKER_SNAPSHOT_STATUSES,
+  type DockerJobFailureReason,
+  type DockerSnapshotRecord,
+} from "./docker-api.ts";
 export {
   DOCKER_LOCAL_IMAGE_LABELS,
   type DockerSnapshotBinding,

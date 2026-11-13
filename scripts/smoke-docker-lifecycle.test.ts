@@ -12,7 +12,6 @@ test.each([
   "opencode",
   "repository",
   "repository-no-proof",
-  "local-image",
   "snapshot",
   "snapshot-no-init",
   "snapshot-build-failed",
@@ -52,11 +51,7 @@ class Opener:
             sandbox = body["requestId"]
             assert timeout == 600
             assert body["hostId"] == "retained-host"
-            if mode.startswith("snapshot"):
-                assert body["snapshotId"] == snapshot_id and "image" not in body and "repos" not in body
-                assert "/opt/armada-build/receipt.json" in body["prompt"] and "a" * 64 not in body["prompt"]
-            else:
-                assert body["image"] == ("sha256:" + "b" * 64 if mode == "local-image" else "image@sha256:" + "a" * 64)
+            assert "image" not in body
             assert body["provider"] == "docker" and body["harness"] == (mode if mode in ("claude", "opencode") else "codex")
             assert body["visibility"] == "private" and "DOCKER_OK" in body["prompt"]
             assert "credentialVersion" not in body
@@ -64,7 +59,7 @@ class Opener:
                 assert body["repos"] == [{"url": "https://github.com/example/project.git", "branch": "feature/work", "dir": "project"}]
                 assert "git -C /home/user/project log -1" in body["prompt"]
             marker = body["prompt"].split("marker for my next message: ")[1].split(".")[0] if lifecycle else None
-            value = {"sandbox": {"id": sandbox, "provider": "docker", "image": "sha256:" + "d" * 64 if mode.startswith("snapshot") else body["image"], "snapshotId": snapshot_id}, "promptId": prompt, "conversationId": conversation}
+            value = {"sandbox": {"id": sandbox, "provider": "docker", "image": "sha256:" + "d" * 64 if mode.startswith("snapshot") else "image@sha256:" + "a" * 64, "snapshotId": snapshot_id}, "promptId": prompt, "conversationId": conversation}
         elif path == "github/runtime-status":
             value = {"configured": True, "credentialRequests": 1}
         elif path == "sandbox/send":
@@ -106,7 +101,7 @@ def command(argv, **kwargs):
     assert "ARMADA_TOKEN" not in kwargs["env"]
     return types.SimpleNamespace(returncode=0)
 argv = ["scripts/smoke-docker-lifecycle.py", "--server", "https://staging.example", "--org", "org",
-        "--credential", "account", "--ssh", "host-alias", "--image", "sha256:" + "b" * 64 if mode == "local-image" else "image@sha256:" + "a" * 64,
+        "--credential", "account", "--ssh", "host-alias", "--image", "image@sha256:" + "a" * 64,
         "--host-id", "retained-host", "--start-host", "--normal-launch"]
 if mode.startswith("repository"):
     argv += ["--repository", "example/project", "--branch", "feature/work"]

@@ -8,7 +8,6 @@ type TemplatePlacement =
       goldenId: null;
       goldenBinding: null;
       hostId: string;
-      image: string;
     };
 export type TemplateDefinition = TemplatePlacement & {
   harness: Harness;

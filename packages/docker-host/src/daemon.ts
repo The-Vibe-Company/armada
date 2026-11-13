@@ -1,17 +1,20 @@
 import { createHash } from "node:crypto";
+import type { DockerJobFailureReason } from "../../core/src/docker-api.ts";
 import {
   type BootstrapDescriptor,
   canonicalDockerHostJob,
   type DockerHostJob,
   parseDockerHostJob,
 } from "../../core/src/docker-host-job.ts";
-import type { DockerMachineRequest } from "../../core/src/docker-machine.ts";
+import { DockerMachineError, type DockerMachineRequest } from "../../core/src/docker-machine.ts";
 
 export type Job = DockerHostJob;
 export type Receipt = {
   requestId: string;
   request: DockerMachineRequest;
   outcome?: "completed" | "failed";
+  /** Why a failed machine operation failed, when it is one the person can act on (#1507). */
+  reason?: DockerJobFailureReason;
   /** Durable positive local stop proof, separate from the original job outcome. */
   expired?: true;
   expiryReported?: true;
@@ -153,8 +156,9 @@ export async function tick(store: Store, api: Api, executor: Executor, skipSnaps
         await executor.startRuntime(receipt.request, job.bootstrap);
       } else await executor[receipt.operation](receipt.request);
       receipt.outcome = "completed";
-    } catch {
+    } catch (error) {
       receipt.outcome = "failed";
+      if (error instanceof DockerMachineError && error.code === "image_unavailable") receipt.reason = error.code;
     } // Uncertain native failure is terminal for this request identity.
     // A long build continues ordinary mailbox/TTL work; merge its receipt into the latest durable state.
     const latest = await store.load();

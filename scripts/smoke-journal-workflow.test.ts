@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 test("journal restore rejects untrusted artifact producers before downloading deletion authority", () => {
-  for (const workflow of ["post-deploy-smoke", "staging-gated-production"]) {
+  {
+    const workflow = "staging-gated-production";
     const config = Bun.YAML.parse(readFileSync(`.github/workflows/${workflow}.yml`, "utf8")) as {
       jobs: Record<string, { steps?: { name?: string; run?: string }[] }>;
     };

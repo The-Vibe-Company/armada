@@ -19,7 +19,6 @@ Docker placement uses the same definition file and template/routine launch path:
 {
   "provider": "docker",
   "hostId": "HOST_UUID",
-  "image": "worker@sha256:REPLACE_WITH_64_LOWERCASE_HEX_DIGEST",
   "harness": "codex",
   "connections": [],
   "skills": []

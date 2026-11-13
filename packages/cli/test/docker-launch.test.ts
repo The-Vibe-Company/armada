@@ -1,5 +1,4 @@
 import { expect, test } from "bun:test";
-import { DOCKER_DEFAULT_IMAGE } from "@armada/core";
 import { run } from "../src/run.ts";
 import { memorySessionStore } from "../src/session.ts";
 
@@ -16,8 +15,6 @@ const args = [
   org,
   "--host",
   host,
-  "--image",
-  image,
   "--credential-id",
   credential,
   "--request-id",
@@ -80,7 +77,6 @@ test.each(["codex", "claude", "opencode"] as const)(
       org,
       provider: "docker",
       hostId: host,
-      image,
       harness,
       credentialId: credential,
       requestId,
@@ -92,7 +88,7 @@ test.each(["codex", "claude", "opencode"] as const)(
   },
 );
 
-test("Docker launch without --image sends Armada's default image", async () => {
+test("Docker repository launch omits image selection", async () => {
   const calls: Request[] = [];
   const withoutImage = args.filter((arg, index) => arg !== "--image" && args[index - 1] !== "--image");
   const result = await capture([...withoutImage, "--repo", "acme/web@feature/work"], async (request) => {
@@ -105,7 +101,6 @@ test("Docker launch without --image sends Armada's default image", async () => {
   });
   expect(result.code).toBe(0);
   expect(await calls[0]?.json()).toMatchObject({
-    image: DOCKER_DEFAULT_IMAGE,
     repos: [{ url: "https://github.com/acme/web", branch: "feature/work", dir: "web" }],
   });
 });
@@ -114,7 +109,7 @@ test("Docker incompatible or malformed options fail before HTTP", async () => {
   const calls: Request[] = [];
   for (const flags of [
     ["--agent", "unknown"],
-    ["--image", "sha256:short"],
+    ["--image", image],
     ["--image", `sha256:${"A".repeat(64)}`],
     ["--skill", "foo@1"],
     ["--repo", "https://user:secret@example.test/web"],
@@ -164,11 +159,7 @@ test("Docker launch resolves an exact unique non-revoked host name and refuses m
     golden: null,
     runtime: { epoch: "1" },
   };
-  const namedArgs = [
-    ...args.map((arg) => (arg === host ? "office" : arg === image ? `sha256:${"b".repeat(64)}` : arg)),
-    "--repo",
-    "acme/web@feature/work",
-  ];
+  const namedArgs = [...args.map((arg) => (arg === host ? "office" : arg)), "--repo", "acme/web@feature/work"];
   const summary = {
     id: host,
     name: "office",
@@ -197,7 +188,6 @@ test("Docker launch resolves an exact unique non-revoked host name and refuses m
       launched++;
       expect(await request.json()).toMatchObject({
         hostId: host,
-        image: `sha256:${"b".repeat(64)}`,
         repos: [{ url: "https://github.com/acme/web", branch: "feature/work", dir: "web" }],
       });
       return Response.json(receipt);
@@ -317,7 +307,7 @@ test("Docker snapshots build through the normal golden command and launch throug
   let calls = 0;
   expect(
     (
-      await capture([...args, "--golden", id], async () => {
+      await capture([...args, "--golden", id, "--image", image], async () => {
         calls++;
         throw Error("unexpected HTTP");
       })
