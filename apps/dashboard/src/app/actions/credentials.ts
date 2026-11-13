@@ -13,7 +13,7 @@ import {
 import { listCredentials } from "@/lib/data/credentials";
 import { isSelectedOrganization } from "@/lib/data/selected-org";
 import { requireViewer } from "@/lib/data/viewer";
-import { PROVIDER_SETTINGS_PATH } from "@/lib/provider-setup";
+import { CLOUD_PROVIDERS_PATH } from "@/lib/provider-setup";
 import { createClient } from "@/lib/supabase/server";
 
 /**
@@ -77,7 +77,7 @@ export async function saveCredential(_previous: ActionResult | null, data: FormD
     const { error } = await supabase.from("credentials").insert({ scope, owner_id: owner, kind, value_enc: valueEnc });
     if (error) return fail(explainDbError(error));
   }
-  revalidatePath(PROVIDER_SETTINGS_PATH);
+  revalidatePath(CLOUD_PROVIDERS_PATH);
   return done(`${credentialKindInfo(kind).label} saved.`);
 }
 
@@ -95,6 +95,6 @@ export async function removeCredential(_previous: ActionResult | null, data: For
   const { data: rows, error } = await supabase.from("credentials").delete().eq("id", id).select("id");
   if (error) return fail(explainDbError(error));
   if (rows.length === 0) return fail("You are not allowed to do that.");
-  revalidatePath(PROVIDER_SETTINGS_PATH);
+  revalidatePath(CLOUD_PROVIDERS_PATH);
   return done("Key removed.");
 }

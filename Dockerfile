@@ -2,8 +2,8 @@
 FROM oven/bun:1.4.2 AS build
 WORKDIR /src
 COPY . .
-# Install both Linux architectures; cross-compile without executing foreign binaries.
-RUN bun install --frozen-lockfile --os linux --cpu '*' \
+# Install only the packages required by the published x64 runtime.
+RUN bun install --frozen-lockfile --os linux --cpu x64 \
   && bun scripts/publish-runtime-artifacts.ts \
   && bun run build
 

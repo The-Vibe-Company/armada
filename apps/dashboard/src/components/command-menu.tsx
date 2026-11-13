@@ -1,22 +1,18 @@
 "use client";
 
-import { ArrowRightIcon, CornerDownLeftIcon, SearchIcon, ZapIcon } from "lucide-react";
+import { ArrowRightIcon, CornerDownLeftIcon, ZapIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { Dialog as DialogPrimitive } from "radix-ui";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ModKey } from "@/components/mod-key";
 import { Button } from "@/components/ui/button";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Kbd } from "@/components/ui/kbd";
 import { type Command as MenuCommand, matchCommands } from "@/lib/command-menu";
 
-/** The event a trigger sends to open the one menu of the page. */
-const OPEN_EVENT = "armada:command-menu";
-
 /**
  * ⌘K (Ctrl+K elsewhere) from anywhere in the signed-in app: type a few letters of a page or an action, arrows to
- * choose, Enter to go. Mounted once per page; any `CommandMenuTrigger` opens it.
+ * choose, Enter to go. Mounted once per page; the sidebar has no search box (#1474), the shortcut opens it.
  */
 export function CommandMenu() {
   const [open, setOpen] = useState(false);
@@ -30,16 +26,8 @@ export function CommandMenu() {
         setOpen((value) => !value);
       }
     }
-    const onOpen = () => {
-      openingFocus.current = document.activeElement as HTMLElement | null;
-      setOpen(true);
-    };
     window.addEventListener("keydown", onKey);
-    window.addEventListener(OPEN_EVENT, onOpen);
-    return () => {
-      window.removeEventListener("keydown", onKey);
-      window.removeEventListener(OPEN_EVENT, onOpen);
-    };
+    return () => window.removeEventListener("keydown", onKey);
   }, [open]);
 
   return (
@@ -56,35 +44,6 @@ export function CommandMenu() {
         {open && <Palette onDone={() => setOpen(false)} />}
       </DialogContent>
     </Dialog>
-  );
-}
-
-/** A button that opens the command menu and shows its shortcut, so it is discoverable without being learned. */
-export function CommandMenuTrigger({ compact = false }: { compact?: boolean }) {
-  const open = () => window.dispatchEvent(new Event(OPEN_EVENT));
-  if (compact)
-    return (
-      <Button variant="ghost" size="icon" aria-label="Search pages and actions" onClick={open}>
-        <SearchIcon />
-      </Button>
-    );
-  return (
-    <Button
-      type="button"
-      variant="outline"
-      onClick={open}
-      aria-keyshortcuts="Meta+K Control+K"
-      className="w-full bg-background px-2.5 font-normal text-muted-foreground has-[>svg]:px-2.5"
-    >
-      <SearchIcon className="size-4 shrink-0" aria-hidden="true" />
-      <span className="flex-1 text-left">Search</span>
-      <Kbd aria-hidden="true">
-        <span>
-          <ModKey />
-        </span>
-        <span>K</span>
-      </Kbd>
-    </Button>
   );
 }
 

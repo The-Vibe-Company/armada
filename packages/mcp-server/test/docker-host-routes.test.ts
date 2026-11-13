@@ -38,7 +38,7 @@ async function fixture() {
       };
     return { ok: false as const };
   };
-  const route = createDockerHostRoutes(store, authenticate);
+  const route = createDockerHostRoutes(store, authenticate, { publicUrl: "https://public.example" });
   async function post(path: string, token: string, body: unknown, extra: Record<string, string> = {}, target = route) {
     const response = await target(
       new Request(`https://staging.example${path}`, {
@@ -60,9 +60,26 @@ test("opt-in host HTTP routes separate user and host capabilities and never cach
   const { db, orgId, route, post } = await fixture();
   const installationId = randomUUID();
   try {
-    const ticketResponse = await post("/api/v1/docker/hosts/register-token", "fixture-user-token", { org: orgId });
+    const ticketResponse = await post("/api/v1/docker/hosts/register-token", "fixture-user-token", {
+      org: orgId,
+      name: "my-docker",
+    });
     expect(ticketResponse.status).toBe(200);
-    const ticket = (await ticketResponse.json()) as { hostId: string; registrationToken: string };
+    const ticket = (await ticketResponse.json()) as {
+      hostId: string;
+      registrationToken: string;
+      command: string;
+      expiresAt: string;
+    };
+    expect(ticket.command).toBe(
+      `curl -fsSL --proto '=https' --proto-redir '=https' 'https://public.example/install-host.sh' | sh -s -- --token ${ticket.registrationToken}`,
+    );
+    const issued = await db.query<{ registration_expires_at: Date; name: string }>(
+      "select registration_expires_at,name from docker_hosts where id=$1",
+      [ticket.hostId],
+    );
+    expect(new Date(issued.rows[0]!.registration_expires_at).toISOString()).toBe(ticket.expiresAt);
+    expect(issued.rows[0]!.name).toBe("my-docker");
     const registered = await post("/api/docker-host/register", ticket.registrationToken, { installationId });
     expect(registered.status).toBe(200);
     const host = (await registered.json()) as { hostId: string; hostToken: string };
@@ -183,6 +200,7 @@ test("host lists admit current members and expose only scoped safe heartbeat sum
       lastSeenAt: null,
       revokedAt: null,
       sandboxes: 0,
+      version: null,
     });
     expect(byId.get(online.hostId)?.state).toBe("online");
     expect(byId.get(online.hostId)?.sandboxes).toBe(2);
@@ -201,6 +219,7 @@ test("host lists admit current members and expose only scoped safe heartbeat sum
         "revokedAt",
         "sandboxes",
         "state",
+        "version",
       ]);
       for (const value of [host.createdAt, host.lastSeenAt, host.revokedAt]) {
         if (value !== null) expect(new Date(value).toISOString()).toBe(value);

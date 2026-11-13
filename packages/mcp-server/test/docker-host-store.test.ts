@@ -696,3 +696,26 @@ test("failed startup ACK or rejected admission fails logical startup without cla
     }
   }
 });
+
+// Real migrated mailbox/ACK flow protects drain order and lost-revocation-response recovery.
+test("uninstall drains bound machines through stop/delete ACKs before idempotent revocation", async () => {
+  const a = await boundFixture();
+  await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
+  await store.complete(a.hostToken, a.installationId, { requestId: a.create.requestId, outcome: "completed" });
+  expect(await store.unregister(a.hostToken, a.installationId)).toBe(false);
+  const stop = await store.poll(a.hostToken, a.installationId, "2.27.0");
+  expect(stop?.operation).toBe("stop");
+  if (!stop) throw new Error("Missing stop");
+  expect(await store.unregister(a.hostToken, a.installationId)).toBe(false);
+  expect((await store.poll(a.hostToken, a.installationId))?.requestId).toBe(stop.requestId);
+  await store.complete(a.hostToken, a.installationId, { requestId: stop.requestId, outcome: "completed" });
+  expect(await store.unregister(a.hostToken, a.installationId)).toBe(false);
+  const remove = await store.poll(a.hostToken, a.installationId);
+  expect(remove?.operation).toBe("delete");
+  if (!remove) throw new Error("Missing delete");
+  await store.complete(a.hostToken, a.installationId, { requestId: remove.requestId, outcome: "completed" });
+  expect(await store.unregister(a.hostToken, a.installationId)).toBe(true);
+  expect(await store.unregister(a.hostToken, a.installationId)).toBe(true);
+  await denied(store.poll(a.hostToken, a.installationId));
+  await denied(store.unregister(a.hostToken, randomUUID()));
+});

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { chmod, mkdtemp, readFile, rm, stat, symlink } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BootstrapDescriptor } from "../../core/src/docker-host-job.ts";
@@ -381,9 +381,16 @@ test("private native state survives reopening, excludes concurrent owners and re
     expect(await (await fileStore(directory)).load()).toEqual(
       JSON.parse(await readFile(join(directory, "state.json"), "utf8")),
     );
+    const priorBoot = join(directory, "daemon-00000000-0000-0000-0000-000000000000.lock");
+    if (process.platform === "linux") await writeFile(priorBoot, "", { mode: 0o600 });
     const release = await store.lock();
     await expect(store.lock()).rejects.toThrow();
     await release();
+    if (process.platform === "linux") {
+      expect(await readFile(priorBoot, "utf8")).toBe("");
+      await writeFile(join(directory, "daemon.lock"), "", { mode: 0o600 });
+      await expect(store.lock()).rejects.toThrow("Legacy daemon lock");
+    }
     await chmod(join(directory, "state.json"), 0o644);
     await expect(store.load()).rejects.toThrow("Unsafe host state");
     await expect(store.save(fixture().state())).rejects.toThrow("Unsafe host state");
@@ -533,4 +540,24 @@ test("resume starts the retained container before fresh runtime bootstrap and ne
   await tick(f.store, f.api, executor);
   expect(calls).toEqual(["start", "bootstrap"]);
   expect(f.acknowledgements).toEqual(["completed", "completed"]);
+});
+
+test("unregister distinguishes a pending drain from confirmed revocation and rejects unknown responses", async () => {
+  const state = fixture().state();
+  for (const result of [false, true]) {
+    const api = httpApi((async (url: string | URL | Request, options?: RequestInit) => {
+      expect(String(url)).toBe(`${state.server}/api/docker-host/unregister`);
+      expect(options?.redirect).toBe("error");
+      expect(new Headers(options?.headers).get("authorization")).toBe(`Bearer ${state.hostToken}`);
+      expect(JSON.parse(String(options?.body))).toEqual({ installationId: state.installationId });
+      return Response.json({ revoked: result });
+    }) as typeof fetch);
+    expect(await api.unregister(state)).toBe(result);
+  }
+  for (const response of [{}, { revoked: "true" }, { revoked: true, unknown: true }, null]) {
+    await expect(
+      httpApi((async (_url: string | URL | Request, _options?: RequestInit) =>
+        Response.json(response)) as typeof fetch).unregister(state),
+    ).rejects.toThrow("Invalid host revocation response");
+  }
 });

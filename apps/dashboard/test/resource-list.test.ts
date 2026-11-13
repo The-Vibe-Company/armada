@@ -118,7 +118,7 @@ describe("what blocks launching an environment", () => {
       ],
     });
     expect(blockers.map((blocker) => [blocker.label, blocker.detail, blocker.target])).toEqual([
-      ["Connect Modal", "2 environments wait for it.", { href: "/settings" }],
+      ["Connect Modal", "2 environments wait for it.", { href: "/providers/cloud" }],
       ["Snapshot alice-private", "Build it once before launching from it.", { item: "3" }],
     ]);
   });

@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { validateHarnessCwd } from "../src/cwd.ts";
 import {
   AUTH_HEADER,
   ClaudeDriver,
@@ -14,7 +15,7 @@ import {
   type Turn,
 } from "../src/index.ts";
 
-// Portable HTTP/WAL owner: invalid native cwd never reaches a driver or queues a prompt.
+// Validation owns input classes; one HTTP refusal proves admission blocks drivers and prompt storage.
 test("private prompt cwd validates absolute normalized existing directory and persists under the same sandbox grant", async () => {
   const root = await mkdtemp(join(tmpdir(), "armada-cwd-protocol-"));
   const journal = new Journal(join(root, "journal.sqlite"), (s) => s);
@@ -45,7 +46,6 @@ test("private prompt cwd validates absolute normalized existing directory and pe
   try {
     await writeFile(join(root, "not-a-directory"), "fixture");
     for (const cwd of [
-      "relative/repo",
       `${root}/../other`,
       `${root}/`,
       `${root}/missing`,
@@ -54,10 +54,12 @@ test("private prompt cwd validates absolute normalized existing directory and pe
       42,
       null,
     ]) {
-      const response = await call(cwd);
-      expect(response.status).toBe(409);
-      expect(await response.json()).toEqual({ error: "invalid_cwd" });
+      expect(() => validateHarnessCwd(cwd)).toThrow("invalid_cwd");
     }
+    // Avoid a durable request fence for every validation case; retain the real HTTP contract.
+    const response = await call("relative/repo");
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: "invalid_cwd" });
     expect(seen).toBeUndefined();
     expect(journal.prompts()).toHaveLength(0);
     expect((await call(root, "stale-generation-fixture-token")).status).toBe(401);

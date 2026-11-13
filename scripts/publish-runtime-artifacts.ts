@@ -4,6 +4,7 @@ import { chmod, copyFile, mkdir } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { OPENCODE_ARTIFACT } from "../packages/agent-runtime/src/opencode-artifact.ts";
+import { publishedRuntimeArchitectures } from "../packages/agent-runtime/src/publication.ts";
 
 type FilePin = { path: string; sha256: string; bytes: number };
 export type PublicationManifest = {
@@ -40,7 +41,7 @@ if (import.meta.main) {
   await mkdir(manifests, { recursive: true });
   const require = createRequire(join(root, "packages/agent-runtime/package.json"));
   const opencodeRequire = createRequire(require.resolve("opencode-ai/package.json"));
-  for (const architecture of ["x64", "arm64"] as const) {
+  for (const architecture of publishedRuntimeArchitectures) {
     const source = join(root, "dist/runtime-build", architecture);
     const build = Bun.spawnSync(
       [
@@ -69,5 +70,32 @@ if (import.meta.main) {
     await publishManifest(manifest, source, destination);
     await Bun.write(join(manifests, `${architecture}.json`), JSON.stringify(manifest, null, 2));
   }
+  // Host executable publication is independent of the runtime architecture policy.
+  const hostPins: Record<string, string> = {};
+  for (const architecture of ["x64", "arm64"] as const) {
+    const source = join(root, "dist/docker-host-build", architecture);
+    await mkdir(source, { recursive: true });
+    const host = join(source, "armada-docker-host");
+    const compiledHost = Bun.spawnSync(
+      [
+        process.execPath,
+        "build",
+        join(root, "packages/docker-host/src/main.ts"),
+        "--compile",
+        `--target=bun-linux-${architecture}`,
+        `--outfile=${host}`,
+      ],
+      { stdout: "inherit", stderr: "inherit" },
+    );
+    if (compiledHost.exitCode !== 0) throw Error(`Host build failed: ${architecture}`);
+    const hostDigest = createHash("sha256")
+      .update(await Bun.file(host).bytes())
+      .digest("hex");
+    await mkdir(destination, { recursive: true });
+    await copyFile(host, join(destination, hostDigest));
+    await chmod(join(destination, hostDigest), 0o444);
+    hostPins[architecture] = hostDigest;
+  }
+  await Bun.write(join(destination, "docker-host.json"), JSON.stringify(hostPins));
   await chmod(destination, 0o555);
 }

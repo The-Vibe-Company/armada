@@ -1,4 +1,5 @@
 import type { LaunchOptions, Sql } from "@armada/core/server";
+import { requirePublishedRuntimeArchitecture } from "../../agent-runtime/src/publication.ts";
 import { createRuntimeAgent } from "./runtime-agent.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
 import { runtimeConfiguration } from "./runtime-configuration.ts";
@@ -13,6 +14,7 @@ export function modalRuntimeLaunch(options: {
   manifest: unknown;
   architecture: "x64" | "arm64";
 }): NonNullable<LaunchOptions["runtime"]> {
+  requirePublishedRuntimeArchitecture(options.architecture);
   const server = new URL(options.serverUrl);
   if (server.protocol !== "https:" || server.href !== `${server.origin}/`) throw Error("invalid_runtime_origin");
   const authority = createRuntimeEnrolments(options.sql, options.encryptionKey);
@@ -23,6 +25,8 @@ export function modalRuntimeLaunch(options: {
       const { model, reasoningEffort } = sandbox;
       if (!model || !reasoningEffort) throw Error("runtime_model_required");
       const plan = await runtimeConfiguration({ ...options, actor, sandbox, credentials }, "modal");
+      // Restored native sessions cannot resurrect old upstream defaults before current-epoch delivery.
+      Object.assign(plan.configuration, { mcp: { revision: "modal_runtime_empty_v1", servers: {} } });
       if (restoreCheckpoint)
         Object.assign(plan.configuration, { restoreCheckpoint: { ...restoreCheckpoint, model, reasoningEffort } });
       signal.throwIfAborted();

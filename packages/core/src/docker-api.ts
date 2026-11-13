@@ -16,13 +16,14 @@ export interface DockerHostListRequest {
 }
 export interface DockerHostSummary {
   id: string;
-  /** No host naming write exists yet. */
   name: string | null;
   /** Online means a recent heartbeat, not a launch/readiness guarantee. */
   state: "pending" | "online" | "offline" | "revoked";
   createdAt: string;
   lastSeenAt: string | null;
   revokedAt: string | null;
+  /** The daemon version the host last reported (#1453); absent or null until a host has reported one. */
+  version?: string | null;
   /** Retained sandboxes, including stopped/failed, excluding deleted. */
   sandboxes: number;
 }
@@ -33,11 +34,15 @@ export interface DockerHostListResponse {
 }
 export interface DockerHostRegistrationRequest {
   org: string;
+  name?: string;
 }
 export interface DockerHostRegistrationResponse {
   hostId: string;
   /** Single-use, five-minute capability. Show once, never persist or log it. */
   registrationToken: string;
+  /** One-click shell command containing only the short-lived registration capability. */
+  command: string;
+  expiresAt: string;
 }
 export interface DockerHostRevokeRequest {
   org: string;
@@ -80,8 +85,15 @@ export interface LaunchOptionsResponse {
   machineSizes: readonly MachineSize[];
   ttl: { defaultSeconds: number; maxSeconds: Partial<Record<SandboxPlacementProviderId, number>> };
   providers: LaunchProviderOption[];
-  modalRuntime?: { version: number; enabled: boolean; followupVersion?: number; resumeVersion?: number };
+  modalRuntime?: {
+    version: number;
+    enabled: boolean;
+    followupVersion?: number;
+    resumeVersion?: number;
+    mcpVersion?: number;
+  };
   boatRuntime: {
+    defaultPath?: "native" | "runtime";
     version: number;
     diagnosticsVersion: number;
     followupVersion: number;
@@ -90,6 +102,7 @@ export interface LaunchOptionsResponse {
     githubVersion: number;
     mcpVersion: number;
     skillsVersion?: number;
+    controlsVersion?: number;
     enabled: boolean;
   };
 }
