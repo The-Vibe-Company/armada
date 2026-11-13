@@ -60,6 +60,7 @@ import type { OrchestratorPair } from "./orchestrator-activation.ts";
 import type { OrchestratorRuntime } from "./orchestrator-runtime.ts";
 import type { GoldenProviderMetadata } from "./provider-metadata.ts";
 import { summarizeResourceHistory } from "./resource-advice.ts";
+import type { RuntimeFollowup } from "./runtime-followup.ts";
 import { sandboxActivity } from "./sandbox-activity.ts";
 import { extendSandbox } from "./sandbox-extend.ts";
 import {
@@ -74,6 +75,7 @@ import { recordStopDispatch } from "./work-preservation.ts";
 
 /** Everything a tool call may use, for one authenticated request. */
 export interface ToolContext {
+  runtimeSend?: RuntimeFollowup;
   measure?: import("./request-timing.ts").RequestTiming["measure"];
   storedProvider?(target: ProviderTarget): Promise<Provider>;
   templates?: TemplateService;
@@ -646,8 +648,8 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     if (!found) throw new ToolError("not_found", `No sandbox with id '${sandboxId}' that you can see.`);
     return found;
   };
-  const live = async (sandboxId: string, allowUnbound = false) => {
-    const found = await visible(sandboxId);
+  const live = async (sandboxId: string, allowUnbound = false, known?: SandboxView) => {
+    const found = known ?? (await visible(sandboxId));
     if (found.boatRuntime && !allowUnbound)
       throw new ToolError(
         "unsupported",
@@ -1346,9 +1348,15 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         "Gives the agent its next instruction as a new turn. Without conversation_id the first send of an idle " +
         "sandbox opens a conversation and later sends continue the latest one. To redirect a turn that is " +
         "still running, use steer. The turn runs with the model and effort chosen at launch; model and " +
-        "reasoning_effort override them for this turn only.",
+        "reasoning_effort override them for this turn only. Experimental runtime follow-up requires request_id, " +
+        "an existing conversation and an already-running sandbox; model/effort remain pinned to launch.",
       input: {
         id,
+        request_id: z
+          .string()
+          .uuid()
+          .optional()
+          .describe("Required for runtime follow-up; reuse with identical input after uncertain delivery."),
         prompt: z.string().min(1).describe("The instruction."),
         conversation_id: conversationId,
         model: modelInput,
@@ -1356,13 +1364,22 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       },
       output: {
         id: z.string(),
+        requestId: z.string().optional(),
+        runtime: z.object({ kind: z.literal("armada"), epoch: z.string() }).optional(),
         promptId: z.string(),
         conversationId: z.string(),
         status: z.enum(["queued", "running", "finished", "failed", "interrupted"]),
       },
     },
     async (args) => {
-      const { sandbox: found, provider } = await live(args.id);
+      const selected = await visible(args.id);
+      if (selected.boatRuntime) {
+        if (!context.runtimeSend) throw new ToolError("unsupported", "Runtime follow-up is unavailable.");
+        return context.runtimeSend(caller, args);
+      }
+      if (args.request_id !== undefined)
+        throw new ToolError("invalid_request", "request_id is supported only for runtime follow-up.");
+      const { sandbox: found, provider } = await live(args.id, false, selected);
       if (args.prompt.trim() === "") throw new ToolError("invalid_request", "The prompt is empty.");
       if (found.credentialId)
         await measure("send_credentials", () =>

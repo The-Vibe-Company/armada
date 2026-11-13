@@ -62,7 +62,8 @@ not a claim the worker ran actual Boat inference or measured launch regression.
 
 Fresh ordinary Boat/Codex only, initial prompt required. Use golden checkout
 as-is: no pull/init replay, GitHub setup, MCP, skills/helpers, parent/toolbox
-access, subsequent send/steer/interrupt/exec or resume. Unsupported extras refuse
+access, steer/interrupt/exec or resume. Running same-conversation follow-ups are now
+available through the fenced `sandbox/send` path described below. Unsupported extras refuse
 before allocation. Work preservation/resumable checkpoint are explicitly not
 claimed; user/TTL cleanup stops compute with an honest preservation note, never
 native quiescence/capture. This is suitable for the literal-answer staging check,
@@ -135,3 +136,48 @@ Expected success is unchanged: exact nonce assistant answer plus finished event
 with `source:"armada-runtime"`, then stopped compute. Stage lines alone, or an
 empty page with source metadata, are not success. Offline failure/replay coverage
 is not a claim that the second real staging model turn has passed.
+
+## Follow-up prompts on ONE live sandbox
+
+The coordinator proved the initial milestone on staging after #1331: sandbox
+`cdfb8f23-5932-48ea-9465-baa884104ab7`, nonce answer verified and compute stopped,
+80 seconds end to end (2026-11-13). Do not repeat it just for diagnostics.
+The next check combines initial + context-retaining follow-up in one allocation:
+
+```sh
+ARMADA_RUNTIME_SMOKE=one_real_boat_launch bun scripts/check-boat-runtime.ts --followup
+```
+
+Use the same server origin, org UUID and authorized account inputs above, after
+this follow-up slice and `20261113030000_runtime_followup_epoch_handoff.sql` are
+merged/deployed through normal coordinator procedures. Preflight requires
+`boatRuntime.followupVersion:1` before allocating. It teaches a random token in
+the initial prompt, then calls `POST /api/v1/sandbox/send` with a fresh
+`request_id` UUID and the existing `conversation_id`, asking for that token
+**without resending it**. Both prompts must have distinct IDs, the same logical
+sandbox/conversation/runtime epoch, exact expected assistant answers and finished
+events in the Armada archive. Output adds `followup:"verified"`, the second
+prompt ID and conversation ID. Before sending, it prints a safe request UUID/ID
+receipt so an unknown response can be reconciled without a new request ID. Then stop the same sandbox once. No allocation
+retry; this does not resume the already-stopped milestone sandbox.
+
+The API/MCP `send` path requires `request_id` for runtime work. Retain it and
+reuse **identical input** after an uncertain response: durable command replay
+never creates a second turn, and replay of an older completed request does not
+overwrite the latest task. An unresolved admission retains its lease, rather
+than guessing that no work ran. A definitive post-admission refusal also keeps
+the workspace fenced for inspection/stop in this narrow slice. Other request IDs are refused until it settles
+or the owner stops/inspects it. Wait for the current prompt to finish before a
+new send. Only the sandbox owner can send; current membership and active pinned
+account/version are revalidated under membership→credential→sandbox→epoch locks.
+
+Observation generations still advance around send admission/completion; only
+that owned same-runtime activity carries the live epoch. Stop, expiry, account
+version changes, membership loss and ordinary lifecycle replacement do not
+become implicit resume. The runtime performs the final conversation-busy check.
+No native host/provider credential or prompt hooks run on this path.
+
+This first follow-up slice is running-only and model-only, with the existing
+conversation and launch model/effort. New conversations and model overrides
+refuse; stop/resume, GitHub/MCP, subscription acceptance and usage/cost proof
+remain the owner's next ordered checks. The Boat native path is not deleted.

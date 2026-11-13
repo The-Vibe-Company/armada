@@ -54,6 +54,7 @@ import { createRuntimeArtifactRoute } from "./runtime-artifacts.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import { createRuntimeEvents } from "./runtime-events.ts";
+import { createRuntimeFollowup } from "./runtime-followup.ts";
 import { createRuntimeModelAccess } from "./runtime-model-access.ts";
 import { createRuntimeNativeAuth } from "./runtime-native-auth.ts";
 import { createRuntimeProgress } from "./runtime-progress.ts";
@@ -106,6 +107,9 @@ export async function startServer(
   );
   await catalogAuthentication("slack"); // Reject invalid deployment ciphertext before serving.
   const sql = bunSql(config.databaseUrl, config.databasePoolMax);
+  const runtimeEnrolments = createRuntimeEnrolments(sql, config.encryptionKey);
+  const runtimeCommands = createRuntimeCommands(runtimeEnrolments, config.encryptionKey);
+  const runtimeSend = createRuntimeFollowup(sql, config.encryptionKey, runtimeCommands);
   let subscriptionMigration: ReturnType<typeof createSubscriptionMigration>;
   const modelAuth = createModelAuthOwnership(sql, config.encryptionKey, undefined, undefined, {
     origin: config.publicUrl,
@@ -276,6 +280,7 @@ export async function startServer(
     });
   }
   const control: ConfiguredControlOptions = {
+    runtimeSend,
     ...(runtimeLaunch
       ? { boatRuntimeLaunch: runtimeLaunch, runtimeHostFor: (apiKey: string) => createBoatProvider({ apiKey }) }
       : {}),
@@ -361,15 +366,14 @@ export async function startServer(
         }),
       });
   if (orchestrators) control.orchestrators = orchestrators.runtime;
-  const runtimeEnrolments = createRuntimeEnrolments(sql, config.encryptionKey);
   const runtimeEvents = createRuntimeEvents(
     runtimeEnrolments,
     config.encryptionKey,
     createRuntimeNativeAuth(sql, config.encryptionKey),
   );
-  const runtimeCommands = createRuntimeCommands(runtimeEnrolments, config.encryptionKey);
   const runtimeSockets = createRuntimeSockets(runtimeEnrolments, runtimeCommands);
   const handler = createHandler({
+    runtimeSend,
     ready: createDatabaseReadiness(sql),
     runtimeProviderFor,
     launch,

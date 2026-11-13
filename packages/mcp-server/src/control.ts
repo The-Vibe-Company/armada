@@ -129,6 +129,7 @@ import {
 import type { ProviderMetadataFor } from "./provider-metadata.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
 import { RequestTiming, withRequestTiming } from "./request-timing.ts";
+import type { RuntimeFollowup } from "./runtime-followup.ts";
 import { type createSandboxArmadaAccess, parseSandboxArmadaAccess } from "./sandbox-armada-access.ts";
 import { bunSql } from "./sql.ts";
 import { createSubscriptionMigration } from "./subscription-migration.ts";
@@ -143,6 +144,7 @@ import { orchestratorHttp } from "./orchestrator-api.ts";
 import type { OrchestratorRuntime } from "./orchestrator-runtime.ts";
 
 export interface ControlOptions {
+  runtimeSend?: RuntimeFollowup;
   boatRuntimeLaunch?: NonNullable<LaunchOptions["boatRuntime"]>;
   runtimeHostFor?: (apiKey: string) => Provider;
   skillCatalog?: ReturnType<typeof createSkillCatalog>;
@@ -771,6 +773,7 @@ async function dispatch(
       boatRuntime: {
         version: 1,
         diagnosticsVersion: 1,
+        followupVersion: options.runtimeSend ? 1 : 0,
         enabled: Boolean(options.boatRuntimeLaunch && options.runtimeHostFor),
       },
     };
@@ -929,6 +932,7 @@ async function dispatch(
       {
         ...(options.goldenAdoption ? { goldenAdoption: options.goldenAdoption } : {}),
         caller: scopedCaller,
+        ...(options.runtimeSend ? { runtimeSend: options.runtimeSend } : {}),
         ...(options.connections ? { connections: options.connections } : {}),
         data: options.data(scopedCaller),
         measure: (phase, work) => measured(options, phase, work),
