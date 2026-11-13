@@ -697,3 +697,25 @@ responses. Additional migration: `20261113160000_docker_host_names.sql`, applied
 only by the authorized coordinator after the host-version migration. This server
 contract is included here so the merged dashboard does not wait on the stacked
 CLI follow-up. Existing `--service-install` real-host acceptance remains pending.
+
+### Default model accounts on normal Docker launch (#1579)
+
+`armada launch --provider docker` no longer requires an explicit
+`--credential-id`. With an account omitted, the server uses the same compatible
+personal-default policy as ordinary launches: a personal subscription marked as
+default wins over a personal API key. Explicit account choices still win; an
+invalid default or ambiguous personal choice fails rather than silently using a
+different account. `--credential-version` requires an explicit account ID.
+
+The server resolves and freezes the selected ID/revision before allocation. The
+original caller request remains the retry identity; later default changes do not
+repin an admitted sandbox or change a retry's billing account. The resolved pin
+is stored separately from an omitted caller choice in the encrypted launch
+manifest and the sandbox row. No template/delegated-access grant rules change.
+
+Coordinator verification after normal deployment: mark a personal Codex
+subscription default while retaining a personal API-key account, launch on the
+owned Docker host without `--credential-id`, and inspect the returned pin. Repeat
+the same request ID after changing the default: it must return the same sandbox
+without allocation/rebilling. An explicit API-key account must remain explicit.
+This procedure is not evidence that live subscription auth has passed.

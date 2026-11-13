@@ -352,3 +352,26 @@ test("Docker snapshots build through the normal golden command and launch throug
   ).not.toBe(0);
   expect(calls).toBe(0);
 });
+
+test("Docker launch omits an unspecified account for server default resolution without choosing a local fallback", async () => {
+  const withoutAccount = args.filter(
+    (arg, index) => arg !== "--credential-id" && args[index - 1] !== "--credential-id",
+  );
+  const requests: Request[] = [];
+  const result = await capture([...withoutAccount, "--json"], async (request) => {
+    requests.push(request);
+    return Response.json({
+      sandbox: { id: requestId, provider: "docker", status: "ready" },
+      golden: null,
+      runtime: { epoch: "1" },
+    });
+  });
+  expect(result.code).toBe(0);
+  expect(requests).toHaveLength(1);
+  expect(await requests[0]?.json()).not.toHaveProperty("credentialId");
+  expect(
+    await capture([...withoutAccount, "--credential-version", "1"], async () => {
+      throw Error("must not contact server");
+    }),
+  ).toMatchObject({ code: 2 });
+});

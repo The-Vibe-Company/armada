@@ -135,7 +135,8 @@ export interface DockerLaunchRequest {
   hostId?: string;
   snapshotId?: string;
   harness: Harness;
-  credentialId: string;
+  /** Omit to resolve the caller's compatible personal default, then freeze its ID/version at admission. */
+  credentialId?: string;
   credentialVersion?: number;
   requestId: string;
   prompt?: string;
