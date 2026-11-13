@@ -15,7 +15,7 @@ const id = "11111111-1111-4111-8111-111111111111";
 // For a new routing pattern, extend strings() with finite CLI-derived values, or
 // add a real-dispatch probe below for mutable routing. Never copy the proxy list;
 // mutation-check that removing the new route makes this guard fail.
-test("every CLI POST control route is admitted by the dashboard proxy", async () => {
+test("CLI user POST routes reach the dashboard proxy while machine-token routes stay outside it", async () => {
   const files = readdirSync(cli)
     .filter((name) => name.endsWith(".ts"))
     .map((name) => resolve(cli, name));
@@ -138,6 +138,7 @@ test("every CLI POST control route is admitted by the dashboard proxy", async ()
   };
 
   const routes = new Set<string>();
+  const machineRoutes = new Set<string>();
   for (const call of calls) {
     const declaration = checker.getResolvedSignature(call)?.declaration;
     const control =
@@ -169,7 +170,18 @@ test("every CLI POST control route is admitted by the dashboard proxy", async ()
     // The authenticated client's fetch forwards its path argument unchanged;
     // its caller inventory above owns URLs, not the transport's local URL object.
     if (call.getSourceFile().fileName === resolve(cli, "armada-api.ts") && path.getText() === "url") continue;
-    for (const route of strings(path)) routes.add(route);
+    // A local install targets the machine API with a one-use registration token,
+    // not the dashboard's user-token control proxy. Its validated HTTPS origin is
+    // runtime-selected; a single static pathname suffix is still independently
+    // discoverable. Dynamic/unknown routing patterns continue to fail closed.
+    const machinePath =
+      ts.isTemplateExpression(path) && path.head.text === "" && path.templateSpans.length === 1
+        ? path.templateSpans[0]?.literal.text
+        : undefined;
+    for (const route of machinePath?.startsWith("/api/docker-host/") ? [machinePath] : strings(path)) {
+      if (route.startsWith("/api/docker-host/")) machineRoutes.add(route);
+      else routes.add(route);
+    }
   }
 
   const previous = process.env.ARMADA_MCP_URL;
@@ -198,6 +210,24 @@ test("every CLI POST control route is admitted by the dashboard proxy", async ()
   };
   try {
     for (const route of routes) await admitted(route);
+    for (const route of machineRoutes) {
+      const path = route.slice("/api/".length);
+      const response = await forwardControl(
+        new Request(`https://dashboard.test/api/v1/${path}`, {
+          method: "POST",
+          headers: { authorization: "Bearer fixture-user-token", "content-type": "application/json" },
+          body: "{}",
+        }),
+        path.split("/"),
+        Object.assign(
+          async () => {
+            throw new Error(`Machine-token route ${route} must not be forwarded by the user proxy`);
+          },
+          { preconnect: fetch.preconnect },
+        ),
+      );
+      expect(response.status).toBe(404);
+    }
     const operationCall = calls.find(
       (call) =>
         checker.getResolvedSignature(call)?.declaration?.getSourceFile().fileName === resolve(cli, "operations.ts") &&

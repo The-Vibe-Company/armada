@@ -423,29 +423,27 @@ export function SandboxChat(props: Props) {
           </div>
         </div>
 
-        {turnModel && (
+        {/* The latest turn's model shows only when there is something to say about it (#1526): turn and conversation
+            ids, or models nobody recorded, are noise above the conversation. */}
+        {turnModel?.modelSelectionReason && (
           <div className="px-4 py-2 text-sm" role="status">
-            <p>
-              Latest turn {turnModel.promptId ?? "unknown"} · Conversation {turnModel.conversationId ?? "unknown"}
-            </p>
-            <p>
-              Requested: {turnModel.requestedModel ?? "unknown"} · Observed: {turnModel.observedModel ?? "unknown"}
-            </p>
-            {turnModel.modelSelectionReason && (
-              <p
-                className={
-                  turnModel.modelSelectionReason === "model_selection_mismatch"
-                    ? "text-destructive"
-                    : "text-muted-foreground"
-                }
-                title={turnModel.modelSelectionReason}
-              >
-                {turnModel.modelSelectionReason === "model_selection_mismatch"
-                  ? "Model selection changed"
-                  : "Model not verified"}
-                : {turnModel.modelSelectionMessage}
+            {(turnModel.requestedModel || turnModel.observedModel) && (
+              <p>
+                Requested: {turnModel.requestedModel ?? "unknown"} · Observed: {turnModel.observedModel ?? "unknown"}
               </p>
             )}
+            <p
+              className={
+                turnModel.modelSelectionReason === "model_selection_mismatch"
+                  ? "text-destructive"
+                  : "text-muted-foreground"
+              }
+            >
+              {turnModel.modelSelectionReason === "model_selection_mismatch"
+                ? "Model selection changed"
+                : "Model not verified"}
+              : {turnModel.modelSelectionMessage}
+            </p>
           </div>
         )}
         <Notices status={status} reason={reason} poll={poll} onRetry={retryPolling} />
