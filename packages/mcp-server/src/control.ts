@@ -24,7 +24,9 @@ import {
   CODEX_ENDPOINT_ENV,
   dedupeEvents,
   GitHubHydrationError,
+  goldenCompatibilityIds,
   goldenForSettings,
+  goldenResponse,
   isHarness,
   isModelConnectionTestResult,
   MAX_SANDBOX_EXTENSION_TTL_SECONDS,
@@ -1390,40 +1392,10 @@ async function listGoldens(options: ControlOptions, caller: Caller): Promise<{ g
   return { goldens: goldens.map(goldenJson) };
 }
 
-export interface GoldenJson {
-  id: string;
-  name: string;
-  provider: GoldenRecord["provider"];
-  modal: GoldenRecord["modal"];
-  orgId: string;
-  visibility: Visibility;
-  ownerId: string;
-  providerSnapshotId: string | null;
-  providerSandboxId: string | null;
-  boatSnapshotId: string | null;
-  boatSandboxId: string | null;
-  repos: number;
-  buildWarnings: string[];
-  config: { repos: { url: string; branch: string; dir: string }[]; init: string[] };
-}
+export type GoldenJson = ReturnType<typeof goldenResponse> & { buildWarnings: string[] };
 
-function goldenJson(row: import("@armada/core/server").GoldenRecord): GoldenJson {
-  return {
-    id: row.id,
-    name: row.name,
-    provider: row.provider,
-    modal: row.modal,
-    orgId: row.orgId,
-    visibility: row.visibility,
-    ownerId: row.ownerId,
-    providerSnapshotId: row.providerSnapshotId,
-    providerSandboxId: row.providerSandboxId,
-    boatSnapshotId: row.provider === "boat" ? row.providerSnapshotId : null,
-    boatSandboxId: row.provider === "boat" ? row.providerSandboxId : null,
-    repos: row.config.repos.length,
-    config: row.config,
-    buildWarnings: row.buildWarnings ?? [],
-  };
+function goldenJson(row: GoldenRecord): GoldenJson {
+  return { ...goldenResponse(row), buildWarnings: row.buildWarnings ?? [] };
 }
 
 /**
@@ -1882,8 +1854,7 @@ function launchJson(result: LaunchResult) {
     },
     golden: {
       ...result.golden,
-      boatSnapshotId: result.golden.provider === "boat" ? result.golden.providerSnapshotId : null,
-      boatSandboxId: result.golden.provider === "boat" ? result.golden.providerSandboxId : null,
+      ...goldenCompatibilityIds(result.golden),
     },
     promptId: result.promptId ?? null,
     conversationId: result.conversationId ?? null,

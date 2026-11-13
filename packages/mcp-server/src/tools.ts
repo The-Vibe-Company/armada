@@ -2,6 +2,7 @@ import {
   dedupeEvents,
   GitHubHydrationError,
   goldenForSettings,
+  goldenResponse,
   idlePauseMessage,
   MACHINE_SIZES,
   parseMachineSizePolicy,
@@ -720,7 +721,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     async () => {
       const goldens: GoldenRecord[] = [];
       for (const orgId of orgIds) goldens.push(...(await data.goldens.list(orgId)));
-      return { goldens: goldens.map(goldenJson) };
+      return { goldens: goldens.map(goldenResponse) };
     },
   );
 
@@ -2087,24 +2088,6 @@ function resolveCreateOrg(
   if (!first) throw new ToolError("not_found", "You are not a member of any org.");
   if (orgs.length > 1) throw new ToolError("invalid_request", "You belong to more than one org. Pass org (an orgId).");
   return first;
-}
-
-function goldenJson(row: GoldenRecord) {
-  return {
-    id: row.id,
-    name: row.name,
-    orgId: row.orgId,
-    visibility: row.visibility,
-    ownerId: row.ownerId,
-    provider: row.provider,
-    providerSnapshotId: row.providerSnapshotId,
-    providerSandboxId: row.providerSandboxId,
-    modal: row.modal,
-    boatSnapshotId: row.provider === "boat" ? row.providerSnapshotId : null,
-    boatSandboxId: row.provider === "boat" ? row.providerSandboxId : null,
-    repos: row.config.repos.length,
-    config: row.config,
-  };
 }
 
 async function readLogs(
