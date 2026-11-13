@@ -1,9 +1,15 @@
 import type { Harness } from "./contract.ts";
-import type { ModalBinding, SandboxProviderId } from "./sandbox-provider.ts";
-export interface TemplateDefinition {
-  goldenId: string;
-  provider: SandboxProviderId;
-  goldenBinding: ModalBinding | null;
+import type { ModalBinding, SandboxPlacementProviderId, SandboxProviderId } from "./sandbox-provider.ts";
+
+type TemplatePlacement =
+  | { provider: SandboxProviderId; goldenId: string; goldenBinding: ModalBinding | null }
+  | {
+      provider: Extract<SandboxPlacementProviderId, "docker">;
+      goldenId: null;
+      goldenBinding: null;
+      hostId: string;
+    };
+export type TemplateDefinition = TemplatePlacement & {
   harness: Harness;
   model: string;
   reasoningEffort: string;
@@ -14,7 +20,7 @@ export interface TemplateDefinition {
   /** Value-free references; optional for revisions published before secret bindings. */
   secrets?: import("./application-secret-bindings.ts").ApplicationSecretBinding[];
   skills: string[];
-}
+};
 export interface LaunchTemplate {
   id: string;
   orgId: string;
@@ -31,9 +37,9 @@ export interface LaunchTemplate {
 export const TEMPLATE_REFUSAL_HELP = {
   reference_unavailable: "A template reference is missing or inaccessible. Check the template definition.",
   environment_unavailable:
-    "Template golden is removed, unavailable or inaccessible. Publish a revision with an eligible golden.",
+    "Template environment is removed, unavailable or inaccessible. Check the golden or Docker host.",
   environment_binding_changed:
-    "Template golden provider binding changed. Publish a revision with the current environment binding.",
+    "Template environment provider binding changed. Publish a revision with the current environment binding.",
   environment_snapshot_unavailable:
     "Template golden snapshot is unavailable or retired. Check the golden before retrying.",
   environment_admission_unavailable:

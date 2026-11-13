@@ -96,6 +96,11 @@ test("skill defaults resolve global personal and org/golden layers, clear with e
       org: ["team/org@2.0.0"],
       environment: ["team/env@3.0.0"],
     });
+    expect(await f.service.resolve(actor, null)).toEqual({
+      personal: ["personal@1.0.0"],
+      org: ["team/org@2.0.0"],
+      environment: [],
+    });
     expect(await f.service.command(f.actor(f.people.member), "get", f.request("personal"))).toEqual({
       skills: ["personal@1.0.0"],
     });
@@ -118,6 +123,7 @@ test("skill defaults resolve global personal and org/golden layers, clear with e
     await expect(f.service.resolve(actor, f.shared)).rejects.toMatchObject({ code: "not_found" });
     await f.db.query("delete from members where org_id=$1 and user_id=$2", [f.people.org, f.people.member]);
     await expect(f.service.resolve(actor, f.shared)).rejects.toMatchObject({ code: "forbidden" });
+    await expect(f.service.resolve(actor, null)).rejects.toMatchObject({ code: "forbidden" });
   } finally {
     await f.db.close();
   }

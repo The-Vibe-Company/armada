@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, watch } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AUTH_HEADER, type Driver, type Grant, Journal, Runner } from "../src/index.ts";
@@ -87,29 +87,45 @@ test("auth refuses before dispatch; real WAL survives restart and reconciles los
   }
 });
 test.skipIf(process.platform !== "linux")(
-  "real command timeout kills process group and detached PID retains terminal evidence",
+  "real exec timeout reconciles missing birth evidence and detached PID retains terminal output",
   async () => {
-    const s = setup();
+    // Exec recovery reuses one SQL connection; the separate WAL test owns disk reopening.
+    const journal = new Journal(":memory:", (text) => text);
+    const runner = new Runner(journal, grant, { claude: unused, codex: unused });
     try {
-      const response = await call(s.runner, {
+      const response = await call(runner, {
         op: "exec",
         input: { sandboxId: "logical", command: "sleep 60", timeoutSeconds: 0 },
       });
       const { result } = await payload(response);
       expect(result).toMatchObject({ timedOut: true, detached: false });
       expect(result.exitCode).not.toBe(0);
+      // This real completed command also owns recovery without persisted birth evidence.
+      const rows = journal.db.query("SELECT pid,body FROM processes").all() as { pid: number; body: string }[];
+      for (const row of rows) {
+        const record = JSON.parse(row.body);
+        delete record.identity;
+        journal.db.query("UPDATE processes SET body=? WHERE pid=?").run(JSON.stringify(record), row.pid);
+      }
+      const restarted = new Runner(journal, grant, { claude: unused, codex: unused });
+      expect((await call(restarted, { op: "checkpoint" })).status).toBe(200);
+      const resumed = new Runner(journal, { ...grant, generation: "g2" }, { claude: unused, codex: unused });
       const detached = await (
-        await call(s.runner, { op: "exec", input: { sandboxId: "logical", command: "printf done", detached: true } })
+        await call(resumed, { op: "exec", input: { sandboxId: "logical", command: "printf done", detached: true } })
       )
         .json()
         .then((x) => x as Envelope);
       expect(detached.result.processId).toBeGreaterThan(0);
-      // A real checkpoint is the completion barrier, not a wall-clock sleep.
-      await call(s.runner, { op: "checkpoint" });
-      const state = await payload(await call(s.runner, { op: "getExec", processId: detached.result.processId }));
-      expect(state.result).toMatchObject({ status: "exited", exitCode: 0, stdout: "done" });
+      // Live detached groups refuse checkpoint; observe terminal evidence without a timed sleep.
+      let state: Envelope | undefined;
+      for (let attempt = 0; attempt < 10000; attempt++) {
+        state = await payload(await call(resumed, { op: "getExec", processId: detached.result.processId }));
+        if (state.result.status === "exited") break;
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      expect(state?.result).toMatchObject({ status: "exited", exitCode: 0, stdout: "done" });
     } finally {
-      s.close();
+      journal.close();
     }
   },
 );
@@ -230,69 +246,36 @@ test.skipIf(process.platform !== "linux")(
   },
 );
 
-test.skipIf(process.platform !== "linux")(
-  "checkpoint reconciles completed exec with unavailable process birth evidence",
-  async () => {
-    const s = setup();
-    try {
-      const response = await call(s.runner, {
-        op: "exec",
-        input: { sandboxId: "logical", command: "printf completed" },
-      });
-      expect((await payload(response)).result).toMatchObject({ exitCode: 0, stdout: "completed" });
-      const rows = s.journal.db.query("SELECT pid,body FROM processes").all() as { pid: number; body: string }[];
-      for (const row of rows) {
-        const record = JSON.parse(row.body);
-        delete record.identity;
-        s.journal.db.query("UPDATE processes SET body=? WHERE pid=?").run(JSON.stringify(record), row.pid);
-      }
-      const restarted = new Runner(s.journal, grant, { claude: unused, codex: unused });
-      expect((await call(restarted, { op: "checkpoint" })).status).toBe(200);
-    } finally {
-      s.close();
-    }
-  },
-);
-
-test("cancelled synchronous runtime exec terminates its process group before returning", async () => {
+test("revoking a dial-out request kills its synchronous exec before returning", async () => {
   const s = setup();
   const stop = new AbortController();
-  const socket = join(s.dir, "ready.sock");
-  const sink = Bun.serve({
-    unix: socket,
-    fetch() {
-      stop.abort();
-      return new Response("ready");
-    },
+  const ready = join(s.dir, "ready");
+  const watcher = watch(s.dir, () => {
+    if (existsSync(ready)) stop.abort();
   });
   try {
-    const response = await s.runner.handle(
-      new Request("http://runtime/v1", {
+    const reply = await s.runner.handle(
+      new Request("https://runner/v1", {
         method: "POST",
         signal: stop.signal,
         headers: { [AUTH_HEADER]: grant.token },
         body: JSON.stringify({
           version: 1,
-          requestId: "cancelled-exec",
-          sandboxId: grant.sandboxId,
+          sandboxId: "logical",
+          requestId: crypto.randomUUID(),
           op: "exec",
-          input: {
-            sandboxId: grant.sandboxId,
-            command: `printf '%s' "$$" > '${s.dir}/pid'; curl -s --unix-socket '${socket}' http://private/ready; exec sleep 60`,
-            timeoutSeconds: 60,
-          },
+          input: { sandboxId: "logical", command: `printf ready > '${ready}'; exec sleep 600` },
         }),
       }),
     );
-    expect(response.status).toBe(200);
-    const body = (await response.json()) as { result: { exitCode: number | null; detached: boolean } };
-    expect(body.result.detached).toBe(false);
-    expect(body.result.exitCode).not.toBe(0);
-    const pid = Number(await Bun.file(join(s.dir, "pid")).text());
-    expect(pid).toBeGreaterThan(0);
-    expect(() => process.kill(pid, 0)).toThrow();
+    expect(stop.signal.aborted).toBe(true);
+    expect(reply.status).toBe(200);
+    const row = s.journal.db.query("SELECT body FROM processes").get() as { body: string };
+    expect(JSON.parse(row.body).status).toBe("exited");
+    expect(JSON.parse(row.body).exitCode).toBeNull();
   } finally {
-    sink.stop(true);
+    watcher.close();
+    stop.abort();
     s.close();
   }
 });

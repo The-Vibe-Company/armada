@@ -4,11 +4,14 @@ import {
   HARNESS_KINDS,
   HARNESSES,
   type Harness,
+  isDockerImageReference,
   resolveModelChoice,
   type SandboxRecord,
   type Sql,
+  VaultError,
 } from "@armada/core";
 import { createDockerHostStore } from "./docker-host-store.ts";
+import { resolveDockerSnapshot } from "./docker-snapshot-data.ts";
 
 type Actor = { userId: string; orgId: string };
 type Reservation = {
@@ -32,6 +35,7 @@ type Row = {
   docker_installation_id: string;
   docker_generation: string;
   docker_image: string;
+  docker_snapshot_id?: string | null;
   harness: Harness;
   visibility: string;
   status: SandboxRecord["status"];
@@ -88,9 +92,7 @@ function normalize(input: Reservation) {
   id(input.hostId);
   id(input.credentialId);
   if (
-    typeof input.image !== "string" ||
-    input.image.length > 512 ||
-    !/^[a-z0-9][a-z0-9./:_-]*@sha256:[0-9a-f]{64}$/.test(input.image) ||
+    !isDockerImageReference(input.image) ||
     !Number.isSafeInteger(input.credentialVersion) ||
     input.credentialVersion < 1 ||
     (input.model !== undefined && typeof input.model !== "string") ||
@@ -112,6 +114,7 @@ function record(row: Row) {
     installationId: row.docker_installation_id,
     generation: row.docker_generation,
     image: row.docker_image,
+    snapshotId: row.docker_snapshot_id ?? null,
     ownerId: row.owner_id,
     orgId: row.org_id,
     harness: row.harness,
@@ -139,7 +142,9 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
     try {
       if (!sql.transaction) deny();
       return await sql.transaction(work);
-    } catch {
+    } catch (error) {
+      // Only trusted transaction-local placement policy raises public VaultError refusals.
+      if (error instanceof VaultError) throw error;
       return deny();
     }
   }
@@ -164,7 +169,7 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
     });
   }
   return {
-    reserve(actor: Actor, input: Reservation) {
+    reserve(actor: Actor, input: Reservation, authorize?: (tx: Sql) => Promise<void>, snapshotId?: string) {
       return transaction(async (tx) => {
         if (options.enabled !== true) deny();
         actorInput(actor);
@@ -202,11 +207,20 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
           );
           if (!credential.rows.length) deny();
         }
+        await authorize?.(tx);
+        const snapshot = snapshotId ? await resolveDockerSnapshot(tx, actor, snapshotId) : undefined;
+        if (
+          snapshot &&
+          (snapshot.host_id !== request.hostId ||
+            snapshot.image_id !== request.image ||
+            snapshot.installation_id !== hint.installation_id)
+        )
+          deny();
         const host =
           (
             await tx.query<{ installation_id: string }>(
               `select installation_id from public.docker_hosts where id=$1 and org_id=$2 and owner_id=$3
-           and installation_id=$4 and hash is not null and registration_hash is null and revoked_at is null for update`,
+           and draining_at is null and installation_id=$4 and hash is not null and registration_hash is null and revoked_at is null for update`,
               [request.hostId, actor.orgId, hint.owner_id, hint.installation_id],
             )
           ).rows[0] ?? deny();
@@ -221,6 +235,7 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
             row.docker_host_id !== request.hostId ||
             row.docker_installation_id !== host.installation_id ||
             row.docker_image !== request.image ||
+            (row.docker_snapshot_id ?? null) !== (snapshotId ?? null) ||
             row.credential_id !== request.credentialId ||
             row.credential_version !== request.credentialVersion ||
             row.harness !== request.harness ||
@@ -246,9 +261,9 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
             await tx.query<Row>(
               `insert into public.sandboxes(id,org_id,owner_id,provider,provider_sandbox_id,harness,status,visibility,access_owner_id,
            docker_host_id,docker_installation_id,docker_generation,docker_image,model,reasoning_effort,
-           credential_id,credential_version,effective_ttl_seconds,expires_at,requested_ttl_seconds)
+           credential_id,credential_version,effective_ttl_seconds,expires_at,requested_ttl_seconds,docker_snapshot_id)
            values($1,$2,$3,'docker',$4,$15,'starting','private',$3,$5,$6,$7,$8,$9,$10,$11,$12,$13,
-           now()+$13::integer*interval '1 second',$14) returning *`,
+           now()+$13::integer*interval '1 second',$14,$16) returning *`,
               [
                 request.requestId,
                 actor.orgId,
@@ -265,6 +280,7 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
                 request.ttlSeconds,
                 input.ttlSeconds ?? null,
                 request.harness,
+                snapshotId ?? null,
               ],
             )
           ).rows[0] ?? deny();

@@ -40,8 +40,13 @@ goes through encrypted enrolment, not fork environment or host arguments.
 Use the golden checkout as-is: no pull/init replay or native cwd/CLI probe.
 Launch-time skills/helpers, scoped toolbox access and unsupported extras refuse
 before allocation; remote HTTP/SSE MCP uses the normal launch/turn lifecycle.
-Steer, interrupt, exec, new conversations and
-model/effort overrides are not supported on this lane. Follow-ups use the existing
+Owner-scoped steer, interrupt and synchronous exec use private runtime commands,
+never native Boat agent APIs. Codex steering restarts the native turn within the
+same runtime prompt; Claude steering joins the running turn. Idle steer refuses
+with `no_running_turn`. Interrupt waits for the terminal event. Exec retains the
+existing authorization, redaction and output limits. Unknown command delivery
+remains unknown; do not blindly retry. New conversations and model/effort
+overrides are not supported on this lane. Follow-ups use the existing
 conversation and launch model/effort. GitHub requires explicit runtime refresh
 below; remote MCP prepares automatically
 from launch bindings/defaults, never native setup. Readable-variable/
@@ -50,7 +55,8 @@ by the model-only milestone.
 
 ## Follow-up and uncertain delivery
 
-For a running sandbox, `POST /api/v1/sandbox/send` (MCP `send`) requires a stable
+`POST /api/v1/sandbox/send` (MCP `send`) wakes a checkpointed stopped runtime
+through the existing resume path and preserves its absolute expiry. It requires a stable
 `request_id` UUID and the existing `conversation_id`. Only the owner can send;
 current membership, active pinned account/version, logical expiry and runtime
 epoch are revalidated. Wait for the previous prompt's finished event before
@@ -285,6 +291,124 @@ assistant assertion is a tool-call pass. Local pinned stdio remains unsupported;
 its production use needs owner inventory, not speculative porting or deletion.
 This procedure is not evidence of a staging pass or permission to flip defaults.
 
+## Environment-wide Boat default switch (prepared, not flipped)
+
+Trusted **server** setting `ARMADA_BOAT_AGENT_PATH=native|runtime` chooses the
+ordinary Boat launch path. Unset means `native`; any other value fails startup.
+Set `runtime` on **staging first**, through the normal operator deployment
+process, not in the smoke client's shell. Ordinary API, CLI, dashboard, MCP
+`sandbox_launch`, template and routine launches share the same Core launch
+selection: no client flag/endpoint change. Modal/Docker selection is unchanged.
+Runtime mode uses the image's matching `/opt/armada/runtime-manifests/<arch>.json`
+(or the existing trusted manifest override); in runtime-default mode,
+missing/invalid manifest metadata fails startup rather than selecting native. Valid
+image-installed artifacts keep the explicit runtime route/retained sessions
+available during rollback. Missing/corrupt runtime-only metadata does not prevent
+native rollback from booting; explicit runtime bootstrap remains unavailable
+until artifacts are fixed (never converted to native). `launch/options.boatRuntime.defaultPath` reports the ordinary selection.
+
+Rollback: set the same server setting to **`native`** and redeploy normally.
+Native code is retained. This changes new ordinary launches only, never converts
+an existing runtime/native session or its conversation, and never retries a
+failed launch on the other path. Existing template request keys retain their
+recorded success/refusal; use the normal new-request policy for new work.
+
+### Refused today / remaining parity (do not call this cutover-ready)
+
+Repository refresh/init is now performed at launch through private runtime
+workspace commands, reusing the native command builders and execution policy:
+configured repository order/branches, `pull --ff-only` without reset,600-second
+step deadlines, the same single ownership retry, then ordered init in
+`/home/user`. Automatic current-epoch GitHub broker setup precedes pulls when
+connected; public/local git remains possible without a connection. Initialization
+uses the existing model-credential-free runtime execution environment and scoped
+GitHub wrappers, not borrowed model keys or native Boat exec/SSH. Background or
+failed setup cannot proceed to inference. General exec remains a separate control
+path; this private operation is launch-only.
+
+Remaining refusals:
+- Idle launches with no initial prompt; current continuation requires an existing
+  runtime conversation.
+- OpenCode on Boat, private scoped Armada-access launches, and requested helper
+  capabilities. Claude support is merged separately; it is not implemented here.
+- Templates/routines requiring native readable-variable or application-secret
+  environment delivery; plain requests still traverse the runtime default policy.
+- Pinned local stdio MCP; connected remote HTTP/SSE defaults remain supported.
+- Legacy unbound model credentials; runtime requires an authorized bound account.
+
+Other follow-on gaps include idle/first-send, automatic GitHub reauthorization on
+resume, model changes/new conversations and the remaining scoped/binding/helper
+features above. Public steer/interrupt/exec controls merged separately; use their
+own acceptance gates, not this workspace check. Unsupported operations do not
+use native fallback.
+Do not interpret the switch or a merged PR as a staging pass for any missing row.
+
+### Standard post-deploy Boat check
+
+Once quota/resources permit, an operator sets the **staging server** setting to
+`runtime` and deploys this revision through the normal process. Keep the existing
+staging `ARMADA_URL`, environment-only `ARMADA_TOKEN`, and configured smoke cases.
+Run **the standard smoke**, selecting one existing Boat case; no runtime-only API:
+
+```sh
+ARMADA_SMOKE_CASES="$(printf '%s' "$ARMADA_SMOKE_CASES" | jq '[.[] | select(.provider == "boat")][0:1]')" \
+ARMADA_SMOKE=create_real_compute bun scripts/post-deploy-smoke.ts
+```
+
+Confirm `launch/options.boatRuntime.defaultPath:runtime`. A successful future
+case must have persisted `boatRuntime:true` and archived
+`logs/read.source:armada-runtime`, not Boat-native events; standard send/wait,
+git probes and stop must all pass. Repository/init admission is implemented; **the standard smoke still uses an
+idle launch, which remains refused** until that next slice; the merged public
+exec/git controls need their own accepted evidence. Do not relax the standard smoke to conceal remaining work, and do not
+retry allocation after an ambiguous result. Roll back the server setting to
+`native` for ordinary native launches; no deletion is authorized here.
+
+Owner staging facts (12:38:43Z): Boat quota exhausted (`launch-runtime-v1`429),
+no effective smoke golden/org/user default skills and no named MCP connection.
+No live check or setting flip by this worker. Skills/MCP rows remain orange.
+
+## Repository/init runtime staging check
+
+The operator-only workspace check reuses an existing golden recipe; no new
+canary, branch, repository or secret input is required. With the same existing
+staging Armada origin/token/org/golden/Codex account:
+
+```sh
+ARMADA_RUNTIME_SMOKE=one_real_boat_launch \
+  bun scripts/check-boat-runtime.ts --workspace --resume
+```
+
+ONE allocation + ONE same-VM activation (two host starts), three prompts, two
+stops; no allocation/activation retry. Preflight requires workspace-v1 server
+support and reads the selected golden's repository/init counts before allocating.
+The guest independently proves workspace-v1 health in the current epoch before
+GitHub authority or commands are delivered; old artifacts refuse, never use
+native setup. The server image publishes the updated compiled artifact normally.
+
+Require archived `source:armada-runtime` / `type:armada/workspaceStep`: every
+configured repository and init step must finish before any first prompt event.
+Failed setup prevents inference; command output is bounded/redacted, not copied
+into diagnostic events. Retry is only the native completed Git-ownership refusal,
+not uncertain command delivery. Stable command IDs replay cached outcomes, never
+run init twice. Workspace operations are launch-only: existing journal prompts
+prevent re-running setup even after process reconstruction. Cancellation closes
+the owned process group before the private operation returns.
+
+Final `workspace:verified` and `workspaceAfterResume:preserved_without_rerun`
+require original setup history, exact replies/terminal events, same conversation,
+epoch+1 and stopped readback. Resume must not emit new workspace setup events or
+overwrite user work. The check deliberately skips skill defaults/MCP in this
+bounded workspace slice; adding `--skills --mcp` can batch their existing gates
+once those resources are configured, still without extra allocation. It is not a
+proof of idle, public exec or other features' separate acceptance gates.
+
+Current owner facts remain: quota exhausted today, no smoke default skills or
+named MCP connection. No live attempt or setting flip by this worker; real
+repository/init staging acceptance remains pending. Next smallest refusal is idle
+launch/first send, then the remaining owned parity gates; Claude/cost/subscription
+work remains with #1419/#1420.
+
 ## Cutover boundary
 
 The [owner parity table](https://github.com/The-Vibe-Company/armada/issues/1161#issuecomment-6848248708)
@@ -316,3 +440,21 @@ fails; unknown cost stays unknown rather than becoming zero. Require final
 `resume:"verified"` and `usageAfterResume:"verified"`.
 Offline tests do not establish this staging result. No native fallback, new product
 launch option, default-on switch or native-path deletion is part of this slice.
+
+
+## Runtime controls acceptance (#1457)
+
+Coordinator only, using the existing staging inputs and matching server/runtime
+artifacts (no new migration or default switch):
+
+```sh
+ARMADA_RUNTIME_SMOKE=one_real_boat_launch bun scripts/check-boat-runtime.ts --steer --interrupt --exec --resume
+```
+
+This adds two control prompts and one synchronous exec to the same allocation.
+It requires controls v1 before allocation, exact exec output, a running-turn
+steer receipt with honest harness delivery, its exact replacement answer, and an
+archived interrupted terminal event. Combine with the existing MCP/skills/usage
+flags if accepting those in the same launch. No allocation retries. The
+coordinator records the staging result in the #1161 parity table; offline tests
+and this procedure are not evidence of a deployed pass.

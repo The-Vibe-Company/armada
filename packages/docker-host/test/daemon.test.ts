@@ -1,15 +1,19 @@
 import { expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { chmod, mkdtemp, readFile, rm, stat, symlink } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BootstrapDescriptor } from "../../core/src/docker-host-job.ts";
-import { createDockerMachineExecutor } from "../../core/src/docker-machine.ts";
+import { createDockerMachineExecutor, DockerMachineError } from "../../core/src/docker-machine.ts";
 import { type Api, type Executor, type Job, register, type State, type Store, tick } from "../src/daemon.ts";
 import { fileStore, httpApi } from "../src/native.ts";
 
+function fail(): never {
+  throw new Error("missing receipt");
+}
+
 function fixture(
-  operation: Exclude<Job["operation"], "bootstrap" | "resume"> = "create",
+  operation: Exclude<Job["operation"], "bootstrap" | "resume" | "buildSnapshot"> = "create",
   bootstrap?: BootstrapDescriptor,
 ) {
   const job: Job = {
@@ -31,7 +35,7 @@ function fixture(
   };
   let deny = false;
   let failSave = false;
-  let failure = false;
+  let failure: false | Error = false;
   const executed: string[] = [];
   const swept: string[] = [];
   const acknowledgements: string[] = [];
@@ -48,7 +52,7 @@ function fixture(
     // Receipt comes from the actual store write, not a fixture-supplied pending record.
     expect(state.receipts.some((r) => r.requestId === job.requestId && !r.outcome)).toBe(true);
     executed.push(job.operation);
-    if (failure) throw new Error("uncertain side effect");
+    if (failure) throw failure;
   };
   const executor: Executor = {
     startRuntime: run,
@@ -87,8 +91,8 @@ function fixture(
     failSave: (v: boolean) => {
       failSave = v;
     },
-    failExecution: () => {
-      failure = true;
+    failExecution: (error: Error = new Error("uncertain side effect")) => {
+      failure = error;
     },
   };
 }
@@ -157,6 +161,42 @@ test("rejects changed request identity, generation inputs, and fresh create iden
   f.job.request = original.request;
   await expect(tick(f.store, f.api, f.executor)).rejects.toThrow("Changed machine generation");
   expect(f.executed).toHaveLength(1);
+});
+
+test("a failed image fetch is reported with its reason, and an older server still gets the plain outcome", async () => {
+  const f = fixture();
+  f.failExecution(new DockerMachineError("image_unavailable"));
+  await tick(f.store, f.api, f.executor);
+  expect(f.state().receipts[0]).toMatchObject({ outcome: "failed", reason: "image_unavailable" });
+  const generic = fixture();
+  generic.failExecution(new DockerMachineError("docker_failed"));
+  await tick(generic.store, generic.api, generic.executor);
+  expect(generic.state().receipts[0]?.reason).toBeUndefined();
+
+  // A transient failure is not an older server: the reason is kept for the next tick, never dropped.
+  const sent: Record<string, unknown>[] = [];
+  const transient = httpApi((async (_url: string | URL | Request, init?: RequestInit) => {
+    sent.push(JSON.parse(String(init?.body)));
+    return new Response(null, { status: 503 });
+  }) as typeof fetch);
+  await expect(transient.result(f.state(), f.state().receipts[0] ?? fail())).rejects.toThrow("Host request denied");
+  expect(sent).toEqual([expect.objectContaining({ reason: "image_unavailable" })]);
+  for (const server of ["current", "older"] as const) {
+    const bodies: Record<string, unknown>[] = [];
+    const api = httpApi((async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      bodies.push(body);
+      // An older server refuses any field it does not know.
+      return new Response(null, { status: server === "older" && "reason" in body ? 400 : 204 });
+    }) as typeof fetch);
+    await api.result(f.state(), f.state().receipts[0] ?? fail());
+    const plain = { installationId: f.state().installationId, requestId: f.job.requestId, outcome: "failed" };
+    expect(bodies).toEqual(
+      server === "current"
+        ? [{ ...plain, reason: "image_unavailable" }]
+        : [{ ...plain, reason: "image_unavailable" }, plain],
+    );
+  }
 });
 
 test("uncertain execution fails durably, never replays, and TTL sweep still runs on denied polling", async () => {
@@ -381,9 +421,16 @@ test("private native state survives reopening, excludes concurrent owners and re
     expect(await (await fileStore(directory)).load()).toEqual(
       JSON.parse(await readFile(join(directory, "state.json"), "utf8")),
     );
+    const priorBoot = join(directory, "daemon-00000000-0000-0000-0000-000000000000.lock");
+    if (process.platform === "linux") await writeFile(priorBoot, "", { mode: 0o600 });
     const release = await store.lock();
     await expect(store.lock()).rejects.toThrow();
     await release();
+    if (process.platform === "linux") {
+      expect(await readFile(priorBoot, "utf8")).toBe("");
+      await writeFile(join(directory, "daemon.lock"), "", { mode: 0o600 });
+      await expect(store.lock()).rejects.toThrow("Legacy daemon lock");
+    }
     await chmod(join(directory, "state.json"), 0o644);
     await expect(store.load()).rejects.toThrow("Unsafe host state");
     await expect(store.save(fixture().state())).rejects.toThrow("Unsafe host state");
@@ -533,4 +580,167 @@ test("resume starts the retained container before fresh runtime bootstrap and ne
   await tick(f.store, f.api, executor);
   expect(calls).toEqual(["start", "bootstrap"]);
   expect(f.acknowledgements).toEqual(["completed", "completed"]);
+});
+
+test("unregister distinguishes a pending drain from confirmed revocation and rejects unknown responses", async () => {
+  const state = fixture().state();
+  for (const result of [false, true]) {
+    const api = httpApi((async (url: string | URL | Request, options?: RequestInit) => {
+      expect(String(url)).toBe(`${state.server}/api/docker-host/unregister`);
+      expect(options?.redirect).toBe("error");
+      expect(new Headers(options?.headers).get("authorization")).toBe(`Bearer ${state.hostToken}`);
+      expect(JSON.parse(String(options?.body))).toEqual({ installationId: state.installationId });
+      return Response.json({ revoked: result });
+    }) as typeof fetch);
+    expect(await api.unregister(state)).toBe(result);
+  }
+  for (const response of [{}, { revoked: "true" }, { revoked: true, unknown: true }, null]) {
+    await expect(
+      httpApi((async (_url: string | URL | Request, _options?: RequestInit) =>
+        Response.json(response)) as typeof fetch).unregister(state),
+    ).rejects.toThrow("Invalid host revocation response");
+  }
+});
+
+test("snapshot builds keep ordinary stop/TTL work responsive and merge durable receipts without retaining credentials", async () => {
+  const hostId = crypto.randomUUID(),
+    installationId = crypto.randomUUID(),
+    snapshotId = crypto.randomUUID();
+  const normal = {
+    sandboxId: crypto.randomUUID(),
+    generation: crypto.randomUUID(),
+    image: `base@sha256:${"a".repeat(64)}`,
+    ttlSeconds: 60,
+    expiresAt: 10000,
+  };
+  const priorId = crypto.randomUUID(),
+    stopId = crypto.randomUUID();
+  const token = "offline-build-token";
+  const build: Job = {
+    requestId: snapshotId,
+    operation: "buildSnapshot",
+    request: { ...normal, sandboxId: snapshotId, generation: crypto.randomUUID() },
+    build: {
+      armadaVersion: "2.28.0",
+      id: snapshotId,
+      ownerId: crypto.randomUUID(),
+      visibility: "private",
+      token,
+      config: { repos: [{ url: "https://github.com/example/project.git", branch: "main", dir: "project" }], init: [] },
+    },
+  };
+  const stop: Job = { requestId: stopId, operation: "stop", request: normal };
+  let state: State = {
+    server: "https://armada.example",
+    hostId,
+    installationId,
+    hostToken: "a".repeat(64),
+    receipts: [{ requestId: priorId, request: normal, operation: "create", outcome: "completed" }],
+  };
+  const store: Store = {
+    load: async () => structuredClone(state),
+    save: async (next) => {
+      state = structuredClone(next);
+    },
+  };
+  const started = Promise.withResolvers<void>(),
+    finish = Promise.withResolvers<string>();
+  let building = false,
+    physicalExpiryDuringBuild = false,
+    stops = 0,
+    builds = 0;
+  const api: Api = {
+    register: async () => {
+      throw Error("unused");
+    },
+    poll: async (_state, options) => ({ job: options?.skipSnapshots ? stop : build }),
+    result: async () => {},
+  };
+  const executor: Executor = {
+    create: async () => {},
+    delete: async () => {},
+    stop: async () => {
+      stops++;
+    },
+    stopIfExpired: async () => {
+      physicalExpiryDuringBuild ||= building;
+      return building;
+    },
+    buildSnapshot: async () => {
+      builds++;
+      building = true;
+      started.resolve();
+      return finish.promise;
+    },
+  };
+  const interval = globalThis.setInterval,
+    clear = globalThis.clearInterval;
+  let pump: (() => void | Promise<void>) | undefined, running: Promise<void> | undefined;
+  globalThis.setInterval = ((callback: () => void | Promise<void>) => {
+    pump = callback;
+    return 1;
+  }) as unknown as typeof setInterval;
+  globalThis.clearInterval = (() => {}) as typeof clearInterval;
+  try {
+    running = tick(store, api, executor);
+    await started.promise;
+    if (!pump) throw Error("missing build work pump");
+    await pump();
+    expect(physicalExpiryDuringBuild).toBe(true);
+    expect(stops).toBe(1);
+    finish.resolve(`sha256:${"b".repeat(64)}`);
+    await running;
+    expect(state.receipts.find((r) => r.requestId === snapshotId)).toMatchObject({
+      operation: "buildSnapshot",
+      outcome: "completed",
+      imageId: `sha256:${"b".repeat(64)}`,
+    });
+    expect(state.receipts.find((r) => r.requestId === stopId)?.outcome).toBe("completed");
+    expect(state.receipts.find((r) => r.requestId === priorId)?.expired).toBe(true);
+    expect(JSON.stringify(state)).not.toContain(token);
+    await tick(store, api, executor);
+    expect(builds).toBe(1);
+  } finally {
+    finish.resolve(`sha256:${"b".repeat(64)}`);
+    await running?.catch(() => {});
+    globalThis.setInterval = interval;
+    globalThis.clearInterval = clear;
+  }
+});
+
+// The no-Node fallback must not label arbitrary HTTP output as a canceled ticket/name.
+test("HTTP reuse authenticates only with the fresh ticket and validates public identity before confirmation", async () => {
+  const state = fixture().state();
+  const token = "c".repeat(64);
+  const before = JSON.stringify(state);
+  for (const name of ["owner-machine", null]) {
+    const api = httpApi((async (url, options) => {
+      expect(String(url)).toBe(`${state.server}/api/docker-host/reuse-registration`);
+      expect(options?.redirect).toBe("error");
+      expect(new Headers(options?.headers).get("authorization")).toBe(`Bearer ${token}`);
+      expect(JSON.parse(String(options?.body))).toEqual({ hostId: state.hostId });
+      expect(String(options?.body)).not.toContain(state.hostToken);
+      return Response.json({ hostId: state.hostId, name });
+    }) as typeof fetch);
+    expect(await api.reuseRegistration(state, token)).toEqual({ hostId: state.hostId, name });
+  }
+  for (const value of [
+    null,
+    {},
+    { hostId: state.hostId },
+    { hostId: crypto.randomUUID(), name: "wrong" },
+    { hostId: state.hostId, name: "bad\nname" },
+    { hostId: state.hostId, name: "x", secret: "unexpected" },
+  ])
+    await expect(
+      httpApi((async (_url: string | URL | Request, _options?: RequestInit) =>
+        Response.json(value)) as typeof fetch).reuseRegistration(state, token),
+    ).rejects.toThrow("Invalid existing host identity");
+  await expect(
+    httpApi(
+      (async (_url: string | URL | Request, _options?: RequestInit) =>
+        new Response(null, { status: 302 })) as typeof fetch,
+    ).reuseRegistration(state, token),
+  ).rejects.toThrow("Host request denied");
+  expect(JSON.stringify(state)).toBe(before);
 });

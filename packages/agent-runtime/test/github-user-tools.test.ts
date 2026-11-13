@@ -129,7 +129,8 @@ globalThis.fetch = ((url, options) => original(String(url) === "https://armada.e
     expect(await readFile(join(home, ".gitconfig"), "utf8")).not.toContain(token);
     expect(await readFile(join(home, ".gitconfig"), "utf8")).not.toContain(configuration.capability);
   } finally {
-    child?.kill();
+    // Dispose the fixture immediately; graceful runtime shutdown drains live HTTP keep-alive sockets.
+    child?.kill("SIGKILL");
     if (child) await child.exited;
     sink.stop(true);
     await rm(root, { recursive: true, force: true });

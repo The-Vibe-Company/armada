@@ -1,106 +1,19 @@
 name: Post-deploy smoke
 
+# Never subscribe to deployment_status: provider events also cover PR and
+# gh-readonly-queue deployments, attaching long-running checks to their SHAs.
 on:
   workflow_dispatch:
-  deployment_status:
 
 permissions:
   contents: read
   actions: read
 
 jobs:
-  smoke:
-    if: >-
-      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
-      (vars.STAGING_GATED_DEPLOYS != 'true' && github.event_name == 'deployment_status' &&
-       github.event.deployment_status.state == 'success' &&
-       github.event.deployment.environment == (vars.ARMADA_SMOKE_DEPLOYMENT_ENVIRONMENT || 'armada / staging'))
-    # Skipped deployment events must not evict a queued staging smoke.
-    # Never cancel a runner while it owns live compute.
-    concurrency:
-      group: post-deploy-smoke-staging
-      cancel-in-progress: false
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    environment: staging
-    steps:
-      - name: Check staging configuration
-        id: config
-        env:
-          ARMADA_URL: ${{ vars.ARMADA_ORIGIN }}
-          ARMADA_TOKEN: ${{ secrets.ARMADA_SMOKE_TOKEN }}
-          ARMADA_SMOKE_CASES: ${{ secrets.ARMADA_SMOKE_CASES }}
-        run: |
-          if [[ -z "$ARMADA_URL" || -z "$ARMADA_TOKEN" || -z "$ARMADA_SMOKE_CASES" ]]; then
-            echo "::notice::Staging smoke is not configured; set variable ARMADA_ORIGIN and secrets ARMADA_SMOKE_TOKEN and ARMADA_SMOKE_CASES in the staging environment. No API calls made."
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
-          fi
-      # Use reviewed default-branch code, never an arbitrary deployment payload ref.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        if: steps.config.outputs.enabled == 'true'
-        with:
-          ref: main
-          persist-credentials: false
-      - uses: ./.github/actions/setup-bun
-        if: steps.config.outputs.enabled == 'true'
-      - name: Restore staging smoke receipts across branches and tags
-        if: steps.config.outputs.enabled == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          mkdir -p .smoke
-          gh api "repos/$GH_REPO/actions/artifacts?name=armada-staging-smoke-journal&per_page=100" > "$RUNNER_TEMP/smoke-artifacts.json"
-          jq '[.artifacts[] | select(
-            .workflow_run.head_repository_id == .workflow_run.repository_id and
-            (.workflow_run.head_branch == "main" or (.workflow_run.head_branch | test("^v[0-9]+\\.[0-9]+\\.[0-9]+(-[A-Za-z0-9.-]+)?$"))))] | {artifacts: .}' \
-            "$RUNNER_TEMP/smoke-artifacts.json" > "$RUNNER_TEMP/smoke-candidates.json"
-          artifact=$(jq -r '.artifacts[0].id // empty' "$RUNNER_TEMP/smoke-candidates.json")
-          if [[ -n "$artifact" ]]; then
-            run=$(jq -r '.artifacts[0].workflow_run.id' "$RUNNER_TEMP/smoke-candidates.json")
-            # Artifacts from arbitrary PR workflows must never authorize deletion.
-            gh api "repos/$GH_REPO/actions/runs/$run" | jq -e --arg repo "$GH_REPO" '
-              .head_repository.full_name == $repo and
-              (.event == "push" or .event == "workflow_dispatch" or .event == "deployment_status") and
-              (.head_branch == "main" or (.head_branch | test("^v[0-9]+\\.[0-9]+\\.[0-9]+(-[A-Za-z0-9.-]+)?$"))) and
-              (.path == ".github/workflows/post-deploy-smoke.yml" or
-               .path == ".github/workflows/staging-gated-production.yml" or
-               .path == ".github/workflows/release.yml")' > /dev/null
-            gh api "repos/$GH_REPO/actions/artifacts/$artifact/zip" > "$RUNNER_TEMP/smoke-journal.zip"
-            unzip -p "$RUNNER_TEMP/smoke-journal.zip" sandboxes.json > .smoke/sandboxes.json
-          fi
-      - name: Exercise deployed staging API
-        if: steps.config.outputs.enabled == 'true'
-        env:
-          ARMADA_URL: ${{ vars.ARMADA_ORIGIN }}
-          ARMADA_TOKEN: ${{ secrets.ARMADA_SMOKE_TOKEN }}
-          ARMADA_SMOKE_CASES: ${{ secrets.ARMADA_SMOKE_CASES }}
-          ARMADA_SMOKE: create_real_compute
-          ARMADA_SMOKE_JOURNAL: .smoke/sandboxes.json
-          ARMADA_SMOKE_DASHBOARD_URL: ${{ vars.ARMADA_SMOKE_DASHBOARD_URL }}
-          ARMADA_SMOKE_SUPABASE_URL: ${{ vars.ARMADA_SMOKE_SUPABASE_URL }}
-          ARMADA_SMOKE_SUPABASE_ANON_KEY: ${{ vars.ARMADA_SMOKE_SUPABASE_ANON_KEY }}
-          ARMADA_SMOKE_DASHBOARD_USER_ID: ${{ vars.ARMADA_SMOKE_DASHBOARD_USER_ID }}
-          ARMADA_SMOKE_DASHBOARD_ORG_ID: ${{ vars.ARMADA_SMOKE_DASHBOARD_ORG_ID }}
-          ARMADA_SMOKE_DASHBOARD_OTTO: ${{ vars.ARMADA_SMOKE_DASHBOARD_OTTO }}
-          ARMADA_SMOKE_DASHBOARD_EMAIL: ${{ secrets.ARMADA_SMOKE_DASHBOARD_EMAIL }}
-          ARMADA_SMOKE_DASHBOARD_PASSWORD: ${{ secrets.ARMADA_SMOKE_DASHBOARD_PASSWORD }}
-        run: |
-          args=(--work-preservation --templates-skills --lifecycle --vault --default-skills --scoped-access --github-refresh --golden-runtime --expiry)
-          # Read-only SSR checks overlap compute; both verdicts must succeed.
-          bun scripts/dashboard-read-smoke.ts &
-          dashboard_pid=$!
-          status=0
-          bun scripts/post-deploy-smoke.ts "${args[@]}" || status=$?
-          wait "$dashboard_pid" || status=1
-          exit "$status"
-
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: always() && hashFiles('.smoke/sandboxes.json') != ''
-        with:
-          name: armada-staging-smoke-journal
-          path: .smoke/sandboxes.json
-          include-hidden-files: true
-          retention-days: 30
+  staging-main:
+    name: Deploy and smoke pinned main on staging
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/staging-gated-production.yml
+    with:
+      source_sha: ${{ github.sha }}
+    secrets: inherit

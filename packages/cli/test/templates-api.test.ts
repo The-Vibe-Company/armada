@@ -124,6 +124,22 @@ test("template commands use the API contracts for all six dashboard-proxied oper
   }
 });
 
+test("template JSON forwards Docker host placement without a golden", async () => {
+  const docker = { provider: "docker", hostId: golden, harness: "codex" };
+  const result = await invoke(["template", "create", "docker", "--file", "docker.json", "--json"], {
+    file: JSON.stringify(docker),
+    response: {
+      item: template,
+      revision: { revision: 1, definition: { ...docker, goldenId: null, goldenBinding: null } },
+    },
+  });
+  expect(result.code).toBe(0);
+  const request = result.requests[0];
+  if (!request) throw Error("missing template request");
+  expect(((await request.json()) as { definition: unknown }).definition).toEqual(docker);
+  expect(JSON.parse(result.out).revision.definition).toMatchObject({ ...docker, goldenId: null });
+});
+
 test("template names resolve within the selected organization and flags create a definition", async () => {
   const named = await invoke(["template", "get", "preset"]);
   expect(named.code).toBe(0);

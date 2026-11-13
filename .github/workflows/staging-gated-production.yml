@@ -11,6 +11,11 @@ on:
         required: true
         type: string
 
+      official_image:
+        description: Consume the official image pin from the calling release
+        type: boolean
+        default: false
+
 permissions:
   contents: read
   actions: read
@@ -26,31 +31,23 @@ jobs:
   configuration:
     runs-on: ubuntu-latest
     steps:
-      - name: Report opt-in state
+      - name: Validate deployment source
         env:
-          ENABLED: ${{ vars.STAGING_GATED_DEPLOYS }}
-          RELEASE_SYNCED: ${{ vars.RELEASE_SYNCED_DEPLOYS }}
-          RELEASE_CALL_SHA: ${{ inputs.source_sha }}
           SOURCE_REF: ${{ github.ref }}
+          RELEASE_CALL_SHA: ${{ inputs.source_sha }}
         run: |
-          if [[ -n "$RELEASE_CALL_SHA" && "$ENABLED" != true ]]; then
-            echo "::error::Release staging smoke cannot be a disabled/no-op run."
+          if [[ "$SOURCE_REF" != refs/heads/main && "$SOURCE_REF" != refs/tags/v* ]]; then
+            echo "::error::Pinned staging deployment requires main or a validated release call."
             exit 1
           fi
-          if [[ "$ENABLED" == true && "$SOURCE_REF" != refs/heads/main && "$SOURCE_REF" != refs/tags/v* ]]; then
-            echo "::error::Pinned staging smoke requires main or a version tag."
-            exit 1
-          fi
-          if [[ "$ENABLED" != true ]]; then
-            echo "::notice::Staging-gated deployments disabled; existing deployment behavior unchanged. See docs/releasing.md."
-          elif [[ "$RELEASE_SYNCED" != true ]]; then
-            echo "::error::STAGING_GATED_DEPLOYS requires RELEASE_SYNCED_DEPLOYS=true; production is release-only."
+          if [[ "$SOURCE_REF" == refs/tags/v* && -z "$RELEASE_CALL_SHA" ]]; then
+            echo "::error::Tag staging deployment requires the validated release SHA."
             exit 1
           fi
 
   staging:
     needs: configuration
-    if: vars.STAGING_GATED_DEPLOYS == 'true' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    if: github.ref == 'refs/heads/main' || (startsWith(github.ref, 'refs/tags/v') && inputs.source_sha != '')
     runs-on: ubuntu-latest
     timeout-minutes: 85
     environment: staging
@@ -61,6 +58,7 @@ jobs:
       SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
       SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
       SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
+      DEPLOYMENT_ENVIRONMENT: staging
       RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
       RAILWAY_PROJECT_ID: ${{ secrets.RAILWAY_PROJECT_ID }}
       RAILWAY_ENVIRONMENT_ID: ${{ secrets.RAILWAY_ENVIRONMENT_ID }}
@@ -70,27 +68,30 @@ jobs:
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
       ARMADA_SERVER_URL: ${{ secrets.ARMADA_SERVER_URL }}
       RELEASE_SHA: ${{ inputs.source_sha || github.sha }}
+      STAGING_LATEST_ONLY: ${{ inputs.source_sha == '' && 'true' || 'false' }}
       ARMADA_URL: ${{ vars.ARMADA_ORIGIN }}
       ARMADA_TOKEN: ${{ secrets.ARMADA_SMOKE_TOKEN }}
       ARMADA_SMOKE_CASES: ${{ secrets.ARMADA_SMOKE_CASES }}
-      ARMADA_SMOKE_DASHBOARD_URL: ${{ vars.ARMADA_SMOKE_DASHBOARD_URL }}
-      ARMADA_SMOKE_SUPABASE_URL: ${{ vars.ARMADA_SMOKE_SUPABASE_URL }}
-      ARMADA_SMOKE_SUPABASE_ANON_KEY: ${{ vars.ARMADA_SMOKE_SUPABASE_ANON_KEY }}
-      ARMADA_SMOKE_DASHBOARD_USER_ID: ${{ vars.ARMADA_SMOKE_DASHBOARD_USER_ID }}
-      ARMADA_SMOKE_DASHBOARD_ORG_ID: ${{ vars.ARMADA_SMOKE_DASHBOARD_ORG_ID }}
-      ARMADA_SMOKE_DASHBOARD_OTTO: ${{ vars.ARMADA_SMOKE_DASHBOARD_OTTO }}
-      ARMADA_SMOKE_DASHBOARD_EMAIL: ${{ secrets.ARMADA_SMOKE_DASHBOARD_EMAIL }}
-      ARMADA_SMOKE_DASHBOARD_PASSWORD: ${{ secrets.ARMADA_SMOKE_DASHBOARD_PASSWORD }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ inputs.source_sha || github.sha }}
           persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: inputs.official_image == true
+        with:
+          name: official-sandbox-image
+          path: packages/core/src
       - name: Validate configuration before any mutation
         run: |
-          for key in SUPABASE_ACCESS_TOKEN SUPABASE_DB_PASSWORD SUPABASE_PROJECT_ID RAILWAY_TOKEN RAILWAY_PROJECT_ID RAILWAY_ENVIRONMENT_ID RAILWAY_SERVICE_ID VERCEL_TOKEN VERCEL_ORG_ID VERCEL_PROJECT_ID ARMADA_SERVER_URL ARMADA_URL ARMADA_TOKEN ARMADA_SMOKE_CASES ARMADA_SMOKE_DASHBOARD_URL ARMADA_SMOKE_SUPABASE_URL ARMADA_SMOKE_SUPABASE_ANON_KEY ARMADA_SMOKE_DASHBOARD_USER_ID ARMADA_SMOKE_DASHBOARD_ORG_ID ARMADA_SMOKE_DASHBOARD_OTTO ARMADA_SMOKE_DASHBOARD_EMAIL ARMADA_SMOKE_DASHBOARD_PASSWORD; do
+          for key in SUPABASE_ACCESS_TOKEN SUPABASE_DB_PASSWORD SUPABASE_PROJECT_ID VERCEL_TOKEN VERCEL_ORG_ID VERCEL_PROJECT_ID ARMADA_SERVER_URL ARMADA_URL ARMADA_TOKEN ARMADA_SMOKE_CASES; do
             [[ -n "${!key:-}" ]] || { echo "::error::Missing staging configuration: $key; production blocked."; exit 1; }
           done
+          if [[ -n "$RAILWAY_TOKEN" ]]; then
+            for key in RAILWAY_PROJECT_ID RAILWAY_ENVIRONMENT_ID RAILWAY_SERVICE_ID; do
+              [[ -n "${!key:-}" ]] || { echo "::error::Missing staging configuration: $key"; exit 1; }
+            done
+          fi
           [[ "${ARMADA_URL%/}" == "${ARMADA_SERVER_URL%/}" ]] || {
             echo "::error::Smoke origin must match the deployed staging server; production blocked."
             exit 1
@@ -112,11 +113,14 @@ jobs:
           node-version: 24
       - name: Install pinned deployment clients
         run: npm install --global @railway/cli@5.71.0 vercel@65.14.0
-      - name: Migrate then deploy pinned server and dashboard
-        run: bash .release-tools/scripts/release/deploy-production.sh
       - uses: ./.github/actions/setup-bun
+      - name: Migrate then deploy pinned server and dashboard
+        id: deployment
+        run: bash .release-tools/scripts/release/deploy-production.sh
       - run: bun install --frozen-lockfile
+        if: steps.deployment.outputs.superseded != 'true'
       - name: Restore staging smoke receipts across branches and tags
+        if: steps.deployment.outputs.superseded != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -142,21 +146,14 @@ jobs:
             unzip -p "$RUNNER_TEMP/smoke-journal.zip" sandboxes.json > .smoke/sandboxes.json
           fi
       - name: Smoke pinned staging
+        if: steps.deployment.outputs.superseded != 'true'
         env:
           ARMADA_SMOKE: create_real_compute
           ARMADA_SMOKE_JOURNAL: .smoke/sandboxes.json
         run: |
-          # Dashboard receives only its own user credentials, never deployment secrets.
-          env -i PATH="$PATH" HOME="$HOME" \
-            ARMADA_SMOKE_DASHBOARD_URL="$ARMADA_SMOKE_DASHBOARD_URL" \
-            ARMADA_SMOKE_SUPABASE_URL="$ARMADA_SMOKE_SUPABASE_URL" \
-            ARMADA_SMOKE_SUPABASE_ANON_KEY="$ARMADA_SMOKE_SUPABASE_ANON_KEY" \
-            ARMADA_SMOKE_DASHBOARD_USER_ID="$ARMADA_SMOKE_DASHBOARD_USER_ID" \
-            ARMADA_SMOKE_DASHBOARD_ORG_ID="$ARMADA_SMOKE_DASHBOARD_ORG_ID" \
-            ARMADA_SMOKE_DASHBOARD_OTTO="$ARMADA_SMOKE_DASHBOARD_OTTO" \
-            ARMADA_SMOKE_DASHBOARD_EMAIL="$ARMADA_SMOKE_DASHBOARD_EMAIL" \
-            ARMADA_SMOKE_DASHBOARD_PASSWORD="$ARMADA_SMOKE_DASHBOARD_PASSWORD" \
-            bun scripts/dashboard-read-smoke.ts &
+          # Read probes receive only the existing staging bearer, never deployment secrets.
+          env -i PATH="$PATH" HOME="$HOME" ARMADA_URL="$ARMADA_URL" ARMADA_TOKEN="$ARMADA_TOKEN" \
+            ARMADA_SMOKE_CASES="$ARMADA_SMOKE_CASES" bun scripts/dashboard-read-smoke.ts &
           dashboard_pid=$!
           status=0
           env -i PATH="$PATH" HOME="$HOME" ARMADA_URL="$ARMADA_URL" ARMADA_TOKEN="$ARMADA_TOKEN" \

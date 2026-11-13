@@ -5,6 +5,7 @@ import { createRuntimeAgent } from "./runtime-agent.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
+import type { RuntimeResume } from "./runtime-resume.ts";
 
 export interface RuntimeFollowupInput {
   id: string;
@@ -16,7 +17,8 @@ export interface RuntimeFollowupInput {
 }
 export type RuntimeFollowup = ReturnType<typeof createRuntimeFollowup>;
 /** Running, owner-scoped, model-only continuation. No host, native credential
- * hooks, resume, model switching or new conversation. Commands are durable;
+ * hooks, model switching or new conversation. Stopped workers use the existing
+ * checkpointed resume path when supplied. Commands are durable;
  * the client MUST reuse request_id and identical input on uncertain delivery.
  */
 export function createRuntimeFollowup(
@@ -24,6 +26,7 @@ export function createRuntimeFollowup(
   key: string,
   commands: ReturnType<typeof createRuntimeCommands>,
   prepareMcp?: RuntimeMcp["prepare"],
+  resume?: RuntimeResume,
 ) {
   const authority = createRuntimeEnrolments(sql, key);
   return async (caller: Caller, input: RuntimeFollowupInput) => {
@@ -42,6 +45,35 @@ export function createRuntimeFollowup(
       (found.harness !== "codex" && !(found.provider === "boat" && found.harness === "claude"))
     )
       throw new VaultError("not_found", "No owned runtime sandbox.");
+    if (input.model !== undefined || input.reasoning_effort !== undefined)
+      throw new VaultError("invalid", "Runtime follow-up uses the launch model and effort.");
+    // Route replays by durable operation identity, not today's machine state.
+    // A completed wake may already be running (or paused again) on retry.
+    const waking =
+      (
+        await sql.query("select request_id from public.runtime_resumes where sandbox_id=$1 and request_id=$2::uuid", [
+          found.id,
+          requestId,
+        ])
+      ).rows.length > 0;
+    if (waking || found.status === "stopped") {
+      const previous = (
+        await sql.query("select request_id from public.runtime_commands where sandbox_id=$1 and request_id=$2", [
+          found.id,
+          `follow_${requestId}`,
+        ])
+      ).rows[0];
+      if (previous)
+        throw new VaultError("conflict", "This request_id belongs to an earlier follow-up; use a new ID for new work.");
+      if (!resume) throw new VaultError("unavailable", "Runtime wake-on-send is unavailable.");
+      return resume(caller, {
+        id: found.id,
+        request_id: requestId,
+        runtimeVersion: 1,
+        prompt: input.prompt,
+        ...(input.conversation_id === undefined ? {} : { conversation_id: input.conversation_id }),
+      });
+    }
     if (
       !found.model ||
       !found.reasoningEffort ||
@@ -52,8 +84,6 @@ export function createRuntimeFollowup(
       found.deletedAt
     )
       throw new VaultError("conflict", "Runtime send requires an already-running, bound sandbox.");
-    if (input.model !== undefined || input.reasoning_effort !== undefined)
-      throw new VaultError("invalid", "Runtime follow-up uses the launch model and effort.");
     const conversation = input.conversation_id ?? found.conversationIds.at(-1);
     if (!conversation || !found.conversationIds.includes(conversation))
       throw new VaultError("invalid", "Continue an existing runtime conversation.");
@@ -206,7 +236,7 @@ export function createRuntimeFollowup(
       {},
       async (signal) => {
         const existing = await commands.result(caller.userId, found.id, commandId, admitted.epoch);
-        if (existing.state === "missing" && found.provider === "boat") await prepareMcp?.(caller, found.id, signal);
+        if (existing.state === "missing") await prepareMcp?.(caller, found.id, signal);
         const accepted = await submit(signal);
         try {
           await store.recordTurnModel?.(found.id, accepted.promptId, found.model);

@@ -10,20 +10,36 @@ export { type ApplicationSecretBinding, parseApplicationSecretBindings } from ".
 export { CLAUDE_ENDPOINT_ENV, type ClaudeEndpoint, parseClaudeEndpoint } from "./claude-endpoint.ts";
 export { CLIENT_CONFIG_PATH, type ClientConfig } from "./client-config.ts";
 export { CODEX_ENDPOINT_ENV, type CodexEndpoint, parseCodexEndpoint } from "./codex-endpoint.ts";
+export {
+  type CatalogModel,
+  CONNECTION_PRESETS,
+  type ConnectionPreset,
+  type ConnectionPresetId,
+  connectionModelList,
+  connectionPreset,
+  type PresetConnectionInput,
+  presetConnectionValue,
+  presetModels,
+  presetPrices,
+} from "./connection-presets.ts";
 export * from "./connections.ts";
 export { HARNESSES, type Harness, type Visibility } from "./contract.ts";
 export type { CredentialBinding } from "./credentials.ts";
 export {
+  type AccountConnectionModels,
   CODEX_AUTH_ENV,
   CODEX_AUTH_PATH,
+  type ConnectionModelInfo,
   CREDENTIAL_KINDS,
   type CredentialReader,
   type CredentialSource,
+  connectionModels,
   credentialName,
   HARNESS_KINDS,
   type HarnessCredentials,
   harnessCredentials,
   type LaunchCredentialKind,
+  listConnectionModels,
   MAX_AUTH_FILE_LENGTH,
   MAX_SECRET_LENGTH,
   type ModalTokenPair,
@@ -86,6 +102,21 @@ export type {
   LaunchProviderOption,
   SandboxPlacementProviderId,
 } from "./docker-api.ts";
+export {
+  DOCKER_DEFAULT_IMAGE,
+  DOCKER_IMAGE_UNAVAILABLE_MESSAGE,
+  DOCKER_JOB_FAILURE_REASONS,
+  DOCKER_SNAPSHOT_STATUSES,
+  type DockerJobFailureReason,
+  type DockerSnapshotRecord,
+} from "./docker-api.ts";
+export {
+  DOCKER_LOCAL_IMAGE_LABELS,
+  type DockerSnapshotBinding,
+  isDockerImageReference,
+  parseDockerSnapshotBinding,
+} from "./docker-image.ts";
+export { parseDockerSnapshotRecord } from "./docker-snapshot.ts";
 export {
   boundEventEntries,
   buildEventPage,
@@ -227,7 +258,16 @@ export {
   type ModelOption,
   resolveModelChoice,
 } from "./models.ts";
-export { OPENCODE_ENDPOINT_ENV, type OpenCodeEndpoint, parseOpenCodeEndpoint } from "./opencode-endpoint.ts";
+export { OFFICIAL_SANDBOX_IMAGE, officialSandboxImage } from "./official-sandbox-image.ts";
+export {
+  CONNECTION_MODEL_ID,
+  MAX_CONNECTION_MODELS,
+  OPENCODE_CONNECTION_PROVIDER,
+  OPENCODE_ENDPOINT_ENV,
+  type OpenCodeEndpoint,
+  parseConnectionModels,
+  parseOpenCodeEndpoint,
+} from "./opencode-endpoint.ts";
 export type {
   OttoCompleteness,
   OttoFact,

@@ -1,13 +1,21 @@
+import { type DockerSnapshotBinding, isDockerImageReference, parseDockerSnapshotBinding } from "./docker-image.ts";
 import type { DockerMachineRequest } from "./docker-machine.ts";
+import { type GoldenConfig, parseGoldenConfig } from "./golden-config.ts";
 
 export type BootstrapDescriptor = {
   serverUrl: string;
   artifact: { sha256: string; bytes: number };
   enrolmentToken: string;
 };
+export type DockerSnapshotBuildDescriptor = DockerSnapshotBinding & {
+  config: GoldenConfig;
+  token: string;
+  armadaVersion: string;
+};
 export type DockerHostJob = { requestId: string; request: DockerMachineRequest } & (
   | { operation: "create" | "stop" | "delete" }
   | { operation: "bootstrap" | "resume"; bootstrap: BootstrapDescriptor }
+  | { operation: "buildSnapshot"; build: DockerSnapshotBuildDescriptor }
 );
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 function invalid(): never {
@@ -25,22 +33,28 @@ function id(value: unknown): asserts value is string {
 export function parseDockerHostJob(value: unknown): DockerHostJob {
   if (!value || typeof value !== "object") invalid();
   const bootstrap = "operation" in value && (value.operation === "bootstrap" || value.operation === "resume");
-  exact(value, ["requestId", "operation", "request", ...(bootstrap ? ["bootstrap"] : [])]);
+  const build = "operation" in value && value.operation === "buildSnapshot";
+  exact(value, ["requestId", "operation", "request", ...(bootstrap ? ["bootstrap"] : []), ...(build ? ["build"] : [])]);
   id(value.requestId);
   if (
     typeof value.operation !== "string" ||
-    !["create", "stop", "delete", "bootstrap", "resume"].includes(value.operation)
+    !["create", "stop", "delete", "bootstrap", "resume", "buildSnapshot"].includes(value.operation)
   )
     invalid();
   const r = value.request;
   const absolute = r !== null && typeof r === "object" && Object.hasOwn(r, "expiresAt");
-  exact(r, ["sandboxId", "generation", "image", "ttlSeconds", ...(absolute ? ["expiresAt"] : [])]);
+  exact(r, [
+    "sandboxId",
+    "generation",
+    "image",
+    "ttlSeconds",
+    ...(absolute ? ["expiresAt"] : []),
+    ...(r !== null && typeof r === "object" && Object.hasOwn(r, "snapshot") ? ["snapshot"] : []),
+  ]);
   id(r.sandboxId);
   id(r.generation);
   if (
-    typeof r.image !== "string" ||
-    r.image.length > 512 ||
-    !/^[a-z0-9][a-z0-9./:_-]*@sha256:[0-9a-f]{64}$/.test(r.image) ||
+    !isDockerImageReference(r.image) ||
     typeof r.ttlSeconds !== "number" ||
     !Number.isInteger(r.ttlSeconds) ||
     r.ttlSeconds < 1 ||
@@ -53,10 +67,32 @@ export function parseDockerHostJob(value: unknown): DockerHostJob {
     image: r.image,
     ttlSeconds: r.ttlSeconds,
   };
+  if (r.snapshot !== undefined) {
+    request.snapshot = parseDockerSnapshotBinding(r.snapshot);
+    if (request.image.includes("@")) invalid();
+  }
   if (absolute) {
     const end = r.expiresAt;
     if (typeof end !== "number" || !Number.isSafeInteger(end) || end <= 0 || end > 8_640_000_000_000_000) invalid();
     request.expiresAt = end;
+  }
+  if (build) {
+    const b = value.build;
+    exact(b, ["id", "ownerId", "visibility", "config", "token", "armadaVersion"]);
+    if (
+      typeof b.armadaVersion !== "string" ||
+      !/^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?(?:\+[a-zA-Z0-9.-]+)?$/.test(b.armadaVersion)
+    )
+      invalid();
+    const binding = parseDockerSnapshotBinding({ id: b.id, ownerId: b.ownerId, visibility: b.visibility });
+    if (binding.id !== request.sandboxId || typeof b.token !== "string" || !/^[\x21-\x7e]{1,8192}$/.test(b.token))
+      invalid();
+    return {
+      requestId: value.requestId,
+      operation: "buildSnapshot",
+      request,
+      build: { ...binding, config: parseGoldenConfig(b.config), token: b.token, armadaVersion: b.armadaVersion },
+    };
   }
   if (!bootstrap)
     return { requestId: value.requestId, operation: value.operation as "create" | "stop" | "delete", request };
@@ -102,5 +138,6 @@ export function canonicalDockerHostJob(value: unknown): string {
     operation: job.operation,
     request: job.request,
     ...(job.operation === "bootstrap" || job.operation === "resume" ? { bootstrap: job.bootstrap } : {}),
+    ...(job.operation === "buildSnapshot" ? { build: job.build } : {}),
   });
 }

@@ -1,4 +1,4 @@
-import type { DockerHostListResponse, DockerHostRegistrationResponse, DockerHostSummary } from "@armada/core";
+import type { DockerHostListResponse, DockerHostSummary } from "@armada/core";
 import { relativeAge } from "./relative-time.ts";
 import type { ResourceState } from "./resource-list.ts";
 
@@ -19,14 +19,12 @@ export const DOCKER_HOST_ROUTES = {
 
 export const HOSTS_PATH = "/hosts";
 
-/** Where the host keeps its private registration and credential, in the command the dialog shows. */
-export const HOST_STATE_DIR = '"$HOME/.local/state/armada-docker-host"';
-
-export type DockerHost = DockerHostSummary;
+/** A parsed host: the daemon version is narrowed to a non-empty string or null (unknown). */
+export type DockerHost = Omit<DockerHostSummary, "version"> & { version: string | null };
 export type DockerHostState = DockerHost["state"];
 
 /** `skipped`: hosts the server listed that do not match the contract, left out of the list (#1398). */
-export type DockerHostList = DockerHostListResponse & { skipped: number };
+export type DockerHostList = Omit<DockerHostListResponse, "hosts"> & { hosts: DockerHost[]; skipped: number };
 
 const STATES: readonly DockerHostState[] = ["pending", "online", "offline", "revoked"];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -40,7 +38,7 @@ const optionalDate = (value: unknown): value is string | null => value === null 
 
 function parseHost(value: unknown): DockerHost | null {
   if (!isRecord(value)) return null;
-  const { id, name, state, createdAt, lastSeenAt, revokedAt, sandboxes } = value;
+  const { id, name, state, createdAt, lastSeenAt, revokedAt, sandboxes, version } = value;
   if (
     typeof id !== "string" ||
     !UUID.test(id) ||
@@ -63,6 +61,7 @@ function parseHost(value: unknown): DockerHost | null {
     lastSeenAt,
     revokedAt,
     sandboxes,
+    version: typeof version === "string" && version.trim() !== "" ? version.trim() : null,
   };
 }
 
@@ -77,15 +76,43 @@ export function parseDockerHostList(value: unknown): DockerHostList | null {
   return { placement: value.placement, hosts: list, skipped: value.hosts.length - list.length };
 }
 
-/** A one-use registration ticket as `register-token` returns it. */
-export type HostRegistration = DockerHostRegistrationResponse;
+/**
+ * What `register-token` answers (#1453, #1471): the single shell line to paste on the machine, with its one-use
+ * token inside, and when it stops working. The command is shown once and kept nowhere: not in storage, a URL or a
+ * log. Any token field the server also sends is dropped here, so the dialog never holds it on its own.
+ */
+export type HostRegistration = { hostId: string; command: string; expiresAt: string };
+
+/** Longest command accepted: one line, far longer than the installer's. */
+const COMMAND_MAX = 2048;
 
 export function parseHostRegistration(value: unknown): HostRegistration | null {
   if (!isRecord(value)) return null;
-  const { hostId, registrationToken } = value;
+  const { hostId, command, expiresAt } = value;
   if (typeof hostId !== "string" || !UUID.test(hostId)) return null;
-  if (typeof registrationToken !== "string" || !/^[0-9a-f]{64}$/.test(registrationToken)) return null;
-  return { hostId, registrationToken };
+  if (typeof command !== "string" || command.trim() === "" || command.length > COMMAND_MAX) return null;
+  // One line: what is copied is exactly what is shown and runs as a single command.
+  if (/[\r\n]/.test(command)) return null;
+  if (!isDate(expiresAt)) return null;
+  return { hostId, command: command.trim(), expiresAt };
+}
+
+/** Longest optional host name the dialog sends. */
+export const HOST_NAME_MAX = 64;
+
+/** The optional name from the dialog: trimmed, null when blank, an error when too long. */
+export function hostNameInput(raw: string): { ok: true; name: string | null } | { ok: false; error: string } {
+  const name = raw.trim();
+  if (name === "") return { ok: true, name: null };
+  if (name.length > HOST_NAME_MAX) return { ok: false, error: `A host name is at most ${HOST_NAME_MAX} characters.` };
+  return { ok: true, name };
+}
+
+/** Time left before the command expires as `m:ss`, or null once it has. */
+export function expiryCountdown(expiresAt: string, now: number): string | null {
+  const left = Math.ceil((Date.parse(expiresAt) - now) / 1000);
+  if (!(left > 0)) return null;
+  return `${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}`;
 }
 
 /**
@@ -156,31 +183,16 @@ export function sandboxCount(count: number): string {
   return count === 1 ? "1 sandbox" : `${count} sandboxes`;
 }
 
-/** Whether the host the dialog registered has checked in from the machine. */
-export function hasCheckedIn(list: DockerHostList, hostId: string): boolean {
+/** The name of the host the dialog registered once it has connected from the machine, else null. */
+export function connectedHostName(list: DockerHostList, hostId: string): string | null {
   const host = list.hosts.find((candidate) => candidate.id === hostId);
-  return host !== undefined && host.state !== "pending" && host.state !== "revoked";
+  if (!host || host.state === "pending" || host.state === "revoked") return null;
+  return hostName(host);
 }
 
-/**
- * The command run on the machine: it asks for the one-use token without echoing it, so the token never lands in
- * argv, the shell history or the terminal scrollback, passes it on stdin, then runs the daemon in the foreground.
- * Bash or zsh. Null when the server address is not an http(s) origin.
- */
-export function hostRegistrationCommand(serverUrl: string): string | null {
-  let origin: string;
-  try {
-    const url = new URL(serverUrl);
-    if ((url.protocol !== "https:" && url.protocol !== "http:") || url.username || url.password) return null;
-    origin = url.origin;
-  } catch {
-    return null;
-  }
-  return [
-    `(printf 'Registration token: '; read -rs token; echo; printf '%s\\n' "$token" |`,
-    `armada-docker-host register --server '${origin}' --state-dir ${HOST_STATE_DIR}) &&`,
-    `armada-docker-host run --state-dir ${HOST_STATE_DIR}`,
-  ].join(" \\\n  ");
+/** A row's fact: what runs there and which daemon runs it. */
+export function hostFact(host: Pick<DockerHost, "sandboxes" | "version">): string {
+  return `${sandboxCount(host.sandboxes)} · ${host.version ? `v${host.version.replace(/^v/, "")}` : "version unknown"}`;
 }
 
 /** What revoking a host does, said before it happens. */
@@ -189,4 +201,20 @@ export function revokeWarning(sandboxes: number): string {
     "Its credential stops working and it takes no new work. This cannot be undone: to use the machine again, add it as a new host.";
   if (sandboxes === 0) return base;
   return `${base} It still has ${sandboxCount(sandboxes).toLowerCase()}: delete ${sandboxes === 1 ? "it" : "them"} first, because a revoked host can no longer stop or delete them.`;
+}
+
+/** A Docker sandbox's host in its page's details: the host's name when the list has it, else its short id (#1526). */
+export function sandboxHostLabel(list: DockerHostList | null, hostId: string | null): string {
+  if (!hostId) return "Unknown";
+  const host = list?.hosts.find((candidate) => candidate.id === hostId);
+  return host ? hostName(host) : `Host ${shortHostId(hostId)}`;
+}
+
+/**
+ * A Docker sandbox's short, readable name (#1526): the container name is a 150-character machine name, so the title
+ * shows `docker-` and the first block of the sandbox id instead, as a Boat `bx_` id is short. The full ids stay in the
+ * details and the copy button.
+ */
+export function dockerSandboxName(id: string): string {
+  return `docker-${id.slice(0, 8)}`;
 }

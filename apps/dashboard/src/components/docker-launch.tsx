@@ -1,12 +1,13 @@
 "use client";
 
-import { MODEL_CATALOG } from "@armada/core";
+import { type Harness, MODEL_CATALOG } from "@armada/core";
 import { RocketIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useId, useRef } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useFormStatus } from "react-dom";
 import { launchOnDockerHost } from "@/app/actions/docker-hosts";
 import { ActionForm, SubmitButton } from "@/components/action-form";
-import { AccountField } from "@/components/launch-dialog";
+import { AccountField, Segmented } from "@/components/launch-dialog";
 import { ModelFields } from "@/components/model-fields";
 import { Button } from "@/components/ui/button";
 import {
@@ -17,17 +18,17 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import type { ActionResult } from "@/lib/action";
-import { dockerLaunchKeyStorage, UNKNOWN_DOCKER_LAUNCH } from "@/lib/docker-launch";
+import { dockerLaunchKeyStorage, preferredHarness, UNKNOWN_DOCKER_LAUNCH } from "@/lib/docker-launch";
+import { HARNESS_LABELS } from "@/lib/labels";
 import { LAUNCH_KEY_FIELD, type LaunchKey, launchKeyFor } from "@/lib/launch-key";
 import { accountProblem, accountsFor, type LaunchAccounts } from "@/lib/model-accounts";
 
 /**
- * Launch a sandbox on one Docker host (#1380): Codex from a digest-pinned plain image, with a model account and an
- * optional task. A Docker host has no environment (golden) yet, so this launch starts from the host, not from an
+ * Launch a sandbox on one Docker host (#1380): an agent the server runs on Docker, from Armada's image, which the person never chooses (#1507,
+ * #1528), with a model account and an optional task. A Docker host has no environment (golden) yet, so this launch starts from the host, not from an
  * environment. What Docker cannot do yet is listed with the server's own reasons. A successful launch navigates to
  * the new sandbox.
  */
@@ -37,12 +38,17 @@ export function DockerLaunchDialog({
   hostName,
   accounts,
   unavailable,
+  harnesses,
+  initialHarness,
 }: {
   orgId: string;
   hostId: string;
   hostName: string;
   accounts: LaunchAccounts;
   unavailable: { name: string; reason: string }[];
+  /** The agents the server launches on Docker; at least one (the launch is blocked otherwise). */
+  harnesses: Harness[];
+  initialHarness: Harness;
 }) {
   return (
     <Dialog>
@@ -54,9 +60,18 @@ export function DockerLaunchDialog({
       <DialogContent className="max-h-[calc(100dvh-2rem)] gap-5 overflow-y-auto sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>Launch on {hostName}</DialogTitle>
-          <DialogDescription>Codex in a private sandbox, started from a plain image on this host.</DialogDescription>
+          <DialogDescription>
+            An agent in a private sandbox, using the official Armada environment on this host.
+          </DialogDescription>
         </DialogHeader>
-        <DockerLaunchForm orgId={orgId} hostId={hostId} accounts={accounts} unavailable={unavailable} />
+        <DockerLaunchForm
+          orgId={orgId}
+          hostId={hostId}
+          accounts={accounts}
+          unavailable={unavailable}
+          harnesses={harnesses}
+          initialHarness={initialHarness}
+        />
       </DialogContent>
     </Dialog>
   );
@@ -67,19 +82,31 @@ function DockerLaunchForm({
   hostId,
   accounts,
   unavailable,
+  harnesses,
+  initialHarness,
 }: {
   orgId: string;
   hostId: string;
   accounts: LaunchAccounts;
   unavailable: { name: string; reason: string }[];
+  harnesses: Harness[];
+  initialHarness: Harness;
 }) {
   const id = useId();
+  const hasUsableAccount = (agent: Harness) =>
+    accounts.state === "ready" &&
+    accountsFor(accounts.accounts, agent).some((account) => accountProblem(account, accounts.now) === null);
+  const [chosenHarness, setHarness] = useState<Harness>(() =>
+    preferredHarness(harnesses, initialHarness, hasUsableAccount),
+  );
+  // A refresh can take the chosen agent off the server's list: the dialog then shows, and launches, an offered one.
+  const harness = harnesses.includes(chosenHarness)
+    ? chosenHarness
+    : preferredHarness(harnesses, initialHarness, hasUsableAccount);
   const root = useRef<HTMLDivElement>(null);
   const storage = dockerLaunchKeyStorage(hostId);
   const router = useRouter();
-  const usable =
-    accounts.state === "ready" &&
-    accountsFor(accounts.accounts, "codex").some((account) => accountProblem(account, accounts.now) === null);
+  const usable = hasUsableAccount(harness);
 
   useEffect(() => {
     const node = root.current;
@@ -127,6 +154,7 @@ function DockerLaunchForm({
         className="space-y-4"
         footer={
           <div className="flex items-center justify-end gap-3">
+            <LaunchProgress />
             {usable ? (
               <SubmitButton>
                 <RocketIcon /> Launch
@@ -134,7 +162,7 @@ function DockerLaunchForm({
             ) : (
               <>
                 <p id={`${id}-no-account`} className="mr-auto text-xs text-warning">
-                  A usable Codex account is needed to launch.
+                  A usable {HARNESS_LABELS[harness]} account is needed to launch.
                 </p>
                 <Button type="button" disabled aria-describedby={`${id}-no-account`}>
                   <RocketIcon /> Launch
@@ -155,28 +183,26 @@ function DockerLaunchForm({
             placeholder="What should the agent do? Leave empty to start idle."
           />
         </div>
-        <div className="space-y-2">
-          <Label htmlFor={`${id}-image`}>Image</Label>
-          <Input
-            id={`${id}-image`}
-            name="image"
-            required
-            spellCheck={false}
-            autoComplete="off"
-            className="font-mono text-xs"
-            placeholder="buildpack-deps@sha256:…"
-            aria-describedby={`${id}-image-hint`}
-          />
-          <p id={`${id}-image-hint`} className="text-xs text-muted-foreground">
-            A plain Linux image pinned by digest, with HTTPS CA roots. Armada installs its runtime and Codex in it.
-          </p>
-        </div>
         <p className="text-sm">
-          <span className="text-muted-foreground">Agent:</span> Codex{" "}
-          <span className="text-muted-foreground">(the only agent on Docker hosts for now)</span>
+          <span className="text-muted-foreground">Environment:</span> Armada official{" "}
+          <span className="text-muted-foreground">(fetched by your host the first time)</span>
         </p>
-        <AccountField idPrefix={id} harness="codex" accounts={accounts} onChange={() => {}} />
-        <ModelFields idPrefix={id} harness="codex" catalog={MODEL_CATALOG} />
+        {harnesses.length > 1 ? (
+          <Segmented
+            legend="Agent"
+            name="harness"
+            value={harness}
+            onChange={setHarness}
+            options={harnesses.map((value) => ({ value, label: HARNESS_LABELS[value] }))}
+          />
+        ) : (
+          <p className="text-sm">
+            <input type="hidden" name="harness" value={harness} />
+            <span className="text-muted-foreground">Agent:</span> {HARNESS_LABELS[harness]}
+          </p>
+        )}
+        <AccountField key={harness} idPrefix={id} harness={harness} accounts={accounts} onChange={() => {}} />
+        <ModelFields key={`${harness}-model`} idPrefix={id} harness={harness} catalog={MODEL_CATALOG} />
         {unavailable.length > 0 && (
           <details className="rounded-md border p-3 text-sm" data-docker-unavailable>
             <summary className="cursor-pointer text-muted-foreground">Not available on Docker hosts yet</summary>
@@ -192,6 +218,21 @@ function DockerLaunchForm({
         )}
       </ActionForm>
     </div>
+  );
+}
+
+/**
+ * What a launch is doing while it waits (#1507): the host fetches Armada's image first if it does not have it yet,
+ * which can take a few minutes the first time. Always rendered, so a screen reader announces the text when it appears.
+ */
+function LaunchProgress() {
+  const { pending } = useFormStatus();
+  return (
+    <p role="status" className="mr-auto text-xs text-muted-foreground" data-docker-launch-progress>
+      {pending
+        ? "Preparing the official Armada environment on your host and starting the sandbox… The first launch can take a few minutes."
+        : null}
+    </p>
   );
 }
 

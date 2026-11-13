@@ -118,7 +118,7 @@ describe("what blocks launching an environment", () => {
       ],
     });
     expect(blockers.map((blocker) => [blocker.label, blocker.detail, blocker.target])).toEqual([
-      ["Connect Modal", "2 environments wait for it.", { href: "/settings" }],
+      ["Connect Modal", "2 snapshots wait for it.", { href: "/providers/cloud" }],
       ["Snapshot alice-private", "Build it once before launching from it.", { item: "3" }],
     ]);
   });
@@ -147,7 +147,7 @@ describe("the capacity line", () => {
         { provider: "boat", state: { kind: "full", capacity: 1, used: 1 }, removed: 1 },
         { provider: "modal", state: { kind: "unknown" }, removed: 0 },
       ]).map((part) => part.text),
-    ).toEqual(["Boat: 1 of 1 slot used, 1 by removed environment", "Modal: no limit"]);
+    ).toEqual(["Boat: 1 of 1 slot used, 1 by removed snapshot", "Modal: no limit"]);
     expect(
       capacityParts([{ provider: "boat", state: { kind: "unavailable", reason: "No key." }, removed: 0 }]),
     ).toEqual([{ provider: "boat", kind: "unavailable", text: "Boat: capacity unavailable", reason: "No key." }]);

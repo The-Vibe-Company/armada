@@ -1,44 +1,59 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import {
   type ApplicationSecretBinding,
   DEFAULT_LAUNCH_TTL_SECONDS,
+  DOCKER_IMAGE_UNAVAILABLE_MESSAGE,
   type DockerLaunchResult,
   type DockerSandboxRecord,
+  type GitHubLaunchInfo,
   type GoldenActor,
   type GoldenRepo,
   HARNESSES,
   type Harness,
   type LaunchCredentialResolver,
   normalizeGitHubGoldenConfig,
+  officialSandboxImage,
   ProviderError,
   parseApplicationSecretBindings,
   parseGoldenConfig,
   parseReadableVariableBindings,
   type ReadableVariableBinding,
   resolveModelChoice,
+  type SkillReceipt,
   type Sql,
+  VaultError,
   validateReadableVariables,
+  validateSkillPins,
 } from "@armada/core";
 import {
+  createSkillDefaultsService,
+  createSqlMcpLaunchPort,
+  createSqlMcpRegistry,
   createSqlSandboxStore,
   decryptSecret,
   encryptSecret,
+  mergeSkillPins,
   resolveLaunchSecrets,
   resolveLaunchVariables,
 } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import type { createDockerBootstrapService } from "./docker-bootstrap-service.ts";
 import { createDockerLaunchEnvironment } from "./docker-launch-environment.ts";
+import { dockerLaunchRequestHash, matchesDockerLaunchRequestHash } from "./docker-launch-identity.ts";
 import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
+import { resolveDockerSnapshot } from "./docker-snapshot-data.ts";
+import { createRuntimeAgent } from "./runtime-agent.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
+import type { RuntimeMcp } from "./runtime-mcp.ts";
 
 type Request = {
   repos?: GoldenRepo[];
   variables?: ReadableVariableBinding[];
   secrets?: ApplicationSecretBinding[];
+  snapshotId?: string;
   org: string;
   provider: "docker";
   harness: Harness;
@@ -52,20 +67,25 @@ type Request = {
   reasoningEffort: string;
   ttlSeconds: number;
   prompt: string | null;
+  skills?: string[];
+  connections?: string[];
+  skipSkillDefaults?: boolean;
 };
 type Manifest = {
   variables?: Record<string, string>;
+  snapshotConfig?: import("@armada/core").GoldenConfig;
   request: Request;
   credentialVersion: number;
   bootstrapId: string;
   healthId: string;
   promptId: string;
+  preparation?: { skills: string[]; connections: string[] };
 };
 type Receipt = {
   epoch: string;
   promptId?: string;
   conversationId?: string;
-  github?: { status: "connected"; login: string };
+  github?: GitHubLaunchInfo;
 };
 type Claim = {
   actor_epoch: string;
@@ -82,7 +102,9 @@ type Row = {
   provider_sandbox_id: string;
   docker_host_id: string;
   docker_image: string;
+  docker_snapshot_id: string | null;
   status: DockerSandboxRecord["status"];
+  status_reason: string | null;
   conversation_ids: string[];
   created_at: Date | string;
   stopped_at: Date | string | null;
@@ -97,18 +119,25 @@ type Row = {
   credential_version: number;
   model: string;
   reasoning_effort: string;
+  skills: SkillReceipt[];
 };
 type Clock = { now(): number; wait(ms: number): Promise<void> };
 type Options = {
   enabled?: boolean;
-  github?: Pick<RuntimeGitHub, "prepare" | "preflightRepositories">;
-  credentials: Pick<LaunchCredentialResolver, "resolve">;
+  /** Trusted server release configuration, never accepted from a caller. */
+  officialImage?: string;
+  github?: Pick<RuntimeGitHub, "prepare" | "prepareLaunch" | "preflightRepositories">;
+  credentials: Pick<LaunchCredentialResolver, "resolve" | "skillpackKey">;
+  mcp?: RuntimeMcp;
   bootstrap?: ReturnType<typeof createDockerBootstrapService>;
   clock?: Clock;
   timeoutMs?: number;
 };
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-function failure(code: "invalid_request" | "not_found" | "conflict" | "unavailable" | "sandbox_not_ready") {
+function failure(
+  code: "invalid_request" | "not_found" | "conflict" | "unavailable" | "sandbox_not_ready",
+  message?: string,
+) {
   const messages = {
     invalid_request: "Invalid Docker launch request.",
     not_found: "Docker launch not found.",
@@ -119,7 +148,7 @@ function failure(code: "invalid_request" | "not_found" | "conflict" | "unavailab
   return new ProviderError({
     provider: "docker",
     code,
-    message: messages[code],
+    message: message ?? messages[code],
     retryable: code === "unavailable",
     // Retain the dashboard replay key for unknown outcomes, including lost commits.
     ...(code === "unavailable" ? { details: { resourceReceipt: true } } : {}),
@@ -129,7 +158,12 @@ function identifier(value: unknown): string {
   if (typeof value !== "string" || !uuid.test(value)) throw failure("invalid_request");
   return value.toLowerCase();
 }
-function normalize(body: Record<string, unknown>): Request {
+function normalize(body: Record<string, unknown>, image: string): Request {
+  if (body && typeof body === "object" && Object.hasOwn(body, "image"))
+    throw failure(
+      "invalid_request",
+      "Remove the image field and retry. Armada chooses the Docker environment automatically.",
+    );
   if (
     !body ||
     typeof body !== "object" ||
@@ -140,10 +174,10 @@ function normalize(body: Record<string, unknown>): Request {
           "repos",
           "variables",
           "secrets",
+          "snapshotId",
           "org",
           "provider",
           "hostId",
-          "image",
           "harness",
           "credentialId",
           "credentialVersion",
@@ -153,14 +187,14 @@ function normalize(body: Record<string, unknown>): Request {
           "prompt",
           "ttlSeconds",
           "visibility",
+          "skills",
+          "connections",
+          "skipSkillDefaults",
         ].includes(field),
     ) ||
     body.provider !== "docker" ||
     !HARNESSES.includes(body.harness as Harness) ||
     (body.visibility !== undefined && body.visibility !== "private") ||
-    typeof body.image !== "string" ||
-    body.image.length > 512 ||
-    !/^[a-z0-9][a-z0-9./:_-]*@sha256:[0-9a-f]{64}$/.test(body.image) ||
     (body.credentialVersion !== undefined &&
       (!Number.isSafeInteger(body.credentialVersion) || (body.credentialVersion as number) < 1)) ||
     (body.model !== undefined && typeof body.model !== "string") ||
@@ -171,6 +205,22 @@ function normalize(body: Record<string, unknown>): Request {
     throw failure("invalid_request");
   const ttlSeconds = body.ttlSeconds === undefined ? DEFAULT_LAUNCH_TTL_SECONDS : body.ttlSeconds;
   if (typeof ttlSeconds !== "number" || !Number.isInteger(ttlSeconds) || ttlSeconds < 1 || ttlSeconds > 86400)
+    throw failure("invalid_request");
+  if (body.skipSkillDefaults !== undefined && typeof body.skipSkillDefaults !== "boolean")
+    throw failure("invalid_request");
+  if (body.skills !== undefined) {
+    try {
+      validateSkillPins(body.skills);
+    } catch {
+      throw failure("invalid_request");
+    }
+  }
+  if (
+    body.connections !== undefined &&
+    (!Array.isArray(body.connections) ||
+      body.connections.length > 32 ||
+      body.connections.some((id) => typeof id !== "string" || !uuid.test(id)))
+  )
     throw failure("invalid_request");
   let choice: ReturnType<typeof resolveModelChoice>;
   try {
@@ -219,12 +269,13 @@ function normalize(body: Record<string, unknown>): Request {
     ...(repos ? { repos } : {}),
     ...(variables ? { variables } : {}),
     ...(secrets ? { secrets } : {}),
+    ...(body.snapshotId === undefined ? {} : { snapshotId: identifier(body.snapshotId) }),
     org: identifier(body.org),
     provider: "docker",
     harness: body.harness as Harness,
     visibility: "private",
     hostId: identifier(body.hostId),
-    image: body.image,
+    image,
     credentialId: identifier(body.credentialId),
     credentialVersion: (body.credentialVersion as number | undefined) ?? null,
     requestId: identifier(body.requestId),
@@ -232,8 +283,19 @@ function normalize(body: Record<string, unknown>): Request {
     reasoningEffort: choice.reasoningEffort,
     ttlSeconds,
     prompt: (body.prompt as string | undefined) ?? null,
+    ...(body.skills === undefined ? {} : { skills: [...(body.skills as string[])] }),
+    ...(body.skipSkillDefaults === undefined ? {} : { skipSkillDefaults: body.skipSkillDefaults as boolean }),
+    ...(body.connections === undefined
+      ? {}
+      : { connections: [...new Set((body.connections as string[]).map((id) => id.toLowerCase()))].sort() }),
   };
 }
+/** A launch that did not become ready, in the host's own words when it could not fetch the image (#1507). */
+const notReady = (row: Row) =>
+  failure(
+    "sandbox_not_ready",
+    row.status_reason === DOCKER_IMAGE_UNAVAILABLE_MESSAGE ? DOCKER_IMAGE_UNAVAILABLE_MESSAGE : undefined,
+  );
 const scoped = (tx: Sql): Sql => ({ query: tx.query.bind(tx), transaction: (work) => work(tx) });
 const iso = (date: Date | string) => new Date(date).toISOString();
 const active = (row: Row) =>
@@ -269,9 +331,9 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
     const membership = await member(tx, actor);
     const row = (
       await tx.query<Row>(
-        `select id,org_id,owner_id,provider,harness,provider_sandbox_id,docker_host_id,docker_image,status,
+        `select id,org_id,owner_id,provider,harness,provider_sandbox_id,docker_host_id,docker_image,docker_snapshot_id,status,status_reason,
         conversation_ids,created_at,stopped_at,deleted_at,stop_requested_at,expires_at,effective_ttl_seconds,
-        lifecycle_generation,requested_ttl_seconds,credential_id,credential_version,model,reasoning_effort,
+        lifecycle_generation,requested_ttl_seconds,credential_id,credential_version,model,reasoning_effort,skills,
         expires_at<=now() as expired from public.sandboxes where id=$1`,
         [request.requestId],
       )
@@ -285,20 +347,35 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
         [row.id],
       )
     ).rows[0];
-    if (!claim || claim.request_hash !== hash) throw failure("conflict");
+    if (!claim) throw failure("conflict");
     if (claim.actor_epoch !== membership.epoch) throw failure("not_found");
     const manifest = JSON.parse(await decryptSecret(claim.request_enc, key)) as Manifest;
     const receipt = claim.result_enc ? (JSON.parse(await decryptSecret(claim.result_enc, key)) as Receipt) : undefined;
     if (
       !manifest ||
       !manifest.request ||
-      createHash("sha256").update(JSON.stringify(manifest.request)).digest("hex") !== hash ||
+      !matchesDockerLaunchRequestHash(manifest.request, claim.request_hash) ||
+      dockerLaunchRequestHash(manifest.request) !== hash ||
       !Number.isSafeInteger(manifest.credentialVersion) ||
       manifest.credentialVersion < 1 ||
       ![manifest.bootstrapId, manifest.healthId, manifest.promptId].every(
         (id) => typeof id === "string" && uuid.test(id),
       )
     )
+      throw failure("conflict");
+    if (manifest.preparation !== undefined) {
+      try {
+        validateSkillPins(manifest.preparation.skills);
+      } catch {
+        throw failure("conflict");
+      }
+      if (
+        !Array.isArray(manifest.preparation.connections) ||
+        manifest.preparation.connections.length > 32 ||
+        manifest.preparation.connections.some((id) => typeof id !== "string" || !uuid.test(id))
+      )
+        throw failure("conflict");
+    } else if (manifest.request.skills !== undefined || manifest.request.connections !== undefined)
       throw failure("conflict");
     if (
       claim.result_enc &&
@@ -325,13 +402,19 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       visibility: "private",
       hostId: row.docker_host_id,
       image: row.docker_image,
+      snapshotId: row.docker_snapshot_id,
       status: row.status,
       conversationIds: row.conversation_ids,
       createdAt: iso(row.created_at),
       stoppedAt: row.stopped_at === null ? null : iso(row.stopped_at),
       deletedAt: row.deleted_at === null ? null : iso(row.deleted_at),
       stopRequestedAt: row.stop_requested_at === null ? null : iso(row.stop_requested_at),
-      statusReason: row.status === "failed" ? "Docker sandbox failed." : null,
+      statusReason:
+        row.status !== "failed"
+          ? null
+          : row.status_reason === DOCKER_IMAGE_UNAVAILABLE_MESSAGE
+            ? row.status_reason
+            : "Docker sandbox failed.",
       repositoryDir: null,
       model: row.model,
       reasoningEffort: row.reasoning_effort,
@@ -340,6 +423,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       expiresAt: iso(row.expires_at),
       effectiveTtlSeconds: row.effective_ttl_seconds,
       requestedTtlSeconds: row.requested_ttl_seconds,
+      skills: row.skills ?? [],
     };
     return {
       sandbox,
@@ -354,19 +438,68 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
     };
   }
   return {
-    async launch(caller: Caller, body: Record<string, unknown>): Promise<DockerLaunchResult> {
+    async launch(
+      caller: Caller,
+      body: Record<string, unknown>,
+      admission?: {
+        beforeReserve(tx: Sql): Promise<void>;
+        beforeStart(): Promise<void>;
+      },
+    ): Promise<DockerLaunchResult> {
       try {
-        const request = normalize(body);
+        const snapshotId = body.snapshotId === undefined ? undefined : identifier(body.snapshotId);
+        if (snapshotId && (body.image !== undefined || body.repos !== undefined)) throw failure("invalid_request");
+        const org = identifier(body.org);
+        if (!caller.orgs.some((member) => member.orgId === org)) throw failure("not_found");
+        const retained = snapshotId
+          ? (
+              await sql.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
+                `select d.request_enc from public.docker_launch_requests d join public.sandboxes s on s.id=d.sandbox_id
+           join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
+           join public.mcp_actor_epochs e on e.org_id=s.org_id and e.user_id=s.owner_id and e.epoch=d.actor_epoch
+           where s.id=$1 and s.owner_id=$2 and s.org_id=$3 and s.provider='docker' and s.docker_snapshot_id=$4`,
+                [identifier(body.requestId), caller.userId, org, snapshotId],
+              )
+            ).rows[0]
+          : undefined;
+        const frozen = retained
+          ? (JSON.parse(await decryptSecret(retained.request_enc, key)) as Manifest).request
+          : undefined;
+        const source =
+          snapshotId && !frozen
+            ? await resolveDockerSnapshot(sql, { userId: caller.userId, orgId: org }, snapshotId)
+            : undefined;
+        const sourceHost = frozen?.hostId ?? source?.host_id,
+          sourceImage = frozen?.image ?? source?.image_id;
+        if (sourceHost && body.hostId !== undefined && identifier(body.hostId) !== sourceHost)
+          throw failure("not_found");
+        let image: string;
+        try {
+          image = sourceImage ?? options.officialImage ?? officialSandboxImage();
+        } catch {
+          throw new ProviderError({
+            provider: "docker",
+            code: "provider_not_configured",
+            retryable: false,
+            message:
+              "Armada's sandbox image configuration is invalid. Ask the server operator to deploy a matching release image pin. No sandbox was created.",
+          });
+        }
+        const request = normalize(sourceHost ? { ...body, hostId: sourceHost } : body, image);
         const actor = { userId: identifier(caller.userId), orgId: request.org };
         if (!caller.orgs.some((org) => org.orgId.toLowerCase() === request.org)) throw failure("not_found");
-        const hash = createHash("sha256").update(JSON.stringify(request)).digest("hex");
+        const hash = dockerLaunchRequestHash(request);
         let state = await transaction((tx) => load(tx, actor, request, hash));
         if (state.row && state.receipt) return envelope(state.row, state.receipt);
         if (options.enabled !== true || !options.bootstrap) throw failure("unavailable");
         if (!state.manifest) {
           if (request.repos) {
             if (!options.github) throw failure("unavailable");
-            await options.github.preflightRepositories(caller, request.org, request.repos);
+            await options.github.preflightRepositories(
+              caller,
+              request.org,
+              request.repos ?? source?.config.repos ?? [],
+            );
           }
           // Resolve outside the reservation transaction; only the binding is retained.
           const resolved = await options.credentials.resolve(
@@ -384,12 +517,31 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
             (request.credentialVersion !== null && binding.credentialVersion !== request.credentialVersion)
           )
             throw failure("not_found");
+          const launchActor = { ...actor, role: state.membership.role };
+          const defaults = request.skipSkillDefaults
+            ? { org: [], personal: [] }
+            : await createSkillDefaultsService(sql).resolve(launchActor, null);
+          let skills: string[];
+          try {
+            skills = mergeSkillPins(defaults.org, defaults.personal, request.skills ?? []);
+          } catch {
+            throw failure("invalid_request");
+          }
+          const connections =
+            request.connections ??
+            (await createSqlMcpLaunchPort(sql, createSqlMcpRegistry(sql, key)).defaults(actor, "private"));
+          if (connections.length) {
+            if (!options.mcp) throw failure("unavailable");
+            await options.mcp.connections.validate(actor, connections, "private");
+          }
           const manifest: Manifest = {
+            ...(source ? { snapshotConfig: source.config } : {}),
             request,
             credentialVersion: binding.credentialVersion,
             bootstrapId: randomUUID(),
             healthId: randomUUID(),
             promptId: randomUUID(),
+            preparation: { skills, connections },
           };
 
           state = await transaction(async (tx) => {
@@ -401,17 +553,22 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
             const exists =
               (await tx.query(`select id from public.sandboxes where id=$1`, [request.requestId])).rows.length > 0;
             if (exists) return load(tx, actor, request, hash);
-            await createDockerSandboxService(scoped(tx), key, { enabled: true }).reserve(actor, {
-              requestId: request.requestId,
-              hostId: request.hostId,
-              image: request.image,
-              harness: request.harness,
-              credentialId: request.credentialId,
-              credentialVersion: manifest.credentialVersion,
-              model: request.model,
-              reasoningEffort: request.reasoningEffort,
-              ...(body.ttlSeconds === undefined ? {} : { ttlSeconds: request.ttlSeconds }),
-            });
+            await createDockerSandboxService(scoped(tx), key, { enabled: true }).reserve(
+              actor,
+              {
+                requestId: request.requestId,
+                hostId: request.hostId,
+                image: request.image,
+                harness: request.harness,
+                credentialId: request.credentialId,
+                credentialVersion: manifest.credentialVersion,
+                model: request.model,
+                reasoningEffort: request.reasoningEffort,
+                ...(body.ttlSeconds === undefined ? {} : { ttlSeconds: request.ttlSeconds }),
+              },
+              admission?.beforeReserve,
+              snapshotId,
+            );
             if (resolved.usagePricing)
               await createSqlSandboxStore(scoped(tx), { turnModels: true }).recordUsagePricingContext?.(
                 request.requestId,
@@ -425,6 +582,10 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
                 ...(await resolveLaunchSecrets(scoped(tx), actor, request.secrets, key)),
               });
             const encrypted = await encryptSecret(JSON.stringify(manifest), key);
+            const connections = manifest.preparation?.connections ?? [];
+            const port = createSqlMcpLaunchPort(scoped(tx), createSqlMcpRegistry(scoped(tx), key));
+            await port.validate(actor, connections, "private");
+            await port.bind(request.requestId, connections);
             const current = await member(tx, actor);
             await tx.query(
               `insert into public.docker_launch_requests(sandbox_id,actor_epoch,request_hash,request_enc) values($1,$2,$3,$4)`,
@@ -440,7 +601,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
         async function live() {
           const current = await transaction((tx) => load(tx, actor, request, hash));
           if (!current.row) throw failure("not_found");
-          if (!active(current.row)) throw failure("sandbox_not_ready");
+          if (!active(current.row)) throw notReady(current.row);
           return current;
         }
         async function wait() {
@@ -452,12 +613,13 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
             await live();
             const job = await sandboxes.job(actor, request.requestId, id);
             if (job?.state === "completed") return;
-            if (job?.state === "failed") throw failure("sandbox_not_ready");
+            if (job?.state === "failed") throw notReady((await live()).row);
             await wait();
           }
         }
         await acknowledged(request.requestId);
         await live();
+        await admission?.beforeStart();
         await options.bootstrap.bootstrap(actor, request.requestId, manifest.bootstrapId);
         await acknowledged(manifest.bootstrapId);
         let receipt: Receipt;
@@ -471,54 +633,88 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
           await wait();
         }
         await createDockerLaunchEnvironment(sql, key, clock)(caller, request.requestId);
+        if (!manifest.request.repos && manifest.snapshotConfig?.repos.length && options.github)
+          receipt.github = await options.github.prepareLaunch(caller, request.requestId);
         if (manifest.request.repos) {
           if (!options.github) throw failure("unavailable");
           const github = await options.github.prepare(caller, request.requestId);
           receipt.github = { status: "connected", login: github.login };
-          const quote = (v: string) => `'${v.replaceAll("'", "'\\''")}'`;
-          const command = [
-            "set -euo pipefail",
-            "export GIT_TERMINAL_PROMPT=0",
-            ...manifest.request.repos.map(
-              (repo) =>
-                `git clone --single-branch --branch ${quote(repo.branch)} -- ${quote(repo.url)} ${quote(`/home/user/${repo.dir}`)}`,
-            ),
-          ].join("\n");
-          const commands = createRuntimeCommands(createRuntimeEnrolments(sql, key), key);
-          const id = `docker_checkout_${request.requestId}`;
-          await commands.enqueue(
-            actor.userId,
-            {
-              version: 1,
-              requestId: id,
-              sandboxId: request.requestId,
-              op: "exec",
-              input: { sandboxId: request.requestId, command, cwd: "/home/user", timeoutSeconds: 600 },
-            },
-            receipt.epoch,
-          );
-          for (;;) {
-            await live();
-            const response = await commands.result(actor.userId, request.requestId, id, receipt.epoch);
-            if (response.state === "finished") {
-              const result = response.reply.body.result as Record<string, unknown> | undefined;
-              if (
-                response.reply.status !== 200 ||
-                !result ||
-                result.detached !== false ||
-                result.exitCode !== 0 ||
-                result.timedOut !== false
-              )
-                throw failure("sandbox_not_ready");
-              break;
+          if (manifest.request.repos) {
+            const quote = (v: string) => `'${v.replaceAll("'", "'\\''")}'`;
+            const command = [
+              "set -euo pipefail",
+              "export GIT_TERMINAL_PROMPT=0",
+              ...manifest.request.repos.map(
+                (repo) =>
+                  `git clone --single-branch --branch ${quote(repo.branch)} -- ${quote(repo.url)} ${quote(`/home/user/${repo.dir}`)}`,
+              ),
+            ].join("\n");
+            const commands = createRuntimeCommands(createRuntimeEnrolments(sql, key), key);
+            const id = `docker_checkout_${request.requestId}`;
+            await commands.enqueue(
+              actor.userId,
+              {
+                version: 1,
+                requestId: id,
+                sandboxId: request.requestId,
+                op: "exec",
+                input: { sandboxId: request.requestId, command, cwd: "/home/user", timeoutSeconds: 600 },
+              },
+              receipt.epoch,
+            );
+            for (;;) {
+              await live();
+              const response = await commands.result(actor.userId, request.requestId, id, receipt.epoch);
+              if (response.state === "finished") {
+                const result = response.reply.body.result as Record<string, unknown> | undefined;
+                if (
+                  response.reply.status !== 200 ||
+                  !result ||
+                  result.detached !== false ||
+                  result.exitCode !== 0 ||
+                  result.timedOut !== false
+                )
+                  throw failure("sandbox_not_ready");
+                break;
+              }
+              if (response.state !== "pending") throw failure("sandbox_not_ready");
+              await wait();
             }
-            if (response.state !== "pending") throw failure("sandbox_not_ready");
-            await wait();
           }
         }
+        const selections = manifest.preparation;
+        if (selections?.skills.length) {
+          const needsKey = selections.skills.some((reference) => !reference.includes("/"));
+          const skillKey = needsKey
+            ? ((await options.credentials.skillpackKey?.({ ...actor, role: state.membership.role })) ?? null)
+            : null;
+          if (needsKey && !skillKey) throw failure("unavailable");
+          const agent = createRuntimeAgent(
+            createRuntimeCommands(createRuntimeEnrolments(sql, key), key, {
+              now: clock.now,
+              wait: (ms) => clock.wait(ms),
+            }),
+            {
+              harness: request.harness,
+              ownerId: actor.userId,
+              sandboxId: request.requestId,
+              providerSandboxId: request.requestId,
+              cwd: "/home/user",
+              defaults: { model: request.model, reasoningEffort: request.reasoningEffort },
+            },
+          );
+          const receipts = await agent.installSkills(selections.skills, skillKey, receipt.epoch);
+          await createRuntimeEnrolments(sql, key).withOwner(request.requestId, actor.userId, async (tx, scope) => {
+            if (scope.epoch !== receipt.epoch) throw failure("sandbox_not_ready");
+            await createSqlSandboxStore(scoped(tx)).recordSkills!(request.requestId, receipts);
+          });
+        }
+        if (options.mcp) await options.mcp.prepare(caller, request.requestId);
+        else if (selections?.connections.length) throw failure("unavailable");
         if (manifest.request.prompt !== null) {
           for (;;) {
             await live();
+            await admission?.beforeStart();
             const result = await runtime.prompt(actor, request.requestId, {
               requestId: manifest.promptId,
               text: manifest.request.prompt,
@@ -558,7 +754,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
           return envelope(saved.row, saved.receipt);
         });
       } catch (error) {
-        if (error instanceof ProviderError) throw error;
+        if (error instanceof ProviderError || error instanceof VaultError) throw error;
         throw failure("unavailable");
       }
     },

@@ -38,7 +38,7 @@ async function fixture() {
       };
     return { ok: false as const };
   };
-  const route = createDockerHostRoutes(store, authenticate);
+  const route = createDockerHostRoutes(store, authenticate, { publicUrl: "https://public.example" });
   async function post(path: string, token: string, body: unknown, extra: Record<string, string> = {}, target = route) {
     const response = await target(
       new Request(`https://staging.example${path}`, {
@@ -57,17 +57,63 @@ async function fixture() {
 // HTTP owns bearer separation, bounded shape admission and cache/error policy.
 // Mailbox authority/replay/durability contracts remain owned by docker-host-store.test.ts.
 test("opt-in host HTTP routes separate user and host capabilities and never cache or echo private input", async () => {
-  const { db, orgId, route, post } = await fixture();
+  const { db, orgId, userId, store, route, post } = await fixture();
   const installationId = randomUUID();
   try {
-    const ticketResponse = await post("/api/v1/docker/hosts/register-token", "fixture-user-token", { org: orgId });
+    const ticketResponse = await post("/api/v1/docker/hosts/register-token", "fixture-user-token", {
+      org: orgId,
+      name: "my-docker",
+    });
     expect(ticketResponse.status).toBe(200);
-    const ticket = (await ticketResponse.json()) as { hostId: string; registrationToken: string };
+    const ticket = (await ticketResponse.json()) as {
+      hostId: string;
+      registrationToken: string;
+      command: string;
+      expiresAt: string;
+    };
+    expect(ticket.command).toBe(
+      `curl -fsSL --proto '=https' --proto-redir '=https' 'https://public.example/install-host.sh' | sh -s -- --token ${ticket.registrationToken}`,
+    );
+    const issued = await db.query<{ registration_expires_at: Date; name: string }>(
+      "select registration_expires_at,name from docker_hosts where id=$1",
+      [ticket.hostId],
+    );
+    expect(new Date(issued.rows[0]!.registration_expires_at).toISOString()).toBe(ticket.expiresAt);
+    expect(issued.rows[0]!.name).toBe("my-docker");
     const registered = await post("/api/docker-host/register", ticket.registrationToken, { installationId });
     expect(registered.status).toBe(200);
     const host = (await registered.json()) as { hostId: string; hostToken: string };
     expect(host.hostId).toBe(ticket.hostId);
     expect((await post("/api/docker-host/poll", host.hostToken, { installationId })).status).toBe(200);
+    const unused = await store.issueRegistration({ userId, orgId });
+    for (const body of [
+      {},
+      { hostId: host.hostId, extra: true },
+      { hostId: "malformed" },
+      { installationId },
+      { hostId: 42 },
+    ])
+      expect((await post("/api/docker-host/reuse-registration", unused.registrationToken, body)).status).toBe(400);
+    for (const bearer of [host.hostToken, "fixture-user-token", "not-a-token"])
+      expect((await post("/api/docker-host/reuse-registration", bearer, { hostId: host.hostId })).status).toBe(401);
+    expect(
+      (
+        await post(
+          "/api/docker-host/reuse-registration",
+          unused.registrationToken,
+          { hostId: host.hostId },
+          { origin: "https://foreign.example" },
+        )
+      ).status,
+    ).toBe(400);
+    const reused = await post("/api/docker-host/reuse-registration", unused.registrationToken, { hostId: host.hostId });
+    expect(reused.status).toBe(200);
+    expect(await reused.json()).toEqual({ hostId: host.hostId, name: "my-docker" });
+    const reuseDenied = await post("/api/docker-host/reuse-registration", unused.registrationToken, {
+      hostId: host.hostId,
+    });
+    expect(reuseDenied.status).toBe(401);
+    expect(await reuseDenied.json()).toEqual({ error: "docker_host_denied" });
     expect((await post("/api/v1/docker/hosts/register-token", host.hostToken, { org: orgId })).status).toBe(401);
     expect((await post("/api/docker-host/poll", "fixture-user-token", { installationId })).status).toBe(401);
     expect((await post("/api/docker-host/poll", host.hostToken, { installationId, unexpected: true })).status).toBe(
@@ -94,6 +140,19 @@ test("opt-in host HTTP routes separate user and host capabilities and never cach
       outcome: "completed",
     });
     expect(denied.status).toBe(401);
+    // A known failure reason reaches machine authorization; a reason on a success, an unknown one or on an expiry
+    // packet is refused by HTTP.
+    const unknownJob = { installationId, requestId: randomUUID(), outcome: "failed" };
+    expect(
+      (await post("/api/docker-host/results", host.hostToken, { ...unknownJob, reason: "image_unavailable" })).status,
+    ).toBe(401);
+    for (const body of [
+      { ...unknownJob, outcome: "completed", reason: "image_unavailable" },
+      { ...unknownJob, reason: "disk_full" },
+      { ...unknownJob, reason: 1 },
+      { ...expiry, reason: "image_unavailable" },
+    ])
+      expect((await post("/api/docker-host/results", host.hostToken, body)).status).toBe(400);
     const deniedText = await denied.text();
     expect(deniedText.includes(host.hostToken)).toBe(false);
     expect(deniedText.includes(ticket.registrationToken)).toBe(false);
@@ -114,6 +173,13 @@ test("host lists admit current members and expose only scoped safe heartbeat sum
   try {
     const actor = { userId, orgId };
     const pending = await store.issueRegistration(actor);
+    const expiredPending = await store.issueRegistration(actor);
+    const revokedPending = await store.issueRegistration(actor);
+    await store.revoke(actor, revokedPending.hostId);
+    await db.query(`update docker_hosts set registration_expires_at=now()-interval '1 second' where id in ($1,$2)`, [
+      expiredPending.hostId,
+      revokedPending.hostId,
+    ]);
     const registered = async () => {
       const ticket = await store.issueRegistration(actor);
       const installationId = randomUUID();
@@ -124,6 +190,10 @@ test("host lists admit current members and expose only scoped safe heartbeat sum
       offline = await registered(),
       neverSeen = await registered(),
       revoked = await registered();
+    // Registration expiry never hides a registered or explicitly revoked host.
+    await db.query(
+      `update docker_hosts set registration_expires_at=now()-interval '1 second' where installation_id is not null`,
+    );
     const timestamp = "2026-01-01T00:00:00.000Z";
     await db.query(`update docker_hosts set created_at=$1`, [timestamp]);
     await db.query(`update docker_hosts set last_seen_at=now() where id in ($1,$2)`, [online.hostId, revoked.hostId]);
@@ -173,8 +243,10 @@ test("host lists admit current members and expose only scoped safe heartbeat sum
     const result = await list();
     expect(Object.keys(result).sort()).toEqual(["hosts", "placement"]);
     expect(result.placement).toBe(false);
-    expect(result.hosts).toHaveLength(5);
+    expect(result.hosts).toHaveLength(6);
     const byId = new Map(result.hosts.map((host) => [host.id, host]));
+    expect(byId.has(expiredPending.hostId)).toBe(false);
+    expect(byId.get(revokedPending.hostId)?.state).toBe("revoked");
     expect(byId.get(pending.hostId)).toEqual({
       id: pending.hostId,
       name: null,
@@ -183,6 +255,7 @@ test("host lists admit current members and expose only scoped safe heartbeat sum
       lastSeenAt: null,
       revokedAt: null,
       sandboxes: 0,
+      version: null,
     });
     expect(byId.get(online.hostId)?.state).toBe("online");
     expect(byId.get(online.hostId)?.sandboxes).toBe(2);
@@ -201,6 +274,7 @@ test("host lists admit current members and expose only scoped safe heartbeat sum
         "revokedAt",
         "sandboxes",
         "state",
+        "version",
       ]);
       for (const value of [host.createdAt, host.lastSeenAt, host.revokedAt]) {
         if (value !== null) expect(new Date(value).toISOString()).toBe(value);

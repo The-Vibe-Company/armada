@@ -1,4 +1,10 @@
-import { type Golden, isSandboxProvider, MODEL_CATALOG, type SandboxProviderId } from "@armada/core";
+import {
+  type DockerSnapshotRecord,
+  type Golden,
+  isSandboxProvider,
+  MODEL_CATALOG,
+  type SandboxProviderId,
+} from "@armada/core";
 import {
   CircleCheckIcon,
   FolderGit2Icon,
@@ -17,6 +23,7 @@ import { setGoldenVisibility } from "@/app/actions/goldens";
 import { ActionForm, SubmitButton } from "@/components/action-form";
 import { CopyButton } from "@/components/copy-button";
 import { Disclosure } from "@/components/disclosure";
+import { SnapshotBuildRefresh, SnapshotCreateChoice } from "@/components/docker-snapshot-forms";
 import { EnvironmentTemplates } from "@/components/environment-templates";
 import { GoldenCreateDialog } from "@/components/golden-create-dialog";
 import { GoldenForm } from "@/components/golden-form";
@@ -38,6 +45,8 @@ import {
   readGoldenCapabilities,
 } from "@/lib/control";
 import { listSelectedConnections } from "@/lib/data/connections";
+import { readDockerLaunchOption, readSelectedDockerHosts } from "@/lib/data/docker-hosts";
+import { readSelectedDockerSnapshots } from "@/lib/data/docker-snapshots";
 import { getGitHubConnection } from "@/lib/data/github";
 import { findRemovedGolden, type GoldenRow, listGoldenHistory, listGoldens } from "@/lib/data/goldens";
 import { launchAccounts, listSelectedAccounts } from "@/lib/data/model-accounts";
@@ -46,6 +55,7 @@ import { selectedOrganization } from "@/lib/data/selected-org";
 import { listSelectedTemplates, lookupsFrom, type TemplateList } from "@/lib/data/templates";
 import { listSelectedVault } from "@/lib/data/variables";
 import { displayUser, listMemberships, type Membership, memberDirectory, requireViewer } from "@/lib/data/viewer";
+import { hasDockerHost, snapshotLaunchEnabled, snapshotState } from "@/lib/docker-snapshots";
 import { mcpUrl } from "@/lib/env";
 import {
   boatFull,
@@ -68,7 +78,7 @@ import {
 } from "@/lib/golden-form";
 import { goldenSizing, sizePolicyBlocker } from "@/lib/machine-size";
 import type { LaunchAccounts } from "@/lib/model-accounts";
-import { connectedProviders, PROVIDER_SETTINGS_PATH } from "@/lib/provider-setup";
+import { CLOUD_PROVIDERS_PATH, connectedProviders } from "@/lib/provider-setup";
 import { relativeAge } from "@/lib/relative-time";
 import { goldenRepositoryDirs } from "@/lib/repository-context";
 import { type Bucket, ITEM_PARAM, sortResources } from "@/lib/resource-list";
@@ -77,7 +87,7 @@ import { launchTarget, type TemplateLaunchTarget } from "@/lib/template-launch";
 import type { TemplateLookups } from "@/lib/templates";
 import { cn } from "@/lib/utils";
 
-export const metadata: Metadata = { title: "Environments" };
+export const metadata: Metadata = { title: "Snapshots" };
 export const dynamic = "force-dynamic";
 // The create, rebuild and launch server actions run in this route's function and wait for the server (a launch up to
 // LAUNCH_TIMEOUT_MS). This is the same bound as `/api/v1/*`, so the fetch times out before the function.
@@ -97,10 +107,18 @@ export default async function GoldensPage({ searchParams }: Props) {
   // New builds, rebuilds and launches run on a provider the organization has connected (#598): exactly that one, never
   // another. Existing goldens and builds the page already tracks stay manageable without it; an org with neither is
   // sent to Settings to connect one. Null: the status could not be read, a retryable error rather than "none".
-  const setup = selected ? await readProviderSetup(selected.org.id) : null;
+  const [setup, hostRead, snapshotRead, dockerOption] = await Promise.all([
+    selected ? readProviderSetup(selected.org.id) : null,
+    readSelectedDockerHosts(),
+    readSelectedDockerSnapshots(),
+    readDockerLaunchOption(),
+  ]);
+  const hosts = hostRead.state === "ready" ? hostRead.list.hosts.filter((host) => host.state !== "revoked") : [];
+  const snapshots = snapshotRead.state === "ready" ? snapshotRead.snapshots : [];
+  const hasDocker = hasDockerHost(hosts) || snapshots.length > 0;
   const setupPending = selected !== null && setup?.state === "pending";
   const connected = setup && setup.state !== "unavailable" ? connectedProviders(setup.status) : null;
-  const canStart = (connected?.length ?? 0) > 0;
+  const canStart = (connected?.length ?? 0) > 0 || hasDocker;
   const tracked = (scope: string) => query[`build.${scope}`] !== undefined || query[`build-key.${scope}`] !== undefined;
   const pending = listMemberships(supabase, viewer.id).then((items) =>
     items.filter((item) => item.org.id === selected?.org.id),
@@ -134,8 +152,8 @@ export default async function GoldensPage({ searchParams }: Props) {
   const rebuildsTracked = new Set(
     goldens.filter((golden) => tracked(`rebuild.${golden.id}`)).map((golden) => golden.id),
   );
-  if (setupPending && goldens.length === 0 && !createTracked && rebuildsTracked.size === 0)
-    redirect(PROVIDER_SETTINGS_PATH);
+  if (setupPending && !hasDocker && goldens.length === 0 && !createTracked && rebuildsTracked.size === 0)
+    redirect(CLOUD_PROVIDERS_PATH);
   const orgs = new Map(memberships.map((item) => [item.org.id, item]));
   // Usage comes only from caller-visible server bindings, never historical row counts.
   const capacities = capabilities
@@ -181,22 +199,51 @@ export default async function GoldensPage({ searchParams }: Props) {
     return false;
   });
   const skipped = goldens.length - shown.length;
-  const rows = sortResources(shown.map((golden) => environmentRow(golden, context, now)));
-  const providerPending = setupPending && selected !== null;
-  const blockers = environmentBlockers({ providerPending, rows: rows.map((row) => ({ ...row, state: row.status })) });
+  const cloudRows = shown.map((golden) => environmentRow(golden, context, now));
+  const rows = sortResources([
+    ...cloudRows,
+    ...snapshots.map((snapshot) =>
+      dockerSnapshotRow(
+        snapshot,
+        context,
+        snapshotLaunchEnabled(dockerOption, hostRead.state === "ready" && hostRead.list.placement),
+      ),
+    ),
+  ]);
+  const providerPending = setupPending && !hasDocker && selected !== null;
+  const blockers = environmentBlockers({
+    providerPending,
+    rows: cloudRows.map((row) => ({ ...row, state: row.status })),
+  });
   // Without a confirmed provider the create form is shown only to follow a build this page already tracks.
   // A build the page tracks reopens the dialog, which follows it.
   const create =
     selected && capacities && (canStart || createTracked) ? (
       <GoldenCreateDialog orgId={selected.org.id} initialOpen={createTracked}>
-        <CreatePanel
-          org={selected}
-          providers={connected ?? []}
-          capacities={capacities}
-          boatLive={counts.boat.live}
-          serverReady={serverReady}
-          githubConnected={githubConnected}
-          rebuildable={rows.filter((row) => row.provider === "boat" && row.rebuildable)}
+        <SnapshotCreateChoice
+          orgId={selected.org.id}
+          isAdmin={selected.role === "admin"}
+          hosts={hosts}
+          canBuild={
+            hostRead.state === "ready" &&
+            hostRead.list.placement &&
+            Boolean(dockerOption?.enabled && dockerOption.capabilities.goldens)
+          }
+          cloudForms={Object.fromEntries(
+            (connected ?? []).map((provider) => [
+              provider,
+              <CreatePanel
+                key={provider}
+                org={selected}
+                providers={[provider]}
+                capacities={capacities}
+                boatLive={counts.boat.live}
+                serverReady={serverReady}
+                githubConnected={githubConnected}
+                rebuildable={cloudRows.filter((row) => row.provider === "boat" && row.rebuildable)}
+              />,
+            ]),
+          )}
         />
       </GoldenCreateDialog>
     ) : undefined;
@@ -216,9 +263,15 @@ export default async function GoldensPage({ searchParams }: Props) {
 
   const notices = (
     <>
+      <SnapshotBuildRefresh building={snapshots.some((row) => row.status === "building")} />
+      {hasDocker && snapshotRead.state === "unavailable" && (
+        <p role="alert" className="text-sm text-destructive">
+          {snapshotRead.message}
+        </p>
+      )}
       {skipped > 0 && (
         <p role="status" className="text-sm text-muted-foreground">
-          {skipped} {skipped === 1 ? "environment" : "environments"} could not be shown.
+          {skipped} {skipped === 1 ? "snapshot" : "snapshots"} could not be shown.
         </p>
       )}
       {setup?.state === "unavailable" && (
@@ -263,10 +316,10 @@ export default async function GoldensPage({ searchParams }: Props) {
 
   return (
     <ResourceBrowser
-      title="Environments"
-      description="Goldens: what a sandbox contains when it starts."
-      meta={shown.length > 0 ? shown.length : undefined}
-      label="Environments"
+      title="Snapshots"
+      description="A saved machine, with its repositories and setup already done, that your sandboxes start from."
+      meta={rows.length > 0 ? rows.length : undefined}
+      label="Snapshots"
       rows={rows}
       blockers={blockers}
       notices={notices}
@@ -299,7 +352,7 @@ export default async function GoldensPage({ searchParams }: Props) {
       }
       empty={
         selected ? (
-          <Empty title="No environments yet" icon={<LayersIcon />}>
+          <Empty title="No snapshots yet" icon={<LayersIcon />}>
             {create
               ? "Use New to build the first one: the repositories an agent starts with, saved as a snapshot."
               : "Connect a sandbox provider to build the first one."}
@@ -309,7 +362,7 @@ export default async function GoldensPage({ searchParams }: Props) {
             <Link className="underline underline-offset-4" href="/orgs">
               Create or join an organization
             </Link>{" "}
-            to build environments.
+            to build snapshots.
           </Empty>
         )
       }
@@ -394,7 +447,7 @@ function CreatePanel({
   /** The Boat environments this viewer may rebuild, offered instead of a new one when Boat is full. */
   rebuildable: EnvironmentRow[];
 }) {
-  const discouraged = boatFull(capacities);
+  const discouraged = providers.includes("boat") && boatFull(capacities);
   const modalOpen = capacities.modal !== undefined && capacities.modal.kind !== "unavailable";
   if (!serverReady)
     return (
@@ -411,8 +464,8 @@ function CreatePanel({
           <AlertDescription className="space-y-2">
             <p>
               {boatLive > 0
-                ? `Every Boat slot is used. Rebuild an existing environment with new repositories instead${modalOpen ? ", or build on Modal" : ""}.`
-                : `A removed Boat environment holds the slot${modalOpen ? ": build on Modal" : ""}.`}
+                ? `Every Boat slot is used. Rebuild an existing snapshot with new repositories instead${modalOpen ? ", or build on Modal" : ""}.`
+                : `A removed Boat snapshot holds the slot${modalOpen ? ": build on Modal" : ""}.`}
             </p>
             {boatLive > 0 && rebuildable.length > 0 && (
               <ul className="flex flex-wrap gap-2">
@@ -556,7 +609,7 @@ function environmentRow(golden: Golden, context: RowContext, now: number): Envir
       </SelectItem>
     ) : state.action === "connect" ? (
       <Button variant="outline" size="sm" asChild>
-        <Link href={PROVIDER_SETTINGS_PATH} aria-label={`Connect ${label} to launch ${golden.name}`}>
+        <Link href={CLOUD_PROVIDERS_PATH} aria-label={`Connect ${label} to launch ${golden.name}`}>
           Connect {label}
         </Link>
       </Button>
@@ -792,4 +845,97 @@ function launchTemplates(
 ): TemplateLaunchTarget[] {
   if (list.state !== "ready") return [];
   return list.items.flatMap((item) => launchTarget(item, goldens, lookups) ?? []);
+}
+
+/** Host artifacts use the shared snapshot list and launch dialog, not a second Docker launch surface. */
+function dockerSnapshotRow(
+  snapshot: DockerSnapshotRecord,
+  context: RowContext,
+  launchEnabled: boolean,
+): ResourceRow & { bucket: Bucket; tie: string } {
+  const state = snapshotState(snapshot, launchEnabled);
+  const action =
+    state.bucket === "ready" ? (
+      <LaunchDialog
+        golden={snapshot.name}
+        snapshotId={snapshot.id}
+        provider="docker"
+        orgId={snapshot.orgId}
+        catalog={MODEL_CATALOG}
+        repositories={[]}
+        connections={context.connections}
+        accounts={context.accounts}
+      />
+    ) : null;
+  const meta = `Built on ${snapshot.builtOnVersion ?? "unknown version"} · Docker · ${snapshot.hostName ?? snapshot.hostId}`;
+  const repos = snapshot.config.repos;
+  const detailText =
+    snapshot.status === "building"
+      ? "Repositories and setup are building on this host. Closing this panel does not stop the build."
+      : snapshot.status === "failed"
+        ? "The build did not publish a snapshot. Check the config and host, then create a new build."
+        : !snapshot.hostAvailable
+          ? "Bring the original registered host online. Snapshots are local to its installation; they are not copied to other hosts."
+          : !launchEnabled
+            ? "Snapshot launches are unavailable on this server. Check Docker placement and the server version."
+            : "Launch the saved workspace on its original host, with your current account and GitHub access.";
+  return {
+    key: snapshot.id,
+    name: snapshot.name,
+    tie: `docker-${snapshot.id}`,
+    bucket: state.bucket,
+    search: [snapshot.name, meta, snapshot.visibility, ...repos.map((repo) => repo.url)].join(" "),
+    mark: (
+      <span
+        aria-hidden
+        className="flex size-8 shrink-0 items-center justify-center rounded-md border bg-background [&_svg]:size-4"
+      >
+        <ProviderMark provider="docker" />
+      </span>
+    ),
+    tags: (
+      <RowTag>
+        {snapshot.visibility === "private" ? <LockIcon aria-hidden /> : <GlobeIcon aria-hidden />}
+        {snapshot.visibility === "private" ? "Private" : "Org"}
+      </RowTag>
+    ),
+    meta,
+    subtitle: meta,
+    state: <StateCell tone={state.tone} label={state.label} detail={detailText} />,
+    fact: (
+      <span className="font-mono text-xs">
+        {repos.length} {repos.length === 1 ? "repository" : "repositories"}
+      </span>
+    ),
+    action,
+    detail: (
+      <div className="space-y-4">
+        <StateCell tone={state.tone} label={state.label} />
+        <p className="text-sm text-muted-foreground">{detailText}</p>
+        {action}
+        <PanelSection title="Repositories">
+          <ul className="space-y-2 text-sm">
+            {repos.map((repo) => (
+              <li key={repo.dir}>
+                <p className="font-mono text-xs break-all">{repo.url}</p>
+                <p className="text-xs text-muted-foreground">
+                  {repo.branch ?? "default branch"} · /home/user/{repo.dir}
+                </p>
+              </li>
+            ))}
+          </ul>
+        </PanelSection>
+        <PanelSection title="Snapshot">
+          <p className="font-mono text-xs break-all">{snapshot.id}</p>
+          <p className="text-sm text-muted-foreground">
+            {snapshot.visibility === "private"
+              ? "Only you may see and launch this snapshot."
+              : "Current organization members may launch this snapshot."}{" "}
+            Visibility and host are fixed when built.
+          </p>
+        </PanelSection>
+      </div>
+    ),
+    attrs: { "data-golden": snapshot.name, "data-golden-provider": "docker" },
+  };
 }

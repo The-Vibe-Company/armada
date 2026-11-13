@@ -5,7 +5,7 @@ import type {
   LaunchProviderCapabilities,
   LaunchProviderOption,
 } from "@armada/core";
-import { HARNESSES } from "@armada/core";
+import { DOCKER_DEFAULT_IMAGE, HARNESSES } from "@armada/core";
 import { isUuid } from "./action.ts";
 import type { DockerHost } from "./docker-hosts.ts";
 
@@ -90,7 +90,7 @@ export function dockerLaunchOption(payload: unknown): DockerLaunchOption | null 
 
 /**
  * Whether this host takes a launch now, or why not. The launch needs the server to say it launches on Docker
- * (`capabilities.launch`, from a plain image, with Codex) and the host list's `placement`; the host itself must be
+ * (`capabilities.launch`, in the official Armada environment, with at least one agent) and the host list's `placement`; the host itself must be
  * online. The server checks all of it again.
  */
 export function dockerLaunchBlocker(
@@ -103,8 +103,8 @@ export function dockerLaunchBlocker(
   if (!option.capabilities.launch)
     return option.unsupportedReasons.launch ?? "This Armada server does not launch on Docker hosts yet.";
   if (!placement) return "This Armada server does not launch on Docker hosts yet.";
-  if (!option.launchSources.includes("image") || !option.harnesses.includes("codex"))
-    return "This Armada server does not launch Codex from an image on Docker hosts.";
+  if (!option.launchSources.includes("image") || option.harnesses.length === 0)
+    return "This Armada server does not launch an agent in the official Armada environment on Docker hosts.";
   if (host.state !== "online") return "The host must be online to launch on it.";
   return null;
 }
@@ -129,23 +129,33 @@ export function dockerUnavailable(option: DockerLaunchOption): { name: string; r
   }));
 }
 
-/** A digest-pinned image reference: `repository@sha256:<64 hex>`, as the server requires. */
-const IMAGE = /^[a-z0-9][a-z0-9._\-/:]{0,254}@sha256:[0-9a-f]{64}$/;
+/**
+ * The agents the dialog offers on Docker (#1507): those the server launches there, in Armada's usual order, Codex
+ * first chosen when offered (the first agent Docker hosts ran).
+ */
+export function dockerHarnesses(option: DockerLaunchOption | null): { offered: Harness[]; initial: Harness | null } {
+  const offered = HARNESSES.filter((harness) => option?.harnesses.includes(harness));
+  return { offered, initial: offered.includes("codex") ? "codex" : (offered[0] ?? null) };
+}
 
-export function checkImage(raw: string): { ok: true; image: string } | { ok: false; error: string } {
-  const image = raw.trim();
-  if (!IMAGE.test(image))
-    return {
-      ok: false,
-      error: "Enter an image pinned by digest, such as buildpack-deps@sha256:<64 hex characters>.",
-    };
-  return { ok: true, image };
+/**
+ * The agent the dialog starts on: the server's first choice when the viewer has a usable account for it, else the
+ * first offered agent they can launch with, else the first choice (the dialog then says an account is needed).
+ */
+export function preferredHarness(
+  offered: readonly Harness[],
+  initial: Harness,
+  usable: (harness: Harness) => boolean,
+): Harness {
+  const first = offered.includes(initial) ? initial : (offered[0] ?? initial);
+  if (usable(first)) return first;
+  return offered.find(usable) ?? first;
 }
 
 export type DockerLaunchArgs = {
   org: string;
   hostId: string;
-  image: string;
+  harness: Harness;
   credentialId: string;
   requestId: string;
   model: string;
@@ -153,7 +163,7 @@ export type DockerLaunchArgs = {
   prompt?: string;
 };
 
-/** The `sandbox/launch` body for a Docker host: Codex from a plain image, private, nothing a golden would carry. */
+/** The `sandbox/launch` body for a Docker host: an agent in the official Armada environment, private, with no image override. */
 export function dockerLaunchBody(args: DockerLaunchArgs): DockerLaunchRequest {
   if (![args.org, args.hostId, args.credentialId, args.requestId].every(isUuid))
     throw new Error("Docker launch identifiers must be UUIDs.");
@@ -161,8 +171,7 @@ export function dockerLaunchBody(args: DockerLaunchArgs): DockerLaunchRequest {
     org: args.org,
     provider: "docker",
     hostId: args.hostId,
-    image: args.image,
-    harness: "codex",
+    harness: args.harness,
     credentialId: args.credentialId,
     requestId: args.requestId,
     model: args.model,
@@ -218,4 +227,17 @@ export function dockerSandboxControls(option: DockerLaunchOption | null): Docker
       return reason ? [{ name: CAPABILITY_LABELS[name], reason }] : [];
     }),
   };
+}
+
+/**
+ * A Docker sandbox's image in its page's details (#1526): Armada's default image by name, a custom one by its
+ * repository (or "Local image" and its short ID for a host-approved image ID). `detail` is the full reference with
+ * its digest, for a tooltip.
+ */
+export function dockerImageLabel(image: string | null): { label: string; detail: string | null } {
+  if (!image) return { label: "Unknown", detail: null };
+  if (image === DOCKER_DEFAULT_IMAGE) return { label: "Armada default", detail: image };
+  // Which local image, at a glance: the first digest characters, as `docker images` shows an image ID.
+  if (image.startsWith("sha256:")) return { label: `Local image ${image.slice(7, 19)}`, detail: image };
+  return { label: image.split("@")[0] || image, detail: image };
 }

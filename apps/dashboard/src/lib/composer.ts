@@ -24,3 +24,37 @@ export function chosenConversation(
     ? { ok: true, id }
     : { ok: false, error: "That conversation is not part of this sandbox." };
 }
+
+/** On an owned Docker host the model and effort chosen at launch serve every message (#1526). */
+export const PINNED_MODEL = "On your own Docker host, the model and effort chosen at launch stay for every message.";
+
+/** The form field carrying one Docker message's request key: the same on a retry of the same message. */
+export const SEND_KEY_FIELD = "send_key";
+
+/**
+ * A Docker send: the server admits it once per request key, so a retry of the same message never runs twice, and it
+ * keeps the launch model and effort, so no override is sent.
+ */
+export function dockerSend(
+  fields: ModelFields,
+  key: string,
+): { ok: true; requestId: string } | { ok: false; error: string } {
+  if (modelChange(fields) !== "none") return { ok: false, error: PINNED_MODEL };
+  if (!UUID.test(key)) return { ok: false, error: "That request is not valid. Reload the page and send it again." };
+  return { ok: true, requestId: key };
+}
+
+/** Lowercase, as the server checks it. */
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/**
+ * A Docker send failure as a person reads it: a server sentence that names an API field (`request_id`) becomes plain
+ * words. The composer keeps the message's request key until the text changes, so sending it again unchanged is the safe
+ * retry the server asks for; a pending admission may still run, so it is never called a failure.
+ */
+export function plainSendFailure(message: string): string {
+  if (!/\b[a-z]+_[a-z_]+\b/.test(message)) return message;
+  return /\bpending\b/.test(message)
+    ? "The host has not confirmed the message yet. Send it again unchanged to check, without editing it."
+    : "The message could not be delivered. Send it again.";
+}

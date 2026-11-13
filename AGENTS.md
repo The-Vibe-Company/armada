@@ -24,7 +24,7 @@ Owner-facing orchestrators have been removed, with no compatibility route or fea
 
 - `bun install`
 - `bun scripts/prepare-runtime.ts`: prepare the portable runtime before local server tests. Linux CI builds and validates the native runtime with `bun packages/agent-runtime/build.ts` and `bun scripts/validate-runtime-native.ts` instead.
-- `bun run verify`: lint (Biome), typecheck (`tsc`, strict) and tests (`bun test`). CI runs the same as "Lint, typecheck and test".
+- `bun run verify`: lint (Biome), typecheck (`tsc`, strict) and tests (`bun test`). CI exposes one required aggregate, "Lint, typecheck and test", over lint/typecheck (including migration and native contract steps) and unit shards.
 - `bun run format`: apply Biome formatting and safe fixes.
 - `bun run build` (this machine), `bun run build --target <os-arch>`, `bun run build:all`: the binary in `dist/`.
 - `bun run armada <args>`: the CLI from source.
@@ -32,11 +32,59 @@ Owner-facing orchestrators have been removed, with no compatibility route or fea
 - `bun run db:types`: regenerate `packages/core/src/database.types.ts` after a migration change.
 - `scripts/aeom/install.sh`: install All Eyes On Me at its pinned commit to redesign or review the public landing (`.aeom/`, `docs/aeom.md`).
 
+## CI: what we test and what we do not
+
+One verdict, under two minutes. A pull request has a single required check, `Lint, typecheck and test`. If it takes more than two minutes, that is a defect to fix before anything else merges.
+No blocking PR or merge-queue check may exceed two minutes. The only slow gated
+path is a publishing release: release → exact-commit staging deployment/smoke →
+production. Staging smoke otherwise runs only after deploying a main commit,
+never from PR, gh-readonly-queue/* or release-please branch deployment events
+and never as a pull-request check. Do not subscribe smoke to deployment_status.
+
+**CI proves the code is sound on its own. Staging proves it works.**
+
+What CI runs on every pull request and in the merge queue:
+- lint and format (Biome), strict typecheck (`tsc`), the migration-version guard;
+- the unit tests (`bun test`), in as few shards as the two-minute limit allows.
+
+What runs only when its files change: the iOS checks (`apps/ios`), the migration dry-run (`supabase/migrations`).
+
+What runs after a merge, not before: the staging dashboard build in GitHub Actions
+(`vercel pull`, `vercel build`, then `vercel deploy --prebuilt`), the deploy to staging and the post-deploy smoke, which launches real sandboxes on every enabled provider, builds goldens and exercises the whole lifecycle. Production deploys only from a publishing release after its exact-SHA staging
+smoke succeeds; there is no opt-in bypass. The #1547 owner cutover in
+`docs/releasing.md` records which provider settings still need owner changes.
+Vercel Git deployments are disabled for both dashboard projects via
+`apps/dashboard/vercel.json`; no PR previews. Keep the Actions staging path
+working and follow the owner cutover prerequisites in `docs/releasing.md`.
+The release dashboard build also runs in Actions and uploads only prebuilt
+output; provider-side Git autodeploy still requires the owner cutover.
+Production SQL applies only from the validated release deployment path; the
+standalone migration workflow retains manual previews/history/owner repair,
+never per-commit production applies.
+Ordinary queued staging-main sources are superseded before mutation when newer
+main exists; started deployments and explicit pinned release smoke are never cancelled.
+Binaries are built by the release workflow when a version is published.
+
+What CI does not do, and must not be added back:
+- no binary builds per pull request;
+- no golden, image or provider build, no real PostgreSQL service, no browser test;
+- nothing that calls the network or a provider;
+- no "informational" job: a check either gates the merge or does not exist;
+- no timing or budget check: the coordinator measures the verdict time.
+
+Rules for a test:
+- one test per behaviour, at the cheapest boundary that proves it; no network, no wall-clock wait, no child process when a function call proves the same thing;
+- a test that takes more than one second is rewritten or deleted;
+- a test that fails intermittently is deleted the day it is seen, not retried, not quarantined; if the behaviour matters, a cheaper deterministic test replaces it;
+- CI has no retries.
+
+Adding a CI job or a required check is the owner's decision, never an agent's. Where something is tested: logic in a unit test; a provider, a golden, a full lifecycle in the post-deploy smoke; a screen by opening it on staging.
+
 ## Rules
 
 - **Separate client and server.** `armada` is an API-only client; `armada-server` contains the server and provider/database adapters. Both compile with Bun. Never import Supabase, provider implementations or server startup into the CLI runtime dependency graph.
 - **One version.** Every `packages/*/package.json` carries the same version; `@armada/core` exports it and `armada --version` prints it.
-- **Secrets never in the repository.** Keys come from the environment or Armada's encrypted store; never print one, never write one into a file, a fixture or a log. Goldens hold no secrets. In the database a secret is ciphertext (`bytea`, `*_enc`) or a token hash, and a user JWT cannot read the ciphertext columns. One encryption scheme: `encryptSecret` and `decryptSecret` in `@armada/core` with `ARMADA_ENCRYPTION_KEY`. Credential values arrive on stdin or from a file, never as arguments.
+- **Secrets never in the repository.** Keys come from the environment or Armada's encrypted store; never print one, never write one into a file, a fixture or a log. Goldens hold no secrets. In the database a secret is ciphertext (`bytea`, `*_enc`) or a token hash, and a user JWT cannot read the ciphertext columns. One encryption scheme: `encryptSecret` and `decryptSecret` in `@armada/core` with `ARMADA_ENCRYPTION_KEY`. Credential values arrive on stdin or from a file, never as arguments. **Owner-approved exception (#1453):** a single-use, five-minute Docker host registration token may appear in the one-click installer command (`sh -s -- --token ...`). The exchanged long-lived host credential must still never appear in argv, logs or public responses.
 - **Schema changes are new migrations.** Follow the [migration author checklist](docs/database-migrations.md#migration-author-checklist): use a unique 14-digit version strictly newer than current main and recheck before merge; fresh SQL tests do not verify remote history. Never rename or edit a migration that has been applied. Row level security is the access rule: members see org resources, a private resource is visible only to its owner, and only an admin changes an org golden, the members or an org key.
 - **Tests earn their place.** One test per behaviour at the cheapest boundary, no network, no wall-clock waits.
 - **English** in code, CLI output, docs and comments.

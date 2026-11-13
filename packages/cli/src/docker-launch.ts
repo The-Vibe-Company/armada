@@ -8,10 +8,12 @@ import {
   parseApplicationSecretBindings,
   parseReadableVariableBindings,
   resolveModelChoice,
+  validateSkillPins,
 } from "@armada/core";
-import { type Args, single, values } from "./args.ts";
+import { type Args, flag, single, values } from "./args.ts";
 import { createArmadaApiClient } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
+import { resolveHost } from "./host-commands.ts";
 import { parseTtl } from "./operations.ts";
 
 const uuid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
@@ -23,7 +25,7 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
     "--secret",
     "--provider",
     "--host",
-    "--image",
+    "--golden",
     "--credential-id",
     "--credential-version",
     "--request-id",
@@ -33,12 +35,12 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
     "--reasoning-effort",
     "--ttl",
     "--json",
+    "--skill",
+    "--connections",
+    "--no-connections",
   ]);
   if ([...args.options.keys()].some((key) => !allowed.has(key)) || args.positionals.length > 1)
-    throw new GoldenError(
-      "invalid_config",
-      "Docker launch takes at most one prompt and no golden, size, connections or skills.",
-    );
+    throw new GoldenError("invalid_config", "Docker launch takes at most one prompt and no golden or size.");
   const harness = (single(args, "--agent") ?? "codex") as Harness;
   if (!HARNESSES.includes(harness)) throw new GoldenError("invalid_config", "Unknown Docker harness.");
   const requiredId = (flag: string) => {
@@ -48,11 +50,15 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
     return value.toLowerCase();
   };
   const org = requiredId("--org"),
-    hostId = requiredId("--host"),
     credentialId = requiredId("--credential-id");
-  const image = single(args, "--image")?.trim();
-  if (!image)
-    throw new GoldenError("invalid_config", "Docker launch requires --image with a digest-pinned image reference.");
+  const snapshotId = single(args, "--golden");
+  if (snapshotId !== undefined && !uuid.test(snapshotId))
+    throw new GoldenError("invalid_config", "--golden requires a Docker snapshot UUID.");
+  const selector = single(args, "--host");
+  if ((!snapshotId && !selector) || (selector !== undefined && (selector.length > 64 || /[\p{C}]/u.test(selector))))
+    throw new GoldenError("invalid_config", "--host requires a UUID or exact host name.");
+  if (snapshotId && values(args, "--repo").length)
+    throw new GoldenError("invalid_config", "A snapshot cannot be combined with --repo.");
   const supplied = single(args, "--request-id");
   if (supplied !== undefined && !uuid.test(supplied))
     throw new GoldenError("invalid_config", "--request-id requires a UUID.");
@@ -91,6 +97,20 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
   } catch {
     throw new GoldenError("invalid_config", "Invalid application secret bindings. Use --secret KEY:UUID:VERSION.");
   }
+  const skills = values(args, "--skill");
+  try {
+    validateSkillPins(skills);
+  } catch {
+    throw new GoldenError("invalid_config", "Skills require exact pins.");
+  }
+  const connections = single(args, "--connections");
+  if (flag(args, "--no-connections") && connections !== undefined)
+    throw new GoldenError("invalid_config", "Use --connections or --no-connections, not both.");
+  const selected = connections?.split(",").map((id) => id.trim());
+  if (selected && (selected.length > 32 || selected.some((id) => !uuid.test(id))))
+    throw new GoldenError("invalid_config", "Connections require 1–32 comma-separated UUIDs.");
+  const client = await createArmadaApiClient(auth);
+  const hostId = selector ? await resolveHost(client, org, selector) : undefined;
   const body: DockerLaunchRequest = {
     ...(secretBindings.length ? { secrets: secretBindings } : {}),
     ...(variableBindings.length ? { variables: variableBindings } : {}),
@@ -106,8 +126,8 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
       : {}),
     org,
     provider: "docker",
-    hostId,
-    image,
+    ...(hostId ? { hostId } : {}),
+    ...(snapshotId ? { snapshotId } : {}),
     harness,
     credentialId,
     requestId,
@@ -115,11 +135,12 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
       model: single(args, "--model"),
       reasoningEffort: single(args, "--reasoning-effort"),
     }),
+    ...(skills.length ? { skills } : {}),
+    ...(flag(args, "--no-connections") ? { connections: [] } : selected ? { connections: selected } : {}),
     ...(version === undefined ? {} : { credentialVersion: Number(version) }),
     ...(ttl === undefined ? {} : { ttlSeconds: parseTtl(ttl) }),
     ...(args.positionals[0] === undefined ? {} : { prompt: args.positionals[0] }),
   };
-  const client = await createArmadaApiClient(auth);
   try {
     const result = await client.request<DockerLaunchResult>("/api/v1/sandbox/launch", {
       method: "POST",

@@ -6,8 +6,9 @@ allocation, proves a model answer and same-conversation recall through the commo
 runtime archive, performs an acknowledged checkpoint, and requests compute stop
 once. The `--resume` extension activates that same logical sandbox once from its
 retained filesystem image, proves a new-epoch same-conversation recall, then
-checkpoints and stops it again. No GitHub, MCP, skills or harness parity is
-claimed. This remains model-only: the golden checkout is used as-is.
+checkpoints and stops it again. Optional `--github`, `--mcp`, `--skills`, `--variables` and `--usage` add the scoped
+checks below; they do not claim full harness/setup parity. The golden
+checkout remains as-is (no pull/init).
 The existing Modal tunnel path remains the default.
 
 ## Prerequisites
@@ -47,8 +48,10 @@ before allocating. With `--resume`, it also requires `resumeVersion:1`; an old
 server refuses before any allocation. Omit `--resume` only to run the original
 first-answer/follow-up/checkpoint/stop subset. It sends one `sandbox/launch-modal-runtime-v1` request with
 `runtimeVersion:1`, `runtimeTransport:"dialout"`, `provider:"modal"`,
-`harness:"codex"`, a 900-second TTL, empty connections/skills and skill defaults
-skipped. The golden checkout is used as-is. The first prompt stores a random
+`harness:"codex"` and a 900-second TTL. Without `--skills`, skills are empty
+and defaults are skipped. With `--skills`, both fields are omitted so the normal
+server policy resolves defaults. Connections are empty unless `--mcp` explicitly
+selects one existing connection. The golden checkout is used as-is. The first prompt stores a random
 memory token and asks for a separate literal
 nonce answer, without tools or file changes. After verifying that archived first
 answer, the script sends exactly one follow-up on the same conversation asking
@@ -120,3 +123,199 @@ staging secrets are needed for this extension. Workers do not run this check.
 Record the exact server revision, receipt and observed result on #1421's parity
 table. Local fixtures and green CI are not real Modal inference evidence. Do not
 flip defaults or delete the tunnel path until the later parity and cutover gates.
+
+## GitHub delivery (`--github`)
+
+Reuse the existing staging `ARMADA_RUNTIME_GITHUB_REPOSITORY=owner/repo` input
+and connected GitHub account/App, with that repository in the selected Modal
+golden's recipe. No new credentials are requested. The script resolves the
+selected visible Modal golden's organization, preflights repository access and
+requires an explicit `provider:"modal"` receipt **before allocation**. Old servers
+or ambiguous same-name provider goldens refuse rather than preflighting Boat.
+
+```sh
+ARMADA_RUNTIME_SMOKE=one_real_modal_launch bun scripts/check-modal-runtime.ts --github --resume
+```
+
+Still ONE allocation, ONE restore activation and TWO stops. Before the initial
+follow-up it delivers GitHub configuration via the existing common private RPC.
+The follow-up must actually run `gh api repos/<repository> --jq .full_name`:
+archived successful command provenance AND current-epoch broker acquisition count
+with the same delivered revision are required. A literal answer or a configured
+receipt alone is not proof. After restore, the old configuration must be absent;
+a new revision is delivered and a fourth same-conversation prompt proves a fresh
+current-epoch acquisition. No token/capability is printed or archived. This flag alone does not pull/init the golden, enable variables, or
+authorize cutover. Add `--skills` for existing defaults and `--mcp` below to verify the selected remote tool in the
+same allocation.
+
+
+## Automatic remote MCP delivery (`--mcp`)
+
+Reuse the existing Boat coordinator inputs; do not create new credentials or
+supply skill references:
+
+- `ARMADA_RUNTIME_MCP_CONNECTION_ID`: existing connected remote MCP connection UUID.
+- `ARMADA_RUNTIME_MCP_TOOL`: a read-only tool on that connection.
+- `ARMADA_RUNTIME_MCP_ARGS_JSON`: non-secret JSON object arguments (defaults to `{}`).
+- `ARMADA_RUNTIME_MCP_EXPECT`: a non-secret expected substring from its successful result.
+
+The selected connection must be visible to the staging owner/organization and use
+HTTP or SSE transport. Pinned stdio connections are not supported by this slice.
+Before allocation, `launch/options.modalRuntime.mcpVersion` must be `2`, the
+script resolves the selected Modal golden's organization once (shared with
+GitHub preflight), and `sandbox/mcp-preflight-v1` must accept the one connection.
+The launch names it explicitly in `connections:[<UUID>]`; it does not rely on
+another user's defaults. **There is no manual MCP configuration call:** the
+server delivers the current selection and current-epoch leases privately before
+launch, follow-up and resumed turns.
+
+### Single combined coordinator check
+
+```sh
+ARMADA_RUNTIME_SMOKE=one_real_modal_launch bun scripts/check-modal-runtime.ts --usage --variables --skills --mcp --github --resume
+```
+
+ONE logical allocation, ONE resume activation, FOUR prompts and TWO stops remain.
+Omit `--github` if only testing MCP/resume: that uses three prompts and the same
+allocation/activation/stops. No extra staging secrets or skill inputs are needed.
+
+Every tested prompt (initial answer, initial follow-up, first resumed answer and
+GitHub's extra post-resume follow-up when enabled) must contain actual archived
+MCP tool provenance: exact server `armada_<connection UUID with underscores>`,
+exact tool name, canonical-equal JSON arguments, successful result and the
+expected non-secret substring. This provenance is the common `ToolCall.server`
+field, not an assistant's text naming a server. Nested/retracted evidence, another
+prompt's tool, a missing/error result, a shell substitute or an old prompt replay
+after resume cannot pass. First/stopped history is re-read without reusing a
+cached evidence flag. The archive must also contain each prompt's exact assistant
+answer and finished event, and the epoch/checkpoint/stop proofs remain unchanged.
+
+Initial receipts add `mcp:"verified"`; final successful resumed cleanup adds
+`mcpAfterResume:"verified"`. This proves the selected remote tool and automatic
+new-epoch delivery, not all MCP server types or default-selection policies. Record
+the exact revision and result on #1421. Workers do not run billable staging checks.
+
+
+## Existing default skills (`--skills`)
+
+Use the **same combined command above** with `--skills`. It requires no new skill
+references, SKILL.md substrings, keys or staging inputs. Do not configure defaults
+for the smoke: the check must prove the existing selected Modal golden,
+organization and personal policy. The golden is resolved once together with the
+MCP/GitHub preflight; `launch/options.modalRuntime.skillsVersion` must be `1`.
+
+Before any allocation, the script uses the existing `readDefaultPins` oracle from
+`scripts/default-skill-smoke.ts`: `skills/defaults/get` for the selected golden,
+organization and personal scope, with independent same-slug precedence. If the
+effective list is empty it plainly reports **“No default skills configured … no
+launch attempted”** and allocates nothing. It never creates or changes defaults.
+
+The launch omits **both** `skills` and `skipSkillDefaults`, allowing Armada's
+normal policy to choose all and only those effective exact pins. Its golden ID
+must match the preflight golden. `verifyDefaultReceipts` then compares launch
+receipts with `sandbox/status.skills`: exact references and versions, valid
+matching skill IDs, checksums and origins. This is checked at launch, after the
+first confirmed stop, after resume and after the second confirmed stop. Missing,
+extra, changed or foreign-golden receipts fail; a successful model answer cannot
+mask them.
+
+The first receipt adds `skills:"verified"`; successful resumed cleanup adds
+`skillsAfterResume:"verified"`. The combined check still uses ONE logical
+allocation, ONE resume activation, FOUR prompts and TWO stops. MCP/GitHub tool
+and current-epoch proofs are unchanged. It proves the public/private defaults
+actually configured by the existing policy; it does not claim coverage of a kind
+absent from that policy, nor does it ask the coordinator to supply a skill pin.
+Workers do not run the billable staging check.
+
+
+## Frozen readable template variables (`--variables`)
+
+The combined command above can also prove the template's readable environment on
+every tested prompt, before and after the retained stop/resume. Supply one new
+**non-secret selector**, `ARMADA_RUNTIME_TEMPLATE_ID`, identifying an **existing
+published Modal Codex template** in the selected golden's organization. Do not
+create/publish a template or change variables/defaults for this check. No raw
+values, variable references, secret bindings or new credentials are requested.
+
+Before allocation the server must advertise `variablesVersion:1`. The check
+resolves the authorized Modal golden once, reads the existing `templates/get`
+revision and requires:
+
+- The selected golden, Modal provider and Codex harness.
+- At least one distinct, valid uppercase readable binding; no application secrets.
+- A pinned model account matching `ARMADA_RUNTIME_CREDENTIAL_ID`.
+- Empty explicit template skills (existing effective defaults are checked with
+  `--skills`), and connections exactly matching the selected MCP connection or
+  empty when `--mcp` is absent.
+- If `ARMADA_RUNTIME_MODEL` is supplied, it matches the published model.
+
+It pins the returned immutable revision and calls the **existing** experimental
+Modal route with standard template `id`, `revision`, `requestKey`, organization
+and prompt/TTL fields. It omits direct-golden/account/model/connection overrides.
+This reuses the standard template source; it is not another runtime or a new API
+route. The non-secret request key is printed before dispatch for reconciliation.
+The standard template receipt must be succeeded and match template/revision,
+request key, golden, account and definition identity. Its frozen readable values
+must have exactly the published keys and pass `validateReadableVariables`.
+The script locally normalizes this ordinary template receipt for its existing
+checks; it does not change the server's template response shape or infer an epoch
+from mutable metadata.
+
+For each tested prompt, the model must run one fixed `node -e` program that reads
+only the sorted known readable keys, builds their JSON map, and writes SHA256.
+Unset keys become JSON `null`, distinct from configured empty strings. The local
+expected digest is computed **only from the frozen launch manifest**, never from
+mutable variable APIs. **Neither values nor expected digest appear in prompts or
+console output.** Only non-secret key metadata appears in the command; the actual
+tool's opaque digest is archived as the evidence under test.
+
+A successful archived `commandExecution` must identify that exact program (or an
+exact, correctly quoted Bash/sh login-shell wrapper) and return the expected
+digest. Assistant text, another prompt's result, missing environment, a wrong
+hash, an echo-masking command or pre-resume tool replay cannot pass. Existing
+GitHub command matching remains equally strict. The ordinary nonce answer,
+MCP tool provenance, GitHub acquisition, skill receipts, checkpoint and stop
+proofs are still independently required when their flags are enabled.
+
+The full combined command remains ONE logical allocation, ONE resume activation,
+FOUR prompts and TWO stops. Final receipts add `variables:"verified"` and
+`variablesAfterResume:"verified"` without printing values or digests. This proves
+frozen readable delivery and continuity, **not application-secret parity**.
+Workers do not run this billable check or mutate staging configuration.
+
+
+## Archived harness usage and frozen cost admission (`--usage`)
+
+The same combined command above adds usage/cost evidence with **no new inputs**.
+`launch/options.modalRuntime.usageVersion` must be `1` before allocation. The
+script uses the existing `createRuntimeUsageCheck` oracle from
+`scripts/runtime-usage-smoke.ts`; it adds no pricing path or token/money formula.
+
+Every page from the verified `source:"armada-runtime"` archive contributes its
+`armada/turnUsage` facts before prompt filtering, including facts belonging to an
+older prompt on the same page. Each tested prompt must have its own harness
+observation as well as the assistant answer, finished event and enabled tool
+proofs. A usage event arriving after the terminal event is polled normally rather
+than mistaken for absent usage.
+
+After each prompt verification, `sandbox/status.usage` must match all observed
+prompt IDs, harness models and counters. Per-turn pricing must identify the
+selected account/version and frozen server admission (capture, pricing basis and
+rate snapshot), remain unchanged through replay and resume, and agree with the
+aggregate. Guest event money is not pricing authority. Missing counters must stay
+unknown rather than becoming zero. Successful first/final stops recheck the same
+aggregate; a failed launch with no usage evidence does not trigger a secondary
+usage check that masks the original error or cleanup uncertainty.
+
+An honestly unknown cost is a valid observation when its admitted provenance and
+reason are present: for example Codex may omit cache-write tokens. The check does
+**not** turn that omission into a known USD amount or call a known subtotal a
+complete price. Receipts add `usage:"verified"`/`usageAfterResume:"verified"`,
+`usageProof` with token totals and frozen admission, and final
+`costAfterResume:"priced"` or `"unknown"` as actually supported by the evidence.
+
+The combined variables/skills/MCP/GitHub/resume command still uses ONE logical
+allocation, ONE activation, FOUR prompts and TWO stops. No catalog/account edits,
+extra launch, provider compute or credentials are introduced by the offline
+fixtures. Record the exact revision and truthful priced/unknown result on #1421;
+workers do not execute the billable staging check.

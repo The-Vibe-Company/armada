@@ -78,17 +78,17 @@ export function launchProviderOptions(
     stop: normal,
     delete: normal,
     resume: normal && docker.normalResume === true && docker.placement === true,
-    goldens: false,
+    goldens: normal && docker.normalLaunch === true && docker.placement === true,
     repositories: normal && docker.normalLaunch === true && docker.placement === true,
     variables: normal && docker.normalLaunch === true && docker.placement === true,
     secrets: normal && docker.normalLaunch === true && docker.placement === true,
     machineSizes: false,
     github: normal && docker.normalLaunch === true && docker.placement === true,
-    mcp: false,
-    skills: false,
-    exec: false,
-    steer: false,
-    interrupt: false,
+    mcp: normal && docker.normalLaunch === true && docker.placement === true,
+    skills: normal && docker.normalLaunch === true && docker.placement === true,
+    exec: normal,
+    steer: normal,
+    interrupt: normal,
   };
   const unsupportedReasons: LaunchProviderOption["unsupportedReasons"] = {};
   const reasons: Record<keyof LaunchProviderCapabilities, string> = {
@@ -141,7 +141,7 @@ export function launchProviderOptions(
     {
       id: "docker",
       enabled: hosts,
-      launchSources: ["image"],
+      launchSources: capabilities.goldens ? ["golden", "image"] : ["image"],
       harnesses: ["codex", "claude", "opencode"],
       capabilities,
       unsupportedReasons,

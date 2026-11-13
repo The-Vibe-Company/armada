@@ -122,8 +122,8 @@ export function createRuntimeResume(
       )
         throw new VaultError("not_found", "Pinned runtime account is no longer authorized.");
       const fence = (
-        await tx.query<{ tainted: boolean; lease: string | null; busy: boolean }>(
-          "select application_secret_tainted as tainted,activity_lease_id::text as lease,(reconcile_lease_until>now()) as busy from public.sandboxes where id=$1 and owner_id=$2 for update",
+        await tx.query<{ tainted: boolean; lease: string | null; busy: boolean; unexpired: boolean }>(
+          "select expires_at>now() as unexpired,application_secret_tainted as tainted,activity_lease_id::text as lease,(reconcile_lease_until>now()) as busy from public.sandboxes where id=$1 and owner_id=$2 for update",
           [found.id, caller.userId],
         )
       ).rows[0];
@@ -132,6 +132,7 @@ export function createRuntimeResume(
         !fence ||
         !current ||
         fence.tainted ||
+        !fence.unexpired ||
         fence.busy ||
         !current.model ||
         !current.reasoningEffort ||
@@ -218,7 +219,6 @@ export function createRuntimeResume(
         status: "starting",
         stoppedAt: null,
         stopRequested: false,
-        renewLifecycle: true,
         advanceGeneration: true,
         activityToken: requestId,
         clearTaskOutcome: true,
@@ -284,7 +284,7 @@ export function createRuntimeResume(
             `resume_${requestId}`,
             admitted.op.target_epoch,
           );
-          if (existing.state === "missing" && found.provider === "boat") await prepareMcp?.(caller, found.id, signal);
+          if (existing.state === "missing") await prepareMcp?.(caller, found.id, signal);
           const accepted = await agent.prompt(
             {
               sandboxId: found.providerSandboxId,

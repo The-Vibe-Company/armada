@@ -184,7 +184,12 @@ export function createRuntimeCommands(
     options: { signal?: AbortSignal; timeoutMs?: number; expectedEpoch?: string } = {},
   ): Promise<RuntimeCommandReply> {
     const timeout = options.timeoutMs ?? 120_000;
-    if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 120_000) throw new RuntimeCommandConflict();
+    if (
+      !Number.isSafeInteger(timeout) ||
+      timeout < 1 ||
+      timeout > (request.op === "workspaceExec" ? 610_000 : request.op === "exec" ? 630_000 : 120_000)
+    )
+      throw new RuntimeCommandConflict();
     const signal = options.signal ?? new AbortController().signal;
     signal.throwIfAborted();
     const deadline = time.now() + timeout;

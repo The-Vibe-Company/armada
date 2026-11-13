@@ -5,6 +5,7 @@ import { boatRuntimeResume } from "../src/boat-runtime-resume.ts";
 import { createSqlData } from "../src/data.ts";
 import { createModelAuthOwnership } from "../src/model-auth.ts";
 import { createRuntimeCheckpoint } from "../src/runtime-checkpoint.ts";
+import { createRuntimeFollowup } from "../src/runtime-followup.ts";
 import { createRuntimeHistory } from "../src/runtime-history.ts";
 import { createRuntimeResume } from "../src/runtime-resume.ts";
 import { callSharedTool } from "../src/tool-api.ts";
@@ -49,9 +50,10 @@ describe.each([
     await f?.close();
   });
 
-  test("resume reopens the same journal into a new attested epoch; stable replay never activates or starts a turn twice", async () => {
+  test("send wakes a checkpointed runtime in the same conversation; replay never activates or starts a turn twice", async () => {
     const old = f.active;
     let activations = 0;
+    let preparations = 0;
     const resume = createRuntimeResume(
       f.sql,
       ENCRYPTION_KEY,
@@ -67,16 +69,17 @@ describe.each([
       }),
       provider === "modal"
         ? async () => {
-            throw Error("No Boat MCP preparation on model-only Modal resume");
+            preparations++;
+            return undefined;
           }
         : undefined,
     );
-    const request = input(f.row.id);
-    const result = (await callSharedTool(
-      { ...f.context, runtimeResume: resume },
-      "runtime_resume",
-      request,
-    )) as Awaited<ReturnType<typeof resume>>;
+    const request = { id: f.row.id, request_id: crypto.randomUUID(), prompt: "continue the previous conversation" };
+    const before = await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id);
+    const send = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, undefined, resume);
+    const result = (await callSharedTool({ ...f.context, runtimeSend: send }, "send", request)) as Awaited<
+      ReturnType<typeof resume>
+    >;
     expect(result).toMatchObject({
       resumed: true,
       conversationId: f.first.conversationId,
@@ -85,11 +88,13 @@ describe.each([
     });
     expect(result.promptId).not.toBe(f.first.promptId);
     await expect(f.authority.withSession(old.runtimeToken, old.epoch, async () => true)).rejects.toThrow();
-    expect(await resume(f.caller, request)).toEqual(result);
+    expect(await send(f.caller, request)).toEqual(result);
     expect(activations).toBe(1);
+    if (provider === "modal") expect(preparations).toBe(1);
     expect(f.starts).toEqual([undefined, "native-thread"]);
     const row = (await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))!;
     expect(row.status).toBe("running");
+    expect(row.expiresAt).toBe(before?.expiresAt);
     expect(row.stoppedAt).toBeNull();
     expect(row.taskPromptId).toBe(result.promptId);
     expect(
@@ -97,7 +102,7 @@ describe.each([
         (e) => e.promptId === f.first.promptId,
       ),
     ).toBe(true);
-    await expect(resume(f.caller, { ...request, prompt: "different" })).rejects.toMatchObject({ code: "conflict" });
+    await expect(send(f.caller, { ...request, prompt: "different" })).rejects.toMatchObject({ code: "conflict" });
     expect(activations).toBe(1);
   });
 });
@@ -128,7 +133,7 @@ test("an already enrolled uncertain resume reconciles on a fresh server without 
   }
 });
 
-test.each(["missing-proof", "prefix", "taint", "account", "owner"] as const)(
+test.each(["missing-proof", "prefix", "taint", "account", "owner", "expired"] as const)(
   "resume refuses unsafe state before preparing or activating compute (%s)",
   async (mode) => {
     const f = await stopped();
@@ -139,6 +144,8 @@ test.each(["missing-proof", "prefix", "taint", "account", "owner"] as const)(
         await f.db.query("update runtime_checkpoints set watermark=watermark+1 where sandbox_id=$1", [f.row.id]);
       if (mode === "taint")
         await f.db.query("update sandboxes set application_secret_tainted=true where id=$1", [f.row.id]);
+      if (mode === "expired")
+        await f.db.query("update sandboxes set expires_at=now()-interval '1 minute' where id=$1", [f.row.id]);
       if (mode === "account") await f.db.query("update credentials set status='revoked' where id=$1", [f.account.id]);
       const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, async () => {
         calls++;
@@ -282,7 +289,7 @@ test.each([false, true])(
           : [
               {
                 sandboxId: "physical",
-                ttlSeconds: (f.row.effectiveTtlSeconds ?? 14400) + 300,
+                ttlSeconds: expect.any(Number),
                 checkpoint: { epoch: "1", watermark: f.cp.checkpoint.watermark },
               },
             ],

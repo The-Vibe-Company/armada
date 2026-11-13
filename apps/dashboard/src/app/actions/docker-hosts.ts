@@ -1,5 +1,6 @@
 "use server";
 
+import type { Harness } from "@armada/core";
 import { revalidatePath } from "next/cache";
 import { type ActionResult, done, fail, formString, isUuid } from "@/lib/action";
 import { ControlError, controlPost } from "@/lib/control";
@@ -7,15 +8,16 @@ import { readDockerLaunchOption, readSelectedDockerHosts, viewerDockerHosts } fr
 import { listSelectedAccounts } from "@/lib/data/model-accounts";
 import { isSelectedOrganization, selectedOrganization } from "@/lib/data/selected-org";
 import { requireViewer } from "@/lib/data/viewer";
-import { HOSTS_PATH, hasCheckedIn, hostRegistrationCommand } from "@/lib/docker-hosts";
+import { connectedHostName, HOSTS_PATH, hostNameInput } from "@/lib/docker-hosts";
 import {
-  checkImage,
+  dockerHarnesses,
   dockerLaunchBlocker,
   dockerLaunchBody,
   launchedDockerSandbox,
   UNKNOWN_DOCKER_LAUNCH,
 } from "@/lib/docker-launch";
 import { mcpUrl } from "@/lib/env";
+import { HARNESS_LABELS } from "@/lib/labels";
 import { LAUNCH_PATH, LAUNCH_TIMEOUT_MS } from "@/lib/launch";
 import { LAUNCH_KEY_FIELD } from "@/lib/launch-key";
 import { checkAccountChoice } from "@/lib/model-accounts";
@@ -36,42 +38,47 @@ async function adminControl(org: string) {
 }
 
 export type HostRegistrationResult =
-  | { ok: true; hostId: string; registrationToken: string; command: string }
+  | { ok: true; hostId: string; command: string; expiresAt: string }
   | { ok: false; error: string };
 
 /**
- * Issues a one-use registration ticket. The token goes back to the dialog that asked, once: it is not stored, logged
- * or put in a URL here, and the server keeps only its hash.
+ * Asks the server for a host's one install command, with an optional name. The command carries a one-use token and
+ * goes back to the dialog that asked, once: it is not stored, logged or put in a URL here, and the server keeps only
+ * the token's hash.
  */
 export async function registerDockerHost(
   _previous: HostRegistrationResult | null,
   data: FormData,
 ): Promise<HostRegistrationResult> {
+  const name = hostNameInput(formString(data, "name"));
+  if (!name.ok) return name;
   const control = await adminControl(formString(data, "org"));
   if ("ok" in control) return control as { ok: false; error: string };
-  const command = hostRegistrationCommand(control.serverUrl);
-  if (!command) return { ok: false, error: "The Armada server address is not valid for a host to reach." };
   try {
-    const registration = await control.register(formString(data, "org"));
+    const registration = await control.register(formString(data, "org"), name.name);
     revalidatePath(HOSTS_PATH);
-    return { ok: true, ...registration, command };
+    return { ok: true, ...registration };
   } catch (error) {
     if (!(error instanceof ControlError)) throw error;
     return { ok: false, error: error.message };
   }
 }
 
-/** Whether the host the dialog registered has checked in; null when that cannot be read now. */
-export async function dockerHostCheckedIn(org: string, hostId: string): Promise<boolean | null> {
+/**
+ * Whether the host the dialog registered has connected: its name once it has, false while it has not, null when
+ * that cannot be read now.
+ */
+export async function dockerHostConnected(org: string, hostId: string): Promise<{ name: string } | false | null> {
   if (!isUuid(org) || !isUuid(hostId)) return null;
   const selected = await selectedOrganization();
   if (!selected || selected.org.id !== org) return null;
   const control = await viewerDockerHosts();
   if (!control) return null;
   try {
-    const checkedIn = hasCheckedIn(await control.list(org), hostId);
-    if (checkedIn) revalidatePath(HOSTS_PATH);
-    return checkedIn;
+    const name = connectedHostName(await control.list(org), hostId);
+    if (name === null) return false;
+    revalidatePath(HOSTS_PATH);
+    return { name };
   } catch (error) {
     if (error instanceof ControlError) return null;
     throw error;
@@ -94,7 +101,7 @@ export async function revokeDockerHost(_previous: ActionResult | null, data: For
 }
 
 /**
- * Launches Codex from a digest-pinned image on one of the organization's Docker hosts, as the signed-in viewer, then
+ * Launches the chosen agent from Armada's image on one of the organization's Docker hosts, as the signed-in viewer, then
  * answers the new sandbox's id for the dialog to follow. The form's request key is the server's `requestId`: a retry of the same form
  * (same choices) after an unanswered launch reuses it, so the server reconciles it instead of starting another.
  */
@@ -107,15 +114,6 @@ export async function launchOnDockerHost(
   const requestId = formString(data, LAUNCH_KEY_FIELD);
   if (!isUuid(org) || !isUuid(hostId) || !isUuid(requestId)) return fail("That request is not valid.");
   if (!(await isSelectedOrganization(org))) return fail("Switch to that organization first.");
-  const image = checkImage(formString(data, "image"));
-  if (!image.ok) return fail(image.error);
-  const choice = modelChoice("codex", {
-    model: formString(data, "model"),
-    otherModel: formString(data, "other_model"),
-    reasoningEffort: formString(data, "reasoning_effort"),
-  });
-  if (!choice.ok) return fail(choice.error);
-
   const [hosts, option, accounts] = await Promise.all([
     readSelectedDockerHosts(),
     readDockerLaunchOption(),
@@ -126,9 +124,19 @@ export async function launchOnDockerHost(
   if (!host) return fail("That host is not in this organization.");
   const blocker = dockerLaunchBlocker(option, hosts.list.placement, host);
   if (blocker) return fail(blocker);
-  const account = checkAccountChoice(accounts, "codex", formString(data, "credential"), Date.now());
+  // A form without an agent is one from before the choice existed: it launched Codex.
+  const harness = (formString(data, "harness") || "codex") as Harness;
+  if (!dockerHarnesses(option).offered.includes(harness))
+    return fail("This Armada server does not launch that agent on Docker hosts.");
+  const choice = modelChoice(harness, {
+    model: formString(data, "model"),
+    otherModel: formString(data, "other_model"),
+    reasoningEffort: formString(data, "reasoning_effort"),
+  });
+  if (!choice.ok) return fail(choice.error);
+  const account = checkAccountChoice(accounts, harness, formString(data, "credential"), Date.now());
   if (!account.ok) return fail(account.error);
-  if (!account.id) return fail("Choose which Codex account the agent runs on.");
+  if (!account.id) return fail(`Choose which ${HARNESS_LABELS[harness]} account the agent runs on.`);
 
   const viewer = await requireViewer();
   const serverUrl = mcpUrl();
@@ -143,7 +151,7 @@ export async function launchOnDockerHost(
         dockerLaunchBody({
           org,
           hostId,
-          image: image.image,
+          harness,
           credentialId: account.id,
           requestId,
           model: choice.args.model,

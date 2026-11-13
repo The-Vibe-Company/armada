@@ -1,8 +1,8 @@
-import { spawn } from "node:child_process";
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { ExecRequest, ExecResult, Harness } from "@armada/core";
 import { HARNESSES, validateReadableVariables } from "@armada/core";
 import { PRIVATE_SKILL_FAILURES } from "../../core/src/private-skill-error.ts";
+import { ChildOwner } from "./children.ts";
 import { validateHarnessCwd } from "./cwd.ts";
 import { HarnessError } from "./errors.ts";
 import { execCredentialValues, validateExecEnvironment } from "./exec-env.ts";
@@ -25,13 +25,18 @@ import {
 } from "./protocol.ts";
 import { sampleVmResources } from "./resource-sampler.ts";
 import { installRuntimeSkills } from "./skills.ts";
+import { executeWorkspace, validateWorkspaceExec } from "./workspace-exec.ts";
 export class Runner {
+  private execChildren = new ChildOwner();
+  private execReleases = new Set<Promise<void>>();
+  private closing = false;
   private active = new Map<
     string,
     { turn: Turn; done: Promise<void>; controller: AbortController; prompt: StoredPrompt; terminal: boolean }
   >();
   private barrier = false;
   private installingSkills = false;
+  private preparingWorkspace = false;
   private mcp: McpConfiguration | undefined;
   private nativeEpoch: NativeEpoch;
   private execEnvironment: Readonly<Record<string, string>>;
@@ -110,6 +115,39 @@ export class Runner {
       if (p.status === "running" || p.status === "queued")
         journal.transition(p, "failed", "runner_restarted_outcome_unknown");
   }
+  /** Dial-out has no independent process lifetime: only bounded synchronous commands may run. */
+  handleDialout(request: RunnerRequest, signal?: AbortSignal): Promise<Response> {
+    if (
+      request.op === "exec" &&
+      (!request.input ||
+        request.input.detached ||
+        typeof request.input.command !== "string" ||
+        !request.input.command.trim() ||
+        Buffer.byteLength(request.input.command) > 262144 ||
+        (request.input.timeoutSeconds !== undefined &&
+          (!Number.isInteger(request.input.timeoutSeconds) ||
+            request.input.timeoutSeconds < 1 ||
+            request.input.timeoutSeconds > 600)))
+    )
+      return Promise.resolve(
+        Response.json({ version: 1, requestId: request.requestId, error: "invalid_request" }, { status: 400 }),
+      );
+    return this.handle(
+      new Request("http://runtime/v1", {
+        ...(signal ? { signal } : {}),
+        method: "POST",
+        headers: { [AUTH_HEADER]: this.grant.token },
+        body: JSON.stringify(request),
+      }),
+    );
+  }
+  /** Revoke admission first, then terminate owned groups before draining their RPCs. */
+  async close(): Promise<void> {
+    this.closing = true;
+    await Promise.all([...this.execReleases]);
+    await Promise.all([this.execChildren.close(), ...Object.values(this.drivers).map((driver) => driver.close())]);
+    await Promise.allSettled([...this.commands]);
+  }
   async handle(request: Request): Promise<Response> {
     const token = request.headers.get(AUTH_HEADER) ?? "";
     if (
@@ -128,6 +166,7 @@ export class Runner {
       } catch {
         throw Error("invalid_request");
       }
+      if (this.closing) throw Error("sandbox_not_ready");
       if (!r || typeof r !== "object" || Array.isArray(r)) throw Error("invalid_request");
       if (r.version !== 1 || r.sandboxId !== this.grant.sandboxId || typeof r.requestId !== "string" || !r.requestId)
         throw Error("invalid_request");
@@ -476,6 +515,7 @@ export class Runner {
         generation: this.grant.generation,
         mcpVersion: 1,
         skillsVersion: 1,
+        workspaceVersion: 1,
         ready: !this.barrier,
         pid: process.pid,
       };
@@ -548,8 +588,53 @@ export class Runner {
       return { watermark, acknowledgedSequence: this.journal.ack, generation: this.grant.generation };
     }
     if (this.barrier) throw Error("checkpoint_in_progress");
+    if (this.preparingWorkspace && !["getPrompt", "events", "getExec"].includes(r.op))
+      throw Error("workspace_setup_in_progress");
     if (this.installingSkills && !["getPrompt", "events", "getExec"].includes(r.op))
       throw Error("skills_install_in_progress");
+    if (r.op === "workspaceExec") {
+      if (
+        this.credentialFreeBuilder ||
+        this.active.size ||
+        this.commands.size ||
+        this.resumingNative ||
+        this.journal.db.query("SELECT 1 FROM prompts LIMIT 1").get()
+      )
+        throw Error("workspace_launch_only");
+      const input = validateWorkspaceExec(r.input);
+      this.preparingWorkspace = true;
+      const workspaceEvent = (status: "running" | "finished" | "failed", exitCode?: number | null) =>
+        this.journal.append({
+          id: `workspace_${r.requestId}_${status}`,
+          at: Date.now(),
+          kind: "other",
+          type: "armada/workspaceStep",
+          data: {
+            phase: input.phase,
+            index: input.index,
+            attempt: input.attempt,
+            status,
+            ...(exitCode !== undefined ? { exitCode } : {}),
+          },
+        });
+      workspaceEvent("running");
+      const work = (async () => {
+        await this.execution.prepareWorkspace?.();
+        return executeWorkspace(input, this.journal, this.execEnvironment, signal);
+      })();
+      this.commands.add(work);
+      try {
+        const result = await work;
+        workspaceEvent(!result.timedOut && result.exitCode === 0 ? "finished" : "failed", result.exitCode);
+        return result;
+      } catch (error) {
+        workspaceEvent("failed");
+        throw error;
+      } finally {
+        this.commands.delete(work);
+        this.preparingWorkspace = false;
+      }
+    }
     if (r.op === "installSkills") {
       if (
         this.credentialFreeBuilder ||
@@ -752,11 +837,9 @@ export class Runner {
   private async exec(r: ExecRequest, signal?: AbortSignal): Promise<ExecResult> {
     signal?.throwIfAborted();
     if (r.sandboxId !== this.grant.sandboxId || typeof r.command !== "string") throw Error("invalid_request");
-    const child = spawn("/bin/bash", ["-s"], {
+    const child = this.execChildren.spawn("/bin/bash", ["-s"], {
       cwd: r.cwd ?? process.cwd(),
-      detached: true,
       env: this.execEnvironment,
-      stdio: ["pipe", "pipe", "pipe"],
     });
     child.stdin.on("error", () => {});
     child.stdin.end(r.command);
@@ -787,13 +870,13 @@ export class Runner {
       child.once("error", reject);
     });
     const pid = child.pid as number;
-    const abort = () => {
+    const terminate = () => {
       try {
         process.kill(-pid, "SIGKILL");
       } catch {}
     };
-    signal?.addEventListener("abort", abort, { once: true });
-    if (signal?.aborted) abort();
+    signal?.addEventListener("abort", terminate, { once: true });
+    if (signal?.aborted) terminate();
     const save = (value: unknown) =>
       this.journal.db
         .query("INSERT OR REPLACE INTO processes VALUES(?,?)")
@@ -812,7 +895,9 @@ export class Runner {
     const done = new Promise<ExecResult>((resolve) =>
       child.once("close", (exitCode) => {
         clearTimeout(timer);
-        signal?.removeEventListener("abort", abort);
+        // Synchronous commands own their whole process group, including background descendants.
+        terminate();
+        signal?.removeEventListener("abort", terminate);
         try {
           this.refreshNativeSecrets?.();
         } catch {
@@ -843,6 +928,16 @@ export class Runner {
     this.commands.add(done);
     void done.finally(() => this.commands.delete(done));
     if (r.detached) return { detached: true, processId: pid };
-    return done;
+    const result = await done;
+    if (!this.closing) {
+      const release = this.execChildren.release(child);
+      this.execReleases.add(release);
+      try {
+        await release;
+      } finally {
+        this.execReleases.delete(release);
+      }
+    }
+    return result;
   }
 }

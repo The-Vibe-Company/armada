@@ -11,19 +11,21 @@ for (const phone of [false, true])
       await page.setViewportSize({ width: phone ? 390 : 1280, height: phone ? 844 : 900 });
       await page.addInitScript((value) => localStorage.setItem("theme", value), theme);
       await signIn(page, "alice@example.com", "/environments");
-      await expect(page.getByLabel("Active organization", { exact: true })).toHaveCount(1);
+      // Alice belongs to one organization, so nothing about organizations is in the sidebar (#1474).
+      await expect(page.getByLabel("Active organization", { exact: true })).toHaveCount(0);
       const nav = page.getByRole("navigation", { name: "Main", exact: true });
       const toggle = page.getByRole("button", { name: /Navigation/ });
       if (phone) {
         await expect(toggle).toHaveAttribute("aria-expanded", "false");
-        await expect(nav.getByRole("link", { name: "Environments" })).toBeHidden();
+        await expect(nav.getByRole("link", { name: "Snapshots" })).toBeHidden();
         await toggle.click();
       }
-      await expect(nav.getByRole("heading", { level: 2 })).toHaveText(["Run", "Library", "Account"]);
+      await expect(nav.getByRole("heading", { level: 2 })).toHaveText(["Run", "Library", "Providers", "Account"]);
       for (const [label, items] of [
-        ["Run", ["Sandboxes", "Routines", "Templates", "Otto"]],
-        ["Library", ["Environments", "Skills", "Tools", "Variables"]],
-        ["Account", ["Models", "Organizations", "Settings"]],
+        ["Run", ["Sandboxes", "Otto", "Routines", "Templates"]],
+        ["Library", ["Snapshots", "Skills", "Tools", "Variables"]],
+        ["Providers", ["Cloud"]],
+        ["Account", ["Models", "Settings"]],
       ] as const) {
         await expect(nav.getByRole("region", { name: label, exact: true }).getByRole("link")).toHaveText([...items]);
       }
@@ -31,7 +33,7 @@ for (const phone of [false, true])
       await expect(nav).not.toContainText("Tools, instructions and configuration.");
       await expect(nav).not.toContainText("Templates bring these choices together.");
       await expect(page.locator("html")).toHaveClass(new RegExp(theme));
-      const environment = nav.getByRole("link", { name: "Environments", exact: true });
+      const environment = nav.getByRole("link", { name: "Snapshots", exact: true });
       await expect(environment).toHaveAttribute("aria-current", "page");
       await page.mouse.move(389, 843);
       await page.screenshot({
@@ -54,7 +56,7 @@ for (const phone of [false, true])
           animations: "disabled",
         });
         await page.getByRole("button", { name: "Expand navigation", exact: true }).click();
-        await expect(page.getByLabel("Active organization", { exact: true })).toBeVisible();
+        await expect(nav.getByRole("link", { name: "Sandboxes", exact: true })).toBeVisible();
       }
       if (phone) {
         await expect(page.getByRole("dialog", { name: "Navigation" })).toBeVisible();

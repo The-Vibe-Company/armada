@@ -1,7 +1,8 @@
 import type { LaunchOptions, Sql } from "@armada/core/server";
+import { requirePublishedRuntimeArchitecture } from "../../agent-runtime/src/publication.ts";
+import { modalRuntimeConfiguration } from "./modal-runtime-variables.ts";
 import { createRuntimeAgent } from "./runtime-agent.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
-import { runtimeConfiguration } from "./runtime-configuration.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import { createRuntimeStartup } from "./runtime-startup.ts";
 
@@ -13,6 +14,7 @@ export function modalRuntimeLaunch(options: {
   manifest: unknown;
   architecture: "x64" | "arm64";
 }): NonNullable<LaunchOptions["runtime"]> {
+  requirePublishedRuntimeArchitecture(options.architecture);
   const server = new URL(options.serverUrl);
   if (server.protocol !== "https:" || server.href !== `${server.origin}/`) throw Error("invalid_runtime_origin");
   const authority = createRuntimeEnrolments(options.sql, options.encryptionKey);
@@ -22,7 +24,9 @@ export function modalRuntimeLaunch(options: {
       if (host.id !== "modal" || sandbox.runtimeTransport !== "dialout") throw Error("runtime_selection_required");
       const { model, reasoningEffort } = sandbox;
       if (!model || !reasoningEffort) throw Error("runtime_model_required");
-      const plan = await runtimeConfiguration({ ...options, actor, sandbox, credentials }, "modal");
+      const plan = await modalRuntimeConfiguration(options.sql, { ...options, actor, sandbox, credentials });
+      // Restored native sessions cannot resurrect old upstream defaults before current-epoch delivery.
+      Object.assign(plan.configuration, { mcp: { revision: "modal_runtime_empty_v1", servers: {} } });
       if (restoreCheckpoint)
         Object.assign(plan.configuration, { restoreCheckpoint: { ...restoreCheckpoint, model, reasoningEffort } });
       signal.throwIfAborted();
@@ -59,7 +63,11 @@ export function modalRuntimeLaunch(options: {
         ...plan,
         signal,
       });
-      return { epoch: ready.epoch, prompt: (request) => agent.prompt(request, `launch_${sandbox.id}`, ready.epoch) };
+      return {
+        installSkills: (references, key) => agent.installSkills(references, key, ready.epoch, signal),
+        epoch: ready.epoch,
+        prompt: (request) => agent.prompt(request, `launch_${sandbox.id}`, ready.epoch),
+      };
     },
   };
 }

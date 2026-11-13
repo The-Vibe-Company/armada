@@ -56,6 +56,8 @@ export interface HandlerOptions {
   storedProviderFor?: (target: ProviderTarget, caller: { userId: string }) => Promise<Provider>;
   /** Runtime readiness of the serving database pool; no credentials in the result. */
   ready?: () => Promise<boolean>;
+  /** Public Git deployment identity; never a credential or arbitrary environment value. */
+  commitSha?: string;
   modelAuth?: ModelAuthOwnership;
   publicUrl: string;
   /** Enabled social login providers. Empty by default: email login always works. */
@@ -138,7 +140,12 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
     if (url.pathname === HEALTH_PATH) {
       const ready = options.ready ? await options.ready().catch(() => false) : true;
       return Response.json(
-        { ok: ready, version: VERSION, ...(!ready ? { reason: "database_unavailable" } : {}) },
+        {
+          ok: ready,
+          version: VERSION,
+          ...(options.commitSha && /^[a-f0-9]{40}$/.test(options.commitSha) ? { commit: options.commitSha } : {}),
+          ...(!ready ? { reason: "database_unavailable" } : {}),
+        },
         {
           status: ready ? 200 : 503,
           headers: { "cache-control": "no-store", ...(!ready ? { "retry-after": "5" } : {}) },

@@ -11,11 +11,14 @@ import {
   GoldenSnapshotRetirements,
   githubAppFromEnv,
   githubInstallationAppFromEnv,
-  promptOutcome,
+  type LaunchOptions,
+  resolveBoatKey,
+  type Sql,
   VaultError,
 } from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
 import { boatRuntimeLaunch } from "./boat-runtime-launch.ts";
+import { readBoatRuntimeManifest } from "./boat-runtime-manifest.ts";
 import { boatRuntimeResume } from "./boat-runtime-resume.ts";
 import { authenticateCaller } from "./caller.ts";
 import { configFromEnv } from "./config.ts";
@@ -26,6 +29,7 @@ import { retryDatabaseBoot } from "./database-boot.ts";
 import { createDatabaseReadiness } from "./database-readiness.ts";
 import { requireDatabaseSchema } from "./database-schema.ts";
 import { createDockerBootstrapService } from "./docker-bootstrap-service.ts";
+import { createDockerHostInstallRoute } from "./docker-host-install.ts";
 import { createDockerHostRoutes } from "./docker-host-routes.ts";
 import { createDockerHostStore } from "./docker-host-store.ts";
 import { createDockerNormalLaunch } from "./docker-normal-launch.ts";
@@ -34,6 +38,7 @@ import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
 import { createDockerSandboxControls } from "./docker-sandbox-controls.ts";
 import { createDockerSandboxRoutes } from "./docker-sandbox-routes.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
+import { createDockerSnapshots } from "./docker-snapshots.ts";
 import { createGitHubAccountApi } from "./github-account.ts";
 import { configureBoatGitHub } from "./github-boat.ts";
 import { createHandler, providerRegistry, type Route } from "./http.ts";
@@ -53,6 +58,7 @@ import { createOttoApi } from "./otto/api.ts";
 import { createOttoRuntime } from "./otto/runtime.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
 import { pruneServerRetention } from "./retention-maintenance.ts";
+import { observeRoutinePrompt } from "./routine-observer.ts";
 import { startRoutineWorker } from "./routine-worker.ts";
 import { createRuntimeArtifactRoute } from "./runtime-artifacts.ts";
 import { createRuntimeCheckpoint } from "./runtime-checkpoint.ts";
@@ -61,6 +67,7 @@ import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import { createRuntimeEvents } from "./runtime-events.ts";
 import { createRuntimeFollowup } from "./runtime-followup.ts";
 import { createRuntimeGitHub } from "./runtime-github.ts";
+import { createRuntimeIdle } from "./runtime-idle.ts";
 import { createRuntimeMcp } from "./runtime-mcp.ts";
 import { createRuntimeModelAccess } from "./runtime-model-access.ts";
 import { createRuntimeNativeAuth } from "./runtime-native-auth.ts";
@@ -93,7 +100,7 @@ export async function startServer(
   } = {},
 ) {
   const config = configFromEnv(env);
-  const launch = { extensionHeadroomSeconds: config.sandboxExtensionHeadroomSeconds };
+  const launch: LaunchOptions = { extensionHeadroomSeconds: config.sandboxExtensionHeadroomSeconds };
   const catalogAuthentication = catalogAuthenticationFromEnv(
     env,
     config.encryptionKey,
@@ -156,7 +163,6 @@ export async function startServer(
     commands: runtimeCommands,
     probe: (userId, orgId, connectionId) => mcp.controlBroker.status({ userId, orgId, connectionId }),
   });
-  const runtimeSend = createRuntimeFollowup(sql, config.encryptionKey, runtimeCommands, runtimeMcp.prepare);
   try {
     await retryDatabaseBoot(async () => {
       await requireDatabaseSchema(sql);
@@ -254,43 +260,39 @@ export async function startServer(
     encryptionKey: config.encryptionKey,
     provider: (actor, target) => providers.resolve(target, { userId: actor.userId }),
   });
-  let manifest: unknown;
-  if (env.ARMADA_BOAT_RUNTIME_MANIFEST) {
-    try {
-      manifest = JSON.parse(await Bun.file(env.ARMADA_BOAT_RUNTIME_MANIFEST).text());
-    } catch {
-      throw Error("Invalid Boat runtime deployment manifest.");
-    }
-  }
-  let runtimeLaunch: ReturnType<typeof boatRuntimeLaunch> | undefined;
-  if (manifest !== undefined) {
-    const row = manifest as {
-      protocol?: unknown;
-      platform?: unknown;
-      libc?: unknown;
-      architecture?: unknown;
-      runtime?: { sha256?: unknown; bytes?: unknown };
+  const imageBoatManifest = `/opt/armada/runtime-manifests/${process.arch}.json`;
+  const deployed = await readBoatRuntimeManifest(
+    env.ARMADA_BOAT_RUNTIME_MANIFEST ?? imageBoatManifest,
+    config.boatAgentPath,
+  );
+  const runtimeLaunch = deployed
+    ? boatRuntimeLaunch({
+        sql,
+        encryptionKey: config.encryptionKey,
+        serverUrl: config.publicUrl,
+        ...(runtimeGitHub ? { github: runtimeGitHub } : {}),
+        manifest: deployed.manifest,
+        architecture: deployed.architecture,
+        modelAuth,
+      })
+    : undefined;
+  if (config.boatAgentPath === "runtime") {
+    if (!runtimeLaunch) throw Error("Boat runtime default requires installed runtime artifacts.");
+    launch.boatRuntimeDefault = {
+      policy: runtimeLaunch,
+      credentials: launchCredentials(store, config.encryptionKey, undefined, modelAuth),
+      connections: runtimeMcp.connections,
+      provider: async (actor, golden) =>
+        createBoatProvider({
+          apiKey: (
+            await resolveBoatKey(store, config.encryptionKey, {
+              userId: actor.userId,
+              orgId: actor.orgId,
+              visibility: golden.visibility,
+            })
+          ).key,
+        }),
     };
-    if (
-      row?.protocol !== 1 ||
-      row.platform !== "linux" ||
-      row.libc !== "glibc" ||
-      (row.architecture !== "x64" && row.architecture !== "arm64") ||
-      typeof row.runtime?.sha256 !== "string" ||
-      !/^[a-f0-9]{64}$/.test(row.runtime.sha256) ||
-      !Number.isSafeInteger(row.runtime.bytes) ||
-      Number(row.runtime.bytes) < 1 ||
-      Number(row.runtime.bytes) > 512 * 1024 * 1024
-    )
-      throw Error("Invalid Boat runtime deployment manifest.");
-    runtimeLaunch = boatRuntimeLaunch({
-      sql,
-      encryptionKey: config.encryptionKey,
-      serverUrl: config.publicUrl,
-      manifest,
-      architecture: row.architecture,
-      modelAuth,
-    });
   }
   let modalRuntimePolicy: ReturnType<typeof modalRuntimeLaunch> | undefined;
   if (env.ARMADA_MODAL_DIALOUT === "1") {
@@ -317,28 +319,24 @@ export async function startServer(
   const dockerEnabled = env.ARMADA_DOCKER_HOSTS === "1" && env.ARMADA_DOCKER_PLACEMENT === "1";
   let dockerBootstrap: ReturnType<typeof createDockerBootstrapService> | undefined;
   if (dockerEnabled) {
-    try {
-      if (!env.ARMADA_DOCKER_RUNTIME_MANIFEST) throw Error();
-      const dockerManifest = await Bun.file(env.ARMADA_DOCKER_RUNTIME_MANIFEST).json();
-      if (
-        dockerManifest?.protocol !== 1 ||
-        dockerManifest.platform !== "linux" ||
-        dockerManifest.libc !== "glibc" ||
-        !["x64", "arm64"].includes(dockerManifest.architecture)
-      )
-        throw Error();
-      dockerBootstrap = createDockerBootstrapService(sql, config.encryptionKey, {
-        enabled: true,
-        serverUrl: config.publicUrl,
-        manifest: dockerManifest,
-        architecture: dockerManifest.architecture,
-        // Plain-image launches resolve only the model account, not GitHub or host credentials.
-        credentials: dockerCredentials,
-        modelAuth,
-      });
-    } catch {
+    if (!env.ARMADA_DOCKER_RUNTIME_MANIFEST) throw Error("Docker runtime manifest required.");
+    const dockerManifest = await Bun.file(env.ARMADA_DOCKER_RUNTIME_MANIFEST).json();
+    if (
+      dockerManifest?.protocol !== 1 ||
+      dockerManifest.platform !== "linux" ||
+      dockerManifest.libc !== "glibc" ||
+      !["x64", "arm64"].includes(dockerManifest.architecture)
+    )
       throw Error("Invalid Docker runtime deployment manifest.");
-    }
+    dockerBootstrap = createDockerBootstrapService(sql, config.encryptionKey, {
+      enabled: true,
+      serverUrl: config.publicUrl,
+      manifest: dockerManifest,
+      architecture: dockerManifest.architecture,
+      // Plain-image launches resolve only the model account, not GitHub or host credentials.
+      credentials: dockerCredentials,
+      modelAuth,
+    });
   }
   const modalRuntimeHostFor = async (
     target: import("@armada/core").ProviderTarget,
@@ -377,12 +375,23 @@ export async function startServer(
       : undefined,
     runtimeMcp.prepare,
   );
+  const runtimeSend = createRuntimeFollowup(
+    sql,
+    config.encryptionKey,
+    runtimeCommands,
+    runtimeMcp.prepare,
+    runtimeResume,
+  );
   const dockerControls =
     env.ARMADA_DOCKER_HOSTS === "1"
       ? createDockerSandboxControls(sql, config.encryptionKey, {
+          prepareMcp: runtimeMcp.prepare,
+          ...(runtimeGitHub ? { prepareSnapshotGitHub: runtimeGitHub.prepareLaunch } : {}),
           ...(dockerBootstrap ? { resume: dockerBootstrap } : {}),
           ...(runtimeGitHub ? { github: runtimeGitHub } : {}),
           send: createDockerNormalSend(sql, config.encryptionKey, {
+            prepareMcp: runtimeMcp.prepare,
+            ...(runtimeGitHub ? { prepareSnapshotGitHub: runtimeGitHub.prepareLaunch } : {}),
             enabled: dockerEnabled && Boolean(dockerBootstrap),
             ...(runtimeGitHub ? { github: runtimeGitHub } : {}),
           }),
@@ -392,6 +401,7 @@ export async function startServer(
   const dockerLaunch =
     env.ARMADA_DOCKER_HOSTS === "1"
       ? createDockerNormalLaunch(sql, config.encryptionKey, {
+          mcp: runtimeMcp,
           enabled: dockerLaunchEnabled,
           ...(runtimeGitHub ? { github: runtimeGitHub } : {}),
           credentials: dockerCredentials,
@@ -503,6 +513,7 @@ export async function startServer(
     runtimeResume,
     ...(runtimeGitHub ? { runtimeGitHub } : {}),
     ready: createDatabaseReadiness(sql),
+    ...(env.RAILWAY_GIT_COMMIT_SHA ? { commitSha: env.RAILWAY_GIT_COMMIT_SHA } : {}),
     runtimeProviderFor,
     launch,
     modelAuth,
@@ -555,7 +566,15 @@ export async function startServer(
                   supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
                   now: new Date(),
                 }),
-              { placement: dockerLaunchEnabled },
+              {
+                placement: dockerLaunchEnabled,
+                publicUrl: config.publicUrl,
+                snapshots: createDockerSnapshots(sql, config.encryptionKey, {
+                  enabled: dockerLaunchEnabled,
+                  github: { store, app: githubApp, encryptionKey: config.encryptionKey },
+                  installationApp: githubInstallationAppFromEnv(env),
+                }),
+              },
             ),
           ]
         : []),
@@ -576,6 +595,7 @@ export async function startServer(
             ),
           ]
         : []),
+      createDockerHostInstallRoute(env.ARMADA_RUNTIME_ARTIFACT_DIR, config.publicUrl),
       createRuntimeArtifactRoute(env.ARMADA_RUNTIME_ARTIFACT_DIR),
       runtimeEnrolments.route,
       createRuntimeProgress(runtimeEnrolments),
@@ -665,7 +685,12 @@ export async function startServer(
     options.logError,
     goldenRetirements,
     () => pruneServerRetention(sql, control.applicationVault, new Date()),
-    [delegatedAccess.childWorker],
+    [
+      delegatedAccess.childWorker,
+      createRuntimeIdle(sql, config.encryptionKey, runtimeCheckpoint, {
+        delayMs: Number(process.env.ARMADA_RUNTIME_IDLE_MINUTES ?? 10) * 60_000,
+      }),
+    ],
   );
   const invitationWorker =
     env.ARMADA_INVITATION_MAIL === "supabase" && control.invitations
@@ -682,16 +707,11 @@ export async function startServer(
       ).rows[0];
       if (!member) return "unknown";
       const caller = { userId: actor.userId, orgs: [{ orgId: orgId!, role: member.role }], via: "service" as const };
-      const sandbox = await data(caller).sandboxes.get(turn.sandboxId);
-      if (!sandbox || sandbox.status === "deleted") return "unknown";
-      const provider = await providers.resolve(sandbox, caller);
-      const result = await promptOutcome(provider, {
-        sandboxId: sandbox.providerSandboxId,
-        promptId: turn.promptId,
-        ...(turn.conversationId ? { conversationId: turn.conversationId } : {}),
+      return observeRoutinePrompt(caller, turn, {
+        ...(control.dockerControls ? { docker: control.dockerControls } : {}),
+        get: (id) => data(caller).sandboxes.get(id),
+        provider: (sandbox) => providers.resolve(sandbox, caller),
       });
-      // Never persist a provider message or a later turn's state in routine history.
-      return result.state;
     },
     launch: async (actor, input, admission) => {
       // Re-read the persisted execution owner's role, never impersonate the editing admin.
@@ -706,9 +726,9 @@ export async function startServer(
       const caller = { userId: actor.userId, orgs: [{ orgId, role: member.role }], via: "service" as const };
       const runtime = templateRuntime(control, caller);
       if (!runtime) throw new VaultError("unavailable", "Routine launch runtime unavailable.");
-      const authorize = async () => {
+      const authorize = async (tx: Sql = sql) => {
         const grant = (
-          await sql.query(
+          await tx.query(
             `select m.user_id from public.routine_runs run
           join public.routines r on r.id=run.routine_id
           join public.members m on m.org_id=r.org_id and m.user_id=run.owner_id
@@ -721,6 +741,12 @@ export async function startServer(
       };
       return templates.command(caller, "launch", input, {
         ...runtime,
+        beforeDockerReserve: async (tx: Sql, id: string) => {
+          await authorize(tx);
+          await admission.beforeFork(tx);
+          await runtime.options?.beforeFork?.(id);
+        },
+        beforeDockerStart: () => authorize(),
         options: {
           ...runtime.options,
           beforeFork: async (id) => {

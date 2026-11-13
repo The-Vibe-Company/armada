@@ -447,6 +447,9 @@ async function main(dialout = false) {
     },
     {
       configureGitHub,
+      prepareWorkspace: async () => {
+        if (!githubSocket) await ensureGitHubTools();
+      },
       ...(restore
         ? {
             restoredFrom: {
@@ -539,7 +542,8 @@ async function main(dialout = false) {
         stop.abort();
         github.configure(null);
         githubSocket?.close();
-        await Promise.all([...Object.values(runner.drivers).map((driver) => driver.close()), ...requests]);
+        await runner.close();
+        await Promise.allSettled([...requests]);
       });
       return closing;
     };
@@ -558,24 +562,7 @@ async function main(dialout = false) {
                   : undefined;
           if (harness !== undefined && harness !== config.selectedHarness)
             return Promise.resolve(Response.json({ error: "unselected_runtime_harness" }, { status: 409 }));
-          // Repository preparation uses bounded synchronous exec through this same
-          // channel. Detached work remains unsupported; revocation kills the process group.
-          if (
-            request.op === "exec" &&
-            (request.input.detached ||
-              !Number.isInteger(request.input.timeoutSeconds) ||
-              (request.input.timeoutSeconds ?? 0) < 1 ||
-              (request.input.timeoutSeconds ?? 0) > 600)
-          )
-            return Promise.resolve(Response.json({ error: "dialout_exec_not_supported" }, { status: 409 }));
-          const work = runner.handle(
-            new Request("http://runtime/v1", {
-              signal: stop.signal,
-              method: "POST",
-              headers: { "x-armada-runner-grant": config.grant.token },
-              body: JSON.stringify(request),
-            }),
-          );
+          const work = runner.handleDialout(request, stop.signal);
           requests.add(work);
           void work.then(
             () => requests.delete(work),

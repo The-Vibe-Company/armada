@@ -1,3 +1,4 @@
+import type { Harness } from "@armada/core";
 import { CircleAlertIcon, ServerIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
@@ -14,8 +15,8 @@ import { Button } from "@/components/ui/button";
 import { readDockerLaunchOption, readSelectedDockerHosts } from "@/lib/data/docker-hosts";
 import { launchAccounts, listSelectedAccounts } from "@/lib/data/model-accounts";
 import { selectedOrganization } from "@/lib/data/selected-org";
-import { type DockerHost, HOSTS_PATH, hostName, hostState, sandboxCount } from "@/lib/docker-hosts";
-import { type DockerLaunchOption, dockerLaunchBlocker, dockerUnavailable } from "@/lib/docker-launch";
+import { type DockerHost, HOSTS_PATH, hostFact, hostName, hostState, sandboxCount } from "@/lib/docker-hosts";
+import { type DockerLaunchOption, dockerHarnesses, dockerLaunchBlocker, dockerUnavailable } from "@/lib/docker-launch";
 import type { LaunchAccounts } from "@/lib/model-accounts";
 import { relativeAge } from "@/lib/relative-time";
 import { type Bucket, ITEM_PARAM, sortResources } from "@/lib/resource-list";
@@ -68,6 +69,7 @@ export default async function HostsPage({ searchParams }: Props) {
     placement: hosts.list.placement,
     accounts: accountList ? launchAccounts(accountList, now) : { state: "unavailable", reason: "Not read." },
     unavailable: option ? dockerUnavailable(option) : [],
+    harnesses: dockerHarnesses(option),
   };
   const rows = sortResources(hosts.list.hosts.map((host) => row(host, orgId, isAdmin, now, launch)));
   const requested = typeof query[ITEM_PARAM] === "string" ? query[ITEM_PARAM] : null;
@@ -109,6 +111,8 @@ type Launch = {
   placement: boolean;
   accounts: LaunchAccounts;
   unavailable: { name: string; reason: string }[];
+  /** The agents the server launches on Docker. */
+  harnesses: { offered: Harness[]; initial: Harness | null };
 };
 
 function row(
@@ -128,12 +132,16 @@ function row(
     key: host.id,
     name,
     bucket: state.bucket,
-    search: [name, host.id, host.state].join(" "),
+    search: [name, host.id, host.state, host.version ?? ""].join(" "),
     mark: <HostMark />,
     meta,
     subtitle: meta,
     state: <StateCell tone={state.tone} label={state.label} detail={state.detail} data-host-state={host.state} />,
-    fact: sandboxCount(host.sandboxes),
+    fact: hostFact(host),
+    action:
+      isAdmin && host.state !== "revoked" ? (
+        <RevokeHost orgId={orgId} hostId={host.id} name={name} sandboxes={host.sandboxes} />
+      ) : undefined,
     detail: (
       <div className="space-y-4">
         <PanelSection title="State">
@@ -153,6 +161,8 @@ function row(
               hostName={name}
               accounts={launch.accounts}
               unavailable={launch.unavailable}
+              harnesses={launch.harnesses.offered}
+              initialHarness={launch.harnesses.initial ?? "codex"}
             />
           )}
         </PanelSection>
@@ -171,13 +181,10 @@ function row(
             <dd>{seen ?? "Never"}</dd>
             <dt className="text-muted-foreground">Sandboxes</dt>
             <dd>{sandboxCount(host.sandboxes)}</dd>
+            <dt className="text-muted-foreground">Daemon version</dt>
+            <dd>{host.version ?? "Unknown"}</dd>
           </dl>
         </PanelSection>
-        {isAdmin && host.state !== "revoked" && (
-          <PanelSection title="Manage">
-            <RevokeHost orgId={orgId} hostId={host.id} name={name} sandboxes={host.sandboxes} />
-          </PanelSection>
-        )}
       </div>
     ),
     attrs: { "data-host": host.id },

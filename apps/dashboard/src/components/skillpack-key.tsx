@@ -28,7 +28,7 @@ import { type SkillpackKey, type SkillpackKeys, type SkillpackScope, skillpackAu
 
 type Props = {
   title: string;
-  description: string;
+  description: ReactNode;
   orgId: string;
   orgName: string;
   isAdmin: boolean;

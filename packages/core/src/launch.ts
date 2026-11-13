@@ -26,7 +26,7 @@ import { type HelperNegotiation, negotiateHelper } from "./helper.ts";
 import { LaunchError, type LaunchInitializationStage } from "./launch-error.ts";
 import { type MachineSize, resolveMachineSize } from "./machine-size.ts";
 import { type ModelChoice, resolveModelChoice } from "./models.ts";
-import { OPENCODE_ENDPOINT_ENV, parseOpenCodeEndpoint } from "./opencode-endpoint.ts";
+import { OPENCODE_CONNECTION_PROVIDER, OPENCODE_ENDPOINT_ENV, parseOpenCodeEndpoint } from "./opencode-endpoint.ts";
 import { PrivateSkillError } from "./private-skill-error.ts";
 import { isNonMutatingProviderRefusal, type Provider, ProviderError } from "./provider.ts";
 import { resolveRepositoryDir } from "./repository-context.ts";
@@ -160,6 +160,18 @@ export interface LaunchResult {
 }
 
 export interface LaunchOptions extends GoldenLimits {
+  /** Trusted deployment-wide default, never a client launch option. Boat only. */
+  boatRuntimeDefault?: {
+    policy: NonNullable<LaunchOptions["boatRuntime"]>;
+    provider(actor: GoldenActor, golden: GoldenRecord): Promise<Provider>;
+    credentials: LaunchCredentialResolver;
+    connections: NonNullable<LaunchStores["connections"]>;
+  };
+  /** Frozen template account version, not a public launch override. */
+  credentialVersion?: number;
+  /** Templates with native-only readable/secret environment delivery. */
+  nativeEnvironmentBindings?: boolean;
+
   /** Trusted per-launch opt-in, never public request configuration. Codex
    * snapshot launch: no native setup/refresh or runner fallback. */
   runtime?: LaunchOptions["boatRuntime"];
@@ -176,6 +188,11 @@ export interface LaunchOptions extends GoldenLimits {
     }): Promise<{
       prompt: Provider["prompt"];
       epoch: string;
+      prepareWorkspace?: (
+        golden: GoldenRecord,
+        progress: (stage: LaunchInitializationStage) => void,
+        sleep?: (ms: number) => Promise<void>,
+      ) => Promise<GitHubLaunchInfo>;
       installSkills?: (
         references: string[],
         key: string | null,
@@ -227,6 +244,24 @@ export async function launchSandbox(
   }
   if (request.skipSkillDefaults !== undefined && typeof request.skipSkillDefaults !== "boolean")
     throw new LaunchError("invalid_request", "skipSkillDefaults must be a boolean.");
+  const golden = await goldenForLaunch(stores.goldens, actor, request.golden, request.provider);
+  if (golden.visibility === "private" && golden.ownerId !== actor.userId)
+    throw new GoldenError("not_found", `No golden named '${golden.name}'.`);
+  const defaultRuntime =
+    golden.provider === "boat" && !options.runtime && !options.boatRuntime ? options.boatRuntimeDefault : undefined;
+  if (defaultRuntime) {
+    const refuse = (feature: string): never => {
+      throw new LaunchError(
+        "invalid_request",
+        `Boat runtime default cannot launch ${feature}; no native fallback. Set ARMADA_BOAT_AGENT_PATH=native for rollback.`,
+      );
+    };
+    if (!request.prompt?.trim()) refuse("an idle sandbox without an initial prompt");
+    if (options.nativeEnvironmentBindings) refuse("template readable-variable or application-secret bindings");
+    provider = await defaultRuntime.provider(actor, golden);
+    stores = { ...stores, credentials: defaultRuntime.credentials, connections: defaultRuntime.connections };
+    options = { ...options, boatRuntime: defaultRuntime.policy };
+  }
   const harness = checkHarness(provider, request.harness);
   const runtime = options.runtime ?? options.boatRuntime;
   if (
@@ -243,7 +278,6 @@ export async function launchSandbox(
   const prompt = checkPrompt(request.prompt);
   const choice = checkModel(provider, harness, request);
 
-  const golden = await goldenForLaunch(stores.goldens, actor, request.golden, request.provider);
   const defaults = !request.skipSkillDefaults ? await stores.skillDefaults?.resolve(actor, golden) : undefined;
   try {
     request = {
@@ -294,9 +328,6 @@ export async function launchSandbox(
     extensionHeadroom > PROVIDER_LIMITS.modal.maxTtlSeconds - SANDBOX_STOP_MARGIN_SECONDS
   )
     throw new LaunchError("invalid_request", "Invalid server sandbox extension headroom policy.");
-  if (golden.visibility === "private" && golden.ownerId !== actor.userId) {
-    throw new GoldenError("not_found", `No golden named '${golden.name}'.`);
-  }
   const repositoryDir = resolveRepositoryDir(golden, request.repo);
   const resourceProject = golden.config.repos.find((repo) => repo.dir === repositoryDir);
   const machineSize = resolveMachineSize(golden.provider, request.size, repositoryDir, golden.sizePolicy);
@@ -316,7 +347,12 @@ export async function launchSandbox(
   await stores.connections?.validate(actor, connectionIds, visibility);
   const snapshot = golden.providerSnapshotId;
   if (!snapshot) throw new GoldenError("conflict", `Golden '${golden.name}' has no snapshot yet.`);
-  const credentials = await stores.credentials.resolve(actor, harness, request.credentialId);
+  const credentials = await stores.credentials.resolve(actor, harness, request.credentialId, options.credentialVersion);
+  if (defaultRuntime && !credentials.binding)
+    throw new LaunchError(
+      "invalid_request",
+      "Boat runtime default requires a bound model account; no native fallback.",
+    );
   if (credentials.env[CLAUDE_ENDPOINT_ENV] && provider.id !== "modal")
     throw new LaunchError("invalid_request", "Custom Claude gateways currently require Modal.");
   if (credentials.env[CODEX_ENDPOINT_ENV] && provider.id !== "modal" && !runtime)
@@ -327,8 +363,11 @@ export async function launchSandbox(
     if (configured) {
       const endpoint = parseOpenCodeEndpoint(JSON.parse(configured));
       const wanted = choice.model;
-      if (!endpoint.models.some((id) => wanted === `armada/${id}`))
-        throw new LaunchError("invalid_request", "Choose an armada/<model> configured on the OpenCode connection.");
+      if (!endpoint.models.some((id) => wanted === `${OPENCODE_CONNECTION_PROVIDER}/${id}`))
+        throw new LaunchError(
+          "invalid_request",
+          `Choose an ${OPENCODE_CONNECTION_PROVIDER}/<model> configured on the OpenCode connection.`,
+        );
     } else if (!choice.model.startsWith("opencode/") && !choice.model.startsWith("opencode-go/")) {
       throw new LaunchError(
         "invalid_request",
@@ -484,7 +523,7 @@ export async function launchSandbox(
       )
         await writeCodexAuth(provider, ready.id, secrets);
       progress("initialization_github");
-      const launchGithub: GitHubLaunchInfo = runtime
+      let launchGithub: GitHubLaunchInfo = runtime
         ? {
             status: "not_connected",
             message:
@@ -495,7 +534,8 @@ export async function launchSandbox(
           : { status: github.status, message: github.message };
       if (!runtime && github.status === "connected" && github.expiresAt)
         launchGithub.tokenExpiresAt = github.expiresAt.toISOString();
-      if (!runtime) await setup(provider, ready.id, record.id, golden, secrets, progress, options.sleep);
+      if (!runtime)
+        await prepareLaunchWorkspace(provider, ready.id, record.id, golden, secrets, progress, options.sleep);
       progress("initialization_cwd");
       if (!runtime && repositoryDir !== null && prepareNativeCwd)
         await prepareNativeCwd({ sandboxId: ready.id, harness, cwd: `${GOLDEN_ROOT}/${repositoryDir}` });
@@ -539,7 +579,8 @@ export async function launchSandbox(
       if (record.expiresAt && new Date(record.expiresAt).getTime() <= Date.now())
         throw new LaunchError("invalid_request", "Provider lifetime has no remaining preservation headroom.");
       if (!runtime) await stores.connections?.prepare?.(provider, record, actor, signal);
-      await options.beforeStart?.(provider, record);
+      const runtimeWorkspace = provider.id === "boat" && Boolean(runtime);
+      if (!runtimeWorkspace) await options.beforeStart?.(provider, record);
       if (runtime && !startedRuntime)
         startedRuntime = Promise.resolve().then(() =>
           runtime.start({ host: provider, actor, sandbox: record, credentials, signal }),
@@ -547,6 +588,14 @@ export async function launchSandbox(
       const agent = startedRuntime ? await startedRuntime : undefined;
       if (runtime && (!agent || typeof agent.prompt !== "function" || !/^[1-9][0-9]{0,18}$/.test(agent.epoch)))
         throw new LaunchError("start_failed", "The runtime did not acknowledge a valid epoch.");
+      if (runtimeWorkspace) {
+        if (!agent?.prepareWorkspace)
+          throw new LaunchError(
+            "start_failed",
+            "Boat runtime workspace setup requires updated runtime artifacts; no native fallback.",
+          );
+        launchGithub = await agent.prepareWorkspace(golden, progress, options.sleep);
+      }
       if (runtime && request.skills?.length) {
         if (!agent?.installSkills) throw new PrivateSkillError("skillpack_transport_failed", "transport");
         const needsKey = request.skills.some((ref) => !ref.includes("/"));
@@ -566,6 +615,7 @@ export async function launchSandbox(
         await stores.sandboxes.recordSkills!(record.id, record.skills);
       }
       if (runtime) await stores.connections?.prepare?.(provider, record, actor, signal);
+      if (runtimeWorkspace) await options.beforeStart?.(provider, record);
       const provenance = agent ? { kind: "armada" as const, epoch: agent.epoch } : undefined;
       // Boat goldens carry the native CLI. A restored fork can be ready while its
       // executable cannot even boot; probe the installed wrapper (including its
@@ -740,18 +790,31 @@ function finish(
   };
 }
 
-async function setup(
-  provider: Provider,
+export async function prepareLaunchWorkspace(
+  provider: Pick<Provider, "id" | "exec">,
   sandboxId: string,
   armadaSandboxId: string,
   golden: GoldenRecord,
   secrets: readonly string[],
   progress: (stage: LaunchInitializationStage) => void,
   sleep: (ms: number) => Promise<void> = delay,
+  transport?: (
+    request: Parameters<Provider["exec"]>[0],
+    step: { phase: "repository" | "init"; index: number; attempt: number },
+  ) => ReturnType<Provider["exec"]>,
 ): Promise<void> {
-  for (const repo of golden.config.repos) {
+  const runner = (phase: "repository" | "init", index: number) => {
+    let attempt = 0;
+    return transport
+      ? {
+          id: provider.id,
+          exec: (request: Parameters<Provider["exec"]>[0]) => transport(request, { phase, index, attempt: attempt++ }),
+        }
+      : provider;
+  };
+  for (const [index, repo] of golden.config.repos.entries()) {
     progress("initialization_repository");
-    await run(provider, sandboxId, pullCommand(repo), `git pull of ${repo.dir}`, secrets, {
+    await run(runner("repository", index), sandboxId, pullCommand(repo), `git pull of ${repo.dir}`, secrets, {
       dir: repo.dir,
       sandboxId: armadaSandboxId,
       sleep,
@@ -759,7 +822,7 @@ async function setup(
   }
   for (const [index, command] of golden.config.init.entries()) {
     progress("initialization_commands");
-    await run(provider, sandboxId, initCommand(command), `init command ${index + 1}`, secrets);
+    await run(runner("init", index), sandboxId, initCommand(command), `init command ${index + 1}`, secrets);
   }
 }
 
@@ -803,7 +866,7 @@ async function writeCodexAuth(provider: Provider, sandboxId: string, secrets: re
 }
 
 async function run(
-  provider: Provider,
+  provider: Pick<Provider, "id" | "exec">,
   sandboxId: string,
   spec: ShellCommand,
   label: string,

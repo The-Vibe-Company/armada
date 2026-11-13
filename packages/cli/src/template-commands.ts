@@ -104,6 +104,7 @@ export async function templateCommand(argv: readonly string[], io: VaultIo): Pro
         if (!definition || typeof definition !== "object" || Array.isArray(definition)) throw new Error();
         const allowed = [
           "goldenId",
+          "hostId",
           "provider",
           "harness",
           "model",

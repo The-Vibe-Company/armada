@@ -42,6 +42,9 @@ import {
   tokenRevoke,
 } from "./auth-commands.ts";
 import { launchDocker } from "./docker-launch.ts";
+import { dockerSnapshotCommand } from "./docker-snapshots.ts";
+import { hostCommand } from "./host-commands.ts";
+import { type LocalHostIo, localHostCommand, productionLocalHostIo } from "./local-host.ts";
 import { operation, parseTtl } from "./operations.ts";
 import { printOptionalResourceAdvice } from "./resource-advice.ts";
 import { routineCommand } from "./routine-commands.ts";
@@ -62,6 +65,8 @@ export interface Deps {
   readFile?: (path: string) => Promise<string>;
   /** Values for credential/application vault writes. By default stdin, only when piped. */
   readStdin?: () => Promise<string>;
+  /** Separate native Docker host binary boundary; no Armada session required. */
+  localHost?: LocalHostIo;
   /** Legacy test seam; commands use the Armada API rather than direct stores. */
   actor?: GoldenActor;
   store?: GoldenStore;
@@ -81,8 +86,13 @@ export interface Deps {
 const HELP = `armada ${VERSION}: launch coding agents in provider-scoped sandboxes
 
 Usage:
-  armada launch [prompt] --provider docker --host UUID --image digest-ref --agent claude|codex|opencode --credential-id UUID --org UUID [--repo owner/repo[@branch] ...] [--variable KEY:UUID:VERSION ...] [--secret KEY:UUID:VERSION ...] [--request-id UUID] [--json]
-                                           Opt-in plain-image Docker launch through the normal Armada API.
+  armada host install --server HTTPS_ORIGIN   Install on the Docker machine; one-use token on stdin, no login
+  armada host status|uninstall                Local host binary wrappers; no login
+  armada host add [--name NAME] [--org UUID]
+  armada host list [--json] [--org UUID]
+  armada host revoke UUID [--org UUID]
+  armada launch [prompt] --provider docker [--host UUID|NAME | --golden snapshot-UUID] --agent claude|codex|opencode --credential-id UUID --org UUID [--repo owner/repo[@branch] ...] [--variable KEY:UUID:VERSION ...] [--secret KEY:UUID:VERSION ...] [--request-id UUID] [--json]
+                                           Docker launch through the normal Armada API using the official Armada environment.
   armada --version                         Print the version
   armada --help                            Show this help
   armada skill install (--project <directory> | --global) --yes [--revision <commit>]
@@ -165,7 +175,8 @@ Usage:
   armada logs <sandbox-id> [--tail [n]] [--all] [--follow] [--json]
                                            Read agent events; --all drains available pages, --follow waits for new pages until settled
   armada login [--url <url>] [--provider github|google | --email <address>]
-                                           --email sends a sign-in link; click it, or type the code it contains
+                                           Discovers enabled methods; prompts for email when available.
+                                           --email: open the emailed link on this machine, or type its code (use one, not both)
   armada logout
   armada token create [--org <name>] [--label <label>]
   armada token list
@@ -256,9 +267,61 @@ For other commands and authentication settings: armada --help.
 
 /** Runs one command line and returns the process exit code. */
 export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Promise<number> {
+  let signingIn = false;
+  let auth: AuthIo | undefined;
+  const sessionFailure = (error: unknown) =>
+    error instanceof AuthError &&
+    (error.code === "unauthorized" || (error instanceof ArmadaApiError && error.status === 401));
   try {
-    return await dispatch(argv, io, deps);
-  } catch (error) {
+    if (argv[0] === "host" && ["install", "status", "uninstall"].includes(argv[1] ?? ""))
+      return await localHostCommand(
+        argv.slice(1),
+        io,
+        deps.localHost ??
+          productionLocalHostIo({
+            ...(deps.fetch ? { fetch: deps.fetch } : {}),
+            ...(deps.readStdin ? { readStdin: deps.readStdin } : {}),
+          }),
+      );
+    auth = authOf(io, deps);
+    try {
+      if (argv.length === 0) {
+        const client = await createArmadaApiClient(auth);
+        await client.request("/api/v1/account/status", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: "{}",
+        });
+      }
+      return await dispatch(argv, io, deps);
+    } catch (error) {
+      if (
+        !sessionFailure(error) ||
+        argv[0] === "login" ||
+        argv[0] === "logout" ||
+        (argv[0] === "account" && argv[1] === "logout") ||
+        auth.env.ARMADA_TOKEN
+      )
+        throw error;
+      if (!argv.includes("--json") && auth.interactive && auth.confirmSignIn && (await auth.confirmSignIn())) {
+        signingIn = true;
+        await loginCommand(auth);
+        signingIn = false;
+        // Retry the original operation once; a failed retry never starts another login.
+        return await dispatch(argv, io, { ...deps, auth });
+      }
+      if (argv.length === 0) {
+        io.err("You are not signed in. Run armada login.\n");
+        io.out(HELP);
+        return 1;
+      }
+      throw new AuthError("You are not signed in. Run armada login.", "unauthorized");
+    }
+  } catch (caught) {
+    const error =
+      sessionFailure(caught) && argv[0] !== "login" && !signingIn && !auth?.env.ARMADA_TOKEN
+        ? new AuthError("You are not signed in. Run armada login.", "unauthorized")
+        : caught;
     if (
       argv.includes("--json") &&
       (error instanceof GoldenError ||
@@ -346,6 +409,7 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
   const terminator = rest.indexOf("--");
   const optionArgs = terminator < 0 ? rest : rest.slice(0, terminator);
   const scoped = [
+    "host",
     "golden",
     "launch",
     "list",
@@ -392,6 +456,8 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
     case "help":
       io.out(HELP);
       return 0;
+    case "host":
+      return hostCommand(rest, { ...authOf(io, deps), ...io });
     case "golden":
       return golden(rest, io, deps);
     case "launch":
@@ -463,7 +529,17 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
     return sizePolicyCommand(rest, authOf(io, deps), (path) =>
       path ? (deps.readFile ?? ((p) => Bun.file(p).text()))(path) : (deps.readStdin ?? (() => Bun.stdin.text()))(),
     );
-  const args = parseArgs(rest, subcommand === "retirement" ? ["--limit"] : []);
+  const args = parseArgs(rest, subcommand === "retirement" ? ["--limit"] : ["--host", "--request-id"]);
+  if (single(args, "--provider") === "docker") {
+    const auth = authOf(io, deps);
+    return dockerSnapshotCommand(
+      subcommand,
+      args,
+      io,
+      { ...auth, fetch: deps.fetch ?? auth.fetch },
+      subcommand === "create" ? await readConfig(args, deps) : undefined,
+    );
+  }
   providerFlag(args);
   const limits = {
     ...(deps.sleep ? { sleep: deps.sleep } : {}),
@@ -864,6 +940,7 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
       "--credential-version",
       "--variable",
       "--secret",
+      "--golden",
     ],
     ["--sized", "--armada-access"],
   );
@@ -872,7 +949,7 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
     return launchDocker(args, io, { ...auth, fetch: deps.fetch ?? auth.fetch });
   }
   if (
-    ["--host", "--image", "--request-id", "--credential-version", "--variable", "--secret"].some(
+    ["--host", "--image", "--request-id", "--credential-version", "--golden", "--variable", "--secret"].some(
       (key) => single(args, key) !== undefined,
     )
   )

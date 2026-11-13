@@ -1,4 +1,5 @@
 import { createHash, createHmac, randomUUID } from "node:crypto";
+import type { Harness } from "@armada/core";
 import {
   createSqlMcpLaunchPort,
   createSqlMcpLeasePort,
@@ -42,7 +43,9 @@ export function createRuntimeMcp(options: {
       result = [];
     for (const id of selected) {
       const c = await registry.get(caller.userId, org, id);
-      if (c.status !== "connected" || !["http", "sse"].includes(c.transport)) return deny();
+      if (!["http", "sse"].includes(c.transport))
+        throw new VaultError("invalid", "Enrolled runtimes do not support pinned stdio MCP; no native fallback.");
+      if (c.status !== "connected") return deny();
       result.push(c);
     }
     return result;
@@ -56,12 +59,20 @@ export function createRuntimeMcp(options: {
     return { mcpReady: true, connections: selected };
   }
   async function owner(caller: Caller, id: string) {
+    const docker = (
+      await sql.query<{ id: string; orgId: string; ownerId: string; harness: Harness }>(
+        `select s.id,s.org_id as "orgId",s.owner_id as "ownerId",s.harness from public.sandboxes s
+       join public.members m on m.org_id=s.org_id and m.user_id=$2
+       where s.id=$1 and s.provider='docker' and s.owner_id=$2 and s.org_id=any($3::uuid[])`,
+        [id, caller.userId, caller.orgs.map((org) => org.orgId)],
+      )
+    ).rows[0];
+    if (docker) return docker;
     const s = await createSqlData(sql)(caller).sandboxes.get(id);
     if (
       !s ||
       s.ownerId !== caller.userId ||
-      s.provider !== "boat" ||
-      !s.boatRuntime ||
+      !((s.provider === "boat" && s.boatRuntime) || (s.provider === "modal" && s.runtimeTransport === "dialout")) ||
       (s.harness !== "codex" && s.harness !== "claude")
     )
       return deny();

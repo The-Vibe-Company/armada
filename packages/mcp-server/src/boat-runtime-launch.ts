@@ -1,5 +1,6 @@
-import type { LaunchOptions, Sql } from "@armada/core/server";
+import { type LaunchOptions, prepareLaunchWorkspace, type Sql } from "@armada/core/server";
 import { startBoatRuntime } from "@armada/provider-boat";
+import { requirePublishedRuntimeArchitecture } from "../../agent-runtime/src/publication.ts";
 import { boatRuntimeConfiguration } from "./boat-runtime-configuration.ts";
 import { createRuntimeAgent } from "./runtime-agent.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
@@ -15,8 +16,10 @@ export function boatRuntimeLaunch(options: {
   serverUrl: string;
   manifest: unknown;
   architecture: "x64" | "arm64";
+  github?: Pick<import("./runtime-github.ts").RuntimeGitHub, "prepareLaunch">;
   modelAuth?: Parameters<typeof boatRuntimeConfiguration>[0]["modelAuth"];
 }): NonNullable<LaunchOptions["boatRuntime"]> {
+  requirePublishedRuntimeArchitecture(options.architecture);
   const server = new URL(options.serverUrl);
   if (server.protocol !== "https:" || server.href !== `${server.origin}/`) throw Error("invalid_runtime_origin");
   const manifest = structuredClone(options.manifest);
@@ -61,6 +64,26 @@ export function boatRuntimeLaunch(options: {
         signal,
       });
       return {
+        prepareWorkspace: async (golden, progress, sleep) => {
+          await agent.workspaceHealth(ready.epoch, signal);
+          const github = options.github
+            ? await options.github.prepareLaunch(
+                { userId: actor.userId, orgs: [{ orgId: actor.orgId, role: actor.role }], via: "service" },
+                sandbox.id,
+              )
+            : { status: "not_connected" as const, message: "GitHub is not configured." };
+          await prepareLaunchWorkspace(
+            host,
+            sandbox.providerSandboxId,
+            sandbox.id,
+            golden,
+            credentials.secrets,
+            progress,
+            sleep,
+            (request, step) => agent.workspaceExec(request, step, ready.epoch, signal),
+          );
+          return github;
+        },
         installSkills: (references, key) => agent.installSkills(references, key, ready.epoch, signal),
         epoch: ready.epoch,
         prompt: (request) => agent.prompt(request, `launch_${sandbox.id}`, ready.epoch),

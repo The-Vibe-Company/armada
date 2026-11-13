@@ -1,17 +1,8 @@
 # Deployed checks
 
-> **Release-only production gate:** With repository variables
-> RELEASE_SYNCED_DEPLOYS=true and STAGING_GATED_DEPLOYS=true,
-> [Staging-gated releases](releasing.md#staging-gated-releases-owner-opt-in)
-> continuously deploy/migrate/smoke main on staging. Release calls that same staging
-> workflow for its exact validated SHA before production migrations/server/dashboard/npm.
-> Independent automatic migration applies and deployment-event smoke below are disabled.
-> Manual diagnostic smoke/history/repair/preview remain available. Missing gate config
-> blocks promotion. Owner cutover, emergency bypass and rollback are in the runbook.
-> Manual diagnostic smoke has a separate lock: wait for pinned staging deployment/
-> smoke to finish and ensure no next deployment is queued before running it.
-> It can otherwise observe staging mid-deploy and never authorizes a release.
-> With both variables absent/false, legacy behavior below is unchanged.
+> **Mandatory deployment gate:** Main staging deployments and exact-SHA publishing
+> release calls own smoke. No opt-in or deployment-event fallback exists. Release
+> requires its staging smoke before production. See [deployment policy](releasing.md#deployment-policy-1547).
 
 `scripts/post-deploy-smoke.ts` allocates **real, billable compute**. It uses only
 an Armada bearer token and the deployed server's `/api/v1/` API. It does not
@@ -102,19 +93,21 @@ Use a separate staging Boat account/key shared by its Claude/Codex cases; Boat's
 one-golden account limit does not justify pair-specific extra goldens. Provider/model
 keys remain in Armada's vault, never cases or workflow arguments.
 
-The **Post-deploy smoke** workflow can be dispatched on main. It also runs after
-a successful GitHub `deployment_status` for environment exactly `armada / staging`
-(Railway's GitHub deployment name, not the GitHub secrets environment). To
-override the accepted name, set the repository variable
-`ARMADA_SMOKE_DEPLOYMENT_ENVIRONMENT` to the exact staging deployment name.
-Leave it unset or empty to use the default; never set it to a production name.
-Use repository scope: environment-scoped variables are unavailable when GitHub
-evaluates the job's `if` condition, before the `staging` environment is attached.
-Your deployment system must publish that GitHub status; a Railway/Vercel deploy
-alone is not assumed to produce it. It uses reviewed main code, not arbitrary
-deployment refs. Missing any required secret produces a notice and makes no
-API calls. Production/preview deployment events are ignored. Runs are serialized
-and not cancelled by a newer deploy, allowing cleanup to finish.
+The **Post-deploy smoke** workflow is a manual **main-only** entry point to the
+same pinned staging deployment-and-smoke workflow used after main merges. It
+first deploys the dispatch's main SHA, then smokes that deployment; it no longer
+accepts `deployment_status` events. PR, merge-queue (`gh-readonly-queue/*`) and
+release-please branch deployments cannot trigger smoke or attach its slow check
+to those branches. Dispatch from any other ref is skipped. The publishing Release
+workflow remains the only slow gated path: exact release commit staging deploy
+and smoke, then production. Main post-merge smoke is not a PR/merge-queue gate.
+
+The manual alias requires all staging deployment secrets and smoke cases; missing
+configuration fails before smoke rather than producing a successful no-op
+attestation. The old deployment opt-in variables are ignored. Set ARMADA_ORIGIN, ARMADA_SMOKE_TOKEN and ARMADA_SMOKE_CASES
+in staging as documented above. Do not restore deployment-event smoke as a
+fallback. The pinned deployment and smoke stay serialized together and are not
+cancelled by a newer deploy, allowing cleanup to finish.
 
 Each step emits a fixed diagnostic line; failures exit nonzero. API bodies,
 command output, tokens and provider error messages are never printed. Requests
@@ -549,75 +542,41 @@ pinned release download per pair plus trivial hashing/exec, with no model usage
 or extra worker. Offline transport tests do not prove deployed provider bytes;
 the coordinator runs both enabled providers after merge.
 
-## Signed-in dashboard reads
+## Dashboard read probes (password-free)
 
-Both staging smoke workflows also run `bun scripts/dashboard-read-smoke.ts`,
-concurrently with the compute smoke. It creates no resources. After one bounded
-10-second login, all page requests start in parallel with a **15-second bound per
-page**, including the full streamed HTML body. Thus this family adds at most
-25 seconds and overlaps the existing smoke; it adds no required PR check.
+Both staging workflows run `bun scripts/dashboard-read-smoke.ts` concurrently
+with compute smoke. This uses the **fallback read-level approach** from #1460,
+not signed-in HTML. The dashboard authenticates with a Supabase session cookie;
+the existing Armada service bearer cannot mint one. No existing smoke credential
+authorizes Supabase admin-generated links. We do not provision a password, user,
+admin key, or session secret.
 
-The dashboard uses Supabase session cookies, **not** an Armada bearer token.
-Configure these additional environment-scoped staging values before enabling the
-gate. Missing/invalid values fail `dashboard_session` (never silently skip reads):
+Only the existing `ARMADA_URL`, `ARMADA_TOKEN` and `ARMADA_SMOKE_CASES` are needed.
+Every distinct case org is checked. Named steps are `dashboard_configuration`,
+`dashboard_sandboxes`, `dashboard_otto`, `dashboard_hosts`, and
+`dashboard_launch_options`. Each read step has a 15-second bound and reports only
+pass, elapsed time and a closed failure code; response bodies and credentials
+are never logged. Non-2xx, error states, malformed/skipped rows, incomplete Otto
+pagination and slow answers fail, rather than silently disabling a probe.
+Otto and Docker host list routes must be enabled on staging.
 
-| Kind | Name | Value |
-| --- | --- | --- |
-| Variable | `ARMADA_SMOKE_DASHBOARD_URL` | Explicit staging dashboard HTTPS origin, not the Railway API origin; no path/query/userinfo |
-| Variable | `ARMADA_SMOKE_SUPABASE_URL` | That dashboard's staging Supabase HTTPS origin |
-| Variable | `ARMADA_SMOKE_SUPABASE_ANON_KEY` | That project's public publishable key or legacy **anon** key; service-role/secret keys refused |
-| Variable | `ARMADA_SMOKE_DASHBOARD_USER_ID` | Dedicated smoke user's Supabase UUID; login must return this identity |
-| Variable | `ARMADA_SMOKE_DASHBOARD_ORG_ID` | Staging smoke org UUID; each rendered active-org selector must confirm it |
-| Variable | `ARMADA_SMOKE_DASHBOARD_OTTO` | Explicit `true` when Otto observes the smoke org, otherwise `false` |
-| Secret | `ARMADA_SMOKE_DASHBOARD_EMAIL` | Dedicated smoke user's confirmed email |
-| Secret | `ARMADA_SMOKE_DASHBOARD_PASSWORD` | Strong, unique staging-only password for that same smoke user |
+Sandboxes calls `sandbox/list` and imports the dashboard's own
+`parseSandboxListMetadata`, rejecting skipped rows even though the UI tolerates
+them. Otto uses the dashboard's `readOtto` (summary, tasks, resources, orphans,
+facts and pagination). Hosts and launch options use the same dashboard parsers.
+These are read-only API calls; no compute or account is created.
 
-Coordinator prerequisites: enable password sign-in for the dedicated user on the
-**staging** Supabase project (the regular dashboard can continue using email OTP),
-ensure it is the same user who owns the smoke token, and grant membership in the
-smoke org. Configure its connected provider, named models and GitHub setup as the
-existing smoke requires. The supplied org preference is membership-validated by
-the dashboard; a stale or unauthorized preference cannot pass by falling back to
-another org. The password grant is sent only to the explicit Supabase origin.
-Session/refresh tokens and cookies stay in memory, never files or output, and
-page requests never carry the Armada bearer. Each run signs in afresh, so no
-expiring session secret needs rotation. Do not use production credentials or
-origins. Protect the staging environment; never pass these secrets to PR code.
+**Uncovered:** actual HTML rendering, hydration, session cookies, selected-org
+handling and user-JWT RLS/Supabase RPC paths (including sandbox costs, membership,
+goldens and other resource pages). These probes do not claim full dashboard page
+coverage or prove that the dashboard's RPC schema matches the control API.
 
-JSON steps (case `0`) are independently nameable by coordinator failure tooling:
-`dashboard_session`, `dashboard_sandboxes`, `dashboard_routines`,
-`dashboard_templates`, `dashboard_otto` (only when enabled),
-`dashboard_environments`, `dashboard_skills`, `dashboard_tools`,
-`dashboard_variables`, `dashboard_models` (`/harness`),
-`dashboard_organizations` (`/orgs`), `dashboard_settings`.
-Each reports `pass`, `bound_ms`, `elapsed_ms`, and a sanitized failure `code`.
-No response bodies or upstream error messages are logged.
-
-These are normal HTML GETs, not RSC prefetches or a browser: SSR executes the
-page's selected-org, user-JWT Supabase/RLS and Armada control reads, including
-Otto's view reads, before the complete body passes. Redirects (including expired
-sessions), wrong orgs, non-HTML, missing page headings, destructive error panels,
-unavailable/not-configured panels, partial template reads and model-usage read
-errors fail even at HTTP 200. Script/hydration text is excluded from panel checks.
-Ordinary healthy empty lists and informational panels are permitted. This checks
-the reads that SSR exposes, not client-only interactions, and cannot identify a
-read that production code silently swallows without rendering any failure state.
-
-Coordinator checks after merge (workers make **no staging/production calls**):
-
-1. Set the values above in the staging environment; verify dashboard and Supabase
-   origins belong to the same staging deployment and the configured user matches
-   the bearer smoke user. Set Otto explicitly according to its staging config.
-2. Run a staging deployment smoke. Confirm each enabled `dashboard_*` step passes
-   within its stated bound, and a wrong password/expired login fails
-   `dashboard_session` without printing credentials. Restore the valid secret.
-3. Confirm no extra compute is created by the read family; use the compute cleanup receipts for leftover-row reconciliation.
-
-Offline proof: `bun test scripts/dashboard-read-smoke.test.ts` uses fake fetch,
-starts every page before releasing any response, verifies chunked cookies decode
-with the dashboard's pinned Supabase SSR SDK, and deliberately returns broken
-HTTP-200 panels to fail only the named page while siblings finish. No network or
-wall-clock waits are used by these tests.
+Coordinator check after merge (workers have no staging access): run the staging
+smoke and confirm all named steps pass for the existing smoke identity within
+the bound. No new credentials should be configured. Offline proof:
+`bun test scripts/dashboard-read-smoke.test.ts` injects malformed sandbox rows
+through the real parser and confirms only `dashboard_sandboxes` fails, with
+siblings finishing. Staging evidence remains the coordinator's responsibility.
 
 ## Legacy independent staging migrations
 
@@ -789,30 +748,6 @@ Offline checks: `bun test scripts/smoke-sandbox-cleanup.test.ts scripts/cleanup-
 Coordinator checks: deliberately fail a probe after launch; restore a journal with
 one known leftover on the next run; verify unrelated stopped sandboxes survive.
 
-## Provisioning the dashboard smoke password
-
-Armada's login page sends an email link/code; it does **not** create a password.
-The password grant is an automation credential for the same dedicated **staging**
-Supabase user, not a second Armada login flow. Before enabling dashboard reads:
-
-1. Sign in once using the smoke mailbox's existing email link/code. Confirm the
-   user's UUID matches both `ARMADA_SMOKE_DASHBOARD_USER_ID` and the smoke token's
-   owner; keep its current staging-org membership.
-2. A coordinator with staging Supabase administration authority sets a strong,
-   unique password on that **existing UUID** using the supported
-   [`supabase.auth.admin.updateUserById(userId, { password })`](https://supabase.com/docs/reference/javascript/auth-admin-updateuserbyid)
-   in a trusted, staging-only administrative process. Read the password from
-   protected input, not argv, source code, shell history or logs. Confirm the
-   returned user UUID without printing the credential or full auth response.
-   This is one-time provisioning, not something the smoke does. Never give the
-   admin/service-role key to the smoke, GitHub workflows, PR code or a worker.
-3. Store that password as staging environment secret
-   `ARMADA_SMOKE_DASHBOARD_PASSWORD`, and the confirmed email as
-   `ARMADA_SMOKE_DASHBOARD_EMAIL`. The smoke itself retains only the public anon
-   key and user credential, obtains a fresh session, and verifies the UUID.
-   Rotate the user password and GitHub secret together. Ordinary Armada users
-   continue signing in by emailed link/code; no dashboard password UI is required.
-
 ## Diagnosing and reconciling deletion
 
 `delete_smoke_sandbox` failures now include `phase`, `httpStatus` and a closed,
@@ -868,3 +803,93 @@ verify parent deletion precedes scoped-child deletion and
 remain untouched. Offline regression tests cover a late-settling stop/lease,
 bounded parent-first selection, and real-SQL child-before-parent refusal followed
 by successful parent/child deletion under current owner/org authorization.
+
+### Three-provider parity observation (#1532)
+
+Run `bun scripts/post-deploy-smoke.ts --parity` against staging with the usual
+`ARMADA_TOKEN`, `ARMADA_SMOKE=create_real_compute`, and `ARMADA_URL` guards.
+`ARMADA_SMOKE_CASES` must contain exactly one Boat, Modal and Docker case for a full run.
+Use `--parity --only docker --feature exec` to run one provider/feature;
+a provider-filtered run may supply only that provider case. Unknown or duplicate
+filters are rejected before any request. All
+cases supply `org`, `harness`, `model`, and `modelAccountId`. Boat/Modal also
+supply `golden`; Docker instead supplies `hostId` (an already registered owned
+host) and `image` (the pulled immutable image digest). No SSH, registration,
+host startup, preview lifecycle endpoint or provider credentials are used.
+The configured host is checked through host discovery; an offline host produces
+one explicit `host_offline` diagnostic without preventing Boat/Modal probes.
+
+This is an **additive observation**, not a replacement for any existing deploy
+gate or its flags. No workflow/deploy failure policy changes. The command fails
+if any advertised operation fails; unsupported operations are reported separately
+with the server's `launch/options` reason, never as passes. Dependent operations
+that cannot run are failures with a dependency reason, not unsupported claims.
+The matrix inventories every requested feature. Implemented probes are
+launch/send/status/logs/exec/stop/resume/delete and resume-recall (a random token
+remembered before stop and recovered after resume). Exec checks a fixed stdout
+marker as well as successful exit. Other rows are explicitly
+`not-run: probe_not_implemented`: this is an incremental migration, not proof
+that those features work or are unsupported. The older scripts remain until
+their checks are migrated. A filtered run still executes launch and cleanup
+prerequisites, plus send/stop/resume when recall needs them; these have separate
+`prerequisite:*` rows. Nonselected cells remain `not-run`. Unsupported and
+not-run counts are printed per provider; only failures make the run nonzero.
+There is at most one launch attempt per selected provider, recorded as
+`starts` in JSON; stop/resume can allocate additional provider compute.
+A full run is not bounded to two minutes; a feature filter skips unrelated
+turns, but provider startup time still applies. Client request builders and
+cleanup-row reconciliation are follow-up work; do not treat this runner as
+evidence those acceptance criteria have passed. The final
+`provider_parity` JSON line contains the entire matrix, and the Markdown table is
+appended to `GITHUB_STEP_SUMMARY` (or printed locally). Normal sandbox cleanup
+journaling via `ARMADA_SMOKE_JOURNAL` remains available; retain that journal after
+unknown outcomes for reconciliation. This command creates real staging compute;
+a procedure or fake-API test is not evidence of a successful staging run.
+
+#### First staging findings (#1532, 2026-11-13)
+
+Failure cells now include the public API error code, HTTP status, and bounded
+credential-redacted server message (never the envelope/details). Local validation
+and transport failures have fixed diagnostics. HTTP 429 / explicit quota codes
+are `not-run: quota`; dependent cells inherit that diagnostic, not a defect.
+No automatic launch retry is made.
+
+Docker's send path sets the persisted machine state to `running`
+(`docker-runtime-lifecycle.ts`); status returns that persisted state even after a
+prompt finishes. The old Python runner checks host/conversation identity rather
+than demanding `ready`. Parity now accepts both live states, with turn completion
+proved independently by the logs. The provider field is optional in the shared
+status schema; launch already checks provider identity. This is a runner
+assertion mismatch, not evidence of a provider regression.
+
+Modal delete was a single attempt here. The adapter can report pending termination
+or recovery-image removal; cleanup can retain a two-minute activity lease.
+Parity now reconciles the same delete/request ID with a bounded retry, without
+replaying stop, and retains the last server diagnostic if confirmation never
+arrives. The older Modal runtime script **only stops**, never deletes; its success
+does not contradict a delete failure. Because the historical run hid its error,
+we cannot assert which server refusal it received; the next staging run will
+identify it. No staging result is claimed by these code-level corrections.
+
+#### Parity cleanup receipts and failure paths
+
+Parity uses the same `post-deploy-smoke:<uuid>` journal request-key format as
+the other smoke probes. The previous callback key `parity:<uuid>` was
+incompatible with `smokeReceipts`. The normal journal wrapper records the launch
+first and deduplicates this callback, so this mismatch is not evidence of the
+historical `remainingRows:5` cause. It is now safe for receipt consumers that
+validate the callback directly. A journal-write error after a known allocation
+still requires cleanup, regardless of the callback key.
+
+Every known allocation now has an independent final cleanup attempt, including
+journal-write failure and unknown resume outcomes. Cleanup confirms stop before
+deleting, reconciles a lost stop acknowledgement by reading status (without
+replaying stop), and requires the delete receipt's ID and terminal status.
+The table includes a `cleanup` cell and `parity_cleanup` JSON reports the ID and
+whether deletion was confirmed. A failed cleanup is a failure even if another
+probe was already failed or not-run. Keep the journal for unconfirmed resources;
+a lost launch response without an ID still requires operator reconciliation.
+The parity probe's shared 35-minute polling deadline still applies; exhausted
+budget can leave cleanup unconfirmed. The journal-enabled wrapper additionally
+runs its own reserved cleanup phase. This slice does not prove the cause of the
+historical five remaining rows or guarantee deletion after provider refusal.
