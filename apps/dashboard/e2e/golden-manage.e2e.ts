@@ -202,7 +202,7 @@ test("a capacity the server cannot read is shown as unavailable, with no invente
   await expect(card).not.toContainText(/\d+ of \d+/);
   await expect(page.locator("[data-legacy-conflict]")).toHaveCount(0);
   await openCreate(page);
-  await expect(page.getByRole("heading", { name: "Create a golden" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Create a snapshot" })).toBeVisible();
 
   // The server denies a foreign org before resolving a provider: also unavailable, never a number.
   await post("/__test/capabilities", {
@@ -253,7 +253,7 @@ test("live unbound rows require reconciliation without automatic rebuild guidanc
   await expect((await goldenPanel(page, "alice-private")).getByText("Edit and rebuild")).toBeVisible();
   // Reconciliation is separate from current-backend usage, which is zero.
   await openCreate(page);
-  await expect(page.getByRole("heading", { name: "Create a golden" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Create a snapshot" })).toBeVisible();
 });
 
 test("an admin edits and rebuilds the existing golden from what it records", async ({ page }) => {

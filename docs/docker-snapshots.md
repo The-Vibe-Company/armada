@@ -21,7 +21,12 @@ Creation returns a stable request/snapshot UUID while building. Reuse the printe
 second build. Launch selects the snapshot, not an image or host: server-side
 resolution pins both and checks current authorization again at reservation.
 Ready snapshots launch the baked workspace without another checkout/init.
-The normal dashboard snapshot chooser is wired in the following UI slice.
+In the dashboard, choose **Snapshots → New → Your host · Docker**, select the
+registered host and upload the same golden JSON. Private is the default; admins
+may publish to the organization. Building and offline artifacts remain visible.
+A ready snapshot opens the normal launch dialog with your model account, skills
+and MCP connections. Sandboxes → Launch a sandbox leads to this same list,
+including in organizations with only an owned host and no cloud provider.
 
 Private snapshots are visible/launchable only by their owner, including against
 org admins. Org snapshots require an admin to build and may be used by current

@@ -201,7 +201,7 @@ export default async function GoldensPage({ searchParams }: Props) {
   const skipped = goldens.length - shown.length;
   const cloudRows = shown.map((golden) => environmentRow(golden, context, now));
   const rows = sortResources([...cloudRows, ...snapshots.map((snapshot) => dockerSnapshotRow(snapshot, context))]);
-  const providerPending = setupPending && selected !== null;
+  const providerPending = setupPending && !hasDocker && selected !== null;
   const blockers = environmentBlockers({
     providerPending,
     rows: cloudRows.map((row) => ({ ...row, state: row.status })),

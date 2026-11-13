@@ -76,7 +76,7 @@ export async function goldenPanel(page: Page, name: string, provider?: "boat" | 
 
 /** The create dialog of the Environments page. */
 export function createDialog(page: Page): Locator {
-  return page.getByRole("dialog", { name: "Create a golden" });
+  return page.getByRole("dialog", { name: "Create a snapshot" });
 }
 
 /** Closes the create dialog, when it shows, so the list behind it can be used. */
