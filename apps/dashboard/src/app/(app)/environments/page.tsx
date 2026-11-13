@@ -79,8 +79,8 @@ import { cn } from "@/lib/utils";
 
 export const metadata: Metadata = { title: "Environments" };
 export const dynamic = "force-dynamic";
-// The create and rebuild server actions run in this route's function and wait for the server's build (up to
-// GOLDEN_BUILD_TIMEOUT_MS). This is the same bound as `/api/v1/*`, so the fetch times out before the function.
+// The create, rebuild and launch server actions run in this route's function and wait for the server (a launch up to
+// LAUNCH_TIMEOUT_MS). This is the same bound as `/api/v1/*`, so the fetch times out before the function.
 export const maxDuration = 800;
 
 type Props = { searchParams: Promise<Record<string, string | string[] | undefined>> };

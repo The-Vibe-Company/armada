@@ -1,6 +1,7 @@
 "use client";
 
 import { CircleAlertIcon, CircleCheckIcon, Loader2Icon } from "lucide-react";
+import Link from "next/link";
 import { type ComponentProps, type ReactNode, useActionState, useCallback, useEffect, useRef } from "react";
 import { useFormStatus } from "react-dom";
 import { Button } from "@/components/ui/button";
@@ -75,7 +76,17 @@ export function ActionForm({
       ) : (
         <CircleAlertIcon aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
       )}
-      <span className="min-w-0">{state.ok ? state.message : state.error}</span>
+      <span className="min-w-0">
+        {state.ok ? state.message : state.error}
+        {!state.ok && state.link && (
+          <>
+            {" "}
+            <Link href={state.link.href} className="font-medium underline underline-offset-2">
+              {state.link.label}
+            </Link>
+          </>
+        )}
+      </span>
     </p>
   );
   return (

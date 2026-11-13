@@ -44,17 +44,20 @@ export class ControlError extends Error {
   /** The server's machine-readable `error.reason`, when it sends one (organization invitations do). */
   readonly reason: string | undefined;
   readonly retryAfterSeconds: number | undefined;
+  /** The request may have reached the server: no answer came back (deadline passed, or the connection failed). */
+  readonly outcomeUnknown: boolean;
   constructor(
     message: string,
     status?: number,
     code?: string,
-    detail?: { reason?: string | undefined; retryAfterSeconds?: number | undefined },
+    detail?: { reason?: string | undefined; retryAfterSeconds?: number | undefined; outcomeUnknown?: boolean },
   ) {
     super(message);
     this.status = status;
     this.code = code;
     this.reason = detail?.reason;
     this.retryAfterSeconds = detail?.retryAfterSeconds;
+    this.outcomeUnknown = detail?.outcomeUnknown === true;
   }
 }
 
@@ -63,12 +66,15 @@ type Options = {
   serverUrl: string;
   token: string;
   fetch?: typeof fetch;
-  /** Defaults to `GOLDEN_BUILD_TIMEOUT_MS`; a short read passes its own. */
+  /** Defaults to `CONTROL_TIMEOUT_MS`; a short read or a long operation (a launch) passes its own. */
   timeoutMs?: number;
 };
 
-/** Admission and status are short requests; build execution belongs to the durable worker. */
-export const GOLDEN_BUILD_TIMEOUT_MS = 10_000;
+/**
+ * The default deadline of one control request. Admission and status are short requests (a golden build's execution
+ * belongs to the durable worker); an operation that does its work inside the request, such as a launch, passes its own.
+ */
+export const CONTROL_TIMEOUT_MS = 10_000;
 
 /** A capacity read is metadata: a page render does not wait on it for long. */
 export const CAPABILITIES_TIMEOUT_MS = 10_000;
@@ -119,7 +125,7 @@ async function transport(options: Options, path: string, body: object) {
   if (!origin) throw new ControlError("The Armada server is not configured for this dashboard.");
   const url = new URL(path, origin);
   if (url.origin !== origin) throw new ControlError("The Armada request address was refused.");
-  const timeoutMs = options.timeoutMs ?? GOLDEN_BUILD_TIMEOUT_MS;
+  const timeoutMs = options.timeoutMs ?? CONTROL_TIMEOUT_MS;
   if (!Number.isInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 2_147_483_647)
     throw new ControlError("The Armada request deadline must be a positive finite number of milliseconds.");
   const signal = AbortSignal.timeout(timeoutMs);
@@ -156,8 +162,11 @@ async function transport(options: Options, path: string, body: object) {
     if (signal.aborted || isAbort(error))
       throw new ControlError(
         "The Armada server did not answer in time. The request outcome may be unknown: inspect its status before trying again.",
+        undefined,
+        undefined,
+        { outcomeUnknown: true },
       );
-    throw new ControlError("The Armada server is unreachable.");
+    throw new ControlError("The Armada server is unreachable.", undefined, undefined, { outcomeUnknown: true });
   } finally {
     signal.removeEventListener("abort", onAbort);
   }
@@ -244,7 +253,7 @@ export type ArmadaApiOptions = {
   serverUrl: string;
   token: string;
   fetch?: typeof fetch;
-  /** Deadline for the entire exchange, including JSON consumption; defaults to 10 seconds. */
+  /** Deadline for the entire exchange, including JSON consumption; defaults to `CONTROL_TIMEOUT_MS`. */
   timeoutMs?: number;
 };
 
