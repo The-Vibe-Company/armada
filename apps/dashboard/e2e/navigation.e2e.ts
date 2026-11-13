@@ -21,9 +21,9 @@ for (const phone of [false, true])
       }
       await expect(nav.getByRole("heading", { level: 2 })).toHaveText(["Run", "Library", "Account"]);
       for (const [label, items] of [
-        ["Run", ["Sandboxes", "Routines", "Templates", "Otto"]],
+        ["Run", ["Sandboxes", "Otto", "Routines", "Templates"]],
         ["Library", ["Environments", "Skills", "Tools", "Variables"]],
-        ["Account", ["Models", "Organizations", "Settings"]],
+        ["Account", ["Models", "Settings"]],
       ] as const) {
         await expect(nav.getByRole("region", { name: label, exact: true }).getByRole("link")).toHaveText([...items]);
       }
