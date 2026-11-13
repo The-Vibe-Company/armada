@@ -152,3 +152,136 @@ test("malformed/mixed native publications never masquerade as journal ACKs or di
     await f.db.close();
   }
 });
+
+test("epoch subscription access round-trips the runtime client, refresh revision and access-only driver callback", async () => {
+  const { createRuntimeModelAccess } = await import("../src/runtime-model-access.ts");
+  const { RuntimeDialout, runtimeSubscriptionAccess } = await import("../../agent-runtime/src/dialout.ts");
+  const f = await fixture();
+  try {
+    const active = await f.enrol();
+    await f.publish(active, native(0), 0);
+    await f.db.query("update model_auth_state set source_generation='server:ready'");
+    const calls: (number | undefined)[] = [],
+      registered: string[] = [];
+    const route = createRuntimeModelAccess(f.sql, ENCRYPTION_KEY, {
+      async access(actor, id, version, previous) {
+        expect([actor.userId, actor.orgId, id, version]).toEqual([f.people.owner, f.people.org, f.account.id, 1]);
+        calls.push(previous);
+        return {
+          accessToken: `access-${calls.length}`,
+          chatgptAccountId: "account",
+          chatgptPlanType: null,
+          revision: calls.length,
+          refreshToken: "must-not-cross-runtime-boundary",
+        };
+      },
+    });
+    const channel = new RuntimeDialout("https://armada.example", active, {
+      async fetch(url, options) {
+        expect(url.pathname).toBe("/api/runtime/model-access");
+        expect(options.redirect).toBe("error");
+        expect(options.credentials).toBe("omit");
+        const response = await route(new Request(url.href, options));
+        if (!response) throw Error("missing model access route");
+        expect(response.headers.get("cache-control")).toBe("no-store");
+        expect(await response.clone().text()).not.toContain("must-not-cross-runtime-boundary");
+        return response;
+      },
+      socket() {
+        throw Error("unused socket");
+      },
+      after() {
+        return () => {};
+      },
+      every() {
+        return () => {};
+      },
+    });
+    const access = runtimeSubscriptionAccess(channel, (values) => registered.push(...values));
+    const first = await access(false);
+    expect(registered).toEqual([first.accessToken]);
+    const refreshed = await access(true, first.accessToken);
+    expect(calls).toEqual([undefined, 1]);
+    expect(refreshed).toEqual({ accessToken: "access-2", chatgptAccountId: "account", chatgptPlanType: null });
+    expect(registered).toEqual(["access-1", "access-2"]);
+    for (const body of [
+      "[]",
+      "{",
+      JSON.stringify({ accountId: f.account.id }),
+      JSON.stringify({ previousRevision: -1 }),
+      JSON.stringify({ padding: "x".repeat(1024) }),
+    ]) {
+      const response = await route(
+        new Request("https://armada.example/api/runtime/model-access", {
+          method: "POST",
+          headers: { authorization: `Bearer ${active.runtimeToken}`, "x-armada-runtime-epoch": active.epoch },
+          body,
+        }),
+      );
+      expect(response?.status).toBe(400);
+    }
+    expect(
+      (await route(new Request("https://armada.example/api/runtime/model-access", { method: "POST", body: "{}" })))
+        ?.status,
+    ).toBe(401);
+    expect(await route(new Request("https://armada.example/healthz"))).toBeNull();
+    expect(calls).toHaveLength(2);
+    await f.enrol();
+    await expect(access(false)).rejects.toThrow("runtime_channel_revoked");
+    expect(calls).toHaveLength(2);
+  } finally {
+    await f.db.close();
+  }
+});
+
+test.each(["epoch", "membership", "pin", "stop", "ownership", "upstream"] as const)(
+  "subscription material cannot escape after %s changes during server refresh",
+  async (change) => {
+    const { createRuntimeModelAccess } = await import("../src/runtime-model-access.ts");
+    const { VaultError } = await import("@armada/core/server");
+    const f = await fixture();
+    try {
+      const active = await f.enrol();
+      await f.publish(active, native(0), 0);
+      await f.db.query("update model_auth_state set source_generation='server:ready'");
+      const route = createRuntimeModelAccess(f.sql, ENCRYPTION_KEY, {
+        async access() {
+          if (change === "epoch") await f.enrol();
+          if (change === "membership")
+            await f.db.query("delete from members where org_id=$1 and user_id=$2", [f.people.org, f.people.owner]);
+          if (change === "pin") {
+            await f.db.query("update credentials set value_enc=$2 where id=$1", [
+              f.account.id,
+              await encryptSecret(native(1), ENCRYPTION_KEY),
+            ]);
+            expect(
+              (await f.db.query<{ version: number }>("select version from credentials where id=$1", [f.account.id]))
+                .rows[0]?.version,
+            ).toBe(2);
+          }
+          if (change === "stop") await f.db.query("update sandboxes set stop_requested_at=now() where id=$1", [f.id]);
+          if (change === "ownership") await f.db.query("update model_auth_state set source_generation='runtime:other'");
+          if (change === "upstream") throw new VaultError("unavailable", "private-upstream-marker");
+          return {
+            accessToken: "private-access-marker",
+            chatgptAccountId: "account",
+            chatgptPlanType: null,
+            revision: 1,
+          };
+        },
+      });
+      const response = await route(
+        new Request("https://armada.example/api/runtime/model-access", {
+          method: "POST",
+          headers: { authorization: `Bearer ${active.runtimeToken}`, "x-armada-runtime-epoch": active.epoch },
+          body: "{}",
+        }),
+      );
+      expect(response?.status).toBe(change === "upstream" ? 503 : 401);
+      expect(response?.headers.get("cache-control")).toBe("no-store");
+      expect(await response?.text()).not.toContain("private-");
+    } finally {
+      await f.db.close();
+    }
+  },
+);
