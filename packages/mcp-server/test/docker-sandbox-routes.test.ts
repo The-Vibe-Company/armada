@@ -111,6 +111,20 @@ test("Docker HTTP requires explicit placement, user bearer and bounded exact sha
   );
   expect((await f.post("launch", { ...f.launch, configuration: { secret: "never-accepted" } })).status).toBe(400);
   expect((await f.post("launch", { ...f.launch, image: "x".repeat(32769) })).status).toBe(413);
+  const prompt = { sandboxId: randomUUID(), requestId: randomUUID(), text: "Continue" };
+  for (const conversationId of [null, 7, {}, [], "", "not-a-uuid"])
+    expect((await f.post("prompt", { ...prompt, conversationId })).status).toBe(400);
+  for (const operation of ["ready", "stop", "delete", "job", "bootstrap", "get", "journal"])
+    expect(
+      (
+        await f.post(operation, {
+          sandboxId: prompt.sandboxId,
+          ...(["get", "journal"].includes(operation) ? {} : { requestId: prompt.requestId }),
+          conversationId: randomUUID(),
+        })
+      ).status,
+    ).toBe(400);
+  expect((await f.post("prompt", { ...prompt, conversationId: randomUUID(), model: "override" })).status).toBe(400);
   expect((await f.route(true)(new Request("https://staging.example/api/v1/docker/sandboxes/launch")))?.status).toBe(
     405,
   );
@@ -118,7 +132,7 @@ test("Docker HTTP requires explicit placement, user bearer and bounded exact sha
   expect((await db.query(`select 1 from sandboxes where id=$1`, [f.launch.requestId])).rows).toHaveLength(0);
 });
 
-test("public Docker preview dispatches one prompt through runtime commands and retains acknowledged answer/usage after cleanup", async () => {
+test("public Docker preview dispatches two same-conversation prompts through runtime commands and retains acknowledged answer/usage after cleanup", async () => {
   const f = await fixture();
   const launched = await f.post("launch", f.launch);
   expect(launched.status).toBe(201);
@@ -137,7 +151,7 @@ test("public Docker preview dispatches one prompt through runtime commands and r
   const healthId = randomUUID();
   expect((await f.post("ready", { sandboxId, requestId: healthId })).status).toBe(202);
   const health = (await commands.next(active.runtimeToken, active.epoch)).command;
-  if (!health || health.op !== "health") throw Error("missing health");
+  if (health?.op !== "health") throw Error("missing health");
   await commands.complete(active.runtimeToken, active.epoch, {
     epoch: active.epoch,
     requestId: health.requestId,
@@ -145,45 +159,78 @@ test("public Docker preview dispatches one prompt through runtime commands and r
     body: { version: 1, requestId: health.requestId, result: { ready: true, generation: active.epoch } },
   });
   expect((await f.post("ready", { sandboxId, requestId: healthId })).status).toBe(200);
-  const prompt = { sandboxId, requestId: randomUUID(), text: "Reply only DOCKER_OK" };
-  expect((await f.post("prompt", prompt)).status).toBe(202);
-  const request = (await commands.next(active.runtimeToken, active.epoch)).command;
-  if (!request || request.op !== "prompt") throw Error("missing prompt");
-  expect(request.input).toMatchObject({ harness: "codex", cwd: "/home/user", text: prompt.text });
-  const promptId = randomUUID(),
-    conversationId = randomUUID();
-  await commands.complete(active.runtimeToken, active.epoch, {
-    epoch: active.epoch,
-    requestId: request.requestId,
-    status: 200,
-    body: { version: 1, requestId: request.requestId, result: { promptId, conversationId, status: "queued" } },
-  });
-  expect((await f.post("prompt", prompt)).status).toBe(200);
-  const events = [
-    { id: "answer", at: 1, kind: "message", promptId, conversationId, text: "DOCKER_OK", partial: false, tools: [] },
-    {
-      id: "usage",
-      at: 2,
-      kind: "other",
-      promptId,
-      type: "armada/turnUsage",
-      data: { model: "gpt-6.1-sol", inputTokens: 10, outputTokens: 3 },
-    },
-    { id: "done", at: 3, kind: "prompt", promptId, conversationId, text: prompt.text, status: "finished" },
-  ];
-  const ack = await createRuntimeEvents(authority, key).route(
-    new Request("https://staging.example/api/runtime/events", {
-      method: "POST",
-      headers: { authorization: `Bearer ${active.runtimeToken}`, "x-armada-runtime-epoch": active.epoch },
-      body: JSON.stringify({
-        sandboxId,
-        generation: active.epoch,
-        events: events.map((event, i) => ({ sequence: i + 1, event })),
+  const conversationId = randomUUID();
+  const events: Record<string, unknown>[] = [];
+  for (let turn = 0; turn < 2; turn++) {
+    const prompt = {
+      sandboxId,
+      requestId: randomUUID(),
+      text: turn ? "Now reply only FOLLOWUP_OK" : "Reply only DOCKER_OK",
+      ...(turn ? { conversationId } : {}),
+    };
+    expect((await f.post("prompt", prompt)).status).toBe(202);
+    const request = (await commands.next(active.runtimeToken, active.epoch)).command;
+    if (request?.op !== "prompt") throw Error("missing prompt");
+    expect(request.input).toMatchObject({ harness: "codex", cwd: "/home/user", text: prompt.text });
+    expect(request.input.conversationId).toBe(turn ? conversationId : undefined);
+    const promptId = randomUUID();
+    await commands.complete(active.runtimeToken, active.epoch, {
+      epoch: active.epoch,
+      requestId: request.requestId,
+      status: 200,
+      body: { version: 1, requestId: request.requestId, result: { promptId, conversationId, status: "queued" } },
+    });
+    const admitted = await f.post("prompt", prompt);
+    expect(admitted.status).toBe(200);
+    expect(await admitted.json()).toEqual({
+      state: "admitted",
+      epoch: active.epoch,
+      receipt: { promptId, conversationId, status: "queued" },
+    });
+    const nextEvents = [
+      {
+        id: `answer-${turn}`,
+        at: turn * 3 + 1,
+        kind: "message",
+        promptId,
+        conversationId,
+        text: turn ? "FOLLOWUP_OK" : "DOCKER_OK",
+        partial: false,
+        tools: [],
+      },
+      {
+        id: `usage-${turn}`,
+        at: turn * 3 + 2,
+        kind: "other",
+        promptId,
+        type: "armada/turnUsage",
+        data: { model: "gpt-6.1-sol", inputTokens: 10, outputTokens: 3 },
+      },
+      {
+        id: `done-${turn}`,
+        at: turn * 3 + 3,
+        kind: "prompt",
+        promptId,
+        conversationId,
+        text: prompt.text,
+        status: "finished",
+      },
+    ];
+    const ack = await createRuntimeEvents(authority, key).route(
+      new Request("https://staging.example/api/runtime/events", {
+        method: "POST",
+        headers: { authorization: `Bearer ${active.runtimeToken}`, "x-armada-runtime-epoch": active.epoch },
+        body: JSON.stringify({
+          sandboxId,
+          generation: active.epoch,
+          events: nextEvents.map((event, i) => ({ sequence: events.length + i + 1, event })),
+        }),
       }),
-    }),
-  );
-  expect(ack?.status).toBe(200);
-  expect(await ack!.json()).toEqual({ acknowledgedSequence: 3 });
+    );
+    events.push(...nextEvents);
+    expect(ack?.status).toBe(200);
+    expect(await ack?.json()).toEqual({ acknowledgedSequence: events.length });
+  }
   const stopId = randomUUID();
   expect((await f.post("stop", { sandboxId, requestId: stopId }, false)).status).toBe(202);
   await f.hosts.complete(f.hostToken, f.installationId, { requestId: stopId, outcome: "completed" });
@@ -197,8 +244,11 @@ test("public Docker preview dispatches one prompt through runtime commands and r
   const archive = (await journal.json()) as { events: { event: unknown }[]; usage: unknown };
   expect(archive.events.map((entry) => entry.event)).toEqual(events);
   expect(archive.usage).toMatchObject({
-    turnCount: 1,
-    turns: [expect.objectContaining({ inputTokens: 10, outputTokens: 3 })],
+    turnCount: 2,
+    turns: [
+      expect.objectContaining({ inputTokens: 10, outputTokens: 3 }),
+      expect.objectContaining({ inputTokens: 10, outputTokens: 3 }),
+    ],
   });
   expect(JSON.stringify(archive)).not.toMatch(/armada_enrol_|armada_runtime_/);
 });

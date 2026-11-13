@@ -501,11 +501,15 @@ export function createSqlMcpLeasePort(sql: Sql) {
       )
         throw new VaultError("invalid", "Invalid lease scope.");
       const r = await sql.query<{ id: string }>(
-        `insert into public.mcp_leases(sandbox_id,connection_id,grant_id,org_id,owner_id,generation,sandbox_generation,hash,operations,expires_at)
-        select s.id,c.id,g.id,s.org_id,s.owner_id,g.generation,s.mcp_generation,$3,$4::text[],$5
+        `insert into public.mcp_leases(sandbox_id,connection_id,grant_id,org_id,owner_id,generation,sandbox_generation,hash,operations,expires_at,runtime_epoch)
+        select s.id,c.id,g.id,s.org_id,s.owner_id,g.generation,s.mcp_generation,$3,$4::text[],$5,case when s.provider='boat' and s.boat_runtime then r.epoch else null end
         from public.mcp_bindings b join public.sandboxes s on s.id=b.sandbox_id
         join public.mcp_connections c on c.id=b.connection_id join public.mcp_grants g on g.id=b.grant_id
+        left join public.runtime_enrolments r on r.sandbox_id=s.id
         where b.sandbox_id=$1::uuid and b.connection_id=$2::uuid and not c.disabled and public.mcp_grant_effective_status(g.status,g.revoked_at,g.refresh_consumed,g.refresh_until)='connected'
+        and (s.provider<>'boat' or not s.boat_runtime or (r.runtime_hash is not null and r.lifecycle_generation=s.lifecycle_generation
+          and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>now()
+          and not exists(select 1 from public.runtime_checkpoints p where p.sandbox_id=s.id and p.epoch=r.epoch)))
         and g.revoked_at is null and s.status not in ('stopped','deleted','failed')
         and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id)
         and c.org_id=s.org_id and g.connection_id=c.id and (c.scope='org' or c.owner_id=s.owner_id)
@@ -522,8 +526,12 @@ export function createSqlMcpLeasePort(sql: Sql) {
             `select l.id,l.connection_id,l.sandbox_id,l.org_id,l.owner_id from public.mcp_leases l
         join public.sandboxes s on s.id=l.sandbox_id join public.mcp_connections c on c.id=l.connection_id
         join public.mcp_grants g on g.id=l.grant_id
+        left join public.runtime_enrolments r on r.sandbox_id=s.id
         where l.hash=$1 and $2=any(l.operations) and l.expires_at>now() and l.revoked_at is null
         and g.revoked_at is null and public.mcp_grant_effective_status(g.status,g.revoked_at,g.refresh_consumed,g.refresh_until)='connected' and not c.disabled
+        and (s.provider<>'boat' or not s.boat_runtime or (l.runtime_epoch=r.epoch and r.runtime_hash is not null
+          and r.lifecycle_generation=s.lifecycle_generation and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>now()
+          and not exists(select 1 from public.runtime_checkpoints p where p.sandbox_id=s.id and p.epoch=r.epoch)))
         and l.generation=g.generation and l.sandbox_generation=s.mcp_generation
         and s.status not in ('stopped','deleted','failed')
         and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id)

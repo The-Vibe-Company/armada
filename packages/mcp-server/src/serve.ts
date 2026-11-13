@@ -62,6 +62,7 @@ import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import { createRuntimeEvents } from "./runtime-events.ts";
 import { createRuntimeFollowup } from "./runtime-followup.ts";
 import { createRuntimeGitHub } from "./runtime-github.ts";
+import { createRuntimeMcp } from "./runtime-mcp.ts";
 import { createRuntimeModelAccess } from "./runtime-model-access.ts";
 import { createRuntimeNativeAuth } from "./runtime-native-auth.ts";
 import { createRuntimeProgress } from "./runtime-progress.ts";
@@ -162,6 +163,13 @@ export async function startServer(
     providerForSandbox: (id) => createMcpSandboxProviderResolver(sql, providers)(id),
     authStore,
     supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
+  });
+  const runtimeMcp = createRuntimeMcp({
+    sql,
+    key: config.encryptionKey,
+    origin: config.publicUrl,
+    commands: runtimeCommands,
+    probe: (userId, orgId, connectionId) => mcp.controlBroker.status({ userId, orgId, connectionId }),
   });
   try {
     await retryDatabaseBoot(async () => {
@@ -340,6 +348,7 @@ export async function startServer(
     runtimeCheckpoint,
     runtimeResume,
     ...(runtimeGitHub ? { runtimeGitHub } : {}),
+    runtimeMcp,
     ...(runtimeLaunch
       ? { boatRuntimeLaunch: runtimeLaunch, runtimeHostFor: (apiKey: string) => createBoatProvider({ apiKey }) }
       : {}),
@@ -436,6 +445,7 @@ export async function startServer(
     runtimeCheckpoint,
     runtimeResume,
     ...(runtimeGitHub ? { runtimeGitHub } : {}),
+    runtimeMcp,
     ready: createDatabaseReadiness(sql),
     runtimeProviderFor,
     launch,

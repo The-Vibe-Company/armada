@@ -132,6 +132,7 @@ import { RequestTiming, withRequestTiming } from "./request-timing.ts";
 import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
+import type { RuntimeMcp } from "./runtime-mcp.ts";
 import type { RuntimeResume } from "./runtime-resume.ts";
 import { type createSandboxArmadaAccess, parseSandboxArmadaAccess } from "./sandbox-armada-access.ts";
 import { bunSql } from "./sql.ts";
@@ -147,6 +148,7 @@ import { orchestratorHttp } from "./orchestrator-api.ts";
 import type { OrchestratorRuntime } from "./orchestrator-runtime.ts";
 
 export interface ControlOptions {
+  runtimeMcp?: RuntimeMcp;
   runtimeGitHub?: RuntimeGitHub;
   runtimeResume?: RuntimeResume;
   runtimeCheckpoint?: RuntimeCheckpoint;
@@ -783,6 +785,7 @@ async function dispatch(
         checkpointVersion: options.runtimeCheckpoint ? 1 : 0,
         resumeVersion: options.runtimeResume ? 1 : 0,
         githubVersion: options.runtimeGitHub ? 1 : 0,
+        mcpVersion: options.runtimeMcp ? 1 : 0,
         enabled: Boolean(options.boatRuntimeLaunch && options.runtimeHostFor),
       },
     };
@@ -898,6 +901,7 @@ async function dispatch(
       "sandbox/advice": "resource_advice",
       "sandbox/send": "send",
       "sandbox/checkpoint-runtime-v1": "runtime_checkpoint",
+      "sandbox/configure-mcp-runtime-v1": "runtime_mcp_refresh",
       "sandbox/resume-runtime-v1": "runtime_resume",
       "sandbox/report": "report",
       "sandbox/stop": "stop",
@@ -948,6 +952,7 @@ async function dispatch(
         ...(options.runtimeCheckpoint ? { runtimeCheckpoint: options.runtimeCheckpoint } : {}),
         ...(options.runtimeResume ? { runtimeResume: options.runtimeResume } : {}),
         ...(options.runtimeGitHub ? { runtimeGitHub: options.runtimeGitHub } : {}),
+        ...(options.runtimeMcp ? { runtimeMcp: options.runtimeMcp } : {}),
         ...(options.connections ? { connections: options.connections } : {}),
         data: options.data(scopedCaller),
         measure: (phase, work) => measured(options, phase, work),
@@ -1146,6 +1151,13 @@ async function dispatch(
         policy: golden.sizePolicy ?? null,
       };
     }
+    case "sandbox/mcp-preflight-v1":
+      if (body.runtimeVersion !== 1 || !options.runtimeMcp)
+        throw new VaultError("unavailable", "Runtime MCP v1 is unavailable.");
+      return options.runtimeMcp.preflight(caller, {
+        org: required(body, "org"),
+        connections: body.connections as string[],
+      });
     case "sandbox/github-preflight-v1":
       if (body.runtimeVersion !== 1 || !options.runtimeGitHub)
         throw new VaultError("unavailable", "Runtime GitHub v1 is unavailable.");

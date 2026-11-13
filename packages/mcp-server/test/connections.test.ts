@@ -8,10 +8,22 @@ import {
   type Sql,
 } from "@armada/core";
 import { createSqlData } from "../src/data.ts";
+import { rowOnlyDatabase } from "./row-only-database.ts";
 import { database, ENCRYPTION_KEY } from "./support.ts";
 
+const sharedDatabase = rowOnlyDatabase();
+async function fixture({ isolated = false } = {}) {
+  const data = await (isolated ? database() : sharedDatabase());
+  return {
+    ...data,
+    close: async () => {
+      if (isolated) await data.db.close();
+    },
+  };
+}
+
 test("registry separates personal grants, fences leases on revoke, and refuses shared impersonation", async () => {
-  const { db, people: p } = await database();
+  const { close, db, people: p } = await fixture({ isolated: true });
   try {
     const registry = createSqlMcpRegistry(db, ENCRYPTION_KEY);
     const input = {
@@ -143,12 +155,12 @@ test("registry separates personal grants, fences leases on revoke, and refuses s
     expect((await db.query("select id from mcp_connections")).rows).toEqual([]);
     await db.exec("reset role");
   } finally {
-    await db.close();
+    await close();
   }
 });
 
 test("control DTOs never echo authentication and report an unconfigured broker honestly", async () => {
-  const { db, people: p } = await database();
+  const { close, db, people: p } = await fixture();
   try {
     const { decryptSecret } = await import("@armada/core");
     const { createSqlVaultStore } = await import("@armada/core/server");
@@ -215,12 +227,12 @@ test("control DTOs never echo authentication and report an unconfigured broker h
     expect((await call("delete", { org: p.org, id })).body.ok).toBe(true);
     expect((await call("list", { org: p.org })).body.connections).toEqual([]);
   } finally {
-    await db.close();
+    await close();
   }
 });
 
 test("MCP resource queries survive unchanged, while credentials remain encrypted write-only payloads", async () => {
-  const { db, people: p } = await database();
+  const { close, db, people: p } = await fixture();
   try {
     const registry = createSqlMcpRegistry(db, ENCRYPTION_KEY);
     const definition = {
@@ -284,12 +296,12 @@ test("MCP resource queries survive unchanged, while credentials remain encrypted
       await expect(registry.save(p.owner, p.org, { ...definition, authType, authentication })).rejects.toThrow();
     }
   } finally {
-    await db.close();
+    await close();
   }
 });
 
 test("pending OAuth take is actor-bound, single-use and fenced by reconnect, expiry and membership", async () => {
-  const { db, people: p } = await database();
+  const { close, db, people: p } = await fixture({ isolated: true });
   try {
     const { createSqlMcpPendingOAuthPort } = await import("@armada/core");
     const registry = createSqlMcpRegistry(db, ENCRYPTION_KEY);
@@ -356,12 +368,12 @@ test("pending OAuth take is actor-bound, single-use and fenced by reconnect, exp
     await expect(db.query("select * from mcp_pending_oauth")).rejects.toThrow(/permission denied/);
     await db.exec("reset role");
   } finally {
-    await db.close();
+    await close();
   }
 });
 
 test("durable invalidations reach every replica independently and roll back with revocation", async () => {
-  const { db, people: p } = await database();
+  const { close, db, people: p } = await fixture({ isolated: true });
   try {
     const { createSqlMcpInvalidationPort } = await import("@armada/core");
     const registry = createSqlMcpRegistry(db, ENCRYPTION_KEY);
@@ -396,12 +408,12 @@ test("durable invalidations reach every replica independently and roll back with
     await expect(db.query("select * from mcp_invalidation_deliveries")).rejects.toThrow(/permission denied/);
     await db.exec("reset role");
   } finally {
-    await db.close();
+    await close();
   }
 });
 
 test("authenticated browser callback delegates without client org and binds to the pending actor", async () => {
-  const { db, people: p } = await database();
+  const { close, db, people: p } = await fixture();
   try {
     const { createSqlMcpPendingOAuthPort, VaultError } = await import("@armada/core");
     const { createSqlVaultStore } = await import("@armada/core/server");
@@ -472,12 +484,12 @@ test("authenticated browser callback delegates without client org and binds to t
     expect(received).toEqual([{ actorId: p.owner, code: "callback-test-code", issuer: "https://issuer.example.com" }]);
     expect((await callback(p.owner)).status).toBe(404);
   } finally {
-    await db.close();
+    await close();
   }
 });
 
 test("canonical control lifecycle toggles fence tokens and bindings reflect authorized current state", async () => {
-  const { db, people: p } = await database();
+  const { close, db, people: p } = await fixture();
   try {
     const { createSqlMcpPendingOAuthPort, createSqlMcpInvalidationPort, encryptSecret } = await import("@armada/core");
     const { createSqlVaultStore } = await import("@armada/core/server");
@@ -660,12 +672,12 @@ test("canonical control lifecycle toggles fence tokens and bindings reflect auth
     await db.query("delete from members where org_id=$1 and user_id=$2", [p.org, p.owner]);
     expect((await call(p.owner, "sandbox-connections", { org: p.org, id: sandbox })).status).toBe(404);
   } finally {
-    await db.close();
+    await close();
   }
 });
 
 test("membership changes permanently fence only the actor's org leases, with fresh admission after rejoin", async () => {
-  const { db, people: p } = await database();
+  const { close, db, people: p } = await fixture();
   try {
     const registry = createSqlMcpRegistry(db, ENCRYPTION_KEY),
       grants = createSqlMcpGrantPort(db),
@@ -775,12 +787,12 @@ test("membership changes permanently fence only the actor's org leases, with fre
     expect((await registry.get(p.member, p.org, connection.id)).status).toBe("connected");
     expect(await leases.validate(otherOrgHash, "tools")).not.toBeNull();
   } finally {
-    await db.close();
+    await close();
   }
 });
 
 test("stdio is configured locally from a pinned definition, then explicitly reconfigured after enable", async () => {
-  const { db, people: p } = await database();
+  const { close, db, people: p } = await fixture();
   try {
     const { createSqlVaultStore } = await import("@armada/core/server");
     const { handleControlRequest } = await import("../src/control.ts");
@@ -854,12 +866,12 @@ test("stdio is configured locally from a pinned definition, then explicitly reco
       "connected",
     );
   } finally {
-    await db.close();
+    await close();
   }
 });
 
 test("catalog instances have independent defaults and metadata does not replace authentication", async () => {
-  const { db, people: p } = await database();
+  const { close, db, people: p } = await fixture();
   try {
     const registry = createSqlMcpRegistry(db, ENCRYPTION_KEY);
     const input = {
@@ -891,13 +903,13 @@ test("catalog instances have independent defaults and metadata does not replace 
     expect(await port.defaults(actor, "private")).toEqual([]);
     await expect(registry.save(p.owner, p.org, { ...input, serviceId: "slack" })).rejects.toThrow(/setup required/);
   } finally {
-    await db.close();
+    await close();
   }
 });
 
 test("metadata UPDATE refuses authority revoked after its pre-read", async () => {
   for (const scope of ["personal", "org"] as const) {
-    const { db, people: p } = await database();
+    const { close, db, people: p } = await fixture();
     try {
       const actor = scope === "personal" ? p.owner : p.admin;
       const registry = createSqlMcpRegistry(db, ENCRYPTION_KEY);
@@ -930,7 +942,7 @@ test("metadata UPDATE refuses authority revoked after its pre-read", async () =>
       ).toEqual([{ name: "Unchanged", default_for_launch: false }]);
       expect(outcome).toBeInstanceOf(Error);
     } finally {
-      await db.close();
+      await close();
     }
   }
 });

@@ -167,7 +167,7 @@ test("a health reply from before stop or an epoch replacement cannot publish rea
   }
 });
 
-test("one durable prompt survives a lost response, exact replays reconcile and conflicting text or new IDs never enqueue", async () => {
+test("one durable conversation survives lost responses and admits only exact retries or explicit same-conversation follow-ups", async () => {
   const f = await fixture(),
     session = await ready(f),
     input = { requestId: randomUUID(), text: "Report the current directory" };
@@ -209,6 +209,106 @@ test("one durable prompt survives a lost response, exact replays reconcile and c
   await denied(service.prompt(f.actor, f.sandbox.id, { ...input, requestId: randomUUID() }));
   expect((await commands.next(session.runtimeToken, session.epoch)).command).toBeNull();
   expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("running");
+  const projection = await db.query<{ conversation_ids: string[]; lifecycle_generation: string }>(
+    `select conversation_ids,lifecycle_generation::text from public.sandboxes where id=$1`,
+    [f.sandbox.id],
+  );
+  expect(projection.rows[0]).toEqual({
+    conversation_ids: [receipt.conversationId],
+    lifecycle_generation: session.epoch,
+  });
+
+  const followup = {
+    requestId: randomUUID(),
+    text: "Continue in that directory",
+    conversationId: receipt.conversationId,
+  };
+  expect(await service.prompt(f.actor, f.sandbox.id, followup)).toEqual({ state: "pending" });
+  await denied(service.prompt(f.actor, f.sandbox.id, { ...followup, requestId: randomUUID() }));
+  await denied(service.prompt(f.actor, f.sandbox.id, { ...followup, text: "Changed text" }));
+  await denied(service.prompt(f.actor, f.sandbox.id, { ...followup, conversationId: randomUUID() }));
+  const nextReceipt = { ...receipt, promptId: randomUUID() };
+  const nextCommand = await complete(session, nextReceipt);
+  expect(nextCommand).toMatchObject({
+    input: {
+      conversationId: receipt.conversationId,
+      model: f.sandbox.model,
+      reasoningEffort: f.sandbox.reasoningEffort,
+      cwd: "/home/user",
+    },
+  });
+  const nextExpected = { state: "admitted" as const, epoch: session.epoch, receipt: nextReceipt };
+  expect(await service.prompt(f.actor, f.sandbox.id, followup)).toEqual(nextExpected);
+  expect(await service.prompt(f.actor, f.sandbox.id, followup)).toEqual(nextExpected);
+  // Initial request replay still omits the now-persisted conversation in its payload.
+  expect(await service.prompt(f.actor, f.sandbox.id, input)).toEqual(expected);
+
+  const foreign = await fixture(),
+    foreignSession = await ready(foreign);
+  const foreignInput = { requestId: randomUUID(), text: "Another allocation" };
+  await service.prompt(foreign.actor, foreign.sandbox.id, foreignInput);
+  const foreignReceipt = { ...receipt, promptId: randomUUID(), conversationId: randomUUID() };
+  await complete(foreignSession, foreignReceipt);
+  await service.prompt(foreign.actor, foreign.sandbox.id, foreignInput);
+  await denied(
+    service.prompt(f.actor, f.sandbox.id, {
+      ...followup,
+      requestId: randomUUID(),
+      conversationId: foreignReceipt.conversationId,
+    }),
+  );
+
+  // A completed native busy/error RPC is reconcilable but does not lock the
+  // allocation: only an unresolved RPC blocks a fresh same-conversation request.
+  const busy = { ...followup, requestId: randomUUID() };
+  await service.prompt(f.actor, f.sandbox.id, busy);
+  const busyCommand = (await commands.next(session.runtimeToken, session.epoch)).command;
+  if (!busyCommand) throw Error("missing follow-up");
+  await commands.complete(session.runtimeToken, session.epoch, {
+    epoch: session.epoch,
+    requestId: busyCommand.requestId,
+    status: 409,
+    body: { version: 1, requestId: busyCommand.requestId, error: "conversation_busy" },
+  });
+  await denied(service.prompt(f.actor, f.sandbox.id, busy));
+  const recovered = { ...followup, requestId: randomUUID() };
+  expect(await service.prompt(f.actor, f.sandbox.id, recovered)).toEqual({ state: "pending" });
+  const finalReceipt = { ...receipt, promptId: randomUUID() };
+  await complete(session, finalReceipt);
+  expect(await service.prompt(f.actor, f.sandbox.id, recovered)).toEqual({
+    state: "admitted",
+    epoch: session.epoch,
+    receipt: finalReceipt,
+  });
+  expect((await commands.next(session.runtimeToken, session.epoch)).command).toBeNull();
+});
+
+test("prompt receipts cannot replace the allocation conversation and invalid replies remain redacted", async () => {
+  const f = await fixture(),
+    session = await ready(f);
+  const input = { requestId: randomUUID(), text: "Begin" };
+  await service.prompt(f.actor, f.sandbox.id, input);
+  const receipt = { promptId: randomUUID(), conversationId: randomUUID(), status: "queued" };
+  await complete(session, receipt);
+  await service.prompt(f.actor, f.sandbox.id, input);
+  for (const bad of [
+    { ...receipt, conversationId: randomUUID() },
+    { ...receipt, conversationId: "not-a-uuid" },
+    { ...receipt, promptId: "not-a-uuid" },
+    { ...receipt, status: "not-a-status" },
+  ]) {
+    const followup = { requestId: randomUUID(), text: "Continue", conversationId: receipt.conversationId };
+    await service.prompt(f.actor, f.sandbox.id, followup);
+    await complete(session, bad);
+    await denied(service.prompt(f.actor, f.sandbox.id, followup));
+  }
+  expect(
+    (
+      await db.query<{ conversation_ids: string[] }>(`select conversation_ids from public.sandboxes where id=$1`, [
+        f.sandbox.id,
+      ])
+    ).rows[0]?.conversation_ids,
+  ).toEqual([receipt.conversationId]);
 });
 
 test("new ready/prompt operations fail closed on current account, membership, issuer, host and lifecycle authority", async () => {

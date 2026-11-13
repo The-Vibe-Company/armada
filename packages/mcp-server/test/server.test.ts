@@ -364,6 +364,7 @@ describe("tools", () => {
         "runtime_checkpoint",
         "runtime_resume",
         "runtime_github_status",
+        "runtime_mcp_refresh",
         "status",
         "steer",
         "stop",
