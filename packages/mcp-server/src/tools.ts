@@ -29,7 +29,6 @@ import {
   MAX_SANDBOX_EXTENSION_TTL_SECONDS,
   type MemberRole,
   MODEL_CATALOG,
-  type ModelChoice,
   PROVIDER_LIMITS,
   type Provider,
   ProviderError,
@@ -370,7 +369,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       // The SDK's callback type is generic over every schema flavour; the input is the parsed `In`.
       (async (args: z.infer<z.ZodObject<In>>): Promise<CallToolResult> => {
         try {
-          const routed = await context.dockerControls?.invoke(caller, name, args);
+          const routed = name === "send" ? undefined : await context.dockerControls?.invoke(caller, name, args);
           const result = routed?.handled ? routed.result : await run(args);
           return {
             structuredContent: result as Record<string, unknown>,
@@ -1426,6 +1425,110 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     },
   );
 
+  async function sendSandbox(args: import("./runtime-followup.ts").RuntimeFollowupInput) {
+    const routed = await context.dockerControls?.invoke(caller, "send", { ...args });
+    if (routed?.handled) return routed.result as import("@armada/core").PromptReceipt & { id: string };
+    const selected = await visible(args.id);
+    if (selected.boatRuntime || selected.runtimeTransport === "dialout") {
+      if (!context.runtimeSend) throw new ToolError("unsupported", "Runtime follow-up is unavailable.");
+      return context.runtimeSend(caller, args);
+    }
+    if (args.request_id !== undefined)
+      throw new ToolError("invalid_request", "request_id is supported only for runtime follow-up.");
+    const { sandbox: found, provider } = await live(args.id, false, selected);
+    if (args.prompt.trim() === "") throw new ToolError("invalid_request", "The prompt is empty.");
+    if (found.credentialId)
+      await measure("send_credentials", () =>
+        context.launchCredentials.resolve(
+          { userId: caller.userId, orgId: found.orgId, role: "member" },
+          found.harness,
+          found.credentialId ?? undefined,
+          found.credentialVersion ?? undefined,
+        ),
+      );
+    const stored =
+      found.model !== null && found.reasoningEffort !== null
+        ? { model: found.model, reasoningEffort: found.reasoningEffort }
+        : undefined;
+    // Recorded defaults bypass today's catalog; an override applies to this turn only.
+    const choice =
+      args.model === undefined && args.reasoning_effort === undefined
+        ? stored
+        : resolveModelChoice(found.harness, { model: args.model, reasoningEffort: args.reasoning_effort }, stored);
+    const conversation = args.conversation_id ?? found.conversationIds.at(-1);
+    const machine = await measure("send_state", () => provider.get(found.providerSandboxId));
+    if (machine.state === "stopped" && found.stoppedAt === null) {
+      await data.sandboxes.update(found.id, {
+        status: "stopped",
+        stoppedAt: (machine.stoppedAt ?? context.now()).toISOString(),
+        ...(found.lifecycleGeneration === undefined ? {} : { expectedGeneration: found.lifecycleGeneration }),
+      });
+    }
+    await measure("send_turn_auth", async () =>
+      context.launchCredentials.assertTurn?.(
+        { userId: found.ownerId, orgId: found.orgId, role: "member" },
+        found.id,
+        machine.state === "stopped",
+      ),
+    );
+    let acknowledged = false;
+    return sandboxActivity(
+      data.sandboxes,
+      found,
+      {
+        clearTaskOutcome: true,
+        renewLifecycle: machine.state === "stopped",
+        stopRequested: false,
+        ...(machine.state === "stopped" ? { status: "starting" as const, stoppedAt: null } : {}),
+      },
+      async (signal) => {
+        const receipt = await measure("send_submit", () =>
+          provider
+            .prompt({
+              sandboxId: found.providerSandboxId,
+              harness: found.harness,
+              text: args.prompt,
+              signal,
+              ...(conversation ? { conversationId: conversation } : {}),
+              ...(choice ?? {}),
+            })
+            .catch(unknownMutationOutcome),
+        );
+        acknowledged = true;
+        try {
+          await data.sandboxes.recordTurnModel?.(found.id, receipt.promptId, choice?.model ?? null);
+        } catch {
+          try {
+            (context.logError ?? console.error)(
+              "armada: turn model request record unavailable; accepted prompt continues.",
+            );
+          } catch {
+            /* Logging must not change accepted work. */
+          }
+        }
+        const conversationIds = found.conversationIds.includes(receipt.conversationId)
+          ? found.conversationIds
+          : [...found.conversationIds, receipt.conversationId];
+        return {
+          patch: {
+            status: "running",
+            taskPromptId: receipt.promptId,
+            statusReason: null,
+            conversationIds,
+            stoppedAt: null,
+            rearmDeadline: receipt.resumed === true,
+          },
+          result: {
+            id: found.id,
+            promptId: receipt.promptId,
+            conversationId: receipt.conversationId,
+            status: receipt.status,
+          },
+        };
+      },
+    ).catch((error) => publicationFailure(error, acknowledged));
+  }
+
   tool(
     "send",
     {
@@ -1457,99 +1560,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         status: z.enum(["queued", "running", "finished", "failed", "interrupted"]),
       },
     },
-    async (args) => {
-      const selected = await visible(args.id);
-      if (selected.boatRuntime || selected.runtimeTransport === "dialout") {
-        if (!context.runtimeSend) throw new ToolError("unsupported", "Runtime follow-up is unavailable.");
-        return context.runtimeSend(caller, args);
-      }
-      if (args.request_id !== undefined)
-        throw new ToolError("invalid_request", "request_id is supported only for runtime follow-up.");
-      const { sandbox: found, provider } = await live(args.id, false, selected);
-      if (args.prompt.trim() === "") throw new ToolError("invalid_request", "The prompt is empty.");
-      if (found.credentialId)
-        await measure("send_credentials", () =>
-          context.launchCredentials.resolve(
-            { userId: caller.userId, orgId: found.orgId, role: "member" },
-            found.harness,
-            found.credentialId ?? undefined,
-            found.credentialVersion ?? undefined,
-          ),
-        );
-      const choice = turnModel(found, { model: args.model, reasoningEffort: args.reasoning_effort });
-      const conversation = args.conversation_id ?? found.conversationIds.at(-1);
-      const machine = await measure("send_state", () => provider.get(found.providerSandboxId));
-      if (machine.state === "stopped" && found.stoppedAt === null) {
-        await data.sandboxes.update(found.id, {
-          status: "stopped",
-          stoppedAt: (machine.stoppedAt ?? context.now()).toISOString(),
-          ...(found.lifecycleGeneration === undefined ? {} : { expectedGeneration: found.lifecycleGeneration }),
-        });
-      }
-      await measure("send_turn_auth", async () =>
-        context.launchCredentials.assertTurn?.(
-          { userId: found.ownerId, orgId: found.orgId, role: "member" },
-          found.id,
-          machine.state === "stopped",
-        ),
-      );
-      let acknowledged = false;
-      return sandboxActivity(
-        data.sandboxes,
-        found,
-        {
-          clearTaskOutcome: true,
-          renewLifecycle: machine.state === "stopped",
-          stopRequested: false,
-          ...(machine.state === "stopped" ? { status: "starting" as const, stoppedAt: null } : {}),
-        },
-        async (signal) => {
-          const receipt = await measure("send_submit", () =>
-            provider
-              .prompt({
-                sandboxId: found.providerSandboxId,
-                harness: found.harness,
-                text: args.prompt,
-                signal,
-                ...(conversation ? { conversationId: conversation } : {}),
-                ...(choice ?? {}),
-              })
-              .catch(unknownMutationOutcome),
-          );
-          acknowledged = true;
-          try {
-            await data.sandboxes.recordTurnModel?.(found.id, receipt.promptId, choice?.model ?? null);
-          } catch {
-            try {
-              (context.logError ?? console.error)(
-                "armada: turn model request record unavailable; accepted prompt continues.",
-              );
-            } catch {
-              /* Logging must not change accepted work. */
-            }
-          }
-          const conversationIds = found.conversationIds.includes(receipt.conversationId)
-            ? found.conversationIds
-            : [...found.conversationIds, receipt.conversationId];
-          return {
-            patch: {
-              status: "running",
-              taskPromptId: receipt.promptId,
-              statusReason: null,
-              conversationIds,
-              stoppedAt: null,
-              rearmDeadline: receipt.resumed === true,
-            },
-            result: {
-              id: found.id,
-              promptId: receipt.promptId,
-              conversationId: receipt.conversationId,
-              status: receipt.status,
-            },
-          };
-        },
-      ).catch((error) => publicationFailure(error, acknowledged));
-    },
+    sendSandbox,
   );
 
   tool(
@@ -2043,24 +2054,6 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
   }
 
   return server;
-}
-
-/**
- * What a send runs with: an override, else the sandbox's recorded choice. A sandbox launched before the
- * choice was recorded keeps the provider's default unless the send names a model or an effort. An override
- * applies to this turn only.
- */
-function turnModel(
-  sandbox: SandboxView,
-  requested: { model?: string | undefined; reasoningEffort?: string | undefined },
-): ModelChoice | undefined {
-  const stored =
-    sandbox.model !== null && sandbox.reasoningEffort !== null
-      ? { model: sandbox.model, reasoningEffort: sandbox.reasoningEffort }
-      : undefined;
-  // The recorded choice was checked at launch; it is sent as is, even if the catalog has moved on since.
-  if (requested.model === undefined && requested.reasoningEffort === undefined) return stored;
-  return resolveModelChoice(sandbox.harness, requested, stored);
 }
 
 /** A sandbox's ids, with the Boat field of earlier clients kept for Boat sandboxes only. */
