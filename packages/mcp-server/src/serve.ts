@@ -376,8 +376,10 @@ export async function startServer(
   const dockerControls =
     env.ARMADA_DOCKER_HOSTS === "1"
       ? createDockerSandboxControls(sql, config.encryptionKey, {
+          prepareMcp: runtimeMcp.prepare,
           ...(dockerBootstrap ? { resume: dockerBootstrap } : {}),
           send: createDockerNormalSend(sql, config.encryptionKey, {
+            prepareMcp: runtimeMcp.prepare,
             enabled: dockerEnabled && Boolean(dockerBootstrap),
           }),
         })
@@ -386,6 +388,7 @@ export async function startServer(
   const dockerLaunch =
     env.ARMADA_DOCKER_HOSTS === "1"
       ? createDockerNormalLaunch(sql, config.encryptionKey, {
+          mcp: runtimeMcp,
           enabled: dockerLaunchEnabled,
           credentials: dockerCredentials,
           ...(dockerBootstrap ? { bootstrap: dockerBootstrap } : {}),
