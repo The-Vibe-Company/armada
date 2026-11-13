@@ -97,6 +97,27 @@ export async function dockerHostsEnabled(): Promise<boolean> {
 }
 
 /**
+ * The selected organization's host list for a Docker sandbox page's host name (#1526), or null when it is not read
+ * within the navigation's patience: the page then names the host by its short id instead of waiting.
+ */
+export async function hostListForPage(): Promise<DockerHostList | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), NAV_DEADLINE_MS);
+  });
+  try {
+    return await Promise.race([
+      readSelectedDockerHosts().then((hosts) => (hosts.state === "ready" ? hosts.list : null)),
+      deadline,
+    ]);
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * The Docker entry of the server's launch options, once per request, or null when it cannot be read or has none
  * (an older server, Docker not enabled): the launch then stays unavailable, never a dead button.
  */

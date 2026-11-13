@@ -124,8 +124,8 @@ test("template commands use the API contracts for all six dashboard-proxied oper
   }
 });
 
-test("template JSON forwards Docker host/image placement without a golden", async () => {
-  const docker = { provider: "docker", hostId: golden, image: `worker@sha256:${"a".repeat(64)}`, harness: "codex" };
+test("template JSON forwards Docker host placement without a golden", async () => {
+  const docker = { provider: "docker", hostId: golden, harness: "codex" };
   const result = await invoke(["template", "create", "docker", "--file", "docker.json", "--json"], {
     file: JSON.stringify(docker),
     response: {

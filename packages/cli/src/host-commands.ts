@@ -132,7 +132,13 @@ export async function hostCommand(argv: readonly string[], auth: AuthIo): Promis
   try {
     while (auth.now().getTime() < deadline && slept < initialBudget) {
       const host = (await listHosts(client, org)).hosts.find((candidate) => candidate.id === ticket.hostId);
-      if (host?.state === "online") {
+      if (!host) {
+        auth.out(
+          "The new registration is no longer pending (canceled or expired). If the installer reused an existing machine, it keeps its existing name and registration. Run armada host list to confirm.\n",
+        );
+        return 0;
+      }
+      if (host.state === "online") {
         auth.out(`Docker host ${ticket.hostId} is online.\n`);
         return 0;
       }

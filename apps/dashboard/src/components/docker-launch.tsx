@@ -61,7 +61,7 @@ export function DockerLaunchDialog({
         <DialogHeader>
           <DialogTitle>Launch on {hostName}</DialogTitle>
           <DialogDescription>
-            An agent in a private sandbox, started from Armada's image on this host.
+            An agent in a private sandbox, using the official Armada environment on this host.
           </DialogDescription>
         </DialogHeader>
         <DockerLaunchForm
@@ -154,13 +154,11 @@ function DockerLaunchForm({
         className="space-y-4"
         footer={
           <div className="flex items-center justify-end gap-3">
+            <LaunchProgress />
             {usable ? (
-              <>
-                <LaunchProgress />
-                <SubmitButton>
-                  <RocketIcon /> Launch
-                </SubmitButton>
-              </>
+              <SubmitButton>
+                <RocketIcon /> Launch
+              </SubmitButton>
             ) : (
               <>
                 <p id={`${id}-no-account`} className="mr-auto text-xs text-warning">
@@ -186,7 +184,7 @@ function DockerLaunchForm({
           />
         </div>
         <p className="text-sm">
-          <span className="text-muted-foreground">Image:</span> Armada default{" "}
+          <span className="text-muted-foreground">Environment:</span> Armada official{" "}
           <span className="text-muted-foreground">(fetched by your host the first time)</span>
         </p>
         {harnesses.length > 1 ? (
@@ -232,7 +230,7 @@ function LaunchProgress() {
   return (
     <p role="status" className="mr-auto text-xs text-muted-foreground" data-docker-launch-progress>
       {pending
-        ? "Preparing the image on your host and starting the sandbox… The first launch can take a few minutes."
+        ? "Preparing the official Armada environment on your host and starting the sandbox… The first launch can take a few minutes."
         : null}
     </p>
   );

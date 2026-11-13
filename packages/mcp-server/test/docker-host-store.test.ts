@@ -33,7 +33,7 @@ async function fixture() {
   const ticket = await store.issueRegistration(actor);
   const installationId = randomUUID();
   const host = await store.exchangeRegistration(ticket.registrationToken, installationId);
-  return { actor, memberId, ticket, installationId, ...host };
+  return { actor, memberId, backupAdmin, ticket, installationId, ...host };
 }
 function job() {
   return {
@@ -90,6 +90,58 @@ test("registration is single-use, expires, and rechecks the issuing admin", asyn
     a.actor.userId,
   ]);
   await denied(store.exchangeRegistration(demoted.registrationToken, randomUUID()));
+});
+
+test("registration reuse cancels only a fresh same-owner/org ticket and preserves existing machine authority", async () => {
+  const a = await fixture(),
+    b = await fixture();
+  await db.query(`update docker_hosts set name='existing office',last_seen_at=now()-interval '1 day' where id=$1`, [
+    a.hostId,
+  ]);
+  const sameOrgTicket = await store.issueRegistration({ ...a.actor, userId: a.backupAdmin });
+  const sameOrgOther = await store.exchangeRegistration(sameOrgTicket.registrationToken, randomUUID());
+  const fresh = await store.issueRegistration(a.actor, "unused new name");
+  const expired = await store.issueRegistration(a.actor);
+  await db.query(`update docker_hosts set registration_expires_at=now()-interval '1 second' where id=$1`, [
+    expired.hostId,
+  ]);
+  const revoked = await store.issueRegistration(a.actor);
+  await store.revoke(a.actor, revoked.hostId);
+  const revokedTargetTicket = await store.issueRegistration(a.actor);
+  const revokedTarget = await store.exchangeRegistration(revokedTargetTicket.registrationToken, randomUUID());
+  await store.revoke(a.actor, revokedTarget.hostId);
+  for (const [token, hostId] of [
+    [fresh.registrationToken, b.hostId],
+    [fresh.registrationToken, sameOrgOther.hostId],
+    [fresh.registrationToken, fresh.hostId],
+    [fresh.registrationToken, revokedTarget.hostId],
+    [fresh.registrationToken, randomUUID()],
+    [fresh.registrationToken, "malformed"],
+    ["malformed", a.hostId],
+    [expired.registrationToken, a.hostId],
+    [revoked.registrationToken, a.hostId],
+    [a.ticket.registrationToken, a.hostId],
+    [a.hostToken, a.hostId],
+  ] as const)
+    await denied(store.reuseRegistration(token, hostId));
+  await db.query(`update members set role='member' where org_id=$1 and user_id=$2`, [a.actor.orgId, a.actor.userId]);
+  await denied(store.reuseRegistration(fresh.registrationToken, a.hostId));
+  await db.query(`update members set role='admin' where org_id=$1 and user_id=$2`, [a.actor.orgId, a.actor.userId]);
+  const before = await db.query(`select * from docker_hosts where id=$1`, [a.hostId]);
+  expect(await store.reuseRegistration(fresh.registrationToken, a.hostId)).toEqual({
+    hostId: a.hostId,
+    name: "existing office",
+  });
+  expect((await db.query(`select * from docker_hosts where id=$1`, [a.hostId])).rows).toEqual(before.rows);
+  const canceled = await db.query<{ registration_hash: string | null; expired: boolean }>(
+    `select registration_hash,registration_expires_at<=now() as expired from docker_hosts where id=$1`,
+    [fresh.hostId],
+  );
+  expect(canceled.rows[0]).toEqual({ registration_hash: null, expired: true });
+  await denied(store.exchangeRegistration(fresh.registrationToken, randomUUID()));
+  await denied(store.reuseRegistration(fresh.registrationToken, a.hostId));
+  expect(await store.poll(a.hostToken, a.installationId)).toBeNull();
+  expect((await store.list(a.actor)).some((host) => host.id === fresh.hostId)).toBe(false);
 });
 
 test("host credentials bind installation, owner membership, and revocation", async () => {

@@ -165,6 +165,28 @@ async function connected(native: LocalHostIo, binary: string, io: Io): Promise<n
   return 1;
 }
 
+async function downloadHost(native: LocalHostIo, server: string): Promise<Uint8Array> {
+  const download = async (path: string) => {
+    const response = await native.fetch(`${server}${path}`, {
+      redirect: "error",
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!response.ok || response.redirected || (response.url && response.url !== `${server}${path}`))
+      return failed("Host download failed or redirected; no downloaded binary was executed.");
+    return response;
+  };
+  const manifest: unknown = await (await download("/api/docker-host/install.json")).json();
+  if (!manifest || typeof manifest !== "object") return failed("Invalid host install manifest.");
+  const pins = manifest as Record<string, unknown>;
+  const digest = pins[native.arch];
+  if (typeof pins.version !== "string" || !pins.version || typeof digest !== "string" || !/^[a-f0-9]{64}$/.test(digest))
+    return failed("Invalid host install manifest.");
+  const bytes = new Uint8Array(await (await download(`/api/runtime/artifacts/${digest}`)).arrayBuffer());
+  if (createHash("sha256").update(bytes).digest("hex") !== digest)
+    return failed("Docker host artifact digest mismatch; no downloaded binary was installed or executed.");
+  return bytes;
+}
+
 export async function localHostCommand(argv: readonly string[], io: Io, native: LocalHostIo): Promise<number> {
   try {
     const [operation, ...rest] = argv;
@@ -227,8 +249,58 @@ export async function localHostCommand(argv: readonly string[], io: Io, native: 
       return 0;
     }
     if (current?.registered) {
+      const bytes = await downloadHost(native, server ?? "");
+      const temporary = `${binary}.${randomUUID()}.tmp`;
+      await native.writeExclusive(temporary, bytes);
+      try {
+        if ((await native.execute(temporary, ["upgrade", "--server", server ?? ""], undefined, 180_000)).code !== 0)
+          return failed(
+            "Could not safely upgrade the existing Docker host; registration preserved. Inspect the local service before retrying.",
+          );
+      } finally {
+        await native.remove(temporary);
+      }
+      const token = (await native.readStdin()).trim();
+      if (!/^[a-f0-9]{64}$/.test(token))
+        return invalid("Pipe a valid one-use registration token on stdin; never pass it as an argument.");
+      let name: string | null = null;
+      try {
+        const response = await native.fetch(`${server}/api/docker-host/reuse-registration`, {
+          method: "POST",
+          redirect: "error",
+          signal: AbortSignal.timeout(30_000),
+          headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+          body: JSON.stringify({ hostId: current.hostId }),
+        });
+        if (
+          !response.ok ||
+          response.redirected ||
+          (response.url && response.url !== `${server}/api/docker-host/reuse-registration`)
+        )
+          throw new Error("Cannot reconcile registration");
+        const value: unknown = await response.json();
+        if (!value || typeof value !== "object") throw new Error("Invalid identity");
+        const identity = value as Record<string, unknown>;
+        if (
+          identity.hostId !== current.hostId ||
+          !(
+            identity.name === null ||
+            (typeof identity.name === "string" &&
+              identity.name.length > 0 &&
+              identity.name.length <= 64 &&
+              !/[\p{C}]/u.test(identity.name))
+          )
+        )
+          throw new Error("Invalid identity");
+        name = identity.name as string | null;
+        io.out("The unused new registration was canceled; its token was not exchanged for machine credentials.\n");
+      } catch {
+        io.err(
+          "Could not reconcile the unused registration or look up its name. It will expire automatically; Ctrl-C stops host add waiting. Existing credentials are preserved.\n",
+        );
+      }
       io.out(
-        `Existing Docker host: ${JSON.stringify(current)}\nKeeping its binary and registration; the new one-use token has not been consumed.\n`,
+        `This machine is already registered as ${name === null ? current.hostId : `${JSON.stringify(name)} (${current.hostId})`}.\nExisting Docker host: ${JSON.stringify(current)}\nKeeping its registration; the host binary was checked and upgraded safely.\n`,
       );
       if (!current.connected) {
         io.out("Restarting the existing user service and waiting up to 60 seconds for connection.\n");
@@ -251,29 +323,7 @@ export async function localHostCommand(argv: readonly string[], io: Io, native: 
     const token = (await native.readStdin()).trim();
     if (!/^[a-f0-9]{64}$/.test(token))
       return invalid("Pipe a valid one-use registration token on stdin; never pass it as an argument.");
-    const download = async (path: string) => {
-      const response = await native.fetch(`${server}${path}`, {
-        redirect: "error",
-        signal: AbortSignal.timeout(30_000),
-      });
-      if (!response.ok || response.redirected || (response.url && response.url !== `${server}${path}`))
-        return failed("Host download failed or redirected; no downloaded binary was executed.");
-      return response;
-    };
-    const manifest: unknown = await (await download("/api/docker-host/install.json")).json();
-    if (!manifest || typeof manifest !== "object") return failed("Invalid host install manifest.");
-    const pins = manifest as Record<string, unknown>;
-    const digest = pins[native.arch];
-    if (
-      typeof pins.version !== "string" ||
-      !pins.version ||
-      typeof digest !== "string" ||
-      !/^[a-f0-9]{64}$/.test(digest)
-    )
-      return failed("Invalid host install manifest.");
-    const bytes = new Uint8Array(await (await download(`/api/runtime/artifacts/${digest}`)).arrayBuffer());
-    if (createHash("sha256").update(bytes).digest("hex") !== digest)
-      return failed("Docker host artifact digest mismatch; no downloaded binary was installed or executed.");
+    const bytes = await downloadHost(native, server ?? "");
     await checkPath(native, dirname(binary), true);
     const temporary = `${binary}.${randomUUID()}.tmp`;
     await native.writeExclusive(temporary, bytes);

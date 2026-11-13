@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import {
   connectedHostName,
   type DockerHost,
+  dockerSandboxName,
   expiryCountdown,
   hostFact,
   hostName,
@@ -11,6 +12,7 @@ import {
   parseDockerHostList,
   parseHostRegistration,
   revokeWarning,
+  sandboxHostLabel,
 } from "../src/lib/docker-hosts.ts";
 
 const ID = "70bde9cd-36c9-40af-b15e-65b2f9d3c2a2";
@@ -150,4 +152,13 @@ test("only an unmounted host route (404 or 405 without a code) reads as Docker n
   expect(isRouteAbsent({ status: 403, code: undefined })).toBe(false);
   expect(isRouteAbsent({ status: 503, code: undefined })).toBe(false);
   expect(isRouteAbsent({ status: undefined, code: undefined })).toBe(false);
+});
+
+test("a Docker sandbox page names its host and itself in short, readable words", () => {
+  const list = { placement: true, hosts: [host({ name: "stan-oneclick" })], skipped: 0 };
+  expect(sandboxHostLabel(list, ID)).toBe("stan-oneclick");
+  expect(sandboxHostLabel(list, OTHER)).toBe("Host 11111111");
+  expect(sandboxHostLabel(null, ID)).toBe("Host 70bde9cd");
+  expect(sandboxHostLabel(list, null)).toBe("Unknown");
+  expect(dockerSandboxName(ID)).toBe("docker-70bde9cd");
 });

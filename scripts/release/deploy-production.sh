@@ -14,6 +14,14 @@ done
 source_dir=$(mktemp -d)
 trap 'rm -rf "$source_dir"' EXIT
 git archive "$RELEASE_SHA" | tar -x -C "$source_dir"
+# git archive intentionally omits generated release metadata. Carry only the
+# validated public pin into the source-built server, never the tooling checkout.
+pin=packages/core/src/official-sandbox-image.json
+if [[ -f "$pin" ]] && jq -e 'type == "object"' "$pin" >/dev/null; then
+  jq -e --arg version "$RELEASE_VERSION" '.version == $version and (.image | test("^ghcr[.]io/the-vibe-company/armada-sandbox@sha256:[a-f0-9]{64}$"))' "$pin" >/dev/null \
+    || fail 'Official sandbox image pin does not match this release.'
+  cp "$pin" "$source_dir/$pin"
+fi
 cd "$source_dir"
 
 supabase link --project-ref "$SUPABASE_PROJECT_ID"
@@ -57,6 +65,16 @@ done
 # Upload the repository root: Vercel project Root Directory remains apps/dashboard,
 # with workspace sources outside that directory included in its build settings.
 # deploy waits for Ready (no --no-wait), then promotes domains only on successful build.
-vercel deploy --prod --yes --token "$VERCEL_TOKEN" \
-  --meta "githubCommitSha=$RELEASE_SHA" --meta "armadaVersion=$RELEASE_VERSION"
+if [[ "${PREBUILT_DASHBOARD:-}" == true ]]; then
+  # Staging builds on the Actions runner, including the release smoke call.
+  # VERCEL_TOKEN is read from the environment, never exposed in argv.
+  vercel pull --yes --environment=production
+  vercel build --prod
+  vercel deploy --prebuilt --prod --yes \
+    --meta "githubCommitSha=$RELEASE_SHA" --meta "armadaVersion=$RELEASE_VERSION"
+else
+  # Production stays unchanged until the owner confirms staging cutover.
+  vercel deploy --prod --yes --token "$VERCEL_TOKEN" \
+    --meta "githubCommitSha=$RELEASE_SHA" --meta "armadaVersion=$RELEASE_VERSION"
+fi
 echo "Released server and dashboard $RELEASE_VERSION from $RELEASE_SHA" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"

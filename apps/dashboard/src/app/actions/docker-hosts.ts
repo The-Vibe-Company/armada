@@ -1,6 +1,6 @@
 "use server";
 
-import { DOCKER_DEFAULT_IMAGE, type Harness } from "@armada/core";
+import type { Harness } from "@armada/core";
 import { revalidatePath } from "next/cache";
 import { type ActionResult, done, fail, formString, isUuid } from "@/lib/action";
 import { ControlError, controlPost } from "@/lib/control";
@@ -151,8 +151,6 @@ export async function launchOnDockerHost(
         dockerLaunchBody({
           org,
           hostId,
-          // The person never chooses an image: Armada's official one (#1507, #1528).
-          image: DOCKER_DEFAULT_IMAGE,
           harness,
           credentialId: account.id,
           requestId,

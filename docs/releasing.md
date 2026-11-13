@@ -351,3 +351,93 @@ APP_STORE_CONNECT_API_* and IOS_DISTRIBUTION_CERTIFICATE_* secrets remain in tha
 environment (see apps/ios/README.md); no new iOS credentials/settings are required.
 Changing TestFlight's beta cadence or coupling its app binary to release tags is
 outside this small deployment-gate PR.
+
+## Dashboard Actions cutover (#1547, step 1)
+
+This step establishes the staging path **beside** the existing Vercel Git
+integration. Step 0 already skips Git builds on every branch except main. This
+step preserves that skip, main Git deployments, Railway settings, and production's
+deployment cadence.
+Do not claim the final release-only policy is active yet. The target policy is
+staging on main commits, production only at a release, with dashboard builds in
+Actions rather than Vercel; steps 2 and 3 complete that policy after owner proof.
+
+On every main push, **Pinned staging smoke → Build and deploy staging dashboard**
+uses the triggering SHA and the GitHub **staging** environment's existing
+`VERCEL_TOKEN`, `VERCEL_ORG_ID`, and `VERCEL_PROJECT_ID`. These must identify
+**armada-dashboard-staging**, never armada-dashboard. Keep the project's Root
+Directory at **apps/dashboard** and enable **Include source files outside of the
+Root Directory in the Build Step**. Preserve its production-environment build
+variables (including public Supabase configuration). The checkout stays at repo
+root so Bun workspaces resolve correctly. Node 24, repository-pinned Bun and
+Vercel CLI 65.14.0 run `vercel pull --environment=production`, `vercel build --prod`,
+then `vercel deploy --prebuilt --prod`: here `--prod` promotes the **staging
+project's** domain, not Armada production. The token is environment-only.
+See Vercel's [Actions guide](https://vercel.com/kb/guide/how-can-i-use-github-actions-with-vercel)
+and [CLI token guidance](https://github.com/vercel-labs/agent-skills/blob/main/skills/vercel-cli-with-tokens/SKILL.md).
+
+When `STAGING_GATED_DEPLOYS=true`, the standalone dashboard job is skipped: the
+existing serialized staging deployment builds prebuilt output instead, after
+server health and before smoke, including exact-SHA release smoke calls. The
+existing opt-in checks, migrations, server deployment and smoke stay unchanged.
+Without that variable the new job deploys only the dashboard; existing server
+and smoke mechanisms remain in place. This adds no PR CI job or PR preview.
+Existing staging FIFO concurrency is retained for this bootstrap step.
+
+**Owner proof before step 2:** after merging, inspect this commit's Actions build
+and the staging project's deployment list. Confirm the CLI deployment is Ready,
+its `githubCommitSha` matches the main commit, and its staging domain renders and
+can log in. Confirm build logs are in Actions, not a Vercel remote build. Git may
+still create a second staging deployment in this temporary overlap. No agent
+performs a deployment or changes provider settings. Leave both Git integrations
+in place until this proof succeeds; if Actions fails, Git remains the fallback.
+Only after the owner confirms this merge and staging proof may the next PR turn
+off Git deployments on both projects. Intermediate PRs use `Refs #1547`; only the final
+production release-only cutover closes the issue.
+
+
+## Disable dashboard Git deployments (#1547, step 2)
+
+This section supersedes the earlier instructions to retain PR previews or move
+Vercel's production branch to an unused branch. After step 1 is proven, both
+dashboard projects use `apps/dashboard/vercel.json` with
+`git.deploymentEnabled: false`. Vercel documents the boolean `false` as disabling
+automatic deployments for **all branches**, unlike the temporary step-0
+`ignoreCommand`, which still let main build. The ignore command is removed.
+See [Vercel Git configuration](https://vercel.com/docs/project-configuration/git-configuration#turning-off-all-automatic-deployments).
+
+This file applies to **both** armada-dashboard and armada-dashboard-staging
+because both projects use Root Directory **apps/dashboard**. The owner must
+confirm that root setting in each project; a different root/config override
+would not be covered by this change. No token or project ID is embedded in the
+file. Git deployment disablement does not disable the explicit CLI upload path:
+staging continues to build in GitHub Actions and deploy with `--prebuilt`.
+Do not disconnect projects, delete domains, or remove their build/runtime vars.
+Production's existing CLI release path remains available, but the final
+production workflow/cadence cutover is still step 3. Railway Git deployment
+settings are unchanged by this Vercel-only slice.
+
+### Owner merge/deployment prerequisites and proof
+
+- Before merging this stacked step, confirm step 1's main Actions run built and
+  uploaded a Ready deployment to **armada-dashboard-staging**, with matching SHA,
+  working domain and login. Preparing the PR in parallel does not waive proof.
+- After merge, ensure active branches incorporate this config. Vercel evaluates
+  configuration from the pushed source; old branches may still contain the old
+  config. Verify both projects' deployment lists: PR, merge-queue, release-please
+  and main pushes must create no Git-triggered deployments. Only the Actions
+  staging upload should deploy on main. Check integration/check behavior on an
+  updated PR; no deployment does not by itself prove old checks are removed.
+- If stale branches or another writer still trigger Git builds, the owner can
+  disconnect the repository under **each project's Settings → Git → Connected
+  Git Repository → Disconnect** after confirming CLI project IDs and staging
+  proof. CLI deployments remain project-ID bound. Remove any obsolete required
+  Vercel checks in GitHub branch protection/rulesets; retain Armada's required
+  verdict. These are owner operations, not performed by this PR or the agent.
+- Existing GitHub/Vercel checks and already-running deployments are not erased
+  by a config commit. Inspect them rather than claiming historical work stopped.
+
+Never re-enable Git builds as an automated recovery. If the Actions path fails,
+fix/retry that workflow at the intended SHA; an emergency provider rollback or
+restoration of the previous config is an explicit owner decision. No deployment
+or provider-setting verification is claimed by local lint/typecheck.

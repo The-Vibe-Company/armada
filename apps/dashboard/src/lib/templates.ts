@@ -85,10 +85,7 @@ export function parseRevision(value: unknown): TemplateRevision | null {
   const d = value.definition;
   if (
     (d.provider === "docker"
-      ? d.goldenId !== null ||
-        !isId(d.hostId) ||
-        typeof d.image !== "string" ||
-        !/^[a-z0-9][a-z0-9./:_-]*@sha256:[0-9a-f]{64}$/.test(d.image)
+      ? d.goldenId !== null || !isId(d.hostId)
       : !isId(d.goldenId) || (d.provider !== "boat" && d.provider !== "modal")) ||
     !isHarness(d.harness) ||
     typeof d.model !== "string" ||
@@ -119,7 +116,7 @@ export function parseRevision(value: unknown): TemplateRevision | null {
     revision: value.revision,
     definition: {
       ...(d.provider === "docker"
-        ? { provider: "docker" as const, goldenId: null, hostId: d.hostId as string, image: d.image as string }
+        ? { provider: "docker" as const, goldenId: null, hostId: d.hostId as string }
         : { goldenId: d.goldenId as string, provider: d.provider as SandboxProviderId }),
       harness: d.harness,
       model: d.model,
