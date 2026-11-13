@@ -390,6 +390,26 @@ export function createDockerSandboxControls(
     if (!options.resume) throw failure("unavailable", "Docker sandbox resume is unavailable.");
     if (row.owner_id !== caller.userId) throw denied();
     if (!requestId) throw invalid();
+    const host = (
+      await sql.query<{ daemon_version: string | null }>(
+        "select daemon_version from public.docker_hosts where id=$1 and org_id=$2",
+        [row.docker_host_id, row.org_id],
+      )
+    ).rows[0];
+    const version = host?.daemon_version?.match(/^(\d+)\.(\d+)\.(\d+)(?:[-+][A-Za-z0-9.-]+)?$/);
+    const major = Number(version?.[1]),
+      minor = Number(version?.[2]);
+    // Initial create/bootstrap is compatible with 2.27; the resume opcode first shipped in 2.28.
+    if (
+      !version ||
+      !Number.isSafeInteger(major) ||
+      !Number.isSafeInteger(minor) ||
+      !(major > 2 || (major === 2 && minor >= 28))
+    )
+      throw failure(
+        "conflict",
+        "Update this Docker host daemon to Armada 2.28.0 or later before resuming. Keep its existing registration, then retry. No resume job was sent.",
+      );
     const actor = { userId: caller.userId, orgId: row.org_id };
     await options.resume.resume(actor, row.id, requestId);
     const deadline = clock.now() + (options.timeoutMs ?? 45_000);
