@@ -1,8 +1,8 @@
 import type { AgentEvent, TaskOutcome } from "@armada/core";
 import { decryptSecret, type Sql } from "@armada/core/server";
-import { scopeKey } from "@armada/provider-modal";
 import type { Caller } from "../caller.ts";
 import type { OttoScope } from "./observation.ts";
+import { type OttoSnapshot, readOttoSnapshot } from "./snapshot.ts";
 
 export interface FleetSandbox {
   id: string;
@@ -43,64 +43,25 @@ export function repositoryOf(url: string | undefined) {
   );
 }
 /** Reads existing journals only; never resumes, executes, prompts or contacts a provider. */
-export async function readFleet(sql: Sql, scope: OttoScope, caller: Caller, now: Date, key?: string) {
-  const admin = caller.orgs.some((o) => o.orgId === scope.orgId && o.role === "admin");
-  const rows = (
-    await sql.query<FleetSandbox>(
-      `select s.id,s.owner_id,s.access_owner_id,s.visibility,s.provider,s.provider_sandbox_id,s.status,s.last_observed_at,s.deleted_at,s.task_prompt_id,
- case when s.owner_id=$2 or $3 then s.task_outcome else null end as task_outcome,
- s.resource_project,g.modal_workspace,g.modal_environment,g.modal_app_id
- from public.sandboxes s join public.goldens g on g.id=s.golden_id where s.org_id=$1
- and (s.visibility='org' or s.access_owner_id=$2)`,
-      [scope.orgId, caller.userId, admin],
-    )
-  ).rows;
-  // Hidden rows cannot be used as ownership evidence, nor can their absence be asserted.
-  const restricted =
-    (
-      await sql.query(
-        `select 1 from public.sandboxes where org_id=$1 and visibility='private' and access_owner_id<>$2 and deleted_at is null and status not in ('stopped','failed') limit 1`,
-        [scope.orgId, caller.userId],
-      )
-    ).rows.length > 0;
-  // Batch journals across the visible fleet instead of one database round trip per sandbox.
-  const boatIds = key ? rows.filter((s) => s.provider === "boat").map((s) => s.id) : [];
-  const boatEvents = boatIds.length
-    ? (
-        await sql.query<{ sandbox_id: string; event_enc: Uint8Array | null }>(
-          `select s.id as sandbox_id,e.event_enc from public.sandboxes s cross join lateral
-      (select sequence,case when octet_length(event_enc)<=65536 then event_enc else null end as event_enc
-       from public.runtime_events where sandbox_id=s.id order by sequence desc limit 128) e
-     where s.id=any($1::uuid[]) order by s.id,e.sequence desc`,
-          [boatIds],
-        )
-      ).rows
-    : [];
-  const encryptedBySandbox = new Map<string, { event_enc: Uint8Array | null }[]>();
-  for (const event of boatEvents) {
-    const list = encryptedBySandbox.get(event.sandbox_id) ?? [];
-    list.push(event);
-    encryptedBySandbox.set(event.sandbox_id, list);
-  }
+export async function readFleet(
+  sql: Sql,
+  scope: OttoScope,
+  caller: Caller,
+  now: Date,
+  key?: string,
+  supplied?: OttoSnapshot,
+) {
+  const snapshot = supplied ?? (await readOttoSnapshot(sql, scope, caller, now.toISOString().slice(0, 10), key));
+  const rows = snapshot.fleet;
+  const restricted = snapshot.restricted || snapshot.capped;
   for (const s of rows) {
     if (s.last_observed_at) s.last_observed_at = new Date(s.last_observed_at).toISOString();
     let events: AgentEvent[] = [];
     if (s.provider === "modal" && s.modal_workspace && s.modal_environment && s.modal_app_id) {
-      const scopeId = scopeKey({
-        orgId: scope.orgId,
-        userId: s.access_owner_id,
-        visibility: s.visibility,
-        binding: { workspace: s.modal_workspace, environment: s.modal_environment, appId: s.modal_app_id },
-      });
-      const stored = (
-        await sql.query<{ event: AgentEvent | null }>(
-          `select case when octet_length(event::text)<=65536 then event else null end as event from public.modal_events where scope=$1 and sandbox_id=$2 and event->>'kind' in ('prompt','message') order by cursor desc limit 128`,
-          [scopeId, s.provider_sandbox_id],
-        )
-      ).rows;
+      const stored = s.modal_events.map((event) => ({ event }));
       events = stored.some((r) => r.event === null) ? [] : stored.flatMap((r) => (r.event ? [r.event] : []));
     } else if (s.provider === "boat" && key) {
-      const encrypted = encryptedBySandbox.get(s.id) ?? [];
+      const encrypted = s.runtime_events.map((hex) => ({ event_enc: hex === null ? null : Buffer.from(hex, "hex") }));
       let bytes = 0;
       for (const row of encrypted) {
         bytes += row.event_enc?.byteLength ?? 1048577;
@@ -183,5 +144,5 @@ export async function readFleet(sql: Sql, scope: OttoScope, caller: Caller, now:
               : "unknown";
     s.activityObservedAt = s.activity === "not_live" ? now.toISOString() : s.last_observed_at;
   }
-  return { sandboxes: rows, restricted, observedAt: now.toISOString() };
+  return { sandboxes: rows, restricted, capped: snapshot.capped, observedAt: now.toISOString() };
 }

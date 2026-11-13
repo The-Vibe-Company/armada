@@ -5,6 +5,7 @@ import type { Route } from "../http.ts";
 import type { OttoScope } from "./observation.ts";
 import { orphanDays } from "./orphan-days.ts";
 import { readOttoModel } from "./read-model.ts";
+import { readOttoSnapshot } from "./snapshot.ts";
 
 /** Auth is deliberately per request; service role reads never bypass caller membership. */
 export function createOttoApi(
@@ -31,6 +32,7 @@ export function createOttoApi(
       },
     };
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let admitted = false;
     const read = async () => {
       const auth = await authenticate(request);
       if (!auth.ok) return reply({ error: "unauthorized" }, 401);
@@ -44,6 +46,7 @@ export function createOttoApi(
       if (!Number.isInteger(limit) || limit < 1 || limit > 100) return reply({ error: "invalid_limit" }, 400);
       const cursor = url.searchParams.get("cursor");
       if (cursor && cursor.length > 512) return reply({ error: "invalid_cursor" }, 400);
+      admitted = true;
       if (view === "facts") {
         let at: string | null = null,
           id: string | null = null;
@@ -90,7 +93,8 @@ export function createOttoApi(
         day > observedNow.toISOString().slice(0, 10)
       )
         return reply({ error: "invalid_day" }, 400);
-      const model = await readOttoModel(readSql, scope, auth.caller, observedNow, encryptionKey);
+      const snapshot = await readOttoSnapshot(readSql, scope, auth.caller, day, encryptionKey);
+      const model = await readOttoModel(readSql, scope, auth.caller, observedNow, encryptionKey, snapshot);
       const daily = await orphanDays(
         readSql,
         scope,
@@ -99,6 +103,7 @@ export function createOttoApi(
         model.completeness === "complete",
         observedNow,
         day,
+        snapshot.history,
       );
       const unknown = model.resources
         .filter(
@@ -160,7 +165,32 @@ export function createOttoApi(
       ]);
     } catch {
       console.warn(`Otto read unavailable view=${view} elapsed_ms=${Math.round(performance.now() - started)}`);
-      return reply({ error: "unavailable" }, 503);
+      if (!admitted) return reply({ error: "unavailable" }, 503);
+      return reply({
+        items:
+          view === "summary"
+            ? [
+                {
+                  openPrCount: null,
+                  orphanCount: null,
+                  confirmedDailyOrphanCount: null,
+                  ownershipCompleteness: "unknown",
+                  orphanCompleteness: "unknown",
+                  fleetCompleteness: "unknown",
+                  fleetCoverage: "armada_database",
+                  fleetScope: "caller_visible",
+                  notObservable: ["external_workstations"],
+                },
+              ]
+            : [],
+        observedAt: null,
+        completeness: "unknown",
+        ownershipCompleteness: "unknown",
+        orphanCompleteness: "unknown",
+        fleetCompleteness: "unknown",
+        githubCompleteness: "unknown",
+        nextCursor: null,
+      });
     } finally {
       clearTimeout(timer);
     }

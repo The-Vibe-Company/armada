@@ -9,6 +9,8 @@ export type SandboxFilters = Record<Facet, string[]> & {
   sort: "attention" | "newest" | "oldest" | "name";
   page: number;
 };
+/** The list opens newest first; the URL names only a different sort. */
+export const DEFAULT_SANDBOX_SORT: SandboxFilters["sort"] = "newest";
 type Params = Record<string, string | string[] | undefined>;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const values = (value: string | string[] | undefined) => [
@@ -30,7 +32,7 @@ export function parseSandboxFilters(params: Params): SandboxFilters {
     owner: values(params.owner).filter((value) => value === "me" || UUID.test(value)),
     size: known("size", [...MACHINE_SIZES, "unknown"]),
     q: one(params.q).trim().slice(0, 200),
-    sort: sort === "newest" || sort === "oldest" || sort === "name" ? sort : "attention",
+    sort: sort === "attention" || sort === "oldest" || sort === "name" ? sort : DEFAULT_SANDBOX_SORT,
     page: Number.isSafeInteger(page) && page > 0 ? page : 1,
   };
 }
@@ -38,7 +40,7 @@ export function filtersToSearch(filters: Partial<SandboxFilters>): string {
   const search = new URLSearchParams();
   if (filters.q) search.set("q", filters.q);
   for (const key of FACETS) for (const value of filters[key] ?? []) search.append(key, value);
-  if (filters.sort && filters.sort !== "attention") search.set("sort", filters.sort);
+  if (filters.sort && filters.sort !== DEFAULT_SANDBOX_SORT) search.set("sort", filters.sort);
   if (filters.page && filters.page > 1) search.set("page", String(filters.page));
   return search.size ? `?${search}` : "";
 }
