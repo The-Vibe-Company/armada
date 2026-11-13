@@ -28,7 +28,7 @@ class Opener:
         assert request.headers["Authorization"] == "Bearer offline-only"
         assert body["org"] == "org"
         if path == "launch/options":
-            value = {"providers": [{"id": "docker", "capabilities": {"launch": True}}]}
+            value = {"providers": [{"id": "docker", "harnesses": ["codex", "claude", "opencode"], "capabilities": {"launch": True}}]}
         elif path == "sandbox/launch":
             sandbox = body["requestId"]
             assert timeout == 600

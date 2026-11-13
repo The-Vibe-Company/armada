@@ -4,7 +4,7 @@ import { runtimeConfiguration } from "./runtime-configuration.ts";
 /** Private server target: Docker configuration needs no golden or Boat compatibility aliases. */
 interface DockerRuntimeTarget extends RuntimeConfigurationTarget {
   provider: "docker";
-  harness: "codex";
+  harness: RuntimeConfigurationTarget["harness"];
   visibility: "private";
   repositoryDir: null;
   expiresAt: string;

@@ -132,6 +132,13 @@ export function launchProviderOptions(
       capabilities: { ...supported },
       unsupportedReasons: {},
     },
-    { id: "docker", enabled: hosts, launchSources: ["image"], harnesses: ["codex"], capabilities, unsupportedReasons },
+    {
+      id: "docker",
+      enabled: hosts,
+      launchSources: ["image"],
+      harnesses: ["codex", "claude", "opencode"],
+      capabilities,
+      unsupportedReasons,
+    },
   ];
 }

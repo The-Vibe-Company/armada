@@ -130,6 +130,8 @@ def main():
             docker = next((p for p in options.get("providers", []) if p.get("id") == "docker"), {})
             if docker.get("capabilities", {}).get("launch") is not True:
                 raise RuntimeError("Normal Docker launch is not enabled; check server opt-ins and installed runtime manifest")
+            if harness not in docker.get("harnesses", []):
+                raise RuntimeError("Requested Docker harness is not advertised by launch/options")
             launch.update({"provider": "docker", "harness": harness, "visibility": "private",
                            "prompt": first + "Reply with exactly DOCKER_OK. Do not run tools or modify files."})
             launched = api("sandbox/launch", launch, normal=True)
