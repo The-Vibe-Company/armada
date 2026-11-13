@@ -17,6 +17,7 @@ export async function runtimeFixture(
   fixture?: Awaited<ReturnType<typeof database>>,
   provider: "boat" | "modal" = "boat",
   harness: "codex" | "claude" = "codex",
+  idle = false,
 ) {
   const { db, people } = fixture ?? (await database());
   const root = await mkdtemp(join(tmpdir(), "runtime-followup-"));
@@ -194,12 +195,13 @@ export async function runtimeFixture(
     cwd: root,
     defaults: { model: "gpt-5.4", reasoningEffort: "high" },
   });
-  const first = await agent.prompt({ sandboxId: "physical", harness, text: "initial" });
-  await createSqlData(sql)(caller).sandboxes.update(row.id, {
-    status: "running",
-    taskPromptId: first.promptId,
-    conversationIds: [first.conversationId],
-  });
+  const first = idle ? undefined : await agent.prompt({ sandboxId: "physical", harness, text: "initial" });
+  if (first)
+    await createSqlData(sql)(caller).sandboxes.update(row.id, {
+      status: "running",
+      taskPromptId: first.promptId,
+      conversationIds: [first.conversationId],
+    });
   await runner.flushOutbox();
   const send = createRuntimeFollowup(sql, ENCRYPTION_KEY, bridge);
   const context: ToolContext = {
@@ -226,7 +228,7 @@ export async function runtimeFixture(
     id: row.id,
     prompt,
     request_id: crypto.randomUUID(),
-    conversation_id: first.conversationId,
+    ...(first ? { conversation_id: first.conversationId } : {}),
   });
   return {
     root,
@@ -241,7 +243,10 @@ export async function runtimeFixture(
       return active;
     },
     starts,
-    first,
+    get first() {
+      if (!first) throw Error("Idle fixture has no initial prompt receipt");
+      return first;
+    },
     get runner() {
       return runner;
     },

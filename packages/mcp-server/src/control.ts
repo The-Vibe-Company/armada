@@ -1305,7 +1305,6 @@ async function dispatch(
         throw new VaultError("invalid", "Runtime v1 requires explicit Boat Codex or Claude snapshot launch.");
       if (!options.boatRuntimeLaunch || !options.runtimeHostFor)
         throw new VaultError("unavailable", "Experimental Boat runtime launch is not configured.");
-      required(body, "prompt");
       return launchRoute(options, caller, body, true);
     case "sandbox/launch-access-v1":
       if (body.armadaAccessVersion !== 1 || !parseSandboxArmadaAccess(body.armadaAccess))

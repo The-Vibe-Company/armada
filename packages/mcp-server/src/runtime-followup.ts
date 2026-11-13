@@ -17,7 +17,8 @@ export interface RuntimeFollowupInput {
 }
 export type RuntimeFollowup = ReturnType<typeof createRuntimeFollowup>;
 /** Running, owner-scoped, model-only continuation. No host, native credential
- * hooks, model switching or new conversation. Stopped workers use the existing
+ * hooks, model switching or arbitrary new conversations. Idle Boat workers
+ * open their first conversation using a request-derived identity. Stopped workers use the existing
  * checkpointed resume path when supplied. Commands are durable;
  * the client MUST reuse request_id and identical input on uncertain delivery.
  */
@@ -84,8 +85,16 @@ export function createRuntimeFollowup(
       found.deletedAt
     )
       throw new VaultError("conflict", "Runtime send requires an already-running, bound sandbox.");
-    const conversation = input.conversation_id ?? found.conversationIds.at(-1);
-    if (!conversation || !found.conversationIds.includes(conversation))
+    // A stable server-owned first-conversation ID keeps uncertain first-send
+    // payloads identical even after publication adds that conversation to SQL.
+    const firstConversation = `first_${requestId}`;
+    const conversation = input.conversation_id ?? found.conversationIds.at(-1) ?? firstConversation;
+    const idleFirst =
+      found.provider === "boat" &&
+      found.conversationIds.length === 0 &&
+      !found.taskPromptId &&
+      input.conversation_id === undefined;
+    if (!found.conversationIds.includes(conversation) && !idleFirst)
       throw new VaultError("invalid", "Continue an existing runtime conversation.");
     const commandId = `follow_${requestId}`;
     const agent = createRuntimeAgent(commands, {
@@ -151,7 +160,10 @@ export function createRuntimeFollowup(
           current.credentialVersion !== found.credentialVersion ||
           current.model !== found.model ||
           current.reasoningEffort !== found.reasoningEffort ||
-          !current.conversationIds.includes(conversation)
+          !(
+            current.conversationIds.includes(conversation) ||
+            (idleFirst && current.conversationIds.length === 0 && !current.taskPromptId)
+          )
         )
           throw new VaultError("conflict", "Runtime admission changed; inspect status before retrying.");
         const checkpoint = (
@@ -248,7 +260,9 @@ export function createRuntimeFollowup(
           patch: {
             status: "running",
             taskPromptId: accepted.promptId,
-            conversationIds: admitted.current.conversationIds,
+            conversationIds: admitted.current.conversationIds.includes(conversation)
+              ? admitted.current.conversationIds
+              : [...admitted.current.conversationIds, conversation],
             statusReason: null,
           },
         };

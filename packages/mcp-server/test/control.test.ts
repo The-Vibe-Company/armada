@@ -2617,15 +2617,6 @@ test("versioned runtime launch is explicit/default-off and never selects native 
     expect(await (await request("launch/options", {}))?.json()).toMatchObject({
       boatRuntime: { defaultPath: "runtime" },
     });
-    const ordinary = await request("sandbox/launch", {
-      golden: body.golden,
-      org: body.org,
-      harness: "codex",
-    });
-    expect(ordinary?.status).toBe(400);
-    expect(JSON.stringify(await ordinary?.json())).toContain("idle sandbox");
-    expect(host.forks).toHaveLength(1);
-    expect(host.prompts).toHaveLength(0);
     const account = (
       await db.query<{ id: string; version: number }>(
         "select id,version from credentials where owner_id=$1 and kind='openai'",
@@ -2673,14 +2664,12 @@ test("versioned runtime launch is explicit/default-off and never selects native 
       golden: body.golden,
       org: body.org,
       harness: "codex",
-      prompt: "ordinary default request",
       credentialId: account.id,
     });
     expect(defaulted?.status).toBe(200);
     expect(await defaulted?.json()).toMatchObject({
       runtime: { kind: "armada", epoch: "1" },
-      sandbox: { boatRuntime: true },
-      promptId: "default-initial",
+      sandbox: { boatRuntime: true, status: "ready", conversationIds: [] },
     });
     expect(host.forks).toHaveLength(2);
     expect(host.forks[1]?.env).toEqual({});
