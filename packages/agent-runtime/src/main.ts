@@ -546,10 +546,6 @@ async function main(dialout = false) {
                   : undefined;
           if (harness !== undefined && harness !== config.selectedHarness)
             return Promise.resolve(Response.json({ error: "unselected_runtime_harness" }, { status: 409 }));
-          // Exec ownership/termination is a separate parity slice. Never start a detached
-          // shell that could outlive this initial dial-out client on revocation.
-          if (request.op === "exec")
-            return Promise.resolve(Response.json({ error: "dialout_exec_not_supported" }, { status: 409 }));
           const work = runner.handle(
             new Request("http://runtime/v1", {
               signal: stop.signal,
