@@ -2037,9 +2037,10 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
   return server;
 }
 
-const providerLimitsText = Object.entries(PROVIDER_LIMITS)
-  .map(([provider, limits]) => `${limits.maxTtlSeconds} (${limits.maxTtlLabel}) on ${provider}`)
-  .join(", ");
+const providerLimitsText = SANDBOX_PROVIDERS.map((provider) => {
+  const limits = PROVIDER_LIMITS[provider];
+  return `${limits.maxTtlSeconds} (${limits.maxTtlLabel}) on ${provider}`;
+}).join(", ");
 
 function fail(): never {
   throw new ToolError("internal", "Armada could not complete the call.");

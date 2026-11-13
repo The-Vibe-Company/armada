@@ -50,7 +50,7 @@ import {
   toolSummary,
   toolText,
 } from "@/lib/chat";
-import { INCOMPLETE_MODEL, modelChange, PINNED_MODEL, SEND_KEY_FIELD } from "@/lib/composer";
+import { INCOMPLETE_MODEL, modelChange, PINNED_MODEL, SEND_KEY_FIELD, UNCONFIRMED_ACTION } from "@/lib/composer";
 import { type ChatEvent, isActiveStatus, mergeEvents, parseEventPage } from "@/lib/events";
 import { describeFailure } from "@/lib/failure";
 import { type LaunchKey, launchKeyFor } from "@/lib/launch-key";
@@ -988,7 +988,7 @@ function Composer({
       try {
         outcome = await action(null, data);
       } catch {
-        outcome = { ok: false, error: "The message could not be sent. Try again." };
+        outcome = { ok: false, error: UNCONFIRMED_ACTION };
       }
       setPending(null);
       setResult(outcome);
@@ -1116,7 +1116,10 @@ function Composer({
             result && (
               <p
                 role={result.ok ? "status" : "alert"}
-                className={cn("min-w-0 flex-1 text-xs", result.ok ? "text-muted-foreground" : "text-destructive")}
+                className={cn(
+                  "min-w-0 flex-1 text-xs",
+                  result.ok ? "text-muted-foreground" : "order-first basis-full text-destructive",
+                )}
               >
                 {result.ok ? result.message : result.error}
               </p>

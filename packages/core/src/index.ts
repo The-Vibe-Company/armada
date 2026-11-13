@@ -324,6 +324,8 @@ export {
 export { providerRateLimitDetails, providerRateLimitMessage } from "./provider-limit.ts";
 export {
   goldenCompatibilityIds,
+  goldenCompatibilityIds,
+  goldenResponse,
   goldenResponse,
   launchGitHubResponse,
   launchResponse,
@@ -334,6 +336,7 @@ export {
   type ReadableVariableBinding,
   validateReadableVariables,
 } from "./readable-variables.ts";
+export { isRecord } from "./record.ts";
 export { resolveRepositoryDir } from "./repository-context.ts";
 export {
   RESOURCE_ADVICE_VERSION,
@@ -409,6 +412,7 @@ export {
   usageUnavailableReason,
   withUsageTotals,
 } from "./sandbox-usage.ts";
+export { shellQuote } from "./shell-quote.ts";
 export type { SkillCatalogItem, SkillCatalogPage, SkillCatalogSource } from "./skill-catalog.ts";
 export { skillRefusalMessage } from "./skill-diagnostics.ts";
 export { SKILL_PIN_PATTERN, validateSkillPins } from "./skill-pins.ts";

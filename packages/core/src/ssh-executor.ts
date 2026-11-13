@@ -7,8 +7,10 @@ import type { GoldenBuildWarning } from "./golden-build-warning.ts";
 import { GoldenError } from "./golden-config.ts";
 import { type PRIVATE_SSH_FAILURES, PrivateSshError } from "./private-skill-error.ts";
 import type { Provider } from "./provider.ts";
+import { shellQuote } from "./shell-quote.ts";
 
 export { PRIVATE_SSH_FAILURES, PrivateSshError } from "./private-skill-error.ts";
+export { shellQuote } from "./shell-quote.ts";
 export interface SshExecDeps {
   /** Opt in only for the private GitHub repair installer, never generic guest output. */
   githubHydration?: boolean;
@@ -526,8 +528,4 @@ function command(
     });
     c.stdin?.end(stdin);
   });
-}
-/** Single-quotes a shell word: close the quote, an escaped literal quote, reopen it. */
-export function shellQuote(value: string) {
-  return `'${value.replaceAll("'", "'\\''")}'`;
 }
