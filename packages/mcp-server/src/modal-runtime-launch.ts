@@ -1,8 +1,8 @@
 import type { LaunchOptions, Sql } from "@armada/core/server";
 import { requirePublishedRuntimeArchitecture } from "../../agent-runtime/src/publication.ts";
+import { modalRuntimeConfiguration } from "./modal-runtime-variables.ts";
 import { createRuntimeAgent } from "./runtime-agent.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
-import { runtimeConfiguration } from "./runtime-configuration.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import { createRuntimeStartup } from "./runtime-startup.ts";
 
@@ -24,7 +24,7 @@ export function modalRuntimeLaunch(options: {
       if (host.id !== "modal" || sandbox.runtimeTransport !== "dialout") throw Error("runtime_selection_required");
       const { model, reasoningEffort } = sandbox;
       if (!model || !reasoningEffort) throw Error("runtime_model_required");
-      const plan = await runtimeConfiguration({ ...options, actor, sandbox, credentials }, "modal");
+      const plan = await modalRuntimeConfiguration(options.sql, { ...options, actor, sandbox, credentials });
       // Restored native sessions cannot resurrect old upstream defaults before current-epoch delivery.
       Object.assign(plan.configuration, { mcp: { revision: "modal_runtime_empty_v1", servers: {} } });
       if (restoreCheckpoint)

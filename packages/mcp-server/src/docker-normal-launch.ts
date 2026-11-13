@@ -6,11 +6,14 @@ import {
   type DockerLaunchResult,
   type DockerSandboxRecord,
   type GoldenActor,
+  type GoldenRepo,
   HARNESSES,
   type Harness,
   isDockerImageReference,
   type LaunchCredentialResolver,
+  normalizeGitHubGoldenConfig,
   ProviderError,
+  parseGoldenConfig,
   resolveModelChoice,
   type SkillReceipt,
   type Sql,
@@ -33,9 +36,11 @@ import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import { createRuntimeAgent } from "./runtime-agent.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
+import type { RuntimeGitHub } from "./runtime-github.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
 
 type Request = {
+  repos?: GoldenRepo[];
   org: string;
   provider: "docker";
   harness: Harness;
@@ -61,7 +66,12 @@ type Manifest = {
   promptId: string;
   preparation?: { skills: string[]; connections: string[] };
 };
-type Receipt = { epoch: string; promptId?: string; conversationId?: string };
+type Receipt = {
+  epoch: string;
+  promptId?: string;
+  conversationId?: string;
+  github?: { status: "connected"; login: string };
+};
 type Claim = {
   actor_epoch: string;
   request_hash: string;
@@ -98,6 +108,7 @@ type Row = {
 type Clock = { now(): number; wait(ms: number): Promise<void> };
 type Options = {
   enabled?: boolean;
+  github?: Pick<RuntimeGitHub, "prepare" | "preflightRepositories">;
   credentials: Pick<LaunchCredentialResolver, "resolve" | "skillpackKey">;
   mcp?: RuntimeMcp;
   bootstrap?: ReturnType<typeof createDockerBootstrapService>;
@@ -137,6 +148,7 @@ function normalize(body: Record<string, unknown>): Request {
     Object.keys(body).some(
       (field) =>
         ![
+          "repos",
           "org",
           "provider",
           "hostId",
@@ -195,7 +207,21 @@ function normalize(body: Record<string, unknown>): Request {
   } catch {
     throw failure("invalid_request");
   }
+  let repos: GoldenRepo[] | undefined;
+  if (body.repos !== undefined) {
+    try {
+      const config = parseGoldenConfig({ repos: body.repos, init: [] });
+      repos = normalizeGitHubGoldenConfig(config).repos.map((r) => ({
+        url: `https://github.com/${r.owner}/${r.repo}.git`,
+        branch: r.branch,
+        dir: r.dir,
+      }));
+    } catch {
+      throw failure("invalid_request");
+    }
+  }
   return {
+    ...(repos ? { repos } : {}),
     org: identifier(body.org),
     provider: "docker",
     harness: body.harness as Harness,
@@ -353,7 +379,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       sandbox,
       golden: null,
       helper: null,
-      github: { status: "unavailable", message: "GitHub is unavailable on Docker hosts." },
+      github: receipt.github ?? { status: "unavailable", message: "GitHub is unavailable on Docker hosts." },
       runtime: { kind: "armada", epoch: receipt.epoch },
       ttlSeconds: row.effective_ttl_seconds,
       expiresAt: iso(row.expires_at),
@@ -379,6 +405,10 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
         if (state.row && state.receipt) return envelope(state.row, state.receipt);
         if (options.enabled !== true || !options.bootstrap) throw failure("unavailable");
         if (!state.manifest) {
+          if (request.repos) {
+            if (!options.github) throw failure("unavailable");
+            await options.github.preflightRepositories(caller, request.org, request.repos);
+          }
           // Resolve outside the reservation transaction; only the binding is retained.
           const resolved = await options.credentials.resolve(
             { ...actor, role: state.membership.role },
@@ -500,6 +530,51 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
           }
           await wait();
         }
+        if (manifest.request.repos) {
+          if (!options.github) throw failure("unavailable");
+          const github = await options.github.prepare(caller, request.requestId);
+          receipt.github = { status: "connected", login: github.login };
+          const quote = (v: string) => `'${v.replaceAll("'", "'\\''")}'`;
+          const command = [
+            "set -euo pipefail",
+            "export GIT_TERMINAL_PROMPT=0",
+            ...manifest.request.repos.map(
+              (repo) =>
+                `git clone --single-branch --branch ${quote(repo.branch)} -- ${quote(repo.url)} ${quote(`/home/user/${repo.dir}`)}`,
+            ),
+          ].join("\n");
+          const commands = createRuntimeCommands(createRuntimeEnrolments(sql, key), key);
+          const id = `docker_checkout_${request.requestId}`;
+          await commands.enqueue(
+            actor.userId,
+            {
+              version: 1,
+              requestId: id,
+              sandboxId: request.requestId,
+              op: "exec",
+              input: { sandboxId: request.requestId, command, cwd: "/home/user", timeoutSeconds: 600 },
+            },
+            receipt.epoch,
+          );
+          for (;;) {
+            await live();
+            const response = await commands.result(actor.userId, request.requestId, id, receipt.epoch);
+            if (response.state === "finished") {
+              const result = response.reply.body.result as Record<string, unknown> | undefined;
+              if (
+                response.reply.status !== 200 ||
+                !result ||
+                result.detached !== false ||
+                result.exitCode !== 0 ||
+                result.timedOut !== false
+              )
+                throw failure("sandbox_not_ready");
+              break;
+            }
+            if (response.state !== "pending") throw failure("sandbox_not_ready");
+            await wait();
+          }
+        }
         const selections = manifest.preparation;
         if (selections?.skills.length) {
           const needsKey = selections.skills.some((reference) => !reference.includes("/"));
@@ -540,6 +615,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
             if (result.state === "admitted") {
               if (result.epoch !== receipt.epoch) throw failure("sandbox_not_ready");
               receipt = {
+                ...receipt,
                 epoch: result.epoch,
                 promptId: result.receipt.promptId,
                 conversationId: result.receipt.conversationId,

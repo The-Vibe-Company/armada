@@ -2,9 +2,8 @@ import { expect, test } from "bun:test";
 import { DOCKER_DEFAULT_IMAGE } from "@armada/core";
 import { launchProviderOptions } from "../../../packages/mcp-server/src/launch-options.ts";
 import {
-  checkImage,
-  chosenImage,
   DOCKER_CAPABILITIES,
+  dockerHarnesses,
   dockerImageLabel,
   dockerLaunchBlocker,
   dockerLaunchBody,
@@ -12,6 +11,7 @@ import {
   dockerSandboxControls,
   dockerUnavailable,
   launchedDockerSandbox,
+  preferredHarness,
 } from "../src/lib/docker-launch.ts";
 
 const ORG = "00000000-0000-4000-8000-000000000010";
@@ -55,7 +55,7 @@ test("the Docker launch option is read strictly from launch/options; anything un
   });
 });
 
-test("a host takes a launch only when the server launches Codex from an image on Docker and the host is online", () => {
+test("a host takes a launch only when the server launches an agent from an image on Docker and the host is online", () => {
   const ready = dockerLaunchOption(options());
   expect(dockerLaunchBlocker(ready, true, { state: "online" })).toBeNull();
   expect(dockerLaunchBlocker(null, true, { state: "online" })).toContain("does not launch on Docker");
@@ -68,7 +68,10 @@ test("a host takes a launch only when the server launches Codex from an image on
   expect(dockerLaunchBlocker(off, false, { state: "online" })).toBe("Wired in the next increment.");
   expect(
     dockerLaunchBlocker(dockerLaunchOption(options({ harnesses: ["claude"] })), true, { state: "online" }),
-  ).toContain("Codex from an image");
+  ).toBeNull();
+  expect(dockerLaunchBlocker(dockerLaunchOption(options({ harnesses: [] })), true, { state: "online" })).toContain(
+    "an agent from an image",
+  );
   expect(dockerLaunchBlocker(ready, true, { state: "offline" })).toBe("The host must be online to launch on it.");
   expect(dockerLaunchBlocker(ready, true, { state: "revoked" })).toBe("This host is revoked.");
   expect(dockerLaunchBlocker(null, false, { state: "revoked" })).toBe("This host is revoked.");
@@ -82,30 +85,21 @@ test("what Docker cannot do yet is listed with the server's reason, or a plain d
   expect(unavailable.map((item) => item.name)).not.toContain("Launch");
 });
 
-test("only a digest-pinned image is accepted", () => {
-  expect(checkImage(` ${DIGEST} `)).toEqual({ ok: true, image: DIGEST });
-  expect(checkImage(`sha256:${"b".repeat(64)}`)).toEqual({ ok: true, image: `sha256:${"b".repeat(64)}` });
-  expect(checkImage(`ghcr.io/org/image:tag@sha256:${"a".repeat(64)}`).ok).toBe(true);
-  for (const bad of [
-    "sha256:short",
-    `sha256:${"A".repeat(64)}`,
-    "buildpack-deps:bookworm-curl",
-    `x@sha256:${"a".repeat(63)}`,
-    `x y@sha256:${"a".repeat(64)}`,
-    "",
-  ])
-    expect(checkImage(bad).ok).toBe(false);
-});
-
-test("the dialog launches Armada's default image unless a custom digest-pinned image is chosen", () => {
-  expect(chosenImage("default", "")).toEqual({ ok: true, image: DOCKER_DEFAULT_IMAGE });
-  expect(chosenImage("default", "ignored")).toEqual({ ok: true, image: DOCKER_DEFAULT_IMAGE });
-  expect(chosenImage("custom", ` ${DIGEST} `)).toEqual({ ok: true, image: DIGEST });
-  expect(chosenImage("custom", "").ok).toBe(false);
-  expect(chosenImage("other", DIGEST).ok).toBe(false);
-  expect(chosenImage("", "")).toEqual({ ok: true, image: DOCKER_DEFAULT_IMAGE });
-  expect(chosenImage("", DIGEST)).toEqual({ ok: true, image: DIGEST });
-  expect(checkImage(DOCKER_DEFAULT_IMAGE).ok).toBe(true);
+test("the dialog offers the agents the server launches on Docker, Codex chosen first when offered", () => {
+  expect(dockerHarnesses(dockerLaunchOption(options({ harnesses: ["opencode", "codex", "claude"] })))).toEqual({
+    offered: ["claude", "codex", "opencode"],
+    initial: "codex",
+  });
+  expect(dockerHarnesses(dockerLaunchOption(options({ harnesses: ["opencode", "claude"] })))).toEqual({
+    offered: ["claude", "opencode"],
+    initial: "claude",
+  });
+  expect(dockerHarnesses(null)).toEqual({ offered: [], initial: null });
+  const all = ["claude", "codex", "opencode"] as const;
+  expect(preferredHarness(all, "codex", () => true)).toBe("codex");
+  expect(preferredHarness(all, "codex", (agent) => agent === "opencode")).toBe("opencode");
+  expect(preferredHarness(all, "codex", () => false)).toBe("codex");
+  expect(preferredHarness(["claude"], "codex", () => false)).toBe("claude");
 });
 
 test("the launch body is the normal route's Docker shape: Codex, private, the form key as requestId", () => {
@@ -114,6 +108,7 @@ test("the launch body is the normal route's Docker shape: Codex, private, the fo
       org: ORG,
       hostId: HOST,
       image: DIGEST,
+      harness: "codex",
       credentialId: ACCOUNT,
       requestId: REQUEST,
       model: "gpt-5",
@@ -138,12 +133,25 @@ test("the launch body is the normal route's Docker shape: Codex, private, the fo
       org: ORG,
       hostId: HOST,
       image: DIGEST,
+      harness: "codex",
       credentialId: ACCOUNT,
       requestId: "x",
       model: "m",
       reasoningEffort: "e",
     }),
   ).toThrow();
+  expect(
+    dockerLaunchBody({
+      org: ORG,
+      hostId: HOST,
+      image: DIGEST,
+      harness: "claude",
+      credentialId: ACCOUNT,
+      requestId: REQUEST,
+      model: "m",
+      reasoningEffort: "e",
+    }).harness,
+  ).toBe("claude");
   expect(launchedDockerSandbox({ sandbox: { id: REQUEST, provider: "docker" } })).toBe(REQUEST);
   expect(launchedDockerSandbox({ sandbox: { id: REQUEST, provider: "boat" } })).toBeNull();
 });

@@ -172,6 +172,7 @@ export async function runtimeConfiguration(
       cacheDir: "/home/user/.armada-runtime-bootstrap",
       configuration: {
         selectedHarness: sandbox.harness,
+        execEnv: { HOME: "/home/user", PATH: "/usr/local/bin:/usr/bin:/bin" },
         artifactManifest: manifest,
         root: `/home/user/.armada-runtime/${sandbox.id}`,
         cwd: repo === null ? "/home/user" : `/home/user/${repo}`,

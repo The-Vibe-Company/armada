@@ -391,6 +391,7 @@ export async function startServer(
       ? createDockerNormalLaunch(sql, config.encryptionKey, {
           mcp: runtimeMcp,
           enabled: dockerLaunchEnabled,
+          ...(runtimeGitHub ? { github: runtimeGitHub } : {}),
           credentials: dockerCredentials,
           ...(dockerBootstrap ? { bootstrap: dockerBootstrap } : {}),
         })
