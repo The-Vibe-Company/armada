@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { createDatabaseReadiness } from "../../packages/mcp-server/src/database-readiness.ts";
 import { openMigratedDatabase } from "./migrated-database.ts";
 
 test("migrated fixtures isolate data, schema, roles and connection lifetime", async () => {
@@ -22,6 +23,18 @@ test("migrated fixtures isolate data, schema, roles and connection lifetime", as
         )
       ).rows[0]?.count,
     ).toBeGreaterThan(0);
+    // The immutable template must also survive a mutated sibling closing before the next clone.
+    const later = await openMigratedDatabase();
+    try {
+      expect((await later.query("select name from orgs")).rows).toEqual([]);
+      expect((await later.query("select to_regclass('public.fixture_only') as relation")).rows).toEqual([
+        { relation: null },
+      ]);
+      expect((await later.query("select current_user as role")).rows).toEqual([{ role: "postgres" }]);
+      expect(await createDatabaseReadiness(later)()).toBe(true);
+    } finally {
+      await later.close();
+    }
   } finally {
     if (!first.closed) await first.close();
     await second.close();

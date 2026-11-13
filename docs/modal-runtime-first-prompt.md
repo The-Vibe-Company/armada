@@ -6,8 +6,8 @@ allocation, proves a model answer and same-conversation recall through the commo
 runtime archive, performs an acknowledged checkpoint, and requests compute stop
 once. The `--resume` extension activates that same logical sandbox once from its
 retained filesystem image, proves a new-epoch same-conversation recall, then
-checkpoints and stops it again. Optional `--github` and `--mcp` add the scoped
-checks below; they do not claim skills or full harness/setup parity. The golden
+checkpoints and stops it again. Optional `--github`, `--mcp` and `--skills` add the scoped
+checks below; they do not claim full harness/setup parity. The golden
 checkout remains as-is (no pull/init).
 The existing Modal tunnel path remains the default.
 
@@ -48,8 +48,10 @@ before allocating. With `--resume`, it also requires `resumeVersion:1`; an old
 server refuses before any allocation. Omit `--resume` only to run the original
 first-answer/follow-up/checkpoint/stop subset. It sends one `sandbox/launch-modal-runtime-v1` request with
 `runtimeVersion:1`, `runtimeTransport:"dialout"`, `provider:"modal"`,
-`harness:"codex"`, a 900-second TTL, empty skills and skill defaults skipped.
-Connections are empty unless `--mcp` explicitly selects one existing connection. The golden checkout is used as-is. The first prompt stores a random
+`harness:"codex"` and a 900-second TTL. Without `--skills`, skills are empty
+and defaults are skipped. With `--skills`, both fields are omitted so the normal
+server policy resolves defaults. Connections are empty unless `--mcp` explicitly
+selects one existing connection. The golden checkout is used as-is. The first prompt stores a random
 memory token and asks for a separate literal
 nonce answer, without tools or file changes. After verifying that archived first
 answer, the script sends exactly one follow-up on the same conversation asking
@@ -142,8 +144,8 @@ archived successful command provenance AND current-epoch broker acquisition coun
 with the same delivered revision are required. A literal answer or a configured
 receipt alone is not proof. After restore, the old configuration must be absent;
 a new revision is delivered and a fourth same-conversation prompt proves a fresh
-current-epoch acquisition. No token/capability is printed or archived. This flag alone does not pull/init the golden, enable skills/variables, or
-authorize cutover. Add `--mcp` below to verify the selected remote tool in the
+current-epoch acquisition. No token/capability is printed or archived. This flag alone does not pull/init the golden, enable variables, or
+authorize cutover. Add `--skills` for existing defaults and `--mcp` below to verify the selected remote tool in the
 same allocation.
 
 
@@ -170,7 +172,7 @@ launch, follow-up and resumed turns.
 ### Single combined coordinator check
 
 ```sh
-ARMADA_RUNTIME_SMOKE=one_real_modal_launch bun scripts/check-modal-runtime.ts --mcp --github --resume
+ARMADA_RUNTIME_SMOKE=one_real_modal_launch bun scripts/check-modal-runtime.ts --skills --mcp --github --resume
 ```
 
 ONE logical allocation, ONE resume activation, FOUR prompts and TWO stops remain.
@@ -192,3 +194,35 @@ Initial receipts add `mcp:"verified"`; final successful resumed cleanup adds
 `mcpAfterResume:"verified"`. This proves the selected remote tool and automatic
 new-epoch delivery, not all MCP server types or default-selection policies. Record
 the exact revision and result on #1421. Workers do not run billable staging checks.
+
+
+## Existing default skills (`--skills`)
+
+Use the **same combined command above** with `--skills`. It requires no new skill
+references, SKILL.md substrings, keys or staging inputs. Do not configure defaults
+for the smoke: the check must prove the existing selected Modal golden,
+organization and personal policy. The golden is resolved once together with the
+MCP/GitHub preflight; `launch/options.modalRuntime.skillsVersion` must be `1`.
+
+Before any allocation, the script uses the existing `readDefaultPins` oracle from
+`scripts/default-skill-smoke.ts`: `skills/defaults/get` for the selected golden,
+organization and personal scope, with independent same-slug precedence. If the
+effective list is empty it plainly reports **“No default skills configured … no
+launch attempted”** and allocates nothing. It never creates or changes defaults.
+
+The launch omits **both** `skills` and `skipSkillDefaults`, allowing Armada's
+normal policy to choose all and only those effective exact pins. Its golden ID
+must match the preflight golden. `verifyDefaultReceipts` then compares launch
+receipts with `sandbox/status.skills`: exact references and versions, valid
+matching skill IDs, checksums and origins. This is checked at launch, after the
+first confirmed stop, after resume and after the second confirmed stop. Missing,
+extra, changed or foreign-golden receipts fail; a successful model answer cannot
+mask them.
+
+The first receipt adds `skills:"verified"`; successful resumed cleanup adds
+`skillsAfterResume:"verified"`. The combined check still uses ONE logical
+allocation, ONE resume activation, FOUR prompts and TWO stops. MCP/GitHub tool
+and current-epoch proofs are unchanged. It proves the public/private defaults
+actually configured by the existing policy; it does not claim coverage of a kind
+absent from that policy, nor does it ask the coordinator to supply a skill pin.
+Workers do not run the billable staging check.
