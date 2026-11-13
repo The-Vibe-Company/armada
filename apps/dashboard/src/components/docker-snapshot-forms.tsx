@@ -106,7 +106,15 @@ function DockerSnapshotForm({
       <fieldset disabled={pending || result?.ok} className="space-y-4">
         <div className="space-y-1.5">
           <Label htmlFor={`${id}-name`}>Name</Label>
-          <Input id={`${id}-name`} name="name" required maxLength={80} placeholder="My project" />
+          <Input
+            id={`${id}-name`}
+            name="name"
+            required
+            maxLength={80}
+            placeholder="my-project"
+            pattern={"[A-Za-z0-9][A-Za-z0-9._\\-]{0,79}"}
+            title="Start with a letter or number; use only letters, numbers, dots, underscores and hyphens."
+          />
         </div>
         <div className="space-y-1.5">
           <Label htmlFor={`${id}-host`}>Host</Label>
@@ -129,16 +137,18 @@ function DockerSnapshotForm({
             accept=".json,application/json"
             required
             onChange={async (event) => {
-              const file = event.target.files?.[0];
+              const source = event.currentTarget;
+              const file = source.files?.[0];
               setConfig("");
               setFileError("");
               if (!file) return;
               try {
                 if (file.size > 1_048_576) throw new Error();
                 const parsed = parseGoldenConfig(JSON.parse(await file.text()));
-                setConfig(JSON.stringify(parsed));
+                if (source.files?.[0] === file) setConfig(JSON.stringify(parsed));
               } catch {
-                setFileError("Choose a golden JSON file under 1 MiB with repositories and init commands.");
+                if (source.files?.[0] === file)
+                  setFileError("Choose a golden JSON file under 1 MiB with repositories and init commands.");
               }
             }}
           />

@@ -24,6 +24,11 @@ export async function buildDockerSnapshot(
 ): Promise<SnapshotCreateResult> {
   const selected = await selectedOrganization();
   if (!selected || formString(data, "org") !== selected.org.id) return createFail("Switch to that organization first.");
+  const name = formString(data, "name");
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}$/.test(name))
+    return createFail(
+      "Use a name of up to 80 letters, numbers, dots, underscores or hyphens, starting with a letter or number.",
+    );
   const hostId = formString(data, "hostId"),
     requestId = formString(data, "requestId"),
     visibility = formString(data, "visibility");
@@ -54,7 +59,7 @@ export async function buildDockerSnapshot(
         await controlPost(
           { serverUrl, token: viewer.token },
           "/api/v1/docker/snapshots/create",
-          { org: selected.org.id, hostId, requestId, name: formString(data, "name"), visibility, config },
+          { org: selected.org.id, hostId, requestId, name, visibility, config },
           "building a host snapshot",
         )
       ).snapshot,
