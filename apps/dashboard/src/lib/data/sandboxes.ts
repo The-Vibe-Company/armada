@@ -1,6 +1,6 @@
-import type { CredentialKind, Sandbox, SandboxCost, SandboxListMetadata } from "@armada/core";
+import type { CredentialKind, Sandbox, SandboxCost } from "@armada/core";
 import { isUuid } from "@/lib/action";
-import { parseSandboxListMetadata } from "@/lib/sandbox-access";
+import { type ListedSandbox, parseSandboxListMetadata } from "@/lib/sandbox-access";
 import { costOfRow } from "@/lib/sandbox-cost";
 import {
   type Facet,
@@ -14,7 +14,7 @@ import type { Supabase } from "@/lib/supabase/server";
 import { selectedOrganization } from "./selected-org";
 
 export type SandboxPage = {
-  rows: SandboxListMetadata[];
+  rows: ListedSandbox[];
   total: number;
   inventoryTotal: number;
   facets: Record<Facet, Map<string, number>>;
@@ -29,7 +29,7 @@ export async function listSandboxes(
   viewerId: string,
 ): Promise<SandboxPage> {
   const selected = await selectedOrganization();
-  const inventory: SandboxListMetadata[] = [];
+  const inventory: ListedSandbox[] = [];
   if (selected) {
     const batch = 500;
     for (let from = 0; ; from += batch) {
@@ -56,7 +56,7 @@ export async function listSandboxes(
 }
 
 /** The listed metadata of one sandbox of the selected organization, or null when the server lists no such sandbox. */
-export async function getSandboxMetadata(supabase: Supabase, id: string): Promise<SandboxListMetadata | null> {
+export async function getSandboxMetadata(supabase: Supabase, id: string): Promise<ListedSandbox | null> {
   const selected = await selectedOrganization();
   if (!selected) return null;
   const { data, error } = await supabase
@@ -102,7 +102,7 @@ export async function credentialKinds(supabase: Supabase, ids: readonly (string 
  */
 export function listSandboxCosts(
   supabase: Supabase,
-  rows: readonly Pick<SandboxListMetadata, "id" | "canOpen">[],
+  rows: readonly Pick<ListedSandbox, "id" | "canOpen">[],
 ): Promise<Map<string, SandboxCost>> {
   return sandboxCosts(
     supabase,

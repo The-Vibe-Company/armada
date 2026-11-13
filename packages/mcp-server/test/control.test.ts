@@ -2118,9 +2118,6 @@ test("access launch grants scoped authority before the first prompt while retain
       return { provider: await modal.storedProviderFor(row, caller), providerSandboxId: row.providerSandboxId };
     };
     options.sandboxArmadaAccess = access;
-    options.orchestrators = {
-      enabledPairs: ["modal:codex"],
-    } as unknown as import("../src/orchestrator-runtime.ts").OrchestratorRuntime;
     // The staging checker used an absolute cwd; the public launch contract takes a configured selector.
     const bearer = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`;
     const stagingLaunch = (repo: string, placement: "boat" | "modal" = "modal") =>
@@ -2253,19 +2250,18 @@ test("access launch grants scoped authority before the first prompt while retain
       selectedBoatKey = key;
       throw new VaultError("unavailable", "Fixture stops before allocation.");
     };
-    options.orchestrators = { enabledPairs: ["boat:codex", "modal:codex"] } as unknown as typeof options.orchestrators;
     const forksBefore = fake.forks.length;
     expect((await stagingLaunch("web", "boat"))?.status).toBe(503);
     expect(selectedBoatKey).toBe("org-boat-fixture-key");
     expect(fake.forks).toHaveLength(forksBefore);
     options.providers = routed;
     options.providerFor = () => provider;
-    const { OrchestratorAuthority } = await import("@armada/core/server");
+    const { DelegatedAuthority } = await import("@armada/core/server");
     const sql: Sql = {
       query: (q, v) => db.query(q, v),
       transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
     };
-    const authority = new OrchestratorAuthority(sql, async (tx, input) => {
+    const authority = new DelegatedAuthority(sql, async (tx, input) => {
       await resolveCredentials(createSqlVaultStore(tx), KEY, input);
     });
     expect(

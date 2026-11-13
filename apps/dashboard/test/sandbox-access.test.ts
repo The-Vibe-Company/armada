@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import type { SandboxListMetadata } from "@armada/core";
 import { parseSandboxListMetadata } from "../src/lib/sandbox-access.ts";
+import { filterSandboxes, parseSandboxFilters, sandboxFacetCounts } from "../src/lib/sandbox-filters.ts";
 
 const ORG = "00000000-0000-4000-8000-000000000011";
 const BOB = "00000000-0000-4000-8000-000000000002";
@@ -73,4 +74,21 @@ test("the outcome and the preservation receipt are read, and an outcome off the 
   });
   const [odd] = parseSandboxListMetadata([{ ...row(), taskOutcome: { state: "done" }, preservationNote: undefined }]);
   expect(odd).toMatchObject({ taskOutcome: null, preservationNote: null });
+});
+
+test("a sandbox on a Docker host is listed, so one such row no longer fails the whole list", () => {
+  const docker = { ...row({ providerSandboxId: null, machineSize: null }), provider: "docker" };
+  const [listed] = parseSandboxListMetadata([row(), docker]).slice(1);
+  expect(listed?.provider).toBe("docker");
+  expect(parseSandboxFilters({ provider: ["docker", "aws"] }).provider).toEqual(["docker"]);
+});
+
+test("Docker rows filter and count under their own provider value", () => {
+  const rows = parseSandboxListMetadata([
+    row({ id: "00000000-0000-4000-8000-000000000041" }),
+    { ...row({ id: "00000000-0000-4000-8000-000000000042" }), provider: "docker" },
+  ]);
+  const filters = parseSandboxFilters({ provider: "docker" });
+  expect(filterSandboxes(rows, filters, BOB).map((item) => item.id)).toEqual(["00000000-0000-4000-8000-000000000042"]);
+  expect(sandboxFacetCounts(rows, parseSandboxFilters({}), BOB).provider.get("docker")).toBe(1);
 });

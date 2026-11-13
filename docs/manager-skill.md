@@ -49,16 +49,10 @@ checkout in a golden is not selected by this installer. Audit that checkout and
 existing installed packages for stale instructions rather than patching an
 unrelated upstream repository.
 
-Orchestrator bootstrap installs the four packages at the public full commit in
-`ARMADA_ORCHESTRATOR_SKILL_REVISION`. After reviewing a skill change, the operator
-must explicitly update that pin and rebuild/audit affected goldens. Installing
-does not update existing destinations; preserve and inspect old copies before
-reinstallation. This is a rollout prerequisite, not permission to deploy.
-
 Delivery stays owned by the worker: implementation, ship-pr-dev's unchanged
 independent review gate, PR and green latest-head CI. It ends with READY TO MERGE
 or BLOCKED and needs no Armada launch identity. The coordinator may then launch
-an additional separate reviewer using its existing CLI or an orchestrator parent's
+an additional separate reviewer using its existing CLI or a sandbox parent's
 scoped launch tool, never a worker credential.
 See armada-manager/references/reviewer.md for launch commands, the minimal
 issue/PR/review prompt, GitHub approval/request-changes, two-round budget,

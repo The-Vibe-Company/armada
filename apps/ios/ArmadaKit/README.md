@@ -107,16 +107,6 @@ offered: `/api/v1` has no delete route for a sandbox.
 
 ## Upgrade compatibility
 
-Stored sessions remain origin-bound and preserve their selected organization. Older
-builds may have stored an orchestrator command journal beside the session; those
-unknown fields are ignored and are not replayed by this build. Removing the local
-client does not stop or delete any server-side compute. The server must retain old
-app compatibility until this build has been published and the coordinator approves
-its later removal.
-
-## Values the server adds later
-
-Sandbox statuses, providers, harnesses and event variants retain unknown wire values.
-The server-generated cross-language fixture includes old-client contract data; this
-client tests only its sandbox responses. Unknown agent event kinds keep the page and
-cursor and are counted as technical events, never rendered as assistant text.
+Stored sessions remain origin-bound and preserve their selected organization.
+Unknown persisted command fields are ignored and never replayed. Removing the local
+client does not stop or delete server-side compute.

@@ -1,5 +1,5 @@
-import { isSandboxProvider, MODEL_CATALOG, type SandboxListMetadata } from "@armada/core";
-import { ArrowLeftIcon, ClockAlertIcon, LockIcon } from "lucide-react";
+import { isSandboxProvider, MODEL_CATALOG } from "@armada/core";
+import { ArrowLeftIcon, ClockAlertIcon, ContainerIcon, LockIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
@@ -34,7 +34,7 @@ import { formatDuration, lifecycleView, readLifecycle } from "@/lib/lifecycle";
 import { describeEvidence } from "@/lib/machine-size";
 import { parseTaskOutcome, preservationView, settledOutcome } from "@/lib/outcome";
 import { sandboxRepositoryDir } from "@/lib/repository-context";
-import { machineSizeLabel, sandboxName } from "@/lib/sandbox-access";
+import { LISTED_PROVIDER_LABELS, type ListedSandbox, machineSizeLabel, sandboxName } from "@/lib/sandbox-access";
 import { costOfRow } from "@/lib/sandbox-cost";
 import { createClient } from "@/lib/supabase/server";
 import { usageRevision } from "@/lib/usage-revision";
@@ -70,6 +70,15 @@ export default async function SandboxPage({ params }: Props) {
     // A listed sandbox the caller may open but whose interior was not returned is inconsistent: never guess at it.
     if (!listed || listed.canOpen) notFound();
     return <RestrictedSandbox sandbox={listed} owner={displayUser(directory, listed.ownerId, viewer.id)} />;
+  }
+  if (sandbox.provider === "docker") {
+    // A sandbox on an owned Docker host (#1165): its facts are listed, its conversation and actions are not in the
+    // dashboard yet. Said plainly instead of a missing page or buttons the server would refuse.
+    const listed = await getSandboxMetadata(supabase, id);
+    if (!listed) notFound();
+    return (
+      <RestrictedSandbox sandbox={listed} owner={displayUser(directory, listed.ownerId, viewer.id)} reason="docker" />
+    );
   }
   if (!isSandboxProvider(sandbox.provider) || sandbox.golden_id === null) notFound();
   const org = memberships.find((item) => item.org.id === sandbox.org_id);
@@ -207,13 +216,23 @@ export default async function SandboxPage({ params }: Props) {
 }
 
 /**
- * What a member who may not open a sandbox sees at its address: the metadata every member already has on the list,
- * and why the rest is closed. Its conversation, files and connections are never read for this page.
+ * A sandbox's address shown from its listed metadata only, and why the rest is not shown: either the viewer may not
+ * open it (its conversation, files and connections are then never read for this page), or it runs on a Docker host,
+ * whose conversation and actions the dashboard does not offer yet.
  */
-function RestrictedSandbox({ sandbox, owner }: { sandbox: SandboxListMetadata; owner: string }) {
+function RestrictedSandbox({
+  sandbox,
+  owner,
+  reason = "access",
+}: {
+  sandbox: ListedSandbox;
+  owner: string;
+  /** Why the interior is not shown: the viewer may not open it, or it runs on a Docker host. */
+  reason?: "access" | "docker";
+}) {
   const life = lifecycleView(sandbox.status, readLifecycle(sandbox), new Date());
   const facts: [string, string][] = [
-    ["Provider", PROVIDER_LABELS[sandbox.provider] ?? sandbox.provider],
+    ["Provider", LISTED_PROVIDER_LABELS[sandbox.provider]],
     ["Harness", HARNESS_LABELS[sandbox.harness] ?? sandbox.harness],
     ["Model", sandbox.model ?? "Provider default"],
     ["Reasoning effort", sandbox.reasoningEffort ?? "Provider default"],
@@ -250,14 +269,24 @@ function RestrictedSandbox({ sandbox, owner }: { sandbox: SandboxListMetadata; o
           <StatusBadge status={sandbox.status} />
         </div>
       </div>
-      <Alert data-restricted role="status">
-        <LockIcon />
-        <AlertTitle>Owner and admins only</AlertTitle>
-        <AlertDescription>
-          Only its owner and organization admins can open this sandbox. Every member sees that it exists; its
-          conversation, files and connections stay closed to them.
-        </AlertDescription>
-      </Alert>
+      {reason === "docker" ? (
+        <Alert data-docker-sandbox role="status">
+          <ContainerIcon />
+          <AlertTitle>Runs on a Docker host</AlertTitle>
+          <AlertDescription>
+            Its conversation, messages, stop and delete are not available in the dashboard for Docker sandboxes yet.
+          </AlertDescription>
+        </Alert>
+      ) : (
+        <Alert data-restricted role="status">
+          <LockIcon />
+          <AlertTitle>Owner and admins only</AlertTitle>
+          <AlertDescription>
+            Only its owner and organization admins can open this sandbox. Every member sees that it exists; its
+            conversation, files and connections stay closed to them.
+          </AlertDescription>
+        </Alert>
+      )}
       <Card className="max-w-xl gap-4">
         <CardHeader>
           <CardTitle className="text-base">Details</CardTitle>

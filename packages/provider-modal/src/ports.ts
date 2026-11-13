@@ -35,8 +35,6 @@ export interface Scope {
   userId: string;
   visibility: "org" | "private";
   binding: ModalBinding;
-  /** Trusted server-only restriction; never part of a runner claim or scope key. */
-  cleanup?: import("@armada/core").OrchestratorCleanupScope;
 }
 /** Trusted source-connection provenance, independent of resource access visibility. No tokens. */
 export interface ModalManagementProvenance {
@@ -54,15 +52,7 @@ export interface ProcessBaseline {
   managedRunnerPid?: number;
 }
 
-import type { ModalOrchestratorCheckpointRecord } from "./orchestrator-checkpoint.ts";
-
 export interface Machine {
-  orchestratorCheckpoint?: ModalOrchestratorCheckpointRecord;
-  orchestratorCreateRecovery?: {
-    request: import("@armada/core").OrchestratorCreateRecoveryRequest;
-    binding: Omit<import("@armada/core").OrchestratorCreateRecoveryProof, "state">;
-    state: "dispatched" | "terminated";
-  };
   info: SandboxInfo;
   generation: number;
   /** Assigned only when reserving a NEW managed launch; legacy/unknown rows stay unknown. */

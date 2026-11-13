@@ -1,5 +1,3 @@
-import { AuthError } from "./errors.ts";
-
 export function randomBytes(size: number): Uint8Array {
   return crypto.getRandomValues(new Uint8Array(size));
 }
@@ -69,7 +67,3 @@ export function bearerKind(token: string): "service" | "access" | "refresh" | nu
 }
 
 export const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-export function assertUuid(value: string, message = "Expected an id."): void {
-  if (!UUID_PATTERN.test(value)) throw new AuthError(message, "usage");
-}

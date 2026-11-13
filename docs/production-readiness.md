@@ -9,7 +9,7 @@ container held each connection. No production logs/settings were accessed in
 this change; confirm live settings and connection counts with the operator.
 
 Code audit: startServer constructs one bunSql shared by auth, control, MCP,
-golden jobs and orchestrator/invitation/lifecycle workers. Previously the main
+golden jobs and invitation/lifecycle workers. Previously the main
 Bun.SQL used its default maximum (10), plus a separate autonomous pool of 2:
 up to 12 per process, 24 for two overlapping deployments, already over 15.
 Construction is lazy; first boot SQL is MCP invalidation draining. Concurrent
@@ -109,7 +109,7 @@ reconnect under dashboard Settings to recover a permanently uncertain refresh.
 Uncertain refresh is never replayed. See [GitHub reconnect safety](github-app.md#reconnect-cache-deployment-585)
 for the full ordering and validation mechanism.
 Database queries/short publication transactions still queue behind DB work.
-Golden/orchestrator workers share the main pool; locks/transactions may hold
+Golden workers share the main pool; locks/transactions may hold
 sessions while awaiting other database locks. No throughput or saturated-live-
 pooler validation is claimed here.
 

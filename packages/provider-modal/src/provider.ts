@@ -23,12 +23,6 @@ import { chooseManagementAuthority, matchesManagementAuthority } from "./authori
 import { type ModalConnection, modalConnection } from "./client.ts";
 import { lifecycleStep, ModalOperationError, modalError, refusal } from "./errors.ts";
 import { executeGoldenCommand } from "./golden-exec.ts";
-import {
-  assertSameCheckpoint,
-  checkpointReceipt,
-  type ModalOrchestratorCheckpoint,
-} from "./orchestrator-checkpoint.ts";
-import { createOrchestratorCreateRecovery } from "./orchestrator-create-recovery.ts";
 import type {
   Machine,
   McpConfiguration,
@@ -67,30 +61,6 @@ export interface ModalProviderOptions extends ModalConnection {
   beforePrompt?(provider: ModalProvider, sandboxId: string): Promise<void>;
 }
 export interface ModalProvider extends Provider {
-  checkpointOrchestrator(request: {
-    sandboxId: string;
-    operationId: string;
-    physicalGeneration: string;
-    conversationId: string | null;
-    harness: Harness;
-    model: string;
-    reasoningEffort?: string;
-    cwd?: string;
-  }): Promise<ModalOrchestratorCheckpoint>;
-  readOrchestratorCheckpoint(request: {
-    sandboxId: string;
-    operationId: string;
-  }): Promise<ModalOrchestratorCheckpoint | null>;
-  restoreOrchestratorCheckpoint(request: {
-    sandboxId: string;
-    operationId: string;
-    checkpoint: ModalOrchestratorCheckpoint;
-  }): Promise<{
-    physicalGeneration: string;
-    conversationId: string;
-    nativeSessionId: string;
-    verified: true;
-  }>;
   configureGitHub: NonNullable<Provider["configureGitHub"]>;
   findGoldenBuilder: NonNullable<Provider["findGoldenBuilder"]>;
   disposeGoldenBuilder: NonNullable<Provider["disposeGoldenBuilder"]>;
@@ -247,13 +217,6 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       throw refusal("conflict", "Named machine ownership does not match the reservation; resource not modified.");
     return sb;
   }
-  const createRecovery = createOrchestratorCreateRecovery({
-    store,
-    scope: options.scope,
-    sourceScope: source.scope,
-    assertSource: assertMachineSource,
-    namedOwned,
-  });
   async function bootStage<T>(
     stage: "binding" | "runtime" | "baseline" | "fresh" | "start" | "health" | "active_publication",
     work: () => Promise<T>,
@@ -546,15 +509,6 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       (await store.watermark(row.info.id, row.generation)) !== result.watermark
     )
       throw refusal("conflict", "Checkpoint lacks a matching durably acknowledged event watermark; source retained.");
-    const pending = row.orchestratorCheckpoint?.receipt;
-    if (pending?.state === "pending") {
-      if (pending.physicalGeneration !== result.generation || result.watermark < pending.eventWatermark)
-        throw refusal("conflict", "Checkpoint event watermark regressed; source retained.");
-      // Driver close/final outbox flush can advance beyond the earlier observation.
-      // Seal only the checkpoint's independently verified durable ACK, before snapshot.
-      pending.eventWatermark = result.watermark;
-      pending.acknowledgedSequence = result.acknowledgedSequence;
-    }
     row.checkpointWatermark = result.watermark;
     await save(row);
   }
@@ -1038,148 +992,6 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         return observed;
       });
     },
-    async readOrchestratorCheckpoint({ sandboxId, operationId }) {
-      // Store lookup only: never ready(), health admission, SDK stop or restore.
-      return checkpointReceipt(await store.get(sandboxId), operationId);
-    },
-    async checkpointOrchestrator(request) {
-      return admit(request.sandboxId, async (row, save) => {
-        const prior = checkpointReceipt(row, request.operationId);
-        if (prior) return prior; // Unknown dispatch never repeats the native effect.
-        if (
-          row.golden ||
-          row.phase !== "active" ||
-          String(row.generation) !== request.physicalGeneration ||
-          !request.operationId ||
-          (request.conversationId !== null && !request.conversationId) ||
-          !request.model ||
-          !(HARNESSES as readonly string[]).includes(request.harness)
-        )
-          throw new ProviderError({
-            provider: "modal",
-            code: "conflict",
-            providerCode: "modal_checkpoint_identity",
-            message: "Native checkpoint requires an exact active parent identity.",
-            retryable: false,
-          });
-        const observed = await runner.call<{
-          physicalGeneration: string;
-          state: string;
-          nativeSessionId: string | null;
-          eventWatermark: number;
-          acknowledgedSequence: number;
-        }>(
-          row,
-          "observeOrchestrator",
-          request.conversationId === null ? {} : { conversationId: request.conversationId },
-        );
-        if (
-          observed.physicalGeneration !== request.physicalGeneration ||
-          observed.state !== "quiescent" ||
-          (request.conversationId === null
-            ? observed.nativeSessionId !== null
-            : typeof observed.nativeSessionId !== "string" || !observed.nativeSessionId) ||
-          !Number.isSafeInteger(observed.eventWatermark) ||
-          observed.eventWatermark < 0 ||
-          observed.acknowledgedSequence !== observed.eventWatermark
-        )
-          throw new ProviderError({
-            provider: "modal",
-            code: "conflict",
-            providerCode: "modal_checkpoint_observation",
-            message: "Native checkpoint lacks quiescence/session/durable event acknowledgement.",
-            retryable: false,
-          });
-        row.orchestratorCheckpoint = {
-          receipt: {
-            version: 1,
-            operationId: request.operationId,
-            sandboxId: request.sandboxId,
-            physicalGeneration: request.physicalGeneration,
-            conversationId: request.conversationId,
-            nativeSessionId: observed.nativeSessionId,
-            harness: request.harness,
-            model: request.model,
-            ...(request.reasoningEffort === undefined ? {} : { reasoningEffort: request.reasoningEffort }),
-            ...(request.cwd === undefined ? {} : { cwd: request.cwd }),
-            eventWatermark: observed.eventWatermark,
-            acknowledgedSequence: observed.acknowledgedSequence,
-            checkpointId: null,
-            state: "pending",
-          },
-        };
-        await save(row); // Durable dispatch before checkpoint/snapshot/termination.
-        await stopLeased(row, save);
-        const complete = checkpointReceipt(row, request.operationId);
-        if (!complete || complete.state !== "stopped")
-          throw new ProviderError({
-            provider: "modal",
-            code: "conflict",
-            providerCode: "modal_checkpoint_receipt",
-            message: "Native checkpoint evidence changed.",
-            retryable: false,
-          });
-        row.orchestratorCheckpoint.receipt = complete;
-        await save(row);
-        return complete;
-      });
-    },
-    async restoreOrchestratorCheckpoint(request) {
-      if (
-        !request.checkpoint.conversationId ||
-        !request.checkpoint.nativeSessionId ||
-        request.checkpoint.harness !== "codex"
-      )
-        throw refusal("unavailable", "No verified no-text driver for this harness.");
-      const activated = await admit(request.sandboxId, async (row, save) => {
-        const saved = checkpointReceipt(row, request.checkpoint.operationId);
-        if (!saved || saved.state !== "stopped" || !saved.checkpointId)
-          throw refusal("conflict", "Native checkpoint is not complete.");
-        assertSameCheckpoint(request.checkpoint, saved);
-        const record = row.orchestratorCheckpoint!;
-        if (record.restore)
-          throw refusal(
-            "conflict",
-            "Native restore outcome requires read-only reconciliation; never replay allocation.",
-          );
-        if (
-          row.phase !== "stopped" ||
-          String(row.generation) !== saved.physicalGeneration ||
-          row.recoveryImageId !== saved.checkpointId
-        )
-          throw refusal("conflict", "Native checkpoint source is no longer current.");
-        record.restore = { operationId: request.operationId, verified: false };
-        await save(row);
-        const active = await readyLeased(row, save); // Actual beforeResume hook, verified image, no text.
-        return String(active.generation);
-      });
-      // Actual credential/MCP lifecycle may take the same native lease; never call it inside ours.
-      await options.beforePrompt?.(provider, request.sandboxId);
-      return admit(request.sandboxId, async (row, save) => {
-        const record = row.orchestratorCheckpoint;
-        if (
-          !record ||
-          !record.receipt.conversationId ||
-          !record.receipt.nativeSessionId ||
-          record.restore?.operationId !== request.operationId ||
-          String(row.generation) !== activated
-        )
-          throw refusal("conflict", "Native restore generation changed.");
-        const verified = await verifyNativeSession(row, {
-          sandboxId: request.sandboxId,
-          physicalGeneration: activated,
-          conversationId: record.receipt.conversationId,
-          nativeSessionId: record.receipt.nativeSessionId,
-          harness: record.receipt.harness,
-          model: record.receipt.model,
-          ...(record.receipt.reasoningEffort === undefined ? {} : { reasoningEffort: record.receipt.reasoningEffort }),
-          ...(record.receipt.cwd === undefined ? {} : { cwd: record.receipt.cwd }),
-        });
-        record.restore = { operationId: request.operationId, generation: activated, verified: true };
-        await save(row);
-        return verified;
-      });
-    },
     async verifyOrchestratorSession(request) {
       return admit(request.sandboxId, async (row) => {
         return verifyNativeSession(row, request);
@@ -1458,9 +1270,9 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       try {
         await store.lease(sandboxId, async (row, save) => {
           observed = row;
-          // Native parent checkpointing and golden builders retain their fail-closed contract.
+          // Golden builders retain their fail-closed contract.
           // Dispatch is durable before any RPC, so a crash cannot reset the retry budget.
-          if (!row.golden && !row.orchestratorCheckpoint && row.phase !== "stopped") {
+          if (!row.golden && row.phase !== "stopped") {
             if (row.ordinaryStopAttempted && row.phase !== "terminate") {
               row.info.stopNote = "checkpoint_failed_disk_not_retained";
               // Never allow resume to silently restore a stale recovery image.
@@ -1481,8 +1293,6 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         throw error;
       }
     },
-    recoverOrchestratorCreate: createRecovery.recover,
-    readOrchestratorCreateRecovery: createRecovery.read,
     async findGoldenBuilder(request) {
       assertRecoveryTarget(request);
       const row = await store.findByRequestKey(request.requestKey);

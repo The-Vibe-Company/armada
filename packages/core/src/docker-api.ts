@@ -84,6 +84,7 @@ export interface LaunchOptionsResponse {
     checkpointVersion: number;
     resumeVersion: number;
     githubVersion: number;
+    mcpVersion: number;
     enabled: boolean;
   };
 }

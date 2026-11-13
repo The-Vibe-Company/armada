@@ -184,7 +184,7 @@ export interface LaunchOptions extends GoldenLimits {
   onRegistered?: (sandbox: SandboxRecord) => Promise<void>;
   /** Trusted final-start admission/bootstrap, after all repository and init work. */
   beforeStart?: (provider: Provider, sandbox: SandboxRecord) => Promise<void>;
-  /** Trusted server-only narrowing for managed orchestrator parents. Not a public launch field. */
+  /** Trusted server-only narrowing for private sandbox parents. Not a public launch field. */
   privateParent?: true;
   /** Trusted narrowing for ordinary sandboxes with owner-scoped access. Keeps normal TTL policy. */
   privateVisibility?: true;

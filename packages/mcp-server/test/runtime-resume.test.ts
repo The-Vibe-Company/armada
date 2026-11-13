@@ -8,11 +8,14 @@ import { createRuntimeCheckpoint } from "../src/runtime-checkpoint.ts";
 import { createRuntimeHistory } from "../src/runtime-history.ts";
 import { createRuntimeResume } from "../src/runtime-resume.ts";
 import { callSharedTool } from "../src/tool-api.ts";
+import { rowOnlyDatabase } from "./row-only-database.ts";
 import { runtimeFixture } from "./runtime-fixture.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
 
+const sharedDatabase = rowOnlyDatabase();
+
 async function stopped() {
-  const f = await runtimeFixture();
+  const f = await runtimeFixture(await sharedDatabase());
   const cp = await createRuntimeCheckpoint(
     f.sql,
     ENCRYPTION_KEY,

@@ -59,7 +59,7 @@ test("DELETE proxy forwards only the authenticated sandbox deletion shape and or
     ["GET", ["sandboxes", id]],
     ["DELETE", ["sandboxes", "not-a-uuid"]],
     ["DELETE", ["sandboxes", id, "extra"]],
-    ["DELETE", ["orchestrators", id]],
+    ["DELETE", ["unknown", id]],
     ["DELETE", ["golden", "list"]],
   ] as const)
     expect((await send(method, [...path])).status).toBe(404);
@@ -418,196 +418,17 @@ test("retirement proxy exposes only the two authenticated closed paths and forwa
   expect(calls).toBe(2);
 });
 
-test("orchestrator public origin preserves exact verbs, query, idempotency and auth while keeping a closed boundary", async () => {
-  const id = "00000000-0000-4000-8000-000000000662";
-  const received: {
-    method: string;
-    path: string;
-    query: string;
-    key: string | null;
-    bearer: string | null;
-    cookie: string | null;
-    body: string;
-  }[] = [];
-  const upstream = Bun.serve({
-    hostname: "127.0.0.1",
-    port: 0,
-    fetch: async (request) => {
-      const url = new URL(request.url);
-      if (url.pathname === "/api/v1/auth/authorize")
-        return new Response(null, { status: 302, headers: { location: "https://identity.invalid/authorize" } });
-      received.push({
-        method: request.method,
-        path: url.pathname,
-        query: url.search,
-        key: request.headers.get("idempotency-key"),
-        bearer: request.headers.get("authorization"),
-        cookie: request.headers.get("cookie"),
-        body: await request.text(),
-      });
-      return Response.json(
-        { version: 1 },
-        { status: request.method === "POST" ? 202 : 200, headers: { "set-cookie": "must-not-forward=value" } },
-      );
-    },
-  });
-  const publicOrigin = Bun.serve({
-    hostname: "127.0.0.1",
-    port: 0,
-    fetch: (request) => {
-      const context = {
-        params: Promise.resolve({ path: new URL(request.url).pathname.slice("/api/v1/".length).split("/") }),
-      };
-      return request.method === "GET"
-        ? GET(request, context)
-        : request.method === "DELETE"
-          ? DELETE(request, context)
-          : POST(request, context);
-    },
-  });
-  process.env.ARMADA_MCP_URL = upstream.url.toString();
-  try {
-    const deletion = await fetch(new URL(`/api/v1/sandboxes/${id}?org=${id}`, publicOrigin.url), {
-      method: "DELETE",
-      headers: { authorization: "Bearer proxy-fixture" },
-    });
-    expect(deletion.status).toBe(200);
-    expect(received.at(-1)).toEqual({
-      method: "DELETE",
-      path: `/api/v1/sandboxes/${id}`,
-      query: `?org=${id}`,
-      key: null,
-      bearer: "Bearer proxy-fixture",
-      cookie: null,
-      body: "",
-    });
-    for (const path of [
-      "orchestrators",
-      "orchestrators/capabilities",
-      `orchestrators/${id}`,
-      `orchestrators/${id}/events`,
-      `orchestrators/${id}/settings`,
-      `orchestrators/${id}/waits`,
-      `orchestrators/${id}/connections`,
-    ]) {
-      const query = "?orgId=org&cursor=opaque%2Fcursor%2Bvalue&limit=2";
-      const count = received.length;
-      expect((await fetch(new URL(`/api/v1/${path}${query}`, publicOrigin.url))).status).toBe(401);
-      expect(received).toHaveLength(count);
-      const response = await fetch(new URL(`/api/v1/${path}${query}`, publicOrigin.url), {
-        headers: { authorization: "Bearer proxy-fixture", cookie: "browser=must-not-forward" },
-      });
-      expect(response.status).toBe(200);
-      expect(response.headers.get("cache-control")).toBe("no-store");
-      expect(response.headers.get("set-cookie")).toBeNull();
-      expect(received.at(-1)).toEqual({
-        method: "GET",
-        path: `/api/v1/${path}`,
-        query,
-        key: null,
-        bearer: "Bearer proxy-fixture",
-        cookie: null,
-        body: "",
-      });
-    }
-    for (const action of [
-      "create",
-      "message",
-      "steer",
-      "stop",
-      "resume",
-      "recover",
-      "reconcile",
-      "settings",
-      "waits",
-      `waits/${id}/renew`,
-      `waits/${id}/release`,
-      "connections/add",
-      "connections/remove",
-    ]) {
-      const path =
-        action === "create"
-          ? "orchestrators"
-          : action === "reconcile"
-            ? "orchestrators/reconcile"
-            : `orchestrators/${id}/${action}`;
-      const body = JSON.stringify({ orgId: "org", expectedRevision: 2, size: "small", text: "work" });
-      const key = `source-${action}`;
-      const count = received.length;
-      const anonymous = await fetch(new URL(`/api/v1/${path}?orgId=org`, publicOrigin.url), {
-        method: "POST",
-        headers: { "idempotency-key": key },
-        body,
-      });
-      expect(anonymous.status).toBe(401);
-      expect(received).toHaveLength(count);
-      const response = await fetch(new URL(`/api/v1/${path}?orgId=org`, publicOrigin.url), {
-        method: "POST",
-        headers: { authorization: "Bearer proxy-fixture", "idempotency-key": key, "content-type": "application/json" },
-        body,
-      });
-      expect(response.status).toBe(202);
-      expect(received.at(-1)).toEqual({
-        method: "POST",
-        path: `/api/v1/${path}`,
-        query: "?orgId=org",
-        key,
-        bearer: "Bearer proxy-fixture",
-        cookie: null,
-        body,
-      });
-    }
-    const before = received.length;
-    for (const [method, path] of [
-      ["GET", `orchestrators/${id}/message`],
-      ["POST", `orchestrators/${id}/events`],
-      ["GET", "orchestrators/private"],
-      ["POST", `orchestrators/${id}/callback`],
-      ["POST", `orchestrators/${id}/resume/extra`],
-      ["GET", `orchestrators/${id}/recover`],
-      ["POST", `orchestrators/${id}/waits/not-a-uuid/renew`],
-      ["POST", `orchestrators/${id}/waits/${id}/unknown`],
-      ["GET", `orchestrators/${id}/waits/${id}/renew`],
-      ["GET", `orchestrators/${id}/connections/add`],
-      ["GET", `orchestrators/${id}/connections/remove`],
-      ["POST", `orchestrators/${id}/connections`],
-      ["POST", `orchestrators/${id}/connections/unknown`],
-      ["POST", `orchestrators/${id}/connections/add/extra`],
-      ["POST", "orchestrators/not-a-uuid/connections/add"],
-      ["DELETE", `orchestrators/${id}/connections/remove`],
-      ["GET", "internal/runner/auth-state"],
-    ]) {
-      const response = await fetch(new URL(`/api/v1/${path}`, publicOrigin.url), {
-        method,
-        headers: { authorization: "Bearer proxy-fixture" },
-      });
-      expect(response.status).toBe(404);
-    }
-    expect(received).toHaveLength(before);
-    const redirect = await fetch(new URL("/api/v1/auth/authorize?provider=github&state=retained", publicOrigin.url), {
-      redirect: "manual",
-    });
-    expect(redirect.status).toBe(302);
-    expect(redirect.headers.get("location")).toBe("https://identity.invalid/authorize");
-  } finally {
-    if (env === undefined) delete process.env.ARMADA_MCP_URL;
-    else process.env.ARMADA_MCP_URL = env;
-    await publicOrigin.stop(true);
-    await upstream.stop(true);
-  }
-});
-
-test("orchestrator body limit counts streamed UTF-8 bytes and never sends oversized input upstream", async () => {
+test("control proxy body limit counts streamed UTF-8 bytes and never sends oversized input upstream", async () => {
   process.env.ARMADA_MCP_URL = "https://armada.test/mcp";
   let sent = 0;
   try {
     const response = await forwardControl(
-      new Request("https://dashboard.test/api/v1/orchestrators", {
+      new Request("https://dashboard.test/api/v1/golden/list", {
         method: "POST",
         headers: { authorization: "Bearer proxy-fixture" },
         body: "é".repeat(70_000),
       }),
-      ["orchestrators"],
+      ["golden", "list"],
       async () => {
         sent++;
         return Response.json({ ok: true });

@@ -1,7 +1,6 @@
 # Opt-in sandbox Armada access (#983, slice 2)
 
-An ordinary sandbox can receive scoped Armada MCP access without becoming an
-orchestrator. Armada supplies access, not an orchestration method; install your
+An ordinary sandbox can receive scoped Armada MCP access without a separate parent resource. Armada supplies access, not an orchestration method; install your
 method separately using existing pinned Skillpack launch skills.
 
 ## API / CLI
@@ -21,7 +20,7 @@ armada launch my-golden --agent codex --credential-id ACCOUNT_ID \
 The parent is private, including from a shared golden, and remains visible through
 ordinary sandbox APIs. Use ordinary status/logs/send/stop with its sandbox ID.
 Sending a follow-up to a retained stopped sandbox uses existing conversation
-resume. No synthetic resume prompt or orchestrator identity is introduced. In the
+resume. No synthetic resume prompt or separate managed identity is introduced. In the
 dashboard launch dialog, Advanced → Armada access is off by default and requires
 a usable named Codex account. It explicitly limits access to three owned children;
 changing the account or harness clears it. iPhone launch forms are unchanged.
@@ -46,27 +45,11 @@ golden or checkpoint files. Stop revokes, quiesces and scrubs before checkpointi
 scrub failure prevents stop. Modal's runner independently refuses checkpointing a
 live epoch. A sandbox without the opt-in has no delegated Armada connection.
 
-## Investigation: what remains different
-
-Orchestrators never had an owner Armada CLI/token either: they received this same
-scoped MCP grant and reference, with an optional external Skillpack method. Parent
-allocation is promptless and children use durable preallocation/idempotency receipts,
-owner/org attribution and concurrency policy. Those shared mechanisms are reused.
-
-The old orchestrator additionally has a separate revision/CAS operation API,
-no-text verified native resume, idle/wait-lease policies and dedicated event/usage
-projections. These are not recreated for ordinary sandboxes. Ordinary send resumes
-a retained conversation; the orchestrator's verified no-text Modal resume is not
-exposed. Boat memory continuity remains best effort, not native session proof.
-Shared broker/epoch/child infrastructure (including legacy internal names) must
-survive removal of the public orchestrator UI/API.
-
 ## Deployment and coordinator staging checklist
 
 Apply `20261111140000_sandbox_armada_access.sql` via the normal deployment process,
-not from an agent. Existing `ARMADA_ORCHESTRATOR_PAIRS` enablement for
-`boat:codex`/`modal:codex` currently composes the shared scoped gateway; a launch
-option cannot enable an unavailable pair.
+not from an agent. Scoped access uses the shared private gateway independently of the retired feature; a launch
+option cannot enable an unavailable provider.
 
 The coordinator runs these checks **after the authorized staging rollout**, once
 for Boat/Codex and once for Modal/Codex. They are post-merge operator checks,

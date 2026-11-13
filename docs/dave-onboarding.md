@@ -1,6 +1,6 @@
 # Onboarding: launching agents on Armada (production)
 
-This guide takes a new user from nothing to a coding agent running on Boat or Modal through the production Armada server, from the `armada` CLI or from an MCP client (Claude Code, Codex, Cursor, an orchestrator).
+This guide takes a new user from nothing to a coding agent running on Boat or Modal through the production Armada server, from the `armada` CLI or from an MCP client (Claude Code, Codex, Cursor, a coordinator).
 
 | What | Value |
 | --- | --- |
@@ -97,7 +97,7 @@ optional `repo` string.
 The server accepts three kinds of bearer on `/mcp`:
 
 - an **OAuth** access token, obtained by the client itself (the server is its own authorization server; metadata at `/.well-known/oauth-authorization-server`);
-- an Armada **service token**, bound to one org, for orchestrators and CI;
+- an Armada **service token**, bound to one org, for automation and CI;
 - the Supabase access token of a signed-in session (what the dashboard uses).
 
 **Claude Code, with OAuth** (it opens the browser on first use; sign in as in step 3):
@@ -106,10 +106,10 @@ The server accepts three kinds of bearer on `/mcp`:
 claude mcp add --transport http armada https://armada-mcp-production.up.railway.app/mcp
 ```
 
-**A service token**, for an orchestrator or a headless client:
+**A service token**, for a coordinator or a headless client:
 
 ```sh
-armada token create --org <org> --label orchestrator    # prints the token once; Armada keeps only its hash
+armada token create --org <org> --label coordinator    # prints the token once; Armada keeps only its hash
 armada token list
 armada token revoke <id>                                # cuts it off at the next request
 ```
@@ -121,7 +121,7 @@ claude mcp add --transport http armada https://armada-mcp-production.up.railway.
   --header "Authorization: Bearer $ARMADA_TOKEN"
 ```
 
-A JSON MCP configuration (Cursor's `mcp.json`, Claude Desktop, most orchestrators), with OAuth (leave out `headers`) or a token:
+A JSON MCP configuration (Cursor's `mcp.json`, Claude Desktop, most clients), with OAuth (leave out `headers`) or a token:
 
 ```json
 {
@@ -178,7 +178,7 @@ The sandbox tools are `launch`, `list`, `status`, `wait`, `logs`, `send`, `steer
 { "id": "<sandbox id>" }
 ```
 
-A typical orchestrator loop is `launch` with a prompt, then `wait` until `settled`, then `logs` with `all: true` to collect final output, then `send` for a follow-up or `stop`. A turn that ends on a usage limit or an expired login marks the sandbox `failed`, and `statusReason` says why.
+A typical coordination loop is `launch` with a prompt, then `wait` until `settled`, then `logs` with `all: true` to collect final output, then `send` for a follow-up or `stop`. A turn that ends on a usage limit or an expired login marks the sandbox `failed`, and `statusReason` says why.
 
 ## Troubleshooting
 

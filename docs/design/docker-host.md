@@ -5,7 +5,7 @@
 Design only; no host agent, provider, schema change or deployment in this slice.
 The [owner decisions](https://github.com/The-Vibe-Company/armada/issues/1160#issuecomment-6819684687)
 override earlier proposals. Build starts only after coordinator approval of order step 5.
-Armada remains a launcher, not an orchestrator.
+Armada remains a launcher, not a workflow engine.
 
 - `packages/core/src/provider.ts` currently combines machine and agent operations.
   `sandbox-provider.ts` already separates HOST_CAPABILITIES and PROVIDER_LIMITS.

@@ -12,8 +12,9 @@ import { createRuntimeFollowup } from "../src/runtime-followup.ts";
 import type { ToolContext } from "../src/tools.ts";
 import { database, ENCRYPTION_KEY } from "./support.ts";
 
-export async function runtimeFixture() {
-  const { db, people } = await database();
+/** Caller-supplied seeded rows stay caller-owned; journal/outbox/root cleanup always stays here. */
+export async function runtimeFixture(fixture?: Awaited<ReturnType<typeof database>>) {
+  const { db, people } = fixture ?? (await database());
   const root = await mkdtemp(join(tmpdir(), "runtime-followup-"));
   let journal = new Journal(join(root, "journal"), (value) => value);
   const sql: Sql = {
@@ -55,6 +56,7 @@ export async function runtimeFixture() {
     (await authority.issue({ sandboxId: row.id, ownerId: people.owner, configuration: {} })).enrolmentToken,
   );
   const starts: (string | undefined)[] = [];
+  const mcpSnapshots: (import("@armada/agent-runtime").McpConfiguration | undefined)[] = [];
   let lost = false,
     now = 0;
   let nextDone: Promise<"finished" | "interrupted"> | undefined;
@@ -67,6 +69,7 @@ export async function runtimeFixture() {
   const driver: Driver = {
     start(context) {
       starts.push(context.sessionId);
+      mcpSnapshots.push(context.mcp);
       context.session("native-thread");
       const done = nextDone ?? Promise.resolve("finished" as const);
       nextDone = undefined;
@@ -214,6 +217,7 @@ export async function runtimeFixture() {
   });
   return {
     root,
+    mcpSnapshots,
     db,
     people,
     sql,
@@ -322,7 +326,7 @@ export async function runtimeFixture() {
     async close() {
       await runner.flushOutbox().catch(() => {});
       journal.close();
-      await db.close();
+      if (!fixture) await db.close();
       await rm(root, { recursive: true, force: true });
     },
   };

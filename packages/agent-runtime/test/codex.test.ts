@@ -168,12 +168,13 @@ nativeTest(
       cwd: root,
       env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: root, CODEX_HOME: root, ARMADA_MCP_INSPECTION: receipt },
     });
+    const toolEvents: DriverEvent[] = [];
     try {
       const turn = driver.start({
         request: { sandboxId: "s", harness: "codex", text: "redirect" },
         signal: AbortSignal.timeout(3000),
         session: () => {},
-        emit: () => {},
+        emit: (event) => toolEvents.push(event),
         mcp: {
           revision: "r1",
           servers: {
@@ -191,6 +192,13 @@ nativeTest(
         },
       });
       expect(await turn.done).toBe("finished");
+      expect(
+        toolEvents.some(
+          (e) =>
+            e.kind === "message" &&
+            e.tools.some((t) => t.server === "remote" && t.name === "read_fixture" && t.result?.isError === false),
+        ),
+      ).toBe(true);
       expect(JSON.parse(await readFile(receipt, "utf8"))).toMatchObject({
         argvLeak: false,
         environmentLeak: false,

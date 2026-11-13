@@ -470,6 +470,7 @@ export class Runner {
       return {
         ...(this.execution.restoredFrom ? { restoredFrom: this.execution.restoredFrom } : {}),
         generation: this.grant.generation,
+        mcpVersion: 1,
         ready: !this.barrier,
         pid: process.pid,
       };

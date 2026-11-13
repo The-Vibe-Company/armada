@@ -3,7 +3,19 @@ import type { Sql, TurnPriceContext, TurnTokenUsage } from "@armada/core";
 import { createUsagePricingContext, type Provider, priceTurn, resolvePrice } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
 import { collectSandboxUsage } from "../src/turns.ts";
+import { rowOnlyDatabase } from "./row-only-database.ts";
 import { database, fakeBoat } from "./support.ts";
+
+const sharedDatabase = rowOnlyDatabase();
+async function fixture({ isolated = false } = {}) {
+  const data = await (isolated ? database() : sharedDatabase());
+  return {
+    ...data,
+    close: async () => {
+      if (isolated) await data.db.close();
+    },
+  };
+}
 
 async function state(data: Awaited<ReturnType<typeof database>>) {
   const { db, people: p } = data;
@@ -55,7 +67,7 @@ async function state(data: Awaited<ReturnType<typeof database>>) {
 }
 
 test("price context and coherent native observations freeze per-share API amounts without trusting native money", async () => {
-  const data = await database();
+  const data = await fixture();
   try {
     const { db, p, caller, store, saved, native, snapshot, context, read } = await state(data);
     const { promptId: _prompt, model: _model, ...frozenMetadata } = context;
@@ -174,12 +186,12 @@ test("price context and coherent native observations freeze per-share API amount
     const metadata = await createSqlData(db)({ ...caller, userId: p.member }).sandboxes.list({ limit: 10 });
     expect(metadata.rows.find((row) => row.id === saved.id)?.usage).toBeNull();
   } finally {
-    await data.db.close();
+    await data.close();
   }
 });
 
 test("query-only SQL cannot erase a price context or update counters beside a stale known amount", async () => {
-  const data = await database();
+  const data = await fixture();
   try {
     const { db, caller, store, saved, native, context, read } = await state(data);
     await store.recordUsage!(
@@ -197,12 +209,12 @@ test("query-only SQL cannot erase a price context or update counters beside a st
     expect((await read())?.pricing?.usd).toBe("0.00022");
     expect((await store.get(saved.id))?.usage?.turnCount).toBe(1);
   } finally {
-    await data.db.close();
+    await data.close();
   }
 });
 
 test("database failure publishing a changed quote rolls native counters back atomically", async () => {
-  const data = await database();
+  const data = await fixture({ isolated: true });
   try {
     const { db, store, saved, native, context, read } = await state(data);
     await store.recordUsage!(
@@ -227,12 +239,12 @@ test("database failure publishing a changed quote rolls native counters back ato
     expect((await read())?.inputTokens).toBe(10);
     expect((await read())?.pricing?.usd).toBe("0.00022");
   } finally {
-    await data.db.close();
+    await data.close();
   }
 });
 
 test("unrecognized stored quote metadata cannot lend an amount or observation witness to a valid context", async () => {
-  const data = await database();
+  const data = await fixture();
   try {
     const { db, store, saved, native, context, read } = await state(data);
     await store.recordUsage!(
@@ -248,7 +260,7 @@ test("unrecognized stored quote metadata cannot lend an amount or observation wi
     await store.recordUsage!(saved.id, { turnCount: 1, turns: [native] }, { observations: [], contexts: [context] });
     expect((await read())?.pricing).toMatchObject({ schemaVersion: 1, usd: null, unknown: "tokens", inputs: null });
   } finally {
-    await data.db.close();
+    await data.close();
   }
 });
 
@@ -274,7 +286,7 @@ test.each([
 ])(
   "$label preserves evidence and applicable prices across native replay",
   async ({ writes, five, hour, initialUsd, nextUsd }) => {
-    const data = await database();
+    const data = await fixture();
     try {
       const { store, saved, native, context } = await state(data);
       await store.recordUsagePricingContext!(
@@ -343,7 +355,7 @@ test.each([
         );
       }
     } finally {
-      await data.db.close();
+      await data.close();
     }
   },
 );

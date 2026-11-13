@@ -181,7 +181,7 @@ commit → publish → PR, not necessarily “arbitrary gh with the owner's acco
 It removes GitHub credential exfiltration from the guest, retains exact commit
 objects, and reuses preservation/credential resolution without implementing a Git
 transport proxy. It remains a launcher operation explicitly requested by an
-owner/agent, not a fleet orchestrator, merge queue or automatic deployer.
+owner/agent, not a fleet coordinator, merge queue or automatic deployer.
 
 Tradeoff: this intentionally sacrifices transparent private Git/gh networking.
 If unrestricted interactive Git compatibility is a hard requirement, option 4 is

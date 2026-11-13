@@ -26,6 +26,7 @@ type WireTool = { id: string; name: string; input: Obj; result: { output: unknow
 function fixture(enabled = true) {
   const output: Obj[] = [];
   const stopped: string[] = [];
+  const journaled: string[] = [];
   const requests: { path: string; body: Obj }[] = [];
   const state = {
     before: [] as string[],
@@ -197,6 +198,9 @@ function fixture(enabled = true) {
     },
     step: async (_name, action) => action(),
     withCleanup: async (action) => action(),
+    recordSandbox: async (id) => {
+      journaled.push(id);
+    },
     async stopSandbox(id) {
       stopped.push(id);
       if (state.stopFail.has(id)) throw new Error("safe stop failed");
@@ -205,7 +209,7 @@ function fixture(enabled = true) {
     out: (line) => output.push(JSON.parse(line)),
   };
   const probe = createScopedProbe(item, enabled, io);
-  return { probe, state, output, stopped, requests, wire, receipt };
+  return { probe, state, output, stopped, journaled, requests, wire, receipt };
 }
 async function run(f: ReturnType<typeof fixture>) {
   await f.probe.prepare();
@@ -485,7 +489,17 @@ describe("ordinary scoped Armada smoke", () => {
     await run(f).catch(() => {});
     expect(await f.probe.cleanup(parent, true)).toBe(false);
     expect(f.stopped).toEqual([]);
+    if (mode === "preexisting" || mode === "parent" || mode === "unclaimed") expect(f.journaled).toEqual([]);
     expect(f.output[0]?.pass).toBe(false);
+  });
+
+  test("known launch claims are journaled even when final fleet snapshot is unreadable", async () => {
+    const f = fixture();
+    await run(f);
+    f.state.incomplete = true;
+    expect(await f.probe.cleanup(parent, true)).toBe(false);
+    expect(f.stopped).toEqual([]);
+    expect(f.journaled).toEqual([child]);
   });
 
   test("cleanup attempts every corroborated claim despite a stop failure", async () => {

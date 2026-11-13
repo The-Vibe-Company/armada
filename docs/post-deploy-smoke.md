@@ -113,27 +113,12 @@ read -rs ARMADA_TOKEN; export ARMADA_TOKEN; echo
 export ARMADA_SMOKE_CASES="$(cat /path/to/staging-cases.json)"
 export ARMADA_SMOKE=create_real_compute
 bun scripts/post-deploy-smoke.ts
-# Optional; use only pairs supported by orchestrator capabilities:
-bun scripts/post-deploy-smoke.ts --orchestrator
 unset ARMADA_TOKEN
 ```
 
 The normal path launches each case, sends one trivial prompt, waits for success,
 checks `git status -sb` and `git ls-remote origin HEAD` in the checkout, stops
-the sandbox and checks provider state. The optional path also exercises
-orchestrator create → send → stop → resume → stop. It requires `goldenId`;
-orchestrator capabilities must enable the selected pair (Modal/Codex native or
-Boat/Claude and Boat/Codex best-effort). Within that supported set,
-the smoke reads `orchestrators/capabilities` once and validates every selected
-pair before **any** sandbox or orchestrator allocation. A disabled or absent
-pair fails the run; it is never silently skipped. Use a separate cases file
-containing only enabled pairs for that run. Ordinary-only runs do not use this
-orchestrator capability gate. Ordinary-pair preflight is tracked in
-[#859](https://github.com/The-Vibe-Company/armada/issues/859): add an authenticated
-`sandbox/capabilities` route using launch's provider/harness availability policy
-and caller-visible model-account validation, then gate ordinary cases before
-allocation. Orchestrator enablement is a separate policy and cannot substitute
-for that route.
+the sandbox and checks provider state.
 
 ### Pair prerequisites
 
@@ -144,38 +129,22 @@ model credentials live in Armada's staging credential store, not GitHub Actions.
 
 | Pair | Staging resources | Fields in each `ARMADA_SMOKE_CASES` entry | GitHub staging configuration |
 | --- | --- | --- | --- |
-| Boat × Claude | Boat golden with git checkout; Claude model account available to smoke user | `provider: "boat"`, `harness: "claude"`; `golden` = Boat golden name; `goldenId` = same Boat golden's ID for orchestrator runs; `modelAccountId` = Claude account ID; `model` = model supported by that account | Shared `ARMADA_ORIGIN`, `ARMADA_SMOKE_TOKEN`, `ARMADA_SMOKE_CASES`; no pair-specific GitHub key |
-| Boat × Codex | Same staging Boat account/key and reusable Boat golden; Codex model account available to smoke user | `provider: "boat"`, `harness: "codex"`; `golden` = Boat golden name; `goldenId` = same Boat golden's ID for orchestrator runs; `modelAccountId` = Codex account ID; `model` = model supported by that account | Same shared variable/secrets; no pair-specific GitHub key |
-| Modal × Claude | Modal golden with git checkout; Claude model account available to smoke user | `provider: "modal"`, `harness: "claude"`; `golden` = Modal golden name; `goldenId` = same Modal golden's ID for orchestrator runs; `modelAccountId` = Claude account ID; `model` = model supported by that account | Same shared variable/secrets; no pair-specific GitHub key |
-| Modal × Codex | Reusable Modal golden; Codex model account available to smoke user | `provider: "modal"`, `harness: "codex"`; `golden` = Modal golden name; `goldenId` = same Modal golden's ID for orchestrator runs; `modelAccountId` = Codex account ID; `model` = model supported by that account | Same shared variable/secrets; no pair-specific GitHub key |
+| Boat × Claude | Boat golden with git checkout; Claude model account available to smoke user | `provider: "boat"`, `harness: "claude"`; `golden` = Boat golden name; `goldenId` = same Boat golden's ID ; `modelAccountId` = Claude account ID; `model` = model supported by that account | Shared `ARMADA_ORIGIN`, `ARMADA_SMOKE_TOKEN`, `ARMADA_SMOKE_CASES`; no pair-specific GitHub key |
+| Boat × Codex | Same staging Boat account/key and reusable Boat golden; Codex model account available to smoke user | `provider: "boat"`, `harness: "codex"`; `golden` = Boat golden name; `goldenId` = same Boat golden's ID ; `modelAccountId` = Codex account ID; `model` = model supported by that account | Same shared variable/secrets; no pair-specific GitHub key |
+| Modal × Claude | Modal golden with git checkout; Claude model account available to smoke user | `provider: "modal"`, `harness: "claude"`; `golden` = Modal golden name; `goldenId` = same Modal golden's ID ; `modelAccountId` = Claude account ID; `model` = model supported by that account | Same shared variable/secrets; no pair-specific GitHub key |
+| Modal × Codex | Reusable Modal golden; Codex model account available to smoke user | `provider: "modal"`, `harness: "codex"`; `golden` = Modal golden name; `goldenId` = same Modal golden's ID ; `modelAccountId` = Codex account ID; `model` = model supported by that account | Same shared variable/secrets; no pair-specific GitHub key |
 
 Every entry also requires `org` (staging org ID) and `repo` (absolute path to
 that golden's git checkout with an accessible `origin`); `reasoningEffort`
 is optional. The smoke token's user needs access to those resources and a staging
-GitHub connection authorized for the checkout. `goldenId` is currently required
-only with `--orchestrator`; use the same provider's golden, not another provider's
-ID. Account references are per harness and may be reused across providers when
+GitHub connection authorized for the checkout. When a mode requires `goldenId`, use the same provider's golden, not another provider's ID. Account references are per harness and may be reused across providers when
 the account supports both; they are identifiers, never credential values.
 
 Goldens are provider-specific: a Boat golden cannot stand in for a Modal golden.
 Use a **separate Boat account and account key for staging**, shared by both Boat
 harness rows (not a separate Boat key per pair): Boat allows one golden per
 account. Configure that key in Armada's staging credential store, never in the
-cases file or workflow. For orchestrator runs, every selected pair must also be
-enabled on the staging server and reported enabled by its capabilities endpoint.
-A server-wide disabled switch reports `orchestrator_disabled`; an absent or
-disabled selected pair reports `pair_disabled`.
-These prerequisites do not imply a pair is enabled today.
-
-This first matrix slice adds preflight only. Sandbox resume/recall,
-orchestrator post-resume recall, bounded recovery/terminal-state assertions,
-timings/job summaries and expanded closed failure labels remain follow-up work
-in [#826](https://github.com/The-Vibe-Company/armada/issues/826) and
-[#827](https://github.com/The-Vibe-Company/armada/issues/827). Before those full-cycle
-changes are merge-ready, the coordinator must run the staging workflow with
-`--orchestrator` and every enabled pair and return its receipts.
-
-The **Post-deploy smoke** workflow can be dispatched on main. It also runs after
+cases file or workflow. The **Post-deploy smoke** workflow can be dispatched on main. It also runs after
 a successful GitHub `deployment_status` for environment exactly `armada / staging`
 (Railway's GitHub deployment name, not the GitHub secrets environment). To
 override the accepted name, set the repository variable
@@ -251,23 +220,7 @@ estimate is reliable without the configured provider/model rates. Do not run
 this mode with production credentials. Live staging execution is performed by
 the existing post-deploy workflows, not by a PR or offline test run.
 
-Remaining #969 families (not claimed by this slice): full sandbox resume/expiry/
-list consistency and timings/leftover summaries; GitHub refresh; vault; templates;
-public/private skills and golden pinned digest verification. These are
-verification follow-ups, not new product capabilities. Per the owner decision
-on #969, orchestrators are excluded; their removal belongs to a separate ticket.
-
 ### Template and skill pins slice (#969)
-
-The next staging slice exercises personal readable-variable templates and pinned
-public/private skills on the explicitly selected provider × harness cases when
-the corresponding exact pins are configured.
-Orchestrators are excluded. A random disposable value must be read by the native
-agent (not included in the prompt), while a plain exec must not inherit its
-environment binding. Installation receipts must match the requested exact pins.
-Private installation is skipped only when Skillpack connection metadata confirms
-no personal or matching-org key is configured; a configured but unusable key is
-a failure. Template, variable and sandbox cleanup runs even after a failed check.
 
 Both staging entrypoints pass `--templates-skills` in addition to
 `--work-preservation`. The new mode also refuses any origin other than the exact
@@ -473,7 +426,7 @@ using the existing access configuration; unavailable/misconfigured access fails.
 The native parent uses only configured scoped MCP launch/message/read/stop.
 No owner CLI token, copied bearer, direct owner HTTP fallback, config/grant read
 or new orchestration method. The reserved MCP server's legacy internal name is
-unchanged; no public orchestrator is created. The nonsecret armada-tools reference
+unchanged; no separate managed parent is created. The nonsecret armada-tools reference
 may be read with the supplied exact read-only cat command.
 
 Named proofs: parent configuration, native turn, actual correlated child launch,
@@ -512,7 +465,7 @@ No migrations/new credentials/case fields. Offline tests are not live receipts.
 ### Legacy GitHub repair (#969)
 
 Both staging entrypoints add `--github-refresh`, requiring `--lifecycle`
-and excluding orchestrator and managed-runtime test modes. It reuses the
+and excluding managed-runtime test modes. It reuses the
 ordinary clean worker; no additional allocations or model turns. Readiness is
 recorded immediately before the new `github_launch_access` read-only git
 probe. This proves origin access before the first model turn or explicit
@@ -559,7 +512,7 @@ Both staging entrypoints add `--expiry`. Standalone
 `bun scripts/post-deploy-smoke.ts --expiry` runs only this family.
 It is admitted only on the exact staging origin. Combined mode requires
 `--lifecycle`, so template-only early returns cannot silently skip the probe;
-orchestrator combinations are refused.
+unsupported combinations are refused.
 
 For every selected pair, launch one additional prompt-free ordinary worker
 with a 180-second logical TTL, no connections and default skills opted out.
@@ -604,7 +557,7 @@ Both staging entrypoints enable `--golden-runtime`. On the existing ordinary
 worker (only the clean worker when preservation is enabled), named
 `golden_helper_integrity` and `golden_skillpack_integrity` steps verify installed
 bytes, executable resolution and version/protocol. No extra allocation or model
-turn is added. The flag refuses non-staging origins, orchestrator mode and template-only
+turn is added. The flag refuses non-staging origins, template-only
 combinations without preservation or lifecycle (which would otherwise return
 before the ordinary worker checks).
 
@@ -627,3 +580,96 @@ Expected added duration: seconds to about one minute per pair; two existing
 pinned release download per pair plus trivial hashing/exec, with no model usage
 or extra worker. Offline transport tests do not prove deployed provider bytes;
 the coordinator runs both enabled providers after merge.
+
+## Signed-in dashboard reads (#1383)
+
+Both staging smoke workflows also run `bun scripts/dashboard-read-smoke.ts`,
+concurrently with the compute smoke. It creates no resources. After one bounded
+10-second login, all page requests start in parallel with a **15-second bound per
+page**, including the full streamed HTML body. Thus this family adds at most
+25 seconds and overlaps the existing smoke; it adds no required PR check.
+
+The dashboard uses Supabase session cookies, **not** an Armada bearer token.
+Configure these additional environment-scoped staging values before enabling the
+gate. Missing/invalid values fail `dashboard_session` (never silently skip reads):
+
+| Kind | Name | Value |
+| --- | --- | --- |
+| Variable | `ARMADA_SMOKE_DASHBOARD_URL` | Explicit staging dashboard HTTPS origin, not the Railway API origin; no path/query/userinfo |
+| Variable | `ARMADA_SMOKE_SUPABASE_URL` | That dashboard's staging Supabase HTTPS origin |
+| Variable | `ARMADA_SMOKE_SUPABASE_ANON_KEY` | That project's public publishable key or legacy **anon** key; service-role/secret keys refused |
+| Variable | `ARMADA_SMOKE_DASHBOARD_USER_ID` | Dedicated smoke user's Supabase UUID; login must return this identity |
+| Variable | `ARMADA_SMOKE_DASHBOARD_ORG_ID` | Staging smoke org UUID; each rendered active-org selector must confirm it |
+| Variable | `ARMADA_SMOKE_DASHBOARD_OTTO` | Explicit `true` when Otto observes the smoke org, otherwise `false` |
+| Secret | `ARMADA_SMOKE_DASHBOARD_EMAIL` | Dedicated smoke user's confirmed email |
+| Secret | `ARMADA_SMOKE_DASHBOARD_PASSWORD` | Strong, unique staging-only password for that same smoke user |
+
+Coordinator prerequisites: enable password sign-in for the dedicated user on the
+**staging** Supabase project (the regular dashboard can continue using email OTP),
+ensure it is the same user who owns the smoke token, and grant membership in the
+smoke org. Configure its connected provider, named models and GitHub setup as the
+existing smoke requires. The supplied org preference is membership-validated by
+the dashboard; a stale or unauthorized preference cannot pass by falling back to
+another org. The password grant is sent only to the explicit Supabase origin.
+Session/refresh tokens and cookies stay in memory, never files or output, and
+page requests never carry the Armada bearer. Each run signs in afresh, so no
+expiring session secret needs rotation. Do not use production credentials or
+origins. Protect the staging environment; never pass these secrets to PR code.
+
+JSON steps (case `0`) are independently nameable by coordinator failure tooling:
+`dashboard_session`, `dashboard_sandboxes`, `dashboard_routines`,
+`dashboard_templates`, `dashboard_otto` (only when enabled),
+`dashboard_environments`, `dashboard_skills`, `dashboard_tools`,
+`dashboard_variables`, `dashboard_models` (`/harness`),
+`dashboard_organizations` (`/orgs`), `dashboard_settings`.
+Each reports `pass`, `bound_ms`, `elapsed_ms`, and a sanitized failure `code`.
+No response bodies or upstream error messages are logged.
+
+These are normal HTML GETs, not RSC prefetches or a browser: SSR executes the
+page's selected-org, user-JWT Supabase/RLS and Armada control reads, including
+Otto's view reads, before the complete body passes. Redirects (including expired
+sessions), wrong orgs, non-HTML, missing page headings, destructive error panels,
+unavailable/not-configured panels, partial template reads and model-usage read
+errors fail even at HTTP 200. Script/hydration text is excluded from panel checks.
+Ordinary healthy empty lists and informational panels are permitted. This checks
+the reads that SSR exposes, not client-only interactions, and cannot identify a
+read that production code silently swallows without rendering any failure state.
+
+Coordinator checks after merge (workers make **no staging/production calls**):
+
+1. Set the values above in the staging environment; verify dashboard and Supabase
+   origins belong to the same staging deployment and the configured user matches
+   the bearer smoke user. Set Otto explicitly according to its staging config.
+2. Run a staging deployment smoke. Confirm each enabled `dashboard_*` step passes
+   within its stated bound, and a wrong password/expired login fails
+   `dashboard_session` without printing credentials. Restore the valid secret.
+3. Confirm no extra compute is created by the read family; use the separate
+   cleanup changes/checks for the compute smoke's row-growth requirement.
+
+Offline proof: `bun test scripts/dashboard-read-smoke.test.ts` uses fake fetch,
+starts every page before releasing any response, verifies chunked cookies decode
+with the dashboard's pinned Supabase SSR SDK, and deliberately returns broken
+HTTP-200 panels to fail only the named page while siblings finish. No network or
+wall-clock waits are used by these tests.
+
+### Sandbox deletion receipts
+
+Both staging workflows upload `.smoke/sandboxes.json` as an artifact even when probes fail, restore the latest named artifact across branches/tags, and set
+`ARMADA_SMOKE_JOURNAL` for the compute smoke. Launch receipts are persisted before
+probe validation; cleanup deletes known IDs after all stop/recovery assertions.
+The bounded startup sweep retries at most 32 older receipted IDs in parallel;
+current-run deletion has an independent 64-ID bound. It never lists all stopped
+sandboxes for deletion. The target `smoke_cleanup_summary.remainingRows` is zero;
+deleted audit rows remain but do not grow active dashboard lists.
+
+For a manual staging run set `ARMADA_SMOKE_JOURNAL` to a durable receipt path.
+Without it, the legacy operator smoke retains its stop-only behavior. Journal
+cleanup refuses managed `--orchestrator` mode before allocating compute. Lost
+launch responses or forced termination before persistence require coordinator
+reconciliation: direct launches have no idempotency lookup. Unknown outcomes
+fail the run instead of claiming zero growth. Artifact expiry can lose retry
+receipts; preserve `smoke_sandbox_receipt` output as independent audit evidence.
+
+Coordinator checks: compare org counts before/after a normal run; deliberately
+fail a probe after launch; restore one known smoke receipt on the next run and
+verify its deletion while an unrelated stopped sandbox remains unchanged.

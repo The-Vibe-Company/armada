@@ -5,8 +5,8 @@ Status: proposed design for
 production change, or scheduling system is implemented here. The [owner
 decision](https://github.com/The-Vibe-Company/armada/issues/906#issuecomment-6769156110)
 adds routine design coverage, with implementation after variables/secrets and templates.
-Owner decisions in §8 precede implementation. Armada remains a launcher, not an
-orchestrator ([#455](https://github.com/The-Vibe-Company/armada/issues/455)).
+Owner decisions in §8 precede implementation. Armada remains a launcher, not a
+workflow engine ([#455](https://github.com/The-Vibe-Company/armada/issues/455)).
 
 ## Owner summary: what Armada guarantees / what it cannot
 
@@ -49,7 +49,7 @@ The following are implementation anchors, not claims that this proposal already 
   auth may use ~/.codex/auth.json; that exception is not permission to write new
   application secrets into checkouts. Today a fork environment is not a proven
   confidential transport for arbitrary secrets.
-- [orchestrator-scoped-gateway.ts](../../packages/mcp-server/src/orchestrator-scoped-gateway.ts)
+- [scoped child access](../sandbox-armada-access.md)
   accepts a strict child selection with pinned account/version, not generic owner
   authority. Extend the authority boundary; do not smuggle new fields through it.
 - [work-preservation-collector.ts](../../packages/core/src/work-preservation-collector.ts)
@@ -332,12 +332,12 @@ unclassified new agent/caller-text field must not be enabled):
 | task_outcome.blocked.reason, ready.prUrl and other caller-supplied outcome fields; report_task_outcome | Filter/reject at the service-owned writer, validate URL/identifier schemas; entire task_outcome/task_prompt_id treated as interior on owner-only machines, including mutation echoes and list DTOs |
 | lifecycle_error, status/outcome reasons, preservation_note | Safe enumerated code/generated note wherever possible; filter any remaining text before write; raw notes/reasons interior, not administrative list text |
 | usage_turns/turn usage details, provider usage/error payloads and usage records | Strict allowlist of finite bounded numeric metrics and enums; no arbitrary JSON/string payloads; detailed usage interior, admin list gets only server-observed bounded aggregates if explicitly authorized |
-| orchestrator runtime/child-operation journal, receipt, failure, prompt/task, request/result and notification/outbox fields | Parent context filter at each durable writer before dispatch and replay; hide content-derived fields from non-owner projections; retry/journal path cannot bypass it |
+| child-operation journal, receipt, failure, prompt/task, request/result and notification/outbox fields | Parent context filter at each durable writer before dispatch and replay; hide content-derived fields from non-owner projections; retry/journal path cannot bypass it |
 | routine occurrence outcome/reason, stored task/prompt/revision text, launch metadata and user-defined labels | Same filter/validation before persistence and response; owner-only-machine-derived text is interior even if routine or template metadata is org-visible |
 | credentials/native-auth write-back, including publishNativeAuth | Not ordinary metadata: existing account-bound encrypted credential storage, identity/schema validation and no public text echoes. Reject recognized unrelated application-secret contamination rather than redacting a credential into invalid auth; do not use write-back to publish arbitrary agent text to another identity |
 
 For a personal-secret owner-only sandbox, omit all interior-derived fields above
-from admin/non-owner sandbox and orchestrator lists (null or absent, never an
+from admin/non-owner sandbox lists (null or absent, never an
 encoded copy). Stop/delete returns only typed IDs/status, not notes or outcomes.
 Use generated labels and allowlisted lifecycle status for administrative views.
 Metadata is **not claimed secret-free**: filtered unknown/encoded text may still
@@ -355,7 +355,7 @@ against the same rule. Non-owner raw writes are not allowed to bypass the writer
 
 Named test B2-state-write-canary / R2-S1-metadata: inject a personal canary via
 report_task_outcome.blocked.reason and prUrl, lifecycle errors, preservation notes,
-usage payloads, outcome reasons and orchestrator journal/request/result fields.
+usage payloads, outcome reasons and child-operation journal/request/result fields.
 Inspect actual rows and mutation echoes, then fetch admin/peer list, detail, RPC
 and direct user-JWT column queries: no exact/escaped known canary stored/returned,
 and no interior-derived fields visible to non-owners. Owner reads the sanitized
@@ -646,7 +646,7 @@ caps and per-run TTL/size before enabling. These caps cannot enlarge existing
 provider/org limits; children consume the same budget, not a bypass.
 
 Subscription accounts are shared like API keys (#1248): other sandboxes, routines
-and orchestrator children do not reserve an account. Resolve/pin the authorized
+and delegated children do not reserve an account. Resolve/pin the authorized
 account ID/version explicitly for unattended runs before enablement; do not
 silently switch accounts at each tick. Codex renewal is server-owned through the
 shared broker; routine capacity and spend budgets remain independent admission

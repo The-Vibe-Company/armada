@@ -55,10 +55,13 @@ export function createRuntimeAgent(
   function target(id: string) {
     if (id !== providerSandboxId) throw refusal("invalid_request");
   }
-  async function invoke<T>(command: RunnerRequest, signal?: AbortSignal): Promise<T> {
+  async function invoke<T>(command: RunnerRequest, signal?: AbortSignal, expectedEpoch?: string): Promise<T> {
     let reply: Awaited<ReturnType<typeof commands.call>>;
     try {
-      reply = await commands.call(ownerId, command, signal ? { signal } : {});
+      reply = await commands.call(ownerId, command, {
+        ...(signal ? { signal } : {}),
+        ...(expectedEpoch !== undefined ? { expectedEpoch } : {}),
+      });
     } catch {
       // A lost wait is not proof of non-execution. Preserve the exact identity for
       // reconciliation; never include transport errors or private payloads.
@@ -115,6 +118,34 @@ export function createRuntimeAgent(
       )
         throw refusal("sandbox_not_ready");
       return { runtime: "armada", epoch: reply.epoch };
+    },
+    async configureMcp(
+      configuration: Extract<RunnerRequest, { op: "configureMcp" }>["configuration"],
+      requestId: string,
+      epoch: string,
+    ): Promise<void> {
+      const health = await invoke<{ ready?: unknown; generation?: unknown; mcpVersion?: unknown }>(
+        { ...identity(), op: "health" },
+        undefined,
+        epoch,
+      );
+      if (health?.ready !== true || health.generation !== epoch || health.mcpVersion !== 1)
+        throw new ProviderError({
+          provider: "boat",
+          code: "sandbox_not_ready",
+          message: "Runtime MCP v1 requires an updated runtime artifact.",
+          retryable: false,
+        });
+      const result = await invoke<{ revision?: unknown }>(
+        {
+          ...identity(requestId),
+          op: "configureMcp",
+          configuration,
+        },
+        undefined,
+        epoch,
+      );
+      if (result?.revision !== configuration.revision) throw refusal("unavailable", requestId);
     },
     async configureGitHub(configuration: GitHubRuntimeConfiguration, requestId: string): Promise<void> {
       const result = await invoke<{ acknowledged?: boolean }>({

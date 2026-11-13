@@ -66,7 +66,7 @@ canaries and no production credentials. Test names refer to
 - **B2-boat-read**: exercise logs/wait/outcome/notifications/exports; separately
   inspect provider raw event storage. Read-time filtering does not delete it.
 - **B2-state-write-canary / R2-S1-metadata**: inject via task outcomes, URLs,
-  lifecycle/preservation reasons, usage and orchestrator journals; inspect actual
+  lifecycle/preservation reasons, usage and operation journals; inspect actual
   rows, mutation echoes, administrative lists and direct JWT column access.
 - **S1-context-expiry**: injected-clock expiry, audited context reads/purges,
   tombstones and restore admission denial; no replay after context expiry.
