@@ -25,3 +25,6 @@ playwright-report/
 .aeom/reports/
 .aeom/review/
 .aeom-worktrees/
+
+# Local smoke cleanup receipts
+.smoke/

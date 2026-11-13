@@ -15,6 +15,7 @@ export interface ScopedProbeIo {
   step<T>(name: string, action: () => Promise<T>): Promise<T>;
   withCleanup<T>(action: () => Promise<T>): Promise<T>;
   stopSandbox(id: string): Promise<void>;
+  recordSandbox?(id: string, requestKey: string): Promise<void>;
   isNotReady(error: unknown): boolean;
   out(line: string): void;
 }
@@ -485,6 +486,14 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
             adopt();
           } catch {
             evidenceUnknown = true;
+            ok = false;
+          }
+        }
+        for (const childId of claims) {
+          if (!before || before.has(childId) || childId === parent) continue;
+          try {
+            await io.recordSandbox?.(childId, launchKey);
+          } catch {
             ok = false;
           }
         }
