@@ -60,7 +60,7 @@ afterAll(async () => {
 
 // The real migrated boundary owns normal-launch sequencing and durable retries.
 // Existing private-lane tests own the individual host/runtime protocol matrices.
-async function fixture(options: { lifecycleGenerationAfterCreate?: number; harness?: Harness } = {}) {
+async function fixture(options: { lifecycleGenerationAfterCreate?: number; harness?: Harness; image?: string } = {}) {
   const orgId = randomUUID(),
     userId = randomUUID(),
     adminId = randomUUID(),
@@ -101,7 +101,7 @@ async function fixture(options: { lifecycleGenerationAfterCreate?: number; harne
     org: orgId,
     provider: "docker",
     hostId: host.hostId,
-    image: `worker@sha256:${"a".repeat(64)}`,
+    image: options.image ?? `worker@sha256:${"a".repeat(64)}`,
     harness: options.harness ?? "codex",
     credentialId,
     requestId: randomUUID(),
@@ -682,4 +682,16 @@ test.each(["claude", "opencode"] as const)("normal Docker launch selects and boo
   expect(f.native).toContainEqual(
     expect.objectContaining({ op: "prompt", input: expect.objectContaining({ harness }) }),
   );
+});
+
+test("normal Docker launch persists and dispatches a full local image ID without rewriting it as a registry digest", async () => {
+  const image = `sha256:${"b".repeat(64)}`;
+  const f = await fixture({ image });
+  const { prompt: _, ...body } = f.body;
+  const result = await f.service().launch(f.caller, body);
+  expect(result.sandbox.image).toBe(image);
+  expect(f.jobs[0]).toMatchObject({ operation: "create", request: { image } });
+  expect((await f.service().launch(f.caller, body)).sandbox.image).toBe(image);
+  expect(f.jobs).toHaveLength(2);
+  await rejected(f.service().launch(f.caller, { ...body, image: `sha256:${"c".repeat(64)}` }), "conflict");
 });

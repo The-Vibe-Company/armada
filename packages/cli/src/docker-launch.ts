@@ -4,6 +4,7 @@ import {
   GoldenError,
   HARNESSES,
   type Harness,
+  isDockerImageReference,
   resolveModelChoice,
 } from "@armada/core";
 import { type Args, single } from "./args.ts";
@@ -48,8 +49,11 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
   if (!selector || selector.length > 64 || /[\p{C}]/u.test(selector))
     throw new GoldenError("invalid_config", "--host requires a UUID or exact host name.");
   const image = single(args, "--image")?.trim();
-  if (!image)
-    throw new GoldenError("invalid_config", "Docker launch requires --image with a digest-pinned image reference.");
+  if (!isDockerImageReference(image))
+    throw new GoldenError(
+      "invalid_config",
+      "Docker launch requires --image repository@sha256:<64 hex> or a host-approved local sha256:<64 hex> ID.",
+    );
   const supplied = single(args, "--request-id");
   if (supplied !== undefined && !uuid.test(supplied))
     throw new GoldenError("invalid_config", "--request-id requires a UUID.");

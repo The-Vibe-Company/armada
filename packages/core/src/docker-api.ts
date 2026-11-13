@@ -113,6 +113,7 @@ export interface DockerLaunchRequest {
   org: string;
   provider: "docker";
   hostId: string;
+  /** Immutable registry digest or host-approved full local sha256 image ID. */
   image: string;
   harness: Harness;
   credentialId: string;

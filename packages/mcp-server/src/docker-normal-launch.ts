@@ -6,6 +6,7 @@ import {
   type GoldenActor,
   HARNESSES,
   type Harness,
+  isDockerImageReference,
   type LaunchCredentialResolver,
   ProviderError,
   resolveModelChoice,
@@ -128,9 +129,7 @@ function normalize(body: Record<string, unknown>): Request {
     body.provider !== "docker" ||
     !HARNESSES.includes(body.harness as Harness) ||
     (body.visibility !== undefined && body.visibility !== "private") ||
-    typeof body.image !== "string" ||
-    body.image.length > 512 ||
-    !/^[a-z0-9][a-z0-9./:_-]*@sha256:[0-9a-f]{64}$/.test(body.image) ||
+    !isDockerImageReference(body.image) ||
     (body.credentialVersion !== undefined &&
       (!Number.isSafeInteger(body.credentialVersion) || (body.credentialVersion as number) < 1)) ||
     (body.model !== undefined && typeof body.model !== "string") ||

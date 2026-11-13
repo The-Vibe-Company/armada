@@ -101,6 +101,7 @@ export type {
   LaunchProviderOption,
   SandboxPlacementProviderId,
 } from "./docker-api.ts";
+export { DOCKER_LOCAL_IMAGE_LABELS, isDockerImageReference } from "./docker-image.ts";
 export {
   boundEventEntries,
   buildEventPage,

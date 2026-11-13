@@ -22,7 +22,7 @@ def main():
     parser.add_argument("--credential", required=True)
     parser.add_argument("--credential-version", type=int)
     parser.add_argument("--ssh", required=True, help="Existing SSH config name or user@host")
-    parser.add_argument("--image", required=True, help="Pulled Linux x64 glibc image@sha256 digest")
+    parser.add_argument("--image", required=True, help="Linux x64 glibc repository@sha256 digest or host-approved local sha256 image ID")
     parser.add_argument("--model")
     parser.add_argument("--host-id", help="Reuse an existing host registration")
     parser.add_argument("--start-host", action="store_true", help="Start that stopped host daemon; never remove its lock")
@@ -149,6 +149,7 @@ def main():
             launched = api("sandbox/launch", launch, normal=True)
             if (launched.get("sandbox", {}).get("id") != sandbox_id
                     or launched.get("sandbox", {}).get("provider") != "docker"
+                    or launched.get("sandbox", {}).get("image") != args.image
                     or not launched.get("promptId") or not launched.get("conversationId")):
                 raise RuntimeError("Normal launch outcome unknown; retain sandbox/request ID")
             launch_receipt = {"promptId": launched["promptId"], "conversationId": launched["conversationId"]}
