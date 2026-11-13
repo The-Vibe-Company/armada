@@ -53,3 +53,27 @@ loadSession true. Existing Claude/Codex launch behavior must remain unchanged.
 After the integration slice, coordinator runs the Modal lifecycle smoke with its
 DeepSeek model connection: answer, follow-up, steer, interrupt, resume, events and
 reported turn tokens. This slice does not claim real-provider acceptance.
+
+## Slice 2: private configuration and portable session state
+
+`OpenCodeDriver` wraps the ACP driver with the pinned vendor's `export`/`import`
+commands. It persists only redacted `sessions/<id>.json` exports (0600, atomic
+rename), never the live SQLite DB/WAL, `auth.json`, logs or provider caches. The
+next integration slice includes these exports in the existing checkpoint
+allowlist. No-text resume imports and then verifies the exact session over ACP;
+a missing or malformed export fails closed rather than starting a replacement.
+
+The private endpoint DTO has HTTPS `baseUrl` and an explicit model allowlist.
+Runtime translation uses the vendor's inline `OPENCODE_CONFIG_CONTENT`, a custom
+`armada` provider using `@ai-sdk/openai-compatible`, and disables native updates
+and model-catalog fetch. API keys are memory-only environment values, never argv
+or golden/project configuration. Model selection is `armada/<upstream-model>`.
+This layer remains dormant until the catalog/credential/Modal integration.
+
+Fast verification: `bun test packages/agent-runtime/test/opencode.test.ts`.
+Coordinator staging check: with the pinned artifact, run a fake-compatible-endpoint
+turn, export the session, check the sanitized export excludes the test key, then
+import and `session/load` it on a fresh native home. Expect the same session ID,
+no history replay into new-turn events and a successful follow-up. The worker
+has no production keys. Real DeepSeek lifecycle acceptance remains the final
+integration smoke, not an assertion established by these fake-process tests.
