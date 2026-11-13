@@ -145,9 +145,16 @@ Usage:
                                            Version 1: {"version":1,"golden":null,"repositories":{}}
                                            Repository keys are configured directories. null golden and an empty map
                                            clear defaults. Scoped to this provider golden, future launches only.
-  armada golden list [--provider boat|modal|docker] [--json]
+  armada golden create <name> --provider docker --host UUID|NAME --org UUID
+                               (--config <file> | --repo <url>[@branch] ... [--init <cmd> ...]) [--private] [--request-id UUID] [--json]
+                                           Build a host-local snapshot from the official Armada image and your repos/setup.
+                                           No image input. Reuse --request-id with identical input after an unknown outcome.
+  armada golden list [--provider boat|modal|docker] [--org UUID] [--json]
+                                           Goldens you can see; Docker requires --org.
+  armada golden get UUID --provider docker --org UUID [--json]
+                                           Read snapshot build state; launch ready snapshots with launch --provider docker --golden UUID.
   armada golden rebuild UUID --provider docker --org UUID [--request-id UUID] [--json]
-                                           Goldens you can see
+                                           Build a new snapshot from saved repos/setup on its original host; keep the old one.
   armada launch <golden> --agent ${HARNESSES.join("|")} ["prompt"] [--model <id>] [--reasoning-effort <level>]
                                            [--armada-access --credential-id <id> [--max-active-children <1..100>]]
                 [--provider boat|modal] [--repo <configured-dir|owner/repo>] [--size small|medium|large|xlarge | --sized] [--ttl 4h] [--json]
