@@ -4,7 +4,7 @@ import { CODEX_ENDPOINT_ENV, parseCodexEndpoint } from "@armada/core";
 import { runArtifactInstallMode } from "./artifact-cache.ts";
 import { configureClaudeEndpoint } from "./claude-endpoint.ts";
 import { configureCodexEndpoint } from "./codex-endpoint.ts";
-import { enrolRuntime, RuntimeDialout } from "./dialout.ts";
+import { enrolRuntime, RuntimeDialout, runtimeSubscriptionAccess } from "./dialout.ts";
 import { prepareEnrolledHarness } from "./enrolled-harness.ts";
 import { execCredentialValues, validateExecEnvironment } from "./exec-env.ts";
 import { GitHubBroker, type GitHubBrokerConfiguration } from "./github-broker.ts";
@@ -41,6 +41,7 @@ async function main(dialout = false) {
     mcp?: McpConfiguration;
     ingestUrl: string;
     codexAuthJson?: string;
+    runtimeSubscription?: boolean;
     subscription?: { url: string; capability: string };
     nativeAuthRevision?: number;
     nativeAuthSecrets?: string[];
@@ -61,6 +62,20 @@ async function main(dialout = false) {
   const opencodeEnv = config.opencodeEnv ?? {};
   if (config.credentialFreeBuilder !== undefined && typeof config.credentialFreeBuilder !== "boolean")
     throw Error("invalid_exec_environment");
+  if (config.runtimeSubscription !== undefined && typeof config.runtimeSubscription !== "boolean")
+    throw Error("invalid_runtime_subscription");
+  if (
+    config.runtimeSubscription &&
+    (!channel ||
+      config.selectedHarness !== "codex" ||
+      config.credentialFreeBuilder ||
+      config.subscription ||
+      config.codexAuthJson ||
+      config.nativeAuthRevision !== undefined ||
+      config.codexEnv.OPENAI_API_KEY ||
+      config.codexEnv[CODEX_ENDPOINT_ENV])
+  )
+    throw Error("invalid_runtime_subscription");
   if (config.subscription && config.codexAuthJson) throw Error("subscription_auth_modes_conflict");
   const codexEndpoint = config.codexEnv[CODEX_ENDPOINT_ENV]
     ? parseCodexEndpoint(JSON.parse(config.codexEnv[CODEX_ENDPOINT_ENV]!))
@@ -205,7 +220,7 @@ async function main(dialout = false) {
   const sourceIdentity = journal.assertRestoreSource(config.grant);
   const fenced = journal.checkpointPending(config.grant);
   let survivingAuth: string | undefined;
-  if (!fenced && config.subscription) {
+  if (!fenced && (config.subscription || config.runtimeSubscription)) {
     await quiesceNativeCodex(config.root, config.codexExecutable);
     readNativeCodexAuth(config.root, (values) => journal.registerSecrets(values));
     journal.sanitize();
@@ -246,14 +261,14 @@ async function main(dialout = false) {
     config.claudeEnv.CLAUDE_CONFIG_DIR = `${config.root}/claude`;
     config.codexEnv.CODEX_HOME = `${config.root}/codex`;
     await configureCodexEndpoint(config.codexEnv.CODEX_HOME, codexEndpoint);
-    if (config.subscription) {
+    if (config.subscription || config.runtimeSubscription) {
       removeNativeCodexAuth(config.root, (values) => journal.registerSecrets(values));
       journal.sanitize();
     } else if (config.codexAuthJson)
       await writeFile(`${config.root}/codex/auth.json`, config.codexAuthJson, { mode: 0o600 });
   }
   const subscriptionRevisions = new Map<string, number>();
-  const subscriptionAccess = config.subscription
+  let subscriptionAccess = config.subscription
     ? async (refresh: boolean, previousAccessToken?: string) => {
         const response = await fetch(config.subscription!.url, {
           method: "POST",
@@ -285,6 +300,8 @@ async function main(dialout = false) {
         };
       }
     : undefined;
+  if (config.runtimeSubscription && channel)
+    subscriptionAccess = runtimeSubscriptionAccess(channel, (values) => journal.registerSecrets(values));
   const github = new GitHubBroker((values) => journal.registerSecrets(values));
   const githubRoot = `${config.root}/github-${createHash("sha256").update(config.grant.generation).digest("hex").slice(0, 16)}`;
   let githubSocket: Awaited<ReturnType<GitHubBroker["listen"]>> | undefined;

@@ -154,6 +154,31 @@ export class RuntimeDialout implements IngestClient {
       nativeAuth,
     })) as { authRevision: number; committed: boolean };
   }
+  async modelAccess(previousRevision?: number): Promise<RuntimeModelAccess> {
+    if (previousRevision !== undefined && (!Number.isSafeInteger(previousRevision) || previousRevision < 0))
+      throw Error("invalid_runtime_model_revision");
+    const value = await this.post("model-access", previousRevision === undefined ? {} : { previousRevision });
+    if (!object(value)) throw Error("invalid_runtime_model_access");
+    this.epoch(value.epoch);
+    const access = value.access;
+    if (
+      !object(access) ||
+      typeof access.accessToken !== "string" ||
+      !access.accessToken ||
+      typeof access.chatgptAccountId !== "string" ||
+      !access.chatgptAccountId ||
+      (access.chatgptPlanType !== null && typeof access.chatgptPlanType !== "string") ||
+      !Number.isSafeInteger(access.revision) ||
+      (access.revision as number) < 0
+    )
+      throw Error("invalid_runtime_model_access");
+    return {
+      accessToken: access.accessToken,
+      chatgptAccountId: access.chatgptAccountId,
+      chatgptPlanType: access.chatgptPlanType,
+      revision: access.revision as number,
+    };
+  }
   private command(value: unknown): RunnerRequest {
     if (
       !object(value) ||
@@ -374,4 +399,31 @@ export class RuntimeDialout implements IngestClient {
       await closing;
     }
   }
+}
+
+export interface RuntimeModelAccess {
+  accessToken: string;
+  chatgptAccountId: string;
+  chatgptPlanType: string | null;
+  revision: number;
+}
+
+/** Native driver callback: register access-only material before exposing it to a child. */
+export function runtimeSubscriptionAccess(
+  channel: Pick<RuntimeDialout, "modelAccess">,
+  register: (values: string[]) => void,
+) {
+  const revisions = new Map<string, number>();
+  return async (refresh: boolean, previousAccessToken?: string) => {
+    const access = await channel.modelAccess(
+      refresh && previousAccessToken ? revisions.get(previousAccessToken) : undefined,
+    );
+    register([access.accessToken]);
+    revisions.set(access.accessToken, access.revision);
+    return {
+      accessToken: access.accessToken,
+      chatgptAccountId: access.chatgptAccountId,
+      chatgptPlanType: access.chatgptPlanType,
+    };
+  };
 }
