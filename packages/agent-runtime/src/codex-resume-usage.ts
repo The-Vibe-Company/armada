@@ -8,6 +8,8 @@ export async function codexResumeUsage(path: string | null | undefined, sessionI
   if (!path) return null;
   let identity = false;
   let latest: Record<string, number> | null = null;
+  let activeTurn: string | null = null;
+  let closed = false;
   const stream = createReadStream(path, { encoding: "utf8" });
   const lines = createInterface({ input: stream, crlfDelay: Infinity });
   try {
@@ -17,7 +19,26 @@ export async function codexResumeUsage(path: string | null | undefined, sessionI
         if (identity || event.payload?.id !== sessionId) return null;
         identity = true;
       }
-      if (event.type !== "event_msg" || event.payload?.type !== "token_count") continue;
+      if (event.type !== "event_msg") continue;
+      if (event.payload?.type === "task_started") {
+        if (activeTurn || typeof event.payload.turn_id !== "string") return null;
+        activeTurn = event.payload.turn_id;
+        latest = null;
+        closed = false;
+      }
+      if (event.payload?.type === "turn_aborted") {
+        if (!activeTurn || event.payload.turn_id !== activeTurn) return null;
+        activeTurn = null;
+        latest = null;
+        closed = false;
+      }
+      if (event.payload?.type === "task_complete") {
+        if (!activeTurn || event.payload.turn_id !== activeTurn) return null;
+        activeTurn = null;
+        closed = true;
+      }
+      if (event.payload?.type !== "token_count") continue;
+      if (!activeTurn) return null;
       const total = event.payload.info?.total_token_usage;
       if (!total) continue; // Rate-limit-only notification.
       const mapped: Record<string, number> = {};
@@ -41,7 +62,7 @@ export async function codexResumeUsage(path: string | null | undefined, sessionI
         return null;
       latest = mapped;
     }
-    return identity ? latest : null;
+    return identity && closed && !activeTurn ? latest : null;
   } catch {
     return null;
   } finally {
