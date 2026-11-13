@@ -38,11 +38,12 @@ export interface ProviderLimits {
   defaultGoldenCapacity?: number;
 }
 
-export const PROVIDER_LIMITS: Readonly<Record<SandboxProviderId, ProviderLimits>> = {
+export const PROVIDER_LIMITS: Readonly<Record<SandboxPlacementProviderId, ProviderLimits>> = {
   /** boat.dev's documented TTL maximum. */
   boat: { maxTtlSeconds: 2_592_000, maxTtlLabel: "30 days", defaultGoldenCapacity: 1 },
   /** Modal's documented maximum lifetime of one sandbox machine. */
   modal: { maxTtlSeconds: 86_400, maxTtlLabel: "24 hours" },
+  docker: { maxTtlSeconds: 86_400, maxTtlLabel: "24 hours" },
 };
 
 /**

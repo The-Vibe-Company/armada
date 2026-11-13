@@ -510,25 +510,17 @@ export function ttlOptions(provider: SandboxPlacementProviderId): { value: strin
     { value: "28800", label: "8 hours" },
     { value: "86400", label: "24 hours" },
     { value: "604800", label: "7 days" },
-  ].filter(
-    (option) =>
-      !option.value ||
-      Number(option.value) <= (provider === "docker" ? 86400 : PROVIDER_LIMITS[provider].maxTtlSeconds),
-  );
+  ].filter((option) => !option.value || Number(option.value) <= PROVIDER_LIMITS[provider].maxTtlSeconds);
 }
 
 /** The launch form's lifetime, checked against the provider's limit; undefined is the server's default. */
 export function ttlChoice(value: string, provider: SandboxPlacementProviderId): Parsed<number | undefined> {
   if (!value) return { ok: true, value: undefined };
   const seconds = Number(value);
-  if (
-    !Number.isSafeInteger(seconds) ||
-    seconds < 1 ||
-    seconds > (provider === "docker" ? 86400 : PROVIDER_LIMITS[provider].maxTtlSeconds)
-  )
+  if (!Number.isSafeInteger(seconds) || seconds < 1 || seconds > PROVIDER_LIMITS[provider].maxTtlSeconds)
     return {
       ok: false,
-      error: `Choose how long it runs, up to ${provider === "docker" ? "24 hours" : PROVIDER_LIMITS[provider].maxTtlLabel}.`,
+      error: `Choose how long it runs, up to ${PROVIDER_LIMITS[provider].maxTtlLabel}.`,
     };
   return { ok: true, value: seconds };
 }
