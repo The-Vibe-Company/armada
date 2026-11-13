@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 
 // Execute the real coordinator helper offline: its new mode must prove the normal
 // route, not accidentally succeed via the already accepted private preview.
-test.each(["launch", "resume", "cost", "bad-cost", "claude", "opencode"])(
+test.each(["launch", "resume", "cost", "bad-cost", "claude", "opencode", "local-image"])(
   "normal Docker smoke uses normal routes (%s)",
   (mode) => {
     const result = spawnSync(
@@ -33,11 +33,12 @@ class Opener:
             sandbox = body["requestId"]
             assert timeout == 600
             assert body["hostId"] == "retained-host"
+            assert body["image"] == ("sha256:" + "b" * 64 if mode == "local-image" else "image@sha256:" + "a" * 64)
             assert body["provider"] == "docker" and body["harness"] == (mode if mode in ("claude", "opencode") else "codex")
             assert body["visibility"] == "private" and "DOCKER_OK" in body["prompt"]
             assert "credentialVersion" not in body
             marker = body["prompt"].split("marker for my next message: ")[1].split(".")[0] if lifecycle else None
-            value = {"sandbox": {"id": sandbox, "provider": "docker"}, "promptId": prompt, "conversationId": conversation}
+            value = {"sandbox": {"id": sandbox, "provider": "docker", "image": body["image"]}, "promptId": prompt, "conversationId": conversation}
         elif path == "sandbox/send":
             assert lifecycle and body["conversation_id"] == conversation
             assert marker not in body["prompt"]
@@ -72,7 +73,7 @@ def command(argv, **kwargs):
     assert "ARMADA_TOKEN" not in kwargs["env"]
     return types.SimpleNamespace(returncode=0)
 argv = ["scripts/smoke-docker-lifecycle.py", "--server", "https://staging.example", "--org", "org",
-        "--credential", "account", "--ssh", "host-alias", "--image", "image@sha256:digest",
+        "--credential", "account", "--ssh", "host-alias", "--image", "sha256:" + "b" * 64 if mode == "local-image" else "image@sha256:" + "a" * 64,
         "--host-id", "retained-host", "--start-host", "--normal-launch"]
 if lifecycle:
     argv.append("--normal-lifecycle")

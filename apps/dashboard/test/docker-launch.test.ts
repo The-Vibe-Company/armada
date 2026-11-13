@@ -85,8 +85,16 @@ test("what Docker cannot do yet is listed with the server's reason, or a plain d
 
 test("only a digest-pinned image is accepted", () => {
   expect(checkImage(` ${DIGEST} `)).toEqual({ ok: true, image: DIGEST });
+  expect(checkImage(`sha256:${"b".repeat(64)}`)).toEqual({ ok: true, image: `sha256:${"b".repeat(64)}` });
   expect(checkImage(`ghcr.io/org/image:tag@sha256:${"a".repeat(64)}`).ok).toBe(true);
-  for (const bad of ["buildpack-deps:bookworm-curl", `x@sha256:${"a".repeat(63)}`, `x y@sha256:${"a".repeat(64)}`, ""])
+  for (const bad of [
+    "sha256:short",
+    `sha256:${"A".repeat(64)}`,
+    "buildpack-deps:bookworm-curl",
+    `x@sha256:${"a".repeat(63)}`,
+    `x y@sha256:${"a".repeat(64)}`,
+    "",
+  ])
     expect(checkImage(bad).ok).toBe(false);
 });
 

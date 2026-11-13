@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DOCKER_LOCAL_IMAGE_LABELS } from "../src/docker-image.ts";
 import { createDockerMachineExecutor, type DockerMachineRequest } from "../src/docker-machine.ts";
 
 const request: DockerMachineRequest = {
@@ -17,6 +18,7 @@ const request: DockerMachineRequest = {
 function fixture() {
   const containers = new Map<string, any>();
   const volumes = new Map<string, any>();
+  const images = new Map<string, unknown>();
   const calls: { argv: readonly string[]; stdin: string | Uint8Array | undefined }[] = [];
   const copies = new Map<string, Uint8Array>();
   let time = 1000;
@@ -26,6 +28,8 @@ function fixture() {
     async run(argv: readonly string[], stdin?: string | Uint8Array) {
       calls.push({ argv, stdin });
       const [kind, action] = argv;
+      if (kind === "image" && action === "inspect")
+        return { exitCode: images.has(argv[2]!) ? 0 : 1, stdout: JSON.stringify([images.get(argv[2]!)]) };
       if (`${kind} ${action}` === failCommand) return { exitCode: 1, stdout: "SECRET Docker diagnostic" };
       if (kind === "cp") {
         const [name, destination] = (argv.at(-1) ?? "").split(":");
@@ -88,6 +92,7 @@ function fixture() {
     volumes,
     calls,
     copies,
+    images,
     setTime: (v: number) => {
       time = v;
     },
@@ -346,6 +351,8 @@ describe("Docker machine executor", () => {
 
   test.each([
     { image: "debian:latest" },
+    { image: "sha256:abcdef" },
+    { image: `sha256:${"A".repeat(64)}` },
     { sandboxId: "--privileged" },
     { generation: "../other" },
     { ttlSeconds: 0 },
@@ -387,4 +394,57 @@ test("resume starts only the retained owned stopped machine without reallocating
   await expect(f.executor.resume(request)).rejects.toThrow("expired");
   await f.executor.delete(request);
   await expect(f.executor.resume(request)).rejects.toThrow("not_found");
+});
+
+test.each([
+  "approved",
+  "foreign-host",
+  "foreign-installation",
+  "private",
+  "missing-approval",
+  "wrong-id",
+  "missing-image",
+])("local immutable image admission requires exact host org approval (%s)", async (mode) => {
+  const f = fixture();
+  const image = `sha256:${"b".repeat(64)}`;
+  const labels: Record<string, string> = {
+    [DOCKER_LOCAL_IMAGE_LABELS.installation]: "11111111-1111-1111-1111-111111111111",
+    [DOCKER_LOCAL_IMAGE_LABELS.host]: "22222222-2222-2222-2222-222222222222",
+    [DOCKER_LOCAL_IMAGE_LABELS.scope]: "org",
+  };
+  if (mode === "foreign-host") labels[DOCKER_LOCAL_IMAGE_LABELS.host] = "55555555-5555-5555-5555-555555555555";
+  if (mode === "foreign-installation")
+    labels[DOCKER_LOCAL_IMAGE_LABELS.installation] = "55555555-5555-5555-5555-555555555555";
+  if (mode === "private") labels[DOCKER_LOCAL_IMAGE_LABELS.scope] = "private";
+  if (mode === "missing-approval") delete labels[DOCKER_LOCAL_IMAGE_LABELS.scope];
+  if (mode !== "missing-image")
+    f.images.set(image, { Id: mode === "wrong-id" ? `sha256:${"c".repeat(64)}` : image, Config: { Labels: labels } });
+  const local = { ...request, image };
+  if (mode !== "approved") {
+    await expect(f.executor.create(local)).rejects.toMatchObject({
+      code: mode === "missing-image" ? "docker_failed" : "ownership_mismatch",
+    });
+    expect(f.containers.size).toBe(0);
+    expect(f.volumes.size).toBe(0);
+    return;
+  }
+  await f.executor.create(local);
+  expect([...f.containers.values()][0].Config.Image).toBe(image);
+  expect(f.calls.filter((call) => call.argv[0] === "image").map((call) => call.argv)).toEqual([
+    ["image", "inspect", image],
+  ]);
+  // Retained operations must not depend on the shared image cache remaining present.
+  f.images.delete(image);
+  await f.executor.stop(local);
+  await f.executor.resume(local);
+  await f.executor.delete(local);
+  expect(f.containers.size).toBe(0);
+  expect(f.volumes.size).toBe(0);
+});
+
+test("registry digest references whose repository is named sha256 do not require local-image approval", async () => {
+  const f = fixture();
+  await f.executor.create({ ...request, image: `sha256:base@sha256:${"a".repeat(64)}` });
+  expect(f.containers.size).toBe(1);
+  expect(f.calls.some((call) => call.argv[0] === "image")).toBe(false);
 });
