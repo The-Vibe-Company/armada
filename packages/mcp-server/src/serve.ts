@@ -45,6 +45,7 @@ import { bootstrapBoatMcp } from "./mcp-native.ts";
 import { createHistoricalSandboxProviderResolver, createMcpSandboxProviderResolver } from "./mcp-sandbox-provider.ts";
 import { createModalIntegration } from "./modal-integration.ts";
 import { modalRuntimeLaunch } from "./modal-runtime-launch.ts";
+import { modalRuntimeResume } from "./modal-runtime-resume.ts";
 import { createModelAuthOwnership } from "./model-auth.ts";
 import { createModelUsageApi } from "./model-usage.ts";
 import type { NamedLaunchCredentials } from "./named-credentials.ts";
@@ -339,12 +340,40 @@ export async function startServer(
       throw Error("Invalid Docker runtime deployment manifest.");
     }
   }
+  const modalRuntimeHostFor = async (
+    target: import("@armada/core").ProviderTarget,
+    caller: import("./caller.ts").Caller,
+  ) => {
+    if (!target.modal) throw Error("Modal binding required.");
+    const tokens = await modal.modalTokensFor(target, caller);
+    return (await modal.modalProviderFor({ tokenId: tokens.tokenId, tokenSecret: tokens.tokenSecret }, target.modal, {
+      target,
+      caller,
+      credentialScope: tokens.scope,
+    })) as import("@armada/provider-modal").ModalProvider;
+  };
+  const boatResume = runtimeLaunch
+    ? boatRuntimeResume({ sql, vault: store, key: config.encryptionKey, policy: runtimeLaunch, modelAuth })
+    : undefined;
+  const modalResume = modalRuntimePolicy
+    ? modalRuntimeResume({
+        sql,
+        vault: store,
+        key: config.encryptionKey,
+        policy: modalRuntimePolicy,
+        hostFor: modalRuntimeHostFor,
+      })
+    : undefined;
   const runtimeResume = createRuntimeResume(
     sql,
     config.encryptionKey,
     runtimeCommands,
-    runtimeLaunch
-      ? boatRuntimeResume({ sql, vault: store, key: config.encryptionKey, policy: runtimeLaunch, modelAuth })
+    boatResume || modalResume
+      ? (caller, sandbox) => {
+          const prepare = sandbox.provider === "modal" ? modalResume : boatResume;
+          if (!prepare) throw new VaultError("unavailable", "Runtime resume policy unavailable.");
+          return prepare(caller, sandbox);
+        }
       : undefined,
     runtimeMcp.prepare,
   );
@@ -385,18 +414,7 @@ export async function startServer(
     ...(modalRuntimePolicy
       ? {
           modalRuntimeLaunch: modalRuntimePolicy,
-          modalRuntimeHostFor: async (
-            target: import("@armada/core").ProviderTarget,
-            caller: import("./caller.ts").Caller,
-          ) => {
-            if (!target.modal) throw Error("Modal binding required.");
-            const tokens = await modal.modalTokensFor(target, caller);
-            return modal.modalProviderFor({ tokenId: tokens.tokenId, tokenSecret: tokens.tokenSecret }, target.modal, {
-              target,
-              caller,
-              credentialScope: tokens.scope,
-            });
-          },
+          modalRuntimeHostFor,
         }
       : {}),
     ...(runtimeLaunch

@@ -785,6 +785,7 @@ async function dispatch(
         version: 1,
         enabled: Boolean(options.modalRuntimeLaunch),
         followupVersion: options.runtimeSend ? 1 : 0,
+        resumeVersion: options.runtimeResume && options.modalRuntimeLaunch ? 1 : 0,
       },
       boatRuntime: {
         version: 1,
