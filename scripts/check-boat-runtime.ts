@@ -12,14 +12,15 @@ const org = process.env.ARMADA_RUNTIME_ORG;
 const credentialId = process.env.ARMADA_RUNTIME_CREDENTIAL_ID;
 if (!token || !golden || !org || !credentialId) throw Error("Missing coordinator staging inputs.");
 interface Reply {
-  boatRuntime?: { enabled?: boolean };
+  boatRuntime?: { enabled?: boolean; diagnosticsVersion?: number };
   sandbox?: { id?: string; goldenId?: string; boatRuntime?: boolean };
   runtime?: { kind?: string; epoch?: string };
   promptId?: string;
   source?: string;
+  runtimeFailure?: { status: string; reason: string };
   cursor?: string | null;
   events?: AgentEvent[];
-  sandboxes?: { id: string; status: string }[];
+  sandboxes?: { id: string; status: string; stoppedAt?: string | null }[];
 }
 async function api(path: string, body: object): Promise<Reply> {
   const response = await fetch(new URL(`/api/v1/${path}`, origin), {
@@ -33,8 +34,10 @@ async function api(path: string, body: object): Promise<Reply> {
   return (await response.json()) as Reply;
 }
 const options = await api("launch/options", {});
-if (options.boatRuntime?.enabled !== true)
-  throw Error("Server has not enabled experimental Boat runtime support; no launch attempted.");
+if (options.boatRuntime?.enabled !== true || options.boatRuntime.diagnosticsVersion !== 1)
+  throw Error(
+    "Use the armada-server origin with experimental Boat runtime diagnostics v1 enabled; no launch attempted.",
+  );
 const marker = `ARMADA_RUNTIME_${crypto.randomUUID().replaceAll("-", "")}`;
 let id: string | undefined;
 let goldenId: string | undefined;
@@ -70,6 +73,10 @@ try {
     finished = false;
   while (Date.now() < deadline && (!answer || !finished)) {
     const page = await api("logs/read", { id, all: true, ...(cursor ? { cursor } : {}) });
+    if (page.runtimeFailure?.status === "failed")
+      throw Error(
+        "Armada runtime failed; inspect logs/read.runtimeFailure.reason and sandbox statusReason. No launch retry.",
+      );
     if (page.source !== "armada-runtime") throw Error("History did not come from the Armada journal archive.");
     for (const event of page.events ?? []) {
       if (event.promptId !== launched.promptId) continue;
@@ -107,7 +114,16 @@ try {
     let stopped = false;
     while (Date.now() < deadline) {
       const page = await api("sandbox/list", { owner: "me", ...(goldenId ? { golden: goldenId } : {}), limit: 200 });
-      if (page.sandboxes?.some((row) => row.id === id && row.status === "stopped")) {
+      if (
+        page.sandboxes?.some(
+          (row) =>
+            row.id === id &&
+            (row.status === "stopped" ||
+              (row.status === "failed" &&
+                typeof row.stoppedAt === "string" &&
+                Number.isFinite(Date.parse(row.stoppedAt)))),
+        )
+      ) {
         stopped = true;
         break;
       }

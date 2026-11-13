@@ -11,8 +11,12 @@ const nativeTest = process.platform === "linux" ? test : test.skip;
 // Audit: actual JSONL child-process transport owns request/notification races and restart steering.
 // Runtime fake tests cannot detect duplicate delivery or response-vs-terminal ordering here.
 nativeTest("Codex waits for interrupt terminal then sends steer once on the same resumed thread", async () => {
+  let started = false;
   const driver = new CodexDriver({
     executable: `${import.meta.dir}/fixtures/app-server.ts`,
+    onStarted: () => {
+      started = true;
+    },
     cwd: import.meta.dir,
     env: { PATH: process.env.PATH ?? "/usr/bin:/bin", ARMADA_RESUME_USAGE_BASELINE: "before" },
   });
@@ -27,6 +31,7 @@ nativeTest("Codex waits for interrupt terminal then sends steer once on the same
       signal: new AbortController().signal,
       session: (id) => sessions.push(id),
       emit: (event) => {
+        expect(started).toBe(true); // Handshake stage must precede native turn output.
         events.push(event);
         if (event.kind === "message" && event.partial && !steering) steering = turn?.steer("redirect");
       },

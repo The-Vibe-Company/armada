@@ -93,8 +93,45 @@ server-side session/event handlers after a committed upload loses its response:
 the same live runtime retries, gets its ACK without duplicate archive/usage, then
 uploads its terminal event. This is offline evidence, not a real redeploy smoke.
 
-**Do not spend the second Boat launch yet.** Bootstrap stage reporting and visible
-startup/turn failure diagnostics requested in the coordinator's failed-launch
-report are still a follow-up slice; the original empty-journal staging cause has
-not been conclusively established from guest evidence. Artifact publication is
-already supplied by #1325; no manual publication step is required.
+## Diagnostic gate for the second launch
+
+Merge/deploy the epoch handoff and these diagnostics before the second start;
+apply the handoff migration through normal deployment. The check now refuses
+before allocation unless `launch/options.boatRuntime.diagnosticsVersion` is `1`.
+Use the **armada-server** origin and organization **UUID** as above. The normal
+image build publishes the newly compiled runtime; no manual artifact publication.
+
+Server logs are fixed JSON lines with `event:"armada.runtime.stage"`, authenticated
+logical `sandboxId`, epoch and one of:
+
+| Stage | Evidence |
+| --- | --- |
+| `bootstrap_started` | Guest Node bootstrap began (ticket, not consumed). |
+| `artifact_verified` | Guest verified cached/downloaded compiled runtime digest/size. |
+| `enrolled` | Guest received its one-use exchange response and current session. |
+| `harness_started` | Actual Codex app-server answered initialize, before turn output. |
+| `first_event` | Guest journal batch committed to encrypted archive/usage; may be queued, not an answer. |
+| `bootstrap_failed`, `runtime_failed` | Authenticated guest reported failure, fixed reason persisted. |
+| `startup_failed_bootstrap`, `startup_failed_enrolment`, `startup_failed_readiness` | Server startup failed in that phase, including enrolment timeout. |
+
+Progress reports carry only a fixed stage, never credentials, error text, prompt
+text, model response or a client-supplied sandbox ID. Ticket reports stop working
+on consumption/expiry/replacement; runtime reports require the current epoch.
+Reports are best effort, bounded to three seconds, and not proof of inference.
+`first_event` is logged after commit, not after merely receiving a request.
+
+Bootstrap/runtime failure marks the sandbox failed and revokes its authority.
+Startup errors retain a phase-specific safe `statusReason`. `logs/read` returns
+`runtimeFailure:{status:"failed",reason:...}` even when no guest event could be
+uploaded; following that failure does not query dead compute. This diagnostic is
+**server metadata, not a fabricated journal event**. If a prompt had already been
+admitted but has no archived terminal status, its status reads failed;
+pre-admission failure returns a failed launch, not an invented prompt receipt. The one-launch check fails immediately on this
+metadata, then attempts stop once. A failed sandbox retains its failed status and
+reason after compute stops; cleanup requires its confirmed `stoppedAt` timestamp.
+The no-retry rule still applies.
+
+Expected success is unchanged: exact nonce assistant answer plus finished event
+with `source:"armada-runtime"`, then stopped compute. Stage lines alone, or an
+empty page with source metadata, are not success. Offline failure/replay coverage
+is not a claim that the second real staging model turn has passed.

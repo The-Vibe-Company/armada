@@ -26,6 +26,7 @@ export class CodexDriver implements Driver {
       cwd: string;
       env: Record<string, string>;
       refreshSecrets?: () => void;
+      onStarted?: () => void;
       exclusiveAuth?: boolean;
       subscriptionAccess?: (
         refresh: boolean,
@@ -398,6 +399,12 @@ export class CodexDriver implements Driver {
         capabilities: { experimentalApi: true },
       });
       child.stdin.write(`${JSON.stringify({ method: "initialized", params: {} })}\n`);
+      // Handshake proves an actual app-server, not merely a spawned process.
+      try {
+        this.options.onStarted?.();
+      } catch {
+        /* Observability is best effort. */
+      }
       if (this.options.subscriptionAccess) {
         const access = await subscriptionAccess(false);
         const result = await rpc<LoginAccountResponse>("account/login/start", {
