@@ -665,13 +665,11 @@ if (resumeMode && !failure && id && checkpointReceipt && initialConversation && 
       const epoch = resumed.runtime.epoch ?? "";
       let revision: string | undefined;
       if (githubMode) {
-        const unconfigured = await api("github/runtime-status", { id });
-        if (
-          unconfigured.configured !== false ||
-          unconfigured.runtime?.kind !== "armada" ||
-          unconfigured.runtime.epoch !== epoch
-        )
-          throw Error("Old GitHub configuration survived resume or current-epoch status is unavailable.");
+        const automatic = await api("github/runtime-status", { id });
+        if (automatic.configured !== true || automatic.runtime?.kind !== "armada" || automatic.runtime.epoch !== epoch)
+          throw Error("Missing automatic current-epoch GitHub preparation after resume.");
+        if (!automatic.revision || automatic.revision === githubProof?.revision)
+          throw Error("Resume reused the previous GitHub revision.");
         revision = await configureGitHub(epoch);
         if (revision === githubProof?.revision) throw Error("Resume reused the previous GitHub revision.");
       }

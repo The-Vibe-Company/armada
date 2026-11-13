@@ -73,6 +73,26 @@ accounts and GitHub connection on staging beforehand. For private repositories,
 the token's user must have access. No provider/database credentials belong in
 this workflow.
 
+
+### Legacy smoke receipts during Boat exclusion
+
+New durable receipts include the confirmed provider. Automatic cleanup accepts
+only Modal/Docker-tagged receipts; it never calls Boat or contacts an unknown
+provider to classify a historical ID. Old untagged receipts and Boat receipts
+are preserved as deferred operator reconciliation debt, not deleted and not
+claimed cleaned. They do not authorize a Boat test or block the owner-approved
+non-Boat gate. Unexpected new provider receipts still fail the attempt and are
+retained for reconciliation without contacting Boat. Existing known Modal/Docker
+handles retain ordinary cleanup guarantees.
+
+The default post-deploy lifecycle path retains Modal probes. The existing
+`--parity --only docker` path continues testing the explicitly configured owned
+Docker host; no implicit host registration or machine discovery is introduced.
+`--only boat` emits owner-decision not-run rows and no API traffic, returning no
+successful eligible-provider proof. The default lifecycle gate with only Boat cases provides no Modal/Docker
+coverage and fails closed, without Boat calls. Accounts parity retains its
+observational not-run/no-account semantics and is not a substitute release gate.
+
 ## Run
 
 From a trusted checkout with Bun installed, set environment variables without
@@ -920,21 +940,43 @@ These probes migrate the older Docker cost check without deleting that script;
 its other checks and the remaining feature rows still need migration. A full
 staging run, not fixture tests, is the evidence that a provider/harness passes.
 
+#### Accounts dimension (#1579)
 
-### Legacy smoke receipts during Boat exclusion
+`bun scripts/post-deploy-smoke.ts --parity --accounts` reuses the same lifecycle
+probe for each configured account on Modal and owned Docker hosts. Boat is never
+selected in this mode. Optionally add `--only modal` or `--only docker`.
 
-New durable receipts include the confirmed provider. Automatic cleanup accepts
-only Modal/Docker-tagged receipts; it never calls Boat or contacts an unknown
-provider to classify a historical ID. Old untagged receipts and Boat receipts
-are preserved as deferred operator reconciliation debt, not deleted and not
-claimed cleaned. They do not authorize a Boat test or block the owner-approved
-non-Boat gate. Unexpected new provider receipts still fail the attempt and are
-retained for reconciliation without contacting Boat. Existing known Modal/Docker
-handles retain ordinary cleanup guarantees.
+Each `ARMADA_SMOKE_CASES` entry additionally declares one stable `account` ID:
+`codex-openai`, `codex-subscription`, `codex-azure`, `claude-anthropic`,
+`claude-subscription`, `claude-gateway`, `opencode-deepseek`, `opencode-openai`,
+`opencode-anthropic`, `opencode-custom`, or `opencode-azure`. Keep the usual
+`org`, `harness`, `model`, `modelAccountId`, and `golden` (Modal) or `hostId`
+(Docker). More than one account per provider is allowed; duplicate provider/account
+pairs and mismatched harnesses fail configuration before any allocation.
+The label describes an operator-selected credential; it does not convert a
+credential or assert upstream protocol support.
 
-The default post-deploy lifecycle path retains Modal probes. The existing
-`--parity --only docker` path continues testing the explicitly configured owned
-Docker host; no implicit host registration or machine discovery is introduced.
-`--only boat` emits owner-decision not-run rows and no API traffic, returning no
-successful eligible-provider proof. A configuration containing only Boat cases
-similarly provides no Modal/Docker coverage and fails closed, without Boat calls.
+An absent pair prints `not-run: no account on staging`, including subscriptions.
+Only provision supported connections: OpenCode custom connections currently speak
+OpenAI-compatible chat completions, not native Anthropic Messages; its endpoint
+contract has no API-version query field. Claude gateways must speak Anthropic
+Messages; native Azure Foundry authentication is not established. These gaps
+remain tracked by #1579, not advertised as working by this probe.
+
+The probe sends an initial answer request, a follow-up recall request, then checks
+recall after stop/resume, token receipts, cost classification and cleanup.
+Account mode accepts explicitly unknown cost (`usd: null` with a reason), rather
+than inventing a price or failing solely because a subscription is unpriced.
+Priced costs still use the existing fixed-point sum and resume-retention checks.
+The `exact-cost` feature name remains for compatibility; in account mode its
+reason explicitly says `unknown` when appropriate. The strict provider parity
+mode is unchanged.
+
+The `accounts_parity` JSON contains independent per-account/provider feature
+reports; the summary table never overwrites one account with another. A cell
+passes only when the required lifecycle, usage, cost and cleanup observations
+pass. Unsupported or quota-limited prerequisites cannot become a passing cell.
+A successful process exit means no observed failures, not that missing accounts
+were tested. Review `not-run` rows before claiming matrix completeness. Each
+configured cell may allocate once (and resume compute); run this deliberately,
+not as an unbounded default deployment probe.

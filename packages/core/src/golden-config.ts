@@ -1,3 +1,4 @@
+import { shellQuote as shQuote } from "./shell-quote.ts";
 /** Where a golden's repositories are cloned. Launch pulls the same directories. */
 export const GOLDEN_ROOT = "/home/user";
 
@@ -373,10 +374,6 @@ function secretAssignment(command: string): string | null {
     if (key && isSecretKey(key)) return key;
   }
   return null;
-}
-
-function shQuote(value: string): string {
-  return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

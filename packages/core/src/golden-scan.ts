@@ -1,5 +1,6 @@
 import { GoldenError } from "./golden-config.ts";
 import type { Provider } from "./provider.ts";
+import { shellQuote } from "./shell-quote.ts";
 import { SKILLPACK_TOKEN_PATTERN } from "./skillpack-token.ts";
 
 /**
@@ -191,10 +192,6 @@ export async function scanGoldenSandbox(
   if (result.exitCode !== 0) {
     throw new GoldenError("setup_failed", "The secret scan could not run to completion; the golden was not saved.");
   }
-}
-
-function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
 /** Provider output is untrusted. Never log it, a path, or an unmatched diagnostic line. */

@@ -31,13 +31,14 @@ async function expectPinnedLaunch(page: Page) {
 test("a task-only launch sends the configured defaults through the launch API", async ({ page }) => {
   await signIn(page, "alice@example.com", "/environments");
   const dialog = await openLaunch(page, "shared-golden", { advanced: false });
-  // The task comes first and has focus; the overrides stay collapsed behind a summary of what will be used.
+  // The task comes first; account/model stay visible, optional skills remain in Advanced.
   const task = dialog.getByLabel("Task");
   await expect(task).toBeFocused();
   await expect(dialog.getByRole("radio", { name: "Claude Code" })).toBeChecked();
   await expect(dialog.getByLabel("Project")).toBeVisible();
-  await expect(dialog.getByLabel("Model", { exact: true })).toBeHidden();
-  await expect(dialog.locator("[data-launch-summary]")).toHaveText("Claude Opus 5.5 · Medium · 1 MCP");
+  await expect(dialog.getByLabel("Model", { exact: true })).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Add skills", exact: true })).toBeHidden();
+  await expect(dialog.locator("[data-launch-summary]")).toHaveText("1 MCP");
   await page.screenshot({ path: "test-results/launch-default-desktop.png", animations: "disabled" });
   await page.setViewportSize({ width: 390, height: 664 });
   await expectPinnedLaunch(page);
@@ -72,7 +73,7 @@ test("the open Advanced area scrolls inside the dialog with Launch still on scre
   const dialog = await openLaunch(page, "shared-golden");
   await dialog.getByLabel("Alice Linear").uncheck();
   await dialog.getByLabel("Acme Docs").check();
-  await expect(dialog.locator("[data-launch-summary]")).toHaveText("Claude Opus 5.5 · Medium · 1 MCP");
+  await expect(dialog.locator("[data-launch-summary]")).toHaveText("1 MCP");
   await dialog.getByLabel("Acme Docs").scrollIntoViewIfNeeded();
   await expectPinnedLaunch(page);
   await page.screenshot({ path: "test-results/launch-advanced-mobile.png", animations: "disabled" });
@@ -86,9 +87,7 @@ test("the open Advanced area scrolls inside the dialog with Launch still on scre
   expect((await launches())[0]).not.toHaveProperty("prompt");
 });
 
-test("errors are never hidden: an invalid override opens Advanced, a refused launch keeps the task", async ({
-  page,
-}) => {
+test("errors are never hidden: an invalid model stays focusable, a refused launch keeps the task", async ({ page }) => {
   // Modal stays connected, so only the golden's own provider is missing once Boat is cleared.
   await post("/__test/reset", { acmeModal: true });
   await signIn(page, "alice@example.com", "/environments");
@@ -98,10 +97,10 @@ test("errors are never hidden: an invalid override opens Advanced, a refused lau
     .locator("[data-launch-advanced]")
     .getByRole("button", { name: /^Advanced/ })
     .click();
-  await expect(dialog.getByLabel("Model id")).toBeHidden();
+  await expect(dialog.getByLabel("Model id")).toBeVisible();
   await dialog.getByLabel("Task").fill("Keep me");
   await dialog.getByRole("button", { name: "Launch", exact: true }).click();
-  // The browser refuses the empty custom model id: the collapsed area opens on it.
+  // The browser refuses the empty custom model id and focuses the visible field.
   await expect(dialog.getByLabel("Model id")).toBeFocused();
   await dialog.getByLabel("Model", { exact: true }).selectOption("claude-sonnet-5-5");
 
