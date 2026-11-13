@@ -9,6 +9,8 @@ export interface DockerMachineRequest {
   /** Host-approved digest-pinned image, not a remote caller's arbitrary image. */
   image: string;
   ttlSeconds: number;
+  /** Frozen absolute UTC deadline; omitted requests retain relative TTL behavior. */
+  expiresAt?: number;
 }
 
 export class DockerMachineError extends Error {
@@ -68,7 +70,11 @@ export function createDockerMachineExecutor(options: {
       !imageDigest.test(request.image) ||
       !Number.isInteger(request.ttlSeconds) ||
       request.ttlSeconds < 1 ||
-      request.ttlSeconds > 86_400
+      request.ttlSeconds > 86_400 ||
+      (request.expiresAt !== undefined &&
+        (!Number.isSafeInteger(request.expiresAt) ||
+          request.expiresAt <= 0 ||
+          request.expiresAt > 8_640_000_000_000_000))
     )
       fail("invalid_request");
     const name = `armada-${options.installationId}-${options.hostId}-${request.sandboxId}-${request.generation}`;
@@ -82,6 +88,7 @@ export function createDockerMachineExecutor(options: {
         [`${prefix}generation`]: request.generation,
         [`${prefix}image`]: request.image,
         [`${prefix}ttl-seconds`]: String(request.ttlSeconds),
+        ...(request.expiresAt === undefined ? {} : { [`${prefix}absolute-expiry`]: String(request.expiresAt) }),
       },
     };
   }
@@ -126,7 +133,9 @@ export function createDockerMachineExecutor(options: {
       !Number.isSafeInteger(created) ||
       created < 0 ||
       !Number.isSafeInteger(end) ||
-      end !== created + request.ttlSeconds * 1000
+      (request.expiresAt === undefined
+        ? labels[`${prefix}absolute-expiry`] !== undefined || end !== created + request.ttlSeconds * 1000
+        : created >= end || end !== Math.min(request.expiresAt, created + request.ttlSeconds * 1000))
     )
       fail("ownership_mismatch");
     return end;
@@ -180,12 +189,21 @@ export function createDockerMachineExecutor(options: {
 
   async function create(request: DockerMachineRequest) {
     let state = await owned(request);
+    const absoluteCreationTime = request.expiresAt === undefined ? undefined : now();
+    if (
+      absoluteCreationTime !== undefined &&
+      request.expiresAt !== undefined &&
+      request.expiresAt <= absoluteCreationTime
+    )
+      fail("expired");
     if (!state.volume) {
-      const created = now();
+      const created = absoluteCreationTime ?? now();
       const labels = {
         ...state.labels,
         [`${prefix}created-at`]: String(created),
-        [`${prefix}expires-at`]: String(created + request.ttlSeconds * 1000),
+        [`${prefix}expires-at`]: String(
+          Math.min(request.expiresAt ?? Number.POSITIVE_INFINITY, created + request.ttlSeconds * 1000),
+        ),
       };
       await checked(["volume", "create", "--driver", "local", ...labelArgs(labels), state.volumeName]);
       state = await owned(request);

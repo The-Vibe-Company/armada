@@ -44,7 +44,13 @@ export function serverOrigin(server: string): string {
 }
 function fingerprint(job: Pick<Job, "request">): string {
   const r = job.request;
-  return JSON.stringify([r.sandboxId, r.generation, r.image, r.ttlSeconds]);
+  return JSON.stringify([
+    r.sandboxId,
+    r.generation,
+    r.image,
+    r.ttlSeconds,
+    ...(r.expiresAt === undefined ? [] : [r.expiresAt]),
+  ]);
 }
 export async function register(store: Store, api: Api, server: string, token: string): Promise<void> {
   if (!validToken(token)) throw new Error("Invalid registration token");
