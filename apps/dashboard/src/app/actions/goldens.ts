@@ -1,6 +1,6 @@
 "use server";
 
-import type { Golden, SandboxProviderId } from "@armada/core";
+import { type Golden, isSandboxProvider, type SandboxProviderId } from "@armada/core";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { type ActionResult, done, explainDbError, fail, formString, isUuid } from "@/lib/action";
@@ -53,7 +53,7 @@ export async function buildGolden(_previous: ActionResult | null, data: FormData
     const supabase = await createClient();
     const [goldens, memberships] = await Promise.all([listGoldens(supabase), listMemberships(supabase, viewer.id)]);
     target = goldens.find((row) => row.id === goldenId && row.org_id === org);
-    if (!target) return fail("That golden is not available in this scope.");
+    if (!target || !isSandboxProvider(target.provider)) return fail("That golden is not available in this scope.");
     const isAdmin = memberships.some((item) => item.org.id === target?.org_id && item.role === "admin");
     const state = goldenRowState(target, goldens, { id: viewer.id, isAdmin });
     if (!state.canRebuild) return fail(state.reason ?? "This golden cannot be rebuilt here.");
@@ -153,7 +153,7 @@ export async function removeGolden(_previous: ActionResult | null, data: FormDat
   const supabase = await createClient();
   const [goldens, memberships] = await Promise.all([listGoldens(supabase), listMemberships(supabase, viewer.id)]);
   const target = goldens.find((row) => row.id === goldenId && row.org_id === org);
-  if (!target) return fail("That golden is not available in this scope.");
+  if (!target || !isSandboxProvider(target.provider)) return fail("That golden is not available in this scope.");
   const isAdmin = memberships.some((item) => item.org.id === org && item.role === "admin");
   const blocker = goldenRemoveBlocker(target, { id: viewer.id, isAdmin });
   if (blocker) return fail(blocker);
@@ -217,7 +217,7 @@ export async function saveSizePolicy(_previous: ActionResult | null, data: FormD
   const supabase = await createClient();
   const [goldens, memberships] = await Promise.all([listGoldens(supabase), listMemberships(supabase, viewer.id)]);
   const target = goldens.find((row) => row.id === goldenId && row.org_id === org);
-  if (!target) return fail("That golden is not available in this scope.");
+  if (!target || !isSandboxProvider(target.provider)) return fail("That golden is not available in this scope.");
   const isAdmin = memberships.some((item) => item.org.id === org && item.role === "admin");
   const blocker = sizePolicyBlocker(target, { id: viewer.id, isAdmin });
   if (blocker) return fail(blocker);

@@ -25,7 +25,7 @@ Nothing in this PR starts a harness or claims a real Docker/Codex smoke.
 
 ## Defaults and remaining work
 
-Revocable host credential without expiry; planned launch TTL3600 seconds; no
+Revocable host credential without expiry; planned launch TTL14400 seconds; no
 disk quota yet. No goldens, resume, Hosts dashboard or gVisor.
 
 Still needed for the authorized one-prompt milestone: durable one-use bootstrap

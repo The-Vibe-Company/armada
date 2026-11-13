@@ -19,7 +19,7 @@ to host stdin, never argv, a shell transcript or logs. It exchanges once via
 State directory/file permissions are 0700/0600. Host credentials have no expiry
 but are revocable. Admin revocation: `POST /api/v1/docker/hosts/revoke` with
 `{"org":"<uuid>","hostId":"<uuid>"}`. Default launch TTL remains planned as
-3,600 seconds; no disk quota yet. Owner may revise these defaults later.
+14,400 seconds; no disk quota yet. Owner may revise these defaults later.
 
 ## Build and run
 

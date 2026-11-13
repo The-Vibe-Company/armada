@@ -1,4 +1,4 @@
-import type { Golden } from "@armada/core";
+import { type Golden, isSandboxProvider } from "@armada/core";
 import { ControlError, createTemplateControl } from "@/lib/control";
 import { mcpUrl } from "@/lib/env";
 import { createClient } from "@/lib/supabase/server";
@@ -76,13 +76,16 @@ export function lookupsFrom(
   vault: VaultList,
 ): TemplateLookups {
   return {
-    goldens: goldens.map((golden) => ({
-      id: golden.id,
-      name: golden.name,
-      provider: golden.provider,
-      visibility: golden.visibility,
-      ready: Boolean(golden.provider_snapshot_id),
-    })),
+    goldens: goldens.map((golden) => {
+      if (!isSandboxProvider(golden.provider)) throw new Error("Unsupported golden provider.");
+      return {
+        id: golden.id,
+        name: golden.name,
+        provider: golden.provider,
+        visibility: golden.visibility,
+        ready: Boolean(golden.provider_snapshot_id),
+      };
+    }),
     connections:
       connections.state === "ready"
         ? connections.connections.map(({ id, name, scope, status }) => ({ id, name, scope, status }))
