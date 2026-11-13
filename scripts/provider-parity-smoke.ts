@@ -117,7 +117,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         !isHarness(c.harness) ||
         [c.org, c.model, c.modelAccountId].some((v) => typeof v !== "string" || !v.trim()) ||
         (c.provider === "docker"
-          ? typeof c.hostId !== "string" || !c.hostId.trim() || typeof c.image !== "string" || !c.image.trim()
+          ? typeof c.hostId !== "string" || !c.hostId.trim()
           : typeof c.golden !== "string" || !c.golden.trim())
       )
         throw new Error();
@@ -371,7 +371,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
             visibility: "private",
             ttlSeconds: 1800,
             ...(c.provider === "docker"
-              ? { hostId: c.hostId, image: c.image, requestId: crypto.randomUUID() }
+              ? { hostId: c.hostId, requestId: crypto.randomUUID() }
               : { golden: c.golden, connections: [] }),
           });
           if (typeof result.sandbox?.id === "string") {

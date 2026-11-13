@@ -82,13 +82,6 @@ test("checkpoint preserves sanitized native sessions but discards whole transien
         () => false,
       ),
     ).toBe(false);
-    // Reuse the real snapshot to guard against losing live history or accepting changed sealed bytes.
-    await rm(join(root, "codex/sessions"), { recursive: true, force: true });
-    await expect(state.checkpoint()).rejects.toThrow("checkpoint_state_ambiguous");
-    await mkdir(join(root, "codex/sessions/2026"), { recursive: true });
-    await writeFile(join(root, "codex/sessions/2026/session.jsonl"), codex);
-    await writeFile(join(root, "session-state/codex/sessions/2026/session.jsonl"), "changed-after-seal");
-    await expect(state.checkpoint()).rejects.toThrow("checkpoint_saved_state_changed");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

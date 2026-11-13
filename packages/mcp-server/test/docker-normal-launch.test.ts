@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { createSqlAuthStore } from "@armada/auth";
 import {
   type AgentEvent,
+  DOCKER_DEFAULT_IMAGE,
   DOCKER_IMAGE_UNAVAILABLE_MESSAGE,
   type DockerLaunchResult,
   type DockerSandboxStatus,
@@ -74,7 +75,12 @@ afterAll(async () => {
 // The real migrated boundary owns normal-launch sequencing and durable retries.
 // Existing private-lane tests own the individual host/runtime protocol matrices.
 async function fixture(
-  options: { lifecycleGenerationAfterCreate?: number; harness?: Harness; checkoutExitCode?: number } = {},
+  options: {
+    lifecycleGenerationAfterCreate?: number;
+    harness?: Harness;
+    checkoutExitCode?: number;
+    daemonVersion?: string;
+  } = {},
 ) {
   const orgId = randomUUID(),
     userId = randomUUID(),
@@ -93,6 +99,7 @@ async function fixture(
   const registration = await hosts.issueRegistration(admin),
     installationId = randomUUID();
   const host = await hosts.exchangeRegistration(registration.registrationToken, installationId);
+  await hosts.poll(host.hostToken, installationId, options.daemonVersion ?? "2.28.0");
   const secret = `offline-normal-launch-${randomUUID()}`;
   // Omitted version must select the current pin, not fabricate version one.
   await db.query(
@@ -131,7 +138,7 @@ async function fixture(
   const jobs: unknown[] = [],
     native: unknown[] = [];
   async function step() {
-    const job = await hosts.poll(host.hostToken, installationId);
+    const job = await hosts.poll(host.hostToken, installationId, options.daemonVersion ?? "2.28.0");
     if (job) {
       jobs.push(job);
       if (job.operation === "bootstrap" || job.operation === "resume")
@@ -234,10 +241,10 @@ async function fixture(
     });
     return createRuntimeMcp({ sql: target, key, origin: "https://armada.example", commands: bridge });
   }
-  function service(target = sql, enabled = true, timeoutMs = 10_000, releaseImage = officialImage) {
+  function service(target = sql, enabled = true, timeoutMs = 10_000, releaseImage: string | null = officialImage) {
     return createDockerNormalLaunch(target, key, {
       enabled,
-      officialImage: releaseImage,
+      ...(releaseImage === null ? {} : { officialImage: releaseImage }),
       credentials: resolver,
       bootstrap,
       clock,
@@ -540,7 +547,7 @@ test("a launch whose host could not fetch the image says so in plain words, at l
 });
 
 test("prompt-free, image-free launch normalizes UUIDs, uses the default image, honors TTL and stops at runtime readiness", async () => {
-  const f = await fixture();
+  const f = await fixture({ daemonVersion: "2.27.0" });
   const { prompt: _prompt, ...base } = f.body;
   const body = {
     ...base,
@@ -550,14 +557,14 @@ test("prompt-free, image-free launch normalizes UUIDs, uses the default image, h
     requestId: base.requestId.toUpperCase(),
     ttlSeconds: 3600,
   };
-  const result = await f.service().launch(f.caller, body);
+  const result = await f.service(sql, true, 10_000, null).launch(f.caller, body);
   expect(result.sandbox).toMatchObject({
     id: f.body.requestId,
     status: "ready",
     conversationIds: [],
     credentialVersion: 2,
     requestedTtlSeconds: 3600,
-    image: officialImage,
+    image: DOCKER_DEFAULT_IMAGE,
   });
   expect(result.ttlSeconds).toBe(3600);
   expect(result.promptId).toBeUndefined();
@@ -786,7 +793,10 @@ test.each(["claude", "opencode"] as const)("normal Docker launch selects and boo
 
 test("normal Docker launch refuses caller-selected images before allocation", async () => {
   const f = await fixture();
-  await rejected(f.service().launch(f.caller, { ...f.body, image: officialImage }), "invalid_request");
+  await expect(f.service().launch(f.caller, { ...f.body, image: officialImage })).rejects.toMatchObject({
+    code: "invalid_request",
+    message: "Remove the image field and retry. Armada chooses the Docker environment automatically.",
+  });
   expect(f.jobs).toHaveLength(0);
 });
 
@@ -1195,4 +1205,24 @@ test("a lost Docker template response retains one reconciling claim and never re
   });
   expect(dispatches).toBe(1);
   expect(await counts(f)).toMatchObject({ sandboxes: 1, claims: 1, jobs: 2 });
+});
+
+test("old or unreported Docker daemons get an actionable resume refusal before any job is queued", async () => {
+  const f = await fixture();
+  await f.service().launch(f.caller, f.body);
+  const controls = createDockerSandboxControls(sql, key, { clock: f.clock, resume: bootstrap });
+  await controls.invoke(f.caller, "stop", { id: f.body.requestId, request_id: randomUUID() });
+  const before = await counts(f);
+  for (const version of [null, "2.27.0"]) {
+    await db.query("update docker_hosts set daemon_version=$2 where id=$1", [f.hostId, version]);
+    await expect(
+      controls.invoke(f.caller, "resume", { id: f.body.requestId, request_id: randomUUID() }),
+    ).rejects.toMatchObject({
+      code: "conflict",
+      retryable: false,
+      message: expect.stringContaining("Update this Docker host daemon"),
+    });
+    expect(await counts(f)).toEqual(before);
+    expect((await createDockerSandboxService(sql, key).get(f.actor, f.body.requestId)).status).toBe("stopped");
+  }
 });

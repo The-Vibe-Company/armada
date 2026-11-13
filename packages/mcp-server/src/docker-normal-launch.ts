@@ -143,6 +143,11 @@ function identifier(value: unknown): string {
   return value.toLowerCase();
 }
 function normalize(body: Record<string, unknown>, image: string): Request {
+  if (body && typeof body === "object" && Object.hasOwn(body, "image"))
+    throw failure(
+      "invalid_request",
+      "Remove the image field and retry. Armada chooses the Docker environment automatically.",
+    );
   if (
     !body ||
     typeof body !== "object" ||
@@ -398,7 +403,19 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       },
     ): Promise<DockerLaunchResult> {
       try {
-        const request = normalize(body, options.officialImage ?? officialSandboxImage());
+        let image: string;
+        try {
+          image = options.officialImage ?? officialSandboxImage();
+        } catch {
+          throw new ProviderError({
+            provider: "docker",
+            code: "provider_not_configured",
+            retryable: false,
+            message:
+              "Armada's sandbox image configuration is invalid. Ask the server operator to deploy a matching release image pin. No sandbox was created.",
+          });
+        }
+        const request = normalize(body, image);
         const actor = { userId: identifier(caller.userId), orgId: request.org };
         if (!caller.orgs.some((org) => org.orgId.toLowerCase() === request.org)) throw failure("not_found");
         const hash = dockerLaunchRequestHash(request);

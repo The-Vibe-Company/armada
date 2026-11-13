@@ -94,6 +94,9 @@ is not reused by v2; sign in once. See [onboarding](dave-onboarding.md).
 
 ## Deployment policy (#1547)
 
+**Interim staging exception:** until its Railway token exists, keep staging Git
+auto-deploy and use the [exact-commit Git-wait path](#interim-tokenless-staging-git-deployment-1547). Production remains token-required.
+
 Main pushes run **Pinned staging smoke**: migrate staging → deploy pinned server
 → wait for that Railway deployment and public version health → build dashboard
 in Actions → upload prebuilt output → sandbox smoke. There is one staging writer,
@@ -235,3 +238,51 @@ APP_STORE_CONNECT_API_* and IOS_DISTRIBUTION_CERTIFICATE_* secrets remain in tha
 environment (see apps/ios/README.md); no new iOS credentials/settings are required.
 Changing TestFlight's beta cadence or coupling its app binary to release tags is
 outside this small deployment-gate PR.
+
+
+## Interim tokenless staging Git deployment (#1547)
+
+Until the owner supplies the environment-scoped Railway project tokens, staging
+alone may keep Railway Git auto-deploy enabled. The staging job explicitly sets
+DEPLOYMENT_ENVIRONMENT=staging. If its resolved RAILWAY_TOKEN is absent, it still
+applies staging migrations but makes **no Railway CLI call**; it polls /healthz
+for up to 15 minutes, requiring ok=true, the source version and **exact full
+commit SHA**. The new health commit field comes only from a validated Railway
+RAILWAY_GIT_COMMIT_SHA (automatically supplied on Git-triggered deployments per
+[Railway's reference](https://docs.railway.com/variables/reference)). An old server
+without this field, a same-version different commit, unhealthy/unreachable server
+or timeout cannot authorize dashboard upload or smoke. This PR's first Git deploy
+must land to expose the new field; no credentials or manual deploy are required.
+
+Only after that exact Git deployment is live does Actions build/upload the
+prebuilt dashboard and run smoke. With RAILWAY_TOKEN present, the existing CLI
+upload/exact deployment-ID wait path is unchanged. Keep migrations compatible
+with old/new servers: Git deploy is an independent interim writer, not an atomic
+SQL/code transaction. Ordinary stale-main admission still applies. An explicit
+release smoke for a commit not currently served by staging fails closed; freeze
+main merges during a release until tokens restore pinned server deployments.
+Git may replace staging independently during this interim mode, so the owner
+must freeze merges for release smoke through production authorization.
+
+Production has **no fallback**: its RAILWAY_TOKEN and IDs remain required before
+any mutation. The owner must provide that token before an authorized release;
+never re-enable production Git auto-deploy to bypass this requirement. After
+staging CLI deployment is proven with its token, disable staging Git auto-deploy
+under the documented freeze/drain cutover. Do not disable it while this interim
+fallback is the only server deploy path.
+
+Required secret names that must resolve (environment or inherited scope):
+- Both staging and production: SUPABASE_ACCESS_TOKEN, SUPABASE_DB_PASSWORD,
+  SUPABASE_PROJECT_ID, VERCEL_TOKEN, VERCEL_ORG_ID, VERCEL_PROJECT_ID,
+  ARMADA_SERVER_URL.
+- Staging additionally: ARMADA_SMOKE_TOKEN, ARMADA_SMOKE_CASES.
+- Production additionally: RAILWAY_TOKEN, RAILWAY_PROJECT_ID,
+  RAILWAY_ENVIRONMENT_ID, RAILWAY_SERVICE_ID.
+- Staging CLI mode additionally: RAILWAY_TOKEN, RAILWAY_PROJECT_ID,
+  RAILWAY_ENVIRONMENT_ID, RAILWAY_SERVICE_ID; these are not needed by the
+  tokenless Git-wait mode. Use distinct matching-environment Railway tokens.
+- Staging variable (not a secret): ARMADA_ORIGIN, matching ARMADA_SERVER_URL.
+
+Never paste token values into an issue, PR, command argument or log. This is a
+repository-only interim change; no actual provider settings or deployments were
+changed or verified by the agent.

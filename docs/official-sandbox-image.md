@@ -6,8 +6,9 @@ only for a validated release tag, and only `linux/amd64`. PR CI never builds it.
 There is no `latest` alias: a release records `version` and `image@sha256:…`
 in the `official-sandbox-image` workflow artifact. Release binary jobs download
 that pin into core before compiling CLI/server, so `officialSandboxImage()`
-returns only that version's digest. Source/dev builds deliberately have no pin
-and fail closed; the existing normal-launch default is unchanged in this slice.
+returns that version's digest. Source/dev builds without a release pin retain the
+server-owned immutable bootstrap baseline; see `docker-staging-image-compatibility.md`.
+A present but invalid or mismatched release pin still fails closed.
 
 The final image contains no checkout, credentials, enrolment tickets or account
 environment. It contains build tools from buildpack-deps, Git, gh, Python, CA
@@ -48,8 +49,8 @@ Normal API requests, CLI launches and dashboard forms no longer accept an image.
 New Docker template definitions select a host only. Historic template image
 fields are ignored at launch; existing sandbox/resume bindings are untouched.
 The server chooses `officialSandboxImage()` from its own release, never from the
-client's CLI version. A deployment with no generated pin refuses Docker launch
-instead of falling back to Debian. Exact request retries retain the admitted
+client's CLI version. A deployment with no generated pin uses the pre-transition immutable bootstrap
+baseline so main-between-releases remains usable; it does not invent a GHCR digest. Exact request retries retain the admitted
 image even if the server's release pin changes.
 
 The release workflow carries the generated public pin into both release staging
