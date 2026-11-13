@@ -22,7 +22,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ vars.RELEASE_SYNCED_DEPLOYS == 'true' && 'release-production' || format('release-{0}', github.ref) }}
+  group: release-production
   queue: max
   cancel-in-progress: false
 
@@ -114,15 +114,6 @@ jobs:
             echo "dist_tag=$dist_tag"
             echo "publish=$publish"
           } >> "$GITHUB_OUTPUT"
-      - name: Validate deployment mode
-        env:
-          GATED: ${{ vars.STAGING_GATED_DEPLOYS }}
-          RELEASE_SYNCED: ${{ vars.RELEASE_SYNCED_DEPLOYS }}
-        run: |
-          if [[ "$GATED" == true && "$RELEASE_SYNCED" != true ]]; then
-            echo "::error::Staging gate requires release-synchronized production."
-            exit 1
-          fi
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
       - run: bun run lint
@@ -235,7 +226,7 @@ jobs:
       actions: read
     name: Smoke exact release commit on staging
     needs: [check, binary]
-    if: ${{ !cancelled() && vars.RELEASE_SYNCED_DEPLOYS == 'true' && vars.STAGING_GATED_DEPLOYS == 'true' && needs.check.outputs.publish == 'true' && needs.check.result == 'success' && needs.binary.result == 'success' }}
+    if: ${{ !cancelled() && needs.check.outputs.publish == 'true' && needs.check.result == 'success' && needs.binary.result == 'success' }}
     uses: ./.github/workflows/staging-gated-production.yml
     with:
       source_sha: ${{ needs.check.outputs.sha }}
@@ -244,7 +235,7 @@ jobs:
   production:
     name: Release migrations, server and dashboard
     needs: [check, binary, staging-smoke]
-    if: ${{ !cancelled() && vars.RELEASE_SYNCED_DEPLOYS == 'true' && needs.check.outputs.publish == 'true' && needs.check.result == 'success' && needs.binary.result == 'success' && (needs.staging-smoke.result == 'success' || (vars.STAGING_GATED_DEPLOYS != 'true' && needs.staging-smoke.result == 'skipped')) }}
+    if: ${{ !cancelled() && needs.check.outputs.publish == 'true' && needs.check.result == 'success' && needs.binary.result == 'success' && needs.staging-smoke.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
     environment: production
@@ -303,7 +294,7 @@ jobs:
   publish:
     name: Publish to npm
     needs: [check, binary, production]
-    if: ${{ !cancelled() && needs.check.result == 'success' && needs.binary.result == 'success' && (needs.production.result == 'success' || (needs.production.result == 'skipped' && (vars.RELEASE_SYNCED_DEPLOYS != 'true' || needs.check.outputs.publish != 'true'))) }}
+    if: ${{ !cancelled() && needs.check.result == 'success' && needs.binary.result == 'success' && (needs.production.result == 'success' || (needs.production.result == 'skipped' && needs.check.outputs.publish != 'true')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: npm

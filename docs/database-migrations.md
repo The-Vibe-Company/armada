@@ -1,29 +1,17 @@
 # Production migration operations
 
-> **Release-only production gate:** With repository variables
-> RELEASE_SYNCED_DEPLOYS=true and STAGING_GATED_DEPLOYS=true,
-> [Staging-gated releases](releasing.md#staging-gated-releases-owner-opt-in)
-> continuously deploy/migrate/smoke main on staging. Release calls that same staging
-> workflow for its exact validated SHA before production migrations/server/dashboard/npm.
-> Independent automatic migration applies and deployment-event smoke below are disabled.
-> Manual diagnostic smoke/history/repair/preview remain available. Missing gate config
-> blocks promotion. Owner cutover, emergency bypass and rollback are in the runbook.
-> Regardless of these variables, standalone production applies are removed by #1547.
-
-> **Release apply path:** Repository variable `RELEASE_SYNCED_DEPLOYS=true`
-> enables tagged release deployment; standalone production applies are always disabled.
-> Tagged migrations run inside Release before server/dashboard/npm deployment, using
-> the validated release SHA. Manual history, guarded repair and dry-run remain available;
-> they still inspect current main and are not a tagged apply/recovery path.
-> Use [release recovery and owner cutover](releasing.md#release-synchronized-production-owner-opt-in).
-> Leaving variables unset never restores push-to-main production applies.
+> **Mandatory release path:** Production schema applies only in the validated
+> publishing Release, after its exact-SHA staging smoke. Main staging deployment
+> applies staging migrations itself; no independent staging migration job remains.
+> Old deployment opt-in variables are ignored. See [deployment policy](releasing.md#deployment-policy-1547).
+> Manual production history, confirmed repair and dry-run preview remain operator
+> diagnostics, never authorization to deploy or proof pending SQL was applied.
 
 The **Database migrations** workflow never applies production schema SQL. Its
 production job is manual-only: history, confirmed history repair, or dry-run
 preview. Production schema applies live only in the validated tagged Release
 workflow, using Supabase CLI 2.75.0 and the remote migration history; retrying
-skips recorded versions. Existing opt-in staging migrations remain independent
-until the final workflow-policy cutover. Never reset production, include seeds,
+skips recorded versions. Staging migrations run only inside the pinned main/release staging deployment. Never reset production, include seeds,
 or repair history to force a deployment. Missing release configuration fails
 closed rather than falling back to a main-push apply.
 
@@ -66,7 +54,8 @@ Before opening a PR, and again against current main before merge:
 ## One-time repository administrator setup
 
 Create the GitHub Actions environment named **production**. Restrict deployment
-branches to **main** (not arbitrary tags/branches), restrict who can change its
+branches/tags to **main and version tags v*** (not arbitrary branches/tags),
+matching the release runbook; restrict who can change its
 configuration, and add these **environment secrets**, not repository secrets:
 
 | Exact name | Value |
@@ -77,7 +66,7 @@ configuration, and add these **environment secrets**, not repository secrets:
 
 Use the least-privileged Supabase account available. Environment reviewers can
 be enabled if policy requires approval, but each run then waits for that approval;
-leave required reviewers off if fully unattended post-merge execution is desired.
+configure approvals according to the owner's release policy.
 Missing secrets fail closed. Do not paste credentials into dispatch inputs,
 command arguments, logs or migration SQL; do not enable CLI debug/shell tracing.
 

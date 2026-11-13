@@ -1,17 +1,8 @@
 # Deployed checks
 
-> **Release-only production gate:** With repository variables
-> RELEASE_SYNCED_DEPLOYS=true and STAGING_GATED_DEPLOYS=true,
-> [Staging-gated releases](releasing.md#staging-gated-releases-owner-opt-in)
-> continuously deploy/migrate/smoke main on staging. Release calls that same staging
-> workflow for its exact validated SHA before production migrations/server/dashboard/npm.
-> Independent automatic migration applies and deployment-event smoke below are disabled.
-> Manual diagnostic smoke/history/repair/preview remain available. Missing gate config
-> blocks promotion. Owner cutover, emergency bypass and rollback are in the runbook.
-> Manual diagnostic smoke has a separate lock: wait for pinned staging deployment/
-> smoke to finish and ensure no next deployment is queued before running it.
-> It can otherwise observe staging mid-deploy and never authorizes a release.
-> With both variables absent/false, legacy behavior below is unchanged.
+> **Mandatory deployment gate:** Main staging deployments and exact-SHA publishing
+> release calls own smoke. No opt-in or deployment-event fallback exists. Release
+> requires its staging smoke before production. See [deployment policy](releasing.md#deployment-policy-1547).
 
 `scripts/post-deploy-smoke.ts` allocates **real, billable compute**. It uses only
 an Armada bearer token and the deployed server's `/api/v1/` API. It does not
@@ -111,10 +102,9 @@ to those branches. Dispatch from any other ref is skipped. The publishing Releas
 workflow remains the only slow gated path: exact release commit staging deploy
 and smoke, then production. Main post-merge smoke is not a PR/merge-queue gate.
 
-The manual alias requires the existing staging-gated configuration (currently
-both repository deployment opt-ins and all staging secrets/cases); missing or
-disabled configuration fails before smoke rather than producing a successful
-no-op attestation. Set ARMADA_ORIGIN, ARMADA_SMOKE_TOKEN and ARMADA_SMOKE_CASES
+The manual alias requires all staging deployment secrets and smoke cases; missing
+configuration fails before smoke rather than producing a successful no-op
+attestation. The old deployment opt-in variables are ignored. Set ARMADA_ORIGIN, ARMADA_SMOKE_TOKEN and ARMADA_SMOKE_CASES
 in staging as documented above. Do not restore deployment-event smoke as a
 fallback. The pinned deployment and smoke stay serialized together and are not
 cancelled by a newer deploy, allowing cleanup to finish.

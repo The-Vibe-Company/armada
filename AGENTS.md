@@ -50,13 +50,14 @@ What CI runs on every pull request and in the merge queue:
 What runs only when its files change: the iOS checks (`apps/ios`), the migration dry-run (`supabase/migrations`).
 
 What runs after a merge, not before: the staging dashboard build in GitHub Actions
-(`vercel pull`, `vercel build`, then `vercel deploy --prebuilt`), the deploy to staging and the post-deploy smoke, which launches real sandboxes on every enabled provider, builds goldens and exercises the whole lifecycle. Production is intended to deploy only at release; the staged #1547 cutover in
+(`vercel pull`, `vercel build`, then `vercel deploy --prebuilt`), the deploy to staging and the post-deploy smoke, which launches real sandboxes on every enabled provider, builds goldens and exercises the whole lifecycle. Production deploys only from a publishing release after its exact-SHA staging
+smoke succeeds; there is no opt-in bypass. The #1547 owner cutover in
 `docs/releasing.md` records which provider settings still need owner changes.
 Vercel Git deployments are disabled for both dashboard projects via
 `apps/dashboard/vercel.json`; no PR previews. Keep the Actions staging path
 working and follow the owner cutover prerequisites in `docs/releasing.md`.
 The release dashboard build also runs in Actions and uploads only prebuilt
-output; enabling the release-only policy still requires the owner cutover.
+output; provider-side Git autodeploy still requires the owner cutover.
 Production SQL applies only from the validated release deployment path; the
 standalone migration workflow retains manual previews/history/owner repair,
 never per-commit production applies.
