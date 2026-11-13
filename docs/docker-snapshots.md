@@ -145,3 +145,13 @@ offline or the server version changes. The rebuild endpoint accepts only
 `org`, source `id` and a new `requestId`, never caller image/config/version fields.
 Existing scan, unprivileged initialization, publication and epoch checks apply.
 A failed new build does not retire the original snapshot.
+
+### Repository history and secret scanning
+
+Docker snapshot builds clone only the selected branch head (`--depth=1`). Init
+commands can fetch additional history if needed, but the secret scan checks all
+materialized files and Git objects before publishing the image, including that
+extra history. This avoids importing unrelated historical credentials into a
+snapshot. Token-shaped test fixtures must be assembled at runtime rather than
+stored literally in source; the scan does not exempt test files. Boat and Modal
+checkout behavior is unchanged.

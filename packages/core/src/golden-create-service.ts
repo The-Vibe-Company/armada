@@ -553,6 +553,7 @@ function ownershipSetup(repos: readonly Pick<PreparedRepo, "dir">[]): string {
 /** Shared credential-safe checkout frame. Runtime/image transports supply the token only in memory. */
 export function goldenCheckoutScript(
   repos: readonly Pick<PreparedRepo, "owner" | "repo" | "branch" | "dir">[],
+  options: { shallow?: boolean } = {},
 ): string {
   return [
     "export GIT_CONFIG_NOSYSTEM=1",
@@ -564,7 +565,7 @@ export function goldenCheckoutScript(
     'export GIT_CONFIG_VALUE_0=\'!f() { while IFS= read -r line; do case $line in protocol=https|host=github.com|host=github.com:443) ;; *) exit 1 ;; esac; done; printf "username=x-access-token\\npassword=%s\\n" "$ARMADA_GIT_TOKEN"; }; f\'',
     ...repos.map(
       (r) =>
-        `git clone --branch ${shellQuote(r.branch ?? "main")} --single-branch https://github.com/${safe(r.owner)}/${safe(r.repo)}.git ${GOLDEN_ROOT}/${safe(r.dir)}`,
+        `git clone ${options.shallow ? "--depth=1 " : ""}--branch ${shellQuote(r.branch ?? "main")} --single-branch https://github.com/${safe(r.owner)}/${safe(r.repo)}.git ${GOLDEN_ROOT}/${safe(r.dir)}`,
     ),
     "unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_CONFIG_NOSYSTEM GIT_CONFIG_GLOBAL GIT_TERMINAL_PROMPT GIT_ASKPASS",
     "unset ARMADA_GIT_TOKEN",
