@@ -132,7 +132,7 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
       return admitted(
         actor,
         sandboxId,
-        async (_tx, authority) => {
+        async (tx, authority) => {
           const id = `docker_health_${requestId}`;
           const commands = createRuntimeCommands(authority, key);
           const queued = await commands.enqueue(actor.userId, { version: 1, requestId: id, sandboxId, op: "health" });
@@ -142,6 +142,29 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
           const health = result(response.reply, queued.epoch, id);
           if (health.generation !== queued.epoch || typeof health.ready !== "boolean") deny();
           if (!health.ready) deny();
+          const checkpoint = (
+            await tx.query<{ epoch: string; watermark: string }>(
+              "select epoch::text,watermark::text from public.runtime_checkpoints where sandbox_id=$1 and epoch=$2::bigint-1 and watermark is not null",
+              [sandboxId, queued.epoch],
+            )
+          ).rows[0];
+          if (checkpoint) {
+            const restore = health.restoredFrom;
+            const saved = (
+              await tx.query<{ conversation_ids: string[] }>(
+                "select conversation_ids from public.sandboxes where id=$1",
+                [sandboxId],
+              )
+            ).rows[0];
+            if (
+              !object(restore) ||
+              restore.epoch !== checkpoint.epoch ||
+              restore.watermark !== Number(checkpoint.watermark) ||
+              saved?.conversation_ids.length !== 1 ||
+              restore.conversationId !== saved.conversation_ids[0]
+            )
+              deny();
+          }
           return authority.withOwner(sandboxId, actor.userId, async (fenced, scope) => {
             if (scope.epoch !== queued.epoch) deny();
             // Private lane status transitions must not revoke their own live epoch.
@@ -195,6 +218,8 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
           // replies, the runner alone owns busy/refusal; no journal scheduler here.
           if (blocked.rows.length) deny();
         }
+        if (!previous.rows.length)
+          await tx.query("update public.sandboxes set task_prompt_id=null where id=$1", [sandboxId]);
         const commands = createRuntimeCommands(authority, key);
         const queued = await commands.enqueue(actor.userId, {
           version: 1,
@@ -227,6 +252,13 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
           (saved.length === 1 && receipt.conversationId !== saved[0])
         )
           deny();
+        await tx.query(
+          `update public.sandboxes s set task_prompt_id=$2 where s.id=$1 and exists (
+           select 1 from public.runtime_commands c where c.sandbox_id=s.id and c.request_id=$3 and c.epoch=$4
+           and not exists(select 1 from public.runtime_commands newer where newer.sandbox_id=c.sandbox_id
+             and newer.epoch=c.epoch and newer.sequence>c.sequence and starts_with(newer.request_id,'docker_prompt_')))`,
+          [sandboxId, receipt.promptId, id, queued.epoch],
+        );
         if (!saved.length) {
           // This service-owned projection must not advance lifecycle_generation.
           await tx.query(`update public.sandboxes set conversation_ids=array[$2]::text[] where id=$1`, [

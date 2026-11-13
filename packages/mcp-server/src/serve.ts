@@ -111,7 +111,9 @@ export async function startServer(
   const sql = bunSql(config.databaseUrl, config.databasePoolMax);
   const runtimeEnrolments = createRuntimeEnrolments(sql, config.encryptionKey);
   const runtimeCommands = createRuntimeCommands(runtimeEnrolments, config.encryptionKey);
-  const runtimeCheckpoint = createRuntimeCheckpoint(sql, config.encryptionKey, runtimeCommands);
+  const runtimeCheckpoint = createRuntimeCheckpoint(sql, config.encryptionKey, runtimeCommands, {
+    docker: env.ARMADA_DOCKER_HOSTS === "1" && env.ARMADA_DOCKER_PLACEMENT === "1",
+  });
   let subscriptionMigration: ReturnType<typeof createSubscriptionMigration>;
   const modelAuth = createModelAuthOwnership(sql, config.encryptionKey, undefined, undefined, {
     origin: config.publicUrl,
@@ -688,7 +690,17 @@ export async function startServer(
     [
       delegatedAccess.childWorker,
       createRuntimeIdle(sql, config.encryptionKey, runtimeCheckpoint, {
-        delayMs: Number(process.env.ARMADA_RUNTIME_IDLE_MINUTES ?? 10) * 60_000,
+        delayMs: Number(env.ARMADA_RUNTIME_IDLE_MINUTES ?? 10) * 60_000,
+        ...(dockerBootstrap
+          ? {
+              dockerStop: (actor, id, requestId) =>
+                createDockerHostStore(sql, config.encryptionKey).enqueueSandbox(actor, id, {
+                  operation: "stop",
+                  requestId,
+                  idleCheckpointRequest: requestId,
+                }),
+            }
+          : {}),
       }),
     ],
   );

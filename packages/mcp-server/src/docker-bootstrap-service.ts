@@ -51,6 +51,51 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
       )
     ).rows[0];
   }
+  async function restoreCheckpoint(tx: Sql, sandboxId: string) {
+    const row = (
+      await tx.query<{
+        status_reason: string | null;
+        tainted: boolean;
+        conversation_ids: string[];
+        model: string;
+        reasoning_effort: string;
+        epoch: string | null;
+        watermark: string | null;
+        archive: string;
+      }>(
+        `select s.status_reason,s.application_secret_tainted as tainted,s.conversation_ids,s.model,s.reasoning_effort,
+       r.epoch::text,p.watermark::text,(select coalesce(max(sequence),0)::text from public.runtime_events where sandbox_id=s.id) as archive
+       from public.sandboxes s left join public.runtime_enrolments r on r.sandbox_id=s.id
+       left join public.runtime_checkpoints p on p.sandbox_id=s.id and p.epoch=r.epoch where s.id=$1`,
+        [sandboxId],
+      )
+    ).rows[0];
+    if (!row) deny();
+    if (row.watermark === null) {
+      if (row.status_reason === "idle_paused") deny();
+      return undefined;
+    }
+    if (row.tainted) deny();
+    const watermark = Number(row.watermark);
+    if (
+      !row.epoch ||
+      row.watermark !== row.archive ||
+      !Number.isSafeInteger(watermark) ||
+      watermark < 0 ||
+      row.conversation_ids.length !== 1 ||
+      !uuid.test(row.conversation_ids[0] ?? "") ||
+      !row.model ||
+      !row.reasoning_effort
+    )
+      deny();
+    return {
+      epoch: row.epoch,
+      watermark,
+      conversationId: row.conversation_ids[0]!,
+      model: row.model,
+      reasoningEffort: row.reasoning_effort,
+    };
+  }
   async function bootstrap(actor: Actor, sandboxId: string, requestId: string, resume = false) {
     try {
       if (options.enabled !== true || !uuid.test(requestId) || !sql.transaction) deny();
@@ -78,6 +123,7 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
         );
         if (!acknowledged.rows.length) deny();
       }
+      const restore = resume && !known ? await restoreCheckpoint(sql, sandboxId) : undefined;
       let projected: Awaited<ReturnType<typeof dockerRuntimeConfiguration>> | undefined;
       if (!known) {
         if (resume && (snapshot.status !== "stopped" || snapshot.deletedAt !== null)) deny();
@@ -96,6 +142,7 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
           architecture,
           ...(options.modelAuth ? { modelAuth: options.modelAuth } : {}),
         });
+        if (restore) Object.assign(projected.configuration, { restoreCheckpoint: restore });
       }
       return await sql.transaction(async (tx) => {
         const hint =
@@ -171,6 +218,7 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
           const occupied = await tx.query(`select 1 from public.runtime_enrolments where sandbox_id=$1`, [sandboxId]);
           if (occupied.rows.length && !resume) deny();
           if (resume) {
+            if (JSON.stringify(await restoreCheckpoint(tx, sandboxId)) !== JSON.stringify(restore)) deny();
             const restarted = await tx.query(
               `update public.sandboxes set status='starting',status_reason=null,stop_requested_at=null,stopped_at=null,
                  lifecycle_generation=lifecycle_generation+1

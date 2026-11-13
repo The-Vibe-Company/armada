@@ -52,7 +52,8 @@ type Sandbox = {
   deleted_at: unknown;
 };
 type Selection = { requestId: string } & (
-  | { operation: "create" | "stop" | "delete" }
+  | { operation: "create" | "delete" }
+  | { operation: "stop"; idleCheckpointRequest?: string }
   | { operation: "bootstrap" | "resume"; bootstrapDescriptor: BootstrapDescriptor }
 );
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -505,6 +506,9 @@ export function createDockerHostStore(sql: Sql, key: string) {
         exact(selection, [
           "requestId",
           "operation",
+          ...(selection.operation === "stop" && selection.idleCheckpointRequest !== undefined
+            ? ["idleCheckpointRequest"]
+            : []),
           ...(selection.operation === "bootstrap" || selection.operation === "resume" ? ["bootstrapDescriptor"] : []),
         ]);
         id(selection.requestId);
@@ -546,6 +550,19 @@ export function createDockerHostStore(sql: Sql, key: string) {
           (await tx.query(`select 1 from public.docker_host_jobs where request_id=$1`, [selection.requestId])).rows
             .length > 0;
         if (!known) await state(tx, row, selection.operation);
+        if (!known && selection.operation === "stop" && selection.idleCheckpointRequest !== undefined) {
+          id(selection.idleCheckpointRequest);
+          const proof = await tx.query(
+            `select 1 from public.sandboxes s join public.runtime_enrolments r on r.sandbox_id=s.id
+             join public.runtime_checkpoints p on p.sandbox_id=s.id and p.epoch=r.epoch
+             where s.id=$1 and p.request_id=$2 and p.watermark is not null
+             and p.watermark=(select coalesce(max(sequence),0) from public.runtime_events where sandbox_id=s.id)
+             and s.status in ('ready','running') and s.stop_requested_at is null and s.expires_at>now()
+             and s.activity_lease_id is null and not s.application_secret_tainted`,
+            [sandboxId, selection.idleCheckpointRequest],
+          );
+          if (!proof.rows.length) deny();
+        }
         const request = await machine(tx, row, selection.operation);
         const job: Job =
           selection.operation === "bootstrap" || selection.operation === "resume"
@@ -588,9 +605,9 @@ export function createDockerHostStore(sql: Sql, key: string) {
         }
         if (selection.operation === "stop")
           await tx.query(
-            `update public.sandboxes set status='stopping',stop_requested_at=coalesce(stop_requested_at,now()),
+            `update public.sandboxes set status='stopping',status_reason=case when $2::boolean then 'idle_paused' else status_reason end,stop_requested_at=coalesce(stop_requested_at,now()),
            lifecycle_generation=lifecycle_generation+1 where id=$1 and status in ('starting','ready','running')`,
-            [sandboxId],
+            [sandboxId, selection.operation === "stop" && selection.idleCheckpointRequest !== undefined],
           );
         return enqueue();
       });

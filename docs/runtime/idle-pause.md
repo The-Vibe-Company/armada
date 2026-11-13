@@ -1,6 +1,6 @@
 # Runtime idle pause (first delivery of #1562)
 
-The server checks enrolled Boat and Modal runtimes once per minute. The default
+The server checks enrolled Boat and Modal runtimes and eligible Docker hosts once per minute. The default
 quiet period is ten minutes, configured globally with
 `ARMADA_RUNTIME_IDLE_MINUTES` (positive whole milliseconds after conversion).
 There is no per-user setting. Native Boat and native Modal are not changed.
@@ -46,7 +46,7 @@ a provider-specific client request. Use a stable request UUID; identical replay
 returns the durable accepted outcome rather than starting another turn, even
 after the machine becomes running. Model/effort and the conversation stay pinned.
 Resume preserves the original absolute expiry and refuses activation after it.
-User-facing paused wording, Docker integration and #1532 parity rows remain follow-ups.
+Pause wording and #1532 debt rows are implemented. Provider staging verification remains outstanding.
 This PR does not claim the issue's end-to-end acceptance criteria are met.
 
 The coordinator must validate idle shutdown and conversation-preserving wake
@@ -68,3 +68,33 @@ before running the server version that writes the marker. It extends the
 existing stop-reason constraint and metadata RPC, retaining the same membership
 and owner/admin masking rules. Type generation was rerun; the generated RPC
 uses the shared DTO alias, so no generated-file change is necessary.
+
+
+## Docker idle checkpoint, host stop and ordinary-send wake
+
+Docker uses the same global idle delay and archived-terminal-turn detector, not
+an independent host timer. Automatic pause requires placement/bootstrap to be
+configured and a registered host daemon supporting resume (2.28.0 or later).
+Older/unknown daemons are skipped before checkpoint, never silently stopped.
+Pending commands, unknown task identity, active turns, application-secret taint
+and the existing archive bound remain conservative exclusions.
+
+The owner-authorized common checkpoint fences all runtime mutation admission.
+Only its synchronized current-epoch watermark allows the Docker host store to
+atomically mark an idle stop and enqueue the existing retained-container stop
+job. The normal host ACK publishes stopped; an ACK is not a runtime checkpoint.
+The Docker allocation, generation, workspace volume and absolute expiry stay
+unchanged. No provider adapter or Boat alias is introduced.
+
+Resume bootstrap embeds the sealed epoch/watermark/conversation proof in its
+new private runtime configuration. Readiness requires the guest to attest that
+restore, not just generic health or a host ACK. Ordinary send reuses this
+existing host resume path and continues the saved conversation. Pending wake
+retries keep the same UUID; same-epoch accepted prompt replay does not duplicate
+the turn. A UUID belonging to a previous prompt is rejected while stopped,
+rather than reactivated as new work; use a new UUID for a genuinely new message.
+Existing explicit unsealed manual stop/resume remains available.
+
+No Docker, Modal or Boat staging success is claimed by unit tests. Run the
+coordinator procedure in #1562 and retain provider compute/recall evidence.
+Native Boat/native Modal are not selected by this runtime worker.

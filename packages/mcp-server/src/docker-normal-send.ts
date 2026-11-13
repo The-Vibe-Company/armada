@@ -39,6 +39,7 @@ export function createDockerNormalSend(
         conversation_ids: string[];
         docker_snapshot_id?: string | null;
       },
+      wake?: () => Promise<typeof row>,
     ) {
       if (!options.enabled) throw failure("unavailable", "Docker send is not enabled.");
       if (row.owner_id !== caller.userId) throw failure("conflict", "Only the Docker sandbox owner can send prompts.");
@@ -54,8 +55,29 @@ export function createDockerNormalSend(
           (typeof args.conversation_id !== "string" || !uuid.test(args.conversation_id)))
       )
         throw failure("invalid_request", "Docker send requires request_id and prompt; model and effort remain pinned.");
-      if (!["ready", "running"].includes(row.status))
-        throw failure("conflict", "Docker sandbox must be running before send.");
+      // A saved prompt UUID is admission history, never a fresh wake instruction.
+      // In particular, retrying it after a later idle stop must not resume compute.
+      const previous = (
+        await sql.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
+          "select request_enc from public.runtime_commands where sandbox_id=$1 and request_id=$2",
+          [row.id, `docker_prompt_${args.request_id}`],
+        )
+      ).rows[0];
+      if (!["ready", "running"].includes(row.status)) {
+        if (previous || !["stopped", "starting"].includes(row.status) || !wake)
+          throw failure("conflict", "Docker sandbox must be running before send. Use a new request_id for a new turn.");
+        if (row.status === "starting") {
+          const pendingResume = await sql.query(
+            `select request_id from public.docker_host_jobs where bound_sandbox_id=$1 and request_id=$2
+             and bound_operation='resume' and bound_actor_id=$3 and outcome is distinct from 'failed'`,
+            [row.id, args.request_id, caller.userId],
+          );
+          if (!pendingResume.rows.length) throw failure("conflict", "Docker sandbox is already starting.");
+        }
+        row = await wake();
+        if (!["ready", "running"].includes(row.status))
+          throw failure("conflict", "Docker sandbox resume is still pending.");
+      }
       const pendingLaunch = await sql.query(
         `select sandbox_id from public.docker_launch_requests where sandbox_id=$1 and result_enc is null`,
         [row.id],
@@ -63,12 +85,6 @@ export function createDockerNormalSend(
       if (pendingLaunch.rows.length) throw failure("conflict", "Docker launch preparation is still pending.");
       await options.prepareMcp?.(caller, row.id);
       let conversationId = args.conversation_id ?? row.conversation_ids.at(-1);
-      const previous = (
-        await sql.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
-          "select request_enc from public.runtime_commands where sandbox_id=$1 and request_id=$2",
-          [row.id, `docker_prompt_${args.request_id}`],
-        )
-      ).rows[0];
       // Reconcile durable admission without requiring GitHub to be healthy again.
       // runtime.prompt still validates exact input, current owner and epoch.
       if (args.conversation_id === undefined && previous)

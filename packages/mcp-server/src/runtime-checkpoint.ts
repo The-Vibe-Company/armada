@@ -1,6 +1,7 @@
 import { decryptSecret, type Sql, VaultError } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import { createSqlData } from "./data.ts";
+import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 
@@ -21,15 +22,48 @@ const uuid = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/;
 /** Explicit quiescence, NOT compute stop or proof that the host retained its disk.
  * No locks cross RPC. Durable intent blocks sends; any uncertainty stays fenced.
  */
-export function createRuntimeCheckpoint(sql: Sql, key: string, commands: ReturnType<typeof createRuntimeCommands>) {
+export function createRuntimeCheckpoint(
+  sql: Sql,
+  key: string,
+  commands: ReturnType<typeof createRuntimeCommands>,
+  options: { docker?: boolean } = {},
+) {
+  type Target = {
+    id: string;
+    ownerId: string;
+    orgId: string;
+    provider: string;
+    harness: string;
+    status: string;
+    deletedAt: string | null;
+    stopRequestedAt?: string | null;
+    boatRuntime?: boolean;
+    runtimeTransport?: string;
+  };
+  const dockerTarget = async (caller: Caller, id: string): Promise<Target | null> => {
+    if (!options.docker) return null;
+    const target = (
+      await sql.query<{ org_id: string }>(
+        `select s.org_id from public.sandboxes s join public.members m on m.org_id=s.org_id and m.user_id=$2
+       where s.id=$1 and s.provider='docker' and s.owner_id=$2 and s.org_id=any($3::uuid[])`,
+        [id, caller.userId, caller.orgs.map((org) => org.orgId)],
+      )
+    ).rows[0];
+    if (!target) return null;
+    return createDockerSandboxService(sql, key).get({ userId: caller.userId, orgId: target.org_id }, id);
+  };
   const authorize = async (caller: Caller, id: string) => {
-    const row = await createSqlData(sql)(caller).sandboxes.get(id);
+    const row: Target | null = (await createSqlData(sql)(caller).sandboxes.get(id)) ?? (await dockerTarget(caller, id));
     if (
       !row ||
       row.ownerId !== caller.userId ||
-      (!row.boatRuntime && row.runtimeTransport !== "dialout") ||
-      !["boat", "modal"].includes(row.provider) ||
-      (row.harness !== "codex" && !(row.provider === "boat" && row.harness === "claude")) ||
+      !(
+        (row.provider === "docker" && options.docker) ||
+        ((row.boatRuntime || row.runtimeTransport === "dialout") && ["boat", "modal"].includes(row.provider))
+      ) ||
+      (row.harness !== "codex" &&
+        !(["boat", "docker"].includes(row.provider) && row.harness === "claude") &&
+        !(row.provider === "docker" && row.harness === "opencode")) ||
       row.deletedAt
     )
       throw new VaultError("not_found", "No owned runtime checkpoint target.");
@@ -133,8 +167,8 @@ export function createRuntimeCheckpoint(sql: Sql, key: string, commands: ReturnT
         if (!member) throw new VaultError("not_found", "Runtime checkpoint membership was revoked.");
         const target = (
           await tx.query(
-            "select id from public.sandboxes where id=$1 and owner_id=$2 and (boat_runtime or (provider='modal' and runtime_transport='dialout')) and deleted_at is null and not application_secret_tainted for update",
-            [sandbox.id, caller.userId],
+            "select id from public.sandboxes where id=$1 and owner_id=$2 and (boat_runtime or (provider='modal' and runtime_transport='dialout') or (provider='docker' and $3::boolean)) and deleted_at is null and not application_secret_tainted for update",
+            [sandbox.id, caller.userId, options.docker === true],
           )
         ).rows[0];
         if (!target) throw new VaultError("not_found", "Runtime checkpoint target changed.");

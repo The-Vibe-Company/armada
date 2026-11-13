@@ -1,4 +1,5 @@
 import { type AgentEvent, decryptSecret, isFinalPromptStatus, type Sql } from "@armada/core/server";
+import { dockerHostSupportsResume } from "./docker-host-version.ts";
 import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
 
 /** Unknown/truncated history cannot prove idle. Detached processes follow the timer,
@@ -22,7 +23,11 @@ export function createRuntimeIdle(
   sql: Sql,
   key: string,
   checkpoint: RuntimeCheckpoint,
-  options: { delayMs?: number; now?: () => number } = {},
+  options: {
+    delayMs?: number;
+    now?: () => number;
+    dockerStop?: (actor: { userId: string; orgId: string }, id: string, checkpointRequest: string) => Promise<unknown>;
+  } = {},
 ) {
   const delay = options.delayMs ?? 600_000;
   if (!Number.isSafeInteger(delay) || delay < 1) throw Error("Invalid runtime idle delay.");
@@ -70,22 +75,33 @@ export function createRuntimeIdle(
       next = now() + 60_000;
       const work = (async () => {
         const rows = (
-          await sql.query<{ id: string; owner_id: string; org_id: string; request_id: string | null }>(
-            `select s.id,s.owner_id,s.org_id,p.request_id::text from public.sandboxes s
+          await sql.query<{
+            id: string;
+            owner_id: string;
+            org_id: string;
+            provider: string;
+            daemon_version: string | null;
+            request_id: string | null;
+          }>(
+            `select s.id,s.owner_id,s.org_id,s.provider::text,h.daemon_version,p.request_id::text from public.sandboxes s
            join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
            join public.runtime_enrolments r on r.sandbox_id=s.id
            left join public.runtime_checkpoints p on p.sandbox_id=s.id and p.epoch=r.epoch
-           where (s.boat_runtime or (s.provider='modal' and s.runtime_transport='dialout'))
+           left join public.docker_hosts h on h.id=s.docker_host_id and h.installation_id=s.docker_installation_id
+             and h.hash is not null and h.revoked_at is null and h.registration_hash is null and h.draining_at is null
+             and exists(select 1 from public.members hm where hm.org_id=h.org_id and hm.user_id=h.owner_id)
+           where (s.boat_runtime or (s.provider='modal' and s.runtime_transport='dialout') or (s.provider='docker' and $2::boolean))
            and s.status in ('ready','running') and s.stop_requested_at is null
            and s.expires_at>now() and not s.application_secret_tainted
            and s.activity_lease_id is null and (s.reconcile_lease_until is null or s.reconcile_lease_until<now())
            order by case when $1::uuid is null or s.id>$1::uuid then 0 else 1 end,s.id limit 20`,
-            [cursor],
+            [cursor, options.dockerStop !== undefined],
           )
         ).rows;
         for (const row of rows) {
           signal.throwIfAborted();
           cursor = row.id;
+          if (row.provider === "docker" && !dockerHostSupportsResume(row.daemon_version)) continue;
           try {
             // Avoid creating an intent unless idle; the authoritative check repeats
             // under checkpoint's admission lock, closing the send/exec race.
@@ -97,6 +113,12 @@ export function createRuntimeIdle(
               (tx) => guard(tx, row.id),
             );
             signal.throwIfAborted();
+            if (row.provider === "docker") {
+              // Host store rechecks checkpoint identity under its own ordered locks
+              // and atomically commits both the idle marker and durable stop job.
+              await options.dockerStop?.({ userId: row.owner_id, orgId: row.org_id }, row.id, requestId);
+              continue;
+            }
             // Leave expiry unchanged. Existing lifecycle owns fenced provider shutdown.
             await sql.query(
               `update public.sandboxes set status='stopping',status_reason='idle_paused',stop_requested_at=coalesce(stop_requested_at,now()),
