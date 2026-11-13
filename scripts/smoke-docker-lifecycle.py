@@ -195,7 +195,7 @@ def main():
     parser.add_argument("--credential", required=True)
     parser.add_argument("--credential-version", type=int)
     parser.add_argument("--ssh", required=True, help="Existing SSH config name or user@host")
-    parser.add_argument("--image", required=True, help="Pulled Linux x64 glibc image@sha256 digest")
+    parser.add_argument("--image", required=True, help="Linux x64 glibc registry digest or host-approved full local image ID")
     parser.add_argument("--mcp", help="MCP connection UUID to deliver through the scoped runtime gateway")
     parser.add_argument("--mcp-tool", help="Safe read-only tool name on --mcp; its successful native tool result is required")
     parser.add_argument("--skills", action="append", default=[], help="Exact Skillpack pin to install and verify (repeatable)")
@@ -345,6 +345,7 @@ def main():
             launched = api("sandbox/launch", launch, normal=True)
             if (launched.get("sandbox", {}).get("id") != sandbox_id
                     or launched.get("sandbox", {}).get("provider") != "docker"
+                    or launched.get("sandbox", {}).get("image") != args.image
                     or not launched.get("promptId") or not launched.get("conversationId")):
                 raise RuntimeError("Normal launch outcome unknown; retain sandbox/request ID")
             launch_receipt = {"promptId": launched["promptId"], "conversationId": launched["conversationId"]}

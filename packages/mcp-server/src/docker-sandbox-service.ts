@@ -4,6 +4,7 @@ import {
   HARNESS_KINDS,
   HARNESSES,
   type Harness,
+  isDockerImageReference,
   resolveModelChoice,
   type SandboxRecord,
   type Sql,
@@ -89,9 +90,7 @@ function normalize(input: Reservation) {
   id(input.hostId);
   id(input.credentialId);
   if (
-    typeof input.image !== "string" ||
-    input.image.length > 512 ||
-    !/^[a-z0-9][a-z0-9./:_-]*@sha256:[0-9a-f]{64}$/.test(input.image) ||
+    !isDockerImageReference(input.image) ||
     !Number.isSafeInteger(input.credentialVersion) ||
     input.credentialVersion < 1 ||
     (input.model !== undefined && typeof input.model !== "string") ||

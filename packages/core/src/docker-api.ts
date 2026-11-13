@@ -120,7 +120,7 @@ export interface DockerLaunchRequest {
   org: string;
   provider: "docker";
   hostId: string;
-  /** A digest-pinned image; omitted means `DOCKER_DEFAULT_IMAGE`. */
+  /** Immutable registry digest or host-approved full local image ID; omitted means DOCKER_DEFAULT_IMAGE. */
   image?: string;
   harness: Harness;
   credentialId: string;

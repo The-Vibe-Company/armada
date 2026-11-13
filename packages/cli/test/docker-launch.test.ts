@@ -110,6 +110,8 @@ test("Docker incompatible or malformed options fail before HTTP", async () => {
   const calls: Request[] = [];
   for (const flags of [
     ["--agent", "unknown"],
+    ["--image", "sha256:short"],
+    ["--image", `sha256:${"A".repeat(64)}`],
     ["--skill", "foo@1"],
     ["--repo", "acme/web"],
     ["--connections", "a"],
@@ -158,7 +160,7 @@ test("Docker launch resolves an exact unique non-revoked host name and refuses m
     golden: null,
     runtime: { epoch: "1" },
   };
-  const namedArgs = args.map((arg) => (arg === host ? "office" : arg));
+  const namedArgs = args.map((arg) => (arg === host ? "office" : arg === image ? `sha256:${"b".repeat(64)}` : arg));
   const summary = {
     id: host,
     name: "office",
@@ -185,7 +187,7 @@ test("Docker launch resolves an exact unique non-revoked host name and refuses m
         });
       }
       launched++;
-      expect(await request.json()).toMatchObject({ hostId: host });
+      expect(await request.json()).toMatchObject({ hostId: host, image: `sha256:${"b".repeat(64)}` });
       return Response.json(receipt);
     });
     expect(result.code === 0).toBe(mode === "unique");
