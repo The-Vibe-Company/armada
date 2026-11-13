@@ -12,17 +12,11 @@ import { ResourceBrowser, type ResourceRow } from "@/components/resource-browser
 import { PanelSection, StateCell } from "@/components/state-cell";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { readDockerLaunchOption, readRecentHostImages, readSelectedDockerHosts } from "@/lib/data/docker-hosts";
+import { readDockerLaunchOption, readSelectedDockerHosts } from "@/lib/data/docker-hosts";
 import { launchAccounts, listSelectedAccounts } from "@/lib/data/model-accounts";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { type DockerHost, HOSTS_PATH, hostFact, hostName, hostState, sandboxCount } from "@/lib/docker-hosts";
-import {
-  type DockerLaunchOption,
-  dockerHarnesses,
-  dockerLaunchBlocker,
-  dockerUnavailable,
-  type HostImage,
-} from "@/lib/docker-launch";
+import { type DockerLaunchOption, dockerHarnesses, dockerLaunchBlocker, dockerUnavailable } from "@/lib/docker-launch";
 import type { LaunchAccounts } from "@/lib/model-accounts";
 import { relativeAge } from "@/lib/relative-time";
 import { type Bucket, ITEM_PARAM, sortResources } from "@/lib/resource-list";
@@ -66,18 +60,15 @@ export default async function HostsPage({ searchParams }: Props) {
   // revoked; the accounts only when some host could take a launch now.
   const live = hosts.list.hosts.some((host) => host.state !== "revoked");
   const launchable = hosts.list.placement && hosts.list.hosts.some((host) => host.state === "online");
-  const online = hosts.list.hosts.filter((host) => host.state === "online").map((host) => host.id);
-  const [option, accountList, images] = await Promise.all([
+  const [option, accountList] = await Promise.all([
     live ? readDockerLaunchOption() : null,
     launchable ? listSelectedAccounts() : null,
-    launchable ? readRecentHostImages(orgId, online) : new Map<string, HostImage[]>(),
   ]);
   const launch: Launch = {
     option,
     placement: hosts.list.placement,
     accounts: accountList ? launchAccounts(accountList, now) : { state: "unavailable", reason: "Not read." },
     unavailable: option ? dockerUnavailable(option) : [],
-    images,
     harnesses: dockerHarnesses(option),
   };
   const rows = sortResources(hosts.list.hosts.map((host) => row(host, orgId, isAdmin, now, launch)));
@@ -120,8 +111,6 @@ type Launch = {
   placement: boolean;
   accounts: LaunchAccounts;
   unavailable: { name: string; reason: string }[];
-  /** Images already used on each host, by host id. */
-  images: Map<string, HostImage[]>;
   /** The agents the server launches on Docker. */
   harnesses: { offered: Harness[]; initial: Harness | null };
 };
@@ -172,7 +161,6 @@ function row(
               hostName={name}
               accounts={launch.accounts}
               unavailable={launch.unavailable}
-              images={launch.images.get(host.id) ?? []}
               harnesses={launch.harnesses.offered}
               initialHarness={launch.harnesses.initial ?? "codex"}
             />

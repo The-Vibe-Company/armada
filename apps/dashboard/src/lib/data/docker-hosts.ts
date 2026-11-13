@@ -1,4 +1,3 @@
-import { DOCKER_DEFAULT_IMAGE } from "@armada/core";
 import { cache } from "react";
 import { ControlError, controlPost } from "@/lib/control";
 import {
@@ -9,15 +8,8 @@ import {
   parseDockerHostList,
   parseHostRegistration,
 } from "@/lib/docker-hosts";
-import {
-  type DockerLaunchOption,
-  dockerLaunchOption,
-  type HostImage,
-  LAUNCH_OPTIONS_ROUTE,
-  recentHostImages,
-} from "@/lib/docker-launch";
+import { type DockerLaunchOption, dockerLaunchOption, LAUNCH_OPTIONS_ROUTE } from "@/lib/docker-launch";
 import { mcpUrl } from "@/lib/env";
-import { createClient } from "@/lib/supabase/server";
 import { selectedOrganization } from "./selected-org";
 import { requireViewer } from "./viewer";
 
@@ -121,37 +113,3 @@ export const readDockerLaunchOption = cache(async (): Promise<DockerLaunchOption
     throw error;
   }
 });
-
-/** How many of a host's newest non-default Docker sandboxes are read to find the images it has already used. */
-const RECENT_SANDBOXES = 50;
-
-/**
- * The images already used for sandboxes on each of `hostIds` (#1507), newest first, for the launch dialog to propose.
- * One read per host, so a busy host never hides another's images. Read as the viewer: row level security returns
- * only the sandboxes they may see. A failed read proposes none for that host.
- */
-export async function readRecentHostImages(
-  orgId: string,
-  hostIds: readonly string[],
-): Promise<Map<string, HostImage[]>> {
-  const supabase = await createClient();
-  const entries = await Promise.all(
-    hostIds.map(async (hostId): Promise<[string, HostImage[]]> => {
-      const { data, error } = await supabase
-        .from("sandboxes")
-        .select("docker_host_id,docker_image")
-        .eq("org_id", orgId)
-        .eq("docker_host_id", hostId)
-        .not("docker_image", "is", null)
-        .neq("docker_image", DOCKER_DEFAULT_IMAGE)
-        .order("created_at", { ascending: false })
-        .limit(RECENT_SANDBOXES);
-      if (error) {
-        console.error(`Recent images of host ${hostId} could not be read: ${error.message}`);
-        return [hostId, []];
-      }
-      return [hostId, recentHostImages(data ?? [], hostId)];
-    }),
-  );
-  return new Map(entries);
-}

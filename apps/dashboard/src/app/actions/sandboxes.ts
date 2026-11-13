@@ -30,7 +30,7 @@ import {
 import { LAUNCH_KEY_FIELD } from "@/lib/launch-key";
 import { MACHINE_SIZE_LABELS, PROVIDER_REFUSALS, policyHasDefaults } from "@/lib/machine-size";
 import { checkAccountChoice } from "@/lib/model-accounts";
-import { launchArgs, type ModelFields, sendOverride } from "@/lib/model-choice";
+import { chosenConnection, launchArgs, type ModelFields, sendOverride } from "@/lib/model-choice";
 import { goldenRepositoryDirs, repositoryChoice } from "@/lib/repository-context";
 import { filtersToSearch } from "@/lib/sandbox-filters";
 import { createClient } from "@/lib/supabase/server";
@@ -185,6 +185,10 @@ export async function launchFromGolden(_previous: ActionResult | null, data: For
   });
   if (!parsed.ok) return fail(parsed.error);
   if (!isUuid(parsed.args.org)) return fail("That request is not valid.");
+  // A connection model is billed to its own connection: never run it on another account.
+  const connection = chosenConnection(modelFields(data));
+  if (connection !== null && connection !== formString(data, "credential"))
+    return fail("That model belongs to another connection. Choose the model again.");
   if (!(await isSelectedOrganization(parsed.args.org))) return fail("Switch to that organization first.");
   const blocker = await newWorkBlocker(parsed.args.org, parsed.args.provider);
   if (blocker) return fail(blocker);

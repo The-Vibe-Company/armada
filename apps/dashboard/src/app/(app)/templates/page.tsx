@@ -166,7 +166,9 @@ function row(item: TemplateItem, context: RowContext): ResourceRow & { bucket: B
     ? lookups.goldens.find((row) => row.id === definition.goldenId && row.provider === definition.provider)
     : undefined;
   const environment = definition
-    ? `${golden?.name ?? "Unavailable environment"} on ${PROVIDER_LABELS[definition.provider]}`
+    ? definition.provider === "docker"
+      ? `${definition.hostId} on Docker`
+      : `${golden?.name ?? "Unavailable environment"} on ${PROVIDER_LABELS[definition.provider]}`
     : null;
   const meta = definition
     ? [
@@ -211,6 +213,9 @@ function row(item: TemplateItem, context: RowContext): ResourceRow & { bucket: B
               </IngredientLink>
             ) : (
               <p className="text-sm">{environment}</p>
+            )}
+            {definition.provider === "docker" && (
+              <p className="break-all text-xs text-muted-foreground">{definition.image}</p>
             )}
           </PanelSection>
           <PanelSection title="Agent">
@@ -320,7 +325,12 @@ function row(item: TemplateItem, context: RowContext): ResourceRow & { bucket: B
           </dd>
         </dl>
       </PanelSection>
-      {context.manage && item.revision ? (
+      {context.manage && definition?.provider === "docker" && (
+        <p className="border-t pt-4 text-xs text-muted-foreground">
+          Manage this host-based template with the Armada CLI.
+        </p>
+      )}
+      {context.manage && item.revision && definition?.provider !== "docker" ? (
         <TemplateManage
           editing={{
             id: item.id,

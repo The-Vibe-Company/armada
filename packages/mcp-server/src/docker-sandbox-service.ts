@@ -4,9 +4,11 @@ import {
   HARNESS_KINDS,
   HARNESSES,
   type Harness,
+  isDockerImageReference,
   resolveModelChoice,
   type SandboxRecord,
   type Sql,
+  VaultError,
 } from "@armada/core";
 import { createDockerHostStore } from "./docker-host-store.ts";
 
@@ -88,9 +90,7 @@ function normalize(input: Reservation) {
   id(input.hostId);
   id(input.credentialId);
   if (
-    typeof input.image !== "string" ||
-    input.image.length > 512 ||
-    !/^[a-z0-9][a-z0-9./:_-]*@sha256:[0-9a-f]{64}$/.test(input.image) ||
+    !isDockerImageReference(input.image) ||
     !Number.isSafeInteger(input.credentialVersion) ||
     input.credentialVersion < 1 ||
     (input.model !== undefined && typeof input.model !== "string") ||
@@ -139,7 +139,9 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
     try {
       if (!sql.transaction) deny();
       return await sql.transaction(work);
-    } catch {
+    } catch (error) {
+      // Only trusted transaction-local placement policy raises public VaultError refusals.
+      if (error instanceof VaultError) throw error;
       return deny();
     }
   }
@@ -164,7 +166,7 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
     });
   }
   return {
-    reserve(actor: Actor, input: Reservation) {
+    reserve(actor: Actor, input: Reservation, authorize?: (tx: Sql) => Promise<void>) {
       return transaction(async (tx) => {
         if (options.enabled !== true) deny();
         actorInput(actor);
@@ -202,6 +204,7 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
           );
           if (!credential.rows.length) deny();
         }
+        await authorize?.(tx);
         const host =
           (
             await tx.query<{ installation_id: string }>(

@@ -1,6 +1,6 @@
 "use server";
 
-import type { Harness } from "@armada/core";
+import { DOCKER_DEFAULT_IMAGE, type Harness } from "@armada/core";
 import { revalidatePath } from "next/cache";
 import { type ActionResult, done, fail, formString, isUuid } from "@/lib/action";
 import { ControlError, controlPost } from "@/lib/control";
@@ -10,7 +10,6 @@ import { isSelectedOrganization, selectedOrganization } from "@/lib/data/selecte
 import { requireViewer } from "@/lib/data/viewer";
 import { connectedHostName, HOSTS_PATH, hostNameInput } from "@/lib/docker-hosts";
 import {
-  chosenImage,
   dockerHarnesses,
   dockerLaunchBlocker,
   dockerLaunchBody,
@@ -102,7 +101,7 @@ export async function revokeDockerHost(_previous: ActionResult | null, data: For
 }
 
 /**
- * Launches the chosen agent from a digest-pinned image on one of the organization's Docker hosts, as the signed-in viewer, then
+ * Launches the chosen agent from Armada's image on one of the organization's Docker hosts, as the signed-in viewer, then
  * answers the new sandbox's id for the dialog to follow. The form's request key is the server's `requestId`: a retry of the same form
  * (same choices) after an unanswered launch reuses it, so the server reconciles it instead of starting another.
  */
@@ -115,8 +114,6 @@ export async function launchOnDockerHost(
   const requestId = formString(data, LAUNCH_KEY_FIELD);
   if (!isUuid(org) || !isUuid(hostId) || !isUuid(requestId)) return fail("That request is not valid.");
   if (!(await isSelectedOrganization(org))) return fail("Switch to that organization first.");
-  const image = chosenImage(formString(data, "image_choice"), formString(data, "image"));
-  if (!image.ok) return fail(image.error);
   const [hosts, option, accounts] = await Promise.all([
     readSelectedDockerHosts(),
     readDockerLaunchOption(),
@@ -154,7 +151,8 @@ export async function launchOnDockerHost(
         dockerLaunchBody({
           org,
           hostId,
-          image: image.image,
+          // The person never chooses an image: Armada's official one (#1507, #1528).
+          image: DOCKER_DEFAULT_IMAGE,
           harness,
           credentialId: account.id,
           requestId,

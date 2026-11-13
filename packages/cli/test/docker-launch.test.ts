@@ -110,11 +110,13 @@ test("Docker incompatible or malformed options fail before HTTP", async () => {
   const calls: Request[] = [];
   for (const flags of [
     ["--agent", "unknown"],
+    ["--image", "sha256:short"],
+    ["--image", `sha256:${"A".repeat(64)}`],
     ["--skill", "foo@1"],
     ["--repo", "acme/web"],
     ["--connections", "a"],
     ["--credential-version", "0"],
-    ["--host", "not-a-host"],
+    ["--host", "x".repeat(65)],
     ["one", "two"],
   ]) {
     const result = await capture([...args, ...flags], async (request) => {
@@ -139,13 +141,26 @@ test("unknown Docker launch outcome retains a stable request UUID for exact retr
   }
 });
 
+test.each([{ flags: ["--skill", "team/notes@1.2.3", "--connections", host] }, { flags: ["--no-connections"] }])(
+  "Docker forwards existing skill/MCP flags %j",
+  async ({ flags }: { flags: readonly string[] }) => {
+    let body: Record<string, unknown> = {};
+    const result = await capture([...args, ...flags], async (request) => {
+      body = (await request.json()) as Record<string, unknown>;
+      return Response.json({ sandbox: { id: requestId, provider: "docker" }, golden: null, runtime: { epoch: "1" } });
+    });
+    expect(result.code).toBe(0);
+    expect(body.connections).toEqual(flags.includes("--no-connections") ? [] : [host]);
+    if (flags.includes("--skill")) expect(body.skills).toEqual(["team/notes@1.2.3"]);
+  },
+);
 test("Docker launch resolves an exact unique non-revoked host name and refuses missing/ambiguous names", async () => {
   const receipt = {
     sandbox: { id: requestId, provider: "docker", status: "running" },
     golden: null,
     runtime: { epoch: "1" },
   };
-  const namedArgs = args.map((arg) => (arg === host ? "office" : arg));
+  const namedArgs = args.map((arg) => (arg === host ? "office" : arg === image ? `sha256:${"b".repeat(64)}` : arg));
   const summary = {
     id: host,
     name: "office",
@@ -172,7 +187,7 @@ test("Docker launch resolves an exact unique non-revoked host name and refuses m
         });
       }
       launched++;
-      expect(await request.json()).toMatchObject({ hostId: host });
+      expect(await request.json()).toMatchObject({ hostId: host, image: `sha256:${"b".repeat(64)}` });
       return Response.json(receipt);
     });
     expect(result.code === 0).toBe(mode === "unique");

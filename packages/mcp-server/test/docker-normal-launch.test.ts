@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createSqlAuthStore } from "@armada/auth";
 import {
   type AgentEvent,
@@ -12,7 +12,15 @@ import {
   type SandboxListMetadata,
   type Sql,
 } from "@armada/core";
-import { createSqlVaultStore, decryptSecret, encryptSecret } from "@armada/core/server";
+import {
+  createSqlMcpLeasePort,
+  createSqlMcpRegistry,
+  createSqlVaultStore,
+  createTemplateService,
+  decryptSecret,
+  encryptSecret,
+  type TemplateRuntime,
+} from "@armada/core/server";
 import { dockerLaunchBody, launchedDockerSandbox } from "../../../apps/dashboard/src/lib/docker-launch.ts";
 import type { Caller } from "../src/caller.ts";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
@@ -20,12 +28,14 @@ import { createSqlData } from "../src/data.ts";
 import { createDockerBootstrapService } from "../src/docker-bootstrap-service.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
 import { createDockerNormalLaunch } from "../src/docker-normal-launch.ts";
+import { createDockerNormalSend } from "../src/docker-normal-send.ts";
 import { createDockerSandboxControls } from "../src/docker-sandbox-controls.ts";
 import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
+import { createRuntimeMcp } from "../src/runtime-mcp.ts";
 import { migratedDatabase } from "./migrated-database.ts";
 
 let db: Awaited<ReturnType<typeof migratedDatabase>>;
@@ -61,7 +71,7 @@ afterAll(async () => {
 
 // The real migrated boundary owns normal-launch sequencing and durable retries.
 // Existing private-lane tests own the individual host/runtime protocol matrices.
-async function fixture(options: { lifecycleGenerationAfterCreate?: number; harness?: Harness } = {}) {
+async function fixture(options: { lifecycleGenerationAfterCreate?: number; harness?: Harness; image?: string } = {}) {
   const orgId = randomUUID(),
     userId = randomUUID(),
     adminId = randomUUID(),
@@ -102,7 +112,7 @@ async function fixture(options: { lifecycleGenerationAfterCreate?: number; harne
     org: orgId,
     provider: "docker",
     hostId: host.hostId,
-    image: `worker@sha256:${"a".repeat(64)}`,
+    image: options.image ?? `worker@sha256:${"a".repeat(64)}`,
     harness: options.harness ?? "codex",
     credentialId,
     requestId: randomUUID(),
@@ -111,7 +121,8 @@ async function fixture(options: { lifecycleGenerationAfterCreate?: number; harne
   };
   let now = 0,
     drive = true,
-    failCreate = false;
+    failCreate = false,
+    malformedSkills = false;
   let session: Awaited<ReturnType<typeof authority.enrol>> | undefined;
   const receipt = { promptId: randomUUID(), conversationId: randomUUID(), status: "queued" };
   const jobs: unknown[] = [],
@@ -120,7 +131,8 @@ async function fixture(options: { lifecycleGenerationAfterCreate?: number; harne
     const job = await hosts.poll(host.hostToken, installationId);
     if (job) {
       jobs.push(job);
-      if (job.operation === "bootstrap") session = await authority.enrol(job.bootstrap.enrolmentToken);
+      if (job.operation === "bootstrap" || job.operation === "resume")
+        session = await authority.enrol(job.bootstrap.enrolmentToken);
       await hosts.complete(host.hostToken, installationId, {
         requestId: job.requestId,
         outcome: failCreate && job.operation === "create" ? "failed" : "completed",
@@ -144,7 +156,22 @@ async function fixture(options: { lifecycleGenerationAfterCreate?: number; harne
           body: {
             version: 1,
             requestId: command.requestId,
-            result: command.op === "health" ? { ready: true, generation: session.epoch } : receipt,
+            result:
+              command.op === "health"
+                ? { ready: true, generation: session.epoch, mcpVersion: 1, skillsVersion: 1 }
+                : command.op === "configureMcp"
+                  ? { revision: command.configuration.revision }
+                  : command.op === "installSkills"
+                    ? {
+                        receipts: command.input.references.map((reference) => ({
+                          reference,
+                          version: reference.split("@")[1],
+                          skillId: randomUUID(),
+                          checksum: malformedSkills ? "bad" : `sha256:${"a".repeat(64)}`,
+                          origin: "https://skillpack.app/v1",
+                        })),
+                      }
+                    : receipt,
           },
         });
       }
@@ -164,12 +191,29 @@ async function fixture(options: { lifecycleGenerationAfterCreate?: number; harne
       return credentials.resolve(...args);
     },
   };
+  function mcp(target = sql) {
+    const bridge = createRuntimeCommands(createRuntimeEnrolments(target, key), key, {
+      now: clock.now,
+      wait: (ms) => clock.wait(ms),
+    });
+    return createRuntimeMcp({ sql: target, key, origin: "https://armada.example", commands: bridge });
+  }
   function service(target = sql, enabled = true, timeoutMs = 10_000) {
-    return createDockerNormalLaunch(target, key, { enabled, credentials: resolver, bootstrap, clock, timeoutMs });
+    return createDockerNormalLaunch(target, key, {
+      enabled,
+      credentials: resolver,
+      bootstrap,
+      clock,
+      timeoutMs,
+      mcp: mcp(target),
+    });
   }
   return {
     actor,
     admin,
+    setMalformedSkills() {
+      malformedSkills = true;
+    },
     otherId,
     caller,
     body,
@@ -181,6 +225,7 @@ async function fixture(options: { lifecycleGenerationAfterCreate?: number; harne
     native,
     receipt,
     service,
+    mcp,
     step,
     setDrive(value: boolean) {
       drive = value;
@@ -688,4 +733,356 @@ test.each(["claude", "opencode"] as const)("normal Docker launch selects and boo
   expect(f.native).toContainEqual(
     expect.objectContaining({ op: "prompt", input: expect.objectContaining({ harness }) }),
   );
+});
+
+test("normal Docker launch persists and dispatches a full local image ID without rewriting it as a registry digest", async () => {
+  const image = `sha256:${"b".repeat(64)}`;
+  const f = await fixture({ image });
+  const { prompt: _, ...body } = f.body;
+  const result = await f.service().launch(f.caller, body);
+  expect(result.sandbox.image).toBe(image);
+  expect(f.jobs[0]).toMatchObject({ operation: "create", request: { image } });
+  expect((await f.service().launch(f.caller, body)).sandbox.image).toBe(image);
+  expect(f.jobs).toHaveLength(2);
+  await rejected(f.service().launch(f.caller, { ...body, image: `sha256:${"c".repeat(64)}` }), "conflict");
+});
+
+async function defaultRemote(f: Awaited<ReturnType<typeof fixture>>) {
+  const registry = createSqlMcpRegistry(sql, key);
+  const connection = await registry.save(f.actor.userId, f.actor.orgId, {
+    name: "Docker remote",
+    scope: "personal",
+    transport: "http",
+    url: "https://upstream.example/mcp",
+    authType: "none",
+  });
+  await db.query("update public.mcp_grants set status='connected' where connection_id=$1", [connection.id]);
+  await registry.metadata(f.actor.userId, f.actor.orgId, connection.id, { defaultForLaunch: true });
+  return connection;
+}
+
+test("Docker freezes org/personal skill defaults and MCP defaults, verifies receipts and configures the epoch before first prompt", async () => {
+  const f = await fixture(),
+    remote = await defaultRemote(f);
+  await db.query("insert into public.org_skill_defaults(org_id,skills) values($1,$2::text::jsonb)", [
+    f.actor.orgId,
+    JSON.stringify(["catalog/org@1.0.0"]),
+  ]);
+  await db.query("insert into public.personal_skill_defaults(user_id,skills) values($1,$2::text::jsonb)", [
+    f.actor.userId,
+    JSON.stringify(["catalog/notes@1.0.0"]),
+  ]);
+  const body = { ...f.body, skills: ["catalog/notes@2.0.0"] };
+  f.setDrive(false);
+  await rejected(f.service(sql, true, 250).launch(f.caller, body), "unavailable");
+  await db.query("update public.org_skill_defaults set skills='[]' where org_id=$1", [f.actor.orgId]);
+  await createSqlMcpRegistry(sql, key).metadata(f.actor.userId, f.actor.orgId, remote.id, { defaultForLaunch: false });
+  f.setDrive(true);
+  const launched = await f.service().launch(f.caller, body);
+  const native = f.native as import("@armada/agent-runtime").RunnerRequest[];
+  const install = native.find((request) => request.op === "installSkills");
+  expect(install).toMatchObject({ input: { references: ["catalog/org@1.0.0", "catalog/notes@2.0.0"] } });
+  const configuration = native.find((request) => request.op === "configureMcp");
+  if (configuration?.op !== "configureMcp") throw Error("missing native MCP configuration");
+  expect(Object.keys(configuration.configuration.servers)).toEqual([`armada_${remote.id.replaceAll("-", "_")}`]);
+  expect(native.indexOf(install!)).toBeLessThan(native.findIndex((request) => request.op === "prompt"));
+  expect(native.indexOf(configuration)).toBeLessThan(native.findIndex((request) => request.op === "prompt"));
+  const stored = (
+    await db.query<{ skills: { reference: string; checksum: string }[] }>(
+      "select skills from public.sandboxes where id=$1",
+      [launched.sandbox.id],
+    )
+  ).rows[0];
+  expect(stored?.skills.map((receipt) => receipt.reference)).toEqual(["catalog/org@1.0.0", "catalog/notes@2.0.0"]);
+  expect(stored?.skills.every((receipt) => /^sha256:[a-f0-9]{64}$/.test(receipt.checksum))).toBe(true);
+  const server = Object.values(configuration.configuration.servers)[0];
+  if (server?.type !== "http") throw Error("missing gateway transport");
+  const hash = createHash("sha256")
+    .update(server.headers?.Authorization?.slice(7) ?? "")
+    .digest("hex");
+  const leases = createSqlMcpLeasePort(sql);
+  expect(await leases.validate(hash, "tools")).toMatchObject({ sandbox_id: launched.sandbox.id });
+  await db.query("update public.mcp_actor_epochs set epoch=epoch+1 where org_id=$1 and user_id=$2", [
+    f.actor.orgId,
+    f.admin.userId,
+  ]);
+  expect(await leases.validate(hash, "tools")).toBeNull();
+  await expect(f.service().launch(f.caller, { ...body, connections: [] })).rejects.toMatchObject({ code: "conflict" });
+});
+
+test("Docker never admits the first prompt after an invalid skill receipt", async () => {
+  const f = await fixture();
+  f.setMalformedSkills();
+  await rejected(
+    f.service().launch(f.caller, { ...f.body, skills: ["catalog/notes@1.0.0"], connections: [] }),
+    "unavailable",
+  );
+  expect(f.native.some((request) => (request as { op: string }).op === "prompt")).toBe(false);
+  const row = (
+    await db.query<{ skills: unknown[] }>("select skills from public.sandboxes where id=$1", [f.body.requestId])
+  ).rows[0];
+  expect(row?.skills).toEqual([]);
+});
+
+test("Docker re-prepares bound MCP grants before follow-up and after same-host resume, revoking the old epoch lease", async () => {
+  const f = await fixture(),
+    remote = await defaultRemote(f);
+  await f.service().launch(f.caller, f.body);
+  const native = f.native as import("@armada/agent-runtime").RunnerRequest[];
+  const configured = () => native.filter((request) => request.op === "configureMcp");
+  const leaseHash = (request: (typeof native)[number]) => {
+    if (request.op !== "configureMcp") throw Error("missing config");
+    const server = Object.values(request.configuration.servers)[0];
+    if (server?.type !== "http") throw Error("missing remote");
+    return createHash("sha256")
+      .update(server.headers?.Authorization?.slice(7) ?? "")
+      .digest("hex");
+  };
+  const first = leaseHash(configured()[0]!);
+  await createSqlMcpLeasePort(sql).invalidateSandbox(f.body.requestId);
+  const send = createDockerNormalSend(sql, key, { enabled: true, clock: f.clock, prepareMcp: f.mcp().prepare });
+  await send.send(
+    f.caller,
+    { request_id: randomUUID(), prompt: "follow up" },
+    {
+      id: f.body.requestId,
+      org_id: f.actor.orgId,
+      owner_id: f.actor.userId,
+      status: "running",
+      conversation_ids: [f.receipt.conversationId],
+    },
+  );
+  expect(configured()).toHaveLength(2);
+  const second = leaseHash(configured()[1]!);
+  expect(second).not.toBe(first);
+  expect(await createSqlMcpLeasePort(sql).validate(first, "tools")).toBeNull();
+  const controls = createDockerSandboxControls(sql, key, {
+    clock: f.clock,
+    resume: bootstrap,
+    prepareMcp: f.mcp().prepare,
+  });
+  await controls.invoke(f.caller, "stop", { id: f.body.requestId, request_id: randomUUID() });
+  const resumed = await controls.invoke(f.caller, "resume", { id: f.body.requestId, request_id: randomUUID() });
+  expect(resumed).toEqual({ handled: true, result: { id: f.body.requestId, status: "ready" } });
+  expect(configured()).toHaveLength(3);
+  expect(await createSqlMcpLeasePort(sql).validate(second, "tools")).toBeNull();
+  const newest = leaseHash(configured()[2]!);
+  expect(await createSqlMcpLeasePort(sql).validate(newest, "tools")).toMatchObject({
+    sandbox_id: f.body.requestId,
+    connection_id: remote.id,
+  });
+  await hosts.revoke(f.admin, f.hostId);
+  expect(await createSqlMcpLeasePort(sql).validate(newest, "tools")).toBeNull();
+});
+
+test("legacy Docker claims without preparation keep their original hash and do not acquire later defaults", async () => {
+  const f = await fixture();
+  f.setDrive(false);
+  await rejected(f.service(sql, true, 250).launch(f.caller, f.body), "unavailable");
+  const row = (
+    await db.query<{ request_enc: Uint8Array<ArrayBuffer>; request_hash: string }>(
+      "select request_enc,request_hash from public.docker_launch_requests where sandbox_id=$1",
+      [f.body.requestId],
+    )
+  ).rows[0];
+  if (!row) throw Error("missing original claim");
+  const manifest = JSON.parse(await decryptSecret(row.request_enc, key));
+  delete manifest.preparation;
+  await db.query("update public.docker_launch_requests set request_enc=$2 where sandbox_id=$1", [
+    f.body.requestId,
+    await encryptSecret(JSON.stringify(manifest), key),
+  ]);
+  await db.query("insert into public.personal_skill_defaults(user_id,skills) values($1,$2::text::jsonb)", [
+    f.actor.userId,
+    JSON.stringify(["catalog/later@1.0.0"]),
+  ]);
+  f.setDrive(true);
+  expect((await f.service().launch(f.caller, f.body)).sandbox.id).toBe(f.body.requestId);
+  expect(f.native.some((request) => (request as { op: string }).op === "installSkills")).toBe(false);
+  expect(
+    (
+      await db.query<{ request_hash: string }>(
+        "select request_hash from public.docker_launch_requests where sandbox_id=$1",
+        [f.body.requestId],
+      )
+    ).rows[0]?.request_hash,
+  ).toBe(row.request_hash);
+});
+
+test("Docker honors frozen launch pins without re-merging later skill defaults", async () => {
+  for (const explicit of [[], ["catalog/frozen@1.0.0"]]) {
+    const f = await fixture();
+    await db.query("insert into public.personal_skill_defaults(user_id,skills) values($1,$2::text::jsonb)", [
+      f.actor.userId,
+      JSON.stringify(["catalog/later@2.0.0"]),
+    ]);
+    const launched = await f.service().launch(f.caller, { ...f.body, skills: explicit, skipSkillDefaults: true });
+    expect(launched.sandbox.skills?.map((receipt) => receipt.reference)).toEqual(explicit);
+    expect(f.native.filter((request) => (request as { op: string }).op === "installSkills")).toHaveLength(
+      explicit.length ? 1 : 0,
+    );
+  }
+});
+
+// Template placement owner: real admission + normal Docker reservation/commands; fake host/runtime
+// replies exercise transport only. Actual native execution remains the coordinator smoke's proof.
+test("Docker templates freeze admission pins, use normal launch, and replay one durable allocation", async () => {
+  const f = await fixture();
+  const templates = createTemplateService(sql, key);
+  const stores = createSqlData(sql)(f.caller);
+  await db.query("insert into public.personal_skill_defaults(user_id,skills) values($1,$2::text::jsonb)", [
+    f.actor.userId,
+    JSON.stringify(["catalog/frozen@1.0.0"]),
+  ]);
+  const created = await templates.command(f.caller, "create", {
+    org: f.actor.orgId,
+    scope: "personal",
+    name: "docker-template",
+    definition: {
+      provider: "docker",
+      hostId: f.hostId,
+      image: f.body.image,
+      harness: "codex",
+      modelAccount: { id: f.body.credentialId, version: 2 },
+    },
+  });
+  const id = (created.item as { id: string }).id;
+  let dispatches = 0,
+    allocations = 0,
+    starts = 0;
+  const runtime: TemplateRuntime = {
+    stores: { goldens: stores.goldens, sandboxes: stores.sandboxes, credentials },
+    provider: async () => {
+      throw Error("Docker cannot resolve a golden provider");
+    },
+    beforeDockerReserve: async (tx, sandboxId) => {
+      allocations++;
+      expect((await tx.query("select id from sandboxes where id=$1", [sandboxId])).rows).toHaveLength(0);
+    },
+    beforeDockerStart: async () => {
+      starts++;
+    },
+    launchDocker: async (body, admission) => {
+      dispatches++;
+      await db.query("update public.personal_skill_defaults set skills=$2::text::jsonb where user_id=$1", [
+        f.actor.userId,
+        JSON.stringify(["catalog/changed@2.0.0"]),
+      ]);
+      f.body.requestId = body.requestId as typeof f.body.requestId;
+      return f.service().launch(f.caller, body, admission);
+    },
+  };
+  const input = { org: f.actor.orgId, id, requestKey: "frozen-docker", prompt: f.body.prompt };
+  const result = await templates.command(f.caller, "launch", input, runtime);
+  expect(result).toMatchObject({
+    state: "succeeded",
+    provider: "docker",
+    promptId: f.receipt.promptId,
+    manifest: {
+      golden: null,
+      host: { installationId: f.installationId, ownerId: f.admin.userId },
+      resolvedSkills: ["catalog/frozen@1.0.0"],
+      skillReceipts: [{ reference: "catalog/frozen@1.0.0" }],
+    },
+  });
+  expect(
+    (await db.query("select golden_operation_fence_id from template_launch_requests where id=$1", [result.requestId]))
+      .rows,
+  ).toEqual([{ golden_operation_fence_id: null }]);
+  expect(allocations).toBe(1);
+  expect(starts).toBeGreaterThan(0);
+  expect(await counts(f)).toMatchObject({ sandboxes: 1, claims: 1, jobs: 2 });
+  expect(await templates.command(f.caller, "launch", input, runtime)).toEqual(result);
+  expect(dispatches).toBe(1);
+});
+
+test("Docker template placement refuses inaccessible, revoked and replaced host identities before reservation", async () => {
+  for (const change of ["revoked", "replaced", "issuer_removed"] as const) {
+    const f = await fixture();
+    const templates = createTemplateService(sql, key);
+    const stores = createSqlData(sql)(f.caller);
+    const definition = { provider: "docker", hostId: f.hostId, image: f.body.image, harness: "codex" };
+    await expect(
+      templates.command(f.caller, "create", {
+        org: f.actor.orgId,
+        scope: "personal",
+        name: "inaccessible",
+        definition: { ...definition, hostId: randomUUID() },
+      }),
+    ).rejects.toThrow("environment_unavailable");
+    const created = await templates.command(f.caller, "create", {
+      org: f.actor.orgId,
+      scope: "personal",
+      name: "host-identity",
+      definition,
+    });
+    const runtime: TemplateRuntime = {
+      stores: { goldens: stores.goldens, sandboxes: stores.sandboxes, credentials },
+      provider: async () => {
+        throw Error("Docker cannot resolve a golden provider");
+      },
+      launchDocker: async (body, admission) => {
+        if (change === "revoked") await db.query("update docker_hosts set revoked_at=now() where id=$1", [f.hostId]);
+        if (change === "replaced")
+          await db.query("update docker_hosts set installation_id=$2 where id=$1", [f.hostId, randomUUID()]);
+        if (change === "issuer_removed")
+          await db.query("delete from members where org_id=$1 and user_id=$2", [f.actor.orgId, f.admin.userId]);
+        f.body.requestId = body.requestId as typeof f.body.requestId;
+        return f.service().launch(f.caller, body, admission);
+      },
+    };
+    const result = await templates.command(
+      f.caller,
+      "launch",
+      {
+        org: f.actor.orgId,
+        id: (created.item as { id: string }).id,
+        requestKey: change,
+        prompt: f.body.prompt,
+      },
+      runtime,
+    );
+    expect(result.state).toBe("failed");
+    expect(await counts(f)).toEqual({ sandboxes: 0, claims: 0, jobs: 0, commands: 0 });
+    if (change === "replaced") expect(result.reason).toBe("environment_binding_changed");
+  }
+});
+
+test("a lost Docker template response retains one reconciling claim and never redispatches its key", async () => {
+  const f = await fixture();
+  const templates = createTemplateService(sql, key);
+  const stores = createSqlData(sql)(f.caller);
+  const created = await templates.command(f.caller, "create", {
+    org: f.actor.orgId,
+    scope: "personal",
+    name: "lost-response",
+    definition: { provider: "docker", hostId: f.hostId, image: f.body.image, harness: "codex" },
+  });
+  let dispatches = 0;
+  const runtime: TemplateRuntime = {
+    stores: { goldens: stores.goldens, sandboxes: stores.sandboxes, credentials },
+    provider: async () => {
+      throw Error("Docker cannot resolve a golden provider");
+    },
+    launchDocker: async (body, admission) => {
+      dispatches++;
+      f.body.requestId = body.requestId as typeof f.body.requestId;
+      await f.service().launch(f.caller, body, admission);
+      throw Error("response lost after actual normal launch committed");
+    },
+  };
+  const input = {
+    org: f.actor.orgId,
+    id: (created.item as { id: string }).id,
+    requestKey: "lost-response",
+    prompt: f.body.prompt,
+  };
+  const result = await templates.command(f.caller, "launch", input, runtime);
+  expect(result).toMatchObject({ state: "reconciling", id: f.body.requestId });
+  expect(await templates.command(f.caller, "launch", input, runtime)).toMatchObject({
+    state: "reconciling",
+    id: f.body.requestId,
+  });
+  expect(dispatches).toBe(1);
+  expect(await counts(f)).toMatchObject({ sandboxes: 1, claims: 1, jobs: 2 });
 });

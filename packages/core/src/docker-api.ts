@@ -102,6 +102,7 @@ export interface LaunchOptionsResponse {
     githubVersion: number;
     mcpVersion: number;
     skillsVersion?: number;
+    workspaceVersion?: number;
     controlsVersion?: number;
     enabled: boolean;
   };
@@ -119,7 +120,7 @@ export interface DockerLaunchRequest {
   org: string;
   provider: "docker";
   hostId: string;
-  /** A digest-pinned image; omitted means `DOCKER_DEFAULT_IMAGE`. */
+  /** Immutable registry digest or host-approved full local image ID; omitted means DOCKER_DEFAULT_IMAGE. */
   image?: string;
   harness: Harness;
   credentialId: string;
@@ -130,6 +131,9 @@ export interface DockerLaunchRequest {
   reasoningEffort?: string;
   ttlSeconds?: number;
   visibility?: "private";
+  skills?: string[];
+  connections?: string[];
+  skipSkillDefaults?: boolean;
 }
 export interface DockerSandboxRecord extends Omit<SandboxRecord, "provider" | "goldenId" | "harness"> {
   provider: "docker";

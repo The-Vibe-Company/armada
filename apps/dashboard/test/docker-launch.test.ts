@@ -1,9 +1,6 @@
 import { expect, test } from "bun:test";
-import { DOCKER_DEFAULT_IMAGE } from "@armada/core";
 import { launchProviderOptions } from "../../../packages/mcp-server/src/launch-options.ts";
 import {
-  checkImage,
-  chosenImage,
   DOCKER_CAPABILITIES,
   dockerHarnesses,
   dockerLaunchBlocker,
@@ -11,10 +8,8 @@ import {
   dockerLaunchOption,
   dockerSandboxControls,
   dockerUnavailable,
-  imageLabel,
   launchedDockerSandbox,
   preferredHarness,
-  recentHostImages,
 } from "../src/lib/docker-launch.ts";
 
 const ORG = "00000000-0000-4000-8000-000000000010";
@@ -86,52 +81,6 @@ test("what Docker cannot do yet is listed with the server's reason, or a plain d
   expect(unavailable).toContainEqual({ name: "Follow-up messages", reason: "Not available on Docker hosts yet." });
   expect(unavailable.map((item) => item.name)).not.toContain("Stop");
   expect(unavailable.map((item) => item.name)).not.toContain("Launch");
-});
-
-test("only a digest-pinned image is accepted", () => {
-  expect(checkImage(` ${DIGEST} `)).toEqual({ ok: true, image: DIGEST });
-  expect(checkImage(`ghcr.io/org/image:tag@sha256:${"a".repeat(64)}`).ok).toBe(true);
-  for (const bad of ["buildpack-deps:bookworm-curl", `x@sha256:${"a".repeat(63)}`, `x y@sha256:${"a".repeat(64)}`, ""])
-    expect(checkImage(bad).ok).toBe(false);
-});
-
-test("the dialog launches Armada's default image unless a custom digest-pinned image is chosen", () => {
-  expect(chosenImage("default", "")).toEqual({ ok: true, image: DOCKER_DEFAULT_IMAGE });
-  expect(chosenImage("default", "ignored")).toEqual({ ok: true, image: DOCKER_DEFAULT_IMAGE });
-  expect(chosenImage("custom", ` ${DIGEST} `)).toEqual({ ok: true, image: DIGEST });
-  expect(chosenImage("custom", "").ok).toBe(false);
-  expect(chosenImage("other", DIGEST).ok).toBe(false);
-  expect(chosenImage("", "")).toEqual({ ok: true, image: DOCKER_DEFAULT_IMAGE });
-  expect(chosenImage("", DIGEST)).toEqual({ ok: true, image: DIGEST });
-  expect(checkImage(DOCKER_DEFAULT_IMAGE).ok).toBe(true);
-});
-
-test("the dialog proposes each image already used on the host once, newest first, by a readable name", () => {
-  const other = `ghcr.io/acme/worker:2@sha256:${"b".repeat(64)}`;
-  const rows = [
-    { docker_host_id: HOST, docker_image: DIGEST },
-    { docker_host_id: HOST, docker_image: DOCKER_DEFAULT_IMAGE },
-    { docker_host_id: ORG, docker_image: `elsewhere@sha256:${"c".repeat(64)}` },
-    { docker_host_id: HOST, docker_image: other },
-    { docker_host_id: HOST, docker_image: DIGEST },
-    { docker_host_id: HOST, docker_image: "not-pinned:latest" },
-    { docker_host_id: HOST, docker_image: null },
-  ];
-  expect(recentHostImages(rows, HOST)).toEqual([
-    { image: DIGEST, label: imageLabel(DIGEST) },
-    { image: other, label: `ghcr.io/acme/worker:2 (${"b".repeat(12)})` },
-  ]);
-  expect(imageLabel(`docker.io/library/debian@sha256:${"d".repeat(64)}`)).toBe(`debian (${"d".repeat(12)})`);
-  expect(imageLabel(`docker.io/acme/x@sha256:${"d".repeat(64)}`)).toBe(`acme/x (${"d".repeat(12)})`);
-  const many = Array.from({ length: 8 }, (_, i) => ({
-    docker_host_id: HOST,
-    docker_image: `img${i}@sha256:${"a".repeat(64)}`,
-  }));
-  expect(recentHostImages(many, HOST).map((item) => item.image)).toEqual(
-    many.slice(0, 5).map((row) => row.docker_image),
-  );
-  expect(chosenImage(other, "")).toEqual({ ok: true, image: other });
-  expect(chosenImage("evil@sha256:short", "").ok).toBe(false);
 });
 
 test("the dialog offers the agents the server launches on Docker, Codex chosen first when offered", () => {

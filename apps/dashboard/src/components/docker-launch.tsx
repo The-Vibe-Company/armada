@@ -18,19 +18,17 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { NativeSelect } from "@/components/ui/native-select";
 import { Textarea } from "@/components/ui/textarea";
 import type { ActionResult } from "@/lib/action";
-import { dockerLaunchKeyStorage, type HostImage, preferredHarness, UNKNOWN_DOCKER_LAUNCH } from "@/lib/docker-launch";
+import { dockerLaunchKeyStorage, preferredHarness, UNKNOWN_DOCKER_LAUNCH } from "@/lib/docker-launch";
 import { HARNESS_LABELS } from "@/lib/labels";
 import { LAUNCH_KEY_FIELD, type LaunchKey, launchKeyFor } from "@/lib/launch-key";
 import { accountProblem, accountsFor, type LaunchAccounts } from "@/lib/model-accounts";
 
 /**
- * Launch a sandbox on one Docker host (#1380): an agent the server runs on Docker (#1507) from Armada's default plain image (or a custom digest-pinned one
- * behind "Custom image…", #1507), with a model account and an optional task. A Docker host has no environment (golden) yet, so this launch starts from the host, not from an
+ * Launch a sandbox on one Docker host (#1380): an agent the server runs on Docker, from Armada's image, which the person never chooses (#1507,
+ * #1528), with a model account and an optional task. A Docker host has no environment (golden) yet, so this launch starts from the host, not from an
  * environment. What Docker cannot do yet is listed with the server's own reasons. A successful launch navigates to
  * the new sandbox.
  */
@@ -40,7 +38,6 @@ export function DockerLaunchDialog({
   hostName,
   accounts,
   unavailable,
-  images,
   harnesses,
   initialHarness,
 }: {
@@ -49,8 +46,6 @@ export function DockerLaunchDialog({
   hostName: string;
   accounts: LaunchAccounts;
   unavailable: { name: string; reason: string }[];
-  /** Images already used for sandboxes on this host, newest first, proposed after Armada's default. */
-  images: HostImage[];
   /** The agents the server launches on Docker; at least one (the launch is blocked otherwise). */
   harnesses: Harness[];
   initialHarness: Harness;
@@ -65,14 +60,15 @@ export function DockerLaunchDialog({
       <DialogContent className="max-h-[calc(100dvh-2rem)] gap-5 overflow-y-auto sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>Launch on {hostName}</DialogTitle>
-          <DialogDescription>An agent in a private sandbox, started from a plain image on this host.</DialogDescription>
+          <DialogDescription>
+            An agent in a private sandbox, started from Armada's image on this host.
+          </DialogDescription>
         </DialogHeader>
         <DockerLaunchForm
           orgId={orgId}
           hostId={hostId}
           accounts={accounts}
           unavailable={unavailable}
-          images={images}
           harnesses={harnesses}
           initialHarness={initialHarness}
         />
@@ -86,7 +82,6 @@ function DockerLaunchForm({
   hostId,
   accounts,
   unavailable,
-  images,
   harnesses,
   initialHarness,
 }: {
@@ -94,7 +89,6 @@ function DockerLaunchForm({
   hostId: string;
   accounts: LaunchAccounts;
   unavailable: { name: string; reason: string }[];
-  images: HostImage[];
   harnesses: Harness[];
   initialHarness: Harness;
 }) {
@@ -109,10 +103,6 @@ function DockerLaunchForm({
   const harness = harnesses.includes(chosenHarness)
     ? chosenHarness
     : preferredHarness(harnesses, initialHarness, hasUsableAccount);
-  const [selectedImage, setImageChoice] = useState("default");
-  // A refresh can drop the chosen image from the list: the select then shows, and launches, the default.
-  const imageChoice =
-    selectedImage === "custom" || images.some((item) => item.image === selectedImage) ? selectedImage : "default";
   const root = useRef<HTMLDivElement>(null);
   const storage = dockerLaunchKeyStorage(hostId);
   const router = useRouter();
@@ -195,46 +185,10 @@ function DockerLaunchForm({
             placeholder="What should the agent do? Leave empty to start idle."
           />
         </div>
-        <div className="space-y-2">
-          <Label htmlFor={`${id}-image-choice`}>Image</Label>
-          <NativeSelect
-            id={`${id}-image-choice`}
-            name="image_choice"
-            value={imageChoice}
-            onChange={(event) => setImageChoice(event.target.value)}
-            aria-describedby={`${id}-image-hint`}
-          >
-            <option value="default">Armada default (Debian, recommended)</option>
-            {images.length > 0 && (
-              <optgroup label="Used on this host">
-                {images.map((item) => (
-                  <option key={item.image} value={item.image}>
-                    {item.label}
-                  </option>
-                ))}
-              </optgroup>
-            )}
-            <option value="custom">Custom image…</option>
-          </NativeSelect>
-          {imageChoice === "custom" ? (
-            <Input
-              id={`${id}-image`}
-              name="image"
-              required
-              aria-label="Custom image"
-              spellCheck={false}
-              autoComplete="off"
-              className="font-mono text-xs"
-              placeholder="repository@sha256:…"
-              aria-describedby={`${id}-image-hint`}
-            />
-          ) : null}
-          <p id={`${id}-image-hint`} className="text-xs text-muted-foreground">
-            {imageChoice === "custom"
-              ? "A plain Linux image pinned by digest, with HTTPS CA roots. Armada installs its runtime and the agent in it."
-              : "Armada installs its runtime and the agent in it. The host fetches the image if it does not have it yet."}
-          </p>
-        </div>
+        <p className="text-sm">
+          <span className="text-muted-foreground">Image:</span> Armada default{" "}
+          <span className="text-muted-foreground">(fetched by your host the first time)</span>
+        </p>
         {harnesses.length > 1 ? (
           <Segmented
             legend="Agent"
@@ -270,16 +224,15 @@ function DockerLaunchForm({
 }
 
 /**
- * What a launch is doing while it waits (#1507): the host fetches the image first if it does not have it yet, which can
- * take a few minutes the first time.
+ * What a launch is doing while it waits (#1507): the host fetches Armada's image first if it does not have it yet,
+ * which can take a few minutes the first time. Always rendered, so a screen reader announces the text when it appears.
  */
 function LaunchProgress() {
   const { pending } = useFormStatus();
-  // Always rendered, so a screen reader announces the text when it appears.
   return (
     <p role="status" className="mr-auto text-xs text-muted-foreground" data-docker-launch-progress>
       {pending
-        ? "Preparing the image on your host and starting the sandbox… The first launch with an image can take a few minutes."
+        ? "Preparing the image on your host and starting the sandbox… The first launch can take a few minutes."
         : null}
     </p>
   );

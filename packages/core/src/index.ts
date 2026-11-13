@@ -25,16 +25,20 @@ export * from "./connections.ts";
 export { HARNESSES, type Harness, type Visibility } from "./contract.ts";
 export type { CredentialBinding } from "./credentials.ts";
 export {
+  type AccountConnectionModels,
   CODEX_AUTH_ENV,
   CODEX_AUTH_PATH,
+  type ConnectionModelInfo,
   CREDENTIAL_KINDS,
   type CredentialReader,
   type CredentialSource,
+  connectionModels,
   credentialName,
   HARNESS_KINDS,
   type HarnessCredentials,
   harnessCredentials,
   type LaunchCredentialKind,
+  listConnectionModels,
   MAX_AUTH_FILE_LENGTH,
   MAX_SECRET_LENGTH,
   type ModalTokenPair,
@@ -98,6 +102,7 @@ export type {
   SandboxPlacementProviderId,
 } from "./docker-api.ts";
 export { DOCKER_DEFAULT_IMAGE } from "./docker-api.ts";
+export { DOCKER_LOCAL_IMAGE_LABELS, isDockerImageReference } from "./docker-image.ts";
 export {
   boundEventEntries,
   buildEventPage,
