@@ -526,6 +526,7 @@ function sandbox(
 
 let state = seed();
 let dockerHosts: Row[] | null = null;
+let accountListFailure: string | null = null;
 let sequence = 100;
 const sessions = new Map<string, string>();
 
@@ -1744,6 +1745,7 @@ const ISSUER = `http://127.0.0.1:${PORT}`;
 /** Pending browser sign-ins by state: the API, not the URL, knows which user and connection a state is for. */
 let failSandboxConnections = false;
 let failConnectionList = false;
+let mcpReadFailures: Partial<Record<"list" | "catalog" | "status", string>> = {};
 const pendingOAuth = new Map<string, { connection: string; user: string; code: string | null }>();
 
 function visibleConnections(orgId: string, userId: string): Row[] {
@@ -1958,6 +1960,10 @@ function mcpControl(operation: string, body: Row, userId: string | null): Respon
   if (operation === "oauth/callback") return oauthCallback(body, userId);
   const org = String(body.org ?? "");
   if (!isMember(org, userId)) return controlFail(403, "forbidden", "You are not a member of that organization.");
+  if (operation === "list" || operation === "catalog" || operation === "status") {
+    const failure = mcpReadFailures[operation];
+    if (failure) return controlFail(503, "unavailable", failure);
+  }
   if (operation === "list") {
     if (failConnectionList) return controlFail(503, "unavailable", "The registry is unavailable.");
     return json({ connections: visibleConnections(org, userId).map(connectionDto) });
@@ -2570,6 +2576,7 @@ function accounts(route: string, body: Row, request: Request): Response {
   if (!userId) return controlFail(401, "unauthorized", "Sign in again.");
   const model = (row: Row) => String(row.kind) in MODEL_KINDS;
   if (route === "creds/list") {
+    if (accountListFailure) return controlFail(503, "unavailable", accountListFailure);
     const org = state.orgs.find((row) => row.id === body.org && isMember(row.id, userId));
     // As the server: every kind of the scope, the Skillpack key (#957) as kind and dates only.
     const listed = (row: Row) => model(row) || row.kind === "skillpack";
@@ -2668,6 +2675,7 @@ function control(url: URL, body: Row): Response {
   if (url.pathname === "/__test/reset") {
     for (const release of state.routineCreateWaiters) release();
     state = seed();
+    accountListFailure = null;
     dockerHosts = Array.isArray(body.dockerHosts) ? body.dockerHosts : null;
     // Keep a visible header but make its current revision unreadable, as a partial control API read can be.
     if (body.missingTemplateRevision)
@@ -2685,6 +2693,7 @@ function control(url: URL, body: Row): Response {
     githubCliFlows.clear();
     failSandboxConnections = false;
     failConnectionList = false;
+    mcpReadFailures = {};
     failCatalog = false;
     failConnect = false;
     if (body.missingUsage) {
@@ -2950,6 +2959,8 @@ function control(url: URL, body: Row): Response {
     return json({ ok: true });
   }
   if (url.pathname === "/__test/accounts") {
+    if (body.listFailure !== undefined)
+      accountListFailure = typeof body.listFailure === "string" ? body.listFailure : null;
     if (body.legacy !== undefined) state.legacyAccounts = body.legacy === true;
     Object.assign(state.usage, (body.usage as Record<string, Row> | undefined) ?? {});
     if (body.authCapabilities !== undefined) state.authCapabilities = body.authCapabilities as Row | null;
@@ -3068,6 +3079,14 @@ function control(url: URL, body: Row): Response {
   }
   if (url.pathname === "/__test/fail-next-tool") {
     state.failNextTool = String(body.message);
+    return json({ ok: true });
+  }
+  if (url.pathname === "/__test/mcp-read-failure") {
+    const operation = body.operation;
+    if (operation !== "list" && operation !== "catalog" && operation !== "status")
+      return json({ error: "Unknown read" }, 400);
+    if (typeof body.message === "string") mcpReadFailures[operation] = body.message;
+    else delete mcpReadFailures[operation];
     return json({ ok: true });
   }
   if (url.pathname === "/__test/fail-connection-list") {
@@ -3236,6 +3255,21 @@ const server = Bun.serve({
         if (!caller || !isMember(body.org, caller))
           return controlFail(403, "forbidden", "Only organization members can list hosts.");
         return json({ placement: true, hosts: dockerHosts });
+      }
+      if (route === "launch/options" && dockerHosts !== null) {
+        if (!viewer(request)) return controlFail(401, "unauthorized", "Sign in again.");
+        return json({
+          providers: [
+            {
+              id: "docker",
+              enabled: true,
+              launchSources: ["image"],
+              harnesses: ["claude", "codex"],
+              capabilities: { launch: true, followupPrompts: true, stop: true, delete: true, status: true, logs: true },
+              unsupportedReasons: {},
+            },
+          ],
+        });
       }
       if (route === "auth/email/start") return json({ ok: true });
       if (route === "skillpack/catalog" || route === "skillpack/versions")

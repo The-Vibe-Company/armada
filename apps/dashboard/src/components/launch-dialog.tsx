@@ -2,21 +2,21 @@
 
 import type { Harness, MachineSize, MachineSizePolicy, SandboxPlacementProviderId } from "@armada/core";
 import { SANDBOX_PLACEMENT_LABELS as PROVIDER_LABELS } from "@armada/core";
-import {
-  ChevronDownIcon,
-  CircleAlertIcon,
-  FolderIcon,
-  PlugIcon,
-  RocketIcon,
-  ServerIcon,
-  WalletIcon,
-} from "lucide-react";
+import { CircleAlertIcon, FolderIcon, PlugIcon, RocketIcon, ServerIcon, WalletIcon } from "lucide-react";
 import Link from "next/link";
-import { Fragment, type ReactNode, type RefObject, useEffect, useId, useRef, useState } from "react";
+import { Fragment, type ReactNode, useEffect, useId, useRef, useState } from "react";
 import { launchFromDockerSnapshot } from "@/app/actions/docker-snapshots";
 import { launchFromGolden } from "@/app/actions/sandboxes";
 import { ActionForm, SubmitButton } from "@/components/action-form";
 import { ConnectionStatusBadge } from "@/components/connections";
+import {
+  LaunchAdvanced,
+  LaunchDialogContent,
+  LaunchDialogHeader,
+  LaunchFields,
+  LaunchTaskField,
+  useLaunchSurface,
+} from "@/components/launch-surface";
 import { MachineSizeField } from "@/components/machine-size-field";
 import { SubmitShortcut } from "@/components/mod-key";
 import { type ModelCatalog, ModelFields } from "@/components/model-fields";
@@ -24,19 +24,10 @@ import { SkillPicker } from "@/components/skill-picker";
 import { TemplateLaunchForm } from "@/components/templates";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
+import { Dialog, DialogTrigger } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
-import { Textarea } from "@/components/ui/textarea";
 import {
   CONNECTION_CHOICE_FIELD,
   launchBlocker,
@@ -57,7 +48,6 @@ import {
   type ModelAccount,
 } from "@/lib/model-accounts";
 import type { ConnectionChoices } from "@/lib/model-picker";
-import { isSubmitShortcut } from "@/lib/shortcut";
 import type { TemplateLaunchTarget } from "@/lib/template-launch";
 import { cn } from "@/lib/utils";
 
@@ -100,19 +90,9 @@ export function LaunchDialog(props: LaunchProps) {
           <RocketIcon /> Launch
         </Button>
       </DialogTrigger>
-      {/* Header and footer stay put; only the fields scroll, so Launch is always on screen. */}
-      <DialogContent
-        className="flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden p-0"
-        // The task comes first, even below the template choice: it is what every launch needs.
-        onOpenAutoFocus={(event) => {
-          const task = (event.target as HTMLElement | null)?.querySelector<HTMLElement>('textarea[name="prompt"]');
-          if (!task) return;
-          event.preventDefault();
-          task.focus();
-        }}
-      >
+      <LaunchDialogContent>
         <LaunchStart {...props} />
-      </DialogContent>
+      </LaunchDialogContent>
     </Dialog>
   );
 }
@@ -128,13 +108,15 @@ function LaunchStart(props: LaunchProps) {
   const template = templates.find((item) => item.id === start);
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <DialogHeader className="px-6 pt-6 pb-4 pr-12">
-        <DialogTitle className="truncate">Launch from {props.golden}</DialogTitle>
-        <DialogDescription>
-          On {PROVIDER_LABELS[props.provider]}
-          {template ? `, with ${template.name} (revision ${template.revision})` : ""}
-        </DialogDescription>
-      </DialogHeader>
+      <LaunchDialogHeader
+        title={`Launch from ${props.golden}`}
+        description={
+          <>
+            On {PROVIDER_LABELS[props.provider]}
+            {template ? `, with ${template.name} (revision ${template.revision})` : ""}
+          </>
+        }
+      />
       {/* Rendered once above either form, so changing it keeps the focus on it. */}
       {templates.length > 0 && (
         <div className="space-y-2 px-6 pb-4" data-launch-start>
@@ -186,7 +168,7 @@ function LaunchForm({
   const launchKey = useRef<LaunchKey | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [skills, setSkills] = useState<string[]>([]);
-  useVisibleViewport(root);
+  useLaunchSurface(root);
 
   useEffect(() => {
     const node = root.current;
@@ -197,14 +179,6 @@ function LaunchForm({
       event.preventDefault();
       event.stopPropagation();
     };
-    // ⌘↵ launches from any field, as the composer sends. It goes through the Launch button, so a held or pending
-    // launch (the button is disabled) is not submitted by the keyboard either.
-    const shortcut = (event: KeyboardEvent) => {
-      if (!isSubmitShortcut(event)) return;
-      event.preventDefault();
-      const button = node.querySelector<HTMLButtonElement>('button[type="submit"]');
-      if (button && !button.disabled) button.form?.requestSubmit(button);
-    };
     // Every submission carries a request key, kept while the choices stay the same: a retry after an unanswered
     // launch is followed to the sandbox it started instead of launching a second one.
     const keyed = (event: Event) => {
@@ -214,11 +188,9 @@ function LaunchForm({
     };
     node.addEventListener("reset", keep, true);
     node.addEventListener("formdata", keyed, true);
-    node.addEventListener("keydown", shortcut);
     return () => {
       node.removeEventListener("reset", keep, true);
       node.removeEventListener("formdata", keyed, true);
-      node.removeEventListener("keydown", shortcut);
     };
   }, []);
 
@@ -275,17 +247,8 @@ function LaunchForm({
         <input type="hidden" name="org" value={orgId} />
         {/* Untouched, or not listed: the launch names no connections and the server applies the defaults (#681). */}
         <input type="hidden" name={CONNECTION_CHOICE_FIELD} value={access.explicit ? "explicit" : "defaults"} />
-        <div data-launch-fields className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-6 pb-4">
-          <div className="space-y-2 pt-1">
-            <Label htmlFor={`${id}-prompt`}>Task</Label>
-            <Textarea
-              id={`${id}-prompt`}
-              name="prompt"
-              rows={4}
-              className="max-h-[40dvh] min-h-24"
-              placeholder="What should the agent do? Leave empty to start idle."
-            />
-          </div>
+        <LaunchFields>
+          <LaunchTaskField idPrefix={id} />
           <div className={cn("grid gap-4", repositories.length > 1 && "sm:grid-cols-2")}>
             <Segmented
               legend="Agent"
@@ -329,131 +292,68 @@ function LaunchForm({
               setArmadaAccess(false);
             }}
           />
-          <Collapsible
+          <LaunchAdvanced
             open={advancedOpen}
             onOpenChange={setAdvancedOpen}
-            data-launch-advanced
-            className="group rounded-md border"
-          >
-            {/* On a phone the summary wraps under the label: every default stays readable, none is cut off. */}
-            <CollapsibleTrigger asChild>
-              <Button
-                type="button"
-                variant="ghost"
-                className="flex h-auto w-full items-center justify-start gap-3 whitespace-normal rounded-md px-3 py-2.5 text-sm"
+            summary={
+              <span
+                data-launch-summary
+                className="flex min-w-0 flex-wrap items-center gap-1 text-xs text-muted-foreground sm:flex-1 sm:justify-end"
               >
-                <span className="flex min-w-0 flex-1 flex-col gap-0.5 sm:flex-row sm:items-center sm:gap-3">
-                  <span className="font-medium">Advanced</span>
-                  {/* Each default is its own chip; the hidden separators keep it one sentence when read aloud. */}
-                  <span
-                    data-launch-summary
-                    className="flex min-w-0 flex-wrap items-center gap-1 text-xs text-muted-foreground sm:flex-1 sm:justify-end"
-                  >
-                    {summary.map((fact, index) => (
-                      <Fragment key={fact.key}>
-                        {index > 0 && <span className="sr-only"> · </span>}
-                        <span
-                          data-launch-fact={fact.key}
-                          className="inline-flex max-w-full items-center gap-1 rounded-full border bg-background px-2 py-0.5 dark:bg-input/30 [&_svg]:size-3 [&_svg]:shrink-0"
-                        >
-                          <span aria-hidden="true" className="contents">
-                            {fact.icon}
-                          </span>
-                          <span className="truncate">{fact.text}</span>
-                        </span>
-                      </Fragment>
-                    ))}
-                  </span>
-                </span>
-                <ChevronDownIcon className="size-4 shrink-0 text-muted-foreground transition-transform motion-reduce:transition-none group-data-[state=open]:rotate-180" />
-              </Button>
-            </CollapsibleTrigger>
-            <CollapsibleContent forceMount className="space-y-4 border-t p-3 data-[state=closed]:hidden">
-              <SkillPicker orgId={orgId} value={skills} onChange={setSkills} />
-              {repositories.length === 1 && (
-                <RepositoryField idPrefix={id} repositories={repositories} onChange={setProject} />
-              )}
-              {provider !== "docker" && sizing && (
-                <MachineSizeField
-                  idPrefix={id}
-                  provider={provider}
-                  policy={sizing.policy}
-                  repositoryDir={project}
-                  onSize={setSize}
+                {summary.map((fact, index) => (
+                  <Fragment key={fact.key}>
+                    {index > 0 && <span className="sr-only"> · </span>}
+                    <span
+                      data-launch-fact={fact.key}
+                      className="inline-flex max-w-full items-center gap-1 rounded-full border bg-background px-2 py-0.5 dark:bg-input/30 [&_svg]:size-3 [&_svg]:shrink-0"
+                    >
+                      <span aria-hidden="true" className="contents">
+                        {fact.icon}
+                      </span>
+                      <span className="truncate">{fact.text}</span>
+                    </span>
+                  </Fragment>
+                ))}
+              </span>
+            }
+          >
+            <SkillPicker orgId={orgId} value={skills} onChange={setSkills} />
+            {repositories.length === 1 && (
+              <RepositoryField idPrefix={id} repositories={repositories} onChange={setProject} />
+            )}
+            {provider !== "docker" && sizing && (
+              <MachineSizeField
+                idPrefix={id}
+                provider={provider}
+                policy={sizing.policy}
+                repositoryDir={project}
+                onSize={setSize}
+              />
+            )}
+            {access.fields(id)}
+            <div className="space-y-1.5">
+              <Label htmlFor={`${id}-armada-access`} className="flex min-h-11 items-center gap-2">
+                <Checkbox
+                  id={`${id}-armada-access`}
+                  name="armada_access"
+                  checked={armadaAccess && canDelegate}
+                  onCheckedChange={(checked) => setArmadaAccess(checked === true)}
+                  disabled={!canDelegate}
+                  aria-describedby={`${id}-armada-access-hint`}
                 />
-              )}
-              {access.fields(id)}
-              <div className="space-y-1.5">
-                <Label htmlFor={`${id}-armada-access`} className="flex min-h-11 items-center gap-2">
-                  <Checkbox
-                    id={`${id}-armada-access`}
-                    name="armada_access"
-                    checked={armadaAccess && canDelegate}
-                    onCheckedChange={(checked) => setArmadaAccess(checked === true)}
-                    disabled={!canDelegate}
-                    aria-describedby={`${id}-armada-access-hint`}
-                  />
-                  Armada access
-                </Label>
-                <p id={`${id}-armada-access-hint`} className="text-xs text-pretty text-muted-foreground">
-                  {canDelegate
-                    ? "Let this private sandbox launch and manage up to 3 child sandboxes in this organization, using the selected snapshot and account."
-                    : "Choose Codex and an active account to enable Armada access."}
-                </p>
-              </div>
-            </CollapsibleContent>
-          </Collapsible>
-        </div>
+                Armada access
+              </Label>
+              <p id={`${id}-armada-access-hint`} className="text-xs text-pretty text-muted-foreground">
+                {canDelegate
+                  ? "Let this private sandbox launch and manage up to 3 child sandboxes in this organization, using the selected snapshot and account."
+                  : "Choose Codex and an active account to enable Armada access."}
+              </p>
+            </div>
+          </LaunchAdvanced>
+        </LaunchFields>
       </ActionForm>
     </div>
   );
-}
-
-/**
- * Keeps the dialog inside what the phone actually shows. An on-screen keyboard shrinks the visual viewport, while
- * `dvh` (iOS) still measures the layout viewport, so a centered dialog would put Launch under the keyboard. While
- * part of the layout viewport is hidden, the dialog is centered in the visible part and capped to its height, and
- * the focused field is scrolled into the fields' own region. Nothing changes while the whole viewport is visible.
- */
-function useVisibleViewport(root: RefObject<HTMLElement | null>) {
-  useEffect(() => {
-    const viewport = window.visualViewport;
-    const content = root.current?.closest<HTMLElement>('[data-slot="dialog-content"]');
-    const fields = root.current?.querySelector<HTMLElement>("[data-launch-fields]");
-    if (!viewport || !content || !fields) return;
-    const release = () => {
-      content.style.removeProperty("top");
-      content.style.removeProperty("max-height");
-      content.style.removeProperty("transition-property");
-      delete content.dataset.visibleViewport;
-    };
-    const fit = () => {
-      // A pinch zoom also shrinks the visual viewport; only a keyboard does so at scale 1.
-      if (viewport.scale > 1 || (window.innerHeight - viewport.height < 1 && viewport.offsetTop < 1)) return release();
-      // No easing: the bounds apply now, so the focused field below is measured where it will stay.
-      content.style.transitionProperty = "none";
-      content.style.top = `${viewport.offsetTop + viewport.height / 2}px`;
-      content.style.maxHeight = `${Math.max(viewport.height - 16, 0)}px`;
-      content.dataset.visibleViewport = "";
-      // Only the fields scroll: bring the focused one into their region, never the page behind the dialog.
-      const active = document.activeElement;
-      if (!(active instanceof HTMLElement) || !fields.contains(active)) return;
-      const box = active.getBoundingClientRect();
-      const region = fields.getBoundingClientRect();
-      if (box.bottom > region.bottom) fields.scrollTop += Math.min(box.bottom - region.bottom, box.top - region.top);
-      else if (box.top < region.top) fields.scrollTop -= region.top - box.top;
-    };
-    fit();
-    viewport.addEventListener("resize", fit);
-    viewport.addEventListener("scroll", fit);
-    fields.addEventListener("focusin", fit);
-    return () => {
-      viewport.removeEventListener("resize", fit);
-      viewport.removeEventListener("scroll", fit);
-      fields.removeEventListener("focusin", fit);
-      release();
-    };
-  }, [root]);
 }
 
 /**

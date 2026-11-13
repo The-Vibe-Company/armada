@@ -444,6 +444,9 @@ export type Database = {
           request_enc: string;
           result_enc: string | null;
           created_at: string;
+          async_launch: boolean;
+          worker_id: string | null;
+          worker_expires_at: string | null;
         };
         Insert: {
           sandbox_id: string;
@@ -452,6 +455,9 @@ export type Database = {
           request_enc: string;
           result_enc?: string | null;
           created_at?: string;
+          async_launch?: boolean;
+          worker_id?: string | null;
+          worker_expires_at?: string | null;
         };
         Update: {
           sandbox_id?: string;
@@ -460,6 +466,9 @@ export type Database = {
           request_enc?: string;
           result_enc?: string | null;
           created_at?: string;
+          async_launch?: boolean;
+          worker_id?: string | null;
+          worker_expires_at?: string | null;
         };
         Relationships: [
           {

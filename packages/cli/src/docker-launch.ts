@@ -154,7 +154,7 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
       result?.sandbox?.provider !== "docker" ||
       result.sandbox.id !== requestId ||
       result.golden !== null ||
-      !result.runtime?.epoch
+      (!result.runtime?.epoch && !(result.runtime === null && ["starting", "failed"].includes(result.sandbox.status)))
     )
       throw new GoldenError(
         "invalid_config",

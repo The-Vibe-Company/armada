@@ -88,15 +88,15 @@ test.each(["codex", "claude", "opencode"] as const)(
   },
 );
 
-test("Docker repository launch omits image selection", async () => {
+test("Docker repository launch accepts a starting receipt without inventing a runtime epoch", async () => {
   const calls: Request[] = [];
   const withoutImage = args.filter((arg, index) => arg !== "--image" && args[index - 1] !== "--image");
   const result = await capture([...withoutImage, "--repo", "acme/web@feature/work"], async (request) => {
     calls.push(request);
     return Response.json({
-      sandbox: { id: requestId, provider: "docker", status: "running" },
+      sandbox: { id: requestId, provider: "docker", status: "starting" },
       golden: null,
-      runtime: { epoch: "1" },
+      runtime: null,
     });
   });
   expect(result.code).toBe(0);
