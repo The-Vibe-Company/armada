@@ -2,6 +2,7 @@ import {
   type TemplateDefinition as CoreTemplateDefinition,
   type Harness,
   isHarness,
+  isSandboxProvider,
   MODEL_CATALOG,
   PROVIDER_LIMITS,
   type SandboxPlacementProviderId,
@@ -86,7 +87,7 @@ export function parseRevision(value: unknown): TemplateRevision | null {
   if (
     (d.provider === "docker"
       ? d.goldenId !== null || !isId(d.hostId)
-      : !isId(d.goldenId) || (d.provider !== "boat" && d.provider !== "modal")) ||
+      : !isId(d.goldenId) || !isSandboxProvider(d.provider)) ||
     !isHarness(d.harness) ||
     typeof d.model !== "string" ||
     typeof d.reasoningEffort !== "string" ||

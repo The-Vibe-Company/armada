@@ -16,7 +16,7 @@ import { resolveModelChoice } from "./models.ts";
 import { PRIVATE_SKILL_FAILURES } from "./private-skill-error.ts";
 import { isNonMutatingProviderRefusal, type Provider, ProviderError } from "./provider.ts";
 import { parseReadableVariableBindings, validateReadableVariables } from "./readable-variables.ts";
-import { ProviderRoutingError } from "./sandbox-provider.ts";
+import { isSandboxPlacementProvider, ProviderRoutingError } from "./sandbox-provider.ts";
 import { createSkillDefaultsService } from "./skill-defaults.ts";
 import { skillRefusalMessage } from "./skill-diagnostics.ts";
 import { mergeSkillPins } from "./skill-merge.ts";
@@ -303,7 +303,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       "secrets",
       "skills",
     ]);
-    if (d.provider !== "boat" && d.provider !== "modal" && d.provider !== "docker") invalid();
+    if (!isSandboxPlacementProvider(d.provider)) invalid();
     if (!isHarness(d.harness)) invalid();
     let choice: ReturnType<typeof resolveModelChoice>;
     try {
