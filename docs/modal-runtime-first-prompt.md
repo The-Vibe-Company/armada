@@ -6,7 +6,7 @@ allocation, proves a model answer and same-conversation recall through the commo
 runtime archive, performs an acknowledged checkpoint, and requests compute stop
 once. The `--resume` extension activates that same logical sandbox once from its
 retained filesystem image, proves a new-epoch same-conversation recall, then
-checkpoints and stops it again. Optional `--github`, `--mcp`, `--skills` and `--variables` add the scoped
+checkpoints and stops it again. Optional `--github`, `--mcp`, `--skills`, `--variables` and `--usage` add the scoped
 checks below; they do not claim full harness/setup parity. The golden
 checkout remains as-is (no pull/init).
 The existing Modal tunnel path remains the default.
@@ -172,7 +172,7 @@ launch, follow-up and resumed turns.
 ### Single combined coordinator check
 
 ```sh
-ARMADA_RUNTIME_SMOKE=one_real_modal_launch bun scripts/check-modal-runtime.ts --variables --skills --mcp --github --resume
+ARMADA_RUNTIME_SMOKE=one_real_modal_launch bun scripts/check-modal-runtime.ts --usage --variables --skills --mcp --github --resume
 ```
 
 ONE logical allocation, ONE resume activation, FOUR prompts and TWO stops remain.
@@ -282,3 +282,40 @@ FOUR prompts and TWO stops. Final receipts add `variables:"verified"` and
 `variablesAfterResume:"verified"` without printing values or digests. This proves
 frozen readable delivery and continuity, **not application-secret parity**.
 Workers do not run this billable check or mutate staging configuration.
+
+
+## Archived harness usage and frozen cost admission (`--usage`)
+
+The same combined command above adds usage/cost evidence with **no new inputs**.
+`launch/options.modalRuntime.usageVersion` must be `1` before allocation. The
+script uses the existing `createRuntimeUsageCheck` oracle from
+`scripts/runtime-usage-smoke.ts`; it adds no pricing path or token/money formula.
+
+Every page from the verified `source:"armada-runtime"` archive contributes its
+`armada/turnUsage` facts before prompt filtering, including facts belonging to an
+older prompt on the same page. Each tested prompt must have its own harness
+observation as well as the assistant answer, finished event and enabled tool
+proofs. A usage event arriving after the terminal event is polled normally rather
+than mistaken for absent usage.
+
+After each prompt verification, `sandbox/status.usage` must match all observed
+prompt IDs, harness models and counters. Per-turn pricing must identify the
+selected account/version and frozen server admission (capture, pricing basis and
+rate snapshot), remain unchanged through replay and resume, and agree with the
+aggregate. Guest event money is not pricing authority. Missing counters must stay
+unknown rather than becoming zero. Successful first/final stops recheck the same
+aggregate; a failed launch with no usage evidence does not trigger a secondary
+usage check that masks the original error or cleanup uncertainty.
+
+An honestly unknown cost is a valid observation when its admitted provenance and
+reason are present: for example Codex may omit cache-write tokens. The check does
+**not** turn that omission into a known USD amount or call a known subtotal a
+complete price. Receipts add `usage:"verified"`/`usageAfterResume:"verified"`,
+`usageProof` with token totals and frozen admission, and final
+`costAfterResume:"priced"` or `"unknown"` as actually supported by the evidence.
+
+The combined variables/skills/MCP/GitHub/resume command still uses ONE logical
+allocation, ONE activation, FOUR prompts and TWO stops. No catalog/account edits,
+extra launch, provider compute or credentials are introduced by the offline
+fixtures. Record the exact revision and truthful priced/unknown result on #1421;
+workers do not execute the billable staging check.

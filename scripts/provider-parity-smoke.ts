@@ -203,6 +203,8 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     let option: LaunchProviderOption | undefined;
     let id: string | undefined;
     let stopped = false;
+    let deleted = false;
+    let stopRequested = false;
     const memory = `PARITY_${crypto.randomUUID().replaceAll("-", "")}`;
     let blocked: string | undefined;
     let blockedDiagnostic: Diagnostic | undefined;
@@ -249,6 +251,62 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           return finished && answered;
         },
       );
+    }
+    async function deleteKnown() {
+      if (!id) throw new Error("launch_not_available");
+      if (!stopped) {
+        let stopError: unknown;
+        if (!stopRequested) {
+          stopRequested = true;
+          try {
+            await api("sandbox/stop", { id, request_id: crypto.randomUUID() });
+          } catch (error) {
+            stopError = error;
+          }
+        }
+        try {
+          const terminal = await poll(
+            () => api<{ id: string; status: string }>("sandbox/status", { id }),
+            (value) => value.id === id && ["stopped", "failed", "deleted"].includes(value.status),
+          );
+          if (terminal.status === "deleted") {
+            deleted = true;
+            stopped = true;
+            return terminal;
+          }
+        } catch (error) {
+          throw stopError ?? error;
+        }
+        stopped = true;
+      }
+      const requestId = crypto.randomUUID();
+      const invoke = () => api<{ id?: string; status: string }>("sandbox/delete", { id, request_id: requestId });
+      let receipt: { id?: string; status: string };
+      // Modal termination/recovery-image cleanup can be pending, and a
+      // failed attempt holds an activity lease. Reconcile the same delete;
+      // never replay stop or launch a replacement allocation.
+      let lastDeleteError: unknown;
+      try {
+        receipt = await poll(
+          async () => {
+            try {
+              return await invoke();
+            } catch (error) {
+              lastDeleteError = error;
+              const detail = diagnostic(error);
+              if (["conflict", "unavailable", "sandbox_busy"].includes(detail.code)) return { status: "pending" };
+              throw error;
+            }
+          },
+          (value) => value.status === "deleted",
+          240,
+        );
+      } catch (error) {
+        throw lastDeleteError ?? error;
+      }
+      if (receipt.status !== "deleted" || receipt.id !== id) throw new Error("delete_unconfirmed");
+      deleted = true;
+      return receipt;
     }
     try {
       const options = await api<{ providers: LaunchProviderOption[] }>("launch/options");
@@ -318,7 +376,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           });
           if (typeof result.sandbox?.id === "string") {
             id = result.sandbox.id;
-            await io.recordSandbox?.(c.org, id, `parity:${crypto.randomUUID()}`);
+            await io.recordSandbox?.(c.org, id, `post-deploy-smoke:${crypto.randomUUID()}`);
           }
           if (!id || result.sandbox.provider !== c.provider) throw new Error("invalid_launch_receipt");
         } else {
@@ -346,16 +404,11 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
             if (!Array.isArray(result.events)) throw new Error("invalid_logs_receipt");
           } else {
             const expected = step === "resume" ? "ready" : step === "stop" ? "stopped" : "deleted";
-            // Never delete a resumed allocation before confirming a second stop.
-            if (step === "delete" && !stopped) {
-              await api("sandbox/stop", { id, request_id: crypto.randomUUID() });
-              await poll(
-                () => api<{ status: string }>("sandbox/status", { id }),
-                (value) => value.status === "stopped",
-              );
-              stopped = true;
+            if (step === "resume") {
+              stopped = false;
+              stopRequested = false;
             }
-            if (step === "resume") stopped = false;
+            if (step === "stop") stopRequested = true;
             const requestId = crypto.randomUUID();
             const invoke = () => api<{ status: string }>(`sandbox/${step}`, { id, request_id: requestId });
             let receipt: { status: string };
@@ -363,29 +416,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
               await runTurn(true);
               receipt = { status: "ready" };
             } else if (step === "delete") {
-              // Modal termination/recovery-image cleanup can be pending, and a
-              // failed attempt holds an activity lease. Reconcile the same delete;
-              // never replay stop or launch a replacement allocation.
-              let lastDeleteError: unknown;
-              try {
-                receipt = await poll(
-                  async () => {
-                    try {
-                      return await invoke();
-                    } catch (error) {
-                      lastDeleteError = error;
-                      const detail = diagnostic(error);
-                      if (["conflict", "unavailable", "sandbox_busy"].includes(detail.code))
-                        return { status: "pending" };
-                      throw error;
-                    }
-                  },
-                  (value) => value.status === "deleted",
-                  240,
-                );
-              } catch (error) {
-                throw lastDeleteError ?? error;
-              }
+              receipt = await deleteKnown();
             } else receipt = await invoke();
             if (step !== "delete")
               await poll(
@@ -422,20 +453,18 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           );
       }
     }
-    // A successful resume must be stopped before deletion; delete may already have handled it.
-    if (id && !stopped) {
+    // Probe failures never replace cleanup. A failed journal write or lost
+    // resume acknowledgement still leaves a known allocation to reconcile.
+    if (id) {
       try {
-        await api("sandbox/stop", { id, request_id: crypto.randomUUID() });
+        if (!deleted) await deleteKnown();
+        record("cleanup", c.provider, "pass");
       } catch (error) {
         const detail = diagnostic(error);
-        record(
-          "cleanup",
-          c.provider,
-          detail.quota ? "not-run" : "fail",
-          detail.quota ? "quota" : "cleanup_unconfirmed",
-          detail,
-        );
+        // Known resources remain unconfirmed even when the refusal is quota.
+        record("cleanup", c.provider, "fail", "cleanup_unconfirmed", detail);
       }
+      io.out(JSON.stringify({ step: "parity_cleanup", provider: c.provider, id, deleted }));
     }
   }
   io.out(JSON.stringify({ step: "provider_parity", version: 2, starts, features: report }));

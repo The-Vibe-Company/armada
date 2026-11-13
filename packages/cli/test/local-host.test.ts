@@ -29,6 +29,11 @@ function machine() {
       expect(init?.redirect).toBe("error");
       const url = String(input);
       requests.push(url);
+      if (url.endsWith("reuse-registration")) {
+        expect(init?.headers).toEqual({ authorization: `Bearer ${token}`, "content-type": "application/json" });
+        expect(JSON.parse(String(init?.body))).toEqual({ hostId });
+        return Response.json({ hostId, name: "owner-machine" });
+      }
       if (url.endsWith("install.json")) return Response.json({ version: "2.27.0", x64: digest, arm64: digest });
       return new Response(bytes);
     },
@@ -145,7 +150,7 @@ test("a stale unregistered binary can be replaced without uninstalling or erasin
 });
 
 test.each([true, false])(
-  "registered host connected=%s keeps binary and token, recovering the existing service if offline",
+  "registered host connected=%s upgrades safely, preserves registration and cancels the unused ticket",
   async (online) => {
     const m = machine();
     m.existing({ ...registered, connected: online });
@@ -160,11 +165,16 @@ test.each([true, false])(
     }
     const result = await m.capture();
     expect(result.code).toBe(0);
-    // Recovery can touch only the existing user service, never download or install.
-    expect(m.requests).toEqual([]);
-    expect(result.inputReads).toBe(0);
+    // Upgrade uses only verified temporary bytes; no second machine registration.
+    expect(m.requests).toEqual([
+      "https://armada.example/api/docker-host/install.json",
+      `https://armada.example/api/runtime/artifacts/${digest}`,
+      "https://armada.example/api/docker-host/reuse-registration",
+    ]);
+    expect(result.inputReads).toBe(1);
     expect(result.out).toContain(hostId);
-    expect(result.out).toContain("token has not been consumed");
+    expect(result.out).toContain("token was not exchanged");
+    expect(result.out).toContain('already registered as "owner-machine"');
     if (online) expect(m.files.get(binary)).toBe(before);
     else
       expect(m.calls).toContainEqual({
@@ -181,7 +191,7 @@ test("offline existing host wait ends at 60 seconds without consuming a replacem
   const result = await m.capture();
   expect(result.code).toBe(1);
   expect(result.elapsed).toBe(60_000);
-  expect(result.inputReads).toBe(0);
+  expect(result.inputReads).toBe(1);
   expect(result.err).toContain("registration preserved");
 });
 

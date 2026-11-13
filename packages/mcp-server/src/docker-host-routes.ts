@@ -10,6 +10,7 @@ const machinePaths = [
   "/api/docker-host/results",
   "/api/docker-host/unregister",
 ];
+const reusePath = "/api/docker-host/reuse-registration";
 const ownerPaths = ["/api/v1/docker/hosts/list", "/api/v1/docker/hosts/register-token", "/api/v1/docker/hosts/revoke"];
 const object = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === "object" && !Array.isArray(value);
@@ -32,7 +33,7 @@ export function createDockerHostRoutes(
   return async (request) => {
     const path = new URL(request.url).pathname;
     const owner = ownerPaths.includes(path);
-    if (!owner && !machinePaths.includes(path)) return null;
+    if (!owner && path !== reusePath && !machinePaths.includes(path)) return null;
     const headers = { "cache-control": "no-store" };
     if (request.method !== "POST") return new Response(null, { status: 405, headers: { ...headers, allow: "POST" } });
     try {
@@ -77,6 +78,13 @@ export function createDockerHostRoutes(
       if (!token) throw new DockerHostDenied();
       const body: unknown = JSON.parse(await readBoundedText(request, 4096));
       if (!object(body)) throw new InvalidInput();
+      // Registration-token capability, not user or installed-machine authority.
+      if (path === reusePath) {
+        fields(body, ["hostId"]);
+        const hostId = string(body.hostId);
+        if (!uuid.test(hostId)) throw new InvalidInput();
+        return Response.json(await store.reuseRegistration(token, hostId), { headers });
+      }
       fields(
         body,
         path.endsWith("/results")

@@ -149,7 +149,10 @@ class HostRequestDenied extends Error {
 }
 
 /** Outbound HTTPS only. Redirects cannot forward host credentials to another origin. */
-export function httpApi(request: typeof fetch = fetch): Api & { unregister(state: State): Promise<boolean> } {
+export function httpApi(request: typeof fetch = fetch): Api & {
+  unregister(state: State): Promise<boolean>;
+  reuseRegistration(state: State, token: string): Promise<{ hostId: string; name: string | null }>;
+} {
   async function post(server: string, endpoint: string, token: string, body: unknown): Promise<unknown> {
     const response = await request(`${serverOrigin(server)}/api/docker-host/${endpoint}`, {
       method: "POST",
@@ -185,6 +188,28 @@ export function httpApi(request: typeof fetch = fetch): Api & { unregister(state
     return JSON.parse(Buffer.concat(parts).toString("utf8"));
   }
   return {
+    async reuseRegistration(state, token) {
+      if (!validToken(token)) throw new Error("Invalid registration token");
+      const result = await post(state.server, "reuse-registration", token, { hostId: state.hostId });
+      if (
+        !result ||
+        typeof result !== "object" ||
+        Array.isArray(result) ||
+        Object.keys(result).length !== 2 ||
+        !("hostId" in result) ||
+        result.hostId !== state.hostId ||
+        !("name" in result) ||
+        !(
+          result.name === null ||
+          (typeof result.name === "string" &&
+            result.name.length > 0 &&
+            result.name.length <= 64 &&
+            !/[\p{C}]/u.test(result.name))
+        )
+      )
+        throw new Error("Invalid existing host identity");
+      return { hostId: state.hostId, name: result.name as string | null };
+    },
     async unregister(state) {
       const result = await post(state.server, "unregister", state.hostToken, { installationId: state.installationId });
       if (

@@ -2,8 +2,10 @@
 import { createHash } from "node:crypto";
 import type { AgentEvent } from "../packages/core/src/provider.ts";
 import { validateReadableVariables } from "../packages/core/src/readable-variables.ts";
+import type { SandboxUsage } from "../packages/core/src/sandbox-usage.ts";
 import type { TemplateDefinition } from "../packages/core/src/templates.ts";
 import { readDefaultPins, verifyDefaultReceipts } from "./default-skill-smoke.ts";
+import { createRuntimeUsageCheck } from "./runtime-usage-smoke.ts";
 
 if (process.env.ARMADA_RUNTIME_SMOKE !== "one_real_modal_launch")
   throw Error("Set ARMADA_RUNTIME_SMOKE=one_real_modal_launch explicitly.");
@@ -46,7 +48,9 @@ interface Reply {
     mcpVersion?: number;
     skillsVersion?: number;
     variablesVersion?: number;
+    usageVersion?: number;
   };
+  usage?: SandboxUsage;
   skills?: unknown;
   sandbox?: { id?: string; goldenId?: string; skills?: unknown; provider?: string; runtimeTransport?: string };
   runtime?: { kind?: string; epoch?: string };
@@ -92,6 +96,11 @@ if (
 const resumeMode = process.argv.includes("--resume");
 if (resumeMode && options.modalRuntime.resumeVersion !== 1)
   throw Error("Modal retained resume v1 is unavailable; no launch attempted.");
+const usageMode = process.argv.includes("--usage");
+if (usageMode && options.modalRuntime.usageVersion !== 1)
+  throw Error("Modal runtime usage v1 is unavailable; no launch attempted.");
+const usageCheck = createRuntimeUsageCheck(credentialId);
+let usageProof: ReturnType<typeof usageCheck.verify> | undefined;
 const variablesMode = process.argv.includes("--variables");
 const templateId = process.env.ARMADA_RUNTIME_TEMPLATE_ID ?? "";
 if (
@@ -278,6 +287,9 @@ const verifySkillStatus = async () => {
     throw Error("Modal skill receipts do not match the effective default pins and launch identity.");
   }
 };
+const verifyUsageStatus = async () => {
+  if (usageMode) usageProof = usageCheck.verify((await api("sandbox/status", { id })).usage);
+};
 const githubToolPrompts = new Set<string>();
 const githubInstruction = `Run exactly: gh api repos/${repository} --jq .full_name successfully. After the tool succeeds, reply exactly with the token I originally asked you to remember. Do not change files.`;
 const recallInstruction =
@@ -318,11 +330,15 @@ const verifyPrompt = async (expectedPromptId: string, expectedAnswer: string) =>
   let foundMcp = !mcpMode;
   let foundVariables = !variablesMode;
   const deadline = Date.now() + 300000;
-  while (Date.now() < deadline && (!foundAnswer || !finished || !foundMcp || !foundVariables)) {
+  while (
+    Date.now() < deadline &&
+    (!foundAnswer || !finished || !foundMcp || !foundVariables || (usageMode && !usageCheck.has(expectedPromptId)))
+  ) {
     const page = await api("logs/read", { id, limit: 1000, ...(cursor ? { cursor } : {}) });
     if (page.source !== "armada-runtime") throw Error("Modal answer was not read from the common runtime archive.");
     if (page.runtimeFailure) throw Error("Modal enrolled runtime failed; inspect server diagnostics.");
     for (const event of page.events ?? []) {
+      if (usageMode) usageCheck.observe(event);
       if (event.promptId !== expectedPromptId) continue;
       if (mcpMode && event.kind === "message" && !event.parentToolUseId && !event.retracted) {
         for (const tool of event.tools)
@@ -377,10 +393,14 @@ const verifyPrompt = async (expectedPromptId: string, expectedAnswer: string) =>
     cursor = page.cursor ?? cursor;
     if (foundAnswer && finished && (!foundMcp || !foundVariables))
       throw Error("Missing this prompt's archived MCP or exact readable-environment command/result proof.");
-    if (!foundAnswer || !finished || !foundMcp || !foundVariables) await Bun.sleep(1000);
+    if (!foundAnswer || !finished || !foundMcp || !foundVariables || (usageMode && !usageCheck.has(expectedPromptId)))
+      await Bun.sleep(1000);
   }
-  if (!foundAnswer || !finished || !foundMcp || !foundVariables)
-    throw Error("Timed out waiting for this Modal prompt's archived answer, tool proof and finished event.");
+  if (!foundAnswer || !finished || !foundMcp || !foundVariables || (usageMode && !usageCheck.has(expectedPromptId)))
+    throw Error(
+      "Timed out waiting for this Modal prompt's archived answer, tool proof, harness usage and finished event.",
+    );
+  await verifyUsageStatus();
 };
 
 const validateCheckpoint = (receipt: Reply, expectedEpoch: string, requestId: string, watermark?: number) => {
@@ -552,6 +572,7 @@ try {
       ...(mcpMode ? { mcp: "verified" } : {}),
       ...(skillsMode ? { skills: "verified" } : {}),
       ...(variablesMode ? { variables: "verified" } : {}),
+      ...(usageMode ? { usage: "verified", usageProof } : {}),
     }),
   );
 } catch (error) {
@@ -584,6 +605,7 @@ const stopKnown = async () => {
       throw Error(`Modal cleanup unconfirmed for ${id}; coordinator must inspect it, never launch again.`);
     }
     await verifySkillStatus();
+    if (!failure && usageProof) await verifyUsageStatus();
   }
 };
 try {
@@ -697,6 +719,7 @@ if (
         ...(mcpMode ? { mcpAfterResume: "verified" } : {}),
         ...(skillsMode ? { skillsAfterResume: "verified" } : {}),
         ...(variablesMode ? { variablesAfterResume: "verified" } : {}),
+        ...(usageMode ? { usageAfterResume: "verified", usageProof, costAfterResume: usageProof?.cost.status } : {}),
       }),
     );
 }

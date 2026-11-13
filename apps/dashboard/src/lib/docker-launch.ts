@@ -5,7 +5,7 @@ import type {
   LaunchProviderCapabilities,
   LaunchProviderOption,
 } from "@armada/core";
-import { HARNESSES } from "@armada/core";
+import { DOCKER_DEFAULT_IMAGE, HARNESSES } from "@armada/core";
 import { isUuid } from "./action.ts";
 import type { DockerHost } from "./docker-hosts.ts";
 
@@ -227,4 +227,17 @@ export function dockerSandboxControls(option: DockerLaunchOption | null): Docker
       return reason ? [{ name: CAPABILITY_LABELS[name], reason }] : [];
     }),
   };
+}
+
+/**
+ * A Docker sandbox's image in its page's details (#1526): Armada's default image by name, a custom one by its
+ * repository (or "Local image" and its short ID for a host-approved image ID). `detail` is the full reference with
+ * its digest, for a tooltip.
+ */
+export function dockerImageLabel(image: string | null): { label: string; detail: string | null } {
+  if (!image) return { label: "Unknown", detail: null };
+  if (image === DOCKER_DEFAULT_IMAGE) return { label: "Armada default", detail: image };
+  // Which local image, at a glance: the first digest characters, as `docker images` shows an image ID.
+  if (image.startsWith("sha256:")) return { label: `Local image ${image.slice(7, 19)}`, detail: image };
+  return { label: image.split("@")[0] || image, detail: image };
 }
