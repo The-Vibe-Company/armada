@@ -20,10 +20,11 @@ for (const phone of [false, true])
         await expect(nav.getByRole("link", { name: "Environments" })).toBeHidden();
         await toggle.click();
       }
-      await expect(nav.getByRole("heading", { level: 2 })).toHaveText(["Run", "Library", "Account"]);
+      await expect(nav.getByRole("heading", { level: 2 })).toHaveText(["Run", "Library", "Providers", "Account"]);
       for (const [label, items] of [
         ["Run", ["Sandboxes", "Otto", "Routines", "Templates"]],
         ["Library", ["Environments", "Skills", "Tools", "Variables"]],
+        ["Providers", ["Cloud"]],
         ["Account", ["Models", "Settings"]],
       ] as const) {
         await expect(nav.getByRole("region", { name: label, exact: true }).getByRole("link")).toHaveText([...items]);

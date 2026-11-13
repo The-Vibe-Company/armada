@@ -16,7 +16,7 @@ import { mcpUrl } from "@/lib/env";
 import { type InvitationView, pendingInvitations } from "@/lib/invitations";
 import { initialOf } from "@/lib/members";
 import { HARNESS_PATH } from "@/lib/model-accounts";
-import { PROVIDER_SETTINGS_PATH } from "@/lib/provider-setup";
+import { CLOUD_PROVIDERS_PATH } from "@/lib/provider-setup";
 import { createClient } from "@/lib/supabase/server";
 
 export const metadata: Metadata = { title: "Organization" };
@@ -66,7 +66,7 @@ export default async function OrgPage({ params, searchParams }: Props) {
     <>
       <PageHeader title={membership.org.name} description={isAdmin ? "Admin" : "Member"}>
         <Button variant="outline" asChild>
-          <Link href={PROVIDER_SETTINGS_PATH}>Sandbox providers</Link>
+          <Link href={CLOUD_PROVIDERS_PATH}>Sandbox providers</Link>
         </Button>
         <Button variant="outline" asChild>
           <Link href={HARNESS_PATH}>Subscriptions</Link>
