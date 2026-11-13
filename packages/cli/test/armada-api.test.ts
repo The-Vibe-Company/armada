@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { ArmadaApiError, armadaApiUrl, createArmadaApiClient } from "../src/armada-api.ts";
-import { memorySessionStore } from "../src/session.ts";
+import { fileSessionStore, memorySessionStore } from "../src/session.ts";
 
 const token = "secret-token-that-must-not-leak";
 
@@ -318,4 +321,108 @@ test("GitHub repair exposes only a closed server phase to its owner", async () =
       expect(failure.message).not.toContain("synthetic-secret");
     }
   }
+});
+
+for (const armadaUrl of [undefined, "https://armada.thevibecompany.co/"]) {
+  test(`independent CLI stores reuse a concurrent refresh (${armadaUrl ? "bound" : "legacy"} session)`, async () => {
+    const directory = await mkdtemp(join(tmpdir(), "armada-refresh-"));
+    try {
+      const path = join(directory, "session.json");
+      const firstStore = fileSessionStore(path);
+      const secondStore = fileSessionStore(path);
+      await firstStore.write({
+        loginId: "same-login",
+        accessToken: "access-old",
+        refreshToken: "refresh-old",
+        expiresAt: "2000-01-01",
+        ...(armadaUrl ? { armadaUrl } : {}),
+      });
+      let reads = 0;
+      let bothRead!: () => void;
+      const bothLoaded = new Promise<void>((resolve) => {
+        bothRead = resolve;
+      });
+      const commandStore = (store: typeof firstStore) => ({
+        ...store,
+        read: async () => {
+          const saved = await store.read();
+          if (++reads === 2) bothRead();
+          return saved;
+        },
+      });
+      let refreshes = 0;
+      const fetch = async (_input: string | URL | Request, init?: RequestInit) => {
+        if (String(_input).endsWith("/auth/refresh")) {
+          await bothLoaded;
+          refreshes++;
+          expect(JSON.parse(String(init?.body)).refreshToken).toBe("refresh-old");
+          if (refreshes > 1) return Response.json({}, { status: 401 });
+          return Response.json({ accessToken: "access-new", refreshToken: "refresh-new", expiresAt: "2099-01-01" });
+        }
+        expect(new Headers(init?.headers).get("authorization")).toBe("Bearer access-new");
+        return Response.json({ ok: true });
+      };
+      const [first, other] = await Promise.all([
+        createArmadaApiClient({ env: {}, session: commandStore(firstStore), fetch }),
+        createArmadaApiClient({ env: {}, session: commandStore(secondStore), fetch }),
+      ]);
+      await Promise.all([first.request("/api/v1/example"), other.request("/api/v1/example")]);
+      expect(refreshes).toBe(1);
+      expect(await secondStore.read()).toMatchObject({ refreshToken: "refresh-new", loginId: "same-login" });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+}
+
+test("a stale client refreshes an expired rotated winner before retrying its request", async () => {
+  const state = io();
+  const initial = await state.session.read();
+  if (!initial) throw new Error("Missing fixture session");
+  let refreshes = 0;
+  let requests = 0;
+  state.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    if (String(input).endsWith("/auth/refresh")) {
+      refreshes++;
+      expect(JSON.parse(String(init?.body)).refreshToken).toBe("refresh-rotated");
+      return Response.json({ accessToken: "usable-access", refreshToken: "next-refresh", expiresAt: "2099-01-01" });
+    }
+    requests++;
+    if (new Headers(init?.headers).get("authorization") !== "Bearer usable-access")
+      return Response.json({}, { status: 401 });
+    return Response.json({ ok: true });
+  }) as unknown as typeof fetch;
+  const client = await createArmadaApiClient(state);
+  await state.session.write({
+    ...initial,
+    accessToken: "expired-rotated",
+    refreshToken: "refresh-rotated",
+    expiresAt: "2000-01-01",
+  });
+  await expect(client.request("/api/v1/example")).resolves.toEqual({ ok: true });
+  expect(refreshes).toBe(1);
+  expect(requests).toBe(2);
+});
+
+test("a pending request never switches to a replacement login at the same origin", async () => {
+  const state = io();
+  const initial = await state.session.read();
+  if (!initial) throw new Error("Missing fixture session");
+  await state.session.write({ ...initial, loginId: "original-login" });
+  let calls = 0;
+  state.fetch = (async () => {
+    calls++;
+    return Response.json({}, { status: 401 });
+  }) as unknown as typeof fetch;
+  const client = await createArmadaApiClient(state);
+  const replacement = {
+    ...initial,
+    loginId: "replacement-login",
+    accessToken: "other-account",
+    refreshToken: "other-refresh",
+  };
+  await state.session.write(replacement);
+  await expect(client.request("/api/v1/example")).rejects.toThrow("saved login changed");
+  expect(calls).toBe(1);
+  expect(await state.session.read()).toEqual(replacement);
 });
