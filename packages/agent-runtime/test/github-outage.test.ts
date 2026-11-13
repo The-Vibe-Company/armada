@@ -66,11 +66,13 @@ test("local Git survives broker outage; native turn output resumes after broker 
       expect(await installer.exited).toBe(0);
     }
     await install();
-    const git = join(base, "git");
-    await run([git, "init", "--bare", join(base, "remote.git")]);
-    await run([git, "init", join(base, "work")]);
+    const git = join(base, "git"),
+      repositoryGit = join(base, "original.armada-original");
+    // Repository creation is setup, not wrapper outage proof.
+    await run([repositoryGit, "init", "--bare", join(base, "remote.git")]);
+    await run([repositoryGit, "init", join(base, "work")]);
     await run([
-      git,
+      repositoryGit,
       "-C",
       join(base, "work"),
       "-c",
@@ -82,7 +84,7 @@ test("local Git survives broker outage; native turn output resumes after broker 
       "-m",
       "initial",
     ]);
-    await run([git, "-C", join(base, "work"), "remote", "add", "origin", join(base, "remote.git")]);
+    await run([repositoryGit, "-C", join(base, "work"), "remote", "add", "origin", join(base, "remote.git")]);
     const program = `#!/usr/bin/python3
 import sys,json,subprocess
 for line in sys.stdin:
@@ -107,15 +109,18 @@ for line in sys.stdin:
       const first = await output.read();
       expect(JSON.parse(new TextDecoder().decode(first.value))).toEqual({ id: "first", result: [0, 0, 0, 0] });
       listener.close();
-      expect((await run([git, "-C", join(base, "work"), "status", "-sb"])).stdout).toContain("##");
-      const credential = Bun.spawn([git, "credential", "fill"], { env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
-      credential.stdin.write("protocol=https\nhost=github.com\npath=acme/repo.git\n\n");
-      credential.stdin.end();
-      expect(await credential.exited).toBe(1);
-      expect(await new Response(credential.stdout).text()).toBe("");
-      expect(await new Response(credential.stderr).text()).toBe(
-        "Managed GitHub credentials unavailable (registration: socket_missing).\n",
-      );
+      // The standalone Git wrapper has no harness-specific behavior; prove its refusal once.
+      if (harness === "claude") {
+        expect((await run([git, "-C", join(base, "work"), "status", "-sb"])).stdout).toContain("##");
+        const credential = Bun.spawn([git, "credential", "fill"], { env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+        credential.stdin.write("protocol=https\nhost=github.com\npath=acme/repo.git\n\n");
+        credential.stdin.end();
+        expect(await credential.exited).toBe(1);
+        expect(await new Response(credential.stdout).text()).toBe("");
+        expect(await new Response(credential.stderr).text()).toBe(
+          "Managed GitHub credentials unavailable (registration: socket_missing).\n",
+        );
+      }
       child.stdin.write('{"id":"second"}\n');
       // The fixed diagnostic is a deterministic handshake: the redaction outage
       // has been reached, not a sleep hoping a child is still running.
