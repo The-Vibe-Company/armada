@@ -24,7 +24,7 @@ for (const phone of [false, true])
       for (const [label, items] of [
         ["Run", ["Sandboxes", "Otto", "Routines", "Templates"]],
         ["Library", ["Snapshots", "Skills", "Tools", "Variables"]],
-        ["Providers", ["Cloud"]],
+        ["Providers", ["Overview"]],
         ["Account", ["Models", "Settings"]],
       ] as const) {
         await expect(nav.getByRole("region", { name: label, exact: true }).getByRole("link")).toHaveText([...items]);
