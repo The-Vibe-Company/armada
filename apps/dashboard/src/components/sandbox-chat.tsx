@@ -28,14 +28,13 @@ import {
 } from "react";
 import { interruptSandbox, sendToSandbox, steerSandbox } from "@/app/actions/sandboxes";
 import { Markdown } from "@/components/markdown";
-import { ModKey } from "@/components/mod-key";
+import { SubmitShortcut } from "@/components/mod-key";
 import { type ModelCatalog, ModelFields } from "@/components/model-fields";
 import { StatusBadge, StatusDot } from "@/components/status-badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Kbd } from "@/components/ui/kbd";
 import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -1128,7 +1127,7 @@ function Composer({
                 ) : (
                   "Steer"
                 )}
-                {primary === "steer" && <SendShortcut />}
+                {primary === "steer" && <SubmitShortcut />}
               </Button>
             )}
             <Button
@@ -1149,27 +1148,12 @@ function Composer({
               ) : (
                 "Send"
               )}
-              {primary === "send" && <SendShortcut />}
+              {primary === "send" && <SubmitShortcut />}
             </Button>
           </div>
         </div>
       </Collapsible>
     </form>
-  );
-}
-
-/** The shortcut the highlighted button answers to, on the button itself; hidden from its accessible name. */
-function SendShortcut() {
-  return (
-    <Kbd
-      aria-hidden="true"
-      className="-mr-1 ml-0.5 border-transparent bg-primary-foreground/15 text-primary-foreground/80 shadow-none max-sm:hidden"
-    >
-      <span>
-        <ModKey />
-      </span>
-      <span>↵</span>
-    </Kbd>
   );
 }
 

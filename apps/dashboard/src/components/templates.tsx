@@ -29,8 +29,9 @@ import {
 import { SubmitButton } from "@/components/action-form";
 import { ChoiceCard } from "@/components/connections";
 import { CreateDialog } from "@/components/create-dialog";
-import { LaunchShortcut, RepositoryField, Segmented } from "@/components/launch-dialog";
+import { RepositoryField, Segmented } from "@/components/launch-dialog";
 import { MachineSizeField } from "@/components/machine-size-field";
+import { SubmitShortcut } from "@/components/mod-key";
 import { type ModelCatalog, ModelFields } from "@/components/model-fields";
 import { SkillPicker } from "@/components/skill-picker";
 import {
@@ -878,7 +879,7 @@ export function TemplateLaunchForm({ target }: { target: TemplateLaunchTarget })
             {...(target.blocker ? { disabled: true, "aria-describedby": `${id}-blocked` } : {})}
           >
             <RocketIcon /> Launch
-            <LaunchShortcut />
+            <SubmitShortcut />
           </SubmitButton>
         </div>
       </div>

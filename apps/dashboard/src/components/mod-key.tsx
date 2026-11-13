@@ -1,6 +1,7 @@
 "use client";
 
 import { useSyncExternalStore } from "react";
+import { Kbd } from "@/components/ui/kbd";
 import { modifierKey } from "@/lib/command-menu";
 
 const subscribe = () => () => {};
@@ -14,5 +15,20 @@ export function ModKey() {
     subscribe,
     () => modifierKey(navigator.platform),
     () => "⌘",
+  );
+}
+
+/** The primary submit shortcut; hidden from the button's accessible name. */
+export function SubmitShortcut() {
+  return (
+    <Kbd
+      aria-hidden="true"
+      className="-mr-1 ml-0.5 border-transparent bg-primary-foreground/15 text-primary-foreground/80 shadow-none max-sm:hidden"
+    >
+      <span>
+        <ModKey />
+      </span>
+      <span>↵</span>
+    </Kbd>
   );
 }
