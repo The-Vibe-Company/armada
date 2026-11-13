@@ -17,12 +17,15 @@ interface Reply {
     diagnosticsVersion?: number;
     followupVersion?: number;
     checkpointVersion?: number;
+    resumeVersion?: number;
   };
   sandbox?: { id?: string; goldenId?: string; boatRuntime?: boolean };
   runtime?: { kind?: string; epoch?: string };
   promptId?: string;
   conversationId?: string;
   requestId?: string;
+  resumed?: boolean;
+  sourceCheckpoint?: { epoch?: string; watermark?: number };
   checkpoint?: { state?: string; watermark?: number; acknowledgedSequence?: number };
   source?: string;
   runtimeFailure?: { status: string; reason: string };
@@ -46,7 +49,10 @@ if (options.boatRuntime?.enabled !== true || options.boatRuntime.diagnosticsVers
   throw Error(
     "Use the armada-server origin with experimental Boat runtime diagnostics v1 enabled; no launch attempted.",
   );
-const checkpointMode = process.argv.includes("--checkpoint");
+const resumeMode = process.argv.includes("--resume");
+const checkpointMode = process.argv.includes("--checkpoint") || resumeMode;
+if (resumeMode && options.boatRuntime.resumeVersion !== 1)
+  throw Error("Server has no verified runtime resume v1; no launch attempted.");
 const followup = process.argv.includes("--followup") || checkpointMode;
 if (checkpointMode && options.boatRuntime.checkpointVersion !== 1)
   throw Error("Server has no runtime checkpoint v1; no launch attempted.");
@@ -60,6 +66,24 @@ let failure: unknown;
 let checkpointInput: { id: string; request_id: string; runtimeVersion: 1 } | undefined;
 let checkpointReceipt: Reply | undefined;
 let verifyStoppedHistory: (() => Promise<void>) | undefined;
+let verifyPrompt: ((id: string, expected: string) => Promise<void>) | undefined;
+let initialConversation: string | undefined;
+let firstPrompt: string | undefined, followupPrompt: string | undefined;
+function validateCheckpoint(candidate: Reply, epoch: string | undefined, requestId: string) {
+  const proof = candidate.checkpoint;
+  if (
+    !epoch ||
+    candidate.requestId !== requestId ||
+    candidate.runtime?.kind !== "armada" ||
+    candidate.runtime.epoch !== epoch ||
+    proof?.state !== "complete" ||
+    typeof proof.watermark !== "number" ||
+    !Number.isSafeInteger(proof.watermark) ||
+    proof.watermark < 0 ||
+    proof.acknowledgedSequence !== proof.watermark
+  )
+    throw Error("Missing complete runtime checkpoint acknowledgement. Do not claim resume.");
+}
 try {
   const launched = await api("sandbox/launch-runtime-v1", {
     runtimeVersion: 1,
@@ -115,6 +139,9 @@ try {
     }
     if (!answer || !finished) throw Error("Timed out waiting for archived runtime answer/terminal event.");
   };
+  verifyPrompt = verify;
+  initialConversation = launched.conversationId;
+  firstPrompt = launched.promptId;
   await verify(launched.promptId, marker);
   let nextPromptId: string | undefined;
   if (followup) {
@@ -148,6 +175,7 @@ try {
       );
     await verify(sent.promptId, memory);
     nextPromptId = sent.promptId;
+    followupPrompt = sent.promptId;
   }
   if (checkpointMode) {
     checkpointInput = { id, request_id: crypto.randomUUID(), runtimeVersion: 1 };
@@ -155,18 +183,7 @@ try {
       JSON.stringify({ operation: "runtime_checkpoint", sandboxId: id, requestId: checkpointInput.request_id }),
     );
     const candidate = await api("sandbox/checkpoint-runtime-v1", checkpointInput);
-    const proof = candidate.checkpoint;
-    if (
-      candidate.requestId !== checkpointInput.request_id ||
-      candidate.runtime?.kind !== "armada" ||
-      candidate.runtime.epoch !== launched.runtime.epoch ||
-      proof?.state !== "complete" ||
-      typeof proof.watermark !== "number" ||
-      !Number.isSafeInteger(proof.watermark) ||
-      proof.watermark < 0 ||
-      proof.acknowledgedSequence !== proof.watermark
-    )
-      throw Error("Missing complete runtime checkpoint acknowledgement. Do not claim resume.");
+    validateCheckpoint(candidate, launched.runtime.epoch, checkpointInput.request_id);
     checkpointReceipt = candidate;
     const first = launched.promptId,
       second = nextPromptId;
@@ -191,7 +208,7 @@ try {
 } catch (error) {
   failure = error;
 }
-try {
+const stopKnown = async () => {
   if (id) {
     await api("sandbox/stop", { id });
     const deadline = Date.now() + 180000;
@@ -216,7 +233,7 @@ try {
     if (!stopped) throw Error(`Stop not confirmed for ${id}; coordinator must inspect it. Do not launch again.`);
     console.log(
       checkpointReceipt
-        ? "Runtime compute stopped after acknowledged checkpoint; resume is not implemented yet."
+        ? "Runtime compute stopped after acknowledged checkpoint; resume was not tested in this phase."
         : "Experimental runtime compute stopped; resume/work preservation unsupported.",
     );
     if (checkpointInput && checkpointReceipt) {
@@ -231,10 +248,88 @@ try {
       )
         throw Error("Stopped checkpoint receipt did not survive. Do not claim resume.");
       await verifyStoppedHistory?.();
-      console.log("Runtime checkpoint and stopped history verified; resume not implemented yet.");
+      console.log("Runtime checkpoint and stopped history verified.");
     }
   }
+};
+try {
+  await stopKnown();
 } catch (error) {
   failure ??= error;
 }
+if (resumeMode && !failure && id && checkpointReceipt && initialConversation && verifyPrompt) {
+  const source = checkpointReceipt;
+  const previousEpoch = source.runtime?.epoch;
+  const check = verifyPrompt;
+  const priorHistory = verifyStoppedHistory;
+  checkpointReceipt = undefined;
+  checkpointInput = undefined;
+  let resumed: Reply | undefined;
+  try {
+    const requestId = crypto.randomUUID();
+    console.log(
+      JSON.stringify({ operation: "runtime_resume", sandboxId: id, conversationId: initialConversation, requestId }),
+    );
+    resumed = await api("sandbox/resume-runtime-v1", {
+      id,
+      request_id: requestId,
+      runtimeVersion: 1,
+      conversation_id: initialConversation,
+      prompt:
+        "Again reply exactly with the token I originally asked you to remember. Do not use tools or change files.",
+    });
+    if (
+      !previousEpoch ||
+      !resumed.promptId ||
+      [firstPrompt, followupPrompt].includes(resumed.promptId) ||
+      resumed.requestId !== requestId ||
+      resumed.resumed !== true ||
+      resumed.conversationId !== initialConversation ||
+      resumed.runtime?.kind !== "armada" ||
+      !/^[1-9][0-9]{0,18}$/.test(resumed.runtime.epoch ?? "") ||
+      BigInt(resumed.runtime.epoch ?? "0") !== BigInt(previousEpoch) + 1n ||
+      resumed.sourceCheckpoint?.epoch !== previousEpoch ||
+      resumed.sourceCheckpoint.watermark !== source.checkpoint?.watermark
+    )
+      throw Error(
+        "Missing restored same-conversation/new-epoch acknowledgement. Reconcile the original request_id; do not activate again.",
+      );
+    await check(resumed.promptId, memory);
+    await priorHistory?.();
+    const third = resumed.promptId;
+    verifyStoppedHistory = async () => {
+      await priorHistory?.();
+      await check(third, memory);
+    };
+    checkpointInput = { id, request_id: crypto.randomUUID(), runtimeVersion: 1 };
+    console.log(
+      JSON.stringify({ operation: "runtime_checkpoint", sandboxId: id, requestId: checkpointInput.request_id }),
+    );
+    const candidate = await api("sandbox/checkpoint-runtime-v1", checkpointInput);
+    validateCheckpoint(candidate, resumed.runtime.epoch, checkpointInput.request_id);
+    checkpointReceipt = candidate;
+  } catch (error) {
+    failure ??= error;
+  }
+  try {
+    await stopKnown();
+  } catch (error) {
+    failure ??= error;
+  }
+  if (!failure && resumed) {
+    console.log(
+      JSON.stringify({
+        sandboxId: id,
+        conversationId: initialConversation,
+        resume: "verified",
+        source: "armada-runtime",
+        previousEpoch,
+        epoch: resumed.runtime?.epoch,
+        promptId: resumed.promptId,
+      }),
+    );
+    console.log("Runtime resume and stopped history verified.");
+  }
+}
+
 if (failure) throw failure;

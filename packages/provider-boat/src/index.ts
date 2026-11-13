@@ -10,6 +10,7 @@ export {
   BOAT_CAPABILITIES,
   type BoatProvider,
   type BoatProviderOptions,
+  type BoatRuntimeHost,
   createBoatProvider,
   DEFAULT_BASE_URL,
   DEFAULT_TTL_SECONDS,

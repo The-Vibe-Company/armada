@@ -131,6 +131,7 @@ import { createProviderMetadata } from "./provider-metadata.ts";
 import { RequestTiming, withRequestTiming } from "./request-timing.ts";
 import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
+import type { RuntimeResume } from "./runtime-resume.ts";
 import { type createSandboxArmadaAccess, parseSandboxArmadaAccess } from "./sandbox-armada-access.ts";
 import { bunSql } from "./sql.ts";
 import { createSubscriptionMigration } from "./subscription-migration.ts";
@@ -145,6 +146,7 @@ import { orchestratorHttp } from "./orchestrator-api.ts";
 import type { OrchestratorRuntime } from "./orchestrator-runtime.ts";
 
 export interface ControlOptions {
+  runtimeResume?: RuntimeResume;
   runtimeCheckpoint?: RuntimeCheckpoint;
   runtimeSend?: RuntimeFollowup;
   boatRuntimeLaunch?: NonNullable<LaunchOptions["boatRuntime"]>;
@@ -777,6 +779,7 @@ async function dispatch(
         diagnosticsVersion: 1,
         followupVersion: options.runtimeSend ? 1 : 0,
         checkpointVersion: options.runtimeCheckpoint ? 1 : 0,
+        resumeVersion: options.runtimeResume ? 1 : 0,
         enabled: Boolean(options.boatRuntimeLaunch && options.runtimeHostFor),
       },
     };
@@ -891,6 +894,7 @@ async function dispatch(
       "sandbox/advice": "resource_advice",
       "sandbox/send": "send",
       "sandbox/checkpoint-runtime-v1": "runtime_checkpoint",
+      "sandbox/resume-runtime-v1": "runtime_resume",
       "sandbox/report": "report",
       "sandbox/stop": "stop",
       "sandbox/extend": "extend",
@@ -938,6 +942,7 @@ async function dispatch(
         caller: scopedCaller,
         ...(options.runtimeSend ? { runtimeSend: options.runtimeSend } : {}),
         ...(options.runtimeCheckpoint ? { runtimeCheckpoint: options.runtimeCheckpoint } : {}),
+        ...(options.runtimeResume ? { runtimeResume: options.runtimeResume } : {}),
         ...(options.connections ? { connections: options.connections } : {}),
         data: options.data(scopedCaller),
         measure: (phase, work) => measured(options, phase, work),

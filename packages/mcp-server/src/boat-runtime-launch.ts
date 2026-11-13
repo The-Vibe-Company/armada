@@ -24,7 +24,7 @@ export function boatRuntimeLaunch(options: {
   const authority = createRuntimeEnrolments(options.sql, options.encryptionKey);
   const commands = createRuntimeCommands(authority, options.encryptionKey);
   return {
-    async start({ host, actor, sandbox, credentials, signal }) {
+    async start({ host, actor, sandbox, credentials, signal, activate, restoreCheckpoint }) {
       if (sandbox.boatRuntime !== true || host.id !== "boat") throw Error("runtime_selection_required");
       const { model, reasoningEffort } = sandbox;
       if (!model || !reasoningEffort) throw Error("runtime_model_required");
@@ -36,6 +36,11 @@ export function boatRuntimeLaunch(options: {
         architecture,
         ...(modelAuth ? { modelAuth } : {}),
       });
+      if (restoreCheckpoint)
+        Object.assign(plan.configuration, { restoreCheckpoint: { ...restoreCheckpoint, model, reasoningEffort } });
+      signal.throwIfAborted();
+      await activate?.(signal);
+      signal.throwIfAborted();
       const agent = createRuntimeAgent(commands, {
         ownerId: actor.userId,
         sandboxId: sandbox.id,
@@ -45,7 +50,7 @@ export function boatRuntimeLaunch(options: {
       });
       const ready = await createRuntimeStartup(authority, {
         bootstrap: (input) => startBoatRuntime(host, input),
-        health: (admission) => agent.health(admission),
+        health: (admission) => agent.health(admission, restoreCheckpoint),
       })({
         ownerId: actor.userId,
         sandboxId: sandbox.id,

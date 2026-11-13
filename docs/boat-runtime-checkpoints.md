@@ -69,3 +69,7 @@ activate the same VM, enrol a new epoch and prove memory/history continuity.
 It must reject missing/mismatched checkpoint state rather than replay a prompt
 or fall back to Boat's native runner. Do not repeat this start just for the
 foundation if the coordinator prefers the later combined lifecycle check.
+
+Explicit new-epoch activation is now defined in [Boat runtime resume](boat-runtime-resume.md).
+The combined `--resume` check supersedes a separate checkpoint-only start when
+conserving staging quota. Bare `send` still never implicitly resumes runtime VMs.

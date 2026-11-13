@@ -40,6 +40,13 @@ async function main(dialout = false) {
     claudeExecutable: string;
     codexExecutable: string;
     selectedHarness?: unknown;
+    restoreCheckpoint?: {
+      epoch: string;
+      watermark: number;
+      conversationId: string;
+      model: string;
+      reasoningEffort: string;
+    };
     artifactManifest?: unknown;
     claudeEnv: Record<string, string>;
     codexEnv: Record<string, string>;
@@ -223,6 +230,25 @@ async function main(dialout = false) {
   };
   const state = new HarnessState(config.root, journal.redact);
   const sourceIdentity = journal.assertRestoreSource(config.grant);
+  const restore = config.restoreCheckpoint;
+  if (restore) {
+    if (
+      !enrolled ||
+      config.selectedHarness !== "codex" ||
+      !/^[1-9][0-9]{0,18}$/.test(restore.epoch) ||
+      typeof restore.conversationId !== "string" ||
+      !restore.conversationId ||
+      typeof restore.model !== "string" ||
+      !restore.model ||
+      typeof restore.reasoningEffort !== "string"
+    )
+      throw Error("invalid_runtime_restore");
+    journal.requireCheckpoint(
+      { sandboxId: config.grant.sandboxId, generation: restore.epoch },
+      restore.watermark,
+      restore.conversationId,
+    );
+  }
   const fenced = journal.checkpointPending(config.grant);
   let survivingAuth: string | undefined;
   if (!fenced && (config.subscription || config.runtimeSubscription)) {
@@ -243,7 +269,12 @@ async function main(dialout = false) {
       journal.sanitize();
     }
   }
-  if (!fenced) await state.restore(config.grant, sourceIdentity);
+  if (!fenced)
+    await state.restore(
+      config.grant,
+      sourceIdentity,
+      restore ? { sandboxId: config.grant.sandboxId, generation: restore.epoch } : undefined,
+    );
   if (!fenced) {
     await rm(`${config.root}/exec-transient`, { recursive: true, force: true });
     await mkdir(`${config.root}/exec-transient/gh`, { recursive: true, mode: 0o700 });
@@ -397,6 +428,15 @@ async function main(dialout = false) {
     },
     {
       configureGitHub,
+      ...(restore
+        ? {
+            restoredFrom: {
+              epoch: restore.epoch,
+              watermark: restore.watermark,
+              conversationId: restore.conversationId,
+            },
+          }
+        : {}),
       testModelConnection: async (harness, model, signal) => {
         if (harness === "codex" && codexEndpoint && config.codexEnv.OPENAI_API_KEY)
           return testModelConnection(
@@ -430,6 +470,42 @@ async function main(dialout = false) {
       ghConfigDir: `${config.root}/exec-transient/gh`,
     },
   );
+  if (restore) {
+    const session = journal.session(restore.conversationId);
+    if (!session) throw Error("resume_checkpoint_mismatch");
+    const response = await runner.handle(
+      new Request("http://runtime/v1", {
+        method: "POST",
+        headers: { "x-armada-runner-grant": config.grant.token },
+        body: JSON.stringify({
+          version: 1,
+          sandboxId: config.grant.sandboxId,
+          requestId: `restore_${config.grant.generation}`,
+          op: "resumeNativeSession",
+          conversationId: restore.conversationId,
+          expectedSessionId: session,
+          input: {
+            sandboxId: config.grant.sandboxId,
+            harness: "codex",
+            model: restore.model,
+            reasoningEffort: restore.reasoningEffort,
+            cwd: config.cwd,
+          },
+        }),
+      }),
+    );
+    const body = (await response.json()) as {
+      result?: { nativeSessionId?: string; physicalGeneration?: string; conversationId?: string; verified?: boolean };
+    };
+    if (
+      response.status !== 200 ||
+      body.result?.verified !== true ||
+      body.result.nativeSessionId !== session ||
+      body.result.physicalGeneration !== config.grant.generation ||
+      body.result.conversationId !== restore.conversationId
+    )
+      throw Error("runtime_native_restore_failed");
+  }
   const flush = setInterval(() => {
     void runner.flushOutbox().catch(() => {});
   }, 1000);
