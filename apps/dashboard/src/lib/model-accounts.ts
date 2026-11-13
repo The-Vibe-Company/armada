@@ -4,7 +4,13 @@
  * refresh token or auth state, and the parsers keep only the named fields, so nothing else is ever rendered.
  */
 import type { ConnectionModelInfo, Harness } from "@armada/core";
-import { HARNESS_CATALOG, HARNESSES, harnessForCredential, MODEL_CREDENTIAL_KINDS } from "@armada/core";
+import {
+  HARNESS_CATALOG,
+  HARNESSES,
+  harnessForCredential,
+  isRecord as isRow,
+  MODEL_CREDENTIAL_KINDS,
+} from "@armada/core";
 
 export const ACCOUNT_KINDS = MODEL_CREDENTIAL_KINDS;
 /** #603's account statuses; any other value reads as `unknown` rather than as working. */
@@ -95,10 +101,6 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const MAX_ACCOUNT_NAME = 120;
 
 type Row = Record<string, unknown>;
-
-function isRow(value: unknown): value is Row {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function oneOf<T extends string>(values: readonly T[], value: unknown): value is T {
   return typeof value === "string" && (values as readonly string[]).includes(value);
