@@ -104,7 +104,8 @@ describe("template DTOs", () => {
       variables: [{ key: "APP_REGION", variableId: REGION, version: 3 }],
       skills: [],
     });
-    expect(parseRevision({ ...revision, definition: { ...definition, harness: "other" } })).toBeNull();
+    for (const field of ["provider", "harness"])
+      expect(parseRevision({ ...revision, definition: { ...definition, [field]: "other" } })).toBeNull();
   });
 
   test("Docker revisions retain host placement and do not require a golden lookup", () => {

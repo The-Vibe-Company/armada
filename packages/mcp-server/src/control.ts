@@ -876,7 +876,7 @@ async function dispatch(
         : caller.orgs.find((org) => org.orgId === selected);
     if (!member) throw new VaultError("forbidden", "Name an org in this caller's scope.");
     const backend = optional(body, "provider") ?? "boat";
-    if (backend !== "boat" && backend !== "modal") throw new VaultError("invalid", "Provider is boat or modal.");
+    if (!isSandboxProvider(backend)) throw new VaultError("invalid", "Provider is boat or modal.");
     if (!options.providerMetadata)
       throw new VaultError("unavailable", "Read-only provider metadata is not configured.");
     return options.providerMetadata({ orgId: member.orgId, provider: backend }, caller);
@@ -1410,7 +1410,7 @@ async function createGoldenRoute(options: ControlOptions, caller: Caller, body: 
   required(body, "idempotencyKey");
   const org = await resolveOrg(options.store, caller.userId, scopedOrg(caller, optional(body, "org")));
   const visibility: Visibility = requiredBoolean(body, "private", false) ? "private" : "org";
-  if (body.provider !== undefined && body.provider !== "boat" && body.provider !== "modal")
+  if (body.provider !== undefined && !isSandboxProvider(body.provider))
     throw new VaultError("invalid", "Provider is boat or modal.");
   if (visibility === "org" && org.role !== "admin")
     throw new VaultError("forbidden", "Only an admin can create an org golden.");
@@ -2087,7 +2087,7 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
 
 function selectGolden(rows: GoldenRecord[], body: Record<string, unknown>): GoldenRecord | undefined {
   const provider = optional(body, "provider");
-  if (provider !== undefined && provider !== "boat" && provider !== "modal")
+  if (provider !== undefined && !isSandboxProvider(provider))
     throw new VaultError("invalid", "Provider is boat or modal.");
   const selected = rows.filter((row) => provider === undefined || row.provider === provider);
   if (selected.length > 1)

@@ -31,7 +31,6 @@ export interface Provider {
   }): Promise<{ acknowledged: boolean }>;
   /** Read-only fixed sampler. Null means isolation/runtime is unsupported or not attested. */
   observeResources?(sandboxId: string): Promise<import("./resource-observation.ts").ProviderResourceObservation | null>;
-  prepareNativeHarnessCwd?(request: PrepareNativeHarnessCwdRequest): Promise<void>;
   readonly id: string;
   readonly harnesses: readonly Harness[];
   /** What each harness can do here. Callers branch on this, never on the harness name. */
@@ -514,12 +513,6 @@ export class ProviderError extends Error {
     this.requestId = init.requestId;
     this.details = init.details;
   }
-}
-
-export interface PrepareNativeHarnessCwdRequest {
-  sandboxId: string;
-  harness: Harness;
-  cwd: string;
 }
 
 /** Explicit non-mutating provider refusals, not transport failures or ambiguous conflicts. */
