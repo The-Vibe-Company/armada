@@ -28,7 +28,7 @@ import { bindableStatus, needsAccountChoice } from "@/lib/account-recovery";
 import { isUuid } from "@/lib/action";
 import { readAccountChoices } from "@/lib/data/account-recovery";
 import { listSandboxConnections, type SandboxConnections } from "@/lib/data/connections";
-import { readDockerLaunchOption, readSelectedDockerHosts } from "@/lib/data/docker-hosts";
+import { hostListForPage, readDockerLaunchOption } from "@/lib/data/docker-hosts";
 import { findGoldenLabel } from "@/lib/data/goldens";
 import { credentialKinds, getSandbox, getSandboxMetadata } from "@/lib/data/sandboxes";
 import { selectedOrganization } from "@/lib/data/selected-org";
@@ -86,7 +86,7 @@ export default async function SandboxPage({ params }: Props) {
     const [option, kinds, hosts] = await Promise.all([
       readDockerLaunchOption(),
       credentialKinds(supabase, [sandbox.credential_id]),
-      readSelectedDockerHosts(),
+      hostListForPage(),
     ]);
     return (
       <DockerSandbox
@@ -95,7 +95,7 @@ export default async function SandboxPage({ params }: Props) {
         org={memberships.find((item) => item.org.id === sandbox.org_id)?.org.name ?? "Unknown"}
         owner={displayUser(directory, sandbox.owner_id, viewer.id)}
         cost={costOfRow(sandbox, kinds.get(sandbox.credential_id ?? "") ?? null)}
-        host={sandboxHostLabel(hosts.state === "ready" ? hosts.list : null, sandbox.docker_host_id)}
+        host={sandboxHostLabel(hosts, sandbox.docker_host_id)}
       />
     );
   }

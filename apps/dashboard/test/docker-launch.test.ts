@@ -200,6 +200,6 @@ test("the server's own launch options drive the Docker sandbox page and the laun
 test("a Docker sandbox's image reads as a name, with the full reference kept for its tooltip", () => {
   expect(dockerImageLabel(DOCKER_DEFAULT_IMAGE)).toEqual({ label: "Armada default", detail: DOCKER_DEFAULT_IMAGE });
   expect(dockerImageLabel(DIGEST)).toEqual({ label: "buildpack-deps", detail: DIGEST });
-  expect(dockerImageLabel(`sha256:${"a".repeat(64)}`)).toMatchObject({ label: "Local image" });
+  expect(dockerImageLabel(`sha256:${"a".repeat(64)}`)).toMatchObject({ label: `Local image ${"a".repeat(12)}` });
   expect(dockerImageLabel(null)).toEqual({ label: "Unknown", detail: null });
 });
