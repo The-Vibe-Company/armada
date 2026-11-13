@@ -21,12 +21,14 @@ const WEB = "https://github.com/example/web.git";
 const ENC_KEY = Buffer.alloc(32, 9).toString("base64");
 
 describe("golden command", () => {
-  test("a secret in the config is refused before any sandbox is created", async () => {
+  test("a secret in the config is refused before any HTTP request", async () => {
     const calls: string[] = [];
+    const fetch: AuthIo["fetch"] = async () => {
+      calls.push("fetch");
+      throw new Error("No request should run");
+    };
     const result = await capture(["golden", "create", "web", "--repo", WEB, "--init", "TOKEN=abc pnpm i"], {
-      actor: admin(),
-      store: failingStore(),
-      provider: recordingProvider(calls),
+      auth: loggedIn("22222222-2222-4222-8222-222222222222", fetch, { ARMADA_URL: "https://armada.test" }),
     });
     expect(result.code).toBe(2);
     expect(result.err).toContain("must not contain secrets");
@@ -216,43 +218,6 @@ async function capture(argv: string[], deps: Parameters<typeof run>[2]) {
   return { code, out, err };
 }
 
-function recordingProvider(calls: string[]) {
-  return {
-    id: "boat",
-    harnesses: ["claude", "codex"] as const,
-    capabilities: { claude: caps(), codex: caps() },
-    createGolden: async () => {
-      calls.push("create");
-      throw new Error("create should not run");
-    },
-  } as never;
-}
-
-function failingStore() {
-  return {
-    list: async () => [],
-    findByName: async () => [],
-    insert: async () => {
-      throw new Error("insert should not run");
-    },
-    setConfig: async () => {},
-    setSandbox: async () => {},
-    setSnapshot: async () => {},
-  };
-}
-
-function admin(): GoldenActor {
-  return actorOf("admin");
-}
-
-function actorOf(role: "admin" | "member"): GoldenActor {
-  return {
-    userId: "22222222-2222-4222-8222-222222222222",
-    orgId: "11111111-1111-4111-8111-111111111111",
-    role,
-  };
-}
-
 function caps() {
   return {
     steer: "none" as const,
@@ -303,7 +268,7 @@ async function asUser<T>(db: PGlite, userId: string, run: () => Promise<T>): Pro
   }
 }
 
-function loggedIn(userId: string, fetchImpl: typeof fetch, env: Record<string, string>): AuthIo {
+function loggedIn(userId: string, fetchImpl: AuthIo["fetch"], env: Record<string, string>): AuthIo {
   const session = memorySessionStore({
     userId,
     accessToken: `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: userId })).replace(/=+$/, "")}.sig`,
