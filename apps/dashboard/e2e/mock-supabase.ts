@@ -649,6 +649,7 @@ function sandboxListMetadata(userId: string): Row[] {
         model: row.model ?? null,
         reasoningEffort: row.reasoning_effort ?? null,
         status: row.status,
+        idlePaused: row.status === "stopped" && row.status_reason === "idle_paused",
         createdAt: at(row.created_at),
         stoppedAt: at(row.stopped_at),
         expiresAt: at(row.expires_at),
