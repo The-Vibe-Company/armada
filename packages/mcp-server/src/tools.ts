@@ -62,6 +62,7 @@ import type { GoldenProviderMetadata } from "./provider-metadata.ts";
 import { summarizeResourceHistory } from "./resource-advice.ts";
 import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
+import type { RuntimeResume } from "./runtime-resume.ts";
 import { sandboxActivity } from "./sandbox-activity.ts";
 import { extendSandbox } from "./sandbox-extend.ts";
 import {
@@ -76,6 +77,7 @@ import { recordStopDispatch } from "./work-preservation.ts";
 
 /** Everything a tool call may use, for one authenticated request. */
 export interface ToolContext {
+  runtimeResume?: RuntimeResume;
   runtimeCheckpoint?: RuntimeCheckpoint;
   runtimeSend?: RuntimeFollowup;
   measure?: import("./request-timing.ts").RequestTiming["measure"];
@@ -1339,6 +1341,37 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       if (!data.sandboxes.reportTaskOutcome) throw new ToolError("conflict", "Task reporting is unavailable.");
       await data.sandboxes.reportTaskOutcome(args.id, found.taskPromptId!, args.outcome, found.lifecycleGeneration);
       return { id: args.id, taskOutcome: args.outcome };
+    },
+  );
+
+  tool(
+    "runtime_resume",
+    {
+      title: "Resume a checkpointed Boat runtime",
+      description:
+        "Explicitly activates the same stopped VM, verifies sealed local history/native thread, enrols a new epoch and admits one instruction in the existing conversation. Owner-only; stable request_id, no implicit retry of uncertain activation. Cached outcome is historical, not current machine state.",
+      input: {
+        id,
+        request_id: z.string().uuid(),
+        runtimeVersion: z.literal(1),
+        prompt: z.string().min(1),
+        conversation_id: conversationId,
+      },
+      output: {
+        id: z.string(),
+        requestId: z.string(),
+        promptId: z.string(),
+        conversationId: z.string(),
+        status: z.enum(["queued", "running", "finished", "failed", "interrupted"]),
+        resumed: z.literal(true),
+        runtime: z.object({ kind: z.literal("armada"), epoch: z.string() }),
+        sourceCheckpoint: z.object({ epoch: z.string(), watermark: z.number().int().nonnegative() }),
+      },
+      destructive: true,
+    },
+    async (args) => {
+      if (!context.runtimeResume) throw new ToolError("unsupported", "Runtime resume is unavailable.");
+      return context.runtimeResume(caller, args);
     },
   );
 

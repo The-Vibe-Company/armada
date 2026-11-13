@@ -1216,3 +1216,15 @@ test("OpenCode is not advertised or dispatched through Boat's native API", async
   });
   expect(boat.requests).toHaveLength(0);
 });
+
+test("runtime activation resumes compute with explicit lifetime and no account environment or native inference", async () => {
+  const boat = fakeBoat({ body: { ok: true } }, { body: { ok: true, sandbox: sandbox({ state: "running" }) } });
+  await boat.provider.resumeRuntime(ID, 1200);
+  expect(boat.requests.map(({ method, path }) => [method, path])).toEqual([
+    ["POST", `/api/v1/sandboxes/${ID}/resume`],
+    ["GET", `/api/v1/sandboxes/${ID}`],
+  ]);
+  expect(boat.requests[0]?.body).toEqual({ noEnv: true, env: {}, ttlSeconds: 1200 });
+  await expect(boat.provider.resumeRuntime(ID, 1.5)).rejects.toBeDefined();
+  expect(boat.requests).toHaveLength(2);
+});

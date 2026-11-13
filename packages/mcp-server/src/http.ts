@@ -32,6 +32,7 @@ import type { ModelAuthOwnership } from "./model-auth.ts";
 import type { ProviderMetadataFor } from "./provider-metadata.ts";
 import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
+import type { RuntimeResume } from "./runtime-resume.ts";
 import { createArmadaServer } from "./tools.ts";
 
 export const MCP_PATH = "/mcp";
@@ -44,6 +45,7 @@ import type { OrchestratorPair } from "./orchestrator-activation.ts";
 import type { OrchestratorRuntime } from "./orchestrator-runtime.ts";
 
 export interface HandlerOptions {
+  runtimeResume?: RuntimeResume;
   runtimeCheckpoint?: RuntimeCheckpoint;
   runtimeSend?: RuntimeFollowup;
   runtimeProviderFor?: (apiKey: string, target: ProviderTarget, caller: { userId: string }) => Promise<Provider>;
@@ -170,6 +172,7 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
         caller,
         ...(options.runtimeSend ? { runtimeSend: options.runtimeSend } : {}),
         ...(options.runtimeCheckpoint ? { runtimeCheckpoint: options.runtimeCheckpoint } : {}),
+        ...(options.runtimeResume ? { runtimeResume: options.runtimeResume } : {}),
         ...(options.skillDefaults ? { skillDefaults: options.skillDefaults } : {}),
         ...(options.templates ? { templates: options.templates } : {}),
         ...(options.applicationVault ? { applicationVault: options.applicationVault } : {}),

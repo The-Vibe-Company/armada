@@ -27,6 +27,7 @@ type Schema = {
 };
 
 const ROW_ALIASES: Record<string, string> = {
+  runtime_resumes: "RuntimeResumeRow",
   runtime_checkpoints: "RuntimeCheckpointRow",
   docker_hosts: "DockerHostRow",
   docker_host_jobs: "DockerHostJobRow",

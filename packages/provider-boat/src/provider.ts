@@ -173,6 +173,11 @@ function page<T>(items: T[], pageInfo: { nextCursor: string | null; hasMore: boo
   return { items, cursor: pageInfo?.hasMore ? pageInfo.nextCursor : null };
 }
 
+/** Compute-only activation port; intentionally not required by legacy managed adapters. */
+export interface BoatRuntimeHost {
+  resumeRuntime(sandboxId: string, ttlSeconds: number, signal?: AbortSignal): Promise<void>;
+}
+
 /** The boat.dev placement, over `@boatdev/sdk`. Every failure is a `ProviderError`. */
 export interface BoatProvider extends Provider {
   /** Ordinary VM activation only. Does not restore or verify a native harness session. */
@@ -187,7 +192,7 @@ export interface BoatProvider extends Provider {
   ): Promise<readonly { id: string; running: boolean; lastHarness: string | null; lastModel: string | null }[]>;
 }
 
-export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
+export function createBoatProvider(options: BoatProviderOptions): BoatProvider & BoatRuntimeHost {
   const defaultTtl = options.defaultTtlSeconds ?? DEFAULT_TTL_SECONDS;
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const api = new BoatApi(
@@ -296,7 +301,7 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
     throw invalidRequest("Sandbox archival remains unconfirmed.");
   }
 
-  const provider: BoatProvider = {
+  const provider: BoatProvider & BoatRuntimeHost = {
     id: PROVIDER_ID,
     harnesses: HARNESSES.filter((id) => HARNESS_CATALOG[id].boatProvider !== null),
     capabilities: BOAT_CAPABILITIES,
@@ -462,6 +467,27 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider {
       // managed parents; managed MCP is prepared by that adapter after activation.
       lifecycleTrace(sandboxId, "resume", "api_dispatch", "best_effort");
       await call(() => api.resume({ sandboxId }, { signal }));
+      let info = await provider.get(sandboxId, { signal });
+      for (let attempt = 0; info.state === "starting" && attempt < 120; attempt++) {
+        signal.throwIfAborted();
+        await sleep(1000);
+        info = await provider.get(sandboxId, { signal });
+      }
+      if (!["ready", "running"].includes(info.state)) throw invalidRequest("Sandbox activation failed.");
+    },
+    async resumeRuntime(sandboxId: string, ttlSeconds: number, caller?: AbortSignal): Promise<void> {
+      const timeout = AbortSignal.timeout(150_000);
+      const signal = caller ? AbortSignal.any([caller, timeout]) : timeout;
+      // Only the trusted managed adapter calls this port after its own owner,
+      // account and operation fence. Ordinary MCP resume hooks deliberately hide
+      // managed parents; managed MCP is prepared by that adapter after activation.
+      lifecycleTrace(sandboxId, "resume", "api_dispatch", "armada_runtime");
+      await call(() =>
+        api.resume(
+          { sandboxId, resumeRequest: { noEnv: true, env: {}, ttlSeconds: ttl(ttlSeconds, defaultTtl) } },
+          { signal },
+        ),
+      );
       let info = await provider.get(sandboxId, { signal });
       for (let attempt = 0; info.state === "starting" && attempt < 120; attempt++) {
         signal.throwIfAborted();
