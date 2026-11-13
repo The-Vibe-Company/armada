@@ -63,7 +63,11 @@ export function modalRuntimeLaunch(options: {
         ...plan,
         signal,
       });
-      return { epoch: ready.epoch, prompt: (request) => agent.prompt(request, `launch_${sandbox.id}`, ready.epoch) };
+      return {
+        installSkills: (references, key) => agent.installSkills(references, key, ready.epoch, signal),
+        epoch: ready.epoch,
+        prompt: (request) => agent.prompt(request, `launch_${sandbox.id}`, ready.epoch),
+      };
     },
   };
 }

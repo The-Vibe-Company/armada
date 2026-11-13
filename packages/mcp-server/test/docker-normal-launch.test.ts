@@ -73,7 +73,12 @@ afterAll(async () => {
 // The real migrated boundary owns normal-launch sequencing and durable retries.
 // Existing private-lane tests own the individual host/runtime protocol matrices.
 async function fixture(
-  options: { lifecycleGenerationAfterCreate?: number; harness?: Harness; checkoutExitCode?: number } = {},
+  options: {
+    lifecycleGenerationAfterCreate?: number;
+    harness?: Harness;
+    checkoutExitCode?: number;
+    image?: string;
+  } = {},
 ) {
   const orgId = randomUUID(),
     userId = randomUUID(),
@@ -115,7 +120,7 @@ async function fixture(
     org: orgId,
     provider: "docker",
     hostId: host.hostId,
-    image: `worker@sha256:${"a".repeat(64)}`,
+    image: options.image ?? `worker@sha256:${"a".repeat(64)}`,
     harness: options.harness ?? "codex",
     credentialId,
     requestId: randomUUID(),
@@ -772,7 +777,7 @@ test.each(["claude", "opencode"] as const)("normal Docker launch selects and boo
 
 for (const checkoutExitCode of [0, 1])
   test(`Docker checkout exit ${checkoutExitCode} gates its first prompt and scopes GitHub access`, async () => {
-    const f = await fixture({ checkoutExitCode });
+    const f = await fixture({ checkoutExitCode, image: `sha256:${"b".repeat(64)}` });
     await db.query(
       `insert into public.github_connections(user_id,github_id,login,name,refresh_token_enc,access_token_enc,access_expires_at)
     values($1,123,'owner','Owner',$2,$3,now()+interval '1 hour')`,
@@ -837,6 +842,18 @@ for (const checkoutExitCode of [0, 1])
     await hosts.revoke(f.admin, f.hostId);
     expect((await acquire("example/project"))?.status).toBe(403);
   });
+test("normal Docker launch persists and dispatches a full local image ID without rewriting it as a registry digest", async () => {
+  const image = `sha256:${"b".repeat(64)}`;
+  const f = await fixture({ image });
+  const { prompt: _, ...body } = f.body;
+  const result = await f.service().launch(f.caller, body);
+  expect(result.sandbox.image).toBe(image);
+  expect(f.jobs[0]).toMatchObject({ operation: "create", request: { image } });
+  expect((await f.service().launch(f.caller, body)).sandbox.image).toBe(image);
+  expect(f.jobs).toHaveLength(2);
+  await rejected(f.service().launch(f.caller, { ...body, image: `sha256:${"c".repeat(64)}` }), "conflict");
+});
+
 async function defaultRemote(f: Awaited<ReturnType<typeof fixture>>) {
   const registry = createSqlMcpRegistry(sql, key);
   const connection = await registry.save(f.actor.userId, f.actor.orgId, {

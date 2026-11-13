@@ -6,6 +6,7 @@ import {
   GoldenError,
   HARNESSES,
   type Harness,
+  isDockerImageReference,
   resolveModelChoice,
   validateSkillPins,
 } from "@armada/core";
@@ -55,10 +56,10 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
   // whichever server version answers it.
   const imageFlag = single(args, "--image");
   const image = imageFlag === undefined ? DOCKER_DEFAULT_IMAGE : imageFlag.trim();
-  if (!image)
+  if (!isDockerImageReference(image))
     throw new GoldenError(
       "invalid_config",
-      "--image requires a digest-pinned image reference; omit it for the default.",
+      "--image requires repository@sha256:<64 hex> or a host-approved local sha256:<64 hex> ID; omit it for the default.",
     );
   const supplied = single(args, "--request-id");
   if (supplied !== undefined && !uuid.test(supplied))

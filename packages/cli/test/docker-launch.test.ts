@@ -113,6 +113,8 @@ test("Docker incompatible or malformed options fail before HTTP", async () => {
   const calls: Request[] = [];
   for (const flags of [
     ["--agent", "unknown"],
+    ["--image", "sha256:short"],
+    ["--image", `sha256:${"A".repeat(64)}`],
     ["--skill", "foo@1"],
     ["--repo", "https://user:secret@example.test/web"],
     ["--connections", "a"],
@@ -161,7 +163,11 @@ test("Docker launch resolves an exact unique non-revoked host name and refuses m
     golden: null,
     runtime: { epoch: "1" },
   };
-  const namedArgs = [...args.map((arg) => (arg === host ? "office" : arg)), "--repo", "acme/web@feature/work"];
+  const namedArgs = [
+    ...args.map((arg) => (arg === host ? "office" : arg === image ? `sha256:${"b".repeat(64)}` : arg)),
+    "--repo",
+    "acme/web@feature/work",
+  ];
   const summary = {
     id: host,
     name: "office",
@@ -190,6 +196,7 @@ test("Docker launch resolves an exact unique non-revoked host name and refuses m
       launched++;
       expect(await request.json()).toMatchObject({
         hostId: host,
+        image: `sha256:${"b".repeat(64)}`,
         repos: [{ url: "https://github.com/acme/web", branch: "feature/work", dir: "web" }],
       });
       return Response.json(receipt);

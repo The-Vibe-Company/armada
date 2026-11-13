@@ -3,14 +3,22 @@ import { spawnSync } from "node:child_process";
 
 // Execute the real coordinator helper offline: its new mode must prove the normal
 // route, not accidentally succeed via the already accepted private preview.
-test.each(["launch", "resume", "cost", "bad-cost", "claude", "opencode", "repository", "repository-no-proof"])(
-  "normal Docker smoke uses normal routes (%s)",
-  (mode) => {
-    const result = spawnSync(
-      "python3",
-      [
-        "-c",
-        `
+test.each([
+  "launch",
+  "resume",
+  "cost",
+  "bad-cost",
+  "claude",
+  "opencode",
+  "repository",
+  "repository-no-proof",
+  "local-image",
+])("normal Docker smoke uses normal routes (%s)", (mode) => {
+  const result = spawnSync(
+    "python3",
+    [
+      "-c",
+      `
 import contextlib, io, json, os, runpy, sys, types
 from unittest.mock import patch
 calls, ssh = [], []
@@ -33,6 +41,7 @@ class Opener:
             sandbox = body["requestId"]
             assert timeout == 600
             assert body["hostId"] == "retained-host"
+            assert body["image"] == ("sha256:" + "b" * 64 if mode == "local-image" else "image@sha256:" + "a" * 64)
             assert body["provider"] == "docker" and body["harness"] == (mode if mode in ("claude", "opencode") else "codex")
             assert body["visibility"] == "private" and "DOCKER_OK" in body["prompt"]
             assert "credentialVersion" not in body
@@ -40,7 +49,7 @@ class Opener:
                 assert body["repos"] == [{"url": "https://github.com/example/project.git", "branch": "feature/work", "dir": "project"}]
                 assert "git -C /home/user/project log -1" in body["prompt"]
             marker = body["prompt"].split("marker for my next message: ")[1].split(".")[0] if lifecycle else None
-            value = {"sandbox": {"id": sandbox, "provider": "docker"}, "promptId": prompt, "conversationId": conversation}
+            value = {"sandbox": {"id": sandbox, "provider": "docker", "image": body["image"]}, "promptId": prompt, "conversationId": conversation}
         elif path == "sandbox/send":
             assert lifecycle and body["conversation_id"] == conversation
             assert marker not in body["prompt"]
@@ -77,7 +86,7 @@ def command(argv, **kwargs):
     assert "ARMADA_TOKEN" not in kwargs["env"]
     return types.SimpleNamespace(returncode=0)
 argv = ["scripts/smoke-docker-lifecycle.py", "--server", "https://staging.example", "--org", "org",
-        "--credential", "account", "--ssh", "host-alias", "--image", "image@sha256:digest",
+        "--credential", "account", "--ssh", "host-alias", "--image", "sha256:" + "b" * 64 if mode == "local-image" else "image@sha256:" + "a" * 64,
         "--host-id", "retained-host", "--start-host", "--normal-launch"]
 if mode.startswith("repository"):
     argv += ["--repository", "example/project", "--branch", "feature/work"]
@@ -105,17 +114,16 @@ assert lifecycle or [path for path, _ in calls] == ["launch/options", "sandbox/l
 assert "PASS: normal Docker launch route created" in output.getvalue()
 assert "offline-only" not in output.getvalue()
 `,
-        mode,
-      ],
-      { cwd: import.meta.dir + "/..", encoding: "utf8" },
-    );
-    expect(result.stderr).toBe(
-      mode === "bad-cost"
-        ? "Docker cost proof failed: expected stable priced turns and exact session total\n"
-        : mode === "repository-no-proof"
-          ? "Repository proof missing: successful git log -1 command result required\n"
-          : "",
-    );
-    expect(result.status).toBe(0);
-  },
-);
+      mode,
+    ],
+    { cwd: import.meta.dir + "/..", encoding: "utf8" },
+  );
+  expect(result.stderr).toBe(
+    mode === "bad-cost"
+      ? "Docker cost proof failed: expected stable priced turns and exact session total\n"
+      : mode === "repository-no-proof"
+        ? "Repository proof missing: successful git log -1 command result required\n"
+        : "",
+  );
+  expect(result.status).toBe(0);
+});
