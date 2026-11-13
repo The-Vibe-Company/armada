@@ -1,4 +1,4 @@
-# Deployed API smoke
+# Deployed checks
 
 > **Release-only production gate:** With repository variables
 > RELEASE_SYNCED_DEPLOYS=true and STAGING_GATED_DEPLOYS=true,
@@ -31,23 +31,14 @@ Set these at environment scope, not to production values:
 | Secret | `ARMADA_SMOKE_TOKEN` | Staging Armada bearer token; smoke only |
 | Secret | `ARMADA_SMOKE_CASES` | JSON array with staging org, golden and model account identifiers; smoke only |
 
-The project reference, database password and origin variable are already configured.
-The owner must still add the access token, smoke token and cases. Each job checks
-its own required configuration and emits a clear no-op notice if any is missing.
-Migration credentials are never passed to the smoke script.
+Verify required environment settings before running. Migration credentials are never
+passed to the smoke script. Missing settings in legacy diagnostics can no-op; a
+skipped/no-op run cannot authorize promotion.
 
-Smoke-specific values:
-
-| Secret | Value |
-| --- | --- |
-| `ARMADA_ORIGIN` (variable) | Explicit HTTPS origin of the staging Armada API (no path/query/userinfo); mapped to the script's `ARMADA_URL` |
-| `ARMADA_SMOKE_TOKEN` | Armada token scoped to a dedicated smoke user/org with launch, interior access and stop permission |
-| `ARMADA_SMOKE_CASES` | JSON array described below, including golden names/IDs and model account IDs |
-
-No origin is supplied by default. Never put production credentials or a production
-origin in the staging environment. Configure environment protection rules as
-appropriate. The workflow does not accept a target origin input and never uses
-the deployment payload's URL.
+No origin is defaulted. Set only the explicit staging API HTTPS origin (no
+path/query/userinfo), never production or the deployment payload's URL. Protect
+the staging environment. Smoke actor requires launch/interior/cleanup rights;
+provider/model/GitHub connections live in Armada, not workflow credentials.
 
 Example cases (replace placeholders; account IDs are identifiers, not credentials):
 
@@ -82,26 +73,6 @@ accounts and GitHub connection on staging beforehand. For private repositories,
 the token's user must have access. No provider/database credentials belong in
 this workflow.
 
-## Staging migrations
-
-The **Database migrations** workflow runs an independent `Staging migrations`
-job on main pushes that change `supabase/migrations/**`, and on main manual
-dispatches with `mode=migrate`. It uses the separate staging project, links it,
-lists applied versions, previews with `supabase db push --linked --dry-run`, then
-applies pending migrations with `--yes` on push or when manual `dry_run=false`.
-Manual dispatch defaults to preview-only. History/repair remain production-only.
-
-All three `SUPABASE_*` secrets above are required before checkout, CLI setup or
-any database connection. Missing configuration produces notices and successful
-no-op completion. Staging has its own concurrency group and no dependency on or
-from production, so missing staging secrets cannot block production. Production
-conditions, commands and release-synchronized behavior are unchanged.
-
-Railway's `staging` environment auto-deploys main and has its own database and
-encryption key. This migration job is independent of that deployment; it does
-not provide a schema-before-deploy gate. Continue to use additive, compatible
-migrations. The workflow does not deploy the server or configure Railway.
-
 ## Run
 
 From a trusted checkout with Bun installed, set environment variables without
@@ -122,29 +93,16 @@ the sandbox and checks provider state.
 
 ### Pair prerequisites
 
-All four rows use the same GitHub **staging** environment variable
-`ARMADA_ORIGIN` and secrets `ARMADA_SMOKE_TOKEN` and `ARMADA_SMOKE_CASES`.
-These are shared across the matrix, not one secret per pair. Provider keys and
-model credentials live in Armada's staging credential store, not GitHub Actions.
+All selected pairs share staging `ARMADA_ORIGIN`, `ARMADA_SMOKE_TOKEN` and
+`ARMADA_SMOKE_CASES`; no per-pair GitHub/provider key. Each needs an authorized
+model account for its harness, supported model, org UUID, provider-specific golden
+and checkout path with origin. `goldenId` names that same golden, not the other
+provider's. Optional effort and exact skill pins retain their documented semantics.
+Use a separate staging Boat account/key shared by its Claude/Codex cases; Boat's
+one-golden account limit does not justify pair-specific extra goldens. Provider/model
+keys remain in Armada's vault, never cases or workflow arguments.
 
-| Pair | Staging resources | Fields in each `ARMADA_SMOKE_CASES` entry | GitHub staging configuration |
-| --- | --- | --- | --- |
-| Boat × Claude | Boat golden with git checkout; Claude model account available to smoke user | `provider: "boat"`, `harness: "claude"`; `golden` = Boat golden name; `goldenId` = same Boat golden's ID ; `modelAccountId` = Claude account ID; `model` = model supported by that account | Shared `ARMADA_ORIGIN`, `ARMADA_SMOKE_TOKEN`, `ARMADA_SMOKE_CASES`; no pair-specific GitHub key |
-| Boat × Codex | Same staging Boat account/key and reusable Boat golden; Codex model account available to smoke user | `provider: "boat"`, `harness: "codex"`; `golden` = Boat golden name; `goldenId` = same Boat golden's ID ; `modelAccountId` = Codex account ID; `model` = model supported by that account | Same shared variable/secrets; no pair-specific GitHub key |
-| Modal × Claude | Modal golden with git checkout; Claude model account available to smoke user | `provider: "modal"`, `harness: "claude"`; `golden` = Modal golden name; `goldenId` = same Modal golden's ID ; `modelAccountId` = Claude account ID; `model` = model supported by that account | Same shared variable/secrets; no pair-specific GitHub key |
-| Modal × Codex | Reusable Modal golden; Codex model account available to smoke user | `provider: "modal"`, `harness: "codex"`; `golden` = Modal golden name; `goldenId` = same Modal golden's ID ; `modelAccountId` = Codex account ID; `model` = model supported by that account | Same shared variable/secrets; no pair-specific GitHub key |
-
-Every entry also requires `org` (staging org ID) and `repo` (absolute path to
-that golden's git checkout with an accessible `origin`); `reasoningEffort`
-is optional. The smoke token's user needs access to those resources and a staging
-GitHub connection authorized for the checkout. When a mode requires `goldenId`, use the same provider's golden, not another provider's ID. Account references are per harness and may be reused across providers when
-the account supports both; they are identifiers, never credential values.
-
-Goldens are provider-specific: a Boat golden cannot stand in for a Modal golden.
-Use a **separate Boat account and account key for staging**, shared by both Boat
-harness rows (not a separate Boat key per pair): Boat allows one golden per
-account. Configure that key in Armada's staging credential store, never in the
-cases file or workflow. The **Post-deploy smoke** workflow can be dispatched on main. It also runs after
+The **Post-deploy smoke** workflow can be dispatched on main. It also runs after
 a successful GitHub `deployment_status` for environment exactly `armada / staging`
 (Railway's GitHub deployment name, not the GitHub secrets environment). To
 override the accepted name, set the repository variable
@@ -161,11 +119,11 @@ and not cancelled by a newer deploy, allowing cleanup to finish.
 Each step emits a fixed diagnostic line; failures exit nonzero. API bodies,
 command output, tokens and provider error messages are never printed. Requests
 and polling are bounded, and cleanup runs even after a failed step. This is
-a smoke test, not a resource janitor: a killed runner or an ambiguous create
+a receipt-scoped smoke, not a fleet-wide resource janitor: a killed runner or an ambiguous create
 response can still require operator reconciliation in the staging dashboard.
-Do not blindly rerun a timed-out create. Stopped resources retain provider disks
-according to the normal retention policy; this smoke does not delete goldens or
-unrelated resources.
+Do not blindly rerun a timed-out create. Without a deletion journal, stopped resources retain provider disks
+according to the normal retention policy; this smoke does not delete goldens or unrelated resources. With a durable journal,
+known sandbox rows are deleted only after their stop/recovery assertions (below).
 
 ## Offline validation
 
@@ -179,15 +137,15 @@ they require no credentials, network calls, compute or wall-clock waits.
 ### Managed GitHub runtime mode
 
 `bun scripts/post-deploy-smoke.ts --github-runtime` runs the staging-only native
-Git/push slice. It additionally requires each case's `disposableRepository` field
+Git/push check. It additionally requires each case's `disposableRepository` field
 (an exact credential-free HTTPS GitHub `.git` origin), all four provider/harness
 pairs, gate/revision assertions and disposable push authority. See the
 [settings, manual renewal and provider-specific broker procedures](github-runtime.md#automated-first-slice-822).
 First run the default smoke above with the staging gate off for the stock baseline;
 then retire those workers and turn staging on before running the new mode. A zero
-exit from this partial slice does not authorize production enablement.
+exit from this partial check does not authorize production enablement.
 
-### Work-preservation slice (#969)
+### Work preservation
 
 Both staging workflow entrypoints now pass `--work-preservation`. This mode
 refuses any origin other than `https://armada-mcp-staging.up.railway.app` before
@@ -220,7 +178,17 @@ estimate is reliable without the configured provider/model rates. Do not run
 this mode with production credentials. Live staging execution is performed by
 the existing post-deploy workflows, not by a PR or offline test run.
 
-### Template and skill pins slice (#969)
+### Template and skill pins
+
+The template mode exercises personal readable-variable templates and pinned
+public/private skills on the explicitly selected provider × harness cases when
+the corresponding exact pins are configured.
+A random disposable value must be read by the native
+agent (not included in the prompt), while a plain exec must not inherit its
+environment binding. Installation receipts must match the requested exact pins.
+Private installation is skipped only when Skillpack connection metadata confirms
+no personal or matching-org key is configured; a configured but unusable key is
+a failure. Template, variable and sandbox cleanup runs even after a failed check.
 
 Both staging entrypoints pass `--templates-skills` in addition to
 `--work-preservation`. The new mode also refuses any origin other than the exact
@@ -280,7 +248,7 @@ labels (including Skillpack transport/authorization and allocation uncertainty);
 unknown remote text is replaced by `unrecognized_refusal`. This remains a smoke, not a resource janitor.
 No live staging run or deployment is implied by the offline API tests.
 
-### Sandbox lifecycle and timings (#969, night slice)
+### Sandbox lifecycle and timings
 
 Both staging entrypoints additionally pass `--lifecycle`. This flag is
 independently runnable against the exact staging origin and needs no new case
@@ -304,15 +272,15 @@ launch cannot be retried or declared clean: use the reported org/golden/start
 time to reconcile staging resources before rerunning. No new correlation API is
 introduced. Interrupted runners still require operator reconciliation.
 
-This adds one tiny model turn and one retained stop/resume physical incarnation
+This mode adds one tiny model turn and one retained stop/resume physical incarnation
 per selected pair, not a new logical sandbox. Expect roughly 1–4 extra minutes
 per pair; provider cold-start/model rates determine cost. Extension requests
 1860 seconds from now (initial logical TTL 1800), within existing Modal physical
 headroom, then cleanup stops compute; no TTL wall-clock wait is added. Shared
 35-minute work / five-minute cleanup deadlines and 120-poll bounds remain.
-Expiry-as-stop is not claimed by this slice. No migrations or deployment actions.
+Lifecycle alone is not expiry-as-stop proof; use the expiry check below.
 
-### Personal vault slice (#969, night program)
+### Personal vault
 
 Both staging entrypoints additionally pass `--vault`. Standalone
 `bun scripts/post-deploy-smoke.ts --vault` performs only vault checks, allocating
@@ -349,7 +317,7 @@ bounded by remaining time. Missing staging personal-vault permissions/encryption
 configuration fail closed. The existing smoke token must have personal vault
 management rights. No live staging receipt is implied by offline tests.
 
-### Durable recovery handles and repeat reads (#969, night slice)
+### Durable recovery handles and repeat reads
 
 The existing `--work-preservation` checks now also verify the durable recovery
 reference, not only the latest archive payload. Empty unpushed commits use a
@@ -377,9 +345,9 @@ adds two bounded archive readbacks, an absent-handle probe and one status observ
 extra base64 response data at the existing2MiB raw archive ceiling); the clean
 worker adds one status read. Expect seconds of API/storage traffic under the
 existing35+5-minute shared deadline. Git's bounded private temporary object store
-and finally cleanup are unchanged. No live staging receipt is implied by tests.
+and finally cleanup are unchanged. Offline tests are not live acceptance receipts.
 
-### Default skill pins (#969, night slice)
+### Default skill pins
 
 `--default-skills` deliberately requires `--work-preservation`: it reuses that
 clean/dirty worker pair and its cleanup inventory, adding no allocation or model
@@ -413,7 +381,7 @@ installs already implied by normal defaults. No policy rows, writes, new secrets
 migrations or extra workers. Model/registry latency stays inside the shared
 35-minute work +5-minute cleanup deadline; slow or changing policies fail closed.
 
-### Scoped Armada access (#969, native sandbox slice)
+### Scoped Armada access
 
 `--scoped-access` requires `--work-preservation` and reuses its two workers:
 the clean Codex parent uses `sandbox/launch-access-v1` with version1 and
@@ -462,7 +430,7 @@ Use dedicated/exclusive staging smoke actors/cases, clean secretless goldens,
 named account UUIDs, and a staging public MCP URL; no production origins/sessions.
 No migrations/new credentials/case fields. Offline tests are not live receipts.
 
-### Legacy GitHub repair (#969)
+### Legacy GitHub repair
 
 Both staging entrypoints add `--github-refresh`, requiring `--lifecycle`
 and excluding managed-runtime test modes. It reuses the
@@ -506,7 +474,7 @@ No policy/settings writes, migrations,
 deployment or production actions. The coordinator runs both providers after
 merge; offline tests do not prove real GitHub/SSH success.
 
-### Ordinary expiry-as-stop (#969)
+### Ordinary expiry-as-stop
 
 Both staging entrypoints add `--expiry`. Standalone
 `bun scripts/post-deploy-smoke.ts --expiry` runs only this family.
@@ -551,7 +519,7 @@ this extra compute time. No production, new capabilities or migrations.
 The coordinator executes both providers after merge; fake transport tests
 prove verdicts and cleanup, not real-provider expiry success.
 
-### Golden runtime integrity (#969)
+### Golden runtime integrity
 
 Both staging entrypoints enable `--golden-runtime`. On the existing ordinary
 worker (only the clean worker when preservation is enabled), named
@@ -581,7 +549,7 @@ pinned release download per pair plus trivial hashing/exec, with no model usage
 or extra worker. Offline transport tests do not prove deployed provider bytes;
 the coordinator runs both enabled providers after merge.
 
-## Signed-in dashboard reads (#1383)
+## Signed-in dashboard reads
 
 Both staging smoke workflows also run `bun scripts/dashboard-read-smoke.ts`,
 concurrently with the compute smoke. It creates no resources. After one bounded
@@ -643,8 +611,7 @@ Coordinator checks after merge (workers make **no staging/production calls**):
 2. Run a staging deployment smoke. Confirm each enabled `dashboard_*` step passes
    within its stated bound, and a wrong password/expired login fails
    `dashboard_session` without printing credentials. Restore the valid secret.
-3. Confirm no extra compute is created by the read family; use the separate
-   cleanup changes/checks for the compute smoke's row-growth requirement.
+3. Confirm no extra compute is created by the read family; use the compute cleanup receipts for leftover-row reconciliation.
 
 Offline proof: `bun test scripts/dashboard-read-smoke.test.ts` uses fake fetch,
 starts every page before releasing any response, verifies chunked cookies decode
@@ -652,7 +619,127 @@ with the dashboard's pinned Supabase SSR SDK, and deliberately returns broken
 HTTP-200 panels to fail only the named page while siblings finish. No network or
 wall-clock waits are used by these tests.
 
-### Sandbox deletion receipts
+## Legacy independent staging migrations
+
+When release-only gates are disabled, the Database migrations workflow may
+independently link/list/preview/apply staging migrations on main/manual dispatch.
+Manual defaults to dry-run; missing settings can no-op. It does not order schema
+before Railway deploy, so additive compatibility is still necessary. All
+`SUPABASE_*` settings must identify the separate staging project. Production
+promotion/history/repair and authoritative workflow ordering remain in
+[releasing](releasing.md) and [database migrations](database-migrations.md), not a
+legacy successful no-op or unrelated historical smoke check.
+
+## Targeted staging checks
+
+These supplement automated smoke families, not evidence that they passed. Use
+only authorized **disposable staging** resources and synthetic canaries. Workers
+do not deploy, apply migrations, alter production or acquire operator secrets.
+Product/API contracts live in [templates](templates-cli.md) and [vault](vault-cli.md).
+
+### Vault and template authorization
+
+- As personal owner/peer/admin/outsider and org member/admin, test explicit
+  scope, personal invisibility even to admins, shared reads/admin-only writes and
+  immediate denial after membership removal. Direct PostgREST must neither expose
+  ciphertext nor bypass API writes. Audit/tombstones contain IDs, operation,
+  version/outcome/time, never value-derived length/hash/prefix/suffix.
+- Test empty variables, multiline/literal shell text, reserved names, NUL/invalid
+  Unicode, >8 KiB inputs, empty secrets, stale/concurrent rotation/revoke and
+  terminal revoked names. Errors must not echo random canaries. Check omitted
+  expiry preserves it, null clears it, both direct and upload/commit. Uploads
+  expire after five minutes and reject wrong actor/org/replay. No secret reveal
+  API, provider traffic or backup-erasure guarantee follows from vault management.
+- Create personal/org templates on each provider with two distinguishable variables
+  (one empty), exact tools/model/effort, and accessible public/private skill pins.
+  Verify native configuration and manifest/receipt checksums, including idle-first-
+  send, stop/restore, new Modal runner and cleared Boat `/run` rehydration. No values
+  should enter build/pull/init or unrelated exec **environment**. Boat's 0644 JSON
+  file remains intentionally readable to guest users/exec: this is not secrecy.
+- Readable source edits/deletion after admission retain frozen manifest values;
+  normal independent sandbox/model/tool authorization still applies. Secret
+  bindings instead re-resolve exact references with current ownership/version/
+  revocation/expiry. Test a random secret through template CLI/dashboard picker:
+  agent reports a boolean, never prints it; APIs return references only. Rotate,
+  require old-version new/later delivery refusal, republish; revoke and require
+  denial. Do not claim previously delivered copies were erased.
+- Reject personal refs in org templates, stale account/ref, removed golden,
+  disabled tool or remap before allocation. Revoke during init: no hydration or
+  first prompt, and confirm stopped compute. Concurrent matching key/body and
+  replay after restart/lost response keep one allocation; changed input conflicts.
+  Snapshot A in-flight stays A (or refuses if retired); a new key may follow
+  rebuilt B without republication. Unknown fork remains reconciling: inspect
+  recorded logical/provider IDs and labels, never delete its fence/request or
+  submit a fresh key to guess. Frozen results replay unchanged after tombstoning.
+- Compare actionable direct/API/CLI/dashboard refusal messages, stale revisions,
+  pinned-account override refusal and private busy-holder link visibility. A
+  definite refusal can choose an eligible alternate account/new request; uncertain
+  allocation cannot. Check both public proxy and MCP operations.
+
+### Raw delivery and the existing taint gate
+
+Template raw-secret environment delivery is enabled by owner decision on Boat and
+Modal using ordinary lifecycle/readable transport, including Boat's readable file.
+**No taint is added and no secret-safe recovery, retention, snapshot, redaction or
+erasure is promised.** Agents/children, same-UID/root, provider-key holders and
+publishers can read/exfiltrate plaintext. Transforms, screenshots, files, commits
+and network output evade known-value masking; rotate upstream after exposure.
+
+The existing irreversible `application_secret_tainted` marker is a separate first
+gate: preservation/recovery, ordinary prompt resume and all ordinary exec refuse
+before native hooks. On a deliberately marked disposable Boat sandbox, allow
+provider TTL archival while SQL remains ready, then test CLI/MCP/control exec:
+no command or compute revival. Running tainted exec also refuses. Stop/delete
+must still clean compute with value-free preservation warning. Do not set this
+marker on real workloads or infer that template delivery uses it.
+
+This is **not** concurrency-safe hydration or provider-internal recovery fencing.
+Provider-internal recovery (including Modal filesystem recovery images) is not
+covered by this first gate; it cannot authorize proposed hardening. Keep permanent
+exposure history/tombstones in rollback/restore; dropping the marker is unsafe.
+Database deletion does not erase backups, provider disks/events or delivered
+copies. The broader [hardening design](design/templates-variables-secrets.md)
+remains proposed, not a prerequisite silently imposed on owner-approved raw delivery.
+
+### Native Boat stop
+
+Use an ordinary **native** Boat staging sandbox, not the enrolled runtime lane.
+Exercise exec/send/wait/logs, then `armada stop ID --json` twice: return stopping/
+stopped, not lease conflict or a second physical stop. Status/detail remain readable
+while archiving; once Boat confirms archival, list shows stoppedAt. If unconfirmed,
+retain retry reason and investigate Boat archival, never infer exit from time or
+resume. After completion repeat stop; require one `sandbox_stop_dispatch` for the
+successful archival, not repeated dispatch while archiving. Contested observations
+return authorized persisted state; pending archival/unconfirmed failed stop cannot
+make wait claim the native turn settled.
+
+### Database runtime readiness
+
+`/healthz` uses the existing serving SQL pool's read-only `select 1`. Success is
+200/ok/version; failure or two-second observation deadline is503,
+`database_unavailable`, no-store and Retry-After5, never raw driver/connection data.
+Results cache for one second and share **one** in-flight query. Observation timeout
+does not cancel raw SQL or permit another pool/query buildup; late success cannot
+publish recovery without a fresh successful observation.
+
+In authorized disposable staging, block serving pooled sockets/queries **after
+boot**, not merely new connections. After cache expiry require bounded503,
+including concurrent probes without query-per-probe growth. Restore; wait for
+old query settlement/cache expiry and require fresh success/200 without restart.
+Separately stall a readiness query: stay503 until it settles; late success alone
+cannot recover. Capture safe timings/proxy query counts. This is not proof of
+writes, migrations, Auth, providers/models. Railway health gates deployment, not
+a promise that it continuously restarts running deployments.
+
+## Subject-specific acceptance
+
+Use [runtime validation](runtime-startup.md#validation),
+[Boat runtime](boat-runtime-first-prompt.md#staging-acceptance),
+[Docker hosts](docker-host-daemon.md), [OpenCode](runtime/opencode-modal.md) and
+[Otto](otto-staging.md) for their implemented feature gates and real-provider checks.
+Synthetic protocol/build proofs are not inference or production acceptance.
+
+## Sandbox deletion receipts
 
 Both staging workflows upload `.smoke/sandboxes.json` as an artifact even when probes fail, restore the latest named artifact across branches/tags, and set
 `ARMADA_SMOKE_JOURNAL` for the compute smoke. Launch receipts are persisted before
@@ -663,9 +750,9 @@ sandboxes for deletion. The target `smoke_cleanup_summary.remainingRows` is zero
 deleted audit rows remain but do not grow active dashboard lists.
 
 For a manual staging run set `ARMADA_SMOKE_JOURNAL` to a durable receipt path.
-Without it, the legacy operator smoke retains its stop-only behavior. Journal
-cleanup refuses managed `--orchestrator` mode before allocating compute. Lost
-launch responses or forced termination before persistence require coordinator
+Without it, the legacy operator smoke retains its stop-only behavior. The removed
+`--orchestrator` mode is refused before compute; no compatibility mode is available.
+Lost launch responses or forced termination before persistence require coordinator
 reconciliation: direct launches have no idempotency lookup. Unknown outcomes
 fail the run instead of claiming zero growth. Artifact expiry can lose retry
 receipts; preserve `smoke_sandbox_receipt` output as independent audit evidence.
@@ -674,7 +761,35 @@ Coordinator checks: compare org counts before/after a normal run; deliberately
 fail a probe after launch; restore one known smoke receipt on the next run and
 verify its deletion while an unrelated stopped sandbox remains unchanged.
 
-### Provisioning the dashboard smoke password
+## Historical cleanup plan
+
+1. Recover an explicit ID manifest from trusted smoke execution receipts. Each
+   entry is `{ "requestKey": "post-deploy-smoke:<UUID>", "org": "<staging org>",
+   "id": "<sandbox UUID>" }`. The key labels the original smoke request in the
+   audit manifest; it is **not** a server-side sandbox label. Keep its source run
+   URL alongside the manifest. Never manufacture attribution from stopped status,
+   age, owner or golden. Old direct launches did not persist labels: without
+   trustworthy receipts, stop and request coordinator attribution.
+2. Set `ARMADA_URL=https://armada-mcp-staging.up.railway.app`,
+   `ARMADA_SMOKE_ORG=<exact staging org from receipts>` and
+   `ARMADA_SMOKE_JOURNAL=<manifest path>`. No token is needed for dry-run.
+3. Run `bun scripts/cleanup-staging-smoke.ts`. Inspect candidate counts and source
+   receipts. Wrong origins (including production) and mixed-org manifests are
+   refused before requests.
+4. Set `ARMADA_TOKEN` through the staging secret store, then run
+   `bun scripts/cleanup-staging-smoke.ts --delete`. At most 32 explicit IDs are
+   attempted per invocation. Counts are printed; failures return nonzero. Preserve
+   the source manifest and partition into batches of 32. Already-deleted IDs can
+   safely be repeated. Never paste tokens into argv or logs.
+5. Compare the staging org's visible sandbox count before/after. Run an ordinary
+   staging smoke, check all deletion steps and final count zero, then confirm the
+   visible count did not grow. No deployment or migration is part of this script.
+
+Offline checks: `bun test scripts/smoke-sandbox-cleanup.test.ts scripts/cleanup-staging-smoke.test.ts`.
+Coordinator checks: deliberately fail a probe after launch; restore a journal with
+one known leftover on the next run; verify unrelated stopped sandboxes survive.
+
+## Provisioning the dashboard smoke password
 
 Armada's login page sends an email link/code; it does **not** create a password.
 The password grant is an automation credential for the same dedicated **staging**
@@ -698,7 +813,7 @@ Supabase user, not a second Armada login flow. Before enabling dashboard reads:
    Rotate the user password and GitHub secret together. Ordinary Armada users
    continue signing in by emailed link/code; no dashboard password UI is required.
 
-### Diagnosing and reconciling deletion
+## Diagnosing and reconciling deletion
 
 `delete_smoke_sandbox` failures now include `phase`, `httpStatus` and a closed,
 non-secret `code`. No error message, provider body, bearer or cookie is printed;

@@ -1,9 +1,9 @@
-# OpenCode on Modal (#1164)
+# OpenCode on Modal
 
-The coordinator released order step 4 on 2026-11-12 after verifying model
-connections/cost on Modal. Boat parity runs in parallel and is not a prerequisite.
-This implementation uses the same ACP v1 driver and shared catalog on every
-supported host; **OpenCode is enabled on Modal only**. Boat fails before fork.
+**OpenCode is enabled on Modal only**; Boat refuses before fork. The shared
+harness catalog drives validators and generated iOS choices. Codex and Claude
+retain their native drivers; OpenCode uses one ACP v1 transport, not a parallel
+V2 server/SDK integration. Modal retains its existing authenticated tunnel.
 
 ## Connections and launch
 
@@ -43,14 +43,14 @@ creation in the dashboard supports a raw key, while custom endpoints use the CLI
 
 ## Runtime/artifact and deployment prerequisites (coordinator only)
 
-Apply the two new migrations in order before deploying the server. No worker
-applies staging/production migrations. The second migration promotes the private
-Modal harness binding from its old two-value text CHECK to the shared enum.
+Deploy the merged harness/credential enum and Modal binding migrations through
+the normal authorized process before the matching server/runtime image. Workers
+do not apply remote migrations or deploy.
 
 The normal Docker deploy now publishes pinned OpenCode **1.19.5** for both
 architectures automatically, verifying native SHA-256 and length during build.
 No separate coordinator publication is required. See
-[runtime artifact publication](../runtime-bootstrap-cache.md) for the image's
+[runtime artifact publication](../runtime-startup.md#build-and-publish) for the image's
 manifest paths and exact post-deploy HEAD checks. Only selected OpenCode
 launches fetch this artifact, and only at start/resume when its verified native
 binary/cache is missing. Older goldens need no model key or new native installer
@@ -61,7 +61,7 @@ in private stdin bootstrap; only the selected driver receives them. `OPENCODE_*`
 and the four native `XDG_*_HOME` routing names are reserved readable-variable names so configuration cannot redirect
 native credentials/history outside the checkpoint boundary.
 
-Native Task delegation/custom agent modes are not exposed in this first slice:
+Native Task delegation/custom agent modes are not exposed currently:
 execution is fixed to build mode with Task denied until child-session graph
 checkpointing/metering is implemented. Unexpected child-session exports fail
 closed rather than claiming portable continuity. Ordinary read/edit/bash/MCP
@@ -92,15 +92,39 @@ turn unknown, never an invented partial sum.
    `{provider:"modal",harness:"opencode",org,golden,model:"armada/deepseek-flash",
    modelAccountId,repo,reasoningEffort:"default"}`. Expect the ordinary lifecycle,
    read-only status/events and confirmed stop/delete checks to pass. No scoped
-   Armada child access is enabled for OpenCode in this slice.
+   Armada child access is enabled for OpenCode on this path.
 
-Worker evidence: the real pinned Linux x64 CLI passed ACP initialize, an actual
-streaming fake-compatible-endpoint turn (10 input/5 output), redacted export,
-checkpoint/restore, no-text native resume and follow-up with fresh 10/5 counters.
-It requested `stream_options.include_usage:true`. No real model key was used;
-this is not a claim that the deployed DeepSeek lifecycle has passed.
+## ACP and portable state
 
-The real pinned CLI also passed a fake tool loop with `bash` and interleaved
-reasoning replay: two model steps were metered as 13 input / 7 output / 2 reasoning
-(tokens once, not only the final 3/2 step). After export/restore, follow-up usage
-was 3/2, excluding prior history. No real provider key was used in that probe.
+The pinned `opencode-ai@1.19.5` Linux x64/arm64 native binary is verified against
+checked-in SHA256 and manifest length; the lockfile pins npm integrity too.
+`opencode acp` uses newline-delimited JSON-RPC protocol version 1 with loadSession
+and HTTP MCP. Do not assume a native/private steer method: steering cancels and
+starts a continuation in the same session, merging usage into one Armada prompt.
+
+Each turn opens a process, loads saved native state and suppresses replay before
+publishing new output. Exact native session identity is checked before resume is
+acknowledged. Model choice is explicit; MCP is re-delivered on new/load. Permission
+requests can choose only an explicit one-shot allow inside the admitted sandbox;
+client filesystem/terminal RPCs are not advertised. Runtime ChildOwner keeps
+process-group ownership through teardown. Raw RPC errors never become diagnostics.
+
+The private custom endpoint uses inline `OPENCODE_CONFIG_CONTENT`, fixed `armada`
+provider and `@ai-sdk/openai-compatible`. API keys are memory-only driver environment,
+not argv, golden/project config or public receipts. Native updates/catalog fetches
+are disabled. Export/import persists only atomic redacted `sessions/<id>.json`
+(mode 0600), not SQLite/WAL, auth, logs or provider caches. No-text restore imports
+and verifies the exact session; missing/malformed export refuses, not replacement.
+
+Local checks:
+
+```sh
+bun test packages/agent-runtime/test/acp.test.ts packages/agent-runtime/test/opencode.test.ts
+bun packages/agent-runtime/build.ts
+```
+
+The pinned CLI can be probed with ACP initialize (protocolVersion 1, loadSession
+true) without a model key. A fake-compatible-endpoint turn plus export/import
+checks redaction, no replay and fresh usage, but does not prove a deployed
+DeepSeek lifecycle or plan-key terms/acceptance. The coordinator-owned lifecycle
+check above remains the real-provider gate.
