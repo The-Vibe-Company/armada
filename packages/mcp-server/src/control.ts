@@ -301,7 +301,10 @@ export async function handleControlRequest(request: Request, options: ControlOpt
           route.startsWith("secrets/")
         ? await readVaultBody(request)
         : await readBody(request);
-    if (route === "sandbox/launch" && body.provider === "docker" && options.dockerLaunch)
+    if (
+      ((route === "sandbox/launch" && body.provider === "docker") || route === "templates/launch") &&
+      options.dockerLaunch
+    )
       options.configureDockerLaunchRequest?.(request);
     if (route === "account/logout") {
       if (caller.via !== "supabase")
@@ -1763,6 +1766,17 @@ export function templateRuntime(options: ControlOptions, caller: Caller) {
       ),
       ...(options.connections ? { connections: options.connections } : {}),
     },
+    ...(options.dockerLaunch
+      ? {
+          launchDocker: (
+            body: Record<string, unknown>,
+            admission: {
+              beforeReserve(tx: import("@armada/core").Sql): Promise<void>;
+              beforeStart(): Promise<void>;
+            },
+          ) => options.dockerLaunch!.launch(caller, body, admission),
+        }
+      : {}),
     provider: (golden: GoldenRecord) => providerForGolden(options, caller, golden),
     ...(options.launch ? { options: options.launch } : {}),
   };
