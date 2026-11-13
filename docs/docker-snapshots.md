@@ -183,3 +183,26 @@ unfinished manifest after lease expiry (30 seconds) following a restart. Pending
 launches are not ready for user prompts until preparation completes. Template
 launches retain their existing synchronous admission callbacks and authorization
 rechecks; this change does not move those callbacks into background work.
+
+### Checking GitHub access
+
+Docker repository launches use the **launching user's** connected Armada GitHub
+App user access token, not the host owner's identity or the selected model
+credential. The App must cover the repository and that user must have access;
+Docker does not ask for a separate installation token or host-local GitHub login.
+Boat/Modal managed-runtime repository preflight uses the same token resolver and
+GitHub repository access check.
+
+Sign in as that same person against the same Armada server, then run
+`armada github status` to inspect connection state and installations;
+`armada github connect`, `reconnect`, `install`, and `manage INSTALLATION_ID`
+provide the corresponding repair flows. Status is not a per-repository access
+probe, and `armada doctor` currently checks neither GitHub connection nor repo
+access. Account-management commands require a personal login, not a service
+bearer. `armada github refresh SANDBOX_ID` configures an existing sandbox; it is
+not a read-only access check.
+
+A repository-authorization failure and an unacknowledged runtime GitHub setup are
+distinct. The latter reports a runtime/host delivery problem rather than telling
+the user to reconnect GitHub; a duration or generic error alone cannot establish
+that the stored GitHub grant is missing.

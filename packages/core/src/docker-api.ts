@@ -125,6 +125,8 @@ export const DOCKER_LAUNCH_FAILURE_MESSAGES = {
   startup: "Docker sandbox startup failed. Check the host and retry with a new request.",
   github:
     "Repository authorization failed. Connect GitHub and grant access to the requested repositories, then launch again.",
+  githubDelivery:
+    "GitHub setup was not acknowledged by the sandbox runtime. Check the runtime connection and host, then retry the launch.",
   environment: "Sandbox environment preparation failed. Check variable and secret bindings, then launch again.",
   checkout:
     "Repository checkout failed or timed out. Check the repository branch and GitHub access, then launch again.",

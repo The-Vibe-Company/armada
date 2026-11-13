@@ -59,6 +59,12 @@ function allowed(binding: Pick<Binding, "repositories">, repo: string) {
     })
   );
 }
+/** Delivery/ACK failure is not evidence that the owner must reconnect GitHub. */
+export class RuntimeGitHubDeliveryError extends Error {
+  constructor() {
+    super("Runtime GitHub configuration was not acknowledged.");
+  }
+}
 export type RuntimeGitHub = ReturnType<typeof createRuntimeGitHub>;
 /** Separate from the legacy/native broker: no boot-id exec, provider lookup, SSH
  * or changes to host authority. Tokens leave only the reviewed private response. */
@@ -285,19 +291,24 @@ export function createRuntimeGitHub(options: {
       cwd: s.repositoryDir ? `/home/user/${s.repositoryDir}` : "/home/user",
       defaults: { model: s.model, reasoningEffort: s.reasoningEffort },
     });
-    await agent.configureGitHub(
-      {
-        version: 1,
-        revision: issuedCap.revision,
-        generation: issuedCap.epoch,
-        expiresAt: issuedCap.expiresAt,
-        capability: issuedCap.capability,
-        url: new URL(path, options.origin).href,
-        retired,
-        identity: { name: identity.name, email: identity.email },
-      },
-      `github_${issuedCap.epoch}_${issuedCap.revision}`,
-    );
+    try {
+      await agent.configureGitHub(
+        {
+          version: 1,
+          revision: issuedCap.revision,
+          generation: issuedCap.epoch,
+          expiresAt: issuedCap.expiresAt,
+          capability: issuedCap.capability,
+          url: new URL(path, options.origin).href,
+          retired,
+          identity: { name: identity.name, email: identity.email },
+        },
+        `github_${issuedCap.epoch}_${issuedCap.revision}`,
+      );
+    } catch {
+      // Never attach the underlying runtime reply or any credential-bearing configuration.
+      throw new RuntimeGitHubDeliveryError();
+    }
     await authority.withOwner(id, s.ownerId, async (tx, scope) => {
       const now = await current(tx, id),
         cap = await read(tx, hash(issuedCap.capability));
