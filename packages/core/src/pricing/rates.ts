@@ -12,7 +12,10 @@ export function validRate(value: unknown): value is string {
   return typeof value === "string" && /^(0|[1-9]\d{0,11})(\.\d{1,12})?$/.test(value);
 }
 export function validRates(rates: TokenRates): boolean {
-  return (rates.cacheWriteOneHour === undefined || rates.cacheWriteOneHour === null || validRate(rates.cacheWriteOneHour)) && [rates.input, rates.output, rates.cacheRead, rates.cacheWrite, rates.reasoning].every(
-    (rate) => rate === null || validRate(rate),
+  return (
+    (rates.cacheWriteOneHour === undefined || rates.cacheWriteOneHour === null || validRate(rates.cacheWriteOneHour)) &&
+    [rates.input, rates.output, rates.cacheRead, rates.cacheWrite, rates.reasoning].every(
+      (rate) => rate === null || validRate(rate),
+    )
   );
 }

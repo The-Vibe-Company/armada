@@ -165,12 +165,23 @@ test.each([
 
 test("Claude coordinator turn prices 1h and mixed cache writes without double charging", () => {
   const snapshot = resolvePrice({ provider: "anthropic", model: "claude-opus-5-5", customEndpoint: false });
-  const native = { ...turn, model: "claude-opus-5-5", inputTokens: 2, outputTokens: 4,
-    reasoningTokens: 0, cachedTokens: 0, cacheWriteTokens: 19058,
-    cacheWriteTokensByTtl: { fiveMinute: 0, oneHour: 19058 } };
+  const native = {
+    ...turn,
+    model: "claude-opus-5-5",
+    inputTokens: 2,
+    outputTokens: 4,
+    reasoningTokens: 0,
+    cachedTokens: 0,
+    cacheWriteTokens: 19058,
+    cacheWriteTokensByTtl: { fiveMinute: 0, oneHour: 19058 },
+  };
   expect(priceTurn(native, "claude", snapshot, "other").usd).toBe("0.152552");
-  expect(priceTurn({ ...native, cacheWriteTokensByTtl: { fiveMinute: 19028, oneHour: 30 } },
-    "claude", snapshot, "other").usd).toBe("0.095468");
-  expect(priceTurn({ ...native, cacheWriteTokensByTtl: { fiveMinute: 0, oneHour: 30 } },
-    "claude", snapshot, "other").unknown).toBe("pricing_dimensions");
+  expect(
+    priceTurn({ ...native, cacheWriteTokensByTtl: { fiveMinute: 19028, oneHour: 30 } }, "claude", snapshot, "other")
+      .usd,
+  ).toBe("0.095468");
+  expect(
+    priceTurn({ ...native, cacheWriteTokensByTtl: { fiveMinute: 0, oneHour: 30 } }, "claude", snapshot, "other")
+      .unknown,
+  ).toBe("pricing_dimensions");
 });

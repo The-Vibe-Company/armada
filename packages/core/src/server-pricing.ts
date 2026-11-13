@@ -109,9 +109,15 @@ export function priceTurn(
   const uncached = harness === "codex" ? input - cached - write : input;
   if (!Number.isSafeInteger(uncached) || uncached < 0) return unknown("tokens");
   const detail = turn.cacheWriteTokensByTtl;
-  const split = harness === "claude" && detail !== undefined && frozen.source === "models.dev";
-  if (split && (detail.conflicted || !count(detail.fiveMinute) || !count(detail.oneHour) ||
-      detail.fiveMinute + detail.oneHour !== write)) return unknown("pricing_dimensions");
+  const split = write > 0 && harness === "claude" && detail !== undefined && frozen.source === "models.dev";
+  if (
+    split &&
+    (detail.conflicted ||
+      !count(detail.fiveMinute) ||
+      !count(detail.oneHour) ||
+      detail.fiveMinute + detail.oneHour !== write)
+  )
+    return unknown("pricing_dimensions");
   if (
     !split &&
     write > 0 &&
