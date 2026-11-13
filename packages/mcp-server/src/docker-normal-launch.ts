@@ -9,7 +9,7 @@ import {
   resolveModelChoice,
   type Sql,
 } from "@armada/core";
-import { decryptSecret, encryptSecret } from "@armada/core/server";
+import { createSqlSandboxStore, decryptSecret, encryptSecret } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import type { createDockerBootstrapService } from "./docker-bootstrap-service.ts";
 import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
@@ -337,6 +337,11 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
               reasoningEffort: request.reasoningEffort,
               ...(body.ttlSeconds === undefined ? {} : { ttlSeconds: request.ttlSeconds }),
             });
+            if (resolved.usagePricing)
+              await createSqlSandboxStore(scoped(tx), { turnModels: true }).recordUsagePricingContext?.(
+                request.requestId,
+                resolved.usagePricing,
+              );
             const current = await member(tx, actor);
             await tx.query(
               `insert into public.docker_launch_requests(sandbox_id,actor_epoch,request_hash,request_enc) values($1,$2,$3,$4)`,

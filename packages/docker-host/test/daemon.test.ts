@@ -8,7 +8,10 @@ import { createDockerMachineExecutor } from "../../core/src/docker-machine.ts";
 import { type Api, type Executor, type Job, register, type State, type Store, tick } from "../src/daemon.ts";
 import { fileStore, httpApi } from "../src/native.ts";
 
-function fixture(operation: Exclude<Job["operation"], "bootstrap"> = "create", bootstrap?: BootstrapDescriptor) {
+function fixture(
+  operation: Exclude<Job["operation"], "bootstrap" | "resume"> = "create",
+  bootstrap?: BootstrapDescriptor,
+) {
   const job: Job = {
     requestId: crypto.randomUUID(),
     ...(bootstrap ? { operation: "bootstrap" as const, bootstrap } : { operation }),
@@ -510,4 +513,24 @@ test("saved generation identity fences absolute expiry across repeated and fresh
   f.job.request.expiresAt--;
   await tick(f.store, f.api, f.executor);
   expect(f.executed).toEqual(["create", "stop"]);
+});
+
+test("resume starts the retained container before fresh runtime bootstrap and never replays a completed resume", async () => {
+  const f = fixture("create", bootstrapDescriptor());
+  if (f.job.operation !== "bootstrap") throw Error("missing bootstrap fixture");
+  f.job.operation = "resume";
+  const calls: string[] = [];
+  const executor: Executor = {
+    ...f.executor,
+    async resume() {
+      calls.push("start");
+    },
+    async startRuntime() {
+      calls.push("bootstrap");
+    },
+  };
+  await tick(f.store, f.api, executor);
+  await tick(f.store, f.api, executor);
+  expect(calls).toEqual(["start", "bootstrap"]);
+  expect(f.acknowledgements).toEqual(["completed", "completed"]);
 });

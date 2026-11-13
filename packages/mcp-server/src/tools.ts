@@ -1404,6 +1404,20 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
   );
 
   tool(
+    "resume",
+    {
+      title: "Resume a stopped Docker sandbox",
+      description:
+        "Owner-only. Restarts the same Docker allocation with fresh runtime enrolment, keeping history and the original TTL. Reuse request_id after uncertainty.",
+      input: { id, request_id: z.string().uuid() },
+      output: { id: z.string(), status: z.literal("ready") },
+    },
+    async () => {
+      throw new ToolError("unsupported", "Normal resume is currently available only for Docker sandboxes.");
+    },
+  );
+
+  tool(
     "send",
     {
       title: "Send a prompt",

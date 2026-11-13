@@ -2,8 +2,10 @@
 
 This slice addresses shared **Codex ChatGPT accounts** on the existing Boat
 runtime path. It adds no launch option, exclusivity lock, sandbox-count limit or
-native fallback. Claude tokens are not supported by Boat's currently Codex-only
-runtime admission; this document does not claim Claude parity.
+native fallback. Claude token admission is implemented by the separate Claude
+lifecycle PR #1428;
+do not duplicate its configuration, driver or migration. Neither slice claims
+real staging parity before coordinator evidence.
 
 ## Authentication boundary
 
@@ -29,12 +31,17 @@ provider resolution/inspection, while the native migration cases still pass.
 
 `packages/mcp-server/test/runtime-native-auth.test.ts` exercises the real SQL
 broker, runtime access route and guest access callback together: two live guests
-share an account, one rotates, the other's stale renewal reuses that committed
-rotation, and a replacement epoch/server route reads the persisted token. The
+share an account. An actual CodexDriver JSONL child logs in via
+`chatgptAuthTokens`, requests renewal during an active turn and completes an
+assistant answer using the broker's new access token. Only one server rotation
+occurs; the other's stale renewal reuses that committed rotation, and a
+replacement epoch/server route reads the persisted token. The
 old epoch refuses; the other guest remains usable. Refresh tokens stay outside
-access responses and the journal. This is not real model-inference evidence.
+access responses and the journal; native auth request/response tokens also stay
+outside driver message events. The JSONL peer is synthetic, not a real model.
+This is not real model-inference evidence.
 
-## Single coordinator staging check
+## Single coordinator staging check: Codex ChatGPT
 
 No worker deploys, applies migrations or allocates Boat compute. After normal
 deployment, use the existing combined smoke with an authorized **ChatGPT-backed
@@ -56,6 +63,32 @@ subscription allocation. Require actual archived answers before and after
 resume and the existing usage checks. A successful answer proves access for
 this subscription account, **not necessarily a real refresh**: refresh acceptance
 also needs coordinator evidence of a server-side revision advance, without
-printing tokens. An unknown cost is not cost parity. #1420 remains open until
-positive cost, subscription-backed answers/refresh, and the requested Claude
-token support are accepted; neither this repair nor #1418 alone closes it.
+printing tokens. Require positive per-turn and session USD with basis
+`api_equivalent`, and
+final `costAfterResume:priced`; an API-key `estimated` receipt does not prove
+subscription acceptance. Missing dimensions/rates remain unknown and are not a
+cost-parity pass. #1420 remains open until the coordinator records positive cost
+and the subscription-backed lifecycle; no worker performed inference.
+
+## Single coordinator staging check: Claude token
+
+PR #1428 already projects `CLAUDE_CODE_OAUTH_TOKEN` in encrypted selected-harness
+configuration, separately from API-key authentication. Do not copy its files or
+add another runtime option. After its normal migration/server/artifact delivery,
+use an authorized account UUID of kind `claude_oauth` as the same existing
+`ARMADA_RUNTIME_CREDENTIAL_ID`:
+
+```sh
+ARMADA_RUNTIME_HARNESS=claude ARMADA_RUNTIME_SMOKE=one_real_boat_launch \
+  bun scripts/check-boat-runtime.ts --usage --resume
+```
+
+One allocation + one same-VM activation, no retries. Require archived actual
+answers and completed prompts before/after resume, own per-turn tokens and
+positive server-priced USD with `api_equivalent` basis, matching frozen
+admission, and same-conversation memory/checkpoint proof. This check does not
+claim Claude MCP/skills parity. A Claude setup token is a credential, not a
+refresh-token bundle: do not introduce a second native refresh writer or export
+raw credentials into public receipts. No new secrets, manual artifact publishing
+or worker staging access. The coordinator owns both real lifecycle checks and
+the #1161 parity table evidence.

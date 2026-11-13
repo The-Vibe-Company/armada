@@ -15,7 +15,7 @@ export type Receipt = {
   /** Durable positive local stop proof, separate from the original job outcome. */
   expired?: true;
   expiryReported?: true;
-} & ({ operation: "create" | "stop" | "delete" } | { operation: "bootstrap"; inputHash: string });
+} & ({ operation: "create" | "stop" | "delete" } | { operation: "bootstrap" | "resume"; inputHash: string });
 export type State = {
   server: string;
   installationId: string;
@@ -36,6 +36,7 @@ export interface Api {
 }
 export interface Executor {
   startRuntime?(request: DockerMachineRequest, bootstrap: BootstrapDescriptor): Promise<unknown>;
+  resume?(request: DockerMachineRequest): Promise<unknown>;
   create(request: DockerMachineRequest): Promise<unknown>;
   stop(request: DockerMachineRequest): Promise<unknown>;
   delete(request: DockerMachineRequest): Promise<unknown>;
@@ -82,7 +83,9 @@ export async function register(store: Store, api: Api, server: string, token: st
 export async function tick(store: Store, api: Api, executor: Executor): Promise<void> {
   const state = await store.load();
   // Sweep even when the server is offline or has revoked the credential. One failed sweep cannot block others.
-  for (const receipt of state.receipts.filter((r) => r.operation === "create" || r.operation === "bootstrap")) {
+  for (const receipt of state.receipts.filter(
+    (r) => r.operation === "create" || r.operation === "bootstrap" || r.operation === "resume",
+  )) {
     try {
       if ((await executor.stopIfExpired(receipt.request)) === true && !receipt.expired) {
         receipt.expired = true;
@@ -117,10 +120,14 @@ export async function tick(store: Store, api: Api, executor: Executor): Promise<
   async function execute(receipt: Receipt, job: Job, admitted: boolean) {
     if (receipt.outcome) return;
     try {
-      if (receipt.operation === "bootstrap") {
+      if (receipt.operation === "bootstrap" || receipt.operation === "resume") {
         // A recovered pending receipt is uncertain, even if persistence preceded the actual call.
-        if (!admitted || job.operation !== "bootstrap" || !executor.startRuntime)
+        if (!admitted || (job.operation !== "bootstrap" && job.operation !== "resume") || !executor.startRuntime)
           throw new Error("Unknown bootstrap outcome");
+        if (receipt.operation === "resume") {
+          if (!executor.resume) throw new Error("Resume unavailable");
+          await executor.resume(receipt.request);
+        }
         await executor.startRuntime(receipt.request, job.bootstrap);
       } else await executor[receipt.operation](receipt.request);
       receipt.outcome = "completed";
@@ -132,10 +139,10 @@ export async function tick(store: Store, api: Api, executor: Executor): Promise<
   const polled = await api.poll(state);
   if (!polled.job) return;
   const job = parseDockerHostJob(polled.job);
-  if (job.operation === "bootstrap" && job.bootstrap.serverUrl !== state.server)
+  if ((job.operation === "bootstrap" || job.operation === "resume") && job.bootstrap.serverUrl !== state.server)
     throw new Error("Wrong bootstrap origin");
   const inputHash =
-    job.operation === "bootstrap"
+    job.operation === "bootstrap" || job.operation === "resume"
       ? createHash("sha256")
           .update(JSON.stringify({ requestId: job.requestId, input: canonicalDockerHostJob(job) }))
           .digest("hex")
@@ -146,7 +153,7 @@ export async function tick(store: Store, api: Api, executor: Executor): Promise<
     receipt &&
     (receipt.operation !== job.operation ||
       fingerprint(receipt) !== fingerprint(job) ||
-      (receipt.operation === "bootstrap" && receipt.inputHash !== inputHash))
+      ((receipt.operation === "bootstrap" || receipt.operation === "resume") && receipt.inputHash !== inputHash))
   )
     throw new Error("Changed host job");
   if (!receipt) {
@@ -164,8 +171,8 @@ export async function tick(store: Store, api: Api, executor: Executor): Promise<
       throw new Error("Changed machine generation");
     const base = { requestId: job.requestId, request: { ...job.request } };
     receipt =
-      job.operation === "bootstrap"
-        ? { ...base, operation: "bootstrap", inputHash: inputHash as string }
+      job.operation === "bootstrap" || job.operation === "resume"
+        ? { ...base, operation: job.operation, inputHash: inputHash as string }
         : { ...base, operation: job.operation };
     state.receipts.push(receipt);
     await store.save(state);

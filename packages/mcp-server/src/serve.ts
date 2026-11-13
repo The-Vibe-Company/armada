@@ -29,6 +29,7 @@ import { createDockerBootstrapService } from "./docker-bootstrap-service.ts";
 import { createDockerHostRoutes } from "./docker-host-routes.ts";
 import { createDockerHostStore } from "./docker-host-store.ts";
 import { createDockerNormalLaunch } from "./docker-normal-launch.ts";
+import { createDockerNormalSend } from "./docker-normal-send.ts";
 import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
 import { createDockerSandboxControls } from "./docker-sandbox-controls.ts";
 import { createDockerSandboxRoutes } from "./docker-sandbox-routes.ts";
@@ -348,7 +349,14 @@ export async function startServer(
     runtimeMcp.prepare,
   );
   const dockerControls =
-    env.ARMADA_DOCKER_HOSTS === "1" ? createDockerSandboxControls(sql, config.encryptionKey) : undefined;
+    env.ARMADA_DOCKER_HOSTS === "1"
+      ? createDockerSandboxControls(sql, config.encryptionKey, {
+          ...(dockerBootstrap ? { resume: dockerBootstrap } : {}),
+          send: createDockerNormalSend(sql, config.encryptionKey, {
+            enabled: dockerEnabled && Boolean(dockerBootstrap),
+          }),
+        })
+      : undefined;
   const dockerLaunchEnabled = dockerEnabled && Boolean(dockerBootstrap);
   const dockerLaunch =
     env.ARMADA_DOCKER_HOSTS === "1"
@@ -366,6 +374,8 @@ export async function startServer(
       placement: dockerEnabled,
       normalApi: Boolean(dockerControls),
       normalLaunch: dockerLaunchEnabled,
+      normalSend: dockerLaunchEnabled,
+      normalResume: dockerLaunchEnabled,
     },
     runtimeSend,
     runtimeCheckpoint,
