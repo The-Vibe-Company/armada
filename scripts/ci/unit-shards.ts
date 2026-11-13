@@ -6,6 +6,8 @@ import durations from "./test-durations.json";
 export const SHARD_COUNT = 6;
 // Measured lint/typecheck/guard work runs once in shard 1, sharing its setup.
 const STATIC_CHECK_SECONDS = 24;
+type WorkerObservation = { files: string[]; seconds: number };
+const workerKey = (files: readonly string[]) => [...files].sort().join(",");
 const root = fileURLToPath(new URL("../../", import.meta.url));
 
 // Bun's default discovery names; explicit ./ paths below are exact files, not filters.
@@ -38,25 +40,37 @@ export function planShards(
   files: string[],
   weights: Record<string, number>,
   sources: Record<string, string> = {},
+  observations: WorkerObservation[] = [],
 ): string[][] {
   const shards: string[][] = Array.from({ length: SHARD_COUNT }, () => []);
   const loads = Array<number>(SHARD_COUNT).fill(0);
   loads[0] = STATIC_CHECK_SECONDS;
-  const weight = (path: string) => {
-    const value = weights[path] ?? 1;
-    if (!Number.isFinite(value) || value <= 0) throw new Error(`Invalid test duration: ${path}`);
-    // Cold isolated-file measurements include ~1.5s of schema initialization.
-    // This is a planning estimate, not an invented per-file worker measurement.
-    return shareSqlWorker(path, sources[path] ?? "") ? Math.max(0.1, value - 1.5) : value;
+  const measured = new Map(observations.map((worker) => [workerKey(worker.files), worker.seconds]));
+  const weight = (batch: string[]) => {
+    const observed = measured.get(workerKey(batch));
+    const cold = batch.reduce((total, path) => {
+      const value = weights[path] ?? 1;
+      if (!Number.isFinite(value) || value <= 0) throw new Error(`Invalid test duration: ${path}`);
+      return total + value;
+    }, 0);
+    // Only unobserved cohorts need an estimate. Keep one cold startup per worker.
+    const value = observed ?? (batch.length === 1 ? cold : Math.max(0.1, cold - (batch.length - 1) * 1.5));
+    if (!Number.isFinite(value) || value <= 0) throw new Error(`Invalid worker duration: ${workerKey(batch)}`);
+    return value;
   };
-  // Longest-processing-time first. New files participate automatically with a 1s estimate.
-  const ordered = [...files].sort((a, b) => weight(b) - weight(a) || a.localeCompare(b));
-  for (const [position, file] of ordered.entries()) {
+  // Schedule workers atomically: regrouping cold files after placement skews loads.
+  const ordered = workerBatches(files, sources, observations);
+  while (ordered.length < SHARD_COUNT && ordered.some((batch) => batch.length > 1)) {
+    const batch = ordered.find((batch) => batch.length > 1)!;
+    ordered.push([batch.pop()!]);
+  }
+  ordered.sort((a, b) => weight(b) - weight(a) || workerKey(a).localeCompare(workerKey(b)));
+  for (const [position, batch] of ordered.entries()) {
     const empty = shards.flatMap((shard, index) => (shard.length === 0 ? [index] : []));
     // Retain nonempty coverage even for small plans where static work dominates.
     const index = ordered.length - position === empty.length ? empty[0]! : loads.indexOf(Math.min(...loads));
-    shards[index]!.push(file);
-    loads[index] = loads[index]! + weight(file);
+    shards[index]!.push(...batch);
+    loads[index] = loads[index]! + weight(batch);
   }
   for (const shard of shards) shard.sort();
   validatePlan(files, shards);
@@ -77,7 +91,11 @@ function shareSqlWorker(file: string, source: string): boolean {
 }
 
 /** Only database-only suites share a worker. Native/global-mock suites retain process isolation. */
-export function workerBatches(files: readonly string[], sources: Record<string, string>): string[][] {
+export function workerBatches(
+  files: readonly string[],
+  sources: Record<string, string>,
+  observations: WorkerObservation[] = [],
+): string[][] {
   const sql: string[] = [];
   const isolated: string[][] = [];
   for (const file of files) {
@@ -85,15 +103,24 @@ export function workerBatches(files: readonly string[], sources: Record<string, 
     else isolated.push([file]);
   }
   const batches: string[][] = [];
+  const remaining = new Set(sql);
+  for (const { files: cohort } of observations) {
+    // Source changes that require isolation invalidate the whole measured cohort.
+    if (cohort.length < 2 || cohort.length > 12 || new Set(cohort).size !== cohort.length) continue;
+    if (!cohort.every((file) => remaining.has(file))) continue;
+    batches.push([...cohort]);
+    for (const file of cohort) remaining.delete(file);
+  }
+  const unmeasured = [...remaining].sort();
   // Bound memory/lifetime without rebuilding the pristine image for every SQL suite.
-  for (let offset = 0; offset < sql.length; offset += 12) batches.push(sql.slice(offset, offset + 12));
+  for (let offset = 0; offset < unmeasured.length; offset += 12) batches.push(unmeasured.slice(offset, offset + 12));
   return [...batches, ...isolated];
 }
 
 if (import.meta.main) {
   const allFiles = testFiles();
   const sources = Object.fromEntries(allFiles.map((path) => [path, readFileSync(join(root, path), "utf8")]));
-  const shards = planShards(allFiles, durations, sources);
+  const shards = planShards(allFiles, durations.files, sources, durations.workers);
   console.log(
     `Validated ${shards.flat().length} test files, assigned exactly once: ${shards.map((s) => s.length).join(" / ")}`,
   );
@@ -103,7 +130,7 @@ if (import.meta.main) {
       throw new Error(`Expected shard 1..${SHARD_COUNT} or --check`);
     let failed = false;
     const files = shards[index - 1]!;
-    for (const batch of workerBatches(files, sources)) {
+    for (const batch of workerBatches(files, sources, durations.workers)) {
       const started = performance.now();
       const child = Bun.spawn([process.execPath, "test", "--no-orphans", ...batch.map((path) => `./${path}`)], {
         cwd: root,

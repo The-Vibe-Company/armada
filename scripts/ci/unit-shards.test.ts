@@ -13,6 +13,14 @@ test("balanced shards include new files exactly once without depending on discov
   expect(plan).toEqual(planShards([...files].reverse(), weights));
   expect(plan.flat().sort()).toEqual([...files].sort());
   expect(plan.find((shard) => shard.includes("slow.test.ts"))).toEqual(["slow.test.ts"]);
+  const sql = Array.from({ length: 12 }, (_, i) => `packages/mcp-server/test/atomic-${i}.test.ts`);
+  const sources = Object.fromEntries(sql.map((file) => [file, "await migratedDatabase()"]));
+  const observations = Array.from({ length: 6 }, (_, i) => ({ files: sql.slice(i * 2, i * 2 + 2), seconds: 10 }));
+  const atomic = planShards(sql, {}, sources, observations);
+  expect(atomic).toEqual(planShards([...sql].reverse(), {}, sources, observations));
+  expect(observations.every(({ files }) => atomic.some((shard) => files.every((file) => shard.includes(file))))).toBe(
+    true,
+  );
 });
 
 test("coverage guard refuses missing, duplicate, foreign and empty shard assignments", () => {
@@ -60,4 +68,8 @@ test("SQL worker merging keeps every file once and leaves native or global-mock 
   expect(batches.flat().sort()).toEqual([...files].sort());
   expect(batches.slice(0, 2).map((batch) => batch.length)).toEqual([12, 3]);
   expect(batches.slice(2).every((batch) => batch.length === 1)).toBe(true);
+  const measured = [{ files: [sql[1]!, sql[3]!], seconds: 1 }];
+  expect(workerBatches(files, sources, measured)[0]).toEqual(measured[0]!.files);
+  const changed = { ...sources, [sql[1]!]: "Bun.spawn()" };
+  expect(workerBatches(files, changed, measured).find((batch) => batch.includes(sql[1]!))).toEqual([sql[1]!]);
 });

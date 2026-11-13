@@ -23,9 +23,12 @@ separate isolated files.
 
 A merged worker logs its actual total (`Completed SQL worker in ...: files`),
 not invented per-file durations. Single-file measurements retain the original
-`Completed <file> in <seconds>s` format. Recorded weights are raw isolated-file observations from completed CI, not local runs.
-The planner subtracts a conservative 1.5-second cold-schema estimate for eligible
-SQL files (floor 0.1 seconds); this estimate is never logged as a measurement.
+`Completed <file> in <seconds>s` format. Recorded weights keep raw isolated-file observations and actual SQL-worker totals
+from completed CI separately. The planner schedules measured workers atomically,
+preserving their membership instead of redistributing fictional per-file costs.
+New/unmeasured SQL cohorts use cold-file sums minus a conservative 1.5-second
+startup credit for each file after the first; estimates are never logged as measurements.
+A source change requiring isolation invalidates the entire old cohort automatically.
 Reviewed SQL owners include the direct migrated/row-only helpers and the existing
 `database`, `harness`, and aliased `runtimeFixture` wrappers. Imported helpers must
 remain free of global hooks/mocks. Shared-worker savings require hosted measurements.
