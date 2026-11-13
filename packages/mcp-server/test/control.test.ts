@@ -2538,7 +2538,7 @@ test("versioned runtime launch is explicit/default-off and never selects native 
     for (const bad of [
       { ...body, runtimeVersion: 0 },
       { ...body, boatRuntime: false },
-      { ...body, harness: "claude" },
+      { ...body, harness: "opencode" },
       { ...body, provider: "modal" },
       { ...body, connections: "invalid" },
       { ...body, skills: ["not-a-pin"] },

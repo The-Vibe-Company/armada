@@ -59,6 +59,16 @@ let initial: string | undefined;
 createInterface({ input: process.stdin }).on("line", (line) => {
   const m = JSON.parse(line);
   if (m.type === "control_request") {
+    if (process.env.ARMADA_RESUME_PROOF) {
+      writeFileSync(process.env.ARMADA_RESUME_PROOF, JSON.stringify({ argv: process.argv, cwd: process.cwd() }));
+      if (process.env.ARMADA_RESUME_REFUSE) {
+        send({
+          type: "control_response",
+          response: { subtype: "error", request_id: m.request_id, error: "No conversation found" },
+        });
+        return;
+      }
+    }
     send({
       type: "control_response",
       response: { subtype: "success", request_id: m.request_id, response: { commands: [], models: [], account: {} } },

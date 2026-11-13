@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AUTH_HEADER, CodexDriver, type Driver, Journal, Runner } from "../src/index.ts";
+import { AUTH_HEADER, ClaudeDriver, CodexDriver, type Driver, Journal, Runner } from "../src/index.ts";
 
 // Real private Runner RPC + native JSONL subprocess: no fake driver can echo proof.
 test("private native resume verifies the persisted session without prompt/events and denies absent or cross-harness identities", async () => {
@@ -226,6 +226,37 @@ test("native no-text ACK preserves actual credential lifecycle hooks and refuses
     expect(await (await resume()).json()).toEqual({ error: "native_auth_state_unacknowledged" });
   } finally {
     journal.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+// Claude's no-text handshake must send --resume and fail closed on native rejection.
+test("Claude native resume initializes the existing session without creating a user turn", async () => {
+  const root = await mkdtemp(join(tmpdir(), "armada-claude-native-resume-"));
+  const proof = join(root, "resume-proof.json");
+  const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", ARMADA_RESUME_PROOF: proof, ARMADA_CWD_PROOF: "1" };
+  const options = { executable: `${import.meta.dir}/fixtures/claude-process.ts`, cwd: root, env };
+  const driver = new ClaudeDriver(options);
+  const sessionId = "11111111-1111-4111-8111-111111111111";
+  const context = {
+    sessionId,
+    signal: new AbortController().signal,
+    request: { sandboxId: "s", harness: "claude" as const, model: "claude-opus-5-5" },
+  };
+  try {
+    expect(await driver.resumeSession(context)).toEqual({ sessionId });
+    const observed = JSON.parse(await readFile(proof, "utf8")) as { argv: string[]; cwd: string };
+    expect(observed.cwd).toBe(root);
+    expect(observed.argv).toContain(`--resume=${sessionId}`);
+    expect(await readFile(join(root, "native-cwd-proof.json"), "utf8").catch(() => null)).toBeNull();
+    const rejecting = new ClaudeDriver({ ...options, env: { ...env, ARMADA_RESUME_REFUSE: "1" } });
+    try {
+      await expect(rejecting.resumeSession(context)).rejects.toThrow("native_session_unverified");
+    } finally {
+      await rejecting.close();
+    }
+  } finally {
+    await driver.close();
     await rm(root, { recursive: true, force: true });
   }
 });

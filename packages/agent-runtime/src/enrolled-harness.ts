@@ -9,19 +9,21 @@ export async function prepareEnrolledHarness(
     root: string;
     selectedHarness?: unknown;
     artifactManifest?: unknown;
+    claudeEnv: Record<string, string>;
     codexEnv: Record<string, string>;
   },
   fetcher: (url: URL, options: RequestInit) => Promise<Response> = fetch,
 ) {
+  const env = configuration.selectedHarness === "claude" ? configuration.claudeEnv : configuration.codexEnv;
   if (
-    configuration.selectedHarness !== "codex" ||
+    (configuration.selectedHarness !== "codex" && configuration.selectedHarness !== "claude") ||
     typeof configuration.root !== "string" ||
     !isAbsolute(configuration.root) ||
     configuration.root === "/" ||
-    !configuration.codexEnv ||
-    typeof configuration.codexEnv !== "object" ||
-    Array.isArray(configuration.codexEnv) ||
-    Object.values(configuration.codexEnv).some((value) => typeof value !== "string")
+    !env ||
+    typeof env !== "object" ||
+    Array.isArray(env) ||
+    Object.values(env).some((value) => typeof value !== "string")
   )
     throw Error("invalid_enrolled_harness");
   await mkdir(configuration.root, { recursive: true, mode: 0o700 });
@@ -36,9 +38,14 @@ export async function prepareEnrolledHarness(
     },
     fetcher,
   );
-  const codexEnv: Record<string, string> = {
-    ...configuration.codexEnv,
-    PATH: [...installed.pathEntries, configuration.codexEnv.PATH ?? "/usr/bin:/bin"].join(":"),
+  const selectedEnv: Record<string, string> = {
+    ...env,
+    PATH: [...installed.pathEntries, env.PATH ?? "/usr/bin:/bin"].join(":"),
   };
-  return { codexExecutable: installed.executable, codexEnv };
+  return {
+    codexExecutable: configuration.selectedHarness === "codex" ? installed.executable : "",
+    claudeExecutable: configuration.selectedHarness === "claude" ? installed.executable : "",
+    codexEnv: configuration.selectedHarness === "codex" ? selectedEnv : configuration.codexEnv,
+    claudeEnv: configuration.selectedHarness === "claude" ? selectedEnv : configuration.claudeEnv,
+  };
 }

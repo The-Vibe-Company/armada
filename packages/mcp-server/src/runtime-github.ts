@@ -38,7 +38,7 @@ const snapshot = `select jsonb_build_object('sandboxId',s.id,'ownerId',s.owner_i
  join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
  join public.mcp_actor_epochs e on e.org_id=m.org_id and e.user_id=m.user_id
  join public.github_connections c on c.user_id=s.owner_id and c.revoked_at is null
- where s.id=$1 and s.boat_runtime and s.provider='boat' and s.harness='codex'
+ where s.id=$1 and s.boat_runtime and s.provider='boat' and s.harness in ('codex','claude')
  and s.status in ('ready','running') and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>now()
  and not exists(select 1 from public.runtime_checkpoints p where p.sandbox_id=s.id and p.epoch=r.epoch)`;
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
@@ -73,7 +73,7 @@ export function createRuntimeGitHub(options: {
       s.ownerId !== caller.userId ||
       !s.boatRuntime ||
       s.provider !== "boat" ||
-      s.harness !== "codex" ||
+      (s.harness !== "codex" && s.harness !== "claude") ||
       s.deletedAt
     )
       return denied();
@@ -204,6 +204,7 @@ export function createRuntimeGitHub(options: {
     const retired = await Promise.all(history.map((row) => decryptSecret(row.token_enc, key)));
     if (!s.model || !s.reasoningEffort) return denied();
     const agent = createRuntimeAgent(options.commands, {
+      harness: s.harness,
       ownerId: s.ownerId,
       sandboxId: id,
       providerSandboxId: s.providerSandboxId,

@@ -37,7 +37,7 @@ export function createRuntimeServing(sql: Sql, key: string) {
       !sandbox ||
       (!sandbox.boatRuntime && sandbox.runtimeTransport !== "dialout") ||
       !["boat", "modal"].includes(sandbox.provider) ||
-      sandbox.harness !== "codex" ||
+      (sandbox.harness !== "codex" && !(sandbox.provider === "boat" && sandbox.harness === "claude")) ||
       sandbox.provider !== target.provider ||
       (typeof apiKey !== "string" && apiKey.id !== sandbox.provider) ||
       sandbox.visibility !== target.visibility ||
@@ -47,6 +47,7 @@ export function createRuntimeServing(sql: Sql, key: string) {
     )
       throw new VaultError("not_found", "No authorized runtime sandbox.");
     const agent = createRuntimeAgent(commands, {
+      harness: sandbox.harness,
       ownerId: sandbox.ownerId,
       sandboxId: sandbox.id,
       providerSandboxId: sandbox.providerSandboxId,

@@ -4,6 +4,7 @@ import {
   type EventPage,
   type EventsRequest,
   type GitHubRuntimeConfiguration,
+  type Harness,
   type ModelChoice,
   type PromptReceipt,
   type PromptRequest,
@@ -45,6 +46,7 @@ function refusal(code: ProviderErrorCode, requestId?: string): ProviderError {
 export function createRuntimeAgent(
   commands: Pick<ReturnType<typeof createRuntimeCommands>, "call">,
   binding: {
+    harness: Harness;
     ownerId: string;
     sandboxId: string;
     providerSandboxId: string;
@@ -138,7 +140,7 @@ export function createRuntimeAgent(
         {
           ...identity(`skills_${sandboxId}`),
           op: "installSkills",
-          input: { harness: "codex", references, cwd, ...(key ? { key } : {}) },
+          input: { harness: binding.harness, references, cwd, ...(key ? { key } : {}) },
         },
         signal,
         epoch,
@@ -201,15 +203,15 @@ export function createRuntimeAgent(
       expectedEpoch?: string,
     ): Promise<PromptReceipt> {
       target(request.sandboxId);
-      if (request.harness !== "codex" || !request.text.trim()) throw refusal("invalid_request");
-      const choice = resolveModelChoice("codex", request, defaults);
+      if (request.harness !== binding.harness || !request.text.trim()) throw refusal("invalid_request");
+      const choice = resolveModelChoice(binding.harness, request, defaults);
       return invoke(
         {
           ...identity(requestId),
           op: "prompt",
           input: {
             sandboxId,
-            harness: "codex",
+            harness: binding.harness,
             text: request.text,
             ...choice,
             cwd,

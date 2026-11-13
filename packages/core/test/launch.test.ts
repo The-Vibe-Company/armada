@@ -205,12 +205,14 @@ describe("launch", () => {
     let starts = 0;
     await expect(
       launchSandbox(
-        world.provider,
+        failure === "harness"
+          ? { ...world.provider, harnesses: [...world.provider.harnesses, "opencode"] }
+          : world.provider,
         world.stores,
         owner,
         {
           golden: "web",
-          harness: failure === "harness" ? "claude" : "codex",
+          harness: failure === "harness" ? "opencode" : "codex",
           prompt: "answer",
           ...(["mcp", "mcp-prepare"].includes(failure) ? { connections: [ORG] } : {}),
           ...(failure === "skills" ? { skills: ["not-a-pin"] } : {}),
@@ -232,6 +234,9 @@ describe("launch", () => {
         },
       ),
     ).rejects.toMatchObject({
+      ...(failure === "harness"
+        ? { message: "The experimental runtime supports ordinary Boat Codex/Claude or Modal Codex workers only." }
+        : {}),
       code: ["harness", "mcp", "skills", "parent"].includes(failure)
         ? "invalid_request"
         : failure === "prompt"

@@ -42,6 +42,7 @@ export function boatRuntimeLaunch(options: {
       await activate?.(signal);
       signal.throwIfAborted();
       const agent = createRuntimeAgent(commands, {
+        harness: sandbox.harness,
         ownerId: actor.userId,
         sandboxId: sandbox.id,
         providerSandboxId: sandbox.providerSandboxId,

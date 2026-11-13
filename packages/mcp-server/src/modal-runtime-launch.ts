@@ -24,6 +24,7 @@ export function modalRuntimeLaunch(options: {
       if (!model || !reasoningEffort) throw Error("runtime_model_required");
       const plan = await runtimeConfiguration({ ...options, actor, sandbox, credentials }, "modal");
       const agent = createRuntimeAgent(commands, {
+        harness: sandbox.harness,
         ownerId: actor.userId,
         sandboxId: sandbox.id,
         providerSandboxId: sandbox.providerSandboxId,

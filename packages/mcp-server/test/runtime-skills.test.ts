@@ -43,6 +43,7 @@ test("skill handoff fences both RPCs to the enrolled epoch and refuses an older 
       },
     },
     {
+      harness: "codex",
       ownerId: "owner",
       sandboxId: "logical",
       providerSandboxId: "physical",

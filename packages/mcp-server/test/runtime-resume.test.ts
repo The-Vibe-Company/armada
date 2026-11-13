@@ -14,8 +14,8 @@ import { ENCRYPTION_KEY } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
 
-async function stopped() {
-  const f = await runtimeFixture(await sharedDatabase());
+async function stopped(harness: "codex" | "claude" = "codex") {
+  const f = await runtimeFixture(await sharedDatabase(), "boat", harness);
   const cp = await createRuntimeCheckpoint(
     f.sql,
     ENCRYPTION_KEY,
@@ -34,12 +34,12 @@ const input = (id: string) => ({
   prompt: "continue the previous conversation",
 });
 
-describe("retained runtime resume", () => {
+describe.each(["codex", "claude"] as const)("retained runtime resume (%s)", (harness) => {
   let f: Awaited<ReturnType<typeof stopped>>;
   // Cold WASM/migrations and building the stopped checkpoint are prerequisites,
   // not resume/replay work. Keep the behavior timeout and real assertions intact.
   beforeAll(async () => {
-    f = await stopped();
+    f = await stopped(harness);
   }, 20_000);
   afterAll(async () => {
     await f?.close();

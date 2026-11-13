@@ -16,6 +16,7 @@ import { database, ENCRYPTION_KEY } from "./support.ts";
 export async function runtimeFixture(
   fixture?: Awaited<ReturnType<typeof database>>,
   provider: "boat" | "modal" = "boat",
+  harness: "codex" | "claude" = "codex",
 ) {
   const { db, people } = fixture ?? (await database());
   const root = await mkdtemp(join(tmpdir(), "runtime-followup-"));
@@ -31,8 +32,8 @@ export async function runtimeFixture(
   };
   const account = (
     await db.query<{ id: string; version: number }>(
-      "select id,version from credentials where kind='openai' and owner_id=$1",
-      [people.org],
+      "select id,version from credentials where kind=$2::public.credential_kind and owner_id=$1",
+      [people.org, harness === "claude" ? "claude_oauth" : "openai"],
     )
   ).rows[0]!;
   let golden = (
@@ -53,7 +54,7 @@ export async function runtimeFixture(
     goldenId: golden.id,
     orgId: people.org,
     ownerId: people.owner,
-    harness: "codex",
+    harness,
     status: "ready",
     visibility: "org",
     model: "gpt-5.4",
@@ -110,7 +111,7 @@ export async function runtimeFixture(
   let runner = new Runner(
     journal,
     grant,
-    { codex: driver },
+    { codex: driver, claude: driver },
     {
       async append(batch) {
         const reply = await createRuntimeEvents(authority, ENCRYPTION_KEY).append(
@@ -186,13 +187,14 @@ export async function runtimeFixture(
     },
   });
   const agent = createRuntimeAgent(bridge, {
+    harness,
     ownerId: people.owner,
     sandboxId: row.id,
     providerSandboxId: "physical",
     cwd: root,
     defaults: { model: "gpt-5.4", reasoningEffort: "high" },
   });
-  const first = await agent.prompt({ sandboxId: "physical", harness: "codex", text: "initial" });
+  const first = await agent.prompt({ sandboxId: "physical", harness, text: "initial" });
   await createSqlData(sql)(caller).sandboxes.update(row.id, {
     status: "running",
     taskPromptId: first.promptId,
@@ -271,7 +273,7 @@ export async function runtimeFixture(
       runner = new Runner(
         journal,
         next,
-        { codex: driver },
+        { codex: driver, claude: driver },
         {
           async append(batch) {
             const result = await createRuntimeEvents(authority, ENCRYPTION_KEY).append(
@@ -310,7 +312,7 @@ export async function runtimeFixture(
               op: "resumeNativeSession",
               conversationId: restore.conversationId,
               expectedSessionId: journal.session(restore.conversationId),
-              input: { sandboxId: row.id, harness: "codex", model: "gpt-5.4", reasoningEffort: "high", cwd: root },
+              input: { sandboxId: row.id, harness, model: "gpt-5.4", reasoningEffort: "high", cwd: root },
             }),
           }),
         );
