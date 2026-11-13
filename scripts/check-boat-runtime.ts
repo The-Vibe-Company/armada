@@ -1,6 +1,9 @@
 /** Coordinator-only staging check: ONE launch, no automatic allocation retry. */
+
 import type { AgentEvent } from "../packages/core/src/provider.ts";
+import type { SandboxUsage } from "../packages/core/src/sandbox-usage.ts";
 import { readDefaultPins, verifyDefaultReceipts } from "./default-skill-smoke.ts";
+import { createRuntimeUsageCheck } from "./runtime-usage-smoke.ts";
 
 if (process.env.ARMADA_RUNTIME_SMOKE !== "one_real_boat_launch")
   throw Error("Set ARMADA_RUNTIME_SMOKE=one_real_boat_launch explicitly.");
@@ -12,6 +15,9 @@ const golden = process.env.ARMADA_RUNTIME_GOLDEN;
 const org = process.env.ARMADA_RUNTIME_ORG;
 const credentialId = process.env.ARMADA_RUNTIME_CREDENTIAL_ID;
 if (!token || !golden || !org || !credentialId) throw Error("Missing coordinator staging inputs.");
+const usageMode = process.argv.includes("--usage");
+const usageCheck = createRuntimeUsageCheck(credentialId);
+let usageProof: ReturnType<typeof usageCheck.verify> | undefined;
 interface Reply {
   boatRuntime?: {
     enabled?: boolean;
@@ -143,6 +149,11 @@ const marker = `ARMADA_RUNTIME_${crypto.randomUUID().replaceAll("-", "")}`;
 let id: string | undefined;
 let goldenId: string | undefined;
 let launchSkills: unknown;
+async function verifyUsageStatus() {
+  if (!usageMode) return;
+  const status = await api<{ usage?: SandboxUsage }>("sandbox/status", { id, org });
+  usageProof = usageCheck.verify(status.usage);
+}
 async function verifySkillStatus() {
   if (!skillsMode) return;
   const status = await api<{ skills?: unknown }>("sandbox/status", { id, org });
@@ -266,7 +277,10 @@ try {
     let answer = false,
       finished = false;
     mcpToolPrompts.delete(promptId);
-    while (Date.now() < deadline && (!answer || !finished || (mcpMode && !mcpToolPrompts.has(promptId)))) {
+    while (
+      Date.now() < deadline &&
+      (!answer || !finished || (usageMode && !usageCheck.has(promptId)) || (mcpMode && !mcpToolPrompts.has(promptId)))
+    ) {
       const page = await api("logs/read", { id, all: true, ...(cursor ? { cursor } : {}) });
       if (page.runtimeFailure?.status === "failed")
         throw Error(
@@ -275,6 +289,7 @@ try {
       if (page.source !== "armada-runtime") throw Error("History did not come from the Armada journal archive.");
       for (const event of page.events ?? []) {
         if (event.promptId !== promptId) continue;
+        if (usageMode) usageCheck.observe(event);
         if (mcpMode && event.kind === "message") {
           for (const tool of event.tools)
             if (
@@ -315,10 +330,17 @@ try {
       cursor = page.cursor ?? cursor;
       if (finished && answer && mcpMode && !mcpToolPrompts.has(promptId))
         throw Error("Missing this prompt's automatic MCP tool evidence.");
-      if (!answer || !finished || (mcpMode && !mcpToolPrompts.has(promptId))) await Bun.sleep(1000);
+      if (
+        !answer ||
+        !finished ||
+        (usageMode && !usageCheck.has(promptId)) ||
+        (mcpMode && !mcpToolPrompts.has(promptId))
+      )
+        await Bun.sleep(1000);
     }
-    if (!answer || !finished || (mcpMode && !mcpToolPrompts.has(promptId)))
-      throw Error("Missing archived runtime answer, terminal event or this prompt's MCP tool evidence.");
+    if (!answer || !finished || (usageMode && !usageCheck.has(promptId)) || (mcpMode && !mcpToolPrompts.has(promptId)))
+      throw Error("Missing archived runtime answer, terminal event, MCP tool or harness usage evidence.");
+    await verifyUsageStatus();
   };
   verifyPrompt = verify;
   initialConversation = launched.conversationId;
@@ -389,6 +411,7 @@ try {
       ...(githubProof ? { github: "verified", githubProof } : {}),
       ...(mcpProof ? { mcp: "verified", mcpProof } : {}),
       ...(skillsMode ? { skills: "verified", skillReferences: defaultPins } : {}),
+      ...(usageMode ? { usage: "verified", usageProof } : {}),
       ...(checkpointReceipt ? { checkpoint: "verified", watermark: checkpointReceipt.checkpoint?.watermark } : {}),
       ...(nextPromptId
         ? { followup: "verified", followupPromptId: nextPromptId, conversationId: launched.conversationId }
@@ -422,6 +445,7 @@ const stopKnown = async () => {
     }
     if (!stopped) throw Error(`Stop not confirmed for ${id}; coordinator must inspect it. Do not launch again.`);
     await verifySkillStatus();
+    await verifyUsageStatus();
     console.log(
       checkpointReceipt
         ? "Runtime compute stopped after acknowledged checkpoint; resume was not tested in this phase."
@@ -566,6 +590,7 @@ if (resumeMode && !failure && id && checkpointReceipt && initialConversation && 
         ...(githubMode ? { githubAfterResume: "verified", githubProof } : {}),
         ...(mcpMode ? { mcpAfterResume: "verified", mcpProof } : {}),
         ...(skillsMode ? { skillsAfterResume: "verified" } : {}),
+        ...(usageMode ? { usageAfterResume: "verified", usageProof, costAfterResume: usageProof?.cost.status } : {}),
         source: "armada-runtime",
         previousEpoch,
         epoch: resumed.runtime?.epoch,
