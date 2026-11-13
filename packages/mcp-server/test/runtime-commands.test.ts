@@ -3,10 +3,13 @@ import type { RunnerRequest } from "@armada/agent-runtime";
 import type { Sql } from "@armada/core/server";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
-import { database, ENCRYPTION_KEY } from "./support.ts";
+import { rowOnlyDatabase } from "./row-only-database.ts";
+import { ENCRYPTION_KEY } from "./support.ts";
+
+const sharedDatabase = rowOnlyDatabase();
 
 async function fixture() {
-  const { db, people } = await database();
+  const { db, people } = await sharedDatabase();
   const id = crypto.randomUUID();
   await db.query(
     `insert into sandboxes(id,golden_id,org_id,owner_id,boat_id,harness,status)
@@ -63,146 +66,135 @@ async function fixture() {
 
 test("encrypted command mailbox survives replica restart, redelivers one stable ID and pins the first durable result", async () => {
   const f = await fixture();
-  try {
-    const active = await f.enrol();
-    const first = {
-      ...f.command("z-first"),
-      op: "prompt",
-      input: { sandboxId: f.id, harness: "codex", text: "private-command-marker" },
-    } as const;
-    const last = f.command("a-second");
-    await f.bridge().enqueue(f.people.owner, first);
-    await f.bridge().enqueue(f.people.owner, last);
-    await f.bridge().enqueue(f.people.owner, first);
-    expect((await f.db.query("select request_id from runtime_commands")).rows).toHaveLength(2);
-    const stored = (
-      await f.db.query<{ request_enc: Uint8Array }>(
-        "select request_enc from runtime_commands where request_id='z-first'",
-      )
-    ).rows[0];
-    expect(Buffer.from(stored?.request_enc ?? []).includes(Buffer.from("private-command-marker"))).toBe(false);
-    const poll = async () => f.request("poll", active.runtimeToken, active.epoch, { epoch: active.epoch });
-    const response = await poll();
-    expect(response.headers.get("cache-control")).toBe("no-store");
-    expect(await response.json()).toEqual({ epoch: active.epoch, command: first });
-    expect(await (await poll()).json()).toEqual({ epoch: active.epoch, command: first });
-    const reply = {
-      epoch: active.epoch,
-      requestId: first.requestId,
-      status: 200,
-      body: { requestId: first.requestId, result: { marker: "private-result-marker" } },
-    };
-    expect(await (await f.request("results", active.runtimeToken, active.epoch, reply)).json()).toEqual({
-      epoch: active.epoch,
-      requestId: first.requestId,
-    });
-    expect(
-      (
-        await f.request("results", active.runtimeToken, active.epoch, {
-          ...reply,
-          body: { error: "late replay must not overwrite" },
-        })
-      ).status,
-    ).toBe(200);
-    expect(await f.bridge().result(f.people.owner, f.id, first.requestId)).toEqual({ state: "finished", reply });
-    const sealed = (
-      await f.db.query<{ result_enc: Uint8Array }>("select result_enc from runtime_commands where request_id='z-first'")
-    ).rows[0];
-    expect(Buffer.from(sealed?.result_enc ?? []).includes(Buffer.from("private-result-marker"))).toBe(false);
-    expect(await (await poll()).json()).toEqual({ epoch: active.epoch, command: last });
-    await expect(
-      f.bridge().enqueue(f.people.owner, { ...first, input: { ...first.input, text: "changed" } }),
-    ).rejects.toThrow("runtime_command_conflict");
-    await expect(f.bridge().enqueue(f.people.member, f.command("foreign-owner"))).rejects.toThrow(
-      "runtime_enrolment_denied",
-    );
-    expect(
-      (await f.request("results", active.runtimeToken, active.epoch, { ...reply, requestId: "not-enqueued", body: {} }))
-        .status,
-    ).toBe(409);
-  } finally {
-    await f.db.close();
-  }
+
+  const active = await f.enrol();
+  const first = {
+    ...f.command("z-first"),
+    op: "prompt",
+    input: { sandboxId: f.id, harness: "codex", text: "private-command-marker" },
+  } as const;
+  const last = f.command("a-second");
+  await f.bridge().enqueue(f.people.owner, first);
+  await f.bridge().enqueue(f.people.owner, last);
+  await f.bridge().enqueue(f.people.owner, first);
+  expect((await f.db.query("select request_id from runtime_commands")).rows).toHaveLength(2);
+  const stored = (
+    await f.db.query<{ request_enc: Uint8Array }>("select request_enc from runtime_commands where request_id='z-first'")
+  ).rows[0];
+  expect(Buffer.from(stored?.request_enc ?? []).includes(Buffer.from("private-command-marker"))).toBe(false);
+  const poll = async () => f.request("poll", active.runtimeToken, active.epoch, { epoch: active.epoch });
+  const response = await poll();
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  expect(await response.json()).toEqual({ epoch: active.epoch, command: first });
+  expect(await (await poll()).json()).toEqual({ epoch: active.epoch, command: first });
+  const reply = {
+    epoch: active.epoch,
+    requestId: first.requestId,
+    status: 200,
+    body: { requestId: first.requestId, result: { marker: "private-result-marker" } },
+  };
+  expect(await (await f.request("results", active.runtimeToken, active.epoch, reply)).json()).toEqual({
+    epoch: active.epoch,
+    requestId: first.requestId,
+  });
+  expect(
+    (
+      await f.request("results", active.runtimeToken, active.epoch, {
+        ...reply,
+        body: { error: "late replay must not overwrite" },
+      })
+    ).status,
+  ).toBe(200);
+  expect(await f.bridge().result(f.people.owner, f.id, first.requestId)).toEqual({ state: "finished", reply });
+  const sealed = (
+    await f.db.query<{ result_enc: Uint8Array }>("select result_enc from runtime_commands where request_id='z-first'")
+  ).rows[0];
+  expect(Buffer.from(sealed?.result_enc ?? []).includes(Buffer.from("private-result-marker"))).toBe(false);
+  expect(await (await poll()).json()).toEqual({ epoch: active.epoch, command: last });
+  await expect(
+    f.bridge().enqueue(f.people.owner, { ...first, input: { ...first.input, text: "changed" } }),
+  ).rejects.toThrow("runtime_command_conflict");
+  await expect(f.bridge().enqueue(f.people.member, f.command("foreign-owner"))).rejects.toThrow(
+    "runtime_enrolment_denied",
+  );
+  expect(
+    (await f.request("results", active.runtimeToken, active.epoch, { ...reply, requestId: "not-enqueued", body: {} }))
+      .status,
+  ).toBe(409);
 });
 
 test("replacement epoch refuses old replies and never silently adopts unfinished commands", async () => {
   const f = await fixture();
-  try {
-    const old = await f.enrol();
-    const request = f.command("before-resume");
-    await f.bridge().enqueue(f.people.owner, request);
-    const current = await f.enrol();
-    const reply = { epoch: old.epoch, requestId: request.requestId, status: 200, body: {} };
-    expect((await f.request("results", old.runtimeToken, old.epoch, reply)).status).toBe(401);
-    expect(await f.bridge().result(f.people.owner, f.id, request.requestId)).toEqual({ state: "superseded" });
-    expect((await f.bridge().next(current.runtimeToken, current.epoch)).command).toBeNull();
-    await expect(f.bridge().enqueue(f.people.owner, request)).rejects.toThrow("runtime_command_conflict");
-    expect(
-      (await f.request("results", current.runtimeToken, current.epoch, { ...reply, epoch: current.epoch })).status,
-    ).toBe(409);
-    const fresh = f.command("after-resume");
-    await f.bridge().enqueue(f.people.owner, fresh);
-    expect(await f.bridge().next(current.runtimeToken, current.epoch)).toEqual({
-      epoch: current.epoch,
-      command: fresh,
-    });
-    await f.db.query("update sandboxes set stop_requested_at=now() where id=$1", [f.id]);
-    expect((await f.request("poll", current.runtimeToken, current.epoch, { epoch: current.epoch })).status).toBe(401);
-  } finally {
-    await f.db.close();
-  }
+
+  const old = await f.enrol();
+  const request = f.command("before-resume");
+  await f.bridge().enqueue(f.people.owner, request);
+  const current = await f.enrol();
+  const reply = { epoch: old.epoch, requestId: request.requestId, status: 200, body: {} };
+  expect((await f.request("results", old.runtimeToken, old.epoch, reply)).status).toBe(401);
+  expect(await f.bridge().result(f.people.owner, f.id, request.requestId)).toEqual({ state: "superseded" });
+  expect((await f.bridge().next(current.runtimeToken, current.epoch)).command).toBeNull();
+  await expect(f.bridge().enqueue(f.people.owner, request)).rejects.toThrow("runtime_command_conflict");
+  expect(
+    (await f.request("results", current.runtimeToken, current.epoch, { ...reply, epoch: current.epoch })).status,
+  ).toBe(409);
+  const fresh = f.command("after-resume");
+  await f.bridge().enqueue(f.people.owner, fresh);
+  expect(await f.bridge().next(current.runtimeToken, current.epoch)).toEqual({
+    epoch: current.epoch,
+    command: fresh,
+  });
+  await f.db.query("update sandboxes set stop_requested_at=now() where id=$1", [f.id]);
+  expect((await f.request("poll", current.runtimeToken, current.epoch, { epoch: current.epoch })).status).toBe(401);
 });
 
 test("empty polls release the transaction while waiting and private routes/grants reject malformed authority", async () => {
   const f = await fixture();
-  try {
-    const active = await f.enrol();
-    const response = await f.request("poll", active.runtimeToken, active.epoch, { epoch: active.epoch });
-    expect(await response.json()).toEqual({ epoch: active.epoch, command: null });
-    f.onWait(async () => {
-      await f.bridge().enqueue(f.people.owner, f.command("arrived-during-idle"));
-    });
-    const awakened = await f.request("poll", active.runtimeToken, active.epoch, { epoch: active.epoch });
-    expect(await awakened.json()).toEqual({ epoch: active.epoch, command: f.command("arrived-during-idle") });
-    expect((await f.request("poll", "invalid", active.epoch, { epoch: active.epoch })).status).toBe(401);
-    expect((await f.request("poll", active.runtimeToken, active.epoch, { epoch: "wrong" })).status).toBe(409);
-    for (const role of ["anon", "authenticated"]) {
-      expect(
-        (
-          await f.db.query<{ allowed: boolean }>(
-            "select has_table_privilege($1,'runtime_commands','select,insert,update,delete') as allowed",
-            [role],
-          )
-        ).rows[0]?.allowed,
-      ).toBe(false);
-      expect(
-        (
-          await f.db.query<{ allowed: boolean }>(
-            "select has_sequence_privilege($1,'runtime_commands_sequence_seq','usage,select,update') as allowed",
-            [role],
-          )
-        ).rows[0]?.allowed,
-      ).toBe(false);
-    }
-    expect(await f.bridge().route(new Request("https://armada.example/healthz"))).toBeNull();
-    expect((await f.bridge().route(new Request("https://armada.example/api/runtime/poll")))?.status).toBe(405);
-    const aborted = new AbortController();
-    aborted.abort();
+
+  const active = await f.enrol();
+  const response = await f.request("poll", active.runtimeToken, active.epoch, { epoch: active.epoch });
+  expect(await response.json()).toEqual({ epoch: active.epoch, command: null });
+  f.onWait(async () => {
+    await f.bridge().enqueue(f.people.owner, f.command("arrived-during-idle"));
+  });
+  const awakened = await f.request("poll", active.runtimeToken, active.epoch, { epoch: active.epoch });
+  expect(await awakened.json()).toEqual({ epoch: active.epoch, command: f.command("arrived-during-idle") });
+  expect((await f.request("poll", "invalid", active.epoch, { epoch: active.epoch })).status).toBe(401);
+  expect((await f.request("poll", active.runtimeToken, active.epoch, { epoch: "wrong" })).status).toBe(409);
+  for (const role of ["anon", "authenticated"]) {
     expect(
       (
-        await f.bridge().route(
-          new Request("https://armada.example/api/runtime/poll", {
-            method: "POST",
-            signal: aborted.signal,
-            headers: { authorization: `Bearer ${active.runtimeToken}`, "x-armada-runtime-epoch": active.epoch },
-            body: JSON.stringify({ epoch: active.epoch }),
-          }),
+        await f.db.query<{ allowed: boolean }>(
+          "select has_table_privilege($1,'runtime_commands','select,insert,update,delete') as allowed",
+          [role],
         )
-      )?.status,
-    ).toBe(499);
-  } finally {
-    await f.db.close();
+      ).rows[0]?.allowed,
+    ).toBe(false);
+    expect(
+      (
+        await f.db.query<{ allowed: boolean }>(
+          "select has_sequence_privilege($1,'runtime_commands_sequence_seq','usage,select,update') as allowed",
+          [role],
+        )
+      ).rows[0]?.allowed,
+    ).toBe(false);
   }
+  expect(await f.bridge().route(new Request("https://armada.example/healthz"))).toBeNull();
+  expect((await f.bridge().route(new Request("https://armada.example/api/runtime/poll")))?.status).toBe(405);
+  const aborted = new AbortController();
+  aborted.abort();
+  expect(
+    (
+      await f.bridge().route(
+        new Request("https://armada.example/api/runtime/poll", {
+          method: "POST",
+          signal: aborted.signal,
+          headers: { authorization: `Bearer ${active.runtimeToken}`, "x-armada-runtime-epoch": active.epoch },
+          body: JSON.stringify({ epoch: active.epoch }),
+        }),
+      )
+    )?.status,
+  ).toBe(499);
 });
 
 test.each(["health", "maximum-frame"] as const)(
@@ -295,7 +287,6 @@ test.each(["health", "maximum-frame"] as const)(
     } finally {
       stop.abort();
       journal.close();
-      await f.db.close();
       await rm(root, { recursive: true, force: true });
     }
   },
@@ -305,60 +296,57 @@ test.each(["timeout", "abort", "replacement", "stop"] as const)(
   "waiting caller preserves durable identity without replay on %s",
   async (scenario) => {
     const f = await fixture();
-    try {
-      const active = await f.enrol();
-      const command = f.command(`waiting-${scenario}`);
-      const abort = new AbortController();
-      f.onWait(async () => {
-        // A different replica sees the admitted request: waiting holds no locks.
-        expect((await f.bridge().next(active.runtimeToken, active.epoch)).command).toEqual(command);
-        if (scenario === "abort") abort.abort();
-        if (scenario === "replacement") {
-          await f.bridge().complete(active.runtimeToken, active.epoch, {
-            epoch: active.epoch,
-            requestId: command.requestId,
-            status: 200,
-            body: {},
-          });
-          await f.enrol();
-          // Historical readback stays available, but it is not a current call reply.
-          expect((await f.bridge().result(f.people.owner, f.id, command.requestId)).state).toBe("finished");
-        }
-        if (scenario === "stop") await f.db.query("update sandboxes set stop_requested_at=now() where id=$1", [f.id]);
-      });
-      await expect(f.bridge().call(f.people.owner, command, { signal: abort.signal, timeoutMs: 1000 })).rejects.toThrow(
-        scenario === "timeout"
-          ? "runtime_command_pending"
-          : scenario === "replacement"
-            ? "runtime_command_conflict"
-            : scenario === "stop"
-              ? "runtime_enrolment_denied"
-              : "abort",
-      );
-      expect((await f.db.query("select request_id from runtime_commands")).rows).toEqual([
-        { request_id: command.requestId },
-      ]);
-      if (scenario !== "timeout" && scenario !== "abort") return;
-      // A lost/aborted HTTP wait is not proof of non-execution. Finish under the
-      // original identity, then reconcile from another caller without a new turn.
-      const reply = {
-        epoch: active.epoch,
-        requestId: command.requestId,
-        status: 200,
-        body: { result: { ready: true } },
-      };
-      await f.bridge().complete(active.runtimeToken, active.epoch, reply);
-      expect(await f.bridge().call(f.people.owner, command)).toEqual(reply);
-      expect((await f.bridge().next(active.runtimeToken, active.epoch)).command).toBeNull();
-      const cancelled = new AbortController();
-      cancelled.abort();
-      await expect(
-        f.bridge().call(f.people.owner, f.command("never-admitted"), { signal: cancelled.signal }),
-      ).rejects.toThrow();
-      expect((await f.db.query("select request_id from runtime_commands")).rows).toHaveLength(1);
-    } finally {
-      await f.db.close();
-    }
+
+    const active = await f.enrol();
+    const command = f.command(`waiting-${scenario}`);
+    const abort = new AbortController();
+    f.onWait(async () => {
+      // A different replica sees the admitted request: waiting holds no locks.
+      expect((await f.bridge().next(active.runtimeToken, active.epoch)).command).toEqual(command);
+      if (scenario === "abort") abort.abort();
+      if (scenario === "replacement") {
+        await f.bridge().complete(active.runtimeToken, active.epoch, {
+          epoch: active.epoch,
+          requestId: command.requestId,
+          status: 200,
+          body: {},
+        });
+        await f.enrol();
+        // Historical readback stays available, but it is not a current call reply.
+        expect((await f.bridge().result(f.people.owner, f.id, command.requestId)).state).toBe("finished");
+      }
+      if (scenario === "stop") await f.db.query("update sandboxes set stop_requested_at=now() where id=$1", [f.id]);
+    });
+    await expect(f.bridge().call(f.people.owner, command, { signal: abort.signal, timeoutMs: 1000 })).rejects.toThrow(
+      scenario === "timeout"
+        ? "runtime_command_pending"
+        : scenario === "replacement"
+          ? "runtime_command_conflict"
+          : scenario === "stop"
+            ? "runtime_enrolment_denied"
+            : "abort",
+    );
+    expect((await f.db.query("select request_id from runtime_commands")).rows).toEqual([
+      { request_id: command.requestId },
+    ]);
+    if (scenario !== "timeout" && scenario !== "abort") return;
+    // A lost/aborted HTTP wait is not proof of non-execution. Finish under the
+    // original identity, then reconcile from another caller without a new turn.
+    const reply = {
+      epoch: active.epoch,
+      requestId: command.requestId,
+      status: 200,
+      body: { result: { ready: true } },
+    };
+    await f.bridge().complete(active.runtimeToken, active.epoch, reply);
+    expect(await f.bridge().call(f.people.owner, command)).toEqual(reply);
+    expect((await f.bridge().next(active.runtimeToken, active.epoch)).command).toBeNull();
+    const cancelled = new AbortController();
+    cancelled.abort();
+    await expect(
+      f.bridge().call(f.people.owner, f.command("never-admitted"), { signal: cancelled.signal }),
+    ).rejects.toThrow();
+    expect((await f.db.query("select request_id from runtime_commands")).rows).toHaveLength(1);
   },
 );
 
@@ -478,7 +466,6 @@ test("Codex agent bridge translates Boat identity and reconciles prompt/status/j
     expect(inputs).toHaveLength(1);
   } finally {
     journal.close();
-    await f.db.close();
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -634,7 +621,6 @@ test("runtime startup privately issues configuration, awaits enrolment and fence
     expect(journal.prompts()).toEqual([]);
   } finally {
     journal.close();
-    await f.db.close();
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -644,64 +630,60 @@ test.each(["selection", "pre-abort", "timeout", "bootstrap", "replacement", "lif
   async (scenario) => {
     const { createRuntimeStartup } = await import("../src/runtime-startup.ts");
     const f = await fixture();
-    try {
-      let starts = 0,
-        now = 0;
-      const abort = new AbortController();
-      if (scenario === "pre-abort") abort.abort();
-      let epoch = "";
-      const start = createRuntimeStartup(
-        f.authority,
-        {
-          async bootstrap(input) {
-            starts++;
-            if (scenario === "bootstrap") throw Error("private-bootstrap-diagnostic");
-            if (scenario !== "timeout" && scenario !== "lifecycle")
-              epoch = (await f.authority.enrol(input.enrolmentToken)).epoch;
-          },
-          async health() {
-            if (scenario === "replacement") await f.enrol();
-            if (scenario === "stop")
-              await f.db.query("update sandboxes set stop_requested_at=now() where id=$1", [f.id]);
-            return { runtime: "armada", epoch };
-          },
+
+    let starts = 0,
+      now = 0;
+    const abort = new AbortController();
+    if (scenario === "pre-abort") abort.abort();
+    let epoch = "";
+    const start = createRuntimeStartup(
+      f.authority,
+      {
+        async bootstrap(input) {
+          starts++;
+          if (scenario === "bootstrap") throw Error("private-bootstrap-diagnostic");
+          if (scenario !== "timeout" && scenario !== "lifecycle")
+            epoch = (await f.authority.enrol(input.enrolmentToken)).epoch;
         },
-        {
-          now: () => now,
-          async wait() {
-            if (scenario === "lifecycle" && now === 0) {
-              await f.db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [f.id]);
-              epoch = (await f.enrol()).epoch;
-            }
-            now += 250;
-          },
+        async health() {
+          if (scenario === "replacement") await f.enrol();
+          if (scenario === "stop") await f.db.query("update sandboxes set stop_requested_at=now() where id=$1", [f.id]);
+          return { runtime: "armada", epoch };
         },
-      );
-      const pending = start({
-        ownerId: f.people.owner,
-        sandboxId: f.id,
-        providerSandboxId: "physical",
-        serverUrl: "https://armada.invalid",
-        cacheDir: "/cache",
-        artifact: { sha256: "a".repeat(64), bytes: 10 },
-        configuration: { selectedHarness: scenario === "selection" ? "claude" : "codex" },
-        signal: abort.signal,
-        readinessTimeoutMs: 1000,
-      });
-      await expect(pending).rejects.toMatchObject({
-        provider: "boat",
-        code: scenario === "selection" ? "invalid_request" : "sandbox_not_ready",
-        retryable: false,
-        message:
-          scenario === "selection"
-            ? "Invalid runtime startup selection."
-            : `Armada runtime startup failed (${["pre-abort", "bootstrap"].includes(scenario) ? "bootstrap" : ["timeout", "lifecycle"].includes(scenario) ? "enrolment" : "readiness"}).`,
-      });
-      expect(starts).toBe(scenario === "pre-abort" || scenario === "selection" ? 0 : 1);
-      if (scenario === "pre-abort" || scenario === "selection")
-        expect((await f.db.query("select sandbox_id from runtime_enrolments")).rows).toEqual([]);
-    } finally {
-      await f.db.close();
-    }
+      },
+      {
+        now: () => now,
+        async wait() {
+          if (scenario === "lifecycle" && now === 0) {
+            await f.db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [f.id]);
+            epoch = (await f.enrol()).epoch;
+          }
+          now += 250;
+        },
+      },
+    );
+    const pending = start({
+      ownerId: f.people.owner,
+      sandboxId: f.id,
+      providerSandboxId: "physical",
+      serverUrl: "https://armada.invalid",
+      cacheDir: "/cache",
+      artifact: { sha256: "a".repeat(64), bytes: 10 },
+      configuration: { selectedHarness: scenario === "selection" ? "claude" : "codex" },
+      signal: abort.signal,
+      readinessTimeoutMs: 1000,
+    });
+    await expect(pending).rejects.toMatchObject({
+      provider: "boat",
+      code: scenario === "selection" ? "invalid_request" : "sandbox_not_ready",
+      retryable: false,
+      message:
+        scenario === "selection"
+          ? "Invalid runtime startup selection."
+          : `Armada runtime startup failed (${["pre-abort", "bootstrap"].includes(scenario) ? "bootstrap" : ["timeout", "lifecycle"].includes(scenario) ? "enrolment" : "readiness"}).`,
+    });
+    expect(starts).toBe(scenario === "pre-abort" || scenario === "selection" ? 0 : 1);
+    if (scenario === "pre-abort" || scenario === "selection")
+      expect((await f.db.query("select sandbox_id from runtime_enrolments")).rows).toEqual([]);
   },
 );

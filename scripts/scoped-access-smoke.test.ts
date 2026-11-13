@@ -179,7 +179,7 @@ function fixture(enabled = true) {
         expect(body.coalesce).toBe(true);
         expect(body.maxBytes).toBe(1_048_576);
         expect(body.limit).toBe(500);
-        if (state.logsFail) throw new Error("secret-error-do-not-print");
+        if (state.logsFail) throw Object.assign(new Error("secret-error-do-not-print"), { status: 400 });
         return {
           events: state.events,
           hasMore: state.logsIncomplete,
@@ -331,6 +331,51 @@ describe("ordinary scoped Armada smoke", () => {
     };
     await expect(run(f)).rejects.toThrow("scoped_");
   });
+
+  test.each(["missing", "uncertain", "wrong-target", "malformed", "array-state"])(
+    "failed message proof reports closed non-secret diagnostics: %s",
+    async (mode) => {
+      const f = fixture();
+      f.state.mutate = (tools) => {
+        const message = at(tools, 1);
+        message.input.extra = "secret-native-input";
+        if (mode === "missing") tools.splice(1, 1);
+        if (mode === "wrong-target") message.input.sandboxId = "secret-native-target";
+        if (mode === "uncertain" || mode === "malformed" || mode === "array-state") {
+          message.result.output = {
+            structuredContent: {
+              result: {
+                ...f.receipt(),
+                state:
+                  mode === "uncertain" ? "uncertain" : mode === "array-state" ? ["succeeded"] : "secret-native-state",
+                detail: "secret-native-output",
+              },
+            },
+          };
+        }
+      };
+      await expect(run(f)).rejects.toThrow("scoped_message_unproven");
+      expect(f.output).toEqual([
+        {
+          step: "scoped_message_diagnostic",
+          provider: "boat",
+          messageCount: mode === "missing" ? 0 : 1,
+          readCount: 1,
+          stopCount: 1,
+          keyMatches: mode !== "missing",
+          textMatches: mode !== "missing",
+          targetMatches: mode !== "missing" && mode !== "wrong-target",
+          receiptTargetMatches: mode !== "missing",
+          receiptIdValid: mode !== "missing",
+          receiptState: mode === "uncertain" ? "uncertain" : mode === "wrong-target" ? "succeeded" : "unrecognized",
+          toolError: mode === "missing" ? null : false,
+          authorityDenied: mode === "missing" ? null : false,
+        },
+      ]);
+      expect(JSON.stringify(f.output)).not.toContain("secret-native");
+      expect(f.state.sends).toBe(1);
+    },
+  );
 
   test.each([true, false])("rejects non-MCP native actions in either control (enabled=%s)", async (enabled) => {
     const f = fixture(enabled);
@@ -540,7 +585,18 @@ describe("ordinary scoped Armada smoke", () => {
     await expect(run(g)).rejects.toThrow("secret-error");
     expect(await g.probe.cleanup(parent, true)).toBe(false);
     expect(g.stopped).toEqual([]);
-    expect(g.output[0]).toMatchObject({ unknownEvidence: true, unattributedSandboxIds: [child] });
+    expect(g.output[0]).toEqual({
+      step: "scoped_logs_diagnostic",
+      provider: "boat",
+      route: "logs/read",
+      page: 0,
+      cursorPresent: false,
+      coalesce: true,
+      limit: 500,
+      maxBytes: 1_048_576,
+      status: 400,
+    });
+    expect(g.output.at(-1)).toMatchObject({ unknownEvidence: true, unattributedSandboxIds: [child] });
     expect(JSON.stringify(g.output)).not.toContain("secret-error");
   });
 });
