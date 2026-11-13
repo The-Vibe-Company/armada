@@ -29,6 +29,7 @@ import { createDockerBootstrapService } from "./docker-bootstrap-service.ts";
 import { createDockerHostRoutes } from "./docker-host-routes.ts";
 import { createDockerHostStore } from "./docker-host-store.ts";
 import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
+import { createDockerSandboxControls } from "./docker-sandbox-controls.ts";
 import { createDockerSandboxRoutes } from "./docker-sandbox-routes.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import { createGitHubAccountApi } from "./github-account.ts";
@@ -324,8 +325,16 @@ export async function startServer(
       : undefined,
     runtimeMcp.prepare,
   );
+  const dockerControls =
+    env.ARMADA_DOCKER_HOSTS === "1" ? createDockerSandboxControls(sql, config.encryptionKey) : undefined;
   const control: ConfiguredControlOptions = {
-    docker: { hosts: env.ARMADA_DOCKER_HOSTS === "1", placement: dockerEnabled, normalApi: false },
+    ...(dockerControls ? { dockerControls } : {}),
+    docker: {
+      hosts: env.ARMADA_DOCKER_HOSTS === "1",
+      placement: dockerEnabled,
+      normalApi: Boolean(dockerControls),
+      normalLaunch: false,
+    },
     runtimeSend,
     runtimeCheckpoint,
     runtimeResume,
@@ -408,6 +417,7 @@ export async function startServer(
   );
   const runtimeSockets = createRuntimeSockets(runtimeEnrolments, runtimeCommands);
   const handler = createHandler({
+    ...(dockerControls ? { dockerControls } : {}),
     runtimeSend,
     runtimeCheckpoint,
     runtimeResume,

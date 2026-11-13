@@ -43,6 +43,7 @@ export const HEALTH_PATH = "/healthz";
 export type Route = (request: Request) => Promise<Response | null>;
 
 export interface HandlerOptions {
+  dockerControls?: import("./docker-sandbox-controls.ts").DockerSandboxControls;
   runtimeGitHub?: RuntimeGitHub;
   runtimeResume?: RuntimeResume;
   runtimeCheckpoint?: RuntimeCheckpoint;
@@ -167,6 +168,7 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
     const server = createArmadaServer(
       {
         caller,
+        ...(options.dockerControls ? { dockerControls: options.dockerControls } : {}),
         ...(options.runtimeSend ? { runtimeSend: options.runtimeSend } : {}),
         ...(options.runtimeCheckpoint ? { runtimeCheckpoint: options.runtimeCheckpoint } : {}),
         ...(options.runtimeResume ? { runtimeResume: options.runtimeResume } : {}),

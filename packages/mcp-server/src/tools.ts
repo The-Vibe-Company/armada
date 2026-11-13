@@ -3,6 +3,7 @@ import {
   goldenForSettings,
   MACHINE_SIZES,
   parseMachineSizePolicy,
+  SANDBOX_PLACEMENT_PROVIDERS,
   USAGE_UNAVAILABLE_CODES,
 } from "@armada/core";
 import {
@@ -76,6 +77,7 @@ import { recordStopDispatch } from "./work-preservation.ts";
 
 /** Everything a tool call may use, for one authenticated request. */
 export interface ToolContext {
+  dockerControls?: import("./docker-sandbox-controls.ts").DockerSandboxControls;
   runtimeGitHub?: RuntimeGitHub;
   runtimeResume?: RuntimeResume;
   runtimeCheckpoint?: RuntimeCheckpoint;
@@ -254,7 +256,7 @@ const sandboxListMetadata = z.object({
   id: z.string(),
   orgId: z.string(),
   ownerId: z.string(),
-  provider: providerOutput,
+  provider: z.enum(SANDBOX_PLACEMENT_PROVIDERS),
   harness: z.enum(HARNESSES),
   model: modelOutput.model,
   reasoningEffort: modelOutput.reasoningEffort,
@@ -298,7 +300,10 @@ const status = {
   usage: sandboxUsage,
   preservationNote: z.string().nullable().optional(),
   id: z.string(),
-  golden: z.string(),
+  golden: z.string().nullable(),
+  provider: z.enum(SANDBOX_PLACEMENT_PROVIDERS).optional(),
+  hostId: z.string().optional(),
+  image: z.string().optional(),
   visibility: z.enum(["org", "private"]),
   harness: z.enum(HARNESSES),
   repositoryDir: z
@@ -360,7 +365,8 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       // The SDK's callback type is generic over every schema flavour; the input is the parsed `In`.
       (async (args: z.infer<z.ZodObject<In>>): Promise<CallToolResult> => {
         try {
-          const result = await run(args);
+          const routed = await context.dockerControls?.invoke(caller, name, args);
+          const result = routed?.handled ? routed.result : await run(args);
           return {
             structuredContent: result as Record<string, unknown>,
             content: [{ type: "text", text: JSON.stringify(result) }],
@@ -1255,6 +1261,9 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         cursor: z.string().nullable(),
         olderCursor: z.string().optional(),
         hasMore: z.boolean(),
+        settled: z.boolean().optional(),
+        source: z.literal("armada-runtime").optional(),
+        runtimeFailure: z.object({ status: z.literal("failed"), reason: z.string() }).optional(),
       },
       readOnly: true,
     },
@@ -1771,7 +1780,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       title: "Delete a stopped sandbox",
       description:
         "Owner/admin only. Permanently removes provider resources and recovery archives. Stop first. Managed orchestrator parents and children are refused.",
-      input: { id },
+      input: { id, request_id: z.string().uuid().optional() },
       output: { id: z.string(), status: z.literal("deleted") },
       destructive: true,
     },
@@ -1854,7 +1863,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         "Stops the machine. Modal keeps its disk only if checkpoint succeeds; fallback termination returns " +
         "checkpoint_failed_disk_not_retained and cannot resume. Other retained stops can resume on send. Use it when the " +
         "agent is done, so the sandbox stops costing.",
-      input: { id },
+      input: { id, request_id: z.string().uuid().optional() },
       output: { id: z.string(), status: z.enum(SANDBOX_STATUSES), preservationNote: z.string().optional() },
       destructive: true,
     },

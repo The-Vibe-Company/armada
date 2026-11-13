@@ -25,6 +25,7 @@ def main():
     parser.add_argument("--host-id", help="Reuse an existing host registration")
     parser.add_argument("--start-host", action="store_true", help="Start that stopped host daemon; never remove its lock")
     parser.add_argument("--follow-up", action="store_true", help="Prove a second prompt recalls the same conversation")
+    parser.add_argument("--normal-controls", action="store_true", help="Read status/logs and stop/delete through normal sandbox API")
     parser.add_argument("--timeout", type=int, default=600, help="Seconds per bounded stage")
     args = parser.parse_args()
     if args.start_host and not args.host_id:
@@ -45,12 +46,12 @@ def main():
 
     opener = urllib.request.build_opener(NoRedirect)
 
-    def api(path, body):
-        request = urllib.request.Request(server + "/api/v1/docker/" + path,
+    def api(path, body, normal=False):
+        request = urllib.request.Request(server + ("/api/v1/" if normal else "/api/v1/docker/") + path,
             data=json.dumps({"org": args.org, **body}).encode(), method="POST",
             headers={"authorization": "Bearer " + token, "content-type": "application/json"})
         try:
-            with opener.open(request, timeout=30) as response:
+            with opener.open(request, timeout=120 if normal and path in ("sandbox/stop", "sandbox/delete") else 30) as response:
                 return json.load(response)
         except urllib.error.HTTPError as error:
             # Do not print response bodies, request headers or private capabilities.
@@ -109,7 +110,7 @@ def main():
         print("BOOTSTRAP_ID=" + bootstrap_id, flush=True)
         api("sandboxes/bootstrap", {"sandboxId": sandbox_id, "requestId": bootstrap_id})
         wait_for("ready", {"sandboxId": sandbox_id, "requestId": str(uuid.uuid4())}, "ready")
-        cursor = "0"
+        cursor = None if args.normal_controls else "0"
 
         def turn(text, expected_answer, conversation=None):
             nonlocal cursor
@@ -126,10 +127,17 @@ def main():
             deadline = time.monotonic() + args.timeout
             answer, finished = False, False
             while True:
-                page = api("sandboxes/journal", {"sandboxId": sandbox_id, "cursor": cursor})
+                if args.normal_controls:
+                    page = api("logs/read", {"id": sandbox_id, **({"cursor": cursor} if cursor else {})}, normal=True)
+                    summary = api("sandbox/detail", {"id": sandbox_id}, normal=True)
+                    if summary.get("provider") != "docker" or summary.get("golden") is not None:
+                        raise RuntimeError("Normal Docker status did not match its contract")
+                    page["usage"] = summary.get("usage")
+                else:
+                    page = api("sandboxes/journal", {"sandboxId": sandbox_id, "cursor": cursor})
                 cursor = page["cursor"]
                 for item in page["events"]:
-                    event = item["event"]
+                    event = item if args.normal_controls else item["event"]
                     if event.get("promptId") != native_prompt:
                         continue
                     if event.get("kind") == "message" and expected_answer in event.get("text", ""):
@@ -167,13 +175,21 @@ def main():
                 for operation in ("stop", "delete"):
                     request_id = str(uuid.uuid4())
                     print(operation.upper() + "_ID=" + request_id, flush=True)
-                    api("sandboxes/" + operation, {"sandboxId": sandbox_id, "requestId": request_id})
-                    wait_for("job", {"sandboxId": sandbox_id, "requestId": request_id}, "completed")
+                    if args.normal_controls:
+                        reply = api("sandbox/" + operation, {"id": sandbox_id, "request_id": request_id}, normal=True)
+                        expected = ("stopped", "failed", "deleted") if operation == "stop" else ("deleted",)
+                        if reply.get("status") not in expected:
+                            raise RuntimeError("Normal Docker cleanup ACK was not confirmed")
+                    else:
+                        api("sandboxes/" + operation, {"sandboxId": sandbox_id, "requestId": request_id})
+                        wait_for("job", {"sandboxId": sandbox_id, "requestId": request_id}, "completed")
             except RuntimeError:
                 print("Cleanup unconfirmed; retain IDs, reconnect host and reconcile stop/delete.", file=sys.stderr)
                 raise
     print("PASS: same-conversation follow-up recalled marker; both turns reported tokens; stop/delete ACKed."
           if args.follow_up else "PASS: one runtime-journal answer with reported tokens; stop/delete ACKed.")
+    if args.normal_controls:
+        print("PASS: normal Docker status/logs and stop/delete routes confirmed.")
     print("Host remains registered/running for inspection. See docs/docker-staging.md for uninstall.")
 
 

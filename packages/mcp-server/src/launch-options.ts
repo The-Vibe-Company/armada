@@ -39,10 +39,12 @@ export const launchOptions = {
  * normal operations remain dark until their handler is actually supplied.
  */
 export function launchProviderOptions(
-  docker: { hosts?: boolean; placement?: boolean; normalApi?: boolean } = {},
+  docker: { hosts?: boolean; placement?: boolean; normalApi?: boolean; normalLaunch?: boolean } = {},
 ): LaunchProviderOption[] {
   const supported: LaunchProviderCapabilities = {
     launch: true,
+    status: true,
+    logs: true,
     followupPrompts: true,
     stop: true,
     delete: true,
@@ -60,7 +62,9 @@ export function launchProviderOptions(
   const hosts = docker.hosts === true;
   const normal = hosts && docker.normalApi === true;
   const capabilities: LaunchProviderCapabilities = {
-    launch: normal && docker.placement === true,
+    launch: normal && docker.normalLaunch === true && docker.placement === true,
+    status: normal,
+    logs: normal,
     followupPrompts: false,
     stop: normal,
     delete: normal,
@@ -77,7 +81,9 @@ export function launchProviderOptions(
   };
   const unsupportedReasons: LaunchProviderOption["unsupportedReasons"] = {};
   const reasons: Record<keyof LaunchProviderCapabilities, string> = {
-    launch: "New Docker placement is disabled on this server.",
+    launch: "New Docker placement is disabled or not installed on this server.",
+    status: "Normal Docker status is not available on this server.",
+    logs: "Normal Docker conversation logs are not available on this server.",
     followupPrompts: "Docker follow-up prompts are not available through normal sandbox control yet.",
     stop: "Normal Docker stop is not available on this server.",
     delete: "Normal Docker delete is not available on this server.",
@@ -98,7 +104,7 @@ export function launchProviderOptions(
         ? "Docker hosts are not enabled on this server."
         : name === "launch" || name === "stop" || name === "delete"
           ? normal
-            ? "New Docker placement is disabled on this server."
+            ? "Normal Docker launch is disabled or not installed on this server."
             : "Normal Docker sandbox control is not available on this server."
           : reasons[name];
   }

@@ -1,4 +1,4 @@
-import { GoldenError } from "@armada/core";
+import { GoldenError, isSandboxPlacementProvider, SANDBOX_PLACEMENT_LABELS } from "@armada/core";
 
 /** Render the #680 sandbox-access-v1 safe DTO, never an interior/golden lookup. */
 export function sandboxListText(rows: unknown[], now: Date): string {
@@ -19,7 +19,9 @@ export function sandboxListText(rows: unknown[], now: Date): string {
     const minutes = Math.max(0, Math.floor((now.getTime() - created) / 60_000));
     const age =
       minutes < 60 ? `${minutes}m` : minutes < 1440 ? `${Math.floor(minutes / 60)}h` : `${Math.floor(minutes / 1440)}d`;
-    const provider = row.provider === "boat" ? "Boat" : row.provider === "modal" ? "Modal" : text(row.provider);
+    const provider = isSandboxPlacementProvider(row.provider)
+      ? SANDBOX_PLACEMENT_LABELS[row.provider]
+      : text(row.provider);
     return [
       text(row.id),
       text(row.displayLabel),

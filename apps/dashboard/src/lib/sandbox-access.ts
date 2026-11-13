@@ -1,12 +1,12 @@
 import { HARNESSES, MACHINE_SIZES, type MachineSize, type SandboxListMetadata } from "@armada/core";
-import { LISTED_PROVIDERS, type ListedProvider } from "./listed-provider.ts";
+import { LISTED_PROVIDERS } from "./listed-provider.ts";
 import { MACHINE_SIZE_LABELS } from "./machine-size.ts";
 import { parseTaskOutcome } from "./outcome.ts";
 import { SANDBOX_STATUSES } from "./sandbox-filters.ts";
 
 export { LISTED_PROVIDER_LABELS, LISTED_PROVIDERS, type ListedProvider } from "./listed-provider.ts";
 
-export type ListedSandbox = Omit<SandboxListMetadata, "provider"> & { provider: ListedProvider };
+export type ListedSandbox = SandboxListMetadata;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 

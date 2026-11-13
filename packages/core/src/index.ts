@@ -330,6 +330,7 @@ export {
   createProviderRegistry,
   HOST_CAPABILITIES,
   type HostCapabilities,
+  isSandboxPlacementProvider,
   isSandboxProvider,
   type ModalBinding,
   PROVIDER_LIMITS,
@@ -339,6 +340,8 @@ export {
   ProviderRoutingError,
   type ProviderRoutingErrorCode,
   type ProviderTarget,
+  SANDBOX_PLACEMENT_LABELS,
+  SANDBOX_PLACEMENT_PROVIDERS,
   SANDBOX_PROVIDERS,
   type SandboxProviderId,
 } from "./sandbox-provider.ts";

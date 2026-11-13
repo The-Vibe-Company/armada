@@ -1,12 +1,7 @@
-import { SANDBOX_PROVIDERS } from "@armada/core";
-import { PROVIDER_LABELS } from "./golden-form.ts";
+import { SANDBOX_PLACEMENT_LABELS, SANDBOX_PLACEMENT_PROVIDERS, type SandboxPlacementProviderId } from "@armada/core";
 
-/**
- * Where a listed sandbox runs. The database's `sandbox_provider` also has `docker` (#1165): a sandbox on an owned
- * Docker host. `SANDBOX_PROVIDERS` stays Boat and Modal, the providers of goldens and of the golden launch, so the
- * list widens it here rather than in the shared contract, until the server exports its placement provider type.
- */
-export const LISTED_PROVIDERS = [...SANDBOX_PROVIDERS, "docker"] as const;
-export type ListedProvider = (typeof LISTED_PROVIDERS)[number];
+/** One server/client row vocabulary, distinct from golden-source providers. */
+export const LISTED_PROVIDERS = SANDBOX_PLACEMENT_PROVIDERS;
+export type ListedProvider = SandboxPlacementProviderId;
 
-export const LISTED_PROVIDER_LABELS: Record<ListedProvider, string> = { ...PROVIDER_LABELS, docker: "Docker" };
+export const LISTED_PROVIDER_LABELS = SANDBOX_PLACEMENT_LABELS;
