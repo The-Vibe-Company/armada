@@ -7,18 +7,26 @@ independently mergeable before the compiled build PR #1185.
 
 ## Server publication
 
-`ARMADA_RUNTIME_ARTIFACT_DIR` opts the Armada server into serving executable
-artifacts. Leave it unset to keep the route disabled (404). Provision this
-read-only directory separately; the existing Docker image does not populate it.
-Publish only public executable/archive bytes, never model configuration, tokens,
-credentials or journals. The directory contains regular files named by their
-lowercase SHA256, not mutable version aliases. Symbolic links are refused.
+A normal Docker/Railway build publishes both Linux x64 and arm64 compiled
+runtimes, each manifest's harness archives, and the pinned OpenCode binaries.
+No separate copy/publication step is needed. The image defaults
+`ARMADA_RUNTIME_ARTIFACT_DIR=/opt/armada/runtime-artifacts`; an explicit
+environment variable overrides it (an empty value disables the route).
+Files are root-owned, mode 0444 in a 0555 directory, readable by the server's
+unprivileged user. Only public executable/archive bytes are published.
 
-For each output file listed in the compiled build's manifest, an operator copies
-the file to `<artifact-directory>/<sha256>`. `GET` and `HEAD` at
-`/api/runtime/artifacts/<sha256>` serve it without authentication. These public
-files have immutable cache headers. Publication is operator-controlled; the
-installer independently verifies the actual bytes, even if publication is wrong.
+`bun scripts/publish-runtime-artifacts.ts` cross-compiles both runtimes on
+Linux with pinned Bun and both architectures' optional npm dependencies
+(`bun install --frozen-lockfile --os linux --cpu '*'`). It executes no foreign
+binary. Native execution/ABI validation remains a separate staging check.
+Every selected file's digest and byte count must match or the build fails.
+The same build manifests are saved at `/opt/armada/runtime-manifests/{x64,arm64}.json`
+for launch configuration and coordinator verification; never use a manifest
+from a different build. The directory contains lowercase SHA256 filenames,
+not mutable aliases, configuration, tokens or credentials.
+
+`GET` and `HEAD /api/runtime/artifacts/<sha256>` are public, immutable-cached
+routes. The installer independently verifies downloaded bytes.
 
 ## Installer
 
@@ -52,13 +60,18 @@ the harness and safe archive extraction belong to launch bootstrap wiring.
 
 ## Coordinator staging check
 
-Deploy with `ARMADA_RUNTIME_ARTIFACT_DIR` pointing at a read-only published
-artifact directory. This is the only new deployment prerequisite; there are no
-migrations. With #1185's compiled artifact built on isolated staging Linux:
+There are no migrations or manual artifact-publication prerequisites.
+After deploying the image, extract its two runtime manifests. For every
+`runtime`, `harnesses.*.archive` and `opencode` entry, run:
 
-1. Copy the runtime executable to the publication directory using the manifest's
-   runtime SHA256 as its filename. Check GET/HEAD at the URL above; HEAD must
-   report its byte length and GET must hash to that digest.
+```sh
+curl -I https://armada-mcp-staging.up.railway.app/api/runtime/artifacts/<digest>
+```
+
+Require HTTP 200 and Content-Length equal to that entry's `bytes`.
+These are the exact coordinator checks for #1324; workers deploy nothing.
+
+1. GET each digest as well and check its SHA256 against the image manifest.
 2. Run `armada-runtime install-artifact` with the JSON input above (substitute
    staging origin, exact manifest digest/size and a fresh private cache path).
    Expected: JSON path receipt, file mode 0700, bytes hash to the manifest.

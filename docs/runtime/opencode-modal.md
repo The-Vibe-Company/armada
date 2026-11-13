@@ -47,18 +47,11 @@ Apply the two new migrations in order before deploying the server. No worker
 applies staging/production migrations. The second migration promotes the private
 Modal harness binding from its old two-value text CHECK to the shared enum.
 
-Build `bun packages/agent-runtime/build.ts` on the target Linux architecture.
-The manifest records OpenCode **1.19.5** and its verified native SHA-256. Publish
-`dist/opencode` under its SHA-256 filename in the existing
-`ARMADA_RUNTIME_ARTIFACT_DIR` served at `/api/runtime/artifacts/<digest>`:
-
-```sh
-# Public executable bytes only. Run in the coordinator's artifact publication lane.
-digest=$(sha256sum packages/agent-runtime/dist/opencode | cut -d ' ' -f 1)
-cp packages/agent-runtime/dist/opencode "$ARMADA_RUNTIME_ARTIFACT_DIR/$digest"
-```
-
-Publish both architecture builds if Modal uses both. Only selected OpenCode
+The normal Docker deploy now publishes pinned OpenCode **1.19.5** for both
+architectures automatically, verifying native SHA-256 and length during build.
+No separate coordinator publication is required. See
+[runtime artifact publication](../runtime-bootstrap-cache.md) for the image's
+manifest paths and exact post-deploy HEAD checks. Only selected OpenCode
 launches fetch this artifact, and only at start/resume when its verified native
 binary/cache is missing. Older goldens need no model key or new native installer
 baked into them. Wrong/missing bytes fail closed. No npm/latest fetch happens
@@ -85,7 +78,7 @@ turn unknown, never an invented partial sum.
 
 ## Staging lifecycle check (coordinator-owned real DeepSeek key)
 
-1. Publish the artifact, migrate/deploy, create the account and launch as above
+1. Migrate/deploy the artifact-bearing image, create the account and launch as above
    on a Modal golden. Expect an answer and current-turn input/output tokens in
    `armada status ID --json`, without any key in logs/events/exec output.
 2. Send a follow-up. Start a tool-bearing prompt, steer it while active, then

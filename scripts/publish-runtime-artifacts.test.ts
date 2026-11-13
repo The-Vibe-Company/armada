@@ -28,9 +28,9 @@ test("publication includes every requested digest and refuses missing or corrupt
       expect((await stat(join(destination, p.sha256))).mode & 0o222).toBe(0);
     }
     await Bun.write(join(root, "opencode"), "bad");
-    await expect(publishManifest(manifest, root, destination)).rejects.toThrow("does not match manifest");
+    await expect(publishManifest(manifest, root, join(root, "rejected"))).rejects.toThrow("does not match manifest");
     await rm(join(root, "opencode"));
-    await expect(publishManifest(manifest, root, destination)).rejects.toThrow();
+    await expect(publishManifest(manifest, root, join(root, "rejected"))).rejects.toThrow();
   } finally {
     await rm(root, { recursive: true, force: true });
   }
