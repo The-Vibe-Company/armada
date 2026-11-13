@@ -7,7 +7,18 @@ import { STAGING_ORIGIN } from "./smoke-sandbox-cleanup.ts";
 import { BOAT_STAGING_NOTICE, smokeReceiptProvider, stagingSmokeCases } from "./staging-smoke-policy.ts";
 
 type Provider = "boat" | "modal" | "docker";
-type Diagnostic = { code: string; httpStatus?: number; message: string; quota?: boolean };
+type Diagnostic = {
+  code: string;
+  httpStatus?: number;
+  message: string;
+  quota?: boolean;
+  elapsedMs?: number;
+  polls?: number;
+  serverElapsedMs?: number | null;
+};
+// Match the server wait tool's maximum observation window (tools.ts MAX_WAIT_SECONDS).
+// This is a bound, not an assertion about any provider's expected latency.
+const OBSERVATION_MS = 600_000;
 type Cell = { status: "pass" | "fail" | "unsupported" | "not-run"; reason: string | null; diagnostic?: Diagnostic };
 
 class ParityError extends Error {
@@ -202,12 +213,15 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     return false;
   }
   const deadline = io.now() + 35 * 60_000;
+  let requestDeadline: number | undefined;
   async function request<T>(path: string, body: object): Promise<T> {
     // Never serialize the response envelope, details, or arbitrary caught errors.
+    const remaining = (requestDeadline ?? Number.POSITIVE_INFINITY) - io.now();
+    if (remaining <= 0) throw new Error("poll_limit_exceeded");
     const response = await io.fetch(`${origin}/api/v1/${path}`, {
       method: "POST",
       redirect: "error",
-      signal: AbortSignal.timeout(600_000),
+      signal: AbortSignal.timeout(Math.max(1, Math.min(600_000, remaining))),
       headers: { authorization: `Bearer ${env.ARMADA_TOKEN}`, "content-type": "application/json" },
       body: JSON.stringify(body),
     });
@@ -246,13 +260,32 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     }
     return result as T;
   }
-  async function poll<T>(read: () => Promise<T>, done: (value: T) => boolean, attempts = 120) {
-    for (let i = 0; i < attempts && io.now() < deadline; i++) {
-      const value = await read();
-      if (done(value)) return value;
-      await io.sleep(1000);
+  async function poll<T>(
+    read: () => Promise<T>,
+    done: (value: T) => boolean,
+    attempts = 600,
+    until = Math.min(deadline, io.now() + OBSERVATION_MS),
+    observed?: (elapsedMs: number, polls: number) => void,
+  ) {
+    const started = io.now();
+    const previousRequestDeadline = requestDeadline;
+    requestDeadline = until;
+    let polls = 0;
+    try {
+      while (polls < attempts && io.now() < until) {
+        polls++;
+        const value = await read();
+        if (io.now() > until) throw new Error("poll_limit_exceeded");
+        if (done(value)) return value;
+        await io.sleep(Math.min(1000, Math.max(0, until - io.now())));
+      }
+      throw new Error("poll_limit_exceeded");
+    } catch (error) {
+      throw new ParityError({ ...diagnostic(error), elapsedMs: io.now() - started, polls });
+    } finally {
+      requestDeadline = previousRequestDeadline;
+      observed?.(io.now() - started, polls);
     }
-    throw new Error("poll_limit_exceeded");
   }
   const report: Record<string, Partial<Record<Provider, Cell>>> = {};
   const record = (
@@ -424,6 +457,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       }
     }
     async function runTurn(recall = false) {
+      const turnStarted = io.now();
       if (!id) throw new Error("launch_not_available");
       const turn = await api<{ promptId: string }>("sandbox/send", {
         id,
@@ -438,40 +472,83 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       let cursor: string | undefined;
       let finished = false;
       let answered = false;
-      await poll(
-        () =>
-          api<{ cursor?: string; events: { kind: string; promptId?: string; status?: string; text?: string }[] }>(
-            "logs/read",
-            { id, ...(cursor ? { cursor } : {}) },
-          ),
-        (page) => {
-          if (
-            page.events.some(
-              (e) =>
-                e.promptId === turn.promptId &&
-                e.kind === "prompt" &&
-                ["failed", "interrupted"].includes(e.status ?? ""),
+      let serverStarted: number | undefined;
+      let serverFinished: number | undefined;
+      let elapsedMs = 0;
+      let polls = 0;
+      try {
+        await poll(
+          () =>
+            api<{
+              cursor?: string;
+              events: { at?: number; kind: string; promptId?: string; status?: string; text?: string }[];
+            }>("logs/read", { id, ...(cursor ? { cursor } : {}) }),
+          (page) => {
+            for (const event of page.events) {
+              if (event.promptId !== turn.promptId || event.kind !== "prompt" || !Number.isFinite(event.at)) continue;
+              if (["queued", "running"].includes(event.status ?? ""))
+                serverStarted = Math.min(serverStarted ?? event.at!, event.at!);
+              if (["finished", "failed", "interrupted"].includes(event.status ?? ""))
+                serverFinished = Math.max(serverFinished ?? event.at!, event.at!);
+            }
+            if (
+              page.events.some(
+                (e) =>
+                  e.promptId === turn.promptId &&
+                  e.kind === "prompt" &&
+                  ["failed", "interrupted"].includes(e.status ?? ""),
+              )
             )
-          )
-            throw new Error("turn_failed");
-          cursor = page.cursor;
-          finished ||= page.events.some(
-            (e) => e.promptId === turn.promptId && e.kind === "prompt" && e.status === "finished",
-          );
-          answered ||= page.events.some(
-            (e) =>
-              e.promptId === turn.promptId && e.kind === "message" && e.text?.includes(recall ? memory : "SMOKE_OK"),
-          );
-          return finished && answered;
-        },
-      );
+              throw new Error("turn_failed");
+            cursor = page.cursor;
+            finished ||= page.events.some(
+              (e) => e.promptId === turn.promptId && e.kind === "prompt" && e.status === "finished",
+            );
+            answered ||= page.events.some(
+              (e) =>
+                e.promptId === turn.promptId && e.kind === "message" && e.text?.includes(recall ? memory : "SMOKE_OK"),
+            );
+            return finished && answered;
+          },
+          600,
+          Math.min(deadline, turnStarted + OBSERVATION_MS),
+          (_elapsed, count) => {
+            elapsedMs = io.now() - turnStarted;
+            polls = count;
+          },
+        );
+      } catch (error) {
+        throw new ParityError({
+          ...diagnostic(error),
+          elapsedMs: io.now() - turnStarted,
+          serverElapsedMs:
+            serverStarted !== undefined && serverFinished !== undefined && serverFinished >= serverStarted
+              ? serverFinished - serverStarted
+              : null,
+        });
+      } finally {
+        io.out(
+          JSON.stringify({
+            step: "parity_turn",
+            provider: c.provider,
+            afterResume,
+            elapsedMs,
+            polls,
+            serverElapsedMs:
+              serverStarted !== undefined && serverFinished !== undefined && serverFinished >= serverStarted
+                ? serverFinished - serverStarted
+                : null,
+          }),
+        );
+      }
       await checkUsage(turn.promptId);
     }
     async function deleteKnown() {
       if (!id) throw new Error("launch_not_available");
-      if (!stopped) {
+      const cleanupDeadline = io.now() + OBSERVATION_MS;
+      {
         let stopError: unknown;
-        if (!stopRequested) {
+        if (!stopped && !stopRequested) {
           stopRequested = true;
           try {
             await api("sandbox/stop", { id, request_id: crypto.randomUUID() });
@@ -483,6 +560,8 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           const terminal = await poll(
             () => api<{ id: string; status: string }>("sandbox/status", { id }),
             (value) => value.id === id && ["stopped", "failed", "deleted"].includes(value.status),
+            600,
+            cleanupDeadline,
           );
           if (terminal.status === "deleted") {
             deleted = true;
@@ -490,7 +569,15 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
             return terminal;
           }
         } catch (error) {
-          throw stopError ?? error;
+          if (stopError) {
+            const observation = diagnostic(error);
+            throw new ParityError({
+              ...diagnostic(stopError),
+              elapsedMs: observation.elapsedMs ?? 0,
+              polls: observation.polls ?? 0,
+            });
+          }
+          throw error;
         }
         stopped = true;
       }
@@ -509,15 +596,23 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
             } catch (error) {
               lastDeleteError = error;
               const detail = diagnostic(error);
-              if (["conflict", "unavailable", "sandbox_busy"].includes(detail.code)) return { status: "pending" };
+              if (["conflict", "unavailable", "sandbox_busy", "sandbox_not_ready"].includes(detail.code))
+                return { status: "pending" };
               throw error;
             }
           },
           (value) => value.status === "deleted",
-          240,
+          600,
+          cleanupDeadline,
         );
       } catch (error) {
-        throw lastDeleteError ?? error;
+        if (lastDeleteError)
+          throw new ParityError({
+            ...diagnostic(lastDeleteError),
+            elapsedMs: diagnostic(error).elapsedMs ?? 0,
+            polls: diagnostic(error).polls ?? 0,
+          });
+        throw error;
       }
       if (receipt.status !== "deleted" || receipt.id !== id) throw new Error("delete_unconfirmed");
       deleted = true;
@@ -576,6 +671,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         );
         continue;
       }
+      const operationStarted = io.now();
       try {
         if (step === "launch") {
           starts++;
@@ -651,7 +747,12 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         }
         record(selected ? step : `prerequisite:${step}`, c.provider, "pass");
       } catch (error) {
-        const detail = diagnostic(error);
+        const caught = diagnostic(error);
+        const detail = {
+          ...caught,
+          elapsedMs: caught.elapsedMs ?? io.now() - operationStarted,
+          polls: caught.polls ?? 0,
+        };
         record(
           selected ? step : `prerequisite:${step}`,
           c.provider,
@@ -699,7 +800,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
             const cell = providers[p];
             return cell
               ? escapeCell(
-                  `${cell.status}${cell.diagnostic ? `: ${cell.reason}; HTTP ${cell.diagnostic.httpStatus ?? "n/a"}; ${cell.diagnostic.code}; ${cell.diagnostic.message}` : cell.reason ? `: ${cell.reason}` : ""}`,
+                  `${cell.status}${cell.diagnostic ? `: ${cell.reason}; HTTP ${cell.diagnostic.httpStatus ?? "n/a"}; ${cell.diagnostic.code}; ${cell.diagnostic.message}; elapsedMs=${cell.diagnostic.elapsedMs ?? "n/a"}; polls=${cell.diagnostic.polls ?? 0}; serverElapsedMs=${cell.diagnostic.serverElapsedMs ?? "unknown"}` : cell.reason ? `: ${cell.reason}` : ""}`,
                 )
               : "—";
           })
