@@ -9,6 +9,7 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { Toaster } from "@/components/ui/toast";
+import { dockerHostsEnabled } from "@/lib/data/docker-hosts";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { listMemberships, requireViewer } from "@/lib/data/viewer";
 import { createClient } from "@/lib/supabase/server";
@@ -65,7 +66,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
           </>
         }
       >
-        <NavLinks className="px-3 pb-3 md:pb-4" />
+        <NavLinks className="px-3 pb-3 md:pb-4" optIns={{ dockerHosts: dockerHostsEnabled() }} />
       </AppSidebar>
       <CommandMenu />
       <Toaster />

@@ -198,7 +198,7 @@ test("a long-lived client uses the rotated refresh token on later requests and p
     },
   });
   expect(
-    await client.request<{ ok: boolean }>("/api/v1/orchestrators/id/resume", {
+    await client.request<{ ok: boolean }>("/api/v1/sandbox/resume", {
       method: "POST",
       headers: { "idempotency-key": "original" },
       body: "{}",

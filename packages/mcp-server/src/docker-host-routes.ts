@@ -50,11 +50,22 @@ export function createDockerHostRoutes(
       if (!token) throw new DockerHostDenied();
       const body: unknown = JSON.parse(await readBoundedText(request, 4096));
       if (!object(body)) throw new InvalidInput();
-      fields(body, path.endsWith("/results") ? ["installationId", "requestId", "outcome"] : ["installationId"]);
+      fields(
+        body,
+        path.endsWith("/results")
+          ? ["installationId", "requestId", "expired" in body ? "expired" : "outcome"]
+          : ["installationId"],
+      );
       const installationId = string(body.installationId);
       if (path.endsWith("/register"))
         return Response.json(await store.exchangeRegistration(token, installationId), { headers });
       if (path.endsWith("/poll")) return Response.json({ job: await store.poll(token, installationId) }, { headers });
+      if ("expired" in body) {
+        if (body.expired !== true) throw new InvalidInput();
+        const requestId = string(body.requestId);
+        await store.expired(token, installationId, { requestId });
+        return Response.json({ requestId }, { headers });
+      }
       const outcome = string(body.outcome);
       if (outcome !== "completed" && outcome !== "failed") throw new InvalidInput();
       const requestId = string(body.requestId);

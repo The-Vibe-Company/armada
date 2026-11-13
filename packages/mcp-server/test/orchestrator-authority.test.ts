@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import type { Sql } from "@armada/core";
 import { createSqlSandboxStore } from "@armada/core";
-import { newOrchestratorEpochSecret, OrchestratorAuthority, reserveOrchestratorOperation } from "@armada/core/server";
+import { DelegatedAuthority, newDelegatedEpochSecret } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
 import { database } from "./support.ts";
 
@@ -88,38 +88,19 @@ test("epoch admission rechecks scope, membership, generation, ACK, expiry and ch
       p.owner,
       parent.id,
     ]);
-    const operation = {
-      orchestratorId: id,
-      actorId: p.owner,
-      action: "message" as const,
-      key: "one",
-      digest: "a".repeat(64),
-      expectedRevision: 0,
-    };
-    const raced = await Promise.allSettled([
-      reserveOrchestratorOperation(sql, operation),
-      reserveOrchestratorOperation(sql, { ...operation, key: "two" }),
-    ]);
-    expect(raced.filter((r) => r.status === "fulfilled")).toHaveLength(1);
-    const winner = raced[0]?.status === "fulfilled" ? operation : { ...operation, key: "two" };
-    const receipt = await reserveOrchestratorOperation(sql, winner);
-    expect(receipt.revision).toBe(1);
-    await expect(reserveOrchestratorOperation(sql, { ...winner, digest: "b".repeat(64) })).rejects.toThrow(
-      "Idempotency conflict",
-    );
     await db.query("insert into orchestrator_children values($1,$2,$3,$4)", [child.id, id, p.org, p.owner]);
     await expect(
       db.query("insert into orchestrators(org_id,owner_id,sandbox_id) values($1,$2,$3)", [p.org, p.owner, child.id]),
     ).rejects.toThrow("not a child");
     const nativeGeneration = "0212ab63-8227-47fa-aa85-25b93c909200";
     await db.query("update sandboxes set orchestrator_native_generation=$2 where id=$1", [parent.id, nativeGeneration]);
-    const { token, hash } = newOrchestratorEpochSecret();
+    const { token, hash } = newDelegatedEpochSecret();
     await db.query(
       `insert into orchestrator_delegations(orchestrator_id,hash,epoch,physical_generation,scopes,golden_ids,account_ids,expires_at,acknowledged_at,native_generation)
  select $1,$2,authority_epoch,1,array['worker:read'],array[]::uuid[],array[]::uuid[],now()+interval '24 hours',now(),$3 from orchestrators where id=$1`,
       [id, hash, nativeGeneration],
     );
-    const authority = new OrchestratorAuthority(sql, async () => {
+    const authority = new DelegatedAuthority(sql, async () => {
       throw new Error("no account adapter enabled");
     });
     const read = (method = "read", childId = child.id) =>
@@ -223,7 +204,7 @@ test("epoch admission rechecks scope, membership, generation, ACK, expiry and ch
     const accounts = { claude: crypto.randomUUID(), codex: crypto.randomUUID() };
     const forwarded: unknown[] = [];
     let accountDenied = false;
-    const launchAuthority = new OrchestratorAuthority(sql, async (_tx, input) => {
+    const launchAuthority = new DelegatedAuthority(sql, async (_tx, input) => {
       forwarded.push(input);
       if (accountDenied) throw new Error("account revoked");
     });

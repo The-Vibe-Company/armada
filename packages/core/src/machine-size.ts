@@ -3,7 +3,6 @@ import { LaunchError } from "./launch-error.ts";
 import type { SandboxProviderId } from "./sandbox-provider.ts";
 
 /** Versioned, browser-safe resource policy. Labels do not imply equal performance or billing. */
-export const MACHINE_SIZE_VERSION = 1 as const;
 export const MACHINE_SIZES = ["small", "medium", "large", "xlarge"] as const;
 export type MachineSize = (typeof MACHINE_SIZES)[number];
 export const MACHINE_SIZE_CATALOG = {

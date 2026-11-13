@@ -52,22 +52,12 @@ export function nativeState(raw: string): NativeState {
 
 /** No public DTO or user JWT can reach plaintext from this store. */
 export function createNativeStateStore(sql: Sql, key: string | undefined) {
-  async function owner(
-    tx: Sql,
-    actor: GoldenActor,
-    accountId: string,
-    version: number,
-    sandboxId: string,
-    cleanupAuthorization?: (tx: Sql) => Promise<void>,
-  ) {
+  async function owner(tx: Sql, actor: GoldenActor, accountId: string, version: number, sandboxId: string) {
     const member = await tx.query(
       "select user_id from public.members where user_id=$1::uuid and org_id=$2::uuid for share",
       [actor.userId, actor.orgId],
     );
-    if (!member.rows.length) {
-      if (!cleanupAuthorization) throw new VaultError("not_found", "Native state membership was revoked.");
-      await cleanupAuthorization(tx);
-    }
+    if (!member.rows.length) throw new VaultError("not_found", "Native state membership was revoked.");
     const rows = await tx.query<{ value_enc: Uint8Array }>(
       `select c.value_enc from public.credentials c
        join public.sandboxes s on s.credential_id=c.id and s.credential_version=c.version
@@ -75,9 +65,9 @@ export function createNativeStateStore(sql: Sql, key: string | undefined) {
        and s.id=$3::uuid and s.owner_id=$4::uuid and s.org_id=$5::uuid and s.deleted_at is null
        and (c.expires_at is null or c.expires_at>now())
        and ((c.scope='user' and c.owner_id=$4::uuid) or (c.scope='org' and c.owner_id=$5::uuid))
-       and ($6::boolean or exists(select 1 from public.members m where m.user_id=$4::uuid and m.org_id=$5::uuid))
+       and exists(select 1 from public.members m where m.user_id=$4::uuid and m.org_id=$5::uuid)
        for update of c,s`,
-      [accountId, version, sandboxId, actor.userId, actor.orgId, !member.rows.length && !!cleanupAuthorization],
+      [accountId, version, sandboxId, actor.userId, actor.orgId],
     );
     const row = rows.rows[0];
     if (!row) throw new VaultError("not_found", "Private native state binding is no longer authorized.");
@@ -287,17 +277,11 @@ export function createNativeStateStore(sql: Sql, key: string | undefined) {
         return { ...state, revision: row.auth_revision, sourceGeneration: row.source_generation };
       });
     },
-    /** Cleanup can reconcile an ACK revision, never hydrate private native auth. */
-    async publicationRevision(
-      actor: GoldenActor,
-      accountId: string,
-      version: number,
-      sandboxId: string,
-      cleanupAuthorization: (tx: Sql) => Promise<void>,
-    ) {
+    /** Reconcile an ACK revision without hydrating private native auth. */
+    async publicationRevision(actor: GoldenActor, accountId: string, version: number, sandboxId: string) {
       if (!sql.transaction) throw new VaultError("unavailable", "Native revision requires transactions.");
       return sql.transaction(async (tx) => {
-        await owner(tx, actor, accountId, version, sandboxId, cleanupAuthorization);
+        await owner(tx, actor, accountId, version, sandboxId);
         const result = await tx.query<{ auth_revision: number }>(
           "select auth_revision from public.model_auth_state where account_id=$1::uuid and account_version=$2",
           [accountId, version],
@@ -313,8 +297,6 @@ export function createNativeStateStore(sql: Sql, key: string | undefined) {
       generation: string;
       expectedRevision: number;
       authJson: string;
-      /** Private checkpoint-only service authorization; never accepted from runner JSON. */
-      cleanupAuthorization?(tx: Sql): Promise<void>;
       /** Recheck the provider incarnation under this same transaction before sealed publication. */
       verifySource(tx: Sql): Promise<void>;
     }): Promise<number> {
@@ -323,14 +305,7 @@ export function createNativeStateStore(sql: Sql, key: string | undefined) {
         throw new VaultError("invalid", "Invalid native auth revision.");
       if (!sql.transaction) throw new VaultError("unavailable", "Private native state requires transactions.");
       return sql.transaction(async (tx) => {
-        const original = await owner(
-          tx,
-          input.actor,
-          input.accountId,
-          input.version,
-          input.sandboxId,
-          input.cleanupAuthorization,
-        );
+        const original = await owner(tx, input.actor, input.accountId, input.version, input.sandboxId);
         const originalAuth = nativeState(await decryptSecret(new Uint8Array(original), key));
         if (JSON.parse(originalAuth.authJson).tokens.account_id !== JSON.parse(next.authJson).tokens.account_id)
           throw new VaultError("conflict", "Native identity changed; reconnect the account explicitly.");

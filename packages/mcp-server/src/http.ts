@@ -42,9 +42,6 @@ export const HEALTH_PATH = "/healthz";
 /** A handler for some paths: null for every other one. */
 export type Route = (request: Request) => Promise<Response | null>;
 
-import type { OrchestratorPair } from "./orchestrator-activation.ts";
-import type { OrchestratorRuntime } from "./orchestrator-runtime.ts";
-
 export interface HandlerOptions {
   runtimeGitHub?: RuntimeGitHub;
   runtimeResume?: RuntimeResume;
@@ -54,8 +51,6 @@ export interface HandlerOptions {
   storedProviderFor?: (target: ProviderTarget, caller: { userId: string }) => Promise<Provider>;
   /** Runtime readiness of the serving database pool; no credentials in the result. */
   ready?: () => Promise<boolean>;
-  orchestratorPairs?: readonly OrchestratorPair[];
-  orchestrators?: OrchestratorRuntime;
   modelAuth?: ModelAuthOwnership;
   publicUrl: string;
   /** Enabled social login providers. Empty by default: email login always works. */
@@ -88,7 +83,7 @@ export interface HandlerOptions {
     binding: ModalBinding,
     context: {
       target: ProviderTarget;
-      caller: { userId: string; orchestratorCleanup?: import("@armada/core").OrchestratorCleanupScope };
+      caller: { userId: string };
       credentialScope: "user" | "org";
     },
   ) => Provider | Promise<Provider>;
@@ -203,8 +198,6 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
         ...(options.launch ? { launch: options.launch } : {}),
         ...(options.goldenAdoption ? { goldenAdoption: options.goldenAdoption } : {}),
         ...(options.goldenBuilds ? { goldenBuilds: options.goldenBuilds } : {}),
-        ...(options.orchestrators ? { orchestrators: options.orchestrators } : {}),
-        ...(options.orchestratorPairs ? { orchestratorPairs: options.orchestratorPairs } : {}),
       },
       VERSION,
     );

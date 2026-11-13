@@ -66,6 +66,7 @@ export type {
   SandboxStatus,
   ServiceToken,
 } from "./database.types.ts";
+export * from "./delegated-access.ts";
 export {
   boundEventEntries,
   buildEventPage,
@@ -103,7 +104,6 @@ export {
   gitIdentity,
   gitSetupCommand,
   refreshGitHubToken,
-  requireGitHubInstallationApp,
   resolveGitHubAccess,
   type StoredGitHubConnection,
 } from "./github.ts";
@@ -209,7 +209,6 @@ export {
   resolveModelChoice,
 } from "./models.ts";
 export { OPENCODE_ENDPOINT_ENV, type OpenCodeEndpoint, parseOpenCodeEndpoint } from "./opencode-endpoint.ts";
-export * from "./orchestrator.ts";
 export type {
   OttoCompleteness,
   OttoFact,
@@ -241,8 +240,6 @@ export {
   type InterruptRequest,
   isFinalPromptStatus,
   type ListRequest,
-  type OrchestratorCreateRecoveryProof,
-  type OrchestratorCreateRecoveryRequest,
   type Page,
   PROMPT_STATUSES,
   type PrepareNativeHarnessCwdRequest,
@@ -321,7 +318,6 @@ export {
   type HostCapabilities,
   isSandboxProvider,
   type ModalBinding,
-  type OrchestratorCleanupScope,
   PROVIDER_LIMITS,
   type ProviderFactory,
   type ProviderLimits,

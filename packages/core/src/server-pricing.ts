@@ -1,5 +1,6 @@
 import type { Harness } from "./contract.ts";
 import type { CredentialKind } from "./database.types.ts";
+import type { ModelPriceOverrides } from "./model-price-overrides.ts";
 import table from "./pricing/models-dev.json";
 import { type TokenRates, validRates } from "./pricing/rates.ts";
 import { costBasis } from "./sandbox-cost.ts";
@@ -151,6 +152,7 @@ export function createUsagePricingContext(input: {
   credentialKind: CredentialKind | null;
   credentialId?: string;
   credentialVersion?: number;
+  modelPrices?: ModelPriceOverrides;
   customEndpoint: boolean;
 }): UsagePricingContext {
   const provider = input.harness === "claude" ? "anthropic" : "openai";
@@ -160,6 +162,18 @@ export function createUsagePricingContext(input: {
       if (!key.startsWith(`${provider}/`)) continue;
       const model = key.slice(provider.length + 1);
       const snapshot = resolvePrice({ provider, model, customEndpoint: false });
+      if (snapshot) prices[model] = snapshot;
+    }
+  }
+  // Connection overrides are exact-model and tied to the admitted credential version.
+  if (input.credentialId && input.credentialVersion !== undefined) {
+    for (const [model, rates] of Object.entries(input.modelPrices ?? {})) {
+      const snapshot = resolvePrice({
+        provider,
+        model,
+        customEndpoint: input.customEndpoint,
+        connection: { id: input.credentialId, revision: String(input.credentialVersion), rates },
+      });
       if (snapshot) prices[model] = snapshot;
     }
   }

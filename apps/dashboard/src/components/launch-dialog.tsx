@@ -458,7 +458,7 @@ function useVisibleViewport(root: RefObject<HTMLElement | null>) {
  * The sandbox keeps this account for every later message, whatever the defaults become. The launch form is never
  * reset after a refused launch, so a retry bills the account the person picked.
  */
-function AccountField({
+export function AccountField({
   idPrefix,
   harness,
   accounts,

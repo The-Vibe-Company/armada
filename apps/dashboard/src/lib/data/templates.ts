@@ -76,16 +76,20 @@ export function lookupsFrom(
   vault: VaultList,
 ): TemplateLookups {
   return {
-    goldens: goldens.map((golden) => {
-      if (!isSandboxProvider(golden.provider)) throw new Error("Unsupported golden provider.");
-      return {
-        id: golden.id,
-        name: golden.name,
-        provider: golden.provider,
-        visibility: golden.visibility,
-        ready: Boolean(golden.provider_snapshot_id),
-      };
-    }),
+    // A golden on a provider goldens do not support is left out, never a failed page (#1398).
+    goldens: goldens.flatMap((golden) =>
+      isSandboxProvider(golden.provider)
+        ? [
+            {
+              id: golden.id,
+              name: golden.name,
+              provider: golden.provider,
+              visibility: golden.visibility,
+              ready: Boolean(golden.provider_snapshot_id),
+            },
+          ]
+        : [],
+    ),
     connections:
       connections.state === "ready"
         ? connections.connections.map(({ id, name, scope, status }) => ({ id, name, scope, status }))

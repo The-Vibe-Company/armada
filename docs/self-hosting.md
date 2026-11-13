@@ -12,7 +12,7 @@ Armada has three deployable parts:
 
 ## Scope
 
-Armada is a launcher, not an orchestrator. It does not split work into tasks, read issue trackers, review code or merge pull requests; an external orchestrator does that through Armada's MCP server. It does not host machines or models either: sandboxes and agents run, and are billed, on the Boat, Modal and model accounts an organization connects.
+Armada is a launcher, not a workflow engine. It does not split work into tasks, read issue trackers, review code or merge pull requests; an external coordinator does that through Armada's MCP server. It does not host machines or models either: sandboxes and agents run, and are billed, on the Boat, Modal and model accounts an organization connects.
 
 The specification is issue [#455](https://github.com/The-Vibe-Company/armada/issues/455); `AGENTS.md` maps every package.
 

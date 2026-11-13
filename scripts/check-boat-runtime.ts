@@ -453,7 +453,7 @@ if (resumeMode && !failure && id && checkpointReceipt && initialConversation && 
     await priorHistory?.();
     const third = resumed.promptId;
     let fourth: string | undefined;
-    if (githubMode) {
+    if (githubMode || mcpMode) {
       const epoch = resumed.runtime.epoch ?? "";
       let revision: string | undefined;
       if (githubMode) {

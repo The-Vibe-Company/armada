@@ -5,14 +5,12 @@
 `maxBytes` (default 262144, 256–1048576), and `coalesce` (default false).
 Existing `all` and `follow` remain; `all` cannot combine with backward reads.
 MCP `logs` calls the cursor `since_cursor` and conversation `conversation_id`,
-with count limit 500. Orchestrator events accepts the same paging options with
-its existing `orgId`/`id` and count limit 500. Core exports `EventsRequest`,
-`EventPage` and `OrchestratorEventPage`.
+with count limit 500. Core exports `EventsRequest` and `EventPage`.
 
 Responses contain chronological `events`, `cursor` (forward continuation after
 newest included raw event), `olderCursor` (backward continuation before oldest
 included raw event, absent on empty pages), and direction-relative `hasMore`.
-Logs retains `settled`; orchestrator envelopes retain `version: 1`.
+Logs retains `settled`.
 Cursors are opaque and exclusive; never decode or mix sources.
 
 Start with `direction: backward` without a cursor. Save its `cursor` as the
@@ -30,8 +28,7 @@ Above the hard 1 MiB events-array limit, it is replaced by one closed
 `kind: other, type: event_truncated` marker. Its `data.reason` is
 `event_exceeds_hard_limit`, with `originalKind`, `originalBytes` and `limitBytes`; the payload
 is omitted, not retryable with a larger budget. The raw cursor still advances.
-Orchestrator envelopes retain their metadata and wrap this marker as an agent
-event (including for an oversized non-agent payload). Markers preserve the
+Markers preserve the
 conversation and prompt IDs when present and at most 256 characters each.
 Oversized context IDs are omitted with `data.contextTruncated: true`, not
 clipped into misleading identities, so the marker itself remains bounded.
@@ -42,8 +39,7 @@ There are two `event_truncated` data shapes: the runtime journal's pre-existing
 marker has `{ originalKind, bytes }` (`bytes` counts serialized UTF-16 code units
 after redaction, at its 262144-unit journal limit). The history hard-limit marker
 has `{ originalKind, reason: "event_exceeds_hard_limit", originalBytes, limitBytes }`;
-`originalBytes` counts UTF-8 JSON events-array bytes, including an orchestrator
-envelope when present. Clients must accept both as closed gaps and must not rely
+`originalBytes` counts UTF-8 JSON events-array bytes. Clients must accept both as closed gaps and must not rely
 on `reason` being present on journal markers.
 
 Coalescing combines only adjacent message events with matching explicit
@@ -65,9 +61,7 @@ chronologically ordered pages when prepending history. Handle `event_truncated`
 as an explicit gap, not as message text or a request to retry. The byte budget
 is soft for one event; keep a 1 MiB receive allowance plus envelope overhead.
 
-Visibility rules are unchanged. Orchestrator history first catches up retained
-events from upstream (at most 100 upstream pages, otherwise unavailable rather
-than a silently stale tail).
+Visibility rules are unchanged.
 
 CLI: `armada logs <id> --tail [n]` (default 100), optionally `--follow`/`--json`.
 Tail cannot combine with `--all` or `--since`. Follow switches from the initial

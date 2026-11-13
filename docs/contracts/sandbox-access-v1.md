@@ -4,7 +4,7 @@ Source contract: `packages/core/src/sandbox-access.ts`, exported from `@armada/c
 `SandboxListMetadata` is the exact allowlist for MCP/API and downstream CLI/dashboard lists.
 All current organization members may list it, including existing private/org rows,
 private or removed source goldens, and rows whose legacy access owner differs.
-Protected orchestrator parents are excluded. There is no global/public list.
+Legacy managed parents are excluded until database retirement. There is no global/public list.
 
 Fields: providerSandboxId, boatId, id, orgId, ownerId, provider, harness, model, reasoningEffort, status,
 createdAt, stoppedAt, expiresAt, effectiveTtlSeconds, machineSize (effective size

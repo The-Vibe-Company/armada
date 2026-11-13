@@ -1,5 +1,4 @@
 import { assertProvider, createSqlAuthStore, oauthOptionsFromEnv } from "@armada/auth";
-import type { ProviderRegistry, Sql } from "@armada/core/server";
 import {
   createApplicationVault,
   createGoldenAdoption,
@@ -26,8 +25,12 @@ import { createSqlData } from "./data.ts";
 import { retryDatabaseBoot } from "./database-boot.ts";
 import { createDatabaseReadiness } from "./database-readiness.ts";
 import { requireDatabaseSchema } from "./database-schema.ts";
+import { createDockerBootstrapService } from "./docker-bootstrap-service.ts";
 import { createDockerHostRoutes } from "./docker-host-routes.ts";
 import { createDockerHostStore } from "./docker-host-store.ts";
+import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
+import { createDockerSandboxRoutes } from "./docker-sandbox-routes.ts";
+import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import { createGitHubAccountApi } from "./github-account.ts";
 import { configureBoatGitHub } from "./github-boat.ts";
 import { createHandler, providerRegistry, type Route } from "./http.ts";
@@ -40,12 +43,7 @@ import { createHistoricalSandboxProviderResolver, createMcpSandboxProviderResolv
 import { createModalIntegration } from "./modal-integration.ts";
 import { createModelAuthOwnership } from "./model-auth.ts";
 import { createModelUsageApi } from "./model-usage.ts";
-import type { NamedOrchestratorCredentials } from "./orchestrator-backend-resolver.ts";
-import type { createOrchestratorServices } from "./orchestrator-composition.ts";
-import { orchestratorDiagnosticLog } from "./orchestrator-diagnostics.ts";
-import { createProductionOrchestrators } from "./orchestrator-production.ts";
-import { orchestratorScopedMcpUrl } from "./orchestrator-scoped-gateway.ts";
-import type { OrchestratorServiceBundle } from "./orchestrator-services.ts";
+import type { NamedLaunchCredentials } from "./named-credentials.ts";
 import { createOttoApi } from "./otto/api.ts";
 import { createOttoRuntime } from "./otto/runtime.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
@@ -65,6 +63,8 @@ import { createRuntimeProgress } from "./runtime-progress.ts";
 import { createRuntimeResume } from "./runtime-resume.ts";
 import { createRuntimeServing } from "./runtime-serving.ts";
 import { createRuntimeSockets, type RuntimeSocketData } from "./runtime-sockets.ts";
+import { orchestratorScopedMcpUrl } from "./sandbox-access-scoped-gateway.ts";
+import { createSandboxAccessServices } from "./sandbox-access-services.ts";
 import { createSandboxArmadaAccess } from "./sandbox-armada-access.ts";
 import { createSandboxLifecycle } from "./sandbox-lifecycle.ts";
 import { startServerWorkers } from "./server-workers.ts";
@@ -81,21 +81,6 @@ export { bunSql };
 export async function startServer(
   env: Record<string, string | undefined>,
   options: {
-    /** Trusted embedding override; otherwise the explicit server pair setting composes Modal Codex. */
-    orchestrators?: (context: {
-      sql: Sql;
-      providers: ProviderRegistry;
-      credentials: NamedOrchestratorCredentials;
-      encryptionKey: string | undefined;
-      connections: NonNullable<ConfiguredControlOptions["connections"]>;
-      managedConnections: NonNullable<ConfiguredControlOptions["connections"]>;
-      publicUrl: string;
-      scopedMcpUrl: string;
-    }) =>
-      | Promise<
-          Pick<ReturnType<typeof createOrchestratorServices>, "runtime" | "lifecycle"> | OrchestratorServiceBundle
-        >
-      | OrchestratorServiceBundle;
     routes?: readonly Route[];
     log?: (line: string) => void;
     /** Failures the server absorbs (an unavailable auth lookup, a tool that failed inside). Redacted. Defaults to stderr. */
@@ -282,8 +267,7 @@ export async function startServer(
       runtime?: { sha256?: unknown; bytes?: unknown };
     };
     if (
-      !row ||
-      row.protocol !== 1 ||
+      row?.protocol !== 1 ||
       row.platform !== "linux" ||
       row.libc !== "glibc" ||
       (row.architecture !== "x64" && row.architecture !== "arm64") ||
@@ -302,6 +286,34 @@ export async function startServer(
       architecture: row.architecture,
       modelAuth,
     });
+  }
+  // Docker placement is a separate, explicit API preview. Host polling remains
+  // enabled independently so disabling new placement does not strand cleanup.
+  const dockerEnabled = env.ARMADA_DOCKER_HOSTS === "1" && env.ARMADA_DOCKER_PLACEMENT === "1";
+  let dockerBootstrap: ReturnType<typeof createDockerBootstrapService> | undefined;
+  if (dockerEnabled) {
+    try {
+      if (!env.ARMADA_DOCKER_RUNTIME_MANIFEST) throw Error();
+      const dockerManifest = await Bun.file(env.ARMADA_DOCKER_RUNTIME_MANIFEST).json();
+      if (
+        dockerManifest?.protocol !== 1 ||
+        dockerManifest.platform !== "linux" ||
+        dockerManifest.libc !== "glibc" ||
+        !["x64", "arm64"].includes(dockerManifest.architecture)
+      )
+        throw Error();
+      dockerBootstrap = createDockerBootstrapService(sql, config.encryptionKey, {
+        enabled: true,
+        serverUrl: config.publicUrl,
+        manifest: dockerManifest,
+        architecture: dockerManifest.architecture,
+        // Plain-image launches resolve only the model account, not GitHub or host credentials.
+        credentials: launchCredentials(store, config.encryptionKey, undefined, modelAuth),
+        modelAuth,
+      });
+    } catch {
+      throw Error("Invalid Docker runtime deployment manifest.");
+    }
   }
   const runtimeResume = createRuntimeResume(
     sql,
@@ -322,7 +334,6 @@ export async function startServer(
       ? { boatRuntimeLaunch: runtimeLaunch, runtimeHostFor: (apiKey: string) => createBoatProvider({ apiKey }) }
       : {}),
     launch,
-    orchestratorPairs: config.orchestratorPairs,
     publicUrl: config.publicUrl,
     modelAuth,
     credentialBindingRecovery: createCredentialBindingRecovery(sql, config.encryptionKey),
@@ -377,32 +388,18 @@ export async function startServer(
     config.encryptionKey,
     { store, app: githubApp },
     Reflect.get(control, "modelAuth"),
-  ]) as NamedOrchestratorCredentials;
-  const orchestratorContext = {
+  ]) as NamedLaunchCredentials;
+  const sandboxAccessContext = {
     extensionHeadroomSeconds: config.sandboxExtensionHeadroomSeconds,
     sql,
     providers,
     credentials,
     encryptionKey: config.encryptionKey,
     connections: mcp.connections,
-    managedConnections: mcp.managedConnections,
     publicUrl: config.publicUrl,
     scopedMcpUrl: orchestratorScopedMcpUrl(config.publicUrl),
   };
-  const orchestrators = options.orchestrators
-    ? await options.orchestrators(orchestratorContext)
-    : createProductionOrchestrators({
-        ...orchestratorContext,
-        encryptionKey: config.encryptionKey,
-        requestedPairs: config.orchestratorPairs,
-        skillRevision: config.orchestratorSkillRevision,
-        diagnosticLog: orchestratorDiagnosticLog({
-          info: options.log ?? console.info,
-          warn: console.warn,
-          error: options.logError ?? console.error,
-        }),
-      });
-  if (orchestrators) control.orchestrators = orchestrators.runtime;
+  const delegatedAccess = createSandboxAccessServices(sandboxAccessContext);
   const runtimeEvents = createRuntimeEvents(
     runtimeEnrolments,
     config.encryptionKey,
@@ -417,8 +414,6 @@ export async function startServer(
     ready: createDatabaseReadiness(sql),
     runtimeProviderFor,
     launch,
-    orchestratorPairs: config.orchestratorPairs,
-    ...(orchestrators ? { orchestrators: orchestrators.runtime } : {}),
     modelAuth,
     publicUrl: config.publicUrl,
     loginProviders: (env.ARMADA_AUTH_PROVIDERS ?? "")
@@ -448,6 +443,19 @@ export async function startServer(
     routes: [
       ...(env.ARMADA_DOCKER_HOSTS === "1"
         ? [
+            createDockerSandboxRoutes(
+              {
+                sandboxes: createDockerSandboxService(sql, config.encryptionKey, { enabled: dockerEnabled }),
+                ...(dockerBootstrap ? { bootstrap: dockerBootstrap } : {}),
+                runtime: createDockerRuntimeLifecycle(sql, config.encryptionKey, { enabled: dockerEnabled }),
+              },
+              (request) =>
+                authenticateCaller(request.headers.get("authorization"), {
+                  store: authStore,
+                  supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
+                  now: new Date(),
+                }),
+            ),
             createDockerHostRoutes(createDockerHostStore(sql, config.encryptionKey), (request) =>
               authenticateCaller(request.headers.get("authorization"), {
                 store: authStore,
@@ -481,15 +489,7 @@ export async function startServer(
       runtimeEvents.route,
       runtimeCommands.route,
       ...(runtimeGitHub ? [runtimeGitHub.route] : []),
-      ...(orchestrators && "scopedToolsRoute" in orchestrators
-        ? [
-            orchestrators.scopedToolsRoute,
-            orchestrators.ownerLifecycleRoute({
-              authStore,
-              supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
-            }),
-          ]
-        : []),
+      delegatedAccess.scopedToolsRoute,
       ...(modelAuth.broker ? [modelAuth.broker.route] : []),
       modal.route,
       mcp.route,
@@ -567,16 +567,7 @@ export async function startServer(
     options.logError,
     goldenRetirements,
     () => pruneServerRetention(sql, control.applicationVault, new Date()),
-    [
-      ...(orchestrators
-        ? [
-            orchestrators.runtime.createWorker,
-            ...("lifecycle" in orchestrators
-              ? [orchestrators.lifecycle]
-              : [orchestrators.lifecycleWorker, orchestrators.childWorker, orchestrators.eventWorker]),
-          ]
-        : []),
-    ],
+    [delegatedAccess.childWorker],
   );
   const invitationWorker =
     env.ARMADA_INVITATION_MAIL === "supabase" && control.invitations

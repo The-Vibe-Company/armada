@@ -3,7 +3,7 @@
 Refs #979. This slice improves discovery of existing log-reader behavior and forwards the
 already-accepted organization selector. It does not add flags, change JSON
 fields, grant permissions or control agents.
-Orchestrators, routines and migrations are out of scope.
+Routines and migrations are out of scope.
 
 ## Offline baseline
 

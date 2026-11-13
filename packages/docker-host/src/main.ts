@@ -5,7 +5,24 @@ import { register, tick } from "./daemon.ts";
 import { dockerCli, fileStore, httpApi } from "./native.ts";
 import { dockerRuntimeStarter } from "./runtime-install.ts";
 
+const usage = `Usage:
+  armada-docker-host register --server https://ARMADA_ORIGIN --state-dir /absolute/private/directory
+  armada-docker-host run --state-dir /absolute/private/directory
+  armada-docker-host --help
+
+Machine-only Docker host agent. Registration reads a one-use token from stdin;
+never pass a token as an argument. State is private; Docker access is required.
+Use --help or -h after register/run for this usage. Stop the daemon with SIGTERM.`;
+
 async function main(args: string[]) {
+  if (
+    args.length === 0 ||
+    (args.length === 1 && ["--help", "-h"].includes(args[0] ?? "")) ||
+    (args.length === 2 && ["register", "run"].includes(args[0] ?? "") && ["--help", "-h"].includes(args[1] ?? ""))
+  ) {
+    console.log(usage);
+    return;
+  }
   const [command, ...flags] = args;
   const options = new Map<string, string>();
   for (let i = 0; i < flags.length; i += 2) {

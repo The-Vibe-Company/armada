@@ -13,11 +13,14 @@ import {
   type TemplateRuntime,
 } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
+import { rowOnlyDatabase } from "./row-only-database.ts";
 import { database, ENCRYPTION_KEY, fakeBoat } from "./support.ts";
 
+const sharedDatabase = rowOnlyDatabase();
+
 // Owns durable scheduler behavior through real SQL + template admission; only physical provider is fake.
-async function fixture() {
-  const { db, people } = await database();
+async function fixture({ isolated = false } = {}) {
+  const { db, people } = await (isolated ? database() : sharedDatabase());
   const sql: Sql = { query: (s, p) => db.query(s, p), transaction: (work) => db.transaction((tx) => work(tx)) };
   const actor = { userId: people.owner, orgs: [{ orgId: people.org }] };
   const service = createRoutineService(sql),
@@ -119,7 +122,25 @@ async function fixture() {
         missed_intervals: number;
       }>("select * from routine_runs where routine_id=$1 order by created_at,id", [routine.id])
     ).rows;
-  return { db, people, sql, actor, service, templates, boat, runtime, launch, observe, launches, routine, due, runs };
+  return {
+    db,
+    people,
+    sql,
+    actor,
+    service,
+    templates,
+    boat,
+    runtime,
+    launch,
+    observe,
+    launches,
+    routine,
+    due,
+    runs,
+    close: async () => {
+      if (isolated) await db.close();
+    },
+  };
 }
 
 test("replicas fire one ordinary template launch, skip alive machines, preserve interval phase and never catch up", async () => {
@@ -164,7 +185,7 @@ test("replicas fire one ordinary template launch, skip alive machines, preserve 
     await createRoutineScheduler(f.sql, { launch: f.launch, observe: f.observe }).tick();
     expect(f.boat.forks).toHaveLength(2);
   } finally {
-    await f.db.close();
+    await f.close();
   }
 });
 
@@ -204,7 +225,7 @@ test("restart after template success but lost history publication reconciles the
     expect(f.launches).toHaveLength(1);
     expect(f.boat.forks).toHaveLength(1);
   } finally {
-    await f.db.close();
+    await f.close();
   }
 });
 
@@ -256,7 +277,7 @@ test("daily cap includes failures, skipped ticks do not reset failures, and thre
     expect(f.boat.forks).toHaveLength(0);
     expect(JSON.stringify(await f.runs())).not.toContain("secret raw");
   } finally {
-    await f.db.close();
+    await f.close();
   }
 });
 
@@ -298,7 +319,7 @@ test.each([false, true])(
         (await f.db.query("select consecutive_failures from routines where id=$1", [f.routine.id])).rows[0],
       ).toEqual({ consecutive_failures: 0 });
     } finally {
-      await f.db.close();
+      await f.close();
     }
   },
 );
@@ -324,7 +345,7 @@ test("uncertain template claims never refork and remain visible across restart",
     expect(f.launches).toHaveLength(1);
     expect((await f.runs()).at(-1)).toMatchObject({ state: "skipped", reason: "previous_run_uncertain" });
   } finally {
-    await f.db.close();
+    await f.close();
   }
 });
 
@@ -337,7 +358,7 @@ test("removed owners cannot execute newly due occurrences", async () => {
     expect((await f.runs())[0]).toMatchObject({ state: "failed", reason: "owner_authorization_changed" });
     expect(f.launches).toHaveLength(0);
   } finally {
-    await f.db.close();
+    await f.close();
   }
 });
 
@@ -375,12 +396,12 @@ test("restart after occurrence admission launches the frozen snapshot with the o
     expect((await f.runs())[0]).toMatchObject({ state: "succeeded", request_key: key });
     expect(f.boat.forks).toHaveLength(1);
   } finally {
-    await f.db.close();
+    await f.close();
   }
 });
 
 test("run input snapshots and sandbox links stay outside JWT history grants", async () => {
-  const f = await fixture();
+  const f = await fixture({ isolated: true });
   try {
     await f.due();
     await createRoutineScheduler(f.sql, { launch: f.launch, observe: f.observe }).tick();
@@ -396,7 +417,7 @@ test("run input snapshots and sandbox links stay outside JWT history grants", as
     await expect(f.db.query("update routine_runs set state='failed'")).rejects.toThrow("permission denied");
     await f.db.exec("reset role");
   } finally {
-    await f.db.close();
+    await f.close();
   }
 });
 
@@ -450,7 +471,7 @@ test("expired preflight cannot allocate after a replacement lease records failur
   } finally {
     resume();
     await pending?.catch(() => {});
-    await f.db.close();
+    await f.close();
   }
 });
 
@@ -498,7 +519,7 @@ test.each(["finished", "failed"] as const)(
       if (status === "failed") expect(typeof (history.items as Record<string, unknown>[])[0]!.taskHelp).toBe("string");
       expect(f.boat.forks).toHaveLength(1);
     } finally {
-      await f.db.close();
+      await f.close();
     }
   },
 );
@@ -533,7 +554,7 @@ test("unavailable task evidence is unknown, not a launch failure or auto-pause",
     await createRoutineScheduler(f.sql, { launch: f.launch, observe }).tick();
     expect(observations).toBe(3);
   } finally {
-    await f.db.close();
+    await f.close();
   }
 });
 
@@ -570,6 +591,6 @@ test("calendar admission counts missed occurrences once and pauses unavailable s
       (await f.db.query("select status,next_due_at,pause_reason from routines where id=$1", [f.routine.id])).rows[0],
     ).toEqual({ status: "paused", next_due_at: null, pause_reason: "schedule_unavailable" });
   } finally {
-    await f.db.close();
+    await f.close();
   }
 });

@@ -1,4 +1,6 @@
-import { HARNESSES, MACHINE_SIZES, SANDBOX_PROVIDERS, type SandboxListMetadata } from "@armada/core";
+import { HARNESSES, MACHINE_SIZES } from "@armada/core";
+import { LISTED_PROVIDERS } from "./listed-provider.ts";
+import type { ListedSandbox } from "./sandbox-access.ts";
 
 export const SANDBOX_STATUSES = ["starting", "ready", "running", "stopping", "stopped", "failed", "deleted"] as const;
 export const PAGE_SIZE = 25;
@@ -9,6 +11,8 @@ export type SandboxFilters = Record<Facet, string[]> & {
   sort: "attention" | "newest" | "oldest" | "name";
   page: number;
 };
+/** The list opens newest first; the URL names only a different sort. */
+export const DEFAULT_SANDBOX_SORT: SandboxFilters["sort"] = "newest";
 type Params = Record<string, string | string[] | undefined>;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const values = (value: string | string[] | undefined) => [
@@ -24,13 +28,13 @@ export function parseSandboxFilters(params: Params): SandboxFilters {
   const sort = one(params.sort);
   return {
     status: known("status", SANDBOX_STATUSES),
-    provider: known("provider", SANDBOX_PROVIDERS),
+    provider: known("provider", LISTED_PROVIDERS),
     harness: known("harness", HARNESSES),
     model: values(params.model).filter((value) => value.length <= 160),
     owner: values(params.owner).filter((value) => value === "me" || UUID.test(value)),
     size: known("size", [...MACHINE_SIZES, "unknown"]),
     q: one(params.q).trim().slice(0, 200),
-    sort: sort === "newest" || sort === "oldest" || sort === "name" ? sort : "attention",
+    sort: sort === "attention" || sort === "oldest" || sort === "name" ? sort : DEFAULT_SANDBOX_SORT,
     page: Number.isSafeInteger(page) && page > 0 ? page : 1,
   };
 }
@@ -38,23 +42,23 @@ export function filtersToSearch(filters: Partial<SandboxFilters>): string {
   const search = new URLSearchParams();
   if (filters.q) search.set("q", filters.q);
   for (const key of FACETS) for (const value of filters[key] ?? []) search.append(key, value);
-  if (filters.sort && filters.sort !== "attention") search.set("sort", filters.sort);
+  if (filters.sort && filters.sort !== DEFAULT_SANDBOX_SORT) search.set("sort", filters.sort);
   if (filters.page && filters.page > 1) search.set("page", String(filters.page));
   return search.size ? `?${search}` : "";
 }
 export function hasSandboxFilters(filters: SandboxFilters): boolean {
   return Boolean(filters.q || FACETS.some((key) => filters[key].length));
 }
-export function facetValue(row: SandboxListMetadata, key: Facet): string {
+export function facetValue(row: ListedSandbox, key: Facet): string {
   return key === "owner" ? row.ownerId : key === "size" ? (row.machineSize ?? "unknown") : (row[key] ?? "unknown");
 }
 /** Runs over the full authorized metadata inventory, never only the visible page. */
 export function filterSandboxes(
-  rows: readonly SandboxListMetadata[],
+  rows: readonly ListedSandbox[],
   filters: SandboxFilters,
   viewerId: string,
   except?: Facet,
-): SandboxListMetadata[] {
+): ListedSandbox[] {
   const q = filters.q.toLocaleLowerCase();
   return rows.filter((row) => {
     if (except !== "status" && !filters.status.length && row.status === "deleted") return false;
@@ -68,14 +72,11 @@ export function filterSandboxes(
     );
   });
 }
-export function sortSandboxes(
-  rows: readonly SandboxListMetadata[],
-  sort: SandboxFilters["sort"],
-): SandboxListMetadata[] {
+export function sortSandboxes(rows: readonly ListedSandbox[], sort: SandboxFilters["sort"]): ListedSandbox[] {
   const priority = { failed: 0, ready: 1, stopped: 2, running: 3, starting: 4, stopping: 5, deleted: 6 };
   return [...rows].sort((a, b) => {
     const age = b.createdAt.localeCompare(a.createdAt);
-    const attention = (row: SandboxListMetadata) => {
+    const attention = (row: ListedSandbox) => {
       if (
         row.status === "failed" ||
         ((row.status === "ready" || row.status === "stopped") && row.taskOutcome?.state === "blocked")
@@ -97,7 +98,7 @@ export function sortSandboxes(
 }
 export type FacetOption = { value: string; label: string; count: number };
 export function sandboxFacetCounts(
-  rows: readonly SandboxListMetadata[],
+  rows: readonly ListedSandbox[],
   filters: SandboxFilters,
   viewerId: string,
 ): Record<Facet, Map<string, number>> {

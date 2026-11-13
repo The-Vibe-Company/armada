@@ -1,6 +1,6 @@
-import type { CredentialKind, Sandbox, SandboxCost, SandboxListMetadata } from "@armada/core";
+import type { CredentialKind, Sandbox, SandboxCost } from "@armada/core";
 import { isUuid } from "@/lib/action";
-import { parseSandboxListMetadata } from "@/lib/sandbox-access";
+import { type ListedSandbox, parseSandboxListMetadata, type SkippedSandboxRow } from "@/lib/sandbox-access";
 import { costOfRow } from "@/lib/sandbox-cost";
 import {
   type Facet,
@@ -14,9 +14,11 @@ import type { Supabase } from "@/lib/supabase/server";
 import { selectedOrganization } from "./selected-org";
 
 export type SandboxPage = {
-  rows: SandboxListMetadata[];
+  rows: ListedSandbox[];
   total: number;
   inventoryTotal: number;
+  /** Rows the server listed that do not match the contract, left out of the page (#1398). */
+  skipped: number;
   facets: Record<Facet, Map<string, number>>;
 };
 
@@ -29,7 +31,8 @@ export async function listSandboxes(
   viewerId: string,
 ): Promise<SandboxPage> {
   const selected = await selectedOrganization();
-  const inventory: SandboxListMetadata[] = [];
+  const inventory: ListedSandbox[] = [];
+  let skipped = 0;
   if (selected) {
     const batch = 500;
     for (let from = 0; ; from += batch) {
@@ -40,9 +43,11 @@ export async function listSandboxes(
         .range(from, from + batch - 1);
       if (error?.code === "PGRST103") break;
       if (error) throw new Error(error.message);
-      const rows = parseSandboxListMetadata(data);
-      inventory.push(...rows);
-      if (rows.length < batch) break;
+      const parsed = parseSandboxListMetadata(data);
+      inventory.push(...parsed.rows);
+      skipped += parsed.skipped.length;
+      logSkipped(parsed.skipped);
+      if (parsed.rows.length + parsed.skipped.length < batch) break;
     }
   }
   const matching = sortSandboxes(filterSandboxes(inventory, filters, viewerId), filters.sort);
@@ -51,12 +56,13 @@ export async function listSandboxes(
     rows: matching.slice(from, from + PAGE_SIZE),
     total: matching.length,
     inventoryTotal: inventory.filter((row) => row.status !== "deleted").length,
+    skipped,
     facets: sandboxFacetCounts(inventory, filters, viewerId),
   };
 }
 
 /** The listed metadata of one sandbox of the selected organization, or null when the server lists no such sandbox. */
-export async function getSandboxMetadata(supabase: Supabase, id: string): Promise<SandboxListMetadata | null> {
+export async function getSandboxMetadata(supabase: Supabase, id: string): Promise<ListedSandbox | null> {
   const selected = await selectedOrganization();
   if (!selected) return null;
   const { data, error } = await supabase
@@ -65,7 +71,16 @@ export async function getSandboxMetadata(supabase: Supabase, id: string): Promis
     .eq("orgId", selected.org.id)
     .maybeSingle();
   if (error) throw new Error(error.message);
-  return data ? (parseSandboxListMetadata([data])[0] ?? null) : null;
+  if (!data) return null;
+  const parsed = parseSandboxListMetadata([data]);
+  logSkipped(parsed.skipped);
+  return parsed.rows[0] ?? null;
+}
+
+/** Server-side only: the row id and the failed contract check, never a row value. */
+function logSkipped(skipped: readonly SkippedSandboxRow[]) {
+  for (const row of skipped)
+    console.error(`Sandbox list row left out: ${row.reason} does not match the contract (id ${row.id ?? "unknown"}).`);
 }
 
 /** The interior row. Row level security returns it only to its owner or a current organization admin. */
@@ -102,7 +117,7 @@ export async function credentialKinds(supabase: Supabase, ids: readonly (string 
  */
 export function listSandboxCosts(
   supabase: Supabase,
-  rows: readonly Pick<SandboxListMetadata, "id" | "canOpen">[],
+  rows: readonly Pick<ListedSandbox, "id" | "canOpen">[],
 ): Promise<Map<string, SandboxCost>> {
   return sandboxCosts(
     supabase,

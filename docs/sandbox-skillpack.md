@@ -6,9 +6,7 @@ API/MCP launch accepts `skills: string[]`; delegated child launch accepts the
 same array in `selection`. At most 20 distinct slugs are accepted; ambiguous
 versions or cross-organization slug collisions are rejected before allocation.
 
-The golden must contain the native Skillpack CLI on PATH. Armada uses the same
-official-origin native installer and lock receipt validator as orchestrator create
-(#839), installs for the chosen harness into the selected repository or golden
+The golden must contain the native Skillpack CLI on PATH. Armada uses the official-origin native installer and lock receipt validator, installs for the chosen harness into the selected repository or golden
 root, and records verified UUID/version/checksum/origin receipts in sandbox
 detail/status. No skills means no CLI requirement. Existing files/defaults are
 left to Skillpack's managed conflict rules; this does not remove snapshot skills.
@@ -17,8 +15,7 @@ and starts no agent. Guest diagnostics are not returned.
 
 Only currently advertised public catalog exact releases work. Private skills,
 share tokens, custom origins and Skillpack credential injection are unsupported
-for ordinary sandbox/child launches in this public-only slice. #872 now supports
-private orchestrator create via the existing encrypted credential contract. Skills are untrusted instructions,
+for ordinary sandbox/child launches in this public-only slice. Skills are untrusted instructions,
 not an isolation boundary. Golden default configuration, build-time installation
 and a pinned/checksummed official CLI bootstrap are deferred to #868, as allowed
 by #867's launch-first scope. No golden config field is accepted in this slice.
@@ -34,16 +31,12 @@ An unavailable release must fail/stop without a first turn.
 The owner requires private skills. #872 now provides encrypted user-over-org
 credential resolution and the shared server-only installPrivateSkill boundary,
 including pinned SSH stdin transport, command-only ephemeral environment,
-workspace provenance, key cleanup and sanitized errors. Orchestrator bootstrap
-reuses that implementation unchanged for bare private pins and reuses this
-module's public command/receipt helpers for qualified anonymous catalog pins.
-Qualified pins never resolve/send a private credential. The previously proposed
+workspace provenance, key cleanup and sanitized errors. Qualified pins never resolve/send a private credential. The previously proposed
 SkillInstallTransport hook was unused by #872 and is removed: no parallel
 credential or installer mechanism is introduced.
 
 Ordinary sandbox and delegated child launch remain explicitly public-only;
-bare private pins are rejected before allocation even though orchestrator create
-accepts them. A future private launch caller must reuse installPrivateSkill and
+bare private pins are rejected before allocation in this slice. A future private launch caller must reuse installPrivateSkill and
 resolveSkillpackCredential, not copy their transport or registry validation.
 Defaults/version resolution remain #841 work; golden defaults remain #868.
 Never persist Skillpack credentials in a golden snapshot, login/profile, config

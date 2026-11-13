@@ -10,8 +10,7 @@ retrying termination, not checkpoint or failed work capture.
 The status/stop receipt includes the closed preservation note
 `checkpoint_failed_disk_not_retained` on fallback. No current disk checkpoint is
 promised; resume is refused rather than silently restoring stale files. Earlier
-encrypted work recovery archives remain available. Golden builders and native
-orchestrator checkpoints retain their fail-closed behavior.
+encrypted work recovery archives remain available. Golden builders retain their fail-closed behavior.
 
 The server logs `modal_lifecycle_step_failed` with closed stage, reason,
 providerStatusClass and, when supplied, processCategory/processFailure fields.

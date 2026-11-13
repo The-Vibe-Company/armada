@@ -157,9 +157,6 @@ jobs:
           done
       - name: Run balanced unit shard
         run: bun scripts/ci/unit-shards.ts ${{ matrix.shard }}
-      - name: PostgreSQL runtime publication integration
-        if: matrix.shard == 1
-        run: bun test ./packages/mcp-server/test/orchestrator-runtime-postgres.integration.ts
 
   # Keep the ruleset's required name; never turn skipped/cancelled children green.
   verify:

@@ -1,4 +1,4 @@
-import { HARNESSES, MACHINE_SIZES, SANDBOX_PROVIDERS, type SandboxCost, type SandboxListMetadata } from "@armada/core";
+import { HARNESSES, MACHINE_SIZES, SANDBOX_PROVIDERS, type SandboxCost } from "@armada/core";
 import { BoxesIcon, LockIcon, RocketIcon, SearchXIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
@@ -24,7 +24,14 @@ import { HARNESS_LABELS } from "@/lib/labels";
 import { type LifecycleView, lifecycleView, readLifecycle } from "@/lib/lifecycle";
 import { preservationView, settledOutcome } from "@/lib/outcome";
 import { PROVIDER_SETTINGS_PATH } from "@/lib/provider-setup";
-import { machineSizeLabel, sandboxName } from "@/lib/sandbox-access";
+import {
+  LISTED_PROVIDER_LABELS,
+  type ListedProvider,
+  type ListedSandbox,
+  machineSizeLabel,
+  sandboxName,
+  skippedRowsNote,
+} from "@/lib/sandbox-access";
 import { costFigure } from "@/lib/sandbox-cost";
 import {
   FACETS,
@@ -56,7 +63,7 @@ async function SandboxesContent({ searchParams }: Props) {
   const filters = parseSandboxFilters(await searchParams);
   const supabase = await createClient();
   const selected = await selectedOrganization();
-  const [{ rows, total, inventoryTotal, facets }, directory, setup] = await Promise.all([
+  const [{ rows, total, inventoryTotal, skipped, facets }, directory, setup] = await Promise.all([
     listSandboxes(supabase, filters, viewer.id),
     listMemberships(supabase, viewer.id)
       .then((items) => items.filter((item) => item.org.id === selected?.org.id))
@@ -74,7 +81,7 @@ async function SandboxesContent({ searchParams }: Props) {
   const filtered = hasSandboxFilters(filters);
   // An organization without a sandbox provider goes to Settings to connect one; one with sandboxes to manage stays here.
   const setupPending = selected !== null && setup?.state === "pending";
-  if (setupPending && !filtered && inventoryTotal === 0) redirect(PROVIDER_SETTINGS_PATH);
+  if (setupPending && !filtered && inventoryTotal === 0 && skipped === 0) redirect(PROVIDER_SETTINGS_PATH);
 
   const launchAction = setupPending ? (
     <Button asChild>
@@ -122,11 +129,13 @@ async function SandboxesContent({ searchParams }: Props) {
                       ? value === "unknown"
                         ? "Not recorded"
                         : machineSizeLabel(value as (typeof MACHINE_SIZES)[number])
-                      : key === "model"
-                        ? value === "unknown"
-                          ? "Not recorded"
-                          : value
-                        : capitalize(value);
+                      : key === "provider"
+                        ? (LISTED_PROVIDER_LABELS[value as ListedProvider] ?? capitalize(value))
+                        : key === "model"
+                          ? value === "unknown"
+                            ? "Not recorded"
+                            : value
+                          : capitalize(value);
               const options = values
                 .filter(
                   (value) =>
@@ -140,6 +149,12 @@ async function SandboxesContent({ searchParams }: Props) {
           ) as Record<Facet, FacetOption[]>
         }
       />
+
+      {skipped > 0 && (
+        <p role="status" className="text-sm text-muted-foreground">
+          {skippedRowsNote(skipped)}
+        </p>
+      )}
 
       {rows.length === 0 ? (
         total > 0 ? (
@@ -270,7 +285,7 @@ async function SandboxesContent({ searchParams }: Props) {
  * The sandbox's listed name. Its owner and the organization's admins open it; any other member sees the same metadata
  * without a link into its conversation, files or connections (#680). The server enforces that again on every read.
  */
-function SandboxName({ sandbox }: { sandbox: SandboxListMetadata }) {
+function SandboxName({ sandbox }: { sandbox: ListedSandbox }) {
   if (sandbox.canOpen)
     return (
       <Link
@@ -345,7 +360,7 @@ function LifecycleHint({ view }: { view: LifecycleView }) {
  * Under the status: what the agent reported for its latest finished turn (owner and admins only; the metadata hides it
  * from other members), and a stopped sandbox's work-preservation receipt. The recovery command is on its page.
  */
-function OutcomeHint({ sandbox }: { sandbox: SandboxListMetadata }) {
+function OutcomeHint({ sandbox }: { sandbox: ListedSandbox }) {
   const outcome = settledOutcome(sandbox.status, sandbox.taskOutcome);
   const preservation = preservationView(sandbox.preservationNote, sandbox.status, sandbox.id, sandbox.canOpen);
   if (!outcome && !preservation) return null;

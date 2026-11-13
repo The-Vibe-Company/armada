@@ -1,12 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import {
-  editDefaults,
-  goldenRequest,
-  goldenRowState,
-  launchRepoOptions,
-  providerCapacity,
-  repoSlug,
-} from "../src/lib/golden-form.ts";
+import { editDefaults, goldenRequest, goldenRowState, providerCapacity, repoSlug } from "../src/lib/golden-form.ts";
 
 const ORG = "11111111-1111-4111-8111-111111111111";
 const base = { mode: "create", name: "web", org: ORG, provider: "boat", visibility: "org", init: "", setup: "" };
@@ -93,21 +86,6 @@ describe("recorded repositories", () => {
     expect(repoSlug("git@github.com:acme/web.git")).toBe("acme/web");
     expect(repoSlug("ssh://git@github.com/acme/web.git")).toBe("acme/web");
     expect(repoSlug("https://gitlab.com/acme/web.git")).toBeNull();
-  });
-
-  test("the launch choices are the golden's distinct GitHub repositories; a legacy empty config offers none", () => {
-    const config = {
-      repos: [
-        { url: "https://github.com/acme/web.git", branch: "main", dir: "web" },
-        { url: "git@github.com:acme/web.git", branch: "dev", dir: "web-2" },
-        { url: "https://gitlab.com/x/y.git", branch: "main", dir: "y" },
-        { url: "https://github.com/acme/api.git", branch: "main", dir: "api" },
-      ],
-      init: [],
-    };
-    expect(launchRepoOptions(config)).toEqual(["acme/web", "acme/api"]);
-    expect(launchRepoOptions({})).toEqual([]);
-    expect(launchRepoOptions(null)).toEqual([]);
   });
 
   test("the rebuild form starts from what the golden records", () => {

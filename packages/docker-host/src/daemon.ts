@@ -8,11 +8,23 @@ import {
 import type { DockerMachineRequest } from "../../core/src/docker-machine.ts";
 
 export type Job = DockerHostJob;
-export type Receipt = { requestId: string; request: DockerMachineRequest; outcome?: "completed" | "failed" } & (
-  | { operation: "create" | "stop" | "delete" }
-  | { operation: "bootstrap"; inputHash: string }
-);
-export type State = { server: string; installationId: string; hostId: string; hostToken: string; receipts: Receipt[] };
+export type Receipt = {
+  requestId: string;
+  request: DockerMachineRequest;
+  outcome?: "completed" | "failed";
+  /** Durable positive local stop proof, separate from the original job outcome. */
+  expired?: true;
+  expiryReported?: true;
+} & ({ operation: "create" | "stop" | "delete" } | { operation: "bootstrap"; inputHash: string });
+export type State = {
+  server: string;
+  installationId: string;
+  hostId: string;
+  hostToken: string;
+  receipts: Receipt[];
+  /** Fair bounded retries across retained confirmations and process restarts. */
+  expiryReportAfter?: string;
+};
 export interface Store {
   load(): Promise<State>;
   save(state: State): Promise<void>;
@@ -20,7 +32,7 @@ export interface Store {
 export interface Api {
   register(server: string, token: string, installationId: string): Promise<{ hostId: string; hostToken: string }>;
   poll(state: State): Promise<{ job: Job | null }>;
-  result(state: State, receipt: Receipt): Promise<void>;
+  result(state: State, receipt: Receipt, expired?: true): Promise<void>;
 }
 export interface Executor {
   startRuntime?(request: DockerMachineRequest, bootstrap: BootstrapDescriptor): Promise<unknown>;
@@ -72,9 +84,34 @@ export async function tick(store: Store, api: Api, executor: Executor): Promise<
   // Sweep even when the server is offline or has revoked the credential. One failed sweep cannot block others.
   for (const receipt of state.receipts.filter((r) => r.operation === "create" || r.operation === "bootstrap")) {
     try {
-      await executor.stopIfExpired(receipt.request);
+      if ((await executor.stopIfExpired(receipt.request)) === true && !receipt.expired) {
+        receipt.expired = true;
+        try {
+          await store.save(state);
+        } catch {
+          // Never publish a confirmation that has not survived persistence.
+          delete receipt.expired;
+        }
+      }
     } catch {
-      /* retry next tick */
+      /* retry the sweep; an earlier durable confirmation can still be reported */
+    }
+  }
+  // Never let offline reporting delay another machine's physical TTL sweep.
+  // One bounded HTTP attempt per tick, round-robin even across process restart.
+  const after = state.receipts.findIndex((receipt) => receipt.requestId === state.expiryReportAfter);
+  const report = [...state.receipts.slice(after + 1), ...state.receipts.slice(0, after + 1)].find(
+    (receipt) => receipt.expired && !receipt.expiryReported,
+  );
+  if (report) {
+    try {
+      state.expiryReportAfter = report.requestId;
+      await store.save(state);
+      await api.result(state, report, true);
+      report.expiryReported = true;
+      await store.save(state);
+    } catch {
+      // Offline/unknown ACK: retry this same durable fact on a later fair turn.
     }
   }
   async function execute(receipt: Receipt, job: Job, admitted: boolean) {
