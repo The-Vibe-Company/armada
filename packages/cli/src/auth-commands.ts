@@ -150,6 +150,7 @@ export async function loginCommand(
           "unauthorized",
         );
       await io.session.write({
+        loginId: crypto.randomUUID(),
         armadaUrl: origin,
         accessToken: value.accessToken,
         refreshToken: value.refreshToken,
@@ -173,6 +174,7 @@ export async function loginCommand(
         ...(io.timeoutMs === undefined ? {} : { timeoutMs: io.timeoutMs }),
       });
       await io.session.write({
+        loginId: crypto.randomUUID(),
         armadaUrl: origin,
         accessToken: result.accessToken,
         refreshToken: result.refreshToken,
