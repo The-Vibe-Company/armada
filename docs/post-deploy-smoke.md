@@ -946,9 +946,9 @@ The table includes a `cleanup` cell and `parity_cleanup` JSON reports the ID and
 whether deletion was confirmed. A failed cleanup is a failure even if another
 probe was already failed or not-run. Keep the journal for unconfirmed resources;
 a lost launch response without an ID still requires operator reconciliation.
-The parity probe's shared 35-minute polling deadline still applies; exhausted
-budget can leave cleanup unconfirmed. The journal-enabled wrapper additionally
-runs its own reserved cleanup phase. This slice does not prove the cause of the
+The parity probes share a 35-minute run deadline, but final cleanup has a
+separate observation window. The journal-enabled wrapper additionally runs its
+own reserved cleanup phase. This slice does not prove the cause of the
 historical five remaining rows or guarantee deletion after provider refusal.
 
 #### Idle pause and wake-on-send (#1562)
@@ -1036,3 +1036,28 @@ A successful process exit means no observed failures, not that missing accounts
 were tested. Review `not-run` rows before claiming matrix completeness. Each
 configured cell may allocate once (and resume compute); run this deliberately,
 not as an unbounded default deployment probe.
+
+#### Turn latency and stop/delete reconciliation (#1532)
+
+Parity no longer treats 120 reads as a turn timeout. Every provider uses the
+same elapsed-time observation ceiling of 600 seconds (the server wait tool's
+maximum), including HTTP/read latency, with at most 600 reads. This is a bound,
+not a measured or promised provider latency. Each `parity_turn` receipt reports
+local `elapsedMs`, `polls`, and `serverElapsedMs`: the latter is the difference
+between matching queued/running and terminal prompt events' server `at`
+timestamps. Missing timestamps remain null/unknown; the probe never substitutes
+a guess or compares unsynchronized local/server clocks. Failure cells include
+these measurements; successful receipts let the coordinator measure actual
+first/follow-up latency on the target server without printing prompts.
+
+Cleanup rechecks an ID-matched terminal stop state even after a stop probe
+passed. Stored logical stop state does not alone prove that provider termination
+has settled: delete therefore reconciles `sandbox_not_ready` (including HTTP
+409), pending/conflict and unavailable responses using the same delete request
+ID, never another launch or a replay of stop. Cleanup has its own 600-second
+observation deadline independent of the exhausted probe deadline. Confirmation
+requires the matching deleted receipt; an already-deleted status is also valid.
+No script can guarantee remote deletion during a permanent outage/refusal:
+unconfirmed cleanup remains an explicit failure with diagnostics and the known
+sandbox ID, never a success. Production Boat execution and reconciliation remain
+coordinator-only; fixture tests are not production evidence.
