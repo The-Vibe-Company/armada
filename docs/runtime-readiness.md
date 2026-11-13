@@ -44,5 +44,3 @@ modify production or deploy.
 4. Separately stall (rather than reject) one readiness query: repeated probes
    remain 503 until that raw query settles; a late completion must not by itself
    report recovery. Save statuses, timings, and staging proxy query counts.
-
-No orchestrator-specific behavior or files are part of this change.

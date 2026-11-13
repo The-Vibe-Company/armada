@@ -4,12 +4,11 @@ Audit baseline: 2026-11-10 (#829). Scope: Armada control API
 `/api/v1/` and its shared MCP tools, not OAuth protocol errors, dashboard
 PostgREST errors or provider-native exceptions. Sources:
 `packages/core/src/api-failure.ts`, `launch-error.ts`, `provider.ts`;
-`packages/mcp-server/src/{api-failure,control,tool-api,orchestrator-api}.ts`.
+`packages/mcp-server/src/{api-failure,control,tool-api}.ts`.
 
 Control errors normally have `{error:{code,message}}`; do not parse the message.
 MCP returns `isError` and an `error code: CODE` text marker, not an HTTP error
-status. Orchestrator accepted operations use HTTP 202, including receipts that
-subsequently fail; inspect the receipt and events, not just HTTP success.
+status.
 Diagnostic stage/reason labels and preservation reasons are not API error codes.
 
 ## Shared typed failures (mapped before legacy class-specific errors)
@@ -85,18 +84,6 @@ its code is a shared failure category. ProviderRoutingError remains 503. The
 fallback is unauthorized 401 rather than the main handler's internal 500.
 These are existing route-specific behaviors, not recommended client semantics.
 
-## Orchestrator routes
-
-Runtime errors expose not_found (404), conflict (409), invalid_request (400),
-or a shared failure category above. Runtime unavailable is normalized to
-dependency_unavailable; unknown admission becomes outcome_unknown. A syntactically
-invalid request becomes invalid_request; unexpected errors become
-dependency_unavailable. Error responses may include admission/operation evidence.
-
-Operation `errorCode` (for example runtime_uncertain,
-previous_conversation_not_continued, boat_conversation_unavailable) describes
-a ledger result, not a separate HTTP status. Read it with state and continuity.
-The successful fresh-Boat-conversation note does not mean the resume failed.
 
 ## Transport exceptions and known inconsistencies
 

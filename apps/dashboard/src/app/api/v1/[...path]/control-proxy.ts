@@ -119,29 +119,7 @@ const PRIVATE_POST_PATHS = new Set([
 ]);
 
 type ControlVerb = "GET" | "POST" | "DELETE";
-const ORCHESTRATOR_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-/** Only the actual owner API shapes. No delegated/private callback or arbitrary tail. */
-function orchestratorPath(method: ControlVerb, path: readonly string[]): boolean {
-  if (method === "DELETE" || path[0] !== "orchestrators") return false;
-  if (path.length === 1) return true;
-  if (method === "POST" && path.length === 2 && path[1] === "reconcile") return true;
-  if (method === "GET" && path.length === 2 && path[1] === "capabilities") return true;
-  if (!path[1] || !ORCHESTRATOR_ID.test(path[1])) return false;
-  if (method === "GET")
-    return (
-      path.length === 2 || (path.length === 3 && ["events", "settings", "waits", "connections"].includes(path[2] ?? ""))
-    );
-  if (path.length === 4 && path[2] === "connections") return ["add", "remove"].includes(path[3] ?? "");
-  if (path.length === 3)
-    return ["message", "steer", "stop", "resume", "recover", "settings", "waits"].includes(path[2] ?? "");
-  return (
-    path.length === 5 &&
-    path[2] === "waits" &&
-    ORCHESTRATOR_ID.test(path[3] ?? "") &&
-    ["renew", "release"].includes(path[4] ?? "")
-  );
-}
+const SANDBOX_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function fail(status: number, error: string): Response {
   return NextResponse.json(
@@ -192,11 +170,10 @@ export async function forwardControl(
     return fail(404, "Not found.");
   const method: ControlVerb = request.method;
   const relative = path.join("/");
-  const orchestrator = orchestratorPath(method, path);
   const sandboxDeletion =
-    method === "DELETE" && path.length === 2 && path[0] === "sandboxes" && ORCHESTRATOR_ID.test(path[1] ?? "");
+    method === "DELETE" && path.length === 2 && path[0] === "sandboxes" && SANDBOX_ID.test(path[1] ?? "");
   const isPublic = method === "POST" && PUBLIC_POST_PATHS.has(relative);
-  if (!orchestrator && !sandboxDeletion && !(method === "POST" && (isPublic || PRIVATE_POST_PATHS.has(relative))))
+  if (!sandboxDeletion && !(method === "POST" && (isPublic || PRIVATE_POST_PATHS.has(relative))))
     return fail(404, "Not found.");
   const authorization = request.headers.get("authorization");
   if (!isPublic && !authorization) return fail(401, "Unauthorized.");
@@ -209,16 +186,14 @@ export async function forwardControl(
       : fail(400, "Invalid request body.");
   }
   const target = new URL(`${CONTROL_PREFIX}${relative}`, upstream);
-  if (orchestrator || sandboxDeletion || relative === "skillpack/catalog" || relative === "skillpack/versions")
+  if (sandboxDeletion || relative === "skillpack/catalog" || relative === "skillpack/versions")
     target.search = new URL(request.url).search;
-  const idempotencyKey = orchestrator && method === "POST" ? request.headers.get("idempotency-key") : null;
   let response: Response;
   try {
     response = await fetchImpl(target, {
       method,
       headers: {
         ...(authorization ? { authorization } : {}),
-        ...(idempotencyKey !== null ? { "idempotency-key": idempotencyKey } : {}),
         ...(method === "POST" ? { "content-type": request.headers.get("content-type") ?? "application/json" } : {}),
         accept: "application/json",
       },

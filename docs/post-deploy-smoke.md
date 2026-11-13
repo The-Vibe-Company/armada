@@ -113,27 +113,12 @@ read -rs ARMADA_TOKEN; export ARMADA_TOKEN; echo
 export ARMADA_SMOKE_CASES="$(cat /path/to/staging-cases.json)"
 export ARMADA_SMOKE=create_real_compute
 bun scripts/post-deploy-smoke.ts
-# Optional; use only pairs supported by orchestrator capabilities:
-bun scripts/post-deploy-smoke.ts --orchestrator
 unset ARMADA_TOKEN
 ```
 
 The normal path launches each case, sends one trivial prompt, waits for success,
 checks `git status -sb` and `git ls-remote origin HEAD` in the checkout, stops
-the sandbox and checks provider state. The optional path also exercises
-orchestrator create → send → stop → resume → stop. It requires `goldenId`;
-orchestrator capabilities must enable the selected pair (Modal/Codex native or
-Boat/Claude and Boat/Codex best-effort). Within that supported set,
-the smoke reads `orchestrators/capabilities` once and validates every selected
-pair before **any** sandbox or orchestrator allocation. A disabled or absent
-pair fails the run; it is never silently skipped. Use a separate cases file
-containing only enabled pairs for that run. Ordinary-only runs do not use this
-orchestrator capability gate. Ordinary-pair preflight is tracked in
-[#859](https://github.com/The-Vibe-Company/armada/issues/859): add an authenticated
-`sandbox/capabilities` route using launch's provider/harness availability policy
-and caller-visible model-account validation, then gate ordinary cases before
-allocation. Orchestrator enablement is a separate policy and cannot substitute
-for that route.
+the sandbox and checks provider state.
 
 ### Pair prerequisites
 
@@ -144,38 +129,22 @@ model credentials live in Armada's staging credential store, not GitHub Actions.
 
 | Pair | Staging resources | Fields in each `ARMADA_SMOKE_CASES` entry | GitHub staging configuration |
 | --- | --- | --- | --- |
-| Boat × Claude | Boat golden with git checkout; Claude model account available to smoke user | `provider: "boat"`, `harness: "claude"`; `golden` = Boat golden name; `goldenId` = same Boat golden's ID for orchestrator runs; `modelAccountId` = Claude account ID; `model` = model supported by that account | Shared `ARMADA_ORIGIN`, `ARMADA_SMOKE_TOKEN`, `ARMADA_SMOKE_CASES`; no pair-specific GitHub key |
-| Boat × Codex | Same staging Boat account/key and reusable Boat golden; Codex model account available to smoke user | `provider: "boat"`, `harness: "codex"`; `golden` = Boat golden name; `goldenId` = same Boat golden's ID for orchestrator runs; `modelAccountId` = Codex account ID; `model` = model supported by that account | Same shared variable/secrets; no pair-specific GitHub key |
-| Modal × Claude | Modal golden with git checkout; Claude model account available to smoke user | `provider: "modal"`, `harness: "claude"`; `golden` = Modal golden name; `goldenId` = same Modal golden's ID for orchestrator runs; `modelAccountId` = Claude account ID; `model` = model supported by that account | Same shared variable/secrets; no pair-specific GitHub key |
-| Modal × Codex | Reusable Modal golden; Codex model account available to smoke user | `provider: "modal"`, `harness: "codex"`; `golden` = Modal golden name; `goldenId` = same Modal golden's ID for orchestrator runs; `modelAccountId` = Codex account ID; `model` = model supported by that account | Same shared variable/secrets; no pair-specific GitHub key |
+| Boat × Claude | Boat golden with git checkout; Claude model account available to smoke user | `provider: "boat"`, `harness: "claude"`; `golden` = Boat golden name; `goldenId` = same Boat golden's ID ; `modelAccountId` = Claude account ID; `model` = model supported by that account | Shared `ARMADA_ORIGIN`, `ARMADA_SMOKE_TOKEN`, `ARMADA_SMOKE_CASES`; no pair-specific GitHub key |
+| Boat × Codex | Same staging Boat account/key and reusable Boat golden; Codex model account available to smoke user | `provider: "boat"`, `harness: "codex"`; `golden` = Boat golden name; `goldenId` = same Boat golden's ID ; `modelAccountId` = Codex account ID; `model` = model supported by that account | Same shared variable/secrets; no pair-specific GitHub key |
+| Modal × Claude | Modal golden with git checkout; Claude model account available to smoke user | `provider: "modal"`, `harness: "claude"`; `golden` = Modal golden name; `goldenId` = same Modal golden's ID ; `modelAccountId` = Claude account ID; `model` = model supported by that account | Same shared variable/secrets; no pair-specific GitHub key |
+| Modal × Codex | Reusable Modal golden; Codex model account available to smoke user | `provider: "modal"`, `harness: "codex"`; `golden` = Modal golden name; `goldenId` = same Modal golden's ID ; `modelAccountId` = Codex account ID; `model` = model supported by that account | Same shared variable/secrets; no pair-specific GitHub key |
 
 Every entry also requires `org` (staging org ID) and `repo` (absolute path to
 that golden's git checkout with an accessible `origin`); `reasoningEffort`
 is optional. The smoke token's user needs access to those resources and a staging
-GitHub connection authorized for the checkout. `goldenId` is currently required
-only with `--orchestrator`; use the same provider's golden, not another provider's
-ID. Account references are per harness and may be reused across providers when
+GitHub connection authorized for the checkout. When a mode requires `goldenId`, use the same provider's golden, not another provider's ID. Account references are per harness and may be reused across providers when
 the account supports both; they are identifiers, never credential values.
 
 Goldens are provider-specific: a Boat golden cannot stand in for a Modal golden.
 Use a **separate Boat account and account key for staging**, shared by both Boat
 harness rows (not a separate Boat key per pair): Boat allows one golden per
 account. Configure that key in Armada's staging credential store, never in the
-cases file or workflow. For orchestrator runs, every selected pair must also be
-enabled on the staging server and reported enabled by its capabilities endpoint.
-A server-wide disabled switch reports `orchestrator_disabled`; an absent or
-disabled selected pair reports `pair_disabled`.
-These prerequisites do not imply a pair is enabled today.
-
-This first matrix slice adds preflight only. Sandbox resume/recall,
-orchestrator post-resume recall, bounded recovery/terminal-state assertions,
-timings/job summaries and expanded closed failure labels remain follow-up work
-in [#826](https://github.com/The-Vibe-Company/armada/issues/826) and
-[#827](https://github.com/The-Vibe-Company/armada/issues/827). Before those full-cycle
-changes are merge-ready, the coordinator must run the staging workflow with
-`--orchestrator` and every enabled pair and return its receipts.
-
-The **Post-deploy smoke** workflow can be dispatched on main. It also runs after
+cases file or workflow. The **Post-deploy smoke** workflow can be dispatched on main. It also runs after
 a successful GitHub `deployment_status` for environment exactly `armada / staging`
 (Railway's GitHub deployment name, not the GitHub secrets environment). To
 override the accepted name, set the repository variable
@@ -251,23 +220,7 @@ estimate is reliable without the configured provider/model rates. Do not run
 this mode with production credentials. Live staging execution is performed by
 the existing post-deploy workflows, not by a PR or offline test run.
 
-Remaining #969 families (not claimed by this slice): full sandbox resume/expiry/
-list consistency and timings/leftover summaries; GitHub refresh; vault; templates;
-public/private skills and golden pinned digest verification. These are
-verification follow-ups, not new product capabilities. Per the owner decision
-on #969, orchestrators are excluded; their removal belongs to a separate ticket.
-
 ### Template and skill pins slice (#969)
-
-The next staging slice exercises personal readable-variable templates and pinned
-public/private skills on the explicitly selected provider × harness cases when
-the corresponding exact pins are configured.
-Orchestrators are excluded. A random disposable value must be read by the native
-agent (not included in the prompt), while a plain exec must not inherit its
-environment binding. Installation receipts must match the requested exact pins.
-Private installation is skipped only when Skillpack connection metadata confirms
-no personal or matching-org key is configured; a configured but unusable key is
-a failure. Template, variable and sandbox cleanup runs even after a failed check.
 
 Both staging entrypoints pass `--templates-skills` in addition to
 `--work-preservation`. The new mode also refuses any origin other than the exact
@@ -473,7 +426,7 @@ using the existing access configuration; unavailable/misconfigured access fails.
 The native parent uses only configured scoped MCP launch/message/read/stop.
 No owner CLI token, copied bearer, direct owner HTTP fallback, config/grant read
 or new orchestration method. The reserved MCP server's legacy internal name is
-unchanged; no public orchestrator is created. The nonsecret armada-tools reference
+unchanged; no separate managed parent is created. The nonsecret armada-tools reference
 may be read with the supplied exact read-only cat command.
 
 Named proofs: parent configuration, native turn, actual correlated child launch,
@@ -512,7 +465,7 @@ No migrations/new credentials/case fields. Offline tests are not live receipts.
 ### Legacy GitHub repair (#969)
 
 Both staging entrypoints add `--github-refresh`, requiring `--lifecycle`
-and excluding orchestrator and managed-runtime test modes. It reuses the
+and excluding managed-runtime test modes. It reuses the
 ordinary clean worker; no additional allocations or model turns. Readiness is
 recorded immediately before the new `github_launch_access` read-only git
 probe. This proves origin access before the first model turn or explicit
@@ -559,7 +512,7 @@ Both staging entrypoints add `--expiry`. Standalone
 `bun scripts/post-deploy-smoke.ts --expiry` runs only this family.
 It is admitted only on the exact staging origin. Combined mode requires
 `--lifecycle`, so template-only early returns cannot silently skip the probe;
-orchestrator combinations are refused.
+unsupported combinations are refused.
 
 For every selected pair, launch one additional prompt-free ordinary worker
 with a 180-second logical TTL, no connections and default skills opted out.
@@ -604,7 +557,7 @@ Both staging entrypoints enable `--golden-runtime`. On the existing ordinary
 worker (only the clean worker when preservation is enabled), named
 `golden_helper_integrity` and `golden_skillpack_integrity` steps verify installed
 bytes, executable resolution and version/protocol. No extra allocation or model
-turn is added. The flag refuses non-staging origins, orchestrator mode and template-only
+turn is added. The flag refuses non-staging origins, template-only
 combinations without preservation or lifecycle (which would otherwise return
 before the ordinary worker checks).
 

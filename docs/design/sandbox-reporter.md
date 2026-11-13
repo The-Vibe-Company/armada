@@ -10,7 +10,7 @@ with on-demand commands and existing supervision, not a universal reporting
 daemon. Read its prerequisite, security and delivery-slice boundaries before
 implementing this proposal.
 
-Armada remains a launcher: reports inform owners and orchestrators; they do not
+Armada remains a launcher: reports inform owners and coordinators; they do not
 schedule tasks, judge work, merge branches, or implement orchestration policy.
 
 ## What runs today
@@ -44,24 +44,12 @@ Other existing residents are not general reporters:
   over pinned SSH/private stdin. A local socket and activation protect access;
   GitHub authority is a separate capability, not report-ingest authority. The
   broker transports GitHub operations, not token-cost or liveness telemetry.
-- **Orchestrator parent MCP:** `packages/mcp-server/src/orchestrator-bootstrap.ts`
-  installs the launcher tool reference and optional skill with a receipt.
-  `orchestrator-scoped-gateway.ts` exposes only delegated child operations.
-  Boat's `boat-orchestrator-script.ts` maintains a loopback proxy with an
-  in-memory, epoch-fenced credential; `boat-orchestrator-bridge.ts` installs
-  `armada_orchestrator` configuration. Modal's Runner installs/scrubs epoch
-  authority (`protocol.ts`, `runtime.ts`). Harness-configured MCP connections
-  (`packages/agent-runtime/src/mcp.ts`, `mcp-file.ts`) can also start stdio
-  descendants or connect to HTTP servers. These exchange tool requests/results,
-  not generic health reports. They must retain their own authority and shutdown
-  ownership; do not borrow a parent's delegation token for telemetry.
 - **Golden init:** `packages/core/src/golden-config.ts` and `launch.ts` execute
   configured repository pulls and init commands. Those commands can start project
   services; no universal service inventory or reporting guarantee follows from
   having a golden. Detached init results are refused by the launch flow. A
   project's arbitrary background service is not automatically a managed reporter.
-- **Existing consumers:** `packages/mcp-server/src/turns.ts` and
-  `orchestrator-event-worker.ts` reconcile turn state. `model-usage.ts` and
+- **Existing consumers:** `packages/mcp-server/src/turns.ts` reconciles turn state. `model-usage.ts` and
   `model-usage-codex.ts` interpret account-private native readings;
   `packages/core/src/sandbox-usage.ts` handles sandbox usage projections.
   `resource-store.ts` / `resource-advice.ts` consume resource observations.

@@ -1,6 +1,6 @@
 import type { Harness } from "./contract.ts";
+import type { SkillReceipt } from "./delegated-access.ts";
 import { HARNESS_CATALOG } from "./harnesses.ts";
-import type { OrchestratorSkillReceipt } from "./orchestrator.ts";
 import { PRIVATE_SKILL_FAILURES, PrivateSkillError } from "./private-skill-error.ts";
 import type { Provider } from "./provider.ts";
 import { SKILLPACK_TOKEN_PATTERN } from "./skillpack-token.ts";
@@ -12,7 +12,7 @@ export { PRIVATE_SKILL_FAILURES, PrivateSkillError, type PrivateSkillFailure } f
 /** Native registry references are bare slugs, scoped by the key's workspace. */
 export const PRIVATE_SKILL_PATTERN = /^[a-z0-9][a-z0-9-]*@[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$/;
 
-/** Shared private install boundary for orchestrator, launch and golden callers. No provider command journal. */
+/** Shared private install boundary for sandbox, launch and golden callers. No provider command journal. */
 export async function installPrivateSkill(
   provider: Provider,
   input: {
@@ -23,7 +23,7 @@ export async function installPrivateSkill(
     key: string | null;
     buildWarnings?: readonly string[];
   },
-): Promise<OrchestratorSkillReceipt & { workspaceId: string }> {
+): Promise<SkillReceipt & { workspaceId: string }> {
   if (!input.key) throw new PrivateSkillError("skillpack_credential_missing");
   if (!new RegExp(`^${SKILLPACK_TOKEN_PATTERN}$`).test(input.key))
     throw new PrivateSkillError("skillpack_credential_unreadable", "credential");

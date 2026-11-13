@@ -151,7 +151,7 @@ describe("cost", () => {
     expect(sandboxCost(null, "claude", "estimated").label).toBe("Estimated cost");
   });
 
-  test("an orchestrator's cost sums its own and its workers', and stays API-equivalent unless all are estimates", () => {
+  test("a sandbox group's cost sums its own and its workers', and stays API-equivalent unless all are estimates", () => {
     const own = sandboxCost(
       { computeSeconds: 60, turnCount: 1, turns: [turn("claude-sonnet-5-5", 1_000_000, 0, 0, "o")] },
       "claude",

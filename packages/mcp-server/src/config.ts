@@ -1,12 +1,9 @@
 import { resourceUrl } from "@armada/auth";
 import { DEFAULT_SANDBOX_EXTENSION_HEADROOM_SECONDS, PROVIDER_LIMITS, SANDBOX_STOP_MARGIN_SECONDS } from "@armada/core";
-import { type OrchestratorPair, orchestratorPairsFromEnv } from "./orchestrator-activation.ts";
 
 export interface ServerConfig {
   sandboxExtensionHeadroomSeconds: number;
   port: number;
-  orchestratorPairs: readonly OrchestratorPair[];
-  orchestratorSkillRevision: string | undefined;
   /** Managed GitHub wrappers/broker are opt-in while the runtime is under repair. */
   githubRuntimeEnabled: boolean;
   /** Experimental legacy Boat hydration at prompt boundaries; explicit repair is independent. */
@@ -104,16 +101,9 @@ export function configFromEnv(env: Record<string, string | undefined>): ServerCo
     );
   const development = env.NODE_ENV === "development";
 
-  const orchestratorPairs = orchestratorPairsFromEnv(env.ARMADA_ORCHESTRATOR_PAIRS);
-  const orchestratorSkillRevision = env.ARMADA_ORCHESTRATOR_SKILL_REVISION?.trim() || undefined;
-
-  if (orchestratorSkillRevision && !/^[a-f0-9]{40}$/.test(orchestratorSkillRevision))
-    throw new Error("ARMADA_ORCHESTRATOR_SKILL_REVISION must be a reviewed public 40-character commit.");
   return {
     sandboxExtensionHeadroomSeconds,
     port,
-    orchestratorPairs,
-    orchestratorSkillRevision,
     githubRuntimeEnabled: env.ARMADA_GITHUB_RUNTIME_ENABLED === "true",
     githubLegacyAutoPrepareEnabled: env.ARMADA_GITHUB_LEGACY_AUTO_PREPARE_ENABLED === "true",
     supabaseUrl: value("SUPABASE_URL").replace(/\/+$/, ""),

@@ -1,9 +1,9 @@
 import type { Harness } from "./contract.ts";
 import type { SandboxStatus } from "./database.types.ts";
+import type { SkillReceipt } from "./delegated-access.ts";
 import type { Sql } from "./golden-store.ts";
 import { isHarness } from "./harnesses.ts";
 import type { MachineSizeEvidence } from "./machine-size.ts";
-import type { OrchestratorSkillReceipt } from "./orchestrator.ts";
 import { type Provider, ProviderError } from "./provider.ts";
 import { isSandboxProvider, type SandboxProviderId } from "./sandbox-provider.ts";
 import { type SandboxUsage, withUsageTotals } from "./sandbox-usage.ts";
@@ -21,7 +21,7 @@ export interface ResourceProject {
 export interface SandboxRecord {
   /** Immutable Boat Codex opt-in. Absent means no Boat opt-in, not a readiness receipt. */
   readonly boatRuntime?: true;
-  skills?: OrchestratorSkillReceipt[];
+  skills?: SkillReceipt[];
   usage?: SandboxUsage | null;
   preservationNote?: string | null;
   taskOutcome?: TaskOutcome | null;
@@ -100,7 +100,7 @@ export interface SandboxStore {
   recordTurnModel?(id: string, promptId: string, requestedModel: string | null): Promise<void>;
   readTurnModel?(id: string, promptId: string): Promise<{ requestedModel: string | null; evidence: unknown } | null>;
   recordTurnModelEvidence?(id: string, promptId: string, evidence: unknown): Promise<void>;
-  recordSkills?(id: string, skills: OrchestratorSkillReceipt[]): Promise<void>;
+  recordSkills?(id: string, skills: SkillReceipt[]): Promise<void>;
   /** Server store can atomically reserve activity ownership; caller-role stores keep their existing restricted grants. */
   activityOwnership?: true;
   insert(input: {
@@ -204,7 +204,7 @@ export interface SandboxRow {
   deleted_at: string | Date | null;
   status_reason: string | null;
   model: string | null;
-  skills?: OrchestratorSkillReceipt[];
+  skills?: SkillReceipt[];
   reasoning_effort: string | null;
   repository_dir: string | null;
   visibility?: "private" | "org";

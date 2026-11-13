@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import type { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { type Provider, type SshExecDeps, sshOrchestratorReceipt } from "../src/server.ts";
+import { type Provider, type SshExecDeps, sshDelegatedReceipt } from "../src/server.ts";
 
 test("private SSH captures only bounded nonsecret receipt, pins host and keeps payload out of argv/files", async () => {
   const token = `armada_epoch_${"a".repeat(64)}`;
@@ -44,7 +44,7 @@ test("private SSH captures only bounded nonsecret receipt, pins host and keeps p
   const provider = {
     sshKey: async () => ({ sshEndpoint: "ssh.test:2222", hostKey: "ssh-ed25519 PINNED" }),
   } as unknown as Provider;
-  const response = await sshOrchestratorReceipt(
+  const response = await sshDelegatedReceipt(
     provider,
     { sandboxId: "fixture", token, script: "public-code-only" },
     deps,
@@ -86,7 +86,7 @@ test("private SSH removes only its temporary guest authorization before success 
       "exit 7",
       `printf 'ARMADA_ORCHESTRATOR_RECEIPT ${receipt}\\n'`,
     ]) {
-      const result = sshOrchestratorReceipt(
+      const result = sshDelegatedReceipt(
         provider,
         { sandboxId: "fixture", token: "private-payload", script },
         { spawn: run },

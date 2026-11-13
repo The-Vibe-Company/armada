@@ -204,7 +204,7 @@ test("ambiguous expiry launch is not replayed and retained IDs still get cleanup
 });
 
 test("expiry admission refuses production and combinations that bypass its ordinary worker checks", async () => {
-  for (const args of [["--expiry"], ["--expiry", "--templates-skills"], ["--expiry", "--orchestrator"]]) {
+  for (const args of [["--expiry"], ["--expiry", "--templates-skills"]]) {
     const fake = fixture("boat");
     expect(
       await postDeploySmoke(

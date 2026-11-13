@@ -202,7 +202,7 @@ Coordinator-only staging checks, on **Boat and Modal**:
 No staging credentials are available to the worker. No migration is required.
 Next slices: personal/org/environment defaults with documented precedence and
 one-launch opt-out; CLI; dashboard Skills, template and environment forms. This
-slice does not introduce defaults, opt-out or orchestrator dependencies.
+slice does not introduce defaults, opt-out dependencies.
 
 ## Secret bindings (#1037)
 

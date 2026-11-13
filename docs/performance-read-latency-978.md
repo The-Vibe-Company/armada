@@ -47,7 +47,7 @@ deployed revision on #978; verify cleanup.deleted=true. Compare API p50/p95/byte
 CLI detail and lifecycle observations with the baseline. Do not compare a changed
 fixture, a compiled CLI against source CLI, or different network as a clean A/B.
 SQL trip counts, internal provider phase durations and browser/phone-open latency
-remain unmeasured. Orchestrators are excluded.
+remain unmeasured.
 
 Regression evidence: existing control API follow/non-follow table now makes live
 compute unavailable for ordinary history reads; only the pre-fix non-follow case

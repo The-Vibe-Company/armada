@@ -37,7 +37,7 @@ Native usage fields are retained observations, not a fresh sampler; live wait/
 stop/admission paths retain their existing collection and physical checks.
 
 Boat reads, wait, send, report, exec, stop, resume and lifecycle management keep
-live providers. No migration or new worker/service. Orchestrators are excluded.
+live providers. No migration or new worker/service.
 
 ## Server-Timing / repeatable after run
 

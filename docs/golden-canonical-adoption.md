@@ -12,7 +12,7 @@ and org admins can adopt; membership is required. Other historical goldens,
 their snapshots, histories and ACLs remain untouched. Adoption does not make
 those other goldens usable through the canonical binding.
 
-## Orchestrator syntax
+## MCP syntax
 
 MCP dry run:
 

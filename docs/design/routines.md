@@ -75,7 +75,7 @@ still require the longer/manual checks below. No staging check was run here.
 # Routines (#1006)
 
 A routine launches a normal sandbox from a template and a prompt at an interval.
-It is not an orchestrator, workflow engine, or privileged service identity.
+It is not a workflow engine or privileged service identity.
 
 ## Delivery slices
 
