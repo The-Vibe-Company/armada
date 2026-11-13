@@ -61,6 +61,8 @@ output; provider-side Git autodeploy still requires the owner cutover.
 Production SQL applies only from the validated release deployment path; the
 standalone migration workflow retains manual previews/history/owner repair,
 never per-commit production applies.
+Ordinary queued staging-main sources are superseded before mutation when newer
+main exists; started deployments and explicit pinned release smoke are never cancelled.
 Binaries are built by the release workflow when a version is published.
 
 What CI does not do, and must not be added back:

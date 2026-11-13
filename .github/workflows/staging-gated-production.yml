@@ -62,6 +62,7 @@ jobs:
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
       ARMADA_SERVER_URL: ${{ secrets.ARMADA_SERVER_URL }}
       RELEASE_SHA: ${{ inputs.source_sha || github.sha }}
+      STAGING_LATEST_ONLY: ${{ inputs.source_sha == '' && 'true' || 'false' }}
       ARMADA_URL: ${{ vars.ARMADA_ORIGIN }}
       ARMADA_TOKEN: ${{ secrets.ARMADA_SMOKE_TOKEN }}
       ARMADA_SMOKE_CASES: ${{ secrets.ARMADA_SMOKE_CASES }}
@@ -98,9 +99,12 @@ jobs:
         run: npm install --global @railway/cli@5.71.0 vercel@65.14.0
       - uses: ./.github/actions/setup-bun
       - name: Migrate then deploy pinned server and dashboard
+        id: deployment
         run: bash .release-tools/scripts/release/deploy-production.sh
       - run: bun install --frozen-lockfile
+        if: steps.deployment.outputs.superseded != 'true'
       - name: Restore staging smoke receipts across branches and tags
+        if: steps.deployment.outputs.superseded != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -126,6 +130,7 @@ jobs:
             unzip -p "$RUNNER_TEMP/smoke-journal.zip" sandboxes.json > .smoke/sandboxes.json
           fi
       - name: Smoke pinned staging
+        if: steps.deployment.outputs.superseded != 'true'
         env:
           ARMADA_SMOKE: create_real_compute
           ARMADA_SMOKE_JOURNAL: .smoke/sandboxes.json

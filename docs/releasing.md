@@ -189,9 +189,15 @@ the source version. Only then does it build/upload the dashboard. Vercel waits
 for Ready. npm only follows successful production for publishing releases.
 No deploy hook or moving main checkout substitutes for the validated source.
 
-Deployment/smoke and release queues currently retain waiting runs with queue:max
-and cancellation disabled, preserving cleanup and queued release calls. Pending
-main-run supersession remains the next bounded #1547 slice. Never cancel a live
+Deployment/smoke and release queues retain waiting runs with queue:max and
+cancellation disabled, preserving cleanup and queued release calls. Immediately
+before the first mutation, an ordinary main run resolves current main over Git
+and skips migration/provider builds/deployment/smoke if a newer SHA superseded
+it. This avoids stale deployments without evicting a pending release. Resolution
+failure fails closed. After mutation starts, newer main never interrupts it.
+Explicit pinned release/manual calls are exempt, so a skipped stale main can
+never authorize production. Queued stale workflows may still perform runner/tool
+setup before this final admission guard; they do not build or deploy an app. Never cancel a live
 smoke blindly: it owns real compute and durable cleanup receipts. Already-running
 old workflow revisions/provider jobs are not stopped by a source change.
 

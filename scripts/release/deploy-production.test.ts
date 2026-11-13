@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 const script = resolve(import.meta.dir, "deploy-production.sh");
 
 // Exercise the real shell entrypoint; fake only external provider executables.
-function deploy(failure = "", missing = "") {
+function deploy(failure = "", missing = "", source = "") {
   const dir = mkdtempSync(join(tmpdir(), "release-deploy-"));
   try {
     const bin = join(dir, "bin");
@@ -22,8 +22,15 @@ function deploy(failure = "", missing = "") {
     run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--quiet", "-m", "fixture"]);
     const sha = run(["git", "rev-parse", "HEAD"]);
     const log = join(dir, "calls");
+    writeFileSync(join(dir, "outputs"), "");
     const executable = (name: string, body: string) =>
       writeFileSync(join(bin, name), `#!/bin/bash\nset -eu\n${body}\n`, { mode: 0o755 });
+    const actualGit = Bun.which("git");
+    if (!actualGit) throw new Error("git is required for the fixture");
+    executable(
+      "git",
+      `if [[ "$1" == ls-remote ]]; then printf '%s\\trefs/heads/main\\n' "$REMOTE_HEAD"; else exec ${JSON.stringify(actualGit)} "$@"; fi`,
+    );
     executable("supabase", 'echo "supabase $*" >> "$CALLS"; [[ "$FAILURE" != migrations ]]');
     executable(
       "railway",
@@ -49,6 +56,9 @@ if [[ "$FAILURE" == health ]]; then echo '{"ok":true,"version":"0.0.0"}'; else e
       FAILURE: failure,
       HOME: dir,
       RELEASE_SHA: sha,
+      REMOTE_HEAD: source === "current" ? sha : source === "unresolved" ? "invalid" : "b".repeat(40),
+      STAGING_LATEST_ONLY: source && source !== "pinned" ? "true" : "false",
+      GITHUB_OUTPUT: join(dir, "outputs"),
       RELEASE_VERSION: "1.2.3",
       ARMADA_SERVER_URL: "https://server.example.invalid",
       GITHUB_STEP_SUMMARY: join(dir, "summary"),
@@ -74,7 +84,12 @@ if [[ "$FAILURE" == health ]]; then echo '{"ok":true,"version":"0.0.0"}'; else e
     } catch {
       /* No provider invoked. */
     }
-    return { code: result.exitCode, calls, error: result.stderr.toString() };
+    return {
+      code: result.exitCode,
+      calls,
+      output: readFileSync(join(dir, "outputs"), "utf8"),
+      error: result.stderr.toString(),
+    };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -126,3 +141,14 @@ test("missing deployment configuration fails before any production mutation", ()
   expect(result.calls).toBe("");
   expect(result.error).toContain("Missing deployment environment secret/configuration: VERCEL_TOKEN");
 });
+
+test.each(["current", "stale", "pinned", "unresolved"])(
+  "%s source only supersedes ordinary queued main deployments",
+  (source) => {
+    const result = deploy("", "", source);
+    expect(result.code).toBe(source === "unresolved" ? 1 : 0);
+    if (source === "stale" || source === "unresolved") expect(result.calls).toBe("");
+    else expect(result.calls).toContain("vercel deploy --prebuilt");
+    if (source === "stale") expect(result.output).toContain("superseded=true");
+  },
+);
