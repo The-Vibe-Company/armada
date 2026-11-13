@@ -156,9 +156,6 @@ test("registry and active/historical SQL resolvers preserve immutable runtime ch
     };
     for (const [name, extra] of [
       ["send", { prompt: "no" }],
-      ["exec", { command: "no" }],
-      ["steer", { text: "no" }],
-      ["interrupt", {}],
       ["github_refresh", {}],
     ] as const)
       await expect(callSharedTool(context, name, { id: record.id, ...extra })).rejects.toMatchObject({

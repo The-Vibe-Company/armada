@@ -875,7 +875,11 @@ describe("control API", () => {
       const discovery = await call({ method: "POST", headers, body: JSON.stringify({ docker: { normalApi: true } }) });
       const publicOptions = (await discovery?.json()) as LaunchOptionsResponse;
       const docker = publicOptions.providers.find((provider) => provider.id === "docker");
-      expect(docker).toMatchObject({ enabled: true, launchSources: ["image"], harnesses: ["codex"] });
+      expect(docker).toMatchObject({
+        enabled: true,
+        launchSources: ["image"],
+        harnesses: ["codex", "claude", "opencode"],
+      });
       expect(docker?.capabilities).toMatchObject({
         launch: false,
         stop: false,
@@ -2593,6 +2597,38 @@ test("versioned runtime launch is explicit/default-off and never selects native 
     expect(host.forks[0]?.env).toEqual({});
     expect(host.prompts).toHaveLength(0);
     expect(host.execs).toHaveLength(0);
+    // An ordinary, unchanged client request obeys the deployment default too.
+    const priorLaunch = options.launch;
+    const noNative = async (): Promise<never> => {
+      throw Error("No native fallback");
+    };
+    options.launch = {
+      ...priorLaunch,
+      boatRuntimeDefault: {
+        policy: options.boatRuntimeLaunch!,
+        provider: async () => host.provider,
+        credentials: { resolve: noNative },
+        connections: { validate: noNative, bind: noNative },
+      },
+    };
+    expect(await (await request("launch/options", {}))?.json()).toMatchObject({
+      boatRuntime: { defaultPath: "runtime" },
+    });
+    const ordinary = await request("sandbox/launch", {
+      golden: body.golden,
+      org: body.org,
+      harness: "codex",
+      prompt: "ordinary request",
+    });
+    expect(ordinary?.status).toBe(400);
+    expect(JSON.stringify(await ordinary?.json())).toContain("repository refresh");
+    expect(host.forks).toHaveLength(1);
+    expect(host.prompts).toHaveLength(0);
+    if (priorLaunch) options.launch = priorLaunch;
+    else delete options.launch;
+    expect(await (await request("launch/options", {}))?.json()).toMatchObject({
+      boatRuntime: { defaultPath: "native" },
+    });
     // Actual startup timeout -> launch failure persistence -> public logs response.
     expectedForks = 1;
     options.boatRuntimeLaunch = {

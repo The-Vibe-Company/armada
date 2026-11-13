@@ -785,8 +785,10 @@ async function dispatch(
         version: 1,
         enabled: Boolean(options.modalRuntimeLaunch),
         followupVersion: options.runtimeSend ? 1 : 0,
+        resumeVersion: options.runtimeResume && options.modalRuntimeLaunch ? 1 : 0,
       },
       boatRuntime: {
+        defaultPath: options.launch?.boatRuntimeDefault ? "runtime" : "native",
         version: 1,
         diagnosticsVersion: 1,
         followupVersion: options.runtimeSend ? 1 : 0,
@@ -795,6 +797,7 @@ async function dispatch(
         githubVersion: options.runtimeGitHub ? 1 : 0,
         mcpVersion: options.runtimeMcp ? 2 : 0,
         skillsVersion: options.boatRuntimeLaunch ? 1 : 0,
+        controlsVersion: options.runtimeHostFor ? 1 : 0,
         enabled: Boolean(options.boatRuntimeLaunch && options.runtimeHostFor),
       },
     } satisfies import("@armada/core").LaunchOptionsResponse;

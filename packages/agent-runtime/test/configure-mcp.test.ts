@@ -247,19 +247,18 @@ test(
   IO_BUDGET_MS,
 );
 
-// Linux native peer sees real SDK argv/config files, including resumed turns and explicit empty removal.
+// Linux native peer owns active-file isolation, resumed rotation and strict empty removal.
 test.skipIf(process.platform !== "linux")(
-  "HTTP MCP updates reach real SDK/JSONL drivers without changing an active file or leaking rotated tokens",
+  "HTTP MCP updates reach the Claude SDK without changing an active file or leaking rotated tokens",
   async () => {
     const grant = freshGrant();
-    const { ClaudeDriver, CodexDriver } = await import("../src/index.ts");
+    const { ClaudeDriver } = await import("../src/index.ts");
     const { createHash } = await import("node:crypto");
     const root = await mkdtemp(join(tmpdir(), "armada-configure-native-"));
     const journal = new Journal(join(root, "journal.sqlite"), (s) => s);
     const state = new HarnessState(root, journal.redact);
     await state.restore();
-    const claudeReceipt = join(root, "claude-receipt.json"),
-      codexReceipt = join(root, "codex-receipt.json");
+    const claudeReceipt = join(root, "claude-receipt.json");
     const nativeClaude = new ClaudeDriver({
       executable: `${import.meta.dir}/fixtures/claude-process.ts`,
       cwd: root,
@@ -270,25 +269,6 @@ test.skipIf(process.platform !== "linux")(
         ARMADA_MCP_INSPECTION: claudeReceipt,
       },
     });
-    const codex = new CodexDriver({
-      executable: `${import.meta.dir}/fixtures/app-server.ts`,
-      cwd: root,
-      env: {
-        PATH: process.env.PATH ?? "/usr/bin:/bin",
-        HOME: join(root, "codex"),
-        CODEX_HOME: join(root, "codex"),
-        ARMADA_MCP_INSPECTION: codexReceipt,
-      },
-    });
-    let codexDone: Promise<unknown> | undefined;
-    const codexDriver: Driver = {
-      start(c) {
-        const turn = codex.start(c);
-        codexDone = turn.done;
-        return turn;
-      },
-      close: () => codex.close(),
-    };
     let ready: () => void = () => {};
     const claude: Driver = {
       start(c) {
@@ -305,7 +285,7 @@ test.skipIf(process.platform !== "linux")(
     const runner = new Runner(
       journal,
       grant,
-      { claude, codex: codexDriver },
+      { claude },
       {
         async append(batch) {
           return { acknowledgedSequence: batch.events.at(-1)?.sequence ?? 0 };
@@ -362,14 +342,8 @@ test.skipIf(process.platform !== "linux")(
       expect(empty.strict).toBe(true);
       expect(empty.headerFingerprint).toBe(null);
       await call(runner, "interrupt", { conversationId: conversation });
-      await call(runner, "prompt", { input: { sandboxId: "s", harness: "codex", text: "redirect" } });
-      await codexDone;
-      // Completion barrier waits for the actual app-server peer and all event ingestion, not a timer.
+      // Codex JSONL secrecy belongs to codex.test.ts, not another native process here.
       expect((await call(runner, "checkpoint")).status).toBe(200);
-      const removed = JSON.parse(await readFile(codexReceipt, "utf8"));
-      expect(removed.serverNames).toEqual([]);
-      expect(removed.argvLeak).toBe(false);
-      expect(removed.environmentLeak).toBe(false);
       const events = await (await call(runner, "events")).text();
       expect(events).not.toContain(secret1);
       expect(events).not.toContain(secret2);
@@ -377,7 +351,7 @@ test.skipIf(process.platform !== "linux")(
         journal.events(0, 1000).some((row) => row.event.kind === "other" && row.event.type === "harness_stderr"),
       ).toBe(true);
     } finally {
-      await Promise.all([nativeClaude.close(), codex.close()]);
+      await nativeClaude.close();
       await new Promise<void>((resolve) => setImmediate(resolve));
       journal.close();
       await rm(root, { recursive: true, force: true });

@@ -561,3 +561,20 @@ with server/org/credential/SSH/image arguments plus
 proves a normal launch/answer/stop/delete and uninstalls; compare inventories with
 the baseline. No reboot, prune, shared-image removal or worker host access.
 This procedure has not been run here.
+
+### Harness and cost acceptance (#1454)
+
+Coordinator only, on host `70bde9cd-36c9-40af-b15e-65b2f9d3c2a2`:
+run `scripts/smoke-docker-lifecycle.py` with the existing staging server/org,
+SSH alias, registered host ID and digest-pinned image arguments. Supply the
+Armada bearer privately through `ARMADA_TOKEN`, never argv.
+
+- `--cost`: Codex per-turn pricing and exact session total, including retained
+  immutable quotes after follow-up and stop/resume.
+- `--claude --cost`: Claude Code using an Anthropic API-key account.
+- `--opencode --cost`: OpenCode using the staging `deepseek-check` custom
+  OpenAI-compatible connection (pass its credential ID and configured model).
+
+Each flag uses normal launch/status/logs/send/stop/resume routes, and cleans up
+with normal stop/delete. These are coordinator acceptance procedures, not claims
+that the real-host runs passed. No worker needs staging or host access.

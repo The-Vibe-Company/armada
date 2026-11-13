@@ -1,5 +1,5 @@
 import type { AgentEvent, Sql } from "@armada/core";
-import { PROMPT_STATUSES } from "@armada/core";
+import { HARNESS_KINDS, PROMPT_STATUSES } from "@armada/core";
 import { decryptSecret } from "@armada/core/server";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
@@ -77,10 +77,10 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
       // then account, then host/sandbox/runtime. withOwner reuses this transaction.
       const source = await authority.lockSourceMembers(tx, sandboxId, actor.userId);
       const credential = await tx.query(
-        `select id from public.credentials where id=$1 and version=$2 and kind in ('openai','codex_auth')
+        `select id from public.credentials where id=$1 and version=$2 and kind = any($5::public.credential_kind[])
          and status='active' and (expires_at is null or expires_at>now())
          and ((scope='user' and owner_id=$3) or (scope='org' and owner_id=$4)) for share`,
-        [snapshot.credentialId, snapshot.credentialVersion, actor.userId, actor.orgId],
+        [snapshot.credentialId, snapshot.credentialVersion, actor.userId, actor.orgId, HARNESS_KINDS[snapshot.harness]],
       );
       if (!credential.rows.length) deny();
       if (allowPending) {
@@ -203,7 +203,7 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
           op: "prompt",
           input: {
             sandboxId,
-            harness: "codex",
+            harness: sandbox.harness,
             text: input.text,
             ...(input.conversationId === undefined ? {} : { conversationId: input.conversationId }),
             model: sandbox.model,

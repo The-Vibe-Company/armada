@@ -81,8 +81,9 @@ export interface LaunchOptionsResponse {
   machineSizes: readonly MachineSize[];
   ttl: { defaultSeconds: number; maxSeconds: Partial<Record<SandboxPlacementProviderId, number>> };
   providers: LaunchProviderOption[];
-  modalRuntime?: { version: number; enabled: boolean; followupVersion?: number };
+  modalRuntime?: { version: number; enabled: boolean; followupVersion?: number; resumeVersion?: number };
   boatRuntime: {
+    defaultPath?: "native" | "runtime";
     version: number;
     diagnosticsVersion: number;
     followupVersion: number;
@@ -91,6 +92,7 @@ export interface LaunchOptionsResponse {
     githubVersion: number;
     mcpVersion: number;
     skillsVersion?: number;
+    controlsVersion?: number;
     enabled: boolean;
   };
 }
@@ -101,7 +103,7 @@ export interface DockerLaunchRequest {
   provider: "docker";
   hostId: string;
   image: string;
-  harness: "codex";
+  harness: Harness;
   credentialId: string;
   credentialVersion?: number;
   requestId: string;
@@ -114,7 +116,7 @@ export interface DockerLaunchRequest {
 export interface DockerSandboxRecord extends Omit<SandboxRecord, "provider" | "goldenId" | "harness"> {
   provider: "docker";
   goldenId: null;
-  harness: "codex";
+  harness: Harness;
   hostId: string;
   image: string;
 }
@@ -136,7 +138,7 @@ export interface DockerSandboxStatus {
   id: string;
   golden: null;
   visibility: "private";
-  harness: "codex";
+  harness: Harness;
   repositoryDir: null;
   machineSize: MachineSizeEvidence | null;
   model: string | null;
