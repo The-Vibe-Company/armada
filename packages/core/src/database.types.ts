@@ -414,6 +414,41 @@ export type Database = {
           },
         ];
       };
+      docker_launch_requests: {
+        Row: {
+          sandbox_id: string;
+          actor_epoch: number;
+          request_hash: string;
+          request_enc: string;
+          result_enc: string | null;
+          created_at: string;
+        };
+        Insert: {
+          sandbox_id: string;
+          actor_epoch: number;
+          request_hash: string;
+          request_enc: string;
+          result_enc?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          sandbox_id?: string;
+          actor_epoch?: number;
+          request_hash?: string;
+          request_enc?: string;
+          result_enc?: string | null;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "docker_launch_requests_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: true;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       github_authorizations: {
         Row: {
           id: string;
@@ -3816,6 +3851,7 @@ export type Database = {
           docker_installation_id: string | null;
           docker_generation: string | null;
           docker_image: string | null;
+          runtime_transport: string | null;
         };
         Insert: {
           id?: string;
@@ -3874,6 +3910,7 @@ export type Database = {
           docker_installation_id?: string | null;
           docker_generation?: string | null;
           docker_image?: string | null;
+          runtime_transport?: string | null;
         };
         Update: {
           id?: string;
@@ -3932,6 +3969,7 @@ export type Database = {
           docker_installation_id?: string | null;
           docker_generation?: string | null;
           docker_image?: string | null;
+          runtime_transport?: string | null;
         };
         Relationships: [
           {
@@ -4138,6 +4176,7 @@ export type ArmadaAccessParentRow = Database["public"]["Tables"]["armada_access_
 export type Credential = Database["public"]["Tables"]["credentials"]["Row"];
 export type DockerHostJobRow = Database["public"]["Tables"]["docker_host_jobs"]["Row"];
 export type DockerHostRow = Database["public"]["Tables"]["docker_hosts"]["Row"];
+export type DockerLaunchRequestRow = Database["public"]["Tables"]["docker_launch_requests"]["Row"];
 export type GitHubAuthorization = Database["public"]["Tables"]["github_authorizations"]["Row"];
 export type GitHubConnection = Database["public"]["Tables"]["github_connections"]["Row"];
 export type GitHubRefreshFence = Database["public"]["Tables"]["github_refresh_fences"]["Row"];

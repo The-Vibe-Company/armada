@@ -29,6 +29,7 @@ import type { GitHubLaunchOptions } from "./launch-credentials.ts";
 import { modalLaunchEnvironment } from "./modal-launch-environment.ts";
 import { createModelAuthOwnership } from "./model-auth.ts";
 import { measureProviderPhase } from "./request-timing.ts";
+import { createRuntimeServing } from "./runtime-serving.ts";
 
 export type { ModalManagementAuthority } from "@armada/provider-modal";
 export const MODAL_INGEST_PATH = "/api/internal/modal/events";
@@ -182,6 +183,7 @@ export async function createModalIntegration(options: {
     const provenance = await managementAuthority(context.target, context.caller);
     const sourceScope: Scope = { ...scope, visibility: provenance.sourceGoldenVisibility };
     const composed: ComposedModalOptions = {
+      ...(context.target.runtimeTransport === "dialout" ? { commonRuntime: true as const } : {}),
       measure: measureProviderPhase,
       storedReads,
       sql: options.sql,
@@ -265,7 +267,7 @@ export async function createModalIntegration(options: {
     storedProviderFor: async (target: ProviderTarget, caller: { userId: string }) => {
       if (target.provider !== "modal" || !target.modal) throw new VaultError("invalid", "Expected Modal binding.");
       const tokens = await modalTokensFor(target, caller);
-      const provider = await modalProviderFor(
+      const host = await modalProviderFor(
         // The resolver's scope label is not the structured machine Scope.
         // Pass only the token pair, exactly as the live registry does.
         { tokenId: tokens.tokenId, tokenSecret: tokens.tokenSecret },
@@ -273,6 +275,10 @@ export async function createModalIntegration(options: {
         { target, caller, credentialScope: tokens.scope },
         true,
       );
+      const provider =
+        target.runtimeTransport === "dialout"
+          ? await createRuntimeServing(options.sql, options.encryptionKey!)(host, target, caller)
+          : host;
       // Do not let a stored observation adapter accidentally drive admission.
       const reads = new Set<PropertyKey>(["get", "getPrompt", "events"]);
       return new Proxy(provider, {

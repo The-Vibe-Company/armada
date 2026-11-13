@@ -41,6 +41,7 @@ import {
   tokenList,
   tokenRevoke,
 } from "./auth-commands.ts";
+import { launchDocker } from "./docker-launch.ts";
 import { operation, parseTtl } from "./operations.ts";
 import { printOptionalResourceAdvice } from "./resource-advice.ts";
 import { routineCommand } from "./routine-commands.ts";
@@ -77,9 +78,11 @@ export interface Deps {
   vault?: { store: VaultStore; encryptionKey: string };
 }
 
-const HELP = `armada ${VERSION}: launch coding agents in Boat and Modal sandboxes
+const HELP = `armada ${VERSION}: launch coding agents in provider-scoped sandboxes
 
 Usage:
+  armada launch [prompt] --provider docker --host UUID --image digest-ref --agent codex --credential-id UUID --org UUID [--request-id UUID] [--json]
+                                           Opt-in plain-image Docker launch through the normal Armada API.
   armada --version                         Print the version
   armada --help                            Show this help
   armada skill install (--project <directory> | --global) --yes [--revision <commit>]
@@ -849,7 +852,17 @@ function decodeLaunchResult(result: LaunchWireResult): LaunchResult {
 }
 
 async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<number> {
-  const args = parseArgs(argv, ["--size", "--skill", "--max-active-children"], ["--sized", "--armada-access"]);
+  const args = parseArgs(
+    argv,
+    ["--size", "--skill", "--max-active-children", "--host", "--image", "--request-id", "--credential-version"],
+    ["--sized", "--armada-access"],
+  );
+  if (single(args, "--provider") === "docker") {
+    const auth = authOf(io, deps);
+    return launchDocker(args, io, { ...auth, fetch: deps.fetch ?? auth.fetch });
+  }
+  if (["--host", "--image", "--request-id", "--credential-version"].some((key) => single(args, key) !== undefined))
+    throw new GoldenError("invalid_config", "Docker placement flags require --provider docker.");
   const maxActiveChildren = single(args, "--max-active-children");
   if (
     maxActiveChildren !== undefined &&

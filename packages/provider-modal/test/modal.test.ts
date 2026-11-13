@@ -53,12 +53,14 @@ function fixture(
   sql: Sql = db,
   beforePrompt?: ModalProviderOptions["beforePrompt"],
   beforeResume?: ModalProviderOptions["beforeResume"],
+  commonRuntime?: true,
 ) {
   const store = createSqlModalStore(sql, accessScope);
   const log: string[] = [];
   let creates = 0;
   const requestedRuntimes: (string | undefined)[] = [];
   const resourceRequests: Record<string, unknown>[] = [];
+  const sdkCommands: { argv: string[]; params: object; stdin: string[] }[] = [];
   let failSnapshot = false;
   let failCreate = false;
   let failBoot = false;
@@ -104,12 +106,15 @@ function fixture(
           poll: async () => state.exit,
           getTags: async () => ownershipOverride ?? params.tags,
           createConnectToken: async () => ({ url: `https://runner.example/${id}`, token: "synthetic-connect" }),
-          exec: async () => {
+          exec: async (argv: string[], params: object) => {
+            const command = { argv, params, stdin: [] as string[] };
+            sdkCommands.push(command);
             let input: Record<string, unknown> | undefined;
             const closed = deferred();
             return {
               stdin: {
                 writeText: async (text: string) => {
+                  command.stdin.push(text);
                   input = JSON.parse(text);
                   if (input && "command" in input) log.push("root-exec");
                   if (input && "grant" in input)
@@ -208,6 +213,7 @@ function fixture(
   };
   const provider = createModalProvider({
     scope: accessScope,
+    ...(commonRuntime ? { commonRuntime } : {}),
     ...(beforePrompt ? { beforePrompt } : {}),
     ...(beforeResume ? { beforeResume } : {}),
     tokenId: "synthetic-id",
@@ -248,6 +254,7 @@ function fixture(
     bootstraps,
     requestedRuntimes,
     resourceRequests,
+    sdkCommands,
     get provisioned() {
       return provisioned;
     },
@@ -677,6 +684,48 @@ async function runningFork(f: ReturnType<typeof fixture>) {
   await f.provider.snapshot({ sandboxId: builder.id, name });
   return f.provider.fork({ from: name });
 }
+test("enrolled Modal host forks never start or call the tunnel and stop without a recovery claim", async () => {
+  const f = fixture(scope, db, undefined, undefined, true);
+  const row = await runningFork(f);
+  expect(await f.store.get(row.id)).toMatchObject({ commonRuntime: true, phase: "active" });
+  const afterFork = f.log.length;
+  expect(f.log.filter((op) => op === "start-1")).toHaveLength(1); // Builder only.
+  await expect(f.provider.prompt({ sandboxId: row.id, harness: "codex", text: "no fallback" })).rejects.toMatchObject({
+    code: "invalid_request",
+  });
+  await f.provider.startRuntime({
+    sandboxId: row.id,
+    serverUrl: "https://armada.example",
+    enrolmentToken: `armada_enrol_${"a".repeat(64)}`,
+    cacheDir: "/home/user/.armada-runtime-bootstrap",
+    artifact: { sha256: "b".repeat(64), bytes: 1 },
+  });
+  const bootstrap = f.sdkCommands.at(-1);
+  expect(JSON.stringify(bootstrap?.argv)).not.toContain(`armada_enrol_${"a".repeat(64)}`);
+  expect(bootstrap?.params).toMatchObject({ env: {}, secrets: [], stderr: "ignore", stdout: "ignore" });
+  expect(JSON.parse(bootstrap?.stdin[0] ?? "")).toEqual({
+    serverUrl: "https://armada.example",
+    enrolmentToken: `armada_enrol_${"a".repeat(64)}`,
+  });
+  await expect(
+    f.provider.startRuntime({
+      sandboxId: row.id,
+      serverUrl: "https://armada.example",
+      enrolmentToken: `armada_enrol_${"a".repeat(64)}`,
+      cacheDir: "/home/user/.armada-runtime-bootstrap",
+      artifact: { sha256: "b".repeat(64), bytes: 1 },
+    }),
+  ).rejects.toMatchObject({ code: "conflict" });
+  await f.provider.stop({ sandboxId: row.id });
+  expect(f.log.slice(afterFork)).toEqual(["terminate"]);
+  expect(await f.provider.get(row.id)).toMatchObject({ state: "stopped" });
+  expect((await f.store.get(row.id)).recoveryImageId).toBeUndefined();
+  await expect(
+    f.provider.prompt({ sandboxId: row.id, harness: "codex", text: "no implicit resume" }),
+  ).rejects.toMatchObject({ code: "invalid_request" });
+  expect(f.creates).toBe(2);
+});
+
 function deferred() {
   let resolve: () => void = () => {};
   const promise = new Promise<void>((done) => {

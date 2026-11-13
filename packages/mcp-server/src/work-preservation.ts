@@ -146,8 +146,9 @@ async function captureAndStore(
         complete: boolean;
         application_secret_tainted: boolean;
         boat_runtime: boolean;
+        runtime_transport: string | null;
       }>(
-        `select boat_runtime,application_secret_tainted, case when stop_requested_at is null then null else stop_generation::text end as stop_token,
+        `select runtime_transport,boat_runtime,application_secret_tainted, case when stop_requested_at is null then null else stop_generation::text end as stop_token,
         (stop_requested_at is not null and preservation_stop_generation is not distinct from stop_generation) as complete
        from public.sandboxes where id=$1::uuid`,
         [id],
@@ -165,6 +166,15 @@ async function captureAndStore(
         sql,
         id,
         "Unpushed work was not preserved: application-secret exposure forbids archives and disk reuse; resume and recovery are unavailable.",
+        stop.stop_token,
+      );
+      return;
+    }
+    if (stop.runtime_transport === "dialout") {
+      await writeNote(
+        sql,
+        id,
+        "Experimental Modal runtime stop: disk retention, resume and Git work preservation are unavailable.",
         stop.stop_token,
       );
       return;

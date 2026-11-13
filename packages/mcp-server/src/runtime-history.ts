@@ -32,7 +32,7 @@ export function createRuntimeHistory(
     const authorize = async () => {
       if (trusted) return trusted.authorize(caller, sandboxId);
       const row = await data(caller).sandboxes.get(sandboxId);
-      if (row?.boatRuntime !== true) throw denied();
+      if (row?.boatRuntime !== true && row?.runtimeTransport !== "dialout") throw denied();
       return row;
     };
     await authorize();
