@@ -394,3 +394,50 @@ in place until this proof succeeds; if Actions fails, Git remains the fallback.
 Only after the owner confirms this merge and staging proof may the next PR turn
 off Git deployments on both projects. Intermediate PRs use `Refs #1547`; only the final
 production release-only cutover closes the issue.
+
+
+## Disable dashboard Git deployments (#1547, step 2)
+
+This section supersedes the earlier instructions to retain PR previews or move
+Vercel's production branch to an unused branch. After step 1 is proven, both
+dashboard projects use `apps/dashboard/vercel.json` with
+`git.deploymentEnabled: false`. Vercel documents the boolean `false` as disabling
+automatic deployments for **all branches**, unlike the temporary step-0
+`ignoreCommand`, which still let main build. The ignore command is removed.
+See [Vercel Git configuration](https://vercel.com/docs/project-configuration/git-configuration#turning-off-all-automatic-deployments).
+
+This file applies to **both** armada-dashboard and armada-dashboard-staging
+because both projects use Root Directory **apps/dashboard**. The owner must
+confirm that root setting in each project; a different root/config override
+would not be covered by this change. No token or project ID is embedded in the
+file. Git deployment disablement does not disable the explicit CLI upload path:
+staging continues to build in GitHub Actions and deploy with `--prebuilt`.
+Do not disconnect projects, delete domains, or remove their build/runtime vars.
+Production's existing CLI release path remains available, but the final
+production workflow/cadence cutover is still step 3. Railway Git deployment
+settings are unchanged by this Vercel-only slice.
+
+### Owner merge/deployment prerequisites and proof
+
+- Before merging this stacked step, confirm step 1's main Actions run built and
+  uploaded a Ready deployment to **armada-dashboard-staging**, with matching SHA,
+  working domain and login. Preparing the PR in parallel does not waive proof.
+- After merge, ensure active branches incorporate this config. Vercel evaluates
+  configuration from the pushed source; old branches may still contain the old
+  config. Verify both projects' deployment lists: PR, merge-queue, release-please
+  and main pushes must create no Git-triggered deployments. Only the Actions
+  staging upload should deploy on main. Check integration/check behavior on an
+  updated PR; no deployment does not by itself prove old checks are removed.
+- If stale branches or another writer still trigger Git builds, the owner can
+  disconnect the repository under **each project's Settings → Git → Connected
+  Git Repository → Disconnect** after confirming CLI project IDs and staging
+  proof. CLI deployments remain project-ID bound. Remove any obsolete required
+  Vercel checks in GitHub branch protection/rulesets; retain Armada's required
+  verdict. These are owner operations, not performed by this PR or the agent.
+- Existing GitHub/Vercel checks and already-running deployments are not erased
+  by a config commit. Inspect them rather than claiming historical work stopped.
+
+Never re-enable Git builds as an automated recovery. If the Actions path fails,
+fix/retry that workflow at the intended SHA; an emergency provider rollback or
+restoration of the previous config is an explicit owner decision. No deployment
+or provider-setting verification is claimed by local lint/typecheck.
