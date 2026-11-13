@@ -322,21 +322,24 @@ step deadlines, the same single ownership retry, then ordered init in
 connected; public/local git remains possible without a connection. Initialization
 uses the existing model-credential-free runtime execution environment and scoped
 GitHub wrappers, not borrowed model keys or native Boat exec/SSH. Background or
-failed setup cannot proceed to inference. General public exec remains unsupported.
+failed setup cannot proceed to inference. General exec remains a separate control
+path; this private operation is launch-only.
 
 Remaining refusals:
 - Idle launches with no initial prompt; current continuation requires an existing
   runtime conversation.
-- Claude/OpenCode (current ordinary runtime admission is Codex-only), private
-  scoped Armada-access launches, and requested helper capabilities.
+- OpenCode on Boat, private scoped Armada-access launches, and requested helper
+  capabilities. Claude support is merged separately; it is not implemented here.
 - Templates/routines requiring native readable-variable or application-secret
   environment delivery; plain requests still traverse the runtime default policy.
 - Pinned local stdio MCP; connected remote HTTP/SSE defaults remain supported.
 - Legacy unbound model credentials; runtime requires an authorized bound account.
 
-Other follow-on gaps, including automatic GitHub setup, native exec/git probes,
-steer/interrupt, model changes/new conversations and related controls, remain
-explicit parity work; unsupported runtime operations do not use native fallback.
+Other follow-on gaps include idle/first-send, automatic GitHub reauthorization on
+resume, model changes/new conversations and the remaining scoped/binding/helper
+features above. Public steer/interrupt/exec controls merged separately; use their
+own acceptance gates, not this workspace check. Unsupported operations do not
+use native fallback.
 Do not interpret the switch or a merged PR as a staging pass for any missing row.
 
 ### Standard post-deploy Boat check
@@ -355,8 +358,8 @@ Confirm `launch/options.boatRuntime.defaultPath:runtime`. A successful future
 case must have persisted `boatRuntime:true` and archived
 `logs/read.source:armada-runtime`, not Boat-native events; standard send/wait,
 git probes and stop must all pass. Repository/init admission is implemented; **the standard smoke still uses an
-idle launch and later exec/git probes, which remain refused** until those next
-slices. Do not relax the standard smoke to conceal remaining work, and do not
+idle launch, which remains refused** until that next slice; the merged public
+exec/git controls need their own accepted evidence. Do not relax the standard smoke to conceal remaining work, and do not
 retry allocation after an ambiguous result. Roll back the server setting to
 `native` for ordinary native launches; no deletion is authorized here.
 
@@ -397,7 +400,7 @@ epoch+1 and stopped readback. Resume must not emit new workspace setup events or
 overwrite user work. The check deliberately skips skill defaults/MCP in this
 bounded workspace slice; adding `--skills --mcp` can batch their existing gates
 once those resources are configured, still without extra allocation. It is not a
-proof of idle/public exec or any other currently refused feature.
+proof of idle, public exec or other features' separate acceptance gates.
 
 Current owner facts remain: quota exhausted today, no smoke default skills or
 named MCP connection. No live attempt or setting flip by this worker; real
