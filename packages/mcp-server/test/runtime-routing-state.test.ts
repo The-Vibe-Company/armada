@@ -70,7 +70,9 @@ test("SQL makes routing immutable, target-specific and user-JWT read-only", asyn
     await expect(f.db.query("update sandboxes set boat_runtime=false where id=$1", [runtime.id])).rejects.toThrow(
       "runtime selection is immutable",
     );
-    await expect(f.core.insert({ ...f.input(), harness: "claude", boatRuntime: true })).rejects.toThrow(
+    const claude = await f.core.insert({ ...f.input(), harness: "claude", boatRuntime: true });
+    expect(claude).toMatchObject({ harness: "claude", boatRuntime: true });
+    await expect(f.core.insert({ ...f.input(), harness: "opencode", boatRuntime: true })).rejects.toThrow(
       "sandboxes_boat_runtime_target",
     );
     const modal = (
