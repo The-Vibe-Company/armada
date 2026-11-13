@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   DEFAULT_LAUNCH_TTL_SECONDS,
   DOCKER_DEFAULT_IMAGE,
+  DOCKER_IMAGE_UNAVAILABLE_MESSAGE,
   type DockerLaunchResult,
   type DockerSandboxRecord,
   type GoldenActor,
@@ -77,6 +78,7 @@ type Row = {
   docker_host_id: string;
   docker_image: string;
   status: DockerSandboxRecord["status"];
+  status_reason: string | null;
   conversation_ids: string[];
   created_at: Date | string;
   stopped_at: Date | string | null;
@@ -103,7 +105,10 @@ type Options = {
   timeoutMs?: number;
 };
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-function failure(code: "invalid_request" | "not_found" | "conflict" | "unavailable" | "sandbox_not_ready") {
+function failure(
+  code: "invalid_request" | "not_found" | "conflict" | "unavailable" | "sandbox_not_ready",
+  message?: string,
+) {
   const messages = {
     invalid_request: "Invalid Docker launch request.",
     not_found: "Docker launch not found.",
@@ -114,7 +119,7 @@ function failure(code: "invalid_request" | "not_found" | "conflict" | "unavailab
   return new ProviderError({
     provider: "docker",
     code,
-    message: messages[code],
+    message: message ?? messages[code],
     retryable: code === "unavailable",
     // Retain the dashboard replay key for unknown outcomes, including lost commits.
     ...(code === "unavailable" ? { details: { resourceReceipt: true } } : {}),
@@ -211,6 +216,12 @@ function normalize(body: Record<string, unknown>): Request {
       : { connections: [...new Set((body.connections as string[]).map((id) => id.toLowerCase()))].sort() }),
   };
 }
+/** A launch that did not become ready, in the host's own words when it could not fetch the image (#1507). */
+const notReady = (row: Row) =>
+  failure(
+    "sandbox_not_ready",
+    row.status_reason === DOCKER_IMAGE_UNAVAILABLE_MESSAGE ? DOCKER_IMAGE_UNAVAILABLE_MESSAGE : undefined,
+  );
 const scoped = (tx: Sql): Sql => ({ query: tx.query.bind(tx), transaction: (work) => work(tx) });
 const iso = (date: Date | string) => new Date(date).toISOString();
 const active = (row: Row) =>
@@ -246,7 +257,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
     const membership = await member(tx, actor);
     const row = (
       await tx.query<Row>(
-        `select id,org_id,owner_id,provider,harness,provider_sandbox_id,docker_host_id,docker_image,status,
+        `select id,org_id,owner_id,provider,harness,provider_sandbox_id,docker_host_id,docker_image,status,status_reason,
         conversation_ids,created_at,stopped_at,deleted_at,stop_requested_at,expires_at,effective_ttl_seconds,
         lifecycle_generation,requested_ttl_seconds,credential_id,credential_version,model,reasoning_effort,skills,
         expires_at<=now() as expired from public.sandboxes where id=$1`,
@@ -322,7 +333,12 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       stoppedAt: row.stopped_at === null ? null : iso(row.stopped_at),
       deletedAt: row.deleted_at === null ? null : iso(row.deleted_at),
       stopRequestedAt: row.stop_requested_at === null ? null : iso(row.stop_requested_at),
-      statusReason: row.status === "failed" ? "Docker sandbox failed." : null,
+      statusReason:
+        row.status !== "failed"
+          ? null
+          : row.status_reason === DOCKER_IMAGE_UNAVAILABLE_MESSAGE
+            ? row.status_reason
+            : "Docker sandbox failed.",
       repositoryDir: null,
       model: row.model,
       reasoningEffort: row.reasoning_effort,
@@ -453,7 +469,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
         async function live() {
           const current = await transaction((tx) => load(tx, actor, request, hash));
           if (!current.row) throw failure("not_found");
-          if (!active(current.row)) throw failure("sandbox_not_ready");
+          if (!active(current.row)) throw notReady(current.row);
           return current;
         }
         async function wait() {
@@ -465,7 +481,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
             await live();
             const job = await sandboxes.job(actor, request.requestId, id);
             if (job?.state === "completed") return;
-            if (job?.state === "failed") throw failure("sandbox_not_ready");
+            if (job?.state === "failed") throw notReady((await live()).row);
             await wait();
           }
         }
