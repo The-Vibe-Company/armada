@@ -144,6 +144,8 @@ export interface GitHubLaunchInfo {
 }
 
 export interface LaunchResult {
+  /** Only after the selected Armada runtime acknowledged initialization/admission. */
+  runtime?: { kind: "armada"; epoch: string };
   helper: HelperNegotiation;
   sandbox: SandboxRecord;
   golden: GoldenRecord;
@@ -157,6 +159,17 @@ export interface LaunchResult {
 }
 
 export interface LaunchOptions extends GoldenLimits {
+  /** Trusted per-launch opt-in, never public request configuration. Model-only
+   * snapshot launch: no native setup/refresh or runner fallback. */
+  boatRuntime?: {
+    start(input: {
+      host: Provider;
+      actor: GoldenActor;
+      sandbox: SandboxRecord;
+      credentials: HarnessCredentials;
+      signal: AbortSignal;
+    }): Promise<{ prompt: Provider["prompt"]; epoch: string }>;
+  };
   /** Trusted server policy: extra physical Modal seconds reserved for extension. */
   extensionHeadroomSeconds?: number;
   /** Trusted server telemetry only; never request input or a raw-error sink. */
@@ -203,6 +216,9 @@ export async function launchSandbox(
   if (request.skipSkillDefaults !== undefined && typeof request.skipSkillDefaults !== "boolean")
     throw new LaunchError("invalid_request", "skipSkillDefaults must be a boolean.");
   const harness = checkHarness(provider, request.harness);
+  const runtime = options.boatRuntime;
+  if (runtime && (provider.id !== "boat" || harness !== "codex" || options.privateParent || options.privateVisibility))
+    throw new LaunchError("invalid_request", "The experimental runtime supports ordinary Boat Codex workers only.");
   const prompt = checkPrompt(request.prompt);
   const choice = checkModel(provider, harness, request);
 
@@ -264,7 +280,7 @@ export async function launchSandbox(
   const resourceProject = golden.config.repos.find((repo) => repo.dir === repositoryDir);
   const machineSize = resolveMachineSize(golden.provider, request.size, repositoryDir, golden.sizePolicy);
   const prepareNativeCwd = provider.prepareNativeHarnessCwd?.bind(provider);
-  if (repositoryDir !== null && !prepareNativeCwd)
+  if (repositoryDir !== null && !prepareNativeCwd && !runtime)
     throw new LaunchError("invalid_request", `${provider.id} cannot prepare a native repository working directory.`);
   // Public launch visibility cannot change access or source authority. Only the
   // trusted managed-parent caller may narrow sandbox access; the source stays unchanged.
@@ -272,6 +288,8 @@ export async function launchSandbox(
   const connectionIds = [
     ...new Set(request.connections ?? (await stores.connections?.defaults?.(actor, visibility)) ?? []),
   ];
+  if (runtime && (connectionIds.length || request.skills?.length || request.helperCapabilities?.length))
+    throw new LaunchError("invalid_request", "The experimental runtime does not yet support MCP, skills or helpers.");
   if (connectionIds.length && !stores.connections)
     throw new LaunchError("invalid_request", "MCP launch connections are not configured.");
   await stores.connections?.validate(actor, connectionIds, visibility);
@@ -280,7 +298,7 @@ export async function launchSandbox(
   const credentials = await stores.credentials.resolve(actor, harness, request.credentialId);
   if (credentials.env[CLAUDE_ENDPOINT_ENV] && provider.id !== "modal")
     throw new LaunchError("invalid_request", "Custom Claude gateways currently require Modal.");
-  if (credentials.env[CODEX_ENDPOINT_ENV] && provider.id !== "modal")
+  if (credentials.env[CODEX_ENDPOINT_ENV] && provider.id !== "modal" && !runtime)
     throw new LaunchError("invalid_request", "Custom Codex endpoints currently require Modal.");
   const github: GitHubAccess = credentials.github ?? { status: "not_connected", message: GITHUB_NOT_CONNECTED };
   const connected = github.status === "connected" ? github : null;
@@ -305,7 +323,7 @@ export async function launchSandbox(
         from: snapshot,
         ...(machineSize.effective ? { size: machineSize.effective } : {}),
         noEnv: true,
-        env,
+        env: runtime ? {} : env,
         // Managed parents own their separate lifecycle policy. Ordinary workers need stop headroom.
         ttlSeconds: options.privateParent
           ? ttlSeconds
@@ -346,6 +364,7 @@ export async function launchSandbox(
     let record: SandboxRecord;
     try {
       record = await stores.sandboxes.insert({
+        ...(runtime ? { boatRuntime: true as const } : {}),
         ...credentials.binding,
         id,
         provider: golden.provider,
@@ -399,7 +418,10 @@ export async function launchSandbox(
         /* Best effort only. */
       }
     };
+    let startedRuntime: ReturnType<NonNullable<LaunchOptions["boatRuntime"]>["start"]> | undefined;
     const start = async (signal: AbortSignal) => {
+      if ((record.boatRuntime === true) !== Boolean(runtime))
+        throw new LaunchError("start_failed", "The sandbox runtime selection was not persisted; no agent was started.");
       if ((record.visibility ?? golden.visibility) !== visibility) {
         await provider.delete({ sandboxId: forked.id });
         throw new LaunchError(
@@ -408,7 +430,7 @@ export async function launchSandbox(
           { safeReason: "visibility_not_persisted" },
         );
       }
-      if (golden.provider === "modal" && credentials.usagePricing)
+      if ((golden.provider === "modal" || runtime) && credentials.usagePricing)
         await stores.sandboxes.recordUsagePricingContext?.(record.id, credentials.usagePricing);
       progress("initialization_bind");
       await stores.connections?.bind(record.id, connectionIds);
@@ -416,20 +438,26 @@ export async function launchSandbox(
       const ready = await waitReady(provider, forked.id, options);
       progress("initialization_hydrate");
       if (
+        !runtime &&
         credentials.codexAuthJson &&
         !(await stores.credentials.hydrateNative?.(actor, credentials, id, provider, ready.id))
       )
         await writeCodexAuth(provider, ready.id, secrets);
       progress("initialization_github");
-      const launchGithub: GitHubLaunchInfo =
-        github.status === "connected"
+      const launchGithub: GitHubLaunchInfo = runtime
+        ? {
+            status: "not_connected",
+            message:
+              "Experimental runtime uses the golden checkout as-is, without native GitHub setup or initialization.",
+          }
+        : github.status === "connected"
           ? await setupGitHub(provider, ready.id, github.identity, secrets)
           : { status: github.status, message: github.message };
-      if (github.status === "connected" && github.expiresAt)
+      if (!runtime && github.status === "connected" && github.expiresAt)
         launchGithub.tokenExpiresAt = github.expiresAt.toISOString();
-      await setup(provider, ready.id, record.id, golden, secrets, progress, options.sleep);
+      if (!runtime) await setup(provider, ready.id, record.id, golden, secrets, progress, options.sleep);
       progress("initialization_cwd");
-      if (repositoryDir !== null && prepareNativeCwd)
+      if (!runtime && repositoryDir !== null && prepareNativeCwd)
         await prepareNativeCwd({ sandboxId: ready.id, harness, cwd: `${GOLDEN_ROOT}/${repositoryDir}` });
       if (request.skills?.length) {
         const receipts = [];
@@ -478,13 +506,21 @@ export async function launchSandbox(
       progress("initialization_mcp");
       if (record.expiresAt && new Date(record.expiresAt).getTime() <= Date.now())
         throw new LaunchError("invalid_request", "Provider lifetime has no remaining preservation headroom.");
-      await stores.connections?.prepare?.(provider, record, actor);
+      if (!runtime) await stores.connections?.prepare?.(provider, record, actor);
       await options.beforeStart?.(provider, record);
+      if (runtime && !startedRuntime)
+        startedRuntime = Promise.resolve().then(() =>
+          runtime.start({ host: provider, actor, sandbox: record, credentials, signal }),
+        );
+      const agent = startedRuntime ? await startedRuntime : undefined;
+      if (runtime && (!agent || typeof agent.prompt !== "function" || !/^[1-9][0-9]{0,18}$/.test(agent.epoch)))
+        throw new LaunchError("start_failed", "The runtime did not acknowledge a valid epoch.");
+      const provenance = agent ? { kind: "armada" as const, epoch: agent.epoch } : undefined;
       // Boat goldens carry the native CLI. A restored fork can be ready while its
       // executable cannot even boot; probe the installed wrapper (including its
       // harness-only readable environment) without creating a session or model turn.
       // Modal validates its separately distributed native runtime at installation.
-      if (provider.id === "boat") {
+      if (provider.id === "boat" && !runtime) {
         try {
           const health = await provider.exec({
             sandboxId: ready.id,
@@ -518,12 +554,19 @@ export async function launchSandbox(
             "ready",
             [],
             undefined,
+            provenance,
           ),
         };
       }
-      const receipt = await provider
-        .prompt({ sandboxId: ready.id, harness, text: prompt, signal, ...choice })
-        .catch((error: unknown) => {
+      const promptRequest = {
+        sandboxId: ready.id,
+        harness,
+        text: prompt,
+        signal,
+        ...choice,
+      };
+      const receipt = await (agent ? agent.prompt(promptRequest) : provider.prompt(promptRequest)).catch(
+        (error: unknown) => {
           throw new LaunchError(
             "prompt_failed",
             `The agent could not be started: ${redact(messageOf(error), secrets)}`,
@@ -531,7 +574,8 @@ export async function launchSandbox(
               cause: error,
             },
           );
-        });
+        },
+      );
       try {
         await stores.sandboxes.recordTurnModel?.(record.id, receipt.promptId, choice.model);
       } catch {
@@ -559,6 +603,7 @@ export async function launchSandbox(
             conversationId: receipt.conversationId,
             promptId: receipt.promptId,
           },
+          provenance,
         ),
       };
     };
@@ -630,6 +675,7 @@ function finish(
   status: SandboxRecord["status"],
   conversationIds: string[],
   prompt: { conversationId: string; promptId: string } | undefined,
+  runtime?: LaunchResult["runtime"],
 ): LaunchResult {
   return {
     helper: negotiateHelper(golden.helperReceipt, golden.providerSnapshotId),
@@ -639,6 +685,7 @@ function finish(
     ttlSeconds,
     ...(expiresAt ? { expiresAt } : {}),
     ...(prompt ?? {}),
+    ...(runtime ? { runtime } : {}),
   };
 }
 
