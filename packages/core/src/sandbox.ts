@@ -311,6 +311,7 @@ export function createSqlSandboxStore(sql: Sql, options: { turnModels?: true } =
 export function mapSandboxRow(row: SandboxRow): SandboxRecord {
   if (!isHarness(row.harness)) throw new Error("Sandbox row harness is invalid.");
   if (!isSandboxProvider(row.provider)) throw new Error("Sandbox row provider is invalid.");
+  if (row.golden_id === null) throw new Error("Sandbox row has no supported golden binding.");
   const lifecycleGeneration = decodeLifecycleGeneration(row.lifecycle_generation);
   return {
     ...(row.boat_runtime === true ? { boatRuntime: true as const } : {}),

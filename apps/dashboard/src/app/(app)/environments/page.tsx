@@ -1,4 +1,4 @@
-import { type Golden, MODEL_CATALOG, type SandboxProviderId } from "@armada/core";
+import { type Golden, isSandboxProvider, MODEL_CATALOG, type SandboxProviderId } from "@armada/core";
 import {
   CircleCheckIcon,
   FolderGit2Icon,
@@ -475,6 +475,7 @@ type EnvironmentRow = ResourceRow & {
 
 /** One golden as a row of the list (its state, repositories and one action) and as its panel (everything else). */
 function environmentRow(golden: Golden, context: RowContext, now: number): EnvironmentRow {
+  if (!isSandboxProvider(golden.provider)) throw new Error("Unsupported golden provider.");
   const membership = context.orgs.get(golden.org_id);
   const isAdmin = membership?.role === "admin";
   const row = goldenRowState(golden, context.all, { id: context.viewerId, isAdmin });

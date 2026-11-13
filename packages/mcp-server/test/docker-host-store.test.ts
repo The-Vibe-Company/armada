@@ -186,3 +186,58 @@ test("SQL persists only token hashes and sealed input and denies user-JWT table/
     });
   }
 });
+
+test("bootstrap tickets are sealed, strictly admitted, immutable and redelivered until terminal acknowledgement", async () => {
+  const a = await fixture();
+  const task = {
+    ...job(),
+    operation: "bootstrap" as const,
+    bootstrap: {
+      serverUrl: "https://armada.example/",
+      artifact: { sha256: "b".repeat(64), bytes: 123 },
+      enrolmentToken: `armada_enrol_${"c".repeat(64)}`,
+    },
+  };
+  await store.enqueue(a.actor, a.hostId, task);
+  await createDockerHostStore(sql, key).enqueue(a.actor, a.hostId, task);
+  const normalized = { ...task, bootstrap: { ...task.bootstrap, serverUrl: "https://armada.example" } };
+  await store.enqueue(a.actor, a.hostId, normalized);
+  const row = await db.query<{ input_enc: Uint8Array<ArrayBuffer> }>(
+    `select input_enc from public.docker_host_jobs where request_id=$1`,
+    [task.requestId],
+  );
+  const bytes = row.rows[0]?.input_enc;
+  if (!bytes) throw new Error("Missing sealed bootstrap");
+  expect(Buffer.from(bytes).includes(Buffer.from(task.bootstrap.enrolmentToken))).toBe(false);
+  expect(JSON.parse(await decryptSecret(bytes, key))).toEqual({
+    operation: "bootstrap",
+    request: task.request,
+    bootstrap: normalized.bootstrap,
+  });
+  await denied(
+    store.enqueue(a.actor, a.hostId, {
+      ...task,
+      bootstrap: { ...task.bootstrap, enrolmentToken: `armada_enrol_${"d".repeat(64)}` },
+    }),
+  );
+  for (const bootstrap of [
+    { ...task.bootstrap, serverUrl: "http://armada.example" },
+    { ...task.bootstrap, serverUrl: "https://user:pass@armada.example" },
+    { ...task.bootstrap, serverUrl: "https://armada.example/path" },
+    { ...task.bootstrap, serverUrl: "https://armada.example/?query=1" },
+    { ...task.bootstrap, serverUrl: "https://armada.example/#fragment" },
+    { ...task.bootstrap, enrolmentToken: "armada_enrol_invalid" },
+    { ...task.bootstrap, artifact: { ...task.bootstrap.artifact, bytes: 0 } },
+    { ...task.bootstrap, artifact: { ...task.bootstrap.artifact, bytes: 512 * 1024 * 1024 + 1 } },
+    { ...task.bootstrap, artifact: { ...task.bootstrap.artifact, sha256: "invalid" } },
+    { ...task.bootstrap, harness: "codex" },
+  ])
+    await denied(store.enqueue(a.actor, a.hostId, { ...task, requestId: randomUUID(), bootstrap } as never));
+  expect(await store.poll(a.hostToken, a.installationId)).toEqual(normalized);
+  expect(await store.poll(a.hostToken, a.installationId)).toEqual(normalized);
+  const result = { requestId: task.requestId, outcome: "completed" as const };
+  await store.complete(a.hostToken, a.installationId, result);
+  await store.complete(a.hostToken, a.installationId, result);
+  await denied(store.complete(a.hostToken, a.installationId, { ...result, outcome: "failed" }));
+  expect(await store.poll(a.hostToken, a.installationId)).toBeNull();
+});

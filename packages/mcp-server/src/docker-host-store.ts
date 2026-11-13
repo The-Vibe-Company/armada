@@ -1,10 +1,10 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { Sql } from "@armada/core";
 import { decryptSecret, encryptSecret } from "@armada/core/server";
-import type { DockerMachineRequest } from "../../core/src/docker-machine.ts";
+import { canonicalDockerHostJob, type DockerHostJob, parseDockerHostJob } from "../../core/src/docker-host-job.ts";
 
 type Actor = { userId: string; orgId: string };
-type Job = { requestId: string; request: DockerMachineRequest; operation: "create" | "stop" | "delete" };
+type Job = DockerHostJob;
 type Host = { id: string; org_id: string; owner_id: string };
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const tokenPattern = /^[0-9a-f]{64}$/;
@@ -31,36 +31,16 @@ function hash(token: unknown): string {
   return createHash("sha256").update(token).digest("hex");
 }
 function input(job: Job): string {
-  exact(job, ["requestId", "operation", "request"]);
-  id(job.requestId);
-  if (!["create", "stop", "delete"].includes(job.operation)) deny();
-  const request = job.request;
-  exact(request, ["sandboxId", "generation", "image", "ttlSeconds"]);
-  id(request.sandboxId);
-  id(request.generation);
-  if (
-    typeof request.image !== "string" ||
-    request.image.length > 512 ||
-    !/^[a-z0-9][a-z0-9./:_-]*@sha256:[0-9a-f]{64}$/.test(request.image) ||
-    !Number.isInteger(request.ttlSeconds) ||
-    request.ttlSeconds < 1 ||
-    request.ttlSeconds > 86_400
-  )
-    deny();
-  return JSON.stringify({
-    operation: job.operation,
-    request: {
-      sandboxId: request.sandboxId,
-      generation: request.generation,
-      image: request.image,
-      ttlSeconds: request.ttlSeconds,
-    },
-  });
+  try {
+    return canonicalDockerHostJob(job);
+  } catch {
+    return deny();
+  }
 }
 
 /** Internal service-role store, deliberately not mounted as a route or wired into placement.
  * Poll is at-least-once; a host must serialize execution and deduplicate request IDs durably.
- * No bootstrap, model credentials, stdout or arbitrary error payloads enter this mailbox.
+ * Only trusted internal bootstrap tickets enter this mailbox; no model credentials or arbitrary execution payloads.
  */
 export function createDockerHostStore(sql: Sql, key: string) {
   async function transaction<T>(work: (tx: Sql) => Promise<T>): Promise<T> {
@@ -188,9 +168,10 @@ export function createDockerHostStore(sql: Sql, key: string) {
         );
         const row = result.rows[0];
         if (!row) return null;
-        const job: Job = { ...JSON.parse(await decryptSecret(row.input_enc, key)), requestId: row.request_id };
-        input(job);
-        return job;
+        return parseDockerHostJob({
+          ...JSON.parse(await decryptSecret(row.input_enc, key)),
+          requestId: row.request_id,
+        });
       });
     },
     complete(

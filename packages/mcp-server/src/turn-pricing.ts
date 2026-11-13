@@ -32,14 +32,16 @@ function snapshot(
   if (
     !v ||
     !rates ||
-    Object.keys(rates).length !== 5 ||
+    ![5, 6].includes(Object.keys(rates).length) ||
     Object.keys(v).some(
       (k) =>
         !["schemaVersion", "provider", "model", "source", "revision", "connectionId", "rates", "unsupported"].includes(
           k,
         ),
     ) ||
-    Object.keys(rates).some((k) => !["input", "output", "cacheRead", "cacheWrite", "reasoning"].includes(k)) ||
+    Object.keys(rates).some(
+      (k) => !["input", "output", "cacheRead", "cacheWrite", "reasoning", "cacheWriteOneHour"].includes(k),
+    ) ||
     v.schemaVersion !== 1 ||
     v.provider !== (harness === "claude" ? "anthropic" : "openai") ||
     v.model !== model ||
@@ -105,23 +107,34 @@ function inputs(row: TurnTokenUsage, harness: Harness): PricingInputs {
   let ttl: PricingInputs["cacheWriteTtl"] = null;
   const detail = object("cacheWriteTokensByTtl" in row ? row.cacheWriteTokensByTtl : null);
   if (harness === "claude" && detail) {
-    if (detail.conflicted === true || (count(detail.oneHour) && detail.oneHour > 0)) ttl = "other";
-    else if (result.cacheWriteTokens !== null && detail.fiveMinute === result.cacheWriteTokens && detail.oneHour === 0)
-      ttl = "5m";
+    ttl =
+      detail.conflicted !== true &&
+      result.cacheWriteTokens !== null &&
+      detail.fiveMinute === result.cacheWriteTokens &&
+      detail.oneHour === 0
+        ? "5m"
+        : "other";
   }
-  return { ...result, cacheWriteTtl: ttl };
+  return {
+    ...result,
+    ...(row.cacheWriteTokensByTtl ? { cacheWriteTokensByTtl: { ...row.cacheWriteTokensByTtl } } : {}),
+    cacheWriteTtl: ttl,
+  };
 }
 function storedInputs(value: unknown): PricingInputs | null {
   const v = object(value);
   if (
     !v ||
-    Object.keys(v).some((k) => ![...fields, "cacheWriteTtl"].includes(k as (typeof fields)[number])) ||
+    Object.keys(v).some(
+      (k) => ![...fields, "cacheWriteTtl", "cacheWriteTokensByTtl"].includes(k as (typeof fields)[number]),
+    ) ||
     fields.some((k) => v[k] !== null && !count(v[k])) ||
     ![null, "5m", "30m", "other"].includes(v.cacheWriteTtl as PricingInputs["cacheWriteTtl"])
   )
     return null;
   return {
     ...Object.fromEntries(fields.map((k) => [k, v[k]])),
+    ...(v.cacheWriteTokensByTtl ? { cacheWriteTokensByTtl: v.cacheWriteTokensByTtl } : {}),
     cacheWriteTtl: v.cacheWriteTtl,
   } as unknown as PricingInputs;
 }
@@ -130,7 +143,14 @@ const effectiveTtl = (input: PricingInputs, harness: Harness, price: PriceSnapsh
     ? null
     : (input.cacheWriteTtl ?? (harness === "claude" ? "5m" : "30m"));
 const equal = (a: PricingInputs, b: PricingInputs, harness: Harness, price: PriceSnapshot | null) =>
-  fields.every((k) => a[k] === b[k]) && effectiveTtl(a, harness, price) === effectiveTtl(b, harness, price);
+  fields.every((k) => a[k] === b[k]) &&
+  (a.cacheWriteTokens === 0 ||
+    price?.source === "connection" ||
+    (effectiveTtl(a, harness, price) !== "other" && effectiveTtl(b, harness, price) !== "other") ||
+    (a.cacheWriteTokensByTtl?.fiveMinute === b.cacheWriteTokensByTtl?.fiveMinute &&
+      a.cacheWriteTokensByTtl?.oneHour === b.cacheWriteTokensByTtl?.oneHour &&
+      a.cacheWriteTokensByTtl?.conflicted === b.cacheWriteTokensByTtl?.conflicted)) &&
+  effectiveTtl(a, harness, price) === effectiveTtl(b, harness, price);
 function complete(input: PricingInputs, price: PriceSnapshot, harness: Harness): boolean {
   // One eligibility policy for publication and projection; do not maintain stricter shadow TTL/rate guards.
   return (

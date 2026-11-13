@@ -1,4 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createDockerMachineExecutor, type DockerMachineRequest } from "../src/docker-machine.ts";
 
 const request: DockerMachineRequest = {
@@ -13,15 +17,23 @@ const request: DockerMachineRequest = {
 function fixture() {
   const containers = new Map<string, any>();
   const volumes = new Map<string, any>();
-  const calls: { argv: readonly string[]; stdin: string | undefined }[] = [];
+  const calls: { argv: readonly string[]; stdin: string | Uint8Array | undefined }[] = [];
+  const copies = new Map<string, Uint8Array>();
   let time = 1000;
   let failCommand = "";
   let retainRemoved = false;
   const cli = {
-    async run(argv: readonly string[], stdin?: string) {
+    async run(argv: readonly string[], stdin?: string | Uint8Array) {
       calls.push({ argv, stdin });
       const [kind, action] = argv;
       if (`${kind} ${action}` === failCommand) return { exitCode: 1, stdout: "SECRET Docker diagnostic" };
+      if (kind === "cp") {
+        const [name, destination] = (argv.at(-1) ?? "").split(":");
+        if (!name || !containers.get(name)?.State.Running || destination !== "/home" || !(stdin instanceof Uint8Array))
+          return { exitCode: 1, stdout: "invalid copy destination or archive" };
+        copies.set(name, stdin);
+        return { exitCode: 0, stdout: "" };
+      }
       const store = kind === "container" ? containers : volumes;
       const last = argv.at(-1)!;
       const value = (flag: string) => argv[argv.indexOf(flag) + 1]!;
@@ -75,6 +87,7 @@ function fixture() {
     containers,
     volumes,
     calls,
+    copies,
     setTime: (v: number) => {
       time = v;
     },
@@ -88,6 +101,76 @@ function fixture() {
 }
 
 describe("Docker machine executor", () => {
+  test("installs the fixed runtime archive with private modes and numeric workspace ownership", async () => {
+    const f = fixture();
+    const receipt = await f.executor.create(request);
+    const executable = new Uint8Array([0, 255, 128, 10, 42]);
+    await f.executor.installRuntime(request, executable);
+    const archive = f.copies.get(receipt.containerName);
+    if (!archive) throw new Error("Runtime archive was not copied to the owned machine");
+    const directory = mkdtempSync(join(tmpdir(), "armada-runtime-tar-"));
+    try {
+      const listing = spawnSync("tar", ["--list", "--verbose", "--numeric-owner", "--file", "-"], { input: archive });
+      expect(listing.status).toBe(0);
+      expect(listing.stdout.toString().trim().split("\n")).toEqual([
+        expect.stringMatching(/^drwx------ 1000\/1000\s+0 .* user\/$/),
+        expect.stringMatching(/^-rwx------ 1000\/1000\s+5 .* user\/armada-runtime$/),
+      ]);
+      const extraction = spawnSync("tar", ["--extract", "--no-same-owner", "--file", "-", "--directory", directory], {
+        input: archive,
+      });
+      expect(extraction.status).toBe(0);
+      expect(readdirSync(directory)).toEqual(["user"]);
+      expect(readdirSync(join(directory, "user"))).toEqual(["armada-runtime"]);
+      expect(new Uint8Array(readFileSync(join(directory, "user/armada-runtime")))).toEqual(executable);
+      expect(statSync(join(directory, "user")).mode & 0o777).toBe(0o700);
+      expect(statSync(join(directory, "user/armada-runtime")).mode & 0o777).toBe(0o700);
+      await f.executor.installRuntime(request, executable);
+      expect(f.copies.get(receipt.containerName)).toEqual(archive);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("runtime installation refuses changed identity, expiry, stopped machines and empty artifacts before copying", async () => {
+    for (const mutation of ["container-label", "volume-label", "image", "expired", "stopped", "empty"]) {
+      const f = fixture();
+      const receipt = await f.executor.create(request);
+      const container = f.containers.get(receipt.containerName);
+      if (mutation === "container-label") container.Config.Labels["dev.armada.machine.host"] = "foreign";
+      if (mutation === "volume-label")
+        f.volumes.get(receipt.volumeName).Labels["dev.armada.machine.generation"] = "foreign";
+      if (mutation === "image") container.Config.Image = "debian:latest";
+      if (mutation === "expired") f.setTime(receipt.expiresAt);
+      if (mutation === "stopped") await f.executor.stop(request);
+      const before = f.calls.length;
+      await expect(
+        f.executor.installRuntime(request, new Uint8Array(mutation === "empty" ? 0 : 1)),
+      ).rejects.toMatchObject({
+        code:
+          mutation === "expired"
+            ? "expired"
+            : mutation === "stopped"
+              ? "not_found"
+              : mutation === "empty"
+                ? "invalid_request"
+                : "ownership_mismatch",
+      });
+      expect(f.calls.slice(before).every((c) => ["ls", "inspect"].includes(c.argv[1] ?? ""))).toBe(true);
+      expect(f.copies.size).toBe(0);
+    }
+  });
+
+  test("runtime copy failures expose no Docker diagnostics", async () => {
+    const f = fixture();
+    await f.executor.create(request);
+    f.fail("cp --archive");
+    await expect(f.executor.installRuntime(request, new Uint8Array([1]))).rejects.toThrow(
+      "Docker machine docker_failed",
+    );
+    expect(f.copies.size).toBe(0);
+  });
+
   test("creates one durable machine, retries without allocation, bootstraps privately, stops and deletes exact resources", async () => {
     const f = fixture();
     const first = await f.executor.create(request);
