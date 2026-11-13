@@ -10,6 +10,7 @@ import {
   PackageIcon,
   PlugIcon,
   RadarIcon,
+  ServerIcon,
   SettingsIcon,
   UsersIcon,
   VariableIcon,
@@ -46,6 +47,7 @@ const GROUPS = [
     label: "Library",
     links: [
       { href: "/environments", label: "Environments", icon: CameraIcon },
+      { href: "/hosts", label: "Hosts", icon: ServerIcon, optIn: "dockerHosts" },
       { href: "/skills", label: "Skills", icon: PackageIcon },
       { href: "/tools", label: "Tools", icon: PlugIcon },
       { href: "/variables", label: "Variables", icon: VariableIcon },
@@ -60,6 +62,13 @@ const GROUPS = [
     ],
   },
 ] as const;
+
+/** Destinations behind a server opt-in, shown only when the shell says the server offers them. */
+export type NavOptIns = { dockerHosts: boolean };
+
+function linksOf(group: (typeof GROUPS)[number], optIns: NavOptIns) {
+  return group.links.filter((link) => !("optIn" in link) || optIns[link.optIn]);
+}
 
 export function NavMobileTrigger() {
   const pathname = usePathname();
@@ -83,7 +92,7 @@ export function NavMobileTrigger() {
   );
 }
 
-export function NavLinks({ className }: { className?: string }) {
+export function NavLinks({ className, optIns }: { className?: string; optIns: NavOptIns }) {
   const pathname = usePathname();
   const { setOpenMobile } = useSidebar();
   return (
@@ -99,7 +108,7 @@ export function NavLinks({ className }: { className?: string }) {
             </SidebarGroupLabel>
             <SidebarGroupContent>
               <SidebarMenu className="gap-0.5">
-                {group.links.map(({ href, label, icon: Icon }) => {
+                {linksOf(group, optIns).map(({ href, label, icon: Icon }) => {
                   const active = pathname === href || pathname.startsWith(`${href}/`);
                   return (
                     <SidebarMenuItem key={href}>

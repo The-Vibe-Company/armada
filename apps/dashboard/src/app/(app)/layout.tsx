@@ -9,6 +9,7 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { Toaster } from "@/components/ui/toast";
+import { dockerHostsEnabled } from "@/lib/data/docker-hosts";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { listMemberships, requireViewer } from "@/lib/data/viewer";
 import { createClient } from "@/lib/supabase/server";
@@ -20,7 +21,7 @@ import { createClient } from "@/lib/supabase/server";
 export default async function AppLayout({ children }: { children: ReactNode }) {
   const viewer = await requireViewer();
   const memberships = await listMemberships(await createClient(), viewer.id);
-  const selected = await selectedOrganization();
+  const [selected, dockerHosts] = await Promise.all([selectedOrganization(), dockerHostsEnabled()]);
   const header = (
     <>
       <div className="flex items-center justify-between gap-2 px-4 pt-3 pb-2 md:px-5 md:pt-5 md:pb-4">
@@ -65,7 +66,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
           </>
         }
       >
-        <NavLinks className="px-3 pb-3 md:pb-4" />
+        <NavLinks className="px-3 pb-3 md:pb-4" optIns={{ dockerHosts }} />
       </AppSidebar>
       <CommandMenu />
       <Toaster />
