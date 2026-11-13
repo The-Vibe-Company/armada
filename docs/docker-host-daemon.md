@@ -61,3 +61,27 @@ binary compiles. SQL-backed HTTP tests prove bearer separation, private cache
 policy and revocation. Tests add seconds, not a new long-running required CI job.
 The final integration PR must give exact SSH install/register/Codex launch
 commands and expectations; this component is not that proof.
+
+## Terminal reconciliation (#1387)
+
+Upgrade the server and the retained host binary for expiry reporting; no migration
+or re-registration is needed. A positive ownership-checked `stopIfExpired` result
+is persisted before it is sent, then retried after reconnect/restart or lost ACK.
+All physical sweeps run before network reporting. At most one confirmation is sent
+per tick, with a durable fair cursor so an unacknowledged fact cannot starve others.
+The existing machine results endpoint accepts either the original job outcome or
+`{installationId,requestId,expired:true}` referring to a bound create/bootstrap.
+The two packets are separate facts; expiry never rewrites the original job outcome.
+Older servers reject the new packet safely and it remains pending until upgrade.
+
+The server validates the current host/installation and the original frozen machine
+identity, then records a terminal stop and revokes runtime authority. Server time
+alone never proves compute stopped. Duplicate/delayed facts cannot revive deleted
+rows or advance the generation twice. An already failed sandbox retains its failure
+while recording the physical stop. Failed bound create/bootstrap ACKs (and rejected
+startup admissions) become logical failed state without fabricating stopped_at;
+confirmed cleanup remains available. Authenticated polling also repairs historical
+failed startup jobs left active by older servers, without replaying those jobs.
+Delete ACK clears the old status reason, preserving the database lifecycle invariant.
+Offline/unreachable/revoked hosts still cannot claim a remote successful stop until
+a trusted confirmation arrives. Local TTL enforcement continues even while offline.

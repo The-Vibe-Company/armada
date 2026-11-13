@@ -138,11 +138,11 @@ export function httpApi(request: typeof fetch = fetch): Api {
         job: Job | null;
       };
     },
-    async result(state, receipt) {
+    async result(state, receipt, expired) {
       await post(state.server, "results", state.hostToken, {
         installationId: state.installationId,
         requestId: receipt.requestId,
-        outcome: receipt.outcome,
+        ...(expired ? { expired: true } : { outcome: receipt.outcome }),
       });
     },
   };
