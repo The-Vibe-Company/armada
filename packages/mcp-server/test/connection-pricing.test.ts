@@ -33,7 +33,7 @@ test.each([
     },
     key,
   );
-  const resolve = () => resolver.resolve({ userId: "u", orgId: "o" }, harness, "priced");
+  const resolve = () => resolver.resolve({ userId: "u", orgId: "o", role: "member" }, harness, "priced");
   const admitted = (await resolve()).usagePricing!;
   const snapshot = admitted.prices[model];
   expect(snapshot).toMatchObject({ source: "connection", connectionId: "priced", revision: "3", model, provider });

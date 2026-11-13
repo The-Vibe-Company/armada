@@ -160,7 +160,7 @@ export function launchCredentials(
         harness,
         credentialKind: resolved.sources[0]?.kind ?? null,
         ...(result.binding ?? {}),
-        modelPrices: result.modelPrices,
+        ...(result.modelPrices ? { modelPrices: result.modelPrices } : {}),
         customEndpoint: Boolean(
           result.env[CODEX_ENDPOINT_ENV] || result.env[CLAUDE_ENDPOINT_ENV] || result.env[OPENCODE_ENDPOINT_ENV],
         ),
