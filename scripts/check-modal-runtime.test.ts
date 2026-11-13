@@ -61,9 +61,20 @@ test.each([
   "mcp-wrong-output",
   "mcp-old-prompt",
   "mcp-resume-replay",
+  "skills",
+  "skills-empty",
+  "skills-old-version",
+  "skills-missing-launch",
+  "skills-wrong-golden",
+  "skills-status-mismatch",
+  "skills-resume",
+  "skills-resume-status-mismatch",
+  "skills-resume-stop-status-mismatch",
+  "skills-mcp-github-resume",
 ])("Modal one-allocation check is fail-closed (%s)", async (mode) => {
   const github = mode.includes("github");
-  const mcp = mode.startsWith("mcp");
+  const mcp = mode.includes("mcp");
+  const skills = mode.startsWith("skills");
   const mcpId = "11111111-1111-4111-8111-111111111111";
   const mcpServer = `armada_${mcpId.replaceAll("-", "_")}`;
   const resume = mode.includes("resume");
@@ -73,15 +84,18 @@ test.each([
     await writeFile(
       preload,
       `
-let launches=0,stops=0,checkpoints=0,sends=0,resumes=0,answer='',memory='',now=0,firstCheckpoint='',githubRevision=0,goldenReads=0;
+let launches=0,stops=0,checkpoints=0,sends=0,resumes=0,answer='',memory='',now=0,firstCheckpoint='',githubRevision=0,goldenReads=0,defaultReads=0,skillStatuses=0;
+const receipts=['personal/notes@3.0.0','catalog/other@1.0.0'].map(reference=>({reference,version:reference.split('@')[1],skillId:'11111111-1111-4111-8111-111111111111',checksum:'sha256:'+'a'.repeat(64),origin:'https://skillpack.app/v1'}));
 Date.now=()=>now;Bun.sleep=async(ms)=>{now+=Number(ms);};
-process.on('exit',()=>console.log('COUNTERS '+JSON.stringify({launches,stops,checkpoints,sends,resumes})));
+process.on('exit',()=>{console.log('COUNTERS '+JSON.stringify({launches,stops,checkpoints,sends,resumes}));console.log('SKILLS '+JSON.stringify({defaultReads,skillStatuses,goldenReads}));});
 globalThis.fetch=async(url,options)=>{
  const path=new URL(url).pathname,body=JSON.parse(options.body);
  if(new Headers(options.headers).get('authorization')!=='Bearer '+process.env.ARMADA_TOKEN)throw Error('auth');
- if(path.endsWith('/launch/options'))return Response.json({modalRuntime:{version:1,enabled:${mode !== "disabled"},followupVersion:${mode === "old-followup" ? 0 : 1},resumeVersion:${mode === "old-resume" ? 0 : 1},mcpVersion:${mode === "mcp-old-version" ? 1 : 2}}});
+ if(path.endsWith('/launch/options'))return Response.json({modalRuntime:{version:1,enabled:${mode !== "disabled"},followupVersion:${mode === "old-followup" ? 0 : 1},resumeVersion:${mode === "old-resume" ? 0 : 1},mcpVersion:${mode === "mcp-old-version" ? 1 : 2},skillsVersion:${mode === "skills-old-version" ? 0 : 1}}});
  if(path.endsWith('/golden/list')){if(++goldenReads!==1)throw Error('golden resolved twice');return Response.json({goldens:[{id:'golden-id',name:'golden',provider:'modal',orgId:'org-id'}]});}
  if(path.endsWith('/sandbox/mcp-preflight-v1')){if(body.org!=='org-id'||body.runtimeVersion!==1||JSON.stringify(body.connections)!==JSON.stringify(['${mcpId}']))throw Error('wrong MCP preflight');return Response.json({mcpReady:${mode !== "mcp-preflight-denied"}});}
+ if(path.endsWith('/skills/defaults/get')){defaultReads++;if(body.org!=='org-id'||(body.scope==='golden'?body.goldenId!=='golden-id':Object.hasOwn(body,'goldenId')))throw Error('wrong defaults scope');return Response.json({skills:${mode === "skills-empty"}?[]:({golden:['catalog/notes@1.0.0','catalog/other@1.0.0'],org:['notes@2.0.0'],personal:['personal/notes@3.0.0']}[body.scope])});}
+ if(path.endsWith('/sandbox/status')){skillStatuses++;return Response.json({skills:${mode === "skills-status-mismatch"}||(resumes&&stops===1&&${mode === "skills-resume-status-mismatch"})||(stops===2&&${mode === "skills-resume-stop-status-mismatch"})?receipts.slice(1):receipts});}
  if(path.endsWith('/sandbox/github-preflight-v1')){if(body.org!=='org-id'||body.repository!=='example/web')throw Error('bad preflight');return Response.json({githubReady:true,provider:${mode === "github-old-preflight"}?undefined:'modal'});}
  if(path.endsWith('/github/refresh'))return Response.json({status:'connected',runtime:{kind:'armada',epoch:${mode === "github-wrong-epoch"}?'99':resumes?'2':'1'},revision:${mode === "github-resume-reused-revision"}?(githubRevision++,'1'):String(++githubRevision)});
  if(path.endsWith('/github/runtime-status')){
@@ -89,11 +103,11 @@ globalThis.fetch=async(url,options)=>{
   return Response.json({configured,runtime:{kind:'armada',epoch:resumes?'2':'1'},revision:${mode === "github-stale-revision"}?'foreign':${mode === "github-resume-reused-revision"}?'1':String(githubRevision),credentialRequests:${mode === "github-no-acquisition"}?0:1});
  }
  if(path.endsWith('/sandbox/launch-modal-runtime-v1')){
-  launches++;if(launches!==1||body.provider!=='modal'||body.runtimeTransport!=='dialout'||body.runtimeVersion!==1||body.harness!=='codex'||body.ttlSeconds!==900||body.skipSkillDefaults!==true||body.skills.length||JSON.stringify(body.connections)!==JSON.stringify(${mcp}?['${mcpId}']:[]))throw Error('unsafe launch');
+  launches++;if(launches!==1||body.provider!=='modal'||body.runtimeTransport!=='dialout'||body.runtimeVersion!==1||body.harness!=='codex'||body.ttlSeconds!==900||(${skills}?(defaultReads!==3||Object.hasOwn(body,'skipSkillDefaults')||Object.hasOwn(body,'skills')):(body.skipSkillDefaults!==true||body.skills.length))||JSON.stringify(body.connections)!==JSON.stringify(${mcp}?['${mcpId}']:[]))throw Error('unsafe launch');
   if(${mcp}&&(!body.prompt.includes('${mcpServer}')||!body.prompt.includes('read_counter')))throw Error('MCP instruction missing');
   if(${mode === "lost-launch"})throw Error('private transport diagnostics must not surface');
   answer=body.prompt.match(/ARMADA_MODAL_[a-f0-9]+/)[0];memory=body.prompt.match(/ARMADA_MEMORY_[a-f0-9]+/)[0];
-  return Response.json({sandbox:{id:'worker',provider:'modal',runtimeTransport:'dialout'},runtime:{kind:'armada',epoch:'1'},promptId:'prompt',conversationId:'conversation'});
+  return Response.json({sandbox:{id:'worker',provider:'modal',runtimeTransport:'dialout',goldenId:'${mode === "skills-wrong-golden" ? "foreign" : "golden-id"}',...(${skills && mode !== "skills-missing-launch"}?{skills:receipts}:{})},runtime:{kind:'armada',epoch:'1'},promptId:'prompt',conversationId:'conversation'});
  }
  if(path.endsWith('/sandbox/send')){
   if(++sends>(${github && resume}?2:1)||body.id!=='worker'||body.conversation_id!=='conversation'||!/^[a-f0-9-]{36}$/.test(body.request_id)||body.prompt.includes(memory))throw Error('unsafe followup');
@@ -145,6 +159,7 @@ globalThis.fetch=async(url,options)=>{
         ...(resume ? ["--resume"] : []),
         ...(github ? ["--github"] : []),
         ...(mcp ? ["--mcp"] : []),
+        ...(skills ? ["--skills"] : []),
       ],
       {
         cwd: process.cwd(),
@@ -186,69 +201,100 @@ globalThis.fetch=async(url,options)=>{
         "mcp",
         "mcp-resume",
         "mcp-github-resume",
+        "skills",
+        "skills-resume",
+        "skills-mcp-github-resume",
       ].includes(mode),
     );
     const counters = JSON.parse(stdout.match(/COUNTERS (.+)/)?.[1] ?? "null");
     expect(counters).toEqual(
-      mcp
+      skills
         ? (() => {
-            const preflight = ["mcp-old-version", "mcp-preflight-denied", "mcp-invalid-json"].includes(mode);
-            const initialPass = ["mcp", "mcp-resume", "mcp-github-resume", "mcp-resume-replay"].includes(mode);
+            const preflight = ["skills-empty", "skills-old-version"].includes(mode);
+            const initialPass = [
+              "skills",
+              "skills-resume",
+              "skills-resume-status-mismatch",
+              "skills-resume-stop-status-mismatch",
+              "skills-mcp-github-resume",
+            ].includes(mode);
             return {
               launches: preflight ? 0 : 1,
               stops: preflight ? 0 : resume ? 2 : 1,
-              checkpoints: initialPass ? (mode === "mcp-resume-replay" ? 2 : resume ? 3 : 1) : 0,
+              checkpoints: initialPass ? (mode === "skills-resume-status-mismatch" ? 2 : resume ? 3 : 1) : 0,
               resumes: resume ? 1 : 0,
               sends: initialPass ? (github ? 2 : 1) : 0,
             };
           })()
-        : github
-          ? {
-              launches: mode === "github-old-preflight" ? 0 : 1,
-              stops: mode === "github-old-preflight" ? 0 : resume ? 2 : 1,
-              checkpoints: ["github", "github-wrapper"].includes(mode)
-                ? 1
-                : mode === "github-resume"
-                  ? 3
-                  : ["github-resume-old-config", "github-resume-reused-revision"].includes(mode)
-                    ? 2
-                    : 0,
-              resumes: resume ? 1 : 0,
-              sends:
-                mode === "github-old-preflight" || mode === "github-wrong-epoch" ? 0 : mode === "github-resume" ? 2 : 1,
-            }
-          : {
-              launches: ["disabled", "old-followup", "old-resume"].includes(mode) ? 0 : 1,
-              stops: ["disabled", "old-followup", "old-resume", "lost-launch"].includes(mode)
-                ? 0
-                : resume && mode !== "resume-lost-stopped-history"
-                  ? 2
-                  : 1,
-              checkpoints:
-                resume && mode !== "old-resume"
-                  ? ["resume", "resume-bad-checkpoint", "resume-stop-unknown"].includes(mode)
-                    ? 3
-                    : 2
-                  : ["success", "bad-checkpoint"].includes(mode)
-                    ? 1
-                    : 0,
-              resumes: resume && !["old-resume", "resume-lost-stopped-history"].includes(mode) ? 1 : 0,
-              sends:
-                resume && mode !== "old-resume"
+        : mcp
+          ? (() => {
+              const preflight = ["mcp-old-version", "mcp-preflight-denied", "mcp-invalid-json"].includes(mode);
+              const initialPass = [
+                "mcp",
+                "mcp-resume",
+                "mcp-github-resume",
+                "mcp-resume-replay",
+                "skills-mcp-github-resume",
+              ].includes(mode);
+              return {
+                launches: preflight ? 0 : 1,
+                stops: preflight ? 0 : resume ? 2 : 1,
+                checkpoints: initialPass ? (mode === "mcp-resume-replay" ? 2 : resume ? 3 : 1) : 0,
+                resumes: resume ? 1 : 0,
+                sends: initialPass ? (github ? 2 : 1) : 0,
+              };
+            })()
+          : github
+            ? {
+                launches: mode === "github-old-preflight" ? 0 : 1,
+                stops: mode === "github-old-preflight" ? 0 : resume ? 2 : 1,
+                checkpoints: ["github", "github-wrapper"].includes(mode)
                   ? 1
-                  : [
-                        "success",
-                        "bad-checkpoint",
-                        "lost-followup",
-                        "stale-epoch",
-                        "wrong-conversation",
-                        "reused-prompt",
-                        "wrong-request",
-                        "replayed-answer",
-                      ].includes(mode)
+                  : mode === "github-resume"
+                    ? 3
+                    : ["github-resume-old-config", "github-resume-reused-revision"].includes(mode)
+                      ? 2
+                      : 0,
+                resumes: resume ? 1 : 0,
+                sends:
+                  mode === "github-old-preflight" || mode === "github-wrong-epoch"
+                    ? 0
+                    : mode === "github-resume"
+                      ? 2
+                      : 1,
+              }
+            : {
+                launches: ["disabled", "old-followup", "old-resume"].includes(mode) ? 0 : 1,
+                stops: ["disabled", "old-followup", "old-resume", "lost-launch"].includes(mode)
+                  ? 0
+                  : resume && mode !== "resume-lost-stopped-history"
+                    ? 2
+                    : 1,
+                checkpoints:
+                  resume && mode !== "old-resume"
+                    ? ["resume", "resume-bad-checkpoint", "resume-stop-unknown"].includes(mode)
+                      ? 3
+                      : 2
+                    : ["success", "bad-checkpoint"].includes(mode)
+                      ? 1
+                      : 0,
+                resumes: resume && !["old-resume", "resume-lost-stopped-history"].includes(mode) ? 1 : 0,
+                sends:
+                  resume && mode !== "old-resume"
                     ? 1
-                    : 0,
-            },
+                    : [
+                          "success",
+                          "bad-checkpoint",
+                          "lost-followup",
+                          "stale-epoch",
+                          "wrong-conversation",
+                          "reused-prompt",
+                          "wrong-request",
+                          "replayed-answer",
+                        ].includes(mode)
+                      ? 1
+                      : 0,
+              },
     );
     expect(stdout + stderr).not.toContain("fixture-token");
     expect(stdout + stderr).not.toContain("private transport diagnostics");
@@ -262,6 +308,9 @@ globalThis.fetch=async(url,options)=>{
         "mcp",
         "mcp-resume",
         "mcp-github-resume",
+        "skills",
+        "skills-resume",
+        "skills-mcp-github-resume",
       ].includes(mode)
     ) {
       expect(stdout).toContain('"answer":"verified"');
@@ -270,7 +319,14 @@ globalThis.fetch=async(url,options)=>{
       expect(stdout).toContain("compute stopped");
     } else if (!resume || mode === "old-resume") expect(stdout).not.toContain('"answer":"verified"');
     expect(stdout.includes('"resume":"verified"')).toBe(
-      ["resume", "github-resume", "mcp-resume", "mcp-github-resume"].includes(mode),
+      [
+        "resume",
+        "github-resume",
+        "mcp-resume",
+        "mcp-github-resume",
+        "skills-resume",
+        "skills-mcp-github-resume",
+      ].includes(mode),
     );
     if (github)
       expect(stdout.includes('"github":"verified"')).toBe(
@@ -281,16 +337,40 @@ globalThis.fetch=async(url,options)=>{
           "github-resume-old-config",
           "github-resume-reused-revision",
           "mcp-github-resume",
+          "skills-mcp-github-resume",
         ].includes(mode),
       );
     expect(stdout.includes('"githubAfterResume":"verified"')).toBe(
-      ["github-resume", "mcp-github-resume"].includes(mode),
+      ["github-resume", "mcp-github-resume", "skills-mcp-github-resume"].includes(mode),
     );
+    if (skills) {
+      const observed = JSON.parse(stdout.match(/SKILLS (.+)/)?.[1] ?? "null");
+      expect(observed.defaultReads).toBe(mode === "skills-old-version" ? 0 : 3);
+      expect(observed.goldenReads).toBe(mode === "skills-old-version" ? 0 : 1);
+      expect(observed.skillStatuses).toBe(
+        ["skills-empty", "skills-old-version"].includes(mode) ? 0 : mode === "skills-wrong-golden" ? 1 : resume ? 4 : 2,
+      );
+      expect(stdout.includes('"skills":"verified"')).toBe(
+        [
+          "skills",
+          "skills-resume",
+          "skills-resume-status-mismatch",
+          "skills-resume-stop-status-mismatch",
+          "skills-mcp-github-resume",
+        ].includes(mode),
+      );
+      expect(stdout.includes('"skillsAfterResume":"verified"')).toBe(
+        ["skills-resume", "skills-mcp-github-resume"].includes(mode),
+      );
+      if (mode === "skills-empty") expect(stderr).toContain("No default skills configured");
+    }
     if (mcp) {
       expect(stdout.includes('"mcp":"verified"')).toBe(
-        ["mcp", "mcp-resume", "mcp-github-resume", "mcp-resume-replay"].includes(mode),
+        ["mcp", "mcp-resume", "mcp-github-resume", "mcp-resume-replay", "skills-mcp-github-resume"].includes(mode),
       );
-      expect(stdout.includes('"mcpAfterResume":"verified"')).toBe(["mcp-resume", "mcp-github-resume"].includes(mode));
+      expect(stdout.includes('"mcpAfterResume":"verified"')).toBe(
+        ["mcp-resume", "mcp-github-resume", "skills-mcp-github-resume"].includes(mode),
+      );
     }
   } finally {
     await rm(root, { recursive: true, force: true });

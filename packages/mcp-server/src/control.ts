@@ -787,6 +787,7 @@ async function dispatch(
         followupVersion: options.runtimeSend ? 1 : 0,
         resumeVersion: options.runtimeResume && options.modalRuntimeLaunch ? 1 : 0,
         mcpVersion: options.runtimeMcp ? 2 : 0,
+        skillsVersion: options.modalRuntimeLaunch ? 1 : 0,
       },
       boatRuntime: {
         defaultPath: options.launch?.boatRuntimeDefault ? "runtime" : "native",
@@ -1187,16 +1188,11 @@ async function dispatch(
         body.harness !== "codex" ||
         body.boatRuntime !== undefined ||
         body.armadaAccess ||
-        body.skipSkillDefaults !== true ||
         (body.connections !== undefined && !Array.isArray(body.connections)) ||
-        (body.skills !== undefined && (!Array.isArray(body.skills) || body.skills.length)) ||
         (body.helperCapabilities !== undefined &&
           (!Array.isArray(body.helperCapabilities) || body.helperCapabilities.length))
       )
-        throw new VaultError(
-          "invalid",
-          "Modal runtime v1 requires explicit Codex launch; skills and helpers are unavailable.",
-        );
+        throw new VaultError("invalid", "Modal runtime v1 requires explicit Codex launch; helpers are unavailable.");
       if (!options.modalRuntimeLaunch || !options.modalRuntimeHostFor)
         throw new VaultError("unavailable", "Modal runtime staging opt-in is disabled.");
       required(body, "prompt");
