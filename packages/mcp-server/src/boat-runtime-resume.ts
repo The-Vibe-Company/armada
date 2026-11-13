@@ -23,7 +23,7 @@ export function boatRuntimeResume(options: {
     const actor = { userId: caller.userId, orgId: sandbox.orgId, role: "member" as const };
     const credentials = await launchCredentials(options.vault, options.key, undefined, options.modelAuth).resolve(
       actor,
-      "codex",
+      sandbox.harness,
       sandbox.credentialId ?? undefined,
       sandbox.credentialVersion ?? undefined,
     );

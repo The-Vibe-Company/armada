@@ -5,13 +5,13 @@ import { callSharedTool } from "../src/tool-api.ts";
 import { runtimeFixture as fixture } from "./runtime-fixture.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
 
-describe("shared runtime send", () => {
+describe.each(["codex", "claude"] as const)("shared runtime send (%s)", (harness) => {
   let f: Awaited<ReturnType<typeof fixture>>;
   // Cold PGlite WASM startup, all migrations, fixture seeding and the initial
   // Runner turn are setup, not send/replay behavior. Keep them out of the test's
   // 5s budget; the real SQL/Runner/epoch assertions below remain unchanged.
   beforeAll(async () => {
-    f = await fixture();
+    f = await fixture(undefined, harness);
   }, 20_000);
   afterAll(async () => {
     await f?.close();

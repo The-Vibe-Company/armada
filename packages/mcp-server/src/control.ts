@@ -1159,13 +1159,13 @@ async function dispatch(
       if (
         body.runtimeVersion !== 1 ||
         body.boatRuntime !== true ||
-        body.harness !== "codex" ||
+        (body.harness !== "codex" && body.harness !== "claude") ||
         (body.provider !== undefined && body.provider !== "boat") ||
         body.armadaAccess ||
         (body.helperCapabilities !== undefined &&
           (!Array.isArray(body.helperCapabilities) || body.helperCapabilities.length))
       )
-        throw new VaultError("invalid", "Runtime v1 requires explicit Boat/Codex snapshot launch.");
+        throw new VaultError("invalid", "Runtime v1 requires explicit Boat Codex or Claude snapshot launch.");
       if (!options.boatRuntimeLaunch || !options.runtimeHostFor)
         throw new VaultError("unavailable", "Experimental Boat runtime launch is not configured.");
       required(body, "prompt");

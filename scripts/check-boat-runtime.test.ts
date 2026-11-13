@@ -47,6 +47,8 @@ test.each([
   "skills-status",
   "skills-golden",
   "skills-resume",
+  "claude-resume",
+  "invalid-harness",
   "usage",
   "usage-resume",
   "usage-unknown",
@@ -55,6 +57,7 @@ test.each([
   "usage-resume-repriced",
   "usage-no-event",
 ] as const)("one-launch coordinator check is fail-closed (%s)", async (mode) => {
+  const claude = mode === "claude-resume";
   const usage = mode.startsWith("usage");
   const usageResume = usage && mode.includes("resume");
   const skills = mode.startsWith("skills");
@@ -92,7 +95,7 @@ globalThis.fetch=async(url,options)=>{
  if(path.endsWith('/github/refresh')){githubConfigurations++;if(phase>=3 && ${mode === "github-resume-lost-refresh"})throw Error('lost new epoch configuration');return Response.json({status:'connected',revision:phase>=3?'4':'3',runtime:{kind:'armada',epoch:phase>=3?'2':'1'}});}
  if(path.endsWith('/github/runtime-status'))return Response.json({configured:phase===3 ? ${mode === "github-resume-stale-status"} : true,revision:phase>=3?'4':'3',credentialRequests:${mode === "github-no-audit" ? 0 : 1}*(phase>=3 && ${mode === "github-resume-no-audit"} ? 0 : 1),runtime:{kind:'armada',epoch:phase>=3?'2':'1'}});
  if(path.endsWith('/sandbox/launch-runtime-v1')){if(++launches!==1)throw Error('allocation repeated');if(${mcp}){if(Object.hasOwn(body,'connections'))throw Error('MCP defaults were bypassed');mcpConfigurations=1;}
-  if(body.runtimeVersion!==1||body.boatRuntime!==true||body.harness!=='codex')throw Error('missing explicit opt-in');
+  if(body.runtimeVersion!==1||body.boatRuntime!==true||body.harness!==${JSON.stringify(claude ? "claude" : "codex")})throw Error('missing explicit opt-in');
   if(${skills}&&(defaultReads!==3||Object.hasOwn(body,'skills')||Object.hasOwn(body,'skipSkillDefaults')))throw Error('defaults bypassed');
   marker=body.prompt.match(/ARMADA_RUNTIME_[a-f0-9]+/)[0];memory=body.prompt.match(/ARMADA_MEMORY_[a-f0-9]+/)?.[0]??'';return Response.json({sandbox:{id:'worker',goldenId:'${mode === "skills-golden" ? "wrong" : "golden"}',boatRuntime:true,...(${skills}?{skills:receipts}:{})},runtime:{kind:'armada',epoch:'1'},promptId:'prompt',conversationId:'conversation'});}
  if(path.endsWith('/sandbox/send')){if(body.id!=='worker'||body.conversation_id!=='conversation'||!body.request_id||body.prompt.includes(memory))throw Error('wrong continuation');if(${mode === "followup-lost"})throw Error('lost follow-up response');if(phase>=3){if(${combined || triple} && githubConfigurations!==2)throw Error('no new epoch GitHub setup');if(${mcp} && mcpConfigurations!==2)throw Error('no new epoch automatic MCP setup');phase=4;return Response.json({promptId:'github-resumed',conversationId:'conversation',requestId:body.request_id,runtime:{kind:'armada',epoch:'2'}});}phase=2;return Response.json({promptId:'followup',conversationId:'conversation',requestId:body.request_id,runtime:{kind:'armada',epoch:'1'}});}
@@ -124,7 +127,7 @@ globalThis.fetch=async(url,options)=>{
         triple
           ? ["--github"]
           : []),
-        ...(["resume", "old-resume", "resume-lost", "bad-resume"].includes(mode) ||
+        ...(["claude-resume", "resume", "old-resume", "resume-lost", "bad-resume"].includes(mode) ||
         combined ||
         mcpResume ||
         skillResume ||
@@ -137,6 +140,7 @@ globalThis.fetch=async(url,options)=>{
         stderr: "pipe",
         env: {
           ...process.env,
+          ARMADA_RUNTIME_HARNESS: claude ? "claude" : mode === "invalid-harness" ? "opencode" : "codex",
           ARMADA_RUNTIME_SMOKE: "one_real_boat_launch",
           ARMADA_URL: "https://staging.invalid",
           ARMADA_TOKEN: token,
@@ -156,6 +160,7 @@ globalThis.fetch=async(url,options)=>{
       err = await new Response(child.stderr).text();
     expect(code === 0).toBe(
       [
+        "claude-resume",
         "success",
         "followup",
         "checkpoint",
@@ -177,10 +182,11 @@ globalThis.fetch=async(url,options)=>{
     if (mode === "mcp-invalid-json")
       expect(out + err).toContain("MCP args must be valid non-secret JSON; no launch attempted.");
     expect(out).toContain(
-      `COUNTERS ${JSON.stringify({ launches: ["disabled", "old-diagnostics", "old-followup", "old-checkpoint", "old-resume", "old-github", "github-preflight-denied", "old-mcp", "mcp-preflight-denied", "mcp-invalid-json", "mcp-no-default", "skills-empty"].includes(mode) ? 0 : 1, stops: ["disabled", "old-diagnostics", "old-followup", "old-checkpoint", "old-resume", "old-github", "github-preflight-denied", "old-mcp", "mcp-preflight-denied", "mcp-invalid-json", "mcp-no-default", "skills-empty"].includes(mode) ? 0 : ["resume", "resume-lost", "bad-resume"].includes(mode) || combined || mcpResume || skillResume || usageResume ? 2 : 1 })}`,
+      `COUNTERS ${JSON.stringify({ launches: ["invalid-harness", "disabled", "old-diagnostics", "old-followup", "old-checkpoint", "old-resume", "old-github", "github-preflight-denied", "old-mcp", "mcp-preflight-denied", "mcp-invalid-json", "mcp-no-default", "skills-empty"].includes(mode) ? 0 : 1, stops: ["invalid-harness", "disabled", "old-diagnostics", "old-followup", "old-checkpoint", "old-resume", "old-github", "github-preflight-denied", "old-mcp", "mcp-preflight-denied", "mcp-invalid-json", "mcp-no-default", "skills-empty"].includes(mode) ? 0 : ["claude-resume", "resume", "resume-lost", "bad-resume"].includes(mode) || combined || mcpResume || skillResume || usageResume ? 2 : 1 })}`,
     );
     if (
       [
+        "claude-resume",
         "success",
         "followup",
         "checkpoint",
@@ -209,7 +215,7 @@ globalThis.fetch=async(url,options)=>{
     }
     if (["bad-checkpoint", "checkpoint-lost"].includes(mode))
       expect(out).not.toContain("Runtime checkpoint and stopped history verified");
-    if (mode === "resume") {
+    if (mode === "resume" || claude) {
       expect(out).toContain('"resume":"verified"');
       expect(out).toContain("Runtime resume and stopped history verified.");
       expect(out).toContain("RESUMES 1");

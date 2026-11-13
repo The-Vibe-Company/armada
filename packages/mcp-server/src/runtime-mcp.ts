@@ -57,7 +57,13 @@ export function createRuntimeMcp(options: {
   }
   async function owner(caller: Caller, id: string) {
     const s = await createSqlData(sql)(caller).sandboxes.get(id);
-    if (!s || s.ownerId !== caller.userId || s.provider !== "boat" || !s.boatRuntime || s.harness !== "codex")
+    if (
+      !s ||
+      s.ownerId !== caller.userId ||
+      s.provider !== "boat" ||
+      !s.boatRuntime ||
+      (s.harness !== "codex" && s.harness !== "claude")
+    )
       return deny();
     return s;
   }

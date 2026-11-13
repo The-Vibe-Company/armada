@@ -1,6 +1,6 @@
 # Boat runtime
 
-Experimental, **default off**, ordinary Boat/Codex workers only. Selected launches
+Experimental, **default off**, ordinary Boat Codex/Claude workers only. Selected launches
 use Armada's compiled runtime for prompts, journal/history and private model
 configuration. Native Boat sessions remain native; Modal retains its existing
 tunnel. There is no native-agent fallback after runtime failure and no migration
@@ -44,7 +44,7 @@ Steer, interrupt, exec, new conversations and
 model/effort overrides are not supported on this lane. Follow-ups use the existing
 conversation and launch model/effort. GitHub requires explicit runtime refresh
 below; remote MCP prepares automatically
-from launch bindings/defaults, never native setup. Claude, readable-variable/
+from launch bindings/defaults, never native setup. Readable-variable/
 secret parity, usage/cost and subscription lifecycle acceptance are not established
 by the model-only milestone.
 
@@ -101,7 +101,7 @@ preparation. Membership, pinned account/version and expiry are reauthorized;
 logical TTL is rearmed once with bounded compute TTL, `noEnv:true`, empty environment.
 
 The new process verifies saved journal identity/seal/watermark/ACK, conversation
-mapping and harness file hashes, then performs no-text native Codex thread restore.
+mapping and harness file hashes, then performs no-text native harness session restore.
 Health must report verified `restoredFrom` evidence before one stable command is
 admitted in the same conversation under a **new** epoch. Old binaries, lost disks
 or empty state cannot silently start a fresh conversation.
@@ -186,8 +186,9 @@ Run only under coordinator authorization, no deployment in flight, with:
 - `ARMADA_TOKEN`: environment-only bearer; never arguments/logs.
 - `ARMADA_RUNTIME_ORG`: organization **UUID**, not name/slug.
 - `ARMADA_RUNTIME_GOLDEN`: snapshotted Boat golden name.
-- `ARMADA_RUNTIME_CREDENTIAL_ID`: authorized Codex account UUID.
+- `ARMADA_RUNTIME_CREDENTIAL_ID`: authorized account UUID for the selected harness.
 - Optional `ARMADA_RUNTIME_MODEL`.
+- `ARMADA_RUNTIME_HARNESS=claude` selects Claude (default: `codex`). Use an Anthropic key or Claude token account ID for Claude.
 
 ```sh
 ARMADA_RUNTIME_SMOKE=one_real_boat_launch bun scripts/check-boat-runtime.ts --resume
@@ -259,3 +260,25 @@ only after accepted staging proof. Native Boat deletion is a separate PR after
 one production day, not part of documentation consolidation. Do not add product
 modes/compatibility layers or automatically port unused native-only features;
 ask the owner which features are actually used. Modal keeps its existing tunnel.
+
+## Claude acceptance (#1419)
+
+The coordinator runs this **single** staging check with an existing Boat golden
+and an Anthropic key or Claude token account supplied by ID:
+
+```sh
+ARMADA_RUNTIME_HARNESS=claude ARMADA_RUNTIME_SMOKE=one_real_boat_launch \
+  bun scripts/check-boat-runtime.ts --usage --resume
+```
+
+Prerequisites: apply the new `20261113114000_boat_runtime_claude.sql` migration
+through the operator migration process and deploy matching server/runtime artifacts.
+No manual artifact publication. Workers neither apply remote migrations nor deploy.
+One allocation, one retained-VM activation, three prompts, two stops; no allocation
+or activation retries. Require first ACK, same-conversation remembered-token follow-up,
+epoch+1 remembered-token resume, verified checkpoint receipts and stopped history,
+and per-turn usage projected against the admitted account pricing. Missing usage
+fails; unknown cost stays unknown rather than becoming zero. Require final
+`resume:"verified"` and `usageAfterResume:"verified"`.
+Offline tests do not establish this staging result. No native fallback, new product
+launch option, default-on switch or native-path deletion is part of this slice.

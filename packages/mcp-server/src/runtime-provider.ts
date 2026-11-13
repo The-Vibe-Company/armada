@@ -36,10 +36,17 @@ export function createRuntimeProvider(
       resume: false,
       parallelConversations: false,
     },
+    claude: {
+      ...HARNESS_CAPABILITIES.claude,
+      steer: "none" as const,
+      interrupt: false,
+      resume: false,
+      parallelConversations: false,
+    },
   };
   return {
     id: "boat",
-    harnesses: ["codex"],
+    harnesses: ["codex", "claude"],
     capabilities,
     ...(host.managementIdentity ? { managementIdentity: host.managementIdentity.bind(host) } : {}),
     ...(host.backendIdentity ? { backendIdentity: host.backendIdentity.bind(host) } : {}),

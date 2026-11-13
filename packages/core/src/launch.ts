@@ -228,8 +228,17 @@ export async function launchSandbox(
     throw new LaunchError("invalid_request", "skipSkillDefaults must be a boolean.");
   const harness = checkHarness(provider, request.harness);
   const runtime = options.boatRuntime;
-  if (runtime && (provider.id !== "boat" || harness !== "codex" || options.privateParent || options.privateVisibility))
-    throw new LaunchError("invalid_request", "The experimental runtime supports ordinary Boat Codex workers only.");
+  if (
+    runtime &&
+    (provider.id !== "boat" ||
+      (harness !== "codex" && harness !== "claude") ||
+      options.privateParent ||
+      options.privateVisibility)
+  )
+    throw new LaunchError(
+      "invalid_request",
+      "The experimental runtime supports ordinary Boat Codex or Claude workers only.",
+    );
   const prompt = checkPrompt(request.prompt);
   const choice = checkModel(provider, harness, request);
 

@@ -36,7 +36,7 @@ export function createRuntimeFollowup(
       !found ||
       found.ownerId !== caller.userId ||
       !found.boatRuntime ||
-      found.harness !== "codex" ||
+      (found.harness !== "codex" && found.harness !== "claude") ||
       found.provider !== "boat"
     )
       throw new VaultError("not_found", "No owned runtime sandbox.");
@@ -57,6 +57,7 @@ export function createRuntimeFollowup(
       throw new VaultError("invalid", "Continue an existing runtime conversation.");
     const commandId = `follow_${requestId}`;
     const agent = createRuntimeAgent(commands, {
+      harness: found.harness,
       ownerId: caller.userId,
       sandboxId: found.id,
       providerSandboxId: found.providerSandboxId,
@@ -82,9 +83,15 @@ export function createRuntimeFollowup(
       const account = (
         await tx.query(
           `select id from public.credentials where id=$1 and version=$2
-        and status='active' and kind in ('openai','codex_auth') and (expires_at is null or expires_at>now())
+        and status='active' and kind = any($5::public.credential_kind[]) and (expires_at is null or expires_at>now())
         and ((scope='user' and owner_id=$3) or (scope='org' and owner_id=$4)) for update`,
-          [found.credentialId, found.credentialVersion, caller.userId, found.orgId],
+          [
+            found.credentialId,
+            found.credentialVersion,
+            caller.userId,
+            found.orgId,
+            found.harness === "claude" ? ["anthropic", "claude_oauth"] : ["openai", "codex_auth"],
+          ],
         )
       ).rows[0];
       if (!account) throw new VaultError("not_found", "The pinned runtime account is no longer authorized.");
@@ -167,7 +174,7 @@ export function createRuntimeFollowup(
       agent.prompt(
         {
           sandboxId: found.providerSandboxId,
-          harness: "codex",
+          harness: found.harness,
           text: input.prompt,
           conversationId: conversation,
           ...(signal ? { signal } : {}),

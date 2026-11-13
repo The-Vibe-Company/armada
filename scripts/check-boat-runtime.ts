@@ -13,6 +13,9 @@ if (origin.protocol !== "https:" || origin.href !== `${origin.origin}/`)
 const token = process.env.ARMADA_TOKEN;
 const golden = process.env.ARMADA_RUNTIME_GOLDEN;
 const org = process.env.ARMADA_RUNTIME_ORG;
+const harness = process.env.ARMADA_RUNTIME_HARNESS ?? "codex";
+if (harness !== "codex" && harness !== "claude")
+  throw Error("ARMADA_RUNTIME_HARNESS must be codex or claude; no launch attempted.");
 const credentialId = process.env.ARMADA_RUNTIME_CREDENTIAL_ID;
 if (!token || !golden || !org || !credentialId) throw Error("Missing coordinator staging inputs.");
 const usageMode = process.argv.includes("--usage");
@@ -245,7 +248,7 @@ try {
     runtimeVersion: 1,
     boatRuntime: true,
     provider: "boat",
-    harness: "codex",
+    harness,
     golden,
     org,
     credentialId,
