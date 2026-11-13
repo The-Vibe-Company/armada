@@ -18,6 +18,7 @@ export const DOCKER_LOCAL_IMAGE_LABELS = {
   snapshot: "dev.armada.environment.snapshot",
   generation: "dev.armada.environment.generation",
   definition: "dev.armada.environment.definition",
+  version: "dev.armada.environment.armada-version",
 } as const;
 
 export interface DockerSnapshotBinding {

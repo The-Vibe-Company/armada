@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { DOCKER_DEFAULT_IMAGE, normalizeGitHubGoldenConfig, parseGoldenConfig } from "@armada/core";
+import { normalizeGitHubGoldenConfig, officialSandboxImage, parseGoldenConfig, VERSION } from "@armada/core";
 import {
   type GitHubInstallationApp,
   type GitHubResolveDeps,
@@ -84,6 +84,7 @@ export function createDockerSnapshots(
         throw new VaultError("conflict", "Snapshot request changed.");
       return { snapshot: snapshotRecord(known) };
     }
+    const baseImage = officialSandboxImage();
     const target = (
       await sql.query(
         "select h.id from public.docker_hosts h join public.members m on m.org_id=h.org_id and m.user_id=h.owner_id where h.id=$1 and h.org_id=$2 and h.hash is not null and h.registration_hash is null and h.revoked_at is null and h.draining_at is null",
@@ -170,8 +171,8 @@ export function createDockerSnapshots(
       const generation = randomUUID(),
         end = Date.now() + 3600000;
       await tx.query(
-        `insert into public.docker_snapshots(id,org_id,owner_id,host_id,installation_id,name,visibility,config,request_hash,actor_epoch,issuer_epoch,generation,base_image,build_expires_at)
-        values($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12,$13,$14)`,
+        `insert into public.docker_snapshots(id,org_id,owner_id,host_id,installation_id,name,visibility,config,request_hash,actor_epoch,issuer_epoch,generation,base_image,build_expires_at,built_on_version)
+        values($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12,$13,$14,$15)`,
         [
           id,
           org,
@@ -185,16 +186,17 @@ export function createDockerSnapshots(
           epochs.actor,
           epochs.issuer,
           generation,
-          DOCKER_DEFAULT_IMAGE,
+          baseImage,
           new Date(end),
+          VERSION,
         ],
       );
       const local: Sql = { query: tx.query.bind(tx), transaction: (work) => work(tx) };
       await createDockerHostStore(local, key).enqueueSnapshot(actor, hostId, {
         requestId: id,
         operation: "buildSnapshot",
-        request: { sandboxId: id, generation, image: DOCKER_DEFAULT_IMAGE, ttlSeconds: 3600, expiresAt: end },
-        build: { id, ownerId: caller.userId, visibility, config, token },
+        request: { sandboxId: id, generation, image: baseImage, ttlSeconds: 3600, expiresAt: end },
+        build: { id, ownerId: caller.userId, visibility, config, token, armadaVersion: VERSION },
       });
     });
     const row = (await read(id))[0];

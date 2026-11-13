@@ -621,6 +621,7 @@ test("snapshot builds keep ordinary stop/TTL work responsive and merge durable r
     operation: "buildSnapshot",
     request: { ...normal, sandboxId: snapshotId, generation: crypto.randomUUID() },
     build: {
+      armadaVersion: "2.28.0",
       id: snapshotId,
       ownerId: crypto.randomUUID(),
       visibility: "private",

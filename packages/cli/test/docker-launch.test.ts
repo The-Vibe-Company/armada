@@ -251,6 +251,7 @@ test("Docker snapshots build through the normal golden command and launch throug
     hostAvailable: true,
     status: "building",
     definitionHash: "a".repeat(64),
+    builtOnVersion: "2.28.0",
     image: null,
     config,
     createdAt: "2026-11-13T00:00:00.000Z",
@@ -289,6 +290,14 @@ test("Docker snapshots build through the normal golden command and launch throug
   expect(build.code).toBe(0);
   expect(build.out).toContain(id);
   expect(build.out).toContain("building");
+  expect(build.out).toContain("Built on Armada: 2.28.0");
+  for (const builtOnVersion of ["2.28.0", null]) {
+    const listed = await capture(["golden", "list", "--provider", "docker", "--org", org], async () =>
+      Response.json({ snapshots: [{ ...snapshot, builtOnVersion }] }),
+    );
+    expect(listed.code).toBe(0);
+    expect(listed.out).toContain(`Built on Armada ${builtOnVersion ?? "unknown version"}`);
+  }
   const sourceArgs = args.filter(
     (arg, index) => !["--image", "--host"].includes(arg) && !["--image", "--host"].includes(args[index - 1] ?? ""),
   );

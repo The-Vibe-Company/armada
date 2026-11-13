@@ -7,7 +7,11 @@ export type BootstrapDescriptor = {
   artifact: { sha256: string; bytes: number };
   enrolmentToken: string;
 };
-export type DockerSnapshotBuildDescriptor = DockerSnapshotBinding & { config: GoldenConfig; token: string };
+export type DockerSnapshotBuildDescriptor = DockerSnapshotBinding & {
+  config: GoldenConfig;
+  token: string;
+  armadaVersion: string;
+};
 export type DockerHostJob = { requestId: string; request: DockerMachineRequest } & (
   | { operation: "create" | "stop" | "delete" }
   | { operation: "bootstrap" | "resume"; bootstrap: BootstrapDescriptor }
@@ -74,7 +78,12 @@ export function parseDockerHostJob(value: unknown): DockerHostJob {
   }
   if (build) {
     const b = value.build;
-    exact(b, ["id", "ownerId", "visibility", "config", "token"]);
+    exact(b, ["id", "ownerId", "visibility", "config", "token", "armadaVersion"]);
+    if (
+      typeof b.armadaVersion !== "string" ||
+      !/^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?(?:\+[a-zA-Z0-9.-]+)?$/.test(b.armadaVersion)
+    )
+      invalid();
     const binding = parseDockerSnapshotBinding({ id: b.id, ownerId: b.ownerId, visibility: b.visibility });
     if (binding.id !== request.sandboxId || typeof b.token !== "string" || !/^[\x21-\x7e]{1,8192}$/.test(b.token))
       invalid();
@@ -82,7 +91,7 @@ export function parseDockerHostJob(value: unknown): DockerHostJob {
       requestId: value.requestId,
       operation: "buildSnapshot",
       request,
-      build: { ...binding, config: parseGoldenConfig(b.config), token: b.token },
+      build: { ...binding, config: parseGoldenConfig(b.config), token: b.token, armadaVersion: b.armadaVersion },
     };
   }
   if (!bootstrap)

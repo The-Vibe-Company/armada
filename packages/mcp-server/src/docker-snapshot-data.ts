@@ -17,6 +17,7 @@ export type SnapshotRow = {
   issuer_epoch: string;
   generation: string;
   base_image: string;
+  built_on_version: string | null;
   build_expires_at: Date | string;
   status: DockerSnapshotRecord["status"];
   image_id: string | null;
@@ -26,6 +27,7 @@ export type SnapshotRow = {
 };
 export function snapshotRecord(row: SnapshotRow): DockerSnapshotRecord {
   return {
+    builtOnVersion: row.built_on_version,
     id: row.id,
     orgId: row.org_id,
     ownerId: row.owner_id,
@@ -36,7 +38,13 @@ export function snapshotRecord(row: SnapshotRow): DockerSnapshotRecord {
     provider: "docker",
     config: parseGoldenConfig(row.config),
     definitionHash: createHash("sha256")
-      .update(JSON.stringify({ image: row.base_image, config: parseGoldenConfig(row.config) }))
+      .update(
+        JSON.stringify({
+          image: row.base_image,
+          config: parseGoldenConfig(row.config),
+          ...(row.built_on_version === null ? {} : { armadaVersion: row.built_on_version }),
+        }),
+      )
       .digest("hex"),
     status: row.status === "building" && new Date(row.build_expires_at).getTime() <= Date.now() ? "failed" : row.status,
     image: row.image_id,
@@ -82,6 +90,7 @@ export async function authorizeSnapshotBuild(
     row.id !== job.request.sandboxId ||
     row.generation !== job.request.generation ||
     row.base_image !== job.request.image ||
+    row.built_on_version !== job.build.armadaVersion ||
     new Date(row.build_expires_at).getTime() !== job.request.expiresAt ||
     job.request.ttlSeconds !== 3600 ||
     row.owner_id !== job.build.ownerId ||

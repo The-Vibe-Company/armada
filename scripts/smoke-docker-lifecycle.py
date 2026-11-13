@@ -394,6 +394,9 @@ def main():
         try:
             actual_config = built["config"]
             definition_hash = built["definitionHash"]
+            built_on_version = built["builtOnVersion"]
+            if not isinstance(built_on_version, str) or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.-]+)?(?:\+[a-zA-Z0-9.-]+)?", built_on_version):
+                raise ValueError()
             directory = "/home/user/" + actual_config["repos"][0]["dir"]
             if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,80}", actual_config["repos"][0]["dir"]) or not re.fullmatch(r"[0-9a-f]{64}", definition_hash):
                 raise ValueError()
@@ -535,7 +538,7 @@ def main():
                                     and result.get("isError") is False):
                                 try:
                                     proof = json.loads(result.get("output", ""))
-                                    snapshot_proven = proof.get("id") == snapshot_id and proof.get("hostId") == host_id and proof.get("definitionHash") == definition_hash and proof.get("initSteps") == len(actual_config.get("init", []))
+                                    snapshot_proven = proof.get("id") == snapshot_id and proof.get("hostId") == host_id and proof.get("definitionHash") == definition_hash and proof.get("initSteps") == len(actual_config.get("init", [])) and proof.get("armadaVersion") == built_on_version
                                 except (ValueError, TypeError, AttributeError):
                                     pass
                     if not repository_proven and event.get("kind") == "message":

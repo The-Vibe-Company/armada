@@ -15,11 +15,12 @@ test("snapshot builds mount credentials privately, publish automatic ownership l
     request: {
       sandboxId: id,
       generation: id,
-      image: `base@sha256:${"a".repeat(64)}`,
+      image: `ghcr.io/the-vibe-company/armada-sandbox@sha256:${"a".repeat(64)}`,
       ttlSeconds: 3600,
       expiresAt: 61000,
     },
     build: {
+      armadaVersion: "2.28.0",
       id,
       ownerId: id,
       visibility: "private",
@@ -65,6 +66,7 @@ test("snapshot builds mount credentials privately, publish automatic ownership l
             expect(await readFile(join(directory, path), "utf8")).not.toContain(token);
           }
           const dockerfile = await readFile(join(directory, "Dockerfile"), "utf8");
+          expect(dockerfile).toContain(`FROM ghcr.io/the-vibe-company/armada-sandbox@sha256:${"a".repeat(64)}\n`);
           expect(dockerfile).toContain("uid=0,gid=0,mode=0400");
           expect(dockerfile).toContain("python3 /opt/armada-build/supervise.py /opt/armada-build/init-0.sh");
           expect(dockerfile).not.toContain("exit 0");
@@ -75,6 +77,8 @@ test("snapshot builds mount credentials privately, publish automatic ownership l
             id,
             hostId,
             initSteps: 2,
+            armadaVersion: "2.28.0",
+            baseImage: job.request.image,
           });
           expect(dockerfile.indexOf("/opt/armada-build/init-1.sh")).toBeLessThan(
             dockerfile.indexOf("&& bash /opt/armada-build/scan.sh"),
@@ -106,6 +110,9 @@ test("snapshot builds mount credentials privately, publish automatic ownership l
   expect(await executor.buildSnapshot(job, true)).toBe(`sha256:${"b".repeat(64)}`);
   expect(builds).toBe(1);
   const image = [...images.values()][0]!;
+  image.Config.Labels["dev.armada.environment.armada-version"] = "2.27.0";
+  await expect(executor.buildSnapshot(job, true)).rejects.toThrow("Docker snapshot build failed or outcome unknown.");
+  image.Config.Labels["dev.armada.environment.armada-version"] = "2.28.0";
   image.Config.Labels["dev.armada.environment.owner"] = "44444444-4444-4444-8444-444444444444";
   await expect(executor.buildSnapshot(job, true)).rejects.toThrow("Docker snapshot build failed or outcome unknown.");
   expect(builds).toBe(1);

@@ -490,6 +490,7 @@ export type Database = {
           status: string;
           image_id: string | null;
           created_at: string;
+          built_on_version: string | null;
         };
         Insert: {
           id: string;
@@ -509,6 +510,7 @@ export type Database = {
           status?: string;
           image_id?: string | null;
           created_at?: string;
+          built_on_version?: string | null;
         };
         Update: {
           id?: string;
@@ -528,6 +530,7 @@ export type Database = {
           status?: string;
           image_id?: string | null;
           created_at?: string;
+          built_on_version?: string | null;
         };
         Relationships: [
           {

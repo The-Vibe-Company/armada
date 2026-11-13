@@ -9,9 +9,11 @@ import {
   type DockerSandboxStatus,
   type Harness,
   type LaunchCredentialResolver,
+  officialSandboxImage,
   ProviderError,
   type SandboxListMetadata,
   type Sql,
+  VERSION,
 } from "@armada/core";
 import {
   createSqlMcpLeasePort,
@@ -1333,12 +1335,30 @@ test.each(["private", "org"] as const)(
       config: f.config,
     };
     const created = await f.snapshots.command(creator, "create", input);
-    expect(created).toMatchObject({ snapshot: { id, status: "building", visibility } });
+    expect(created).toMatchObject({ snapshot: { id, status: "building", visibility, builtOnVersion: VERSION } });
+    expect(
+      (await db.query("select base_image,built_on_version from public.docker_snapshots where id=$1", [id])).rows[0],
+    ).toEqual({ base_image: officialSandboxImage(), built_on_version: VERSION });
+    await expect(
+      db.query("update public.docker_snapshots set built_on_version='0.0.1' where id=$1", [id]),
+    ).rejects.toThrow("Snapshot base is immutable");
+    await expect(
+      db.query("update public.docker_snapshots set base_image=$2 where id=$1", [
+        id,
+        `ghcr.io/the-vibe-company/armada-sandbox@sha256:${"e".repeat(64)}`,
+      ]),
+    ).rejects.toThrow("Snapshot base is immutable");
     expect(JSON.stringify(created)).not.toContain("offline-snapshot-access");
     expect(await f.snapshots.command(creator, "create", input)).toMatchObject({ snapshot: { id } });
     const build = await hosts.poll(f.hostToken, f.installationId);
     if (build?.operation !== "buildSnapshot") throw Error("missing snapshot build");
     expect(build.build.config).toEqual(input.config);
+    expect(build.request.image).toBe(officialSandboxImage());
+    expect(build.build).toMatchObject({ armadaVersion: VERSION });
+    for (const fields of [{ image: officialImage }, { baseImage: officialImage }, { builtOnVersion: "0.0.1" }])
+      await expect(
+        f.snapshots.command(creator, "create", { ...input, requestId: randomUUID(), ...fields }),
+      ).rejects.toMatchObject({ code: "invalid" });
     expect(build.build.token).toBe(visibility === "private" ? "offline-snapshot-access" : "offline-admin-access");
     const image = `sha256:${"d".repeat(64)}`;
     await hosts.complete(f.hostToken, f.installationId, { requestId: id, outcome: "completed", imageId: image });

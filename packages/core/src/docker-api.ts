@@ -190,6 +190,8 @@ export interface DockerSandboxStatus {
 
 export const DOCKER_SNAPSHOT_STATUSES = ["building", "ready", "failed"] as const;
 export interface DockerSnapshotRecord {
+  /** Frozen server release version; null only for snapshots created before version recording. */
+  builtOnVersion: string | null;
   id: string;
   orgId: string;
   ownerId: string;

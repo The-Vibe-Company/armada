@@ -36,8 +36,12 @@ export async function dockerSnapshotCommand(
     io.out(
       flag(args, "--json")
         ? JSON.stringify(rows, null, 2) + "\n"
-        : rows.map((r) => `${r.id}\t${r.name}\t${r.status}\t${r.visibility}\t${r.hostName ?? r.hostId}`).join("\n") +
-            "\n",
+        : rows
+            .map(
+              (r) =>
+                `${r.id}\t${r.name}\t${r.status}\t${r.visibility}\t${r.hostName ?? r.hostId}\tBuilt on Armada ${r.builtOnVersion ?? "unknown version"}`,
+            )
+            .join("\n") + "\n",
     );
     return 0;
   }
@@ -73,7 +77,7 @@ export async function dockerSnapshotCommand(
   io.out(
     flag(args, "--json")
       ? JSON.stringify(row, null, 2) + "\n"
-      : `Docker snapshot: ${row.id}\nName: ${row.name}\nBuild: ${row.status}\nRead: armada golden get ${row.id} --provider docker --org ${org}\n`,
+      : `Docker snapshot: ${row.id}\nName: ${row.name}\nBuild: ${row.status}\nBuilt on Armada: ${row.builtOnVersion ?? "unknown version"}\nRead: armada golden get ${row.id} --provider docker --org ${org}\n`,
   );
   return 0;
 }

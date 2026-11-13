@@ -1,6 +1,13 @@
 # Host-local snapshots
 
-Docker snapshots are built on their registered host from the same versionable
+Docker snapshots are built FROM core’s release-aware official Armada image
+(`officialSandboxImage()`; the pinned core default for source deployments today).
+The caller cannot select or change this base. Its exact image reference and
+Armada version are frozen at admission; the version appears in dashboard and CLI
+lists and in the product-written build receipt. Existing pre-version snapshots
+show an unknown version, never an invented release, and remain launchable.
+
+Snapshots are built on their registered host from the same versionable
 `{repos, init}` golden JSON used for Boat/Modal. They are immutable image artifacts,
 not aliases for foreign provider snapshots. Snapshot builds require GitHub access,
 not a model account. The product applies host/installation, owner, visibility,
@@ -58,7 +65,8 @@ credential delivery and publication. Images do not become ready on configuration
 ACK alone. The trusted host operator can always read its own machine's contents.
 
 The image includes a product-written, root-owned `/opt/armada-build/receipt.json`
-with its snapshot identity, host, definition and completed init plan. Normal
+with its snapshot identity, host, official base, Armada version, definition and
+completed init plan. Normal
 runtime installation and harness/model/account handling remain the shared paths.
 Current-owner GitHub access is prepared for snapshot launch/new turns/resume;
 a copied snapshot does not delegate its builder's GitHub identity.
@@ -88,3 +96,12 @@ Migration `20261113180001_docker_snapshots.sql` must be applied through normal
 operator procedures before matching server/daemon/clients. The normal release
 ships binaries/artifacts; no manual publication step. No remote migrations,
 deployment or host operations are performed by workers.
+
+
+Migration `20261113190001_docker_snapshot_versions.sql` adds the immutable built-on
+version metadata; apply it before matching server/daemon/clients. No new user
+options or base-image inputs exist. The version-based rebuild offer/action belongs
+to the following #1528 update-offer slice; nothing automatically rebuilds or
+invalidates an old snapshot on upgrade. The coordinator's existing `--snapshot`
+check above also requires the archived build receipt's version to match catalog
+metadata; no label preparation is necessary.

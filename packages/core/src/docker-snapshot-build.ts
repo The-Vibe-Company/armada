@@ -26,8 +26,11 @@ export async function buildDockerSnapshot(
     [DOCKER_LOCAL_IMAGE_LABELS.owner]: job.build.ownerId,
     [DOCKER_LOCAL_IMAGE_LABELS.snapshot]: job.build.id,
     [DOCKER_LOCAL_IMAGE_LABELS.generation]: job.request.generation,
+    [DOCKER_LOCAL_IMAGE_LABELS.version]: job.build.armadaVersion,
     [DOCKER_LOCAL_IMAGE_LABELS.definition]: createHash("sha256")
-      .update(JSON.stringify({ image: job.request.image, config: job.build.config }))
+      .update(
+        JSON.stringify({ image: job.request.image, config: job.build.config, armadaVersion: job.build.armadaVersion }),
+      )
       .digest("hex"),
   };
   let directory: string | undefined;
@@ -81,6 +84,8 @@ export async function buildDockerSnapshot(
     await writeFile(
       join(directory, "public", "receipt.json"),
       JSON.stringify({
+        armadaVersion: job.build.armadaVersion,
+        baseImage: job.request.image,
         id: job.build.id,
         hostId: options.hostId,
         installationId: options.installationId,

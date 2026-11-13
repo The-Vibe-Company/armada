@@ -9,6 +9,11 @@ export function parseDockerSnapshotRecord(input: unknown): DockerSnapshotRecord 
       (key) => typeof r[key] !== "string" || !uuid.test(r[key] as string),
     ) ||
     r.provider !== "docker" ||
+    !(
+      r.builtOnVersion === null ||
+      (typeof r.builtOnVersion === "string" &&
+        /^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?(?:\+[a-zA-Z0-9.-]+)?$/.test(r.builtOnVersion))
+    ) ||
     typeof r.name !== "string" ||
     !r.name ||
     (r.visibility !== "private" && r.visibility !== "org") ||
@@ -23,6 +28,7 @@ export function parseDockerSnapshotRecord(input: unknown): DockerSnapshotRecord 
   )
     throw Error("Invalid snapshot response.");
   return {
+    builtOnVersion: r.builtOnVersion as string | null,
     id: r.id as string,
     orgId: r.orgId as string,
     ownerId: r.ownerId as string,

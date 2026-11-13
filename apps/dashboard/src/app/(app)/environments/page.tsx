@@ -867,7 +867,7 @@ function dockerSnapshotRow(
         accounts={context.accounts}
       />
     ) : null;
-  const meta = `Docker · ${snapshot.hostName ?? snapshot.hostId}`;
+  const meta = `Built on ${snapshot.builtOnVersion ?? "unknown version"} · Docker · ${snapshot.hostName ?? snapshot.hostId}`;
   const repos = snapshot.config.repos;
   const detailText =
     snapshot.status === "building"

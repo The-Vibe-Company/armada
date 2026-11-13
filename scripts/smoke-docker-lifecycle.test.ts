@@ -14,6 +14,7 @@ test.each([
   "repository-no-proof",
   "snapshot",
   "snapshot-no-init",
+  "snapshot-wrong-version",
   "snapshot-build-failed",
 ])("normal Docker smoke uses normal routes (%s)", (mode) => {
   const result = spawnSync(
@@ -44,7 +45,7 @@ class Opener:
             snapshot_id = body["requestId"]
             value = {"snapshot": {"id": snapshot_id, "status": "building"}}
         elif path == "docker/snapshots/get":
-            value = {"snapshot": {"id": snapshot_id, "hostId": "retained-host", "status": "failed" if mode == "snapshot-build-failed" else "ready", "image": "sha256:" + "d" * 64, "config": config, "definitionHash": "a" * 64}}
+            value = {"snapshot": {"id": snapshot_id, "hostId": "retained-host", "status": "failed" if mode == "snapshot-build-failed" else "ready", "image": "sha256:" + "d" * 64, "config": config, "definitionHash": "a" * 64, "builtOnVersion": "2.28.0"}}
         elif path == "launch/options":
             value = {"providers": [{"id": "docker", "harnesses": ["codex", "claude", "opencode"], "capabilities": {"launch": True}}]}
         elif path == "sandbox/launch":
@@ -80,7 +81,7 @@ class Opener:
                    "result": {"isError": False, "output": "a" * 40}}] if mode == "repository" else
                  [{"name": "commandExecution", "input": {"command": "git -C /home/user/project log -1 --format=%H"}, "result": {"isError": False, "output": "a" * 40}}] +
                  [{"name": "commandExecution", "input": {"command": "gh api repos/example/project --jq .full_name"}, "result": {"isError": False, "output": "example/project"}}] +
-                 ([{"name": "commandExecution", "input": {"command": "cat /opt/armada-build/receipt.json"}, "result": {"isError": False, "output": json.dumps({"id": snapshot_id, "hostId": "retained-host", "definitionHash": "a" * 64, "initSteps": len(config["init"])})}}] if mode != "snapshot-no-init" else []) if mode.startswith("snapshot") else []},
+                 ([{"name": "commandExecution", "input": {"command": "cat /opt/armada-build/receipt.json"}, "result": {"isError": False, "output": json.dumps({"id": snapshot_id, "hostId": "retained-host", "definitionHash": "a" * 64, "armadaVersion": "2.27.0" if mode == "snapshot-wrong-version" else "2.28.0", "initSteps": len(config["init"])})}}] if mode != "snapshot-no-init" else []) if mode.startswith("snapshot") else []},
                 {"kind": "prompt", "promptId": prompt, "status": "finished"}]}
         elif path == "sandbox/detail":
             if not any(t["promptId"] == prompt for t in prices):
@@ -122,10 +123,10 @@ with patch.dict(os.environ, {"ARMADA_TOKEN": "offline-only", "ARMADA_DOCKER_SNAP
     try:
         runpy.run_path(argv[0], run_name="__main__")
     except SystemExit as error:
-        assert mode in ("bad-cost", "repository-no-proof", "snapshot-no-init", "snapshot-build-failed") and error.code == 1
+        assert mode in ("bad-cost", "repository-no-proof", "snapshot-no-init", "snapshot-wrong-version", "snapshot-build-failed") and error.code == 1
         assert stops == (0 if mode == "snapshot-build-failed" else 1)
         sys.exit(0)
-    assert mode not in ("bad-cost", "repository-no-proof", "snapshot-no-init", "snapshot-build-failed"), "Missing proof was accepted"
+    assert mode not in ("bad-cost", "repository-no-proof", "snapshot-no-init", "snapshot-wrong-version", "snapshot-build-failed"), "Missing proof was accepted"
 assert len(ssh) == 1 and " run --state-dir " in ssh[0][0][-1]
 assert "nohup setsid" in ssh[0][0][-1] and "daemon.lock" in ssh[0][0][-1]
 assert (not lifecycle or (sends == 2 and stops == 2))
@@ -142,7 +143,7 @@ assert "offline-only" not in output.getvalue()
       ? "Docker cost proof failed: expected stable priced turns and exact session total\n"
       : mode === "repository-no-proof"
         ? "Repository proof missing: successful git log -1 command result required\n"
-        : mode === "snapshot-no-init"
+        : mode === "snapshot-no-init" || mode === "snapshot-wrong-version"
           ? "Snapshot proof missing: successful immutable build-receipt output required\n"
           : mode === "snapshot-build-failed"
             ? "Snapshot build failed; retain printed snapshot ID\n"
