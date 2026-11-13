@@ -50,10 +50,17 @@ import {
   toolSummary,
   toolText,
 } from "@/lib/chat";
-import { INCOMPLETE_MODEL, modelChange, PINNED_MODEL, SEND_KEY_FIELD, UNCONFIRMED_ACTION } from "@/lib/composer";
+import {
+  INCOMPLETE_MODEL,
+  messageKeyFor,
+  modelChange,
+  PINNED_MODEL,
+  SEND_KEY_FIELD,
+  UNCONFIRMED_ACTION,
+} from "@/lib/composer";
 import { type ChatEvent, isActiveStatus, mergeEvents, parseEventPage } from "@/lib/events";
 import { describeFailure } from "@/lib/failure";
-import { type LaunchKey, launchKeyFor } from "@/lib/launch-key";
+import type { LaunchKey } from "@/lib/launch-key";
 import { cn } from "@/lib/utils";
 
 const POLL_MS = 2000;
@@ -973,11 +980,8 @@ function Composer({
       setResult({ ok: false, error: INCOMPLETE_MODEL });
       return;
     }
-    if (intent === "send" && pinnedModel) {
-      sendKey.current = launchKeyFor(sendKey.current, [
-        ["prompt", String(data.get("prompt") ?? "")],
-        ["conversation", String(data.get("conversation") ?? "")],
-      ]);
+    if (intent === "send") {
+      sendKey.current = messageKeyFor(sendKey.current, data);
       data.set(SEND_KEY_FIELD, sendKey.current.key);
     }
     const action = intent === "send" ? sendToSandbox : intent === "steer" ? steerSandbox : interruptSandbox;

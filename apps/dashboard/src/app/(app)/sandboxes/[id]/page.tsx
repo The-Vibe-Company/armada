@@ -204,6 +204,7 @@ export default async function SandboxPage({ params }: Props) {
           <SandboxChat
             sandboxId={sandbox.id}
             initialStatus={sandbox.status}
+            pinnedModel={sandbox.boat_runtime || sandbox.runtime_transport === "dialout"}
             initialIdlePaused={sandbox.status_reason === "idle_paused"}
             expiresAt={sandbox.expires_at}
             initialUsageRevision={usageRevision(sandbox.usage_turns)}

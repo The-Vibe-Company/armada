@@ -69,6 +69,29 @@ existing stop-reason constraint and metadata RPC, retaining the same membership
 and owner/admin masking rules. Type generation was rerun; the generated RPC
 uses the shared DTO alias, so no generated-file change is necessary.
 
+## Ordinary client send identity
+
+CLI and dashboard messages use the same ordinary send request, with a UUID
+`request_id` regardless of provider. The server selects follow-up versus wake
+from immutable runtime identity and stored lifecycle state; clients do not
+select a resume endpoint or start a new conversation after pause.
+
+The CLI generates a UUID when omitted. `armada send ID 'instruction'
+--request-id UUID` supplies an existing identity for reconciling an uncertain
+runtime delivery. Send errors display the request ID; retain it and the exact
+original input and inspect status before deciding whether to reconcile. There
+is no automatic resend. A genuinely new instruction needs a new UUID.
+
+The dashboard retains the key while the submitted sandbox, prompt,
+conversation and model/effort fields are unchanged, and rotates it when any of
+those choices change. Runtime-backed composers keep the model/effort pinned to
+launch, including Boat/Modal runtimes, not only Docker.
+
+Native providers accept the field for request-shape compatibility, but do not
+implement durable UUID deduplication. A repeated native request can run again;
+this change does not add native replay guarantees. Deploy the accepting server
+before these updated clients: older servers reject UUIDs on native sends.
+
 
 ## Docker idle checkpoint, host stop and ordinary-send wake
 

@@ -1,4 +1,5 @@
 import { describeFailure } from "./failure.ts";
+import { type LaunchKey, launchKeyFor } from "./launch-key.ts";
 import { type ModelFields, OTHER_MODEL } from "./model-choice.ts";
 
 /**
@@ -27,7 +28,7 @@ export function chosenConversation(
 }
 
 /** On an owned Docker host the model and effort chosen at launch serve every message (#1526). */
-export const PINNED_MODEL = "On your own Docker host, the model and effort chosen at launch stay for every message.";
+export const PINNED_MODEL = "This sandbox keeps the model and effort chosen at launch for every message.";
 
 /** The form field carrying one Docker message's request key: the same on a retry of the same message. */
 export const SEND_KEY_FIELD = "send_key";
@@ -36,7 +37,7 @@ export const SEND_KEY_FIELD = "send_key";
  * A Docker send: the server admits it once per request key, so a retry of the same message never runs twice, and it
  * keeps the launch model and effort, so no override is sent.
  */
-export function dockerSend(
+export function pinnedSend(
   fields: ModelFields,
   key: string,
 ): { ok: true; requestId: string } | { ok: false; error: string } {
@@ -69,7 +70,18 @@ export function drivingFailureMessage(
 
 /** A keyed Docker retry checks the same admission; never suggest editing or starting a second message. */
 function plainSendFailure(message: string): string {
-  return /\bpending\b/i.test(message)
-    ? "The host has not confirmed the message yet. Send it again unchanged to check, without editing it."
+  return /\b(pending|uncertain|unknown)\b/i.test(message)
+    ? "The message has not been confirmed and may still run. Keep it unchanged and check the sandbox status before retrying."
     : "The host could not confirm delivery. Send the same message again without editing it to check.";
+}
+
+/** Identical retry keeps its key; every submitted instruction/model choice participates. */
+export function messageKeyFor(previous: LaunchKey | null, data: FormData, fresh?: () => string): LaunchKey {
+  return launchKeyFor(
+    previous,
+    ["sandbox", "prompt", "conversation", "model", "other_model", "reasoning_effort"].map(
+      (field) => [field, String(data.get(field) ?? "")] as [string, string],
+    ),
+    fresh,
+  );
 }

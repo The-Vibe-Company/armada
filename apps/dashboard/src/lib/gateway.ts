@@ -161,7 +161,7 @@ export function sandboxGateway(gateway: Gateway) {
     stop: (sandboxId: string) => gateway.call("stop", { id: sandboxId }),
     /** Permanent; the server refuses it unless the sandbox is stopped or failed. */
     delete: (sandboxId: string) => gateway.call("delete", { id: sandboxId }),
-    /** `requestId` makes the send idempotent: a Docker sandbox requires it (#1526). */
+    /** Runtime-backed sends require a stable requestId. Native accepts the field for compatibility only, without deduplication. */
     send: (sandboxId: string, prompt: string, override: SendArgs = {}, conversationId?: string, requestId?: string) =>
       gateway.call("send", {
         id: sandboxId,

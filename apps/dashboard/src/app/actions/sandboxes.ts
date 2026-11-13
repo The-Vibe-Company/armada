@@ -7,10 +7,10 @@ import { redirect } from "next/navigation";
 import { type ActionResult, done, fail, formString, isUuid } from "@/lib/action";
 import {
   chosenConversation,
-  dockerSend,
   drivingFailureMessage,
   INCOMPLETE_MODEL,
   modelChange,
+  pinnedSend,
   SEND_KEY_FIELD,
   STEER_KEEPS_MODEL,
 } from "@/lib/composer";
@@ -115,12 +115,16 @@ export async function sendToSandbox(_previous: ActionResult | null, data: FormDa
   const conversation = chosenConversation(formString(data, "conversation"), target.sandbox.conversation_ids);
   if (!conversation.ok) return fail(conversation.error);
   let override: SendArgs = {};
-  let requestId: string | undefined;
-  if (target.sandbox.provider === "docker") {
-    // A Docker sandbox keeps its launch model and admits each message once per request key (#1526).
-    const docker = dockerSend(modelFields(data), formString(data, SEND_KEY_FIELD));
-    if (!docker.ok) return fail(docker.error);
-    requestId = docker.requestId;
+  const requestId = formString(data, SEND_KEY_FIELD);
+  if (!isUuid(requestId)) return fail("That request is not valid. Reload the page and send it again.");
+  const pinned =
+    target.sandbox.provider === "docker" ||
+    target.sandbox.boat_runtime ||
+    target.sandbox.runtime_transport === "dialout";
+  if (pinned) {
+    // Runtime-backed sandboxes keep launch choices and admit stable instruction IDs.
+    const checked = pinnedSend(modelFields(data), requestId);
+    if (!checked.ok) return fail(checked.error);
   } else {
     const chosen = sendOverride(target.sandbox.harness, modelFields(data), target.sandbox.model);
     if (!chosen.ok) return fail(chosen.error);
@@ -129,7 +133,7 @@ export async function sendToSandbox(_previous: ActionResult | null, data: FormDa
   try {
     await target.gateway.send(id, prompt, override, conversation.id, requestId);
   } catch (error) {
-    if (error instanceof GatewayError) return drivingFailure(error, target.owner, requestId !== undefined);
+    if (error instanceof GatewayError) return drivingFailure(error, target.owner, pinned);
     throw error;
   }
   revalidatePath(`/sandboxes/${id}`);

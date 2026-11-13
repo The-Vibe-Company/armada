@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import {
   chosenConversation,
-  dockerSend,
   drivingFailureMessage,
+  messageKeyFor,
   modelChange,
   PINNED_MODEL,
+  pinnedSend,
   UNCONFIRMED_ACTION,
 } from "../src/lib/composer.ts";
 
@@ -27,10 +28,10 @@ describe("composer guards", () => {
 
   test("a Docker send carries its request key and no model overrides", () => {
     const key = "0b9f3c1e-7d2a-4c5b-9e8f-1a2b3c4d5e6f";
-    expect(dockerSend(fields(), key)).toEqual({ ok: true, requestId: key });
-    expect(dockerSend(fields("", "", "high"), key)).toEqual({ ok: false, error: PINNED_MODEL });
-    expect(dockerSend(fields(), "")).toMatchObject({ ok: false });
-    expect(dockerSend(fields(), key.toUpperCase())).toMatchObject({ ok: false });
+    expect(pinnedSend(fields(), key)).toEqual({ ok: true, requestId: key });
+    expect(pinnedSend(fields("", "", "high"), key)).toEqual({ ok: false, error: PINNED_MODEL });
+    expect(pinnedSend(fields(), "")).toMatchObject({ ok: false });
+    expect(pinnedSend(fields(), key.toUpperCase())).toMatchObject({ ok: false });
   });
 });
 
@@ -51,7 +52,28 @@ test("composer failures preserve curated recovery steps and never echo API detai
   expect(drivingFailureMessage({ message: raw }, true, true)).toBe(
     "The host could not confirm delivery. Send the same message again without editing it to check.",
   );
-  expect(
-    drivingFailureMessage({ message: "Docker prompt admission pending. Retry with request_id." }, true, true),
-  ).toBe("The host has not confirmed the message yet. Send it again unchanged to check, without editing it.");
+  for (const message of [
+    "Docker prompt admission pending. Retry with request_id.",
+    "Runtime send outcome is uncertain; reuse the original request_id and identical input.",
+    "Resume outcome unknown; inspect status with the same request_id.",
+  ])
+    expect(drivingFailureMessage({ message }, true, true)).toBe(
+      "The message has not been confirmed and may still run. Keep it unchanged and check the sandbox status before retrying.",
+    );
+});
+
+test("ordinary message keys survive unchanged retries and rotate for any submitted choice", () => {
+  const fields = ["sandbox", "prompt", "conversation", "model", "other_model", "reasoning_effort"];
+  const data = new FormData();
+  for (const name of fields) data.set(name, `${name}-original`);
+  let serial = 0;
+  const fresh = () => `key-${++serial}`;
+  const first = messageKeyFor(null, data, fresh);
+  expect(messageKeyFor(first, data, fresh)).toEqual(first);
+  for (const name of fields) {
+    const changed = new FormData();
+    for (const [field, value] of data) changed.set(field, value);
+    changed.set(name, "changed");
+    expect(messageKeyFor(first, changed, fresh).key).not.toBe(first.key);
+  }
 });
