@@ -24,7 +24,7 @@ gate. Screenshot evidence workflows and their one-off capture scripts are remove
 
 | Workflow file | Queue? | Reason |
 | --- | --- | --- |
-| `ci.yml` | Yes | Lint/typecheck (including migration-version and native contract steps), six unit shards and their aggregate. Migration versions compare the entire candidate against `merge_group.base_sha`. |
+| `ci.yml` | Yes | Six unit shards (shard 1 also runs lint/typecheck and migration guards), plus their aggregate. Native/namespace contracts run in release validation. Migration versions compare the entire candidate against `merge_group.base_sha`. |
 | `apple-quality.yml` | No | Optional PR/main workflow filtered to iOS and its generated harness contract inputs. GitHub merge-group events do not support workflow-level path filters. |
 | `migration-preview.yml` | No | Optional PR dry-run, filtered to `supabase/migrations/**`, with no production credentials. |
 | `migrations.yml` | No | Main migration changes or explicit operator dispatch only; apply jobs never appear on PRs. |

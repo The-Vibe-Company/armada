@@ -195,6 +195,8 @@ test("CLI/shared launch prepares persisted native repo cwd before idle/first pro
     expect(boat.preparations).toHaveLength(preparedCount);
     expect(boat.prompts.at(-1)?.text).toBe("plain");
     const forks = boat.forks.length;
+    for (const repo of ["", 42, null, ["example/web"]])
+      expect((await call(client, "launch", { golden: "shared", harness: "codex", repo })).isError).toBe(true);
     for (const repo of ["unknown", "../web", "/home/user/web", "web/subdir", "web;echo unsafe"]) {
       const response = await handleControlRequest(
         new Request(`${PUBLIC_URL}/api/v1/sandbox/launch`, {

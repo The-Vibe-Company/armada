@@ -23,8 +23,8 @@ Owner-facing orchestrators have been removed, with no compatibility route or fea
 ## Commands
 
 - `bun install`
-- `bun scripts/prepare-runtime.ts`: prepare the portable runtime before local server tests. Linux CI builds and validates the native runtime with `bun packages/agent-runtime/build.ts` and `bun scripts/validate-runtime-native.ts` instead.
-- `bun run verify`: lint (Biome), typecheck (`tsc`, strict) and tests (`bun test`). CI exposes one required aggregate, "Lint, typecheck and test", over lint/typecheck (including migration and native contract steps) and unit shards.
+- `bun scripts/prepare-runtime.ts`: prepare the portable runtime before local server tests. Publishing release validation builds and validates the native runtime with `bun packages/agent-runtime/build.ts` and `bun scripts/validate-runtime-native.ts` instead.
+- `bun run verify`: lint (Biome), typecheck (`tsc`, strict) and tests (`bun test`). CI exposes one required aggregate, "Lint, typecheck and test", over lint/typecheck (including migration guards; native/namespace contracts run in publishing release validation) and unit shards.
 - `bun run verify:changed [--base origin/main] [--dry-run]`: lint/typecheck plus unit tests in changed workspaces and their transitive consumers; includes staged, unstaged and untracked files. Root/config changes conservatively select every workspace. Root script tests remain included for executable changes. Use `--dry-run` to inspect selection without running checks; this is a local shortcut, not the CI verdict or a two-minute guarantee. Fetch the base ref first.
 - `bun run format`: apply Biome formatting and safe fixes.
 - `bun run build` (this machine), `bun run build --target <os-arch>`, `bun run build:all`: the binary in `dist/`.
