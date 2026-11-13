@@ -29,11 +29,14 @@ import { createSqlData } from "../src/data.ts";
 import { createMcpLifecycle } from "../src/mcp-lifecycle.ts";
 import { callSharedTool } from "../src/tool-api.ts";
 import { createArmadaServer } from "../src/tools.ts";
+import { rowOnlyDatabase } from "./row-only-database.ts";
 import { database, ENCRYPTION_KEY, fakeBoat } from "./support.ts";
 
+const sharedDatabase = rowOnlyDatabase();
+
 // Primary contract owner: real migrations + service-role authorization/admission, fake physical provider only.
-async function fixture() {
-  const { db, people } = await database();
+async function fixture({ isolated = false } = {}) {
+  const { db, people } = await (isolated ? database() : sharedDatabase());
   const queries: string[] = [];
   const sql: Sql = {
     query: (s, p) => {
@@ -109,6 +112,11 @@ async function fixture() {
       runtime,
     );
   return {
+    // The row-only helper owns its connection until afterAll; only isolated
+    // fixtures close here. Every fixture still constructs fresh service/provider state.
+    close: async () => {
+      if (isolated) await db.close();
+    },
     queries,
     db,
     sql,
@@ -129,7 +137,8 @@ async function fixture() {
 }
 
 test("immutable revisions enforce personal/org ownership, optimistic publication, tombstones and JWT grants", async () => {
-  const f = await fixture();
+  // SET ROLE and the session JWT claim must never contaminate a row-only fixture.
+  const f = await fixture({ isolated: true });
   try {
     const created = await f.create();
     const t = created.item as LaunchTemplate;
@@ -185,7 +194,7 @@ test("immutable revisions enforce personal/org ownership, optimistic publication
       (await f.db.query("select * from launch_template_revisions where template_id=$1", [t.id])).rows,
     ).toHaveLength(2);
   } finally {
-    await f.db.close();
+    await f.close();
   }
 });
 
@@ -248,7 +257,7 @@ test("template launch freezes selection before allocation, delivers readable val
     expect(manifests[1]!.manifest.golden.providerSnapshotId).toBe(rebuilt);
     await expect(f.db.query("update template_launch_requests set manifest='{}'")).rejects.toThrow("immutable");
   } finally {
-    await f.db.close();
+    await f.close();
   }
 });
 
@@ -305,7 +314,7 @@ for (const mode of ["before_commit", "after_commit", "both_before_commit", "both
       expect(f.boat.prompts).toHaveLength(1);
     } finally {
       injected.mockRestore();
-      await f.db.close();
+      await f.close();
     }
   });
 }
@@ -338,7 +347,7 @@ for (const retained of [false, true]) {
       expect((await f.db.query("select id from sandboxes")).rows).toHaveLength(0);
       expect((await f.db.query("select id from golden_operation_fences")).rows).toHaveLength(retained ? 1 : 0);
     } finally {
-      await f.db.close();
+      await f.close();
     }
   });
 }
@@ -373,7 +382,7 @@ test("unknown provider outcomes remain durable reconciling across service restar
       ).rows,
     ).toHaveLength(1);
   } finally {
-    await f.db.close();
+    await f.close();
   }
 });
 
@@ -395,7 +404,7 @@ test("changed variable, removed membership and invalid authority overrides fail 
     await expect(f.launch(t.id)).rejects.toMatchObject({ code: "forbidden" });
     expect(f.boat.forks).toHaveLength(0);
   } finally {
-    await f.db.close();
+    await f.close();
   }
 });
 
@@ -547,7 +556,7 @@ test("HTTP and MCP share strict template operations; secure routes require authe
     })) as { state: string };
     expect(launched.state).toBe("succeeded");
   } finally {
-    await f.db.close();
+    await f.close();
   }
 });
 
@@ -628,7 +637,7 @@ test("exact connection grant generations and account versions fail closed withou
     await expect(f.launch(pinned.id, "stale-account")).rejects.toMatchObject({ code: "conflict" });
     expect(f.boat.forks).toHaveLength(2);
   } finally {
-    await f.db.close();
+    await f.close();
   }
 });
 
@@ -657,7 +666,7 @@ test("reference revocation during initialization stops the allocated sandbox bef
     expect(f.configured).toHaveLength(0);
     expect(f.boat.stops).toHaveLength(1);
   } finally {
-    await f.db.close();
+    await f.close();
   }
 });
 
@@ -692,7 +701,7 @@ test("a rebuild published during provider selection cannot replace or invalidate
       f.db.query("update template_launch_requests set golden_operation_fence_id=gen_random_uuid()"),
     ).rejects.toThrow("immutable");
   } finally {
-    await f.db.close();
+    await f.close();
   }
 });
 
@@ -711,7 +720,7 @@ test("claimed snapshot fences release on pre-adoption launch refusals without lo
     expect((await f.db.query("select id from template_launch_requests")).rows).toHaveLength(2);
     expect(f.boat.forks).toHaveLength(0);
   } finally {
-    await f.db.close();
+    await f.close();
   }
 });
 
@@ -763,7 +772,7 @@ test("later readable preparation survives variable edits, template tombstones an
     ).rejects.toMatchObject({ code: "forbidden" });
     expect(f.configured).toHaveLength(2);
   } finally {
-    await f.db.close();
+    await f.close();
   }
 });
 
@@ -798,7 +807,7 @@ test("ordinary prompt admission performs no additional template queries or provi
     await withTemplates.beforePrompt(f.provider, fromTemplate.providerSandboxId as string, actor);
     expect(f.configured).toHaveLength(2);
   } finally {
-    await f.db.close();
+    await f.close();
   }
 });
 
@@ -880,7 +889,7 @@ test.skipIf(process.platform !== "linux")(
         await g.driver.close();
         g.journal.close();
       }
-      await f.db.close();
+      await f.close();
       await rm(root, { recursive: true, force: true });
     }
   },
@@ -1012,7 +1021,7 @@ test("template skills retain verified receipts and closed refusals without repla
       expect(stored.rows[0]?.result.message).toBe(directMessage);
     }
   } finally {
-    await f.db.close();
+    await f.close();
   }
 });
 
@@ -1073,7 +1082,7 @@ test("template admission freezes merged defaults and explicit overrides; opt-out
     });
     expect(f.boat.forks).toHaveLength(2);
   } finally {
-    await f.db.close();
+    await f.close();
   }
 });
 
@@ -1229,7 +1238,7 @@ test("secret references authorize delivery without persisting values and revoke 
       await expect(f.create(f.people.owner, "personal", updated)).rejects.toThrow("secret_unavailable");
     }
   } finally {
-    await f.db.close();
+    await f.close();
   }
 });
 
@@ -1259,7 +1268,7 @@ test("template publication caps readable and secret bindings at 64 combined entr
     });
     expect((valid.item as LaunchTemplate).currentRevision).toBe(1);
   } finally {
-    await f.db.close();
+    await f.close();
   }
 });
 
@@ -1289,7 +1298,7 @@ test("template admission validates decrypted combined byte budget before any for
     expect(f.boat.forks).toHaveLength(1);
     expect(JSON.stringify(accepted).includes(canary)).toBe(false);
   } finally {
-    await f.db.close();
+    await f.close();
   }
 });
 
@@ -1324,7 +1333,7 @@ test("template launch preserves public account and provider refusals and their r
     }
     expect(f.boat.forks).toHaveLength(0);
   } finally {
-    await f.db.close();
+    await f.close();
   }
 });
 
@@ -1354,6 +1363,6 @@ test("template golden admission preserves direct-launch public classifications",
     });
     expect(f.boat.forks).toHaveLength(0);
   } finally {
-    await f.db.close();
+    await f.close();
   }
 });

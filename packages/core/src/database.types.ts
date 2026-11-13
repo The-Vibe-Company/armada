@@ -3402,6 +3402,41 @@ export type Database = {
           },
         ];
       };
+      runtime_checkpoints: {
+        Row: {
+          sandbox_id: string;
+          epoch: number;
+          request_id: string;
+          watermark: number | null;
+          created_at: string;
+          completed_at: string | null;
+        };
+        Insert: {
+          sandbox_id: string;
+          epoch: number;
+          request_id: string;
+          watermark?: number | null;
+          created_at?: string;
+          completed_at?: string | null;
+        };
+        Update: {
+          sandbox_id?: string;
+          epoch?: number;
+          request_id?: string;
+          watermark?: number | null;
+          created_at?: string;
+          completed_at?: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "runtime_checkpoints_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: false;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       runtime_commands: {
         Row: {
           sandbox_id: string;
@@ -3446,6 +3481,7 @@ export type Database = {
           enrolment_expires_at: string | null;
           configuration_enc: string | null;
           runtime_hash: string | null;
+          docker_issuer_fence: string | null;
         };
         Insert: {
           sandbox_id: string;
@@ -3455,6 +3491,7 @@ export type Database = {
           enrolment_expires_at?: string | null;
           configuration_enc?: string | null;
           runtime_hash?: string | null;
+          docker_issuer_fence?: string | null;
         };
         Update: {
           sandbox_id?: string;
@@ -3464,6 +3501,7 @@ export type Database = {
           enrolment_expires_at?: string | null;
           configuration_enc?: string | null;
           runtime_hash?: string | null;
+          docker_issuer_fence?: string | null;
         };
         Relationships: [
           {
@@ -4034,6 +4072,7 @@ export type ResourceObservation = Database["public"]["Tables"]["resource_observa
 export type RoutineRunInputRow = Database["public"]["Tables"]["routine_run_inputs"]["Row"];
 export type RoutineRunRow = Database["public"]["Tables"]["routine_runs"]["Row"];
 export type RoutineRow = Database["public"]["Tables"]["routines"]["Row"];
+export type RuntimeCheckpointRow = Database["public"]["Tables"]["runtime_checkpoints"]["Row"];
 export type RuntimeCommandRow = Database["public"]["Tables"]["runtime_commands"]["Row"];
 export type RuntimeEnrolmentRow = Database["public"]["Tables"]["runtime_enrolments"]["Row"];
 export type RuntimeEventRow = Database["public"]["Tables"]["runtime_events"]["Row"];

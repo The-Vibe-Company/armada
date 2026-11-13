@@ -109,6 +109,17 @@ export function createRuntimeFollowup(sql: Sql, key: string, commands: ReturnTyp
           !current.conversationIds.includes(conversation)
         )
           throw new VaultError("conflict", "Runtime admission changed; inspect status before retrying.");
+        const checkpoint = (
+          await locked.query("select 1 from public.runtime_checkpoints where sandbox_id=$1 and epoch=$2", [
+            found.id,
+            scope.epoch,
+          ])
+        ).rows[0];
+        if (checkpoint)
+          throw new VaultError(
+            "conflict",
+            "Runtime checkpoint is pending or complete; stop it before a fresh enrolment.",
+          );
         const saved = (
           await locked.query<{ epoch: string; finished: boolean }>(
             "select epoch::text,result_enc is not null as finished from public.runtime_commands where sandbox_id=$1 and request_id=$2",
