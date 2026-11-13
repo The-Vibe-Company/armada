@@ -153,6 +153,7 @@ export interface ControlOptions {
   runtimeResume?: RuntimeResume;
   runtimeCheckpoint?: RuntimeCheckpoint;
   runtimeSend?: RuntimeFollowup;
+  modalRuntimeHostFor?: (target: import("@armada/core").ProviderTarget, caller: Caller) => Promise<Provider>;
   modalRuntimeLaunch?: NonNullable<LaunchOptions["runtime"]>;
   boatRuntimeLaunch?: NonNullable<LaunchOptions["boatRuntime"]>;
   runtimeHostFor?: (apiKey: string) => Provider;
@@ -1176,7 +1177,8 @@ async function dispatch(
           "invalid",
           "Modal runtime v1 requires explicit model-only Codex launch, no setup capabilities.",
         );
-      if (!options.modalRuntimeLaunch) throw new VaultError("unavailable", "Modal runtime staging opt-in is disabled.");
+      if (!options.modalRuntimeLaunch || !options.modalRuntimeHostFor)
+        throw new VaultError("unavailable", "Modal runtime staging opt-in is disabled.");
       required(body, "prompt");
       return launchRoute(options, caller, body, "modal");
     case "sandbox/launch-runtime-v1":
@@ -1605,25 +1607,27 @@ async function launchRoute(
     throw new VaultError("unavailable", "Sandbox Armada access is unavailable for this provider/harness.");
   if (runtime && golden.provider !== (modalRuntime ? "modal" : "boat"))
     throw new VaultError("invalid", "Runtime v1 requires a Boat golden.");
-  const provider = runtimeHost
-    ? runtimeHost(
-        (
-          await resolveBoatKey(options.store, options.encryptionKey, {
-            userId: caller.userId,
-            orgId: actor.orgId,
-            visibility: golden.visibility,
-          })
-        ).key,
-      )
-    : await providerForGolden(
-        options,
-        caller,
-        modalRuntime
-          ? { ...golden, runtimeTransport: "dialout" }
-          : armadaAccess
-            ? { ...golden, visibility: "private", sourceGoldenVisibility: golden.visibility }
-            : golden,
-      );
+  const provider = modalRuntime
+    ? await options.modalRuntimeHostFor!({ ...golden, runtimeTransport: "dialout" }, caller)
+    : runtimeHost
+      ? runtimeHost(
+          (
+            await resolveBoatKey(options.store, options.encryptionKey, {
+              userId: caller.userId,
+              orgId: actor.orgId,
+              visibility: golden.visibility,
+            })
+          ).key,
+        )
+      : await providerForGolden(
+          options,
+          caller,
+          modalRuntime
+            ? { ...golden, runtimeTransport: "dialout" }
+            : armadaAccess
+              ? { ...golden, visibility: "private", sourceGoldenVisibility: golden.visibility }
+              : golden,
+        );
   const connectionLifecycle = modalRuntime
     ? undefined
     : runtime

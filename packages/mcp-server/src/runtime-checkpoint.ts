@@ -133,7 +133,7 @@ export function createRuntimeCheckpoint(sql: Sql, key: string, commands: ReturnT
         if (!member) throw new VaultError("not_found", "Runtime checkpoint membership was revoked.");
         const target = (
           await tx.query(
-            "select id from public.sandboxes where id=$1 and owner_id=$2 and boat_runtime and deleted_at is null and not application_secret_tainted for update",
+            "select id from public.sandboxes where id=$1 and owner_id=$2 and (boat_runtime or (provider='modal' and runtime_transport='dialout')) and deleted_at is null and not application_secret_tainted for update",
             [sandbox.id, caller.userId],
           )
         ).rows[0];

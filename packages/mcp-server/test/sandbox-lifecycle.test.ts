@@ -677,3 +677,44 @@ test("runtime lifecycle stops compute with explicit no-checkpoint note, without 
   expect(final?.preservationNote).toContain("no acknowledged runtime checkpoint");
   await lifecycle.drain();
 });
+
+// Expiry must stop enrolled Modal compute even though native quiesce is unavailable.
+test("expired Modal dial-out reaches compute stop without tunnel quiescence or preservation exec", async () => {
+  const { db, people } = await sharedDatabase();
+  const sql = bunLikeSql(db);
+  const golden = (
+    await db.query<{ id: string }>(
+      `insert into goldens(org_id,owner_id,name,visibility,provider,provider_sandbox_id,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config)
+    values($1,$2,'expired-modal','private','modal','master','image','workspace','main','app','{"repos":[],"init":[]}') returning id`,
+      [people.org, people.owner],
+    )
+  ).rows[0]!;
+  const id = crypto.randomUUID();
+  await db.query(
+    `insert into sandboxes(id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status,runtime_transport,expires_at)
+    values($1,'modal','compute',$2,$3,$4,'codex','running','dialout',now()-interval '1 second')`,
+    [id, golden.id, people.org, people.owner],
+  );
+  let stopped = false;
+  const provider = {
+    id: "modal",
+    get: async () => ({ id: "compute", state: stopped ? "stopped" : "running" }),
+    stop: async () => {
+      stopped = true;
+    },
+    quiesce: async () => {
+      throw Error("No tunnel quiesce");
+    },
+    exec: async () => {
+      throw Error("No native work capture");
+    },
+  } as unknown as import("@armada/core").Provider;
+  const worker = createSandboxLifecycle(sql, async () => provider);
+  expect(await worker.reconcileOne()).toBe(true);
+  expect(stopped).toBe(true);
+  expect((await db.query("select status,preservation_note from sandboxes where id=$1", [id])).rows[0]).toMatchObject({
+    status: "stopped",
+    preservation_note: expect.stringContaining("disk retention, resume"),
+  });
+  await worker.drain();
+});

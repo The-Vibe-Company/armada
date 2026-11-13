@@ -38,6 +38,8 @@ export function createRuntimeServing(sql: Sql, key: string) {
       (!sandbox.boatRuntime && sandbox.runtimeTransport !== "dialout") ||
       !["boat", "modal"].includes(sandbox.provider) ||
       sandbox.harness !== "codex" ||
+      sandbox.provider !== target.provider ||
+      (typeof apiKey !== "string" && apiKey.id !== sandbox.provider) ||
       sandbox.visibility !== target.visibility ||
       sandbox.sourceGoldenVisibility !== (target.sourceGoldenVisibility ?? target.visibility) ||
       !sandbox.model ||

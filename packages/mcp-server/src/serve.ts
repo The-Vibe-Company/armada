@@ -360,7 +360,23 @@ export async function startServer(
     runtimeResume,
     ...(runtimeGitHub ? { runtimeGitHub } : {}),
     runtimeMcp,
-    ...(modalRuntimePolicy ? { modalRuntimeLaunch: modalRuntimePolicy } : {}),
+    ...(modalRuntimePolicy
+      ? {
+          modalRuntimeLaunch: modalRuntimePolicy,
+          modalRuntimeHostFor: async (
+            target: import("@armada/core").ProviderTarget,
+            caller: import("./caller.ts").Caller,
+          ) => {
+            if (!target.modal) throw Error("Modal binding required.");
+            const tokens = await modal.modalTokensFor(target, caller);
+            return modal.modalProviderFor({ tokenId: tokens.tokenId, tokenSecret: tokens.tokenSecret }, target.modal, {
+              target,
+              caller,
+              credentialScope: tokens.scope,
+            });
+          },
+        }
+      : {}),
     ...(runtimeLaunch
       ? { boatRuntimeLaunch: runtimeLaunch, runtimeHostFor: (apiKey: string) => createBoatProvider({ apiKey }) }
       : {}),
