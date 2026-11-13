@@ -114,7 +114,14 @@ export function mcpSecretValues(configuration: McpConfiguration): string[] {
   return Object.values(configuration.servers)
     .flatMap((server) =>
       server.type === "http"
-        ? [server.url, ...new URL(server.url).searchParams.values(), ...Object.values(server.headers ?? {})]
+        ? [
+            server.url,
+            ...new URL(server.url).searchParams.values(),
+            ...Object.values(server.headers ?? {}).flatMap((value) => [
+              value,
+              ...(/^Bearer /i.test(value) ? [value.slice(7)] : []),
+            ]),
+          ]
         : [...(server.args ?? []), ...Object.values(server.env ?? {})],
     )
     .filter(Boolean);

@@ -58,6 +58,7 @@ import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import { createRuntimeEvents } from "./runtime-events.ts";
 import { createRuntimeFollowup } from "./runtime-followup.ts";
 import { createRuntimeGitHub } from "./runtime-github.ts";
+import { createRuntimeMcp } from "./runtime-mcp.ts";
 import { createRuntimeModelAccess } from "./runtime-model-access.ts";
 import { createRuntimeNativeAuth } from "./runtime-native-auth.ts";
 import { createRuntimeProgress } from "./runtime-progress.ts";
@@ -113,6 +114,12 @@ export async function startServer(
   const sql = bunSql(config.databaseUrl, config.databasePoolMax);
   const runtimeEnrolments = createRuntimeEnrolments(sql, config.encryptionKey);
   const runtimeCommands = createRuntimeCommands(runtimeEnrolments, config.encryptionKey);
+  const runtimeMcp = createRuntimeMcp({
+    sql,
+    key: config.encryptionKey,
+    origin: config.publicUrl,
+    commands: runtimeCommands,
+  });
   const runtimeSend = createRuntimeFollowup(sql, config.encryptionKey, runtimeCommands);
   const runtimeCheckpoint = createRuntimeCheckpoint(sql, config.encryptionKey, runtimeCommands);
   let subscriptionMigration: ReturnType<typeof createSubscriptionMigration>;
@@ -308,6 +315,7 @@ export async function startServer(
     runtimeCheckpoint,
     runtimeResume,
     ...(runtimeGitHub ? { runtimeGitHub } : {}),
+    runtimeMcp,
     ...(runtimeLaunch
       ? { boatRuntimeLaunch: runtimeLaunch, runtimeHostFor: (apiKey: string) => createBoatProvider({ apiKey }) }
       : {}),
@@ -404,6 +412,7 @@ export async function startServer(
     runtimeCheckpoint,
     runtimeResume,
     ...(runtimeGitHub ? { runtimeGitHub } : {}),
+    runtimeMcp,
     ready: createDatabaseReadiness(sql),
     runtimeProviderFor,
     launch,
