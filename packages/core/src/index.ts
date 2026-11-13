@@ -349,10 +349,7 @@ export type {
 } from "./resource-observation.ts";
 export { ROUTINE_REASON_HELP, type Routine, routineReasonHelp } from "./routines.ts";
 export {
-  type CleanupResult,
-  cleanupSandboxes,
   createSqlSandboxStore,
-  DEFAULT_SANDBOX_RETENTION_DAYS,
   MAX_STATUS_REASON_LENGTH,
   mapSandboxRow,
   type ResourceProject,
