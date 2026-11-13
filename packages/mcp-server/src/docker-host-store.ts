@@ -43,7 +43,7 @@ type Sandbox = {
 };
 type Selection = { requestId: string } & (
   | { operation: "create" | "stop" | "delete" }
-  | { operation: "bootstrap"; bootstrapDescriptor: BootstrapDescriptor }
+  | { operation: "bootstrap" | "resume"; bootstrapDescriptor: BootstrapDescriptor }
 );
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const tokenPattern = /^[0-9a-f]{64}$/;
@@ -255,7 +255,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
       saved.request.expiresAt === undefined
     )
       deny();
-    if (operation === "bootstrap" && original.outcome !== "completed") deny();
+    if ((operation === "bootstrap" || operation === "resume") && original.outcome !== "completed") deny();
     return saved.request;
   }
   async function boundMachine(tx: Sql, job: StoredJob, host: Host, installationId: string) {
@@ -266,7 +266,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
     return logical;
   }
   async function startupFailed(tx: Sql, row: Sandbox, operation: string | null) {
-    if (operation !== "create" && operation !== "bootstrap") return;
+    if (operation !== "create" && operation !== "bootstrap" && operation !== "resume") return;
     await tx.query(
       `update public.sandboxes set status='failed',status_reason='Docker sandbox startup failed.',
        lifecycle_generation=lifecycle_generation+1 where id=$1 and status in ('starting','ready','running','stopping')`,
@@ -380,10 +380,10 @@ export function createDockerHostStore(sql: Sql, key: string) {
         exact(selection, [
           "requestId",
           "operation",
-          ...(selection.operation === "bootstrap" ? ["bootstrapDescriptor"] : []),
+          ...(selection.operation === "bootstrap" || selection.operation === "resume" ? ["bootstrapDescriptor"] : []),
         ]);
         id(selection.requestId);
-        if (!["create", "bootstrap", "stop", "delete"].includes(selection.operation)) deny();
+        if (!["create", "bootstrap", "resume", "stop", "delete"].includes(selection.operation)) deny();
         const hint =
           (
             await tx.query<Sandbox & { issuer_id: string }>(
@@ -417,10 +417,10 @@ export function createDockerHostStore(sql: Sql, key: string) {
         if (!known) await state(tx, row, selection.operation);
         const request = await machine(tx, row, selection.operation);
         const job: Job =
-          selection.operation === "bootstrap"
+          selection.operation === "bootstrap" || selection.operation === "resume"
             ? {
                 requestId: selection.requestId,
-                operation: "bootstrap",
+                operation: selection.operation,
                 request,
                 bootstrap: selection.bootstrapDescriptor,
               }
@@ -434,7 +434,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
             bound_operation: selection.operation,
           });
         if (known) return enqueue();
-        if (selection.operation === "bootstrap") {
+        if (selection.operation === "bootstrap" || selection.operation === "resume") {
           // This lookup takes no source locks. Reject a foreign capability before
           // the validator can acquire any of that sandbox's membership locks.
           const ticket = (
@@ -546,7 +546,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
               result.requestId,
             ])
           ).rows[0] ?? deny();
-        if (job.bound_operation !== "create" && job.bound_operation !== "bootstrap") deny();
+        if (job.bound_operation !== "create" && job.bound_operation !== "bootstrap" && job.bound_operation !== "resume")
+          deny();
         const logical = await boundMachine(tx, job, host, installationId);
         // Only the authenticated host's observed physical stop is evidence. SQL's
         // clock may differ from the frozen host deadline and cannot prove exit.

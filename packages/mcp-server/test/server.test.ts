@@ -1655,6 +1655,7 @@ test("public MCP schemas protect secret boundaries and mutation contracts", asyn
       "secret_delete",
       "report",
       "resource_advice",
+      "resume",
       "send",
       "runtime_checkpoint",
       "runtime_resume",
@@ -1666,6 +1667,8 @@ test("public MCP schemas protect secret boundaries and mutation contracts", asyn
     ].sort(),
   );
   for (const tool of tools) expect(tool.outputSchema).toBeDefined();
+  const resume = tools.find((tool) => tool.name === "resume");
+  expect(resume?.inputSchema.required).toEqual(["id", "request_id"]);
   const secretCommit = tools.find((tool) => tool.name === "secret_commit");
   expect(secretCommit?.inputSchema.required).toEqual(["org", "uploadReference"]);
   expect(secretCommit?.inputSchema.properties?.uploadReference).toMatchObject({ type: "string" });

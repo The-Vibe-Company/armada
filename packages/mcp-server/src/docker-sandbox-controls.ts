@@ -12,9 +12,13 @@ import {
 import { decryptSecret, type Sql } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import { createSqlData } from "./data.ts";
+import type { createDockerBootstrapService } from "./docker-bootstrap-service.ts";
 import { createDockerHostStore, DockerHostDenied } from "./docker-host-store.ts";
+import type { createDockerNormalSend } from "./docker-normal-send.ts";
+import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
 import { isPrivateModelEvent } from "./model-usage.ts";
 import { createRuntimeHistory } from "./runtime-history.ts";
+import { withServerCost } from "./turn-pricing.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 type Row = {
@@ -75,7 +79,12 @@ function usage(value: unknown): SandboxUsage | null {
 export function createDockerSandboxControls(
   sql: Sql,
   key: string,
-  options: { clock?: Clock; timeoutMs?: number } = {},
+  options: {
+    clock?: Clock;
+    timeoutMs?: number;
+    send?: ReturnType<typeof createDockerNormalSend>;
+    resume?: Pick<ReturnType<typeof createDockerBootstrapService>, "resume">;
+  } = {},
 ) {
   const clock = options.clock ?? realClock;
   async function visible(caller: Caller, id: string): Promise<Row> {
@@ -240,7 +249,7 @@ export function createDockerSandboxControls(
               : null,
       conversationIds: [...conversations],
       expiresAt: row.expires_at === null ? null : new Date(row.expires_at).toISOString(),
-      usage: usage(row.usage_turns),
+      usage: withServerCost(usage(row.usage_turns), "codex"),
       prompt,
       settled:
         terminal(row) ||
@@ -366,13 +375,38 @@ export function createDockerSandboxControls(
       await clock.wait(Math.min(250, deadline - clock.now()));
     }
   }
+  async function resume(caller: Caller, row: Row, requestId?: string) {
+    if (!options.resume) throw failure("unavailable", "Docker sandbox resume is unavailable.");
+    if (row.owner_id !== caller.userId) throw denied();
+    if (!requestId) throw invalid();
+    const actor = { userId: caller.userId, orgId: row.org_id };
+    await options.resume.resume(actor, row.id, requestId);
+    const deadline = clock.now() + (options.timeoutMs ?? 45_000);
+    const runtime = createDockerRuntimeLifecycle(sql, key, { enabled: true });
+    for (;;) {
+      // Host ACK is not runtime readiness.
+      const state = (
+        await sql.query<{ outcome: string | null }>(
+          `select outcome from public.docker_host_jobs where request_id=$1 and bound_sandbox_id=$2 and bound_operation='resume'`,
+          [requestId, row.id],
+        )
+      ).rows[0];
+      if (state?.outcome === "failed") throw failure("conflict", "Docker resume failed.");
+      if (state?.outcome === "completed") {
+        const ready = await runtime.ready(actor, row.id, requestId);
+        if (ready.state === "ready") return { id: row.id, status: "ready" as const };
+      }
+      if (clock.now() >= deadline) throw failure("conflict", "Docker resume is pending. Retry the same request_id.");
+      await clock.wait(Math.min(250, deadline - clock.now()));
+    }
+  }
   return {
     async invoke(
       caller: Caller,
       name: string,
       args: Record<string, unknown>,
     ): Promise<{ handled: false } | { handled: true; result: object }> {
-      if (!["status", "logs", "stop", "delete"].includes(name)) return { handled: false };
+      if (!["status", "logs", "stop", "delete", "send", "resume"].includes(name)) return { handled: false };
       try {
         if (typeof args.id !== "string" || !UUID.test(args.id)) throw denied();
         if (
@@ -384,6 +418,12 @@ export function createDockerSandboxControls(
           throw invalid();
         const row = await visible(caller, args.id);
         if (row.provider !== "docker") return { handled: false };
+        if (name === "send") {
+          if (!options.send) throw failure("unavailable", "Docker send is unavailable.");
+          return { handled: true, result: await options.send.send(caller, args, row) };
+        }
+        if (name === "resume")
+          return { handled: true, result: await resume(caller, row, args.request_id as string | undefined) };
         const result =
           name === "status"
             ? await status(caller, row, args.prompt_id as string | undefined)

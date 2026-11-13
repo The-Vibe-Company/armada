@@ -489,3 +489,30 @@ At this stage, placement=false and capabilities.launch=false are intentional.
 Normal-launch acceptance requires its separately implemented backend; this
 read/discovery check does not enable it.
 No worker staging access, SSH, deployment, inference or remote migration was used.
+
+### Normal follow-up and stop/resume (#1422)
+
+With Docker placement and the runtime manifest enabled, `sandbox/send` (MCP `send`)
+accepts `{id, request_id, prompt, conversation_id?}`. Reuse the UUID and identical
+input after uncertain delivery. Omitted conversation selects the retained conversation;
+model and effort stay pinned. Only the sandbox owner can send.
+
+`sandbox/resume` (MCP `resume`) accepts `{id, request_id}` after a confirmed stop.
+It starts the **same** labelled container on the original host, retains the workspace,
+native conversation and journal, and issues fresh enrolment/epoch before confirming
+runtime health. It does not extend the original TTL or replace an expired/missing
+allocation. Unknown outcomes require the same request ID, not another allocation.
+Status exposes per-turn tokens and service-computed session cost; unknown prices
+remain unknown rather than zero.
+
+Deployment prerequisites: apply `20261113130000_docker_resume_jobs.sql` through the
+normal release process and update the Docker host daemon before using resume. Older
+daemons do not accept the new `resume` job. No new application-secret or repository
+capabilities are enabled.
+
+Coordinator-only staging proof: use `scripts/smoke-docker-lifecycle.py` with
+`--normal-lifecycle --host-id 70bde9cd-36c9-40af-b15e-65b2f9d3c2a2` and the existing
+server/org/credential/SSH/image arguments. This implies normal launch, follow-up,
+stop/resume and a third same-conversation recall, then confirmed stop/delete. Keep
+`ARMADA_TOKEN` private in the environment. This procedure is not evidence of a passed
+real-host run.
