@@ -4,10 +4,13 @@ import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-aud
 import { goldenHelperReport } from "../../core/test/support/golden-helper.ts";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
+import { rowOnlyDatabase } from "./row-only-database.ts";
 import { call, ENCRYPTION_KEY, harness, PUBLIC_URL, type TestServer } from "./support.ts";
 
-async function fixture() {
-  const server = await harness();
+const sharedDatabase = rowOnlyDatabase();
+
+async function fixture({ isolated = false } = {}) {
+  const server = await harness({}, isolated ? undefined : await sharedDatabase());
   const { boat, people } = server;
   const exec = boat.provider.exec;
   boat.provider.exec = async (request) => {
@@ -110,7 +113,7 @@ test("HTTP durable admission, idempotent acknowledgement recovery and MCP status
 });
 
 test("MCP admission and rebuild failure retain last-good config/pointer and release only the build reservation", async () => {
-  const s = await fixture();
+  const s = await fixture({ isolated: true });
   const logs = spyOn(console, "error").mockImplementation(() => {});
   try {
     const token = await s.token(s.people.admin);
@@ -314,12 +317,15 @@ test("expired execution fence cannot publish or replay; reconciliation stops a k
     entered = resolve;
   });
   let worker: Promise<boolean> | undefined;
-  const base: TestServer = await harness({
-    buildSsh: async () => {
-      entered();
-      await gate;
+  const base: TestServer = await harness(
+    {
+      buildSsh: async () => {
+        entered();
+        await gate;
+      },
     },
-  });
+    await sharedDatabase(),
+  );
   try {
     let allocations = 0;
     base.boat.provider.createGolden = async () => {
