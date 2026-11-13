@@ -14,7 +14,7 @@ const native = (revision: number, account = "offline-account") =>
       refresh_token: `offline-refresh-${revision}`,
     },
   });
-async function fixture() {
+async function fixture(boatRuntime = false) {
   const { db, people } = await database();
   const sql: Sql = {
     query: (q, v) => db.query(q, v),
@@ -31,9 +31,9 @@ async function fixture() {
     actor: GoldenActor = { userId: people.owner, orgId: people.org, role: "member" };
   const ownership = createModelAuthOwnership(sql, ENCRYPTION_KEY);
   await db.query(
-    `insert into sandboxes(id,golden_id,org_id,owner_id,boat_id,harness,status,credential_id,credential_version)
-    select $1,id,org_id,owner_id,'native-publisher','codex','ready',$3,1 from goldens where owner_id=$2 and visibility='private' limit 1`,
-    [id, people.owner, account.id],
+    `insert into sandboxes(id,golden_id,org_id,owner_id,boat_id,harness,status,credential_id,credential_version,boat_runtime)
+    select $1,id,org_id,owner_id,'native-publisher','codex','ready',$3,1,$4 from goldens where owner_id=$2 and visibility='private' limit 1`,
+    [id, people.owner, account.id, boatRuntime],
   );
   const authority = createRuntimeEnrolments(sql, ENCRYPTION_KEY);
   const enrol = async () =>
@@ -285,3 +285,84 @@ test.each(["epoch", "membership", "pin", "stop", "ownership", "upstream"] as con
     }
   },
 );
+
+test("two Boat runtime guests share server renewal and a replacement epoch reads the persisted revision", async () => {
+  const { createRuntimeModelAccess } = await import("../src/runtime-model-access.ts");
+  const { RuntimeDialout, runtimeSubscriptionAccess } = await import("../../agent-runtime/src/dialout.ts");
+  const f = await fixture(true);
+  try {
+    let renewals = 0;
+    const ownership = createModelAuthOwnership(f.sql, ENCRYPTION_KEY, undefined, undefined, {
+      origin: "https://armada.example",
+      fetch: (async (_url, init) => {
+        expect(JSON.parse(String(init?.body)).refresh_token).toBe("offline-refresh-0");
+        renewals++;
+        return Response.json({ access_token: "renewed-access", refresh_token: "renewed-refresh" });
+      }) as typeof fetch,
+    });
+    if (!ownership.broker) throw Error("missing broker");
+    await ownership.broker.enroll(f.actor, f.account.id, 1);
+    const secondId = crypto.randomUUID();
+    await f.db.query(
+      `insert into sandboxes(id,golden_id,org_id,owner_id,boat_id,harness,status,credential_id,credential_version,boat_runtime)
+       select $2,golden_id,org_id,owner_id,'second-runtime','codex','ready',credential_id,credential_version,true from sandboxes where id=$1`,
+      [f.id, secondId],
+    );
+    const first = await f.enrol();
+    const second = await f.authority.enrol(
+      (await f.authority.issue({ ownerId: f.people.owner, sandboxId: secondId, configuration: {} })).enrolmentToken,
+    );
+    // Reconstruct the route and broker on resume, as after a server restart.
+    const routeFor = (auth: typeof ownership) => createRuntimeModelAccess(f.sql, ENCRYPTION_KEY, auth.broker);
+    const connect = (active: typeof first, route: ReturnType<typeof routeFor>) => {
+      const registered: string[] = [];
+      const channel = new RuntimeDialout("https://armada.example", active, {
+        async fetch(url, options) {
+          const response = await route(new Request(url.href, options));
+          if (!response) throw Error("missing model access route");
+          const body = await response.clone().text();
+          expect(body).not.toContain("offline-refresh-0");
+          expect(body).not.toContain("renewed-refresh");
+          return response;
+        },
+        socket() {
+          throw Error("unused socket");
+        },
+        after() {
+          return () => {};
+        },
+        every() {
+          return () => {};
+        },
+      });
+      return { registered, access: runtimeSubscriptionAccess(channel, (values) => registered.push(...values)) };
+    };
+    const route = routeFor(ownership);
+    const a = connect(first, route),
+      b = connect(second, route);
+    const [initialA, initialB] = await Promise.all([a.access(false), b.access(false)]);
+    expect(initialA.accessToken).toBe("offline-access-0");
+    expect(initialB.accessToken).toBe("offline-access-0");
+    const refreshed = await a.access(true, initialA.accessToken);
+    // A second guest's stale refresh request must reuse the already committed rotation.
+    expect(await b.access(true, initialB.accessToken)).toEqual(refreshed);
+    expect(renewals).toBe(1);
+    expect(a.registered).toEqual(["offline-access-0", "renewed-access"]);
+    expect(b.registered).toEqual(["offline-access-0", "renewed-access"]);
+    const replacement = await f.enrol();
+    await expect(a.access(false)).rejects.toThrow("runtime_channel_revoked");
+    const restarted = createModelAuthOwnership(f.sql, ENCRYPTION_KEY, undefined, undefined, {
+      origin: "https://armada.example",
+      fetch: (async (_url, _init) =>
+        Response.json({ error: "unexpected resume renewal" }, { status: 500 })) as typeof fetch,
+    });
+    expect(await connect(replacement, routeFor(restarted)).access(false)).toEqual(refreshed);
+    expect(await b.access(false)).toEqual(refreshed);
+    const state = await restarted.state.read(f.actor, f.account.id, 1, f.id);
+    expect(state).toMatchObject({ sourceGeneration: "server:ready", revision: 1 });
+    expect(JSON.parse(state?.authJson ?? "{}").tokens.refresh_token).toBe("renewed-refresh");
+    expect((await f.db.query("select sequence from runtime_events")).rows).toEqual([]);
+  } finally {
+    await f.db.close();
+  }
+});
