@@ -1,4 +1,4 @@
-import { type AgentEvent, PROMPT_STATUSES, type SandboxStatus, type ToolCall } from "@armada/core";
+import { type AgentEvent, isRecord, PROMPT_STATUSES, type SandboxStatus, type ToolCall } from "@armada/core";
 
 const ACTIVE: readonly SandboxStatus[] = ["starting", "ready", "running", "stopping"];
 
@@ -43,10 +43,6 @@ export function parseEventPage(value: unknown): { events: ChatEvent[]; cursor: s
     cursor: typeof record.cursor === "string" ? record.cursor : null,
     hasMore: record.hasMore === true,
   };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function normalizeEvent(value: unknown): ChatEvent | null {

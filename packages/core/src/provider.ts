@@ -31,7 +31,6 @@ export interface Provider {
   }): Promise<{ acknowledged: boolean }>;
   /** Read-only fixed sampler. Null means isolation/runtime is unsupported or not attested. */
   observeResources?(sandboxId: string): Promise<import("./resource-observation.ts").ProviderResourceObservation | null>;
-  prepareNativeHarnessCwd?(request: PrepareNativeHarnessCwdRequest): Promise<void>;
   readonly id: string;
   readonly harnesses: readonly Harness[];
   /** What each harness can do here. Callers branch on this, never on the harness name. */
@@ -169,8 +168,9 @@ export interface Provider {
   quiesce?(request: InterruptRequest): Promise<void>;
   /** Reset the physical lifetime without restoring or replacing compute. Returns the confirmed hard deadline. */
   extendLifetime?(request: { sandboxId: string; ttlSeconds: number }): Promise<Date>;
-  /** Removes the machine and keeps the disk and the conversations. */
-  stop(request: { sandboxId: string }): Promise<void>;
+  /** Removes compute through the provider's stop policy. Automatic idle requires
+   * retained workspace/conversation state and must refuse a compute-only fallback. */
+  stop(request: { sandboxId: string; requireRetention?: boolean }): Promise<void>;
   /** Removes the sandbox and its disk for good. */
   delete(request: { sandboxId: string }): Promise<DeleteReceipt>;
 }
@@ -514,12 +514,6 @@ export class ProviderError extends Error {
     this.requestId = init.requestId;
     this.details = init.details;
   }
-}
-
-export interface PrepareNativeHarnessCwdRequest {
-  sandboxId: string;
-  harness: Harness;
-  cwd: string;
 }
 
 /** Explicit non-mutating provider refusals, not transport failures or ambiguous conflicts. */

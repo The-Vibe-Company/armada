@@ -1,4 +1,4 @@
-import { VERSION } from "@armada/core";
+import { isRecord, VERSION } from "@armada/core";
 import { describeFailure } from "./failure.ts";
 import type { SendArgs } from "./model-choice.ts";
 
@@ -148,10 +148,6 @@ async function readMessage(response: Response, id?: number): Promise<Record<stri
   return match;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 /**
  * What the dashboard asks of the server, by the tool names of the spec. `send` opens a new turn, `steer` redirects
  * the running one and `interrupt` stops it: the server applies the harness's capabilities, never the dashboard.
@@ -165,7 +161,7 @@ export function sandboxGateway(gateway: Gateway) {
     stop: (sandboxId: string) => gateway.call("stop", { id: sandboxId }),
     /** Permanent; the server refuses it unless the sandbox is stopped or failed. */
     delete: (sandboxId: string) => gateway.call("delete", { id: sandboxId }),
-    /** `requestId` makes the send idempotent: a Docker sandbox requires it (#1526). */
+    /** Runtime-backed sends require a stable requestId. Native accepts the field for compatibility only, without deduplication. */
     send: (sandboxId: string, prompt: string, override: SendArgs = {}, conversationId?: string, requestId?: string) =>
       gateway.call("send", {
         id: sandboxId,

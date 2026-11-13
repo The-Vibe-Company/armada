@@ -17,7 +17,7 @@ import { SandboxAccountChoice } from "@/components/sandbox-account-choice";
 import { SandboxActions } from "@/components/sandbox-actions";
 import { SandboxAttention } from "@/components/sandbox-attention";
 import { SandboxChat } from "@/components/sandbox-chat";
-import { SandboxCostCard } from "@/components/sandbox-cost";
+import { RowCost, SandboxCostCard } from "@/components/sandbox-cost";
 import { SandboxDetailsPanel } from "@/components/sandbox-details-panel";
 import { StatusBadge } from "@/components/status-badge";
 import { OutcomeBadge, OutcomeDetail, PreservationNotice } from "@/components/task-outcome";
@@ -33,7 +33,7 @@ import { findGoldenLabel } from "@/lib/data/goldens";
 import { credentialKinds, getSandbox, getSandboxMetadata } from "@/lib/data/sandboxes";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { displayUser, listMemberships, memberDirectory, requireViewer } from "@/lib/data/viewer";
-import { dockerSandboxName, sandboxHostLabel } from "@/lib/docker-hosts";
+import { sandboxHostLabel } from "@/lib/docker-hosts";
 import { type DockerSandboxControls, dockerImageLabel, dockerSandboxControls } from "@/lib/docker-launch";
 import { mcpUrl } from "@/lib/env";
 import { isActiveStatus } from "@/lib/events";
@@ -122,6 +122,8 @@ export default async function SandboxPage({ params }: Props) {
   const preservation = preservationView(sandbox.preservation_note, sandbox.status, sandbox.id, true);
 
   const facts: [string, string][] = [
+    ["Sandbox ID", sandbox.id],
+    ["Machine ID", sandbox.provider_sandbox_id ?? "Not assigned"],
     ["Golden", golden ? `${golden.name}${golden.removed_at ? " (removed)" : ""}` : "Unknown"],
     ["Org", org?.org.name ?? "Unknown"],
     ["Provider", PROVIDER_LABELS[sandbox.provider] ?? sandbox.provider],
@@ -161,16 +163,18 @@ export default async function SandboxPage({ params }: Props) {
         {/* One row on every width: a long name wraps inside its heading, the machine's action stays on the right. */}
         <div className="flex items-center justify-between gap-3">
           <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-2 sm:gap-x-3">
-            <h1 className="min-w-0 font-mono text-xl font-semibold tracking-tight break-all">
-              {sandbox.provider_sandbox_id}
+            <h1 className="min-w-0 text-xl font-semibold tracking-tight break-words">
+              {golden?.name ?? "Sandbox"} / {HARNESS_LABELS[sandbox.harness] ?? "Agent"}
             </h1>
             <StatusBadge
               status={sandbox.status}
               idlePaused={sandbox.status_reason === "idle_paused"}
               expiresAt={sandbox.expires_at}
             />
-            <CopyButton value={sandbox.provider_sandbox_id} label="Copy sandbox ID" className="-ml-1.5" />
             {outcome && <OutcomeBadge outcome={outcome} />}
+            <span className="text-xs text-muted-foreground">
+              Cost: <RowCost cost={cost} />
+            </span>
           </div>
           {configured && <SandboxActions sandboxId={sandbox.id} status={sandbox.status} />}
         </div>
@@ -200,6 +204,7 @@ export default async function SandboxPage({ params }: Props) {
           <SandboxChat
             sandboxId={sandbox.id}
             initialStatus={sandbox.status}
+            pinnedModel={sandbox.boat_runtime || sandbox.runtime_transport === "dialout"}
             initialIdlePaused={sandbox.status_reason === "idle_paused"}
             expiresAt={sandbox.expires_at}
             initialUsageRevision={usageRevision(sandbox.usage_turns)}
@@ -215,7 +220,10 @@ export default async function SandboxPage({ params }: Props) {
           <SandboxAttention sandbox={sandbox} viewer={viewer} />
           <Card className="gap-3 py-5">
             <CardHeader className="px-5">
-              <CardTitle className="text-sm">Details</CardTitle>
+              <CardTitle className="flex items-center justify-between text-sm">
+                Details
+                <CopyButton value={sandbox.id} label="Copy sandbox ID" />
+              </CardTitle>
             </CardHeader>
             <CardContent className="px-5">
               <Facts facts={facts} />
@@ -262,6 +270,7 @@ function DockerSandbox({
   const { reasons } = controls;
   const image = dockerImageLabel(sandbox.docker_image);
   const facts: Fact[] = [
+    ["Sandbox ID", sandbox.id],
     ["Org", org],
     ["Provider", SANDBOX_PLACEMENT_LABELS.docker],
     ["Host", host],
@@ -297,16 +306,18 @@ function DockerSandbox({
         </Button>
         <div className="flex items-center justify-between gap-3">
           <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-2 sm:gap-x-3">
-            <h1 className="min-w-0 font-mono text-xl font-semibold tracking-tight break-all" title={sandbox.id}>
-              {dockerSandboxName(sandbox.id)}
+            <h1 className="min-w-0 text-xl font-semibold tracking-tight break-words">
+              {HARNESS_LABELS[sandbox.harness] ?? "Agent"} workspace
             </h1>
             <StatusBadge
               status={sandbox.status}
               idlePaused={sandbox.status_reason === "idle_paused"}
               expiresAt={sandbox.expires_at}
             />
-            <CopyButton value={sandbox.id} label="Copy sandbox ID" className="-ml-1.5" />
           </div>
+          <span className="text-xs text-muted-foreground">
+            Cost: <RowCost cost={cost} />
+          </span>
           {configured && (
             <SandboxActions
               sandboxId={sandbox.id}
@@ -356,7 +367,10 @@ function DockerSandbox({
         <SandboxDetailsPanel>
           <Card className="gap-3 py-5">
             <CardHeader className="px-5">
-              <CardTitle className="text-sm">Details</CardTitle>
+              <CardTitle className="flex items-center justify-between text-sm">
+                Details
+                <CopyButton value={sandbox.id} label="Copy sandbox ID" />
+              </CardTitle>
             </CardHeader>
             <CardContent className="px-5">
               <Facts facts={facts} />

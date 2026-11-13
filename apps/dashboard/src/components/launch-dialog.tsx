@@ -5,24 +5,21 @@ import { SANDBOX_PLACEMENT_LABELS as PROVIDER_LABELS } from "@armada/core";
 import {
   ChevronDownIcon,
   CircleAlertIcon,
-  CpuIcon,
   FolderIcon,
-  GaugeIcon,
   PlugIcon,
   RocketIcon,
   ServerIcon,
   WalletIcon,
 } from "lucide-react";
 import Link from "next/link";
-import { Fragment, type ReactNode, type RefObject, useCallback, useEffect, useId, useRef, useState } from "react";
-import { flushSync } from "react-dom";
+import { Fragment, type ReactNode, type RefObject, useEffect, useId, useRef, useState } from "react";
 import { launchFromDockerSnapshot } from "@/app/actions/docker-snapshots";
 import { launchFromGolden } from "@/app/actions/sandboxes";
 import { ActionForm, SubmitButton } from "@/components/action-form";
 import { ConnectionStatusBadge } from "@/components/connections";
 import { MachineSizeField } from "@/components/machine-size-field";
 import { SubmitShortcut } from "@/components/mod-key";
-import { EFFORT_LABEL, type ModelCatalog, ModelFields } from "@/components/model-fields";
+import { type ModelCatalog, ModelFields } from "@/components/model-fields";
 import { SkillPicker } from "@/components/skill-picker";
 import { TemplateLaunchForm } from "@/components/templates";
 import { Button } from "@/components/ui/button";
@@ -91,8 +88,8 @@ type LaunchProps = {
 
 /**
  * Launches an agent from a golden. The task comes first, then the agent and, for a golden with several
- * repositories, the project. Everything else starts on its configured default and is summarized on the collapsed
- * Advanced area, where it can be overridden. Who may open the sandbox is not a choice: its owner and the org's
+ * repositories, the project. Account and model choices stay visible; optional skills and infrastructure overrides
+ * stay in Advanced. Who may open the sandbox is not a choice: its owner and the org's
  * admins (#680).
  */
 export function LaunchDialog(props: LaunchProps) {
@@ -171,10 +168,6 @@ function LaunchForm({
 }: LaunchProps) {
   const id = useId();
   const [harness, setHarness] = useState<Harness>("claude");
-  const [choice, setChoice] = useState({
-    model: catalog.claude.defaultModel,
-    effort: catalog.claude.defaultReasoningEffort,
-  });
   const initialAccount = (agent: Harness) => {
     if (accounts.state !== "ready") return "";
     const resolved = launchDefault(accounts.accounts, agent, accounts.now);
@@ -190,7 +183,6 @@ function LaunchForm({
   const canDelegate = provider !== "docker" && harness === "codex" && usableCodexAccount(credential);
   const access = useLaunchAccess(connections);
   const root = useRef<HTMLDivElement>(null);
-  const advanced = useRef<HTMLDivElement>(null);
   const launchKey = useRef<LaunchKey | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [skills, setSkills] = useState<string[]>([]);
@@ -198,17 +190,12 @@ function LaunchForm({
 
   useEffect(() => {
     const node = root.current;
-    const details = advanced.current;
-    if (!node || !details) return;
+    if (!node) return;
     // React resets a form after its action returns. A failed launch must keep the task and the choices that were
     // made, so the person fixes the cause and launches again; a successful one navigates away.
     const keep = (event: Event) => {
       event.preventDefault();
       event.stopPropagation();
-    };
-    // A field the browser refuses to submit (an empty custom model id) must be visible to be focused and explained.
-    const reveal = () => {
-      flushSync(() => setAdvancedOpen(true));
     };
     // ⌘↵ launches from any field, as the composer sends. It goes through the Launch button, so a held or pending
     // launch (the button is disabled) is not submitted by the keyboard either.
@@ -228,12 +215,10 @@ function LaunchForm({
     node.addEventListener("reset", keep, true);
     node.addEventListener("formdata", keyed, true);
     node.addEventListener("keydown", shortcut);
-    details.addEventListener("invalid", reveal, true);
     return () => {
       node.removeEventListener("reset", keep, true);
       node.removeEventListener("formdata", keyed, true);
       node.removeEventListener("keydown", shortcut);
-      details.removeEventListener("invalid", reveal, true);
     };
   }, []);
 
@@ -249,12 +234,7 @@ function LaunchForm({
   const [project, setProject] = useState(repositories.length === 1 ? (repositories[0] ?? "") : "");
   // The size that will be requested, null while the provider decides.
   const [size, setSize] = useState<MachineSize | null>(null);
-  const onChoice = useCallback((next: { model: string; effort: string }) => setChoice(next), []);
-  const entry = catalog[harness];
-  const modelLabel = entry.models.find((option) => option.id === choice.model)?.label ?? (choice.model || "Model id");
   const summary: { key: string; icon: ReactNode; text: string }[] = [
-    { key: "model", icon: <CpuIcon />, text: modelLabel },
-    { key: "effort", icon: <GaugeIcon />, text: EFFORT_LABEL[choice.effort] ?? choice.effort },
     // A single repository is chosen in Advanced, so its choice is summarized with the other overrides.
     ...(repositories.length === 1
       ? [{ key: "project", icon: <FolderIcon />, text: project || "Default directory" }]
@@ -337,9 +317,19 @@ function LaunchForm({
           {access.alerts(() => {
             focusLaunch.current = true;
           })}
-          <SkillPicker orgId={orgId} value={skills} onChange={setSkills} />
+          <ModelFields
+            key={`model-${harness}`}
+            idPrefix={id}
+            harness={harness}
+            catalog={catalog}
+            connections={connectionChoices(accounts, harness)}
+            account={credential}
+            onConnection={(next) => {
+              setCredential(next);
+              setArmadaAccess(false);
+            }}
+          />
           <Collapsible
-            ref={advanced}
             open={advancedOpen}
             onOpenChange={setAdvancedOpen}
             data-launch-advanced
@@ -379,19 +369,7 @@ function LaunchForm({
               </Button>
             </CollapsibleTrigger>
             <CollapsibleContent forceMount className="space-y-4 border-t p-3 data-[state=closed]:hidden">
-              <ModelFields
-                key={harness}
-                idPrefix={id}
-                harness={harness}
-                catalog={catalog}
-                onChoice={onChoice}
-                connections={connectionChoices(accounts, harness)}
-                account={credential}
-                onConnection={(next) => {
-                  setCredential(next);
-                  setArmadaAccess(false);
-                }}
-              />
+              <SkillPicker orgId={orgId} value={skills} onChange={setSkills} />
               {repositories.length === 1 && (
                 <RepositoryField idPrefix={id} repositories={repositories} onChange={setProject} />
               )}

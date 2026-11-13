@@ -18,13 +18,13 @@ PRs ahead of it. Merge limits control merges, not the contents of CI builds.
 
 Dashboard browser tests are manual-only for now (owner decision, 2026-11-12).
 Run `bun run e2e` when browser validation is wanted; it is not a PR or merge-queue
-gate. Screenshot evidence workflows are removed; their capture scripts remain.
+gate. Screenshot evidence workflows and their one-off capture scripts are removed.
 
 ## What runs in the queue
 
 | Workflow file | Queue? | Reason |
 | --- | --- | --- |
-| `ci.yml` | Yes | Lint/typecheck (including migration-version and native contract steps), six unit shards and their aggregate. Migration versions compare the entire candidate against `merge_group.base_sha`. |
+| `ci.yml` | Yes | Six unit shards (shard 1 also runs lint/typecheck and migration guards), plus their aggregate. Native/namespace contracts run in release validation. Migration versions compare the entire candidate against `merge_group.base_sha`. |
 | `apple-quality.yml` | No | Optional PR/main workflow filtered to iOS and its generated harness contract inputs. GitHub merge-group events do not support workflow-level path filters. |
 | `migration-preview.yml` | No | Optional PR dry-run, filtered to `supabase/migrations/**`, with no production credentials. |
 | `migrations.yml` | No | Main migration changes or explicit operator dispatch only; apply jobs never appear on PRs. |

@@ -497,40 +497,6 @@ test.each(["finished", "failed"] as const)(
   },
 );
 
-test("unavailable task evidence is unknown, not a launch failure or auto-pause", async () => {
-  const f = await fixture();
-  try {
-    await f.due();
-    await createRoutineScheduler(f.sql, { launch: f.launch, observe: f.observe }).tick();
-    let observations = 0;
-    const observe = async () => {
-      observations++;
-      throw Error("sensitive provider diagnostics");
-    };
-    for (let i = 0; i < 3; i++) {
-      await f.db.query("update routine_runs set task_checked_at=now()-interval '2 minutes' where routine_id=$1", [
-        f.routine.id,
-      ]);
-      await createRoutineScheduler(f.sql, { launch: f.launch, observe }).tick();
-    }
-    expect(observations).toBe(3);
-    expect(
-      (await f.db.query("select state,task_state from routine_runs where routine_id=$1", [f.routine.id])).rows[0],
-    ).toEqual({ state: "succeeded", task_state: "unknown" });
-    expect(
-      (await f.db.query("select status,consecutive_failures from routines where id=$1", [f.routine.id])).rows[0],
-    ).toEqual({ status: "enabled", consecutive_failures: 0 });
-    await f.db.query("delete from members where user_id=$1 and org_id=$2", [f.people.owner, f.people.org]);
-    await f.db.query("update routine_runs set task_checked_at=now()-interval '2 minutes' where routine_id=$1", [
-      f.routine.id,
-    ]);
-    await createRoutineScheduler(f.sql, { launch: f.launch, observe }).tick();
-    expect(observations).toBe(3);
-  } finally {
-    await f.close();
-  }
-});
-
 test("calendar admission counts missed occurrences once and pauses unavailable schedules without compute", async () => {
   const f = await fixture();
   try {

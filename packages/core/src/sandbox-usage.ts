@@ -216,21 +216,3 @@ export function withUsageTotals(usage: SandboxUsage | null | undefined): Sandbox
   ) as unknown as TokenUsageTotals;
   return { ...usage, tokenTotals: { ...totals, incomplete } };
 }
-
-/** Empty child sets cost zero; any unknown component keeps that component unknown. */
-export function sumSandboxUsage(usages: readonly (SandboxUsage | null)[]): SandboxUsageSummary {
-  const rows = usages.map(summarizeSandboxUsage);
-  return Object.fromEntries(
-    ([...TOKEN_FIELDS, "computeSeconds", "turnCount"] as const).map((key) => {
-      const values = rows.map((row) => row[key]);
-      const sum = values.reduce<number>((total, value) => total + (value ?? 0), 0);
-      return [
-        key,
-        values.every((value) => value !== null) &&
-        (key === "computeSeconds" ? Number.isFinite(sum) : Number.isSafeInteger(sum))
-          ? sum
-          : null,
-      ];
-    }),
-  ) as unknown as SandboxUsageSummary;
-}
