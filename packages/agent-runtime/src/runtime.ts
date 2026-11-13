@@ -1,8 +1,8 @@
-import { spawn } from "node:child_process";
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { ExecRequest, ExecResult, Harness } from "@armada/core";
 import { HARNESSES, validateReadableVariables } from "@armada/core";
 import { PRIVATE_SKILL_FAILURES } from "../../core/src/private-skill-error.ts";
+import { ChildOwner } from "./children.ts";
 import { validateHarnessCwd } from "./cwd.ts";
 import { HarnessError } from "./errors.ts";
 import { execCredentialValues, validateExecEnvironment } from "./exec-env.ts";
@@ -26,6 +26,9 @@ import {
 import { sampleVmResources } from "./resource-sampler.ts";
 import { installRuntimeSkills } from "./skills.ts";
 export class Runner {
+  private execChildren = new ChildOwner();
+  private execReleases = new Set<Promise<void>>();
+  private closing = false;
   private active = new Map<
     string,
     { turn: Turn; done: Promise<void>; controller: AbortController; prompt: StoredPrompt; terminal: boolean }
@@ -110,6 +113,39 @@ export class Runner {
       if (p.status === "running" || p.status === "queued")
         journal.transition(p, "failed", "runner_restarted_outcome_unknown");
   }
+  /** Dial-out has no independent process lifetime: only bounded synchronous commands may run. */
+  handleDialout(request: RunnerRequest, signal?: AbortSignal): Promise<Response> {
+    if (
+      request.op === "exec" &&
+      (!request.input ||
+        request.input.detached ||
+        typeof request.input.command !== "string" ||
+        !request.input.command.trim() ||
+        Buffer.byteLength(request.input.command) > 262144 ||
+        (request.input.timeoutSeconds !== undefined &&
+          (!Number.isInteger(request.input.timeoutSeconds) ||
+            request.input.timeoutSeconds < 1 ||
+            request.input.timeoutSeconds > 600)))
+    )
+      return Promise.resolve(
+        Response.json({ version: 1, requestId: request.requestId, error: "invalid_request" }, { status: 400 }),
+      );
+    return this.handle(
+      new Request("http://runtime/v1", {
+        ...(signal ? { signal } : {}),
+        method: "POST",
+        headers: { [AUTH_HEADER]: this.grant.token },
+        body: JSON.stringify(request),
+      }),
+    );
+  }
+  /** Revoke admission first, then terminate owned groups before draining their RPCs. */
+  async close(): Promise<void> {
+    this.closing = true;
+    await Promise.all([...this.execReleases]);
+    await Promise.all([this.execChildren.close(), ...Object.values(this.drivers).map((driver) => driver.close())]);
+    await Promise.allSettled([...this.commands]);
+  }
   async handle(request: Request): Promise<Response> {
     const token = request.headers.get(AUTH_HEADER) ?? "";
     if (
@@ -128,6 +164,7 @@ export class Runner {
       } catch {
         throw Error("invalid_request");
       }
+      if (this.closing) throw Error("sandbox_not_ready");
       if (!r || typeof r !== "object" || Array.isArray(r)) throw Error("invalid_request");
       if (r.version !== 1 || r.sandboxId !== this.grant.sandboxId || typeof r.requestId !== "string" || !r.requestId)
         throw Error("invalid_request");
@@ -751,11 +788,9 @@ export class Runner {
   }
   private async exec(r: ExecRequest): Promise<ExecResult> {
     if (r.sandboxId !== this.grant.sandboxId || typeof r.command !== "string") throw Error("invalid_request");
-    const child = spawn("/bin/bash", ["-s"], {
+    const child = this.execChildren.spawn("/bin/bash", ["-s"], {
       cwd: r.cwd ?? process.cwd(),
-      detached: true,
       env: this.execEnvironment,
-      stdio: ["pipe", "pipe", "pipe"],
     });
     child.stdin.on("error", () => {});
     child.stdin.end(r.command);
@@ -834,6 +869,16 @@ export class Runner {
     this.commands.add(done);
     void done.finally(() => this.commands.delete(done));
     if (r.detached) return { detached: true, processId: pid };
-    return done;
+    const result = await done;
+    if (!this.closing) {
+      const release = this.execChildren.release(child);
+      this.execReleases.add(release);
+      try {
+        await release;
+      } finally {
+        this.execReleases.delete(release);
+      }
+    }
+    return result;
   }
 }

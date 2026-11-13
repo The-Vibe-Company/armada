@@ -1551,7 +1551,16 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         "Redirects the turn that is running now. delivery says how: native joins the turn (Claude Code); " +
         "restart interrupts it and continues the same conversation with this text (Codex). Refused when no " +
         "turn runs: use send then.",
-      input: { id, text: z.string().min(1), conversation_id: conversationId },
+      input: {
+        id,
+        text: z.string().min(1),
+        conversation_id: conversationId,
+        request_id: z
+          .string()
+          .uuid()
+          .optional()
+          .describe("Optional durable runtime request ID; reuse identical input after uncertain delivery."),
+      },
       output: {
         id: z.string(),
         promptId: z.string(),
@@ -1561,6 +1570,8 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       },
     },
     async (args) => {
+      if (args.request_id !== undefined)
+        throw new ToolError("invalid_request", "request_id is supported only for runtime control.");
       const { sandbox: found, provider } = await live(args.id);
       const delivery = provider.capabilities[found.harness]?.steer ?? "none";
       if (delivery === "none") throw new ToolError("unsupported", `${found.harness} cannot be steered here.`);
@@ -1640,10 +1651,20 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     {
       title: "Interrupt the running turn",
       description: "Stops the running turn of one conversation, or of all. The sandbox stays up for the next send.",
-      input: { id, conversation_id: conversationId },
+      input: {
+        id,
+        conversation_id: conversationId,
+        request_id: z
+          .string()
+          .uuid()
+          .optional()
+          .describe("Optional durable runtime request ID; reuse identical input after uncertain delivery."),
+      },
       output: { id: z.string(), interrupted: z.boolean() },
     },
     async (args) => {
+      if (args.request_id !== undefined)
+        throw new ToolError("invalid_request", "request_id is supported only for runtime control.");
       const { sandbox: found, provider } = await live(args.id);
       if (!provider.capabilities[found.harness]?.interrupt) {
         throw new ToolError("unsupported", `${found.harness} cannot be interrupted here.`);
@@ -1667,6 +1688,11 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         "contains the agent's credentials is redacted. Use it to inspect the repos, not to drive the agent.",
       input: {
         id,
+        request_id: z
+          .string()
+          .uuid()
+          .optional()
+          .describe("Optional durable runtime request ID; reuse identical input after uncertain delivery."),
         command: z.string().min(1),
         cwd: z.string().min(1).optional(),
         timeout_seconds: z.number().int().min(1).max(600).optional().describe("Default 120."),
@@ -1681,6 +1707,8 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       },
     },
     async (args) => {
+      if (args.request_id !== undefined)
+        throw new ToolError("invalid_request", "request_id is supported only for runtime control.");
       const { sandbox: found, provider } = await live(args.id);
       // Applies to managed and ordinary exec before any native preparation or
       // provider command can implicitly resume a retained disk.
