@@ -310,7 +310,10 @@ test("a refused launch keeps the chosen account: the retry bills who the person 
 test("a server older than named accounts is said plainly, and launches send no account", async ({ page }) => {
   await mock("/__test/accounts", { legacy: true });
   await signIn(page, "alice@example.com", "/harness");
-  await expect(page.locator('[data-accounts="legacy"]')).toContainText("This Armada server predates named accounts");
+  await expect(page.locator('[data-accounts="legacy"]')).toContainText("Account management needs an update");
+  await expect(
+    page.locator('[data-accounts="legacy"]').getByRole("link", { name: "Choose a snapshot" }),
+  ).toHaveAttribute("href", "/environments");
   await expect(page.getByRole("button", { name: "Add a model account", exact: true })).toHaveCount(0);
 
   const dialog = await openLaunch(page);
