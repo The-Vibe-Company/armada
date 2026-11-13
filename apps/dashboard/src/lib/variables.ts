@@ -1,3 +1,4 @@
+import { isRecord } from "@armada/core";
 import type { Bucket, ResourceState } from "./resource-list.ts";
 
 /**
@@ -27,10 +28,6 @@ export type VaultItem = {
 };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function iso(value: unknown): string | null {
   return typeof value === "string" && Number.isFinite(Date.parse(value)) ? value : null;
