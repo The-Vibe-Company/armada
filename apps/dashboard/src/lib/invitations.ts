@@ -1,3 +1,4 @@
+import { isRecord } from "@armada/core";
 /**
  * Organization invitations (#641), as the dashboard shows them: the admin who invites, resends and revokes, and the
  * person who previews and accepts. The Armada server owns the invitation (#640, control API v1): authenticated POSTs
@@ -31,9 +32,6 @@ const STATUS = ["pending", "accepted", "revoked"] as const satisfies readonly In
 
 /** One invitation as the admin's list shows it: the server's DTO, fields checked. */
 export type InvitationView = OrganizationInvitation;
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
 
 /** An invitation from the server, or null when the answer is not one. Extra fields are dropped. */
 export function parseInvitation(value: unknown): InvitationView | null {

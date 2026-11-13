@@ -8,13 +8,12 @@ import {
   parseClaudeEndpoint,
   parseCodexEndpoint,
   parseOpenCodeEndpoint,
+  isRecord as record,
   type SandboxRecord,
 } from "@armada/core";
 import { VaultError } from "@armada/core/server";
 import type { ModelAuthOwnership } from "./model-auth.ts";
 
-const record = (value: unknown): value is Record<string, unknown> =>
-  !!value && typeof value === "object" && !Array.isArray(value);
 const claudeAllowed = new Set(["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", CLAUDE_ENDPOINT_ENV]);
 const opencodeAllowed = new Set(["OPENCODE_API_KEY", OPENCODE_ENDPOINT_ENV]);
 const codexAllowed = new Set(["OPENAI_API_KEY", CODEX_ENDPOINT_ENV, CODEX_AUTH_ENV, "ARMADA_SERVER_CODEX"]);
