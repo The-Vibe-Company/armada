@@ -502,6 +502,7 @@ export async function startServer(
     runtimeResume,
     ...(runtimeGitHub ? { runtimeGitHub } : {}),
     ready: createDatabaseReadiness(sql),
+    ...(env.RAILWAY_GIT_COMMIT_SHA ? { commitSha: env.RAILWAY_GIT_COMMIT_SHA } : {}),
     runtimeProviderFor,
     launch,
     modelAuth,
