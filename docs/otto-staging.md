@@ -62,7 +62,27 @@ inferred from usage counters. The three orphan reasons are `pr_without_live_owne
 
 Needs-work evidence must match the exact current head: a failed REQUIRED check,
 a conflict, or observed queue removal after entry. Pending/missing evidence is
-UNKNOWN, never a failure. The follow-up GitHub evidence slice supplies these facts.
+UNKNOWN, never a failure. Reconciliation reads PR details (conflicts), classic
+required-status-check protection (context + GitHub App ID), latest check runs and
+combined commit statuses. All URLs cache selected metadata + ETags independently;
+304 reuses stored selected metadata, revalidated before truth is derived. Policy lookup is shared by base branch
+within a traversal. A head change during detail lookup yields UNKNOWN work evidence.
+Only an observed required failure is positive; another App's same-named failed check
+is not. A partial check listing can supply a positive witness but never prove that
+no failures exist. Pending checks do not themselves create an orphan.
+
+The existing GitHub observer token needs Administration **read** permission for
+classic required-check policy lookup, in addition to Checks/Contents/PR/Issues read.
+See [GitHub's branch protection API](https://docs.github.com/en/rest/branches/branch-protection)
+and [check-run reference](https://docs.github.com/en/rest/checks/runs).
+Do not grant write permission. Policy 403/404 or ruleset-only requirements that
+cannot be identified by that endpoint stay UNKNOWN when a failure might be required.
+No failures in a proven complete check universe can establish a negative even when
+policy is unavailable. Metadata caches exclude PR bodies and check outputs.
+Signed `pull_request` enqueued/dequeued events retain exact-head entry/removal
+witnesses; removal without an observed entry is UNKNOWN. Stale, reversed or
+equal-time conflicting queue notifications are UNKNOWN, not a guessed order. Reconciliation without
+webhooks still runs, but cannot invent historical queue entries/removals.
 
 `/orphans?day=YYYY-MM-DD` returns retained UTC detections in this viewer's scope;
 default is today. `firstSeenAt` and `lastSeenAt` record actual read-model detections,
@@ -78,3 +98,9 @@ ownership completeness and orphan completeness; an unproven total stays null.
 Compare every paginated PR with a complete `gh pr list` in staging. Provisioning,
 webhook configuration, migration application and deployment remain coordinator-only.
 The dashboard slice is reserved for its assigned frontend agent.
+
+PR webhook state uses GitHub's `updated_at`, not receipt time, so delayed events
+cannot replace a newer observed head. Missing/future PR timestamps are rejected.
+Reconciliation points retain page-observation times, not transaction admission
+or later per-PR work-query time. Work evidence IDs/times are returned in resource
+`evidence.workFacts` for inspection.
