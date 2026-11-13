@@ -698,3 +698,25 @@ starts every page before releasing any response, verifies chunked cookies decode
 with the dashboard's pinned Supabase SSR SDK, and deliberately returns broken
 HTTP-200 panels to fail only the named page while siblings finish. No network or
 wall-clock waits are used by these tests.
+
+### Sandbox deletion receipts
+
+Both staging workflows upload `.smoke/sandboxes.json` as an artifact even when probes fail, restore the latest named artifact across branches/tags, and set
+`ARMADA_SMOKE_JOURNAL` for the compute smoke. Launch receipts are persisted before
+probe validation; cleanup deletes known IDs after all stop/recovery assertions.
+The bounded startup sweep retries at most 32 older receipted IDs in parallel;
+current-run deletion has an independent 64-ID bound. It never lists all stopped
+sandboxes for deletion. The target `smoke_cleanup_summary.remainingRows` is zero;
+deleted audit rows remain but do not grow active dashboard lists.
+
+For a manual staging run set `ARMADA_SMOKE_JOURNAL` to a durable receipt path.
+Without it, the legacy operator smoke retains its stop-only behavior. Journal
+cleanup refuses managed `--orchestrator` mode before allocating compute. Lost
+launch responses or forced termination before persistence require coordinator
+reconciliation: direct launches have no idempotency lookup. Unknown outcomes
+fail the run instead of claiming zero growth. Artifact expiry can lose retry
+receipts; preserve `smoke_sandbox_receipt` output as independent audit evidence.
+
+Coordinator checks: compare org counts before/after a normal run; deliberately
+fail a probe after launch; restore one known smoke receipt on the next run and
+verify its deletion while an unrelated stopped sandbox remains unchanged.

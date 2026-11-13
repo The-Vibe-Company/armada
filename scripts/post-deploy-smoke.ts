@@ -1,4 +1,11 @@
 import { HARNESS_CATALOG, type Harness, isHarness } from "../packages/core/src/harnesses.ts";
+import {
+  deleteSmokeReceipts,
+  readSmokeJournal,
+  type SmokeSandboxReceipt,
+  STAGING_ORIGIN,
+  saveSmokeJournal,
+} from "./smoke-sandbox-cleanup.ts";
 /** API-only smoke; ARMADA_SMOKE=create_real_compute explicitly authorizes compute.
  * ARMADA_URL must be an HTTPS origin; ARMADA_TOKEN is the only credential.
  * ARMADA_SMOKE_CASES is a JSON array of {provider, harness, org, golden, model,
@@ -97,6 +104,7 @@ interface SmokeIo {
   sleep: (ms: number) => Promise<void>;
   now: () => number;
   out: (line: string) => void;
+  recordSandbox?: (org: string, id: string, key: string) => Promise<void>;
 }
 const POLLS = 120;
 const PROMPT = "Reply with exactly SMOKE_OK and do not use tools.";
@@ -166,7 +174,7 @@ async function verifyRecovery(archive: string, repo: string, commit: string) {
 }
 
 /** Operator entrypoint; injected I/O also permits fake-API validation without compute. */
-export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[], io: SmokeIo): Promise<boolean> {
+async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[], io: SmokeIo): Promise<boolean> {
   function report(index: number, step: string, error?: unknown) {
     io.out(
       JSON.stringify({
@@ -572,6 +580,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
     const scoped = scopedPair
       ? createScopedProbe({ ...item, goldenId: item.goldenId! }, !dirty, {
           request: (path, body) => request(path, { ...body, org: item.org }),
+          recordSandbox: (id, key) => io.recordSandbox?.(item.org, id, key) ?? Promise.resolve(),
           poll: (read, done) => poll(read, done, 300),
           step,
           withCleanup: async (action) => {
@@ -1351,6 +1360,100 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
     }
   }
   return passed;
+}
+
+/** Persist handles before callers inspect receipts; cleanup also runs after failed probes. */
+export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[], io: SmokeIo): Promise<boolean> {
+  const path = env.ARMADA_SMOKE_JOURNAL;
+  if (!path) return runPostDeploySmoke(env, args, io);
+  if (
+    env.ARMADA_URL !== STAGING_ORIGIN ||
+    !env.ARMADA_TOKEN ||
+    env.ARMADA_SMOKE !== "create_real_compute" ||
+    args.includes("--orchestrator")
+  ) {
+    io.out(JSON.stringify({ step: "smoke_cleanup_configure", pass: false }));
+    return false;
+  }
+  let rows: SmokeSandboxReceipt[];
+  try {
+    rows = await readSmokeJournal(path);
+  } catch {
+    io.out(JSON.stringify({ step: "smoke_cleanup_journal", pass: false }));
+    return false;
+  }
+  const cleanupIo = { fetch: io.fetch, out: io.out };
+  rows = await deleteSmokeReceipts(STAGING_ORIGIN, env.ARMADA_TOKEN, rows, cleanupIo);
+  await saveSmokeJournal(path, rows);
+  const earlierRows = rows;
+  rows = [];
+  let passed = false;
+  let unknownLaunch = false;
+  const trackedIo: SmokeIo = {
+    ...io,
+    recordSandbox: async (org, id, requestKey) => {
+      if (!rows.some((row) => row.id === id)) rows.push({ org, id, requestKey });
+      await saveSmokeJournal(path, [...earlierRows, ...rows]);
+    },
+    fetch: async (url, init) => {
+      const launch = /\/api\/v1\/(sandbox\/launch(?:-access-v1)?|templates\/launch)$/.test(url);
+      if (!launch) {
+        // Scoped probe children are attributed by its verified native launch claims,
+        // never by a difference of fleet-wide stopped rows.
+        if (url.endsWith("/api/v1/sandbox/stop")) {
+          const body = JSON.parse(String(init.body));
+          if (typeof body.id === "string" && typeof body.org === "string" && !rows.some((row) => row.id === body.id)) {
+            const row = { requestKey: `post-deploy-smoke:${crypto.randomUUID()}`, org: body.org, id: body.id };
+            rows.push(row);
+            await saveSmokeJournal(path, [...earlierRows, ...rows]);
+            io.out(JSON.stringify({ step: "smoke_sandbox_receipt", ...row }));
+          }
+        }
+        return io.fetch(url, init);
+      }
+      const requestKey = `post-deploy-smoke:${crypto.randomUUID()}`;
+      const org = JSON.parse(String(init.body)).org;
+      let response: Response;
+      try {
+        response = await io.fetch(url, init);
+      } catch (error) {
+        unknownLaunch = true;
+        throw error;
+      }
+      const result = (await response
+        .clone()
+        .json()
+        .catch(() => null)) as {
+        sandbox?: { id?: unknown };
+        state?: unknown;
+        id?: unknown;
+      } | null;
+      const id = result?.sandbox?.id ?? (result?.state === "succeeded" ? result.id : undefined);
+      if (typeof id === "string" && typeof org === "string") {
+        const row = { requestKey, org, id };
+        rows.push(row);
+        await saveSmokeJournal(path, [...earlierRows, ...rows]);
+        io.out(JSON.stringify({ step: "smoke_sandbox_receipt", ...row }));
+      } else if (response.ok) unknownLaunch = true;
+      return response;
+    },
+  };
+  try {
+    passed = await runPostDeploySmoke(env, args, trackedIo);
+  } finally {
+    rows = await deleteSmokeReceipts(STAGING_ORIGIN, env.ARMADA_TOKEN, rows, cleanupIo, 64);
+    rows = [...earlierRows, ...rows];
+    await saveSmokeJournal(path, rows);
+    io.out(
+      JSON.stringify({
+        step: "smoke_cleanup_summary",
+        pass: rows.length === 0 && !unknownLaunch,
+        remainingRows: rows.length,
+        launchOutcomeUnknown: unknownLaunch,
+      }),
+    );
+  }
+  return passed && rows.length === 0 && !unknownLaunch;
 }
 
 if (import.meta.main) {
