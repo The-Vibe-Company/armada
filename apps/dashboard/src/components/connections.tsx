@@ -107,7 +107,7 @@ export function ScopeBadge({ scope }: { scope: ConnectionScope }) {
   );
 }
 
-function ResultLine({ result, className }: { result: ActionResult | null; className?: string }) {
+export function ResultLine({ result, className }: { result: ActionResult | null; className?: string }) {
   if (!result) return null;
   return (
     <p

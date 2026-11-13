@@ -26,7 +26,7 @@ import {
   testAccountConnection,
 } from "@/app/actions/model-accounts";
 import { SubmitButton } from "@/components/action-form";
-import { ChoiceCard } from "@/components/connections";
+import { ChoiceCard, ResultLine } from "@/components/connections";
 import { Disclosure } from "@/components/disclosure";
 import { Empty } from "@/components/page-header";
 import {
@@ -87,15 +87,6 @@ import {
 import { cn } from "@/lib/utils";
 
 type Action = (previous: ActionResult | null, data: FormData) => Promise<ActionResult>;
-
-function ResultLine({ result }: { result: ActionResult | null }) {
-  if (!result) return null;
-  return (
-    <p role={result.ok ? "status" : "alert"} className={cn("text-sm", result.ok ? "text-success" : "text-destructive")}>
-      {result.ok ? result.message : result.error}
-    </p>
-  );
-}
 
 function day(iso: string): string {
   return new Date(iso).toISOString().slice(0, 10);

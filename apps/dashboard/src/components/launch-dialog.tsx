@@ -19,7 +19,7 @@ import { launchFromGolden } from "@/app/actions/sandboxes";
 import { ActionForm, SubmitButton } from "@/components/action-form";
 import { ConnectionStatusBadge } from "@/components/connections";
 import { MachineSizeField } from "@/components/machine-size-field";
-import { ModKey } from "@/components/mod-key";
+import { SubmitShortcut } from "@/components/mod-key";
 import { EFFORT_LABEL, type ModelCatalog, ModelFields } from "@/components/model-fields";
 import { SkillPicker } from "@/components/skill-picker";
 import { TemplateLaunchForm } from "@/components/templates";
@@ -34,7 +34,6 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { Kbd } from "@/components/ui/kbd";
 import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
@@ -272,7 +271,7 @@ function LaunchForm({ golden, provider, orgId, catalog, connections, accounts, r
               {...(access.held ? { disabled: true, "aria-describedby": `${id}-held` } : {})}
             >
               <RocketIcon /> Launch
-              <LaunchShortcut />
+              <SubmitShortcut />
             </SubmitButton>
           </div>
         }
@@ -548,21 +547,6 @@ export function AccountField({
         </NativeSelect>
       </div>
     </div>
-  );
-}
-
-/** The shortcut Launch answers to, on the button itself; hidden from its accessible name. */
-export function LaunchShortcut() {
-  return (
-    <Kbd
-      aria-hidden="true"
-      className="-mr-1 ml-0.5 border-transparent bg-primary-foreground/15 text-primary-foreground/80 shadow-none max-sm:hidden"
-    >
-      <span>
-        <ModKey />
-      </span>
-      <span>↵</span>
-    </Kbd>
   );
 }
 
