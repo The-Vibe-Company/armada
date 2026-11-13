@@ -280,8 +280,8 @@ test("frozen machine expiry survives mailbox delivery and cannot change under an
   );
 });
 
-async function boundFixture() {
-  const host = await fixture();
+async function boundFixture(registered?: Awaited<ReturnType<typeof fixture>>) {
+  const host = registered ?? (await fixture());
   const sandboxId = randomUUID(),
     generation = randomUUID();
   await db.query(
@@ -517,4 +517,182 @@ test("stop commits runtime revocation once; cleanup retains the create deadline 
   expect(
     (await db.query<{ status: string }>(`select status from sandboxes where id=$1`, [a.sandboxId])).rows[0]?.status,
   ).toBe("deleted");
+});
+
+async function boundStartup(operation: "create" | "bootstrap") {
+  const a = await boundFixture();
+  const { createRuntimeEnrolments } = await import("../src/runtime-enrolment.ts");
+  const authority = createRuntimeEnrolments(sql, key, { allowDockerIssue: true });
+  await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
+  const ticket = await authority.issue({ sandboxId: a.sandboxId, ownerId: a.owner.userId, configuration: {} });
+  let startup = a.create as { requestId: string; operation: "create" | "bootstrap" };
+  if (operation === "bootstrap") {
+    await store.complete(a.hostToken, a.installationId, { requestId: a.create.requestId, outcome: "completed" });
+    startup = { requestId: randomUUID(), operation };
+    await store.enqueueSandbox(a.owner, a.sandboxId, {
+      ...startup,
+      operation,
+      bootstrapDescriptor: {
+        serverUrl: "https://armada.example",
+        artifact: { sha256: "b".repeat(64), bytes: 123 },
+        enrolmentToken: ticket.enrolmentToken,
+      },
+    });
+  }
+  const runtime = await authority.enrol(ticket.enrolmentToken);
+  return { ...a, startup, authority, runtime };
+}
+async function lifecycle(sandboxId: string) {
+  return (
+    await db.query<{
+      status: string;
+      status_reason: string | null;
+      lifecycle_generation: string;
+      stopped_at: unknown;
+      stop_requested_at: unknown;
+      deleted_at: unknown;
+    }>(
+      `select status,status_reason,lifecycle_generation::text,stopped_at,stop_requested_at,deleted_at
+       from sandboxes where id=$1`,
+      [sandboxId],
+    )
+  ).rows[0];
+}
+
+test("host-confirmed frozen expiry fences runtime once, survives owner removal and admits cleanup", async () => {
+  for (const operation of ["create", "bootstrap"] as const) {
+    const a = await boundStartup(operation);
+    // SQL's deadline is still in the future: the host's physical observation,
+    // not the server clock or the actor's current grant, is authoritative.
+    await db.query(`delete from members where org_id=$1 and user_id=$2`, [a.owner.orgId, a.owner.userId]);
+    const before = await lifecycle(a.sandboxId);
+    await store.expired(a.hostToken, a.installationId, { requestId: a.startup.requestId });
+    const stopped = await lifecycle(a.sandboxId);
+    expect(stopped?.status).toBe("stopped");
+    expect(stopped?.status_reason).toBe("expired");
+    expect(stopped?.stopped_at).not.toBeNull();
+    expect(stopped?.stop_requested_at).not.toBeNull();
+    expect(Number(stopped?.lifecycle_generation)).toBe(Number(before?.lifecycle_generation) + 1);
+    await expect(a.authority.withSession(a.runtime.runtimeToken, a.runtime.epoch, async () => true)).rejects.toThrow(
+      "runtime_enrolment_denied",
+    );
+    await createDockerHostStore(sql, key).expired(a.hostToken, a.installationId, { requestId: a.startup.requestId });
+    expect(await lifecycle(a.sandboxId)).toEqual(stopped);
+    // An unacknowledged startup must not be replayed after the terminal fact.
+    expect(await store.poll(a.hostToken, a.installationId)).toBeNull();
+    expect(await lifecycle(a.sandboxId)).toEqual(stopped);
+    const remove = { requestId: randomUUID(), operation: "delete" as const };
+    await store.enqueueSandbox(a.actor, a.sandboxId, remove);
+    expect((await store.poll(a.hostToken, a.installationId))?.requestId).toBe(remove.requestId);
+    await store.complete(a.hostToken, a.installationId, { requestId: remove.requestId, outcome: "completed" });
+    const deleted = await lifecycle(a.sandboxId);
+    expect(deleted?.status).toBe("deleted");
+    expect(deleted?.deleted_at).not.toBeNull();
+    await store.expired(a.hostToken, a.installationId, { requestId: a.startup.requestId });
+    expect(await lifecycle(a.sandboxId)).toEqual(deleted);
+  }
+});
+
+test("expiry accepts only this installation's bound frozen startup machine, never arbitrary mailbox claims", async () => {
+  const a = await boundFixture(),
+    b = await boundFixture();
+  await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
+  const before = await lifecycle(a.sandboxId);
+  await denied(store.expired(b.hostToken, b.installationId, { requestId: a.create.requestId }));
+  await denied(store.expired(a.hostToken, randomUUID(), { requestId: a.create.requestId }));
+  await denied(store.expired(a.hostToken, a.installationId, { requestId: randomUUID() }));
+  const legacy = job();
+  await store.enqueue(a.actor, a.hostId, legacy);
+  await denied(store.expired(a.hostToken, a.installationId, { requestId: legacy.requestId }));
+  const stop = { requestId: randomUUID(), operation: "stop" as const };
+  await store.enqueueSandbox(a.actor, a.sandboxId, stop);
+  await denied(store.expired(a.hostToken, a.installationId, { requestId: stop.requestId }));
+  // A stale generation and a corrupted frozen frame must not transition the target.
+  const original = (
+    await db.query<{ input_enc: Uint8Array<ArrayBuffer> }>(
+      `select input_enc from docker_host_jobs where request_id=$1`,
+      [a.create.requestId],
+    )
+  ).rows[0];
+  if (!original) throw Error("missing bound create");
+  const { encryptSecret } = await import("@armada/core/server");
+  const envelope = JSON.parse(await decryptSecret(original.input_enc, key));
+  for (const request of [
+    { ...envelope.job.request, generation: randomUUID() },
+    { ...envelope.job.request, expiresAt: undefined },
+    { ...envelope.job.request, sandboxId: b.sandboxId },
+  ]) {
+    await db.query(`update docker_host_jobs set input_enc=$2 where request_id=$1`, [
+      a.create.requestId,
+      await encryptSecret(JSON.stringify({ ...envelope, job: { ...envelope.job, request } }), key),
+    ]);
+    const current = await lifecycle(a.sandboxId);
+    await denied(store.expired(a.hostToken, a.installationId, { requestId: a.create.requestId }));
+    // Neither pending admission nor repair of an old failed ACK may let a
+    // malformed identity fail the logical machine or block ordinary queue work.
+    expect(await store.poll(a.hostToken, a.installationId)).toBeNull();
+    expect(await lifecycle(a.sandboxId)).toEqual(current);
+    const later = await boundFixture(a);
+    await store.enqueueSandbox(later.owner, later.sandboxId, later.create);
+    await db.query(`update docker_host_jobs set outcome='failed',completed_at=now() where request_id=$1`, [
+      later.create.requestId,
+    ]);
+    expect((await store.poll(a.hostToken, a.installationId))?.requestId).toBe(legacy.requestId);
+    expect(await lifecycle(a.sandboxId)).toEqual(current);
+    expect((await lifecycle(later.sandboxId))?.status).toBe("failed");
+    await db.query(`update docker_host_jobs set outcome=null,completed_at=null where request_id=$1`, [
+      a.create.requestId,
+    ]);
+  }
+  expect(before?.stopped_at).toBeNull();
+  expect((await lifecycle(a.sandboxId))?.stopped_at).toBeNull();
+});
+
+test("failed startup ACK or rejected admission fails logical startup without claiming a physical stop", async () => {
+  for (const operation of ["create", "bootstrap"] as const) {
+    for (const failure of ["ack", "historical-ack", "expiry", "removed-actor"] as const) {
+      const a = await boundStartup(operation);
+      const before = await lifecycle(a.sandboxId);
+      if (failure === "ack")
+        await store.complete(a.hostToken, a.installationId, { requestId: a.startup.requestId, outcome: "failed" });
+      else {
+        if (failure === "historical-ack")
+          await db.query(`update docker_host_jobs set outcome='failed',completed_at=now() where request_id=$1`, [
+            a.startup.requestId,
+          ]);
+        else if (failure === "expiry")
+          await db.query(`update sandboxes set expires_at=now()-interval '1 second' where id=$1`, [a.sandboxId]);
+        else await db.query(`delete from members where org_id=$1 and user_id=$2`, [a.owner.orgId, a.owner.userId]);
+        expect(await store.poll(a.hostToken, a.installationId)).toBeNull();
+      }
+      const failed = await lifecycle(a.sandboxId);
+      if (!failed) throw Error("missing failed sandbox");
+      expect(failed.status).toBe("failed");
+      expect(failed?.status_reason).toBe("Docker sandbox startup failed.");
+      expect(failed?.stopped_at).toBeNull();
+      expect(Number(failed?.lifecycle_generation)).toBe(Number(before?.lifecycle_generation) + 1);
+      await expect(a.authority.withSession(a.runtime.runtimeToken, a.runtime.epoch, async () => true)).rejects.toThrow(
+        "runtime_enrolment_denied",
+      );
+      if (failure === "historical-ack") expect(await store.poll(a.hostToken, a.installationId)).toBeNull();
+      else await store.complete(a.hostToken, a.installationId, { requestId: a.startup.requestId, outcome: "failed" });
+      expect(await lifecycle(a.sandboxId)).toEqual(failed);
+      // Only a subsequent physical fact may populate stopped_at; failed is retained.
+      const stop = { requestId: randomUUID(), operation: "stop" as const };
+      await store.enqueueSandbox(a.actor, a.sandboxId, stop);
+      expect((await store.poll(a.hostToken, a.installationId))?.requestId).toBe(stop.requestId);
+      await store.complete(a.hostToken, a.installationId, { requestId: stop.requestId, outcome: "completed" });
+      const physicallyStopped = await lifecycle(a.sandboxId);
+      if (!physicallyStopped) throw Error("missing failed sandbox");
+      expect(physicallyStopped.status).toBe("failed");
+      expect(physicallyStopped.stopped_at).not.toBeNull();
+      expect(physicallyStopped.lifecycle_generation).toBe(failed.lifecycle_generation);
+      await store.expired(a.hostToken, a.installationId, { requestId: a.startup.requestId });
+      expect(await lifecycle(a.sandboxId)).toEqual({ ...physicallyStopped, stop_requested_at: expect.anything() });
+      const remove = { requestId: randomUUID(), operation: "delete" as const };
+      await store.enqueueSandbox(a.actor, a.sandboxId, remove);
+      await store.complete(a.hostToken, a.installationId, { requestId: remove.requestId, outcome: "completed" });
+      expect((await lifecycle(a.sandboxId))?.status).toBe("deleted");
+    }
+  }
 });

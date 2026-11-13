@@ -56,6 +56,17 @@ test("opt-in host HTTP routes separate user and host capabilities and never cach
       (await post("/api/docker-host/poll", host.hostToken, { installationId }, { origin: "https://foreign.example" }))
         .status,
     ).toBe(400);
+    const expiry = { installationId, requestId: randomUUID(), expired: true };
+    // Exact expiry packets reach machine authorization; ambiguous/nonliteral
+    // packets are rejected by HTTP before any machine fact can be recorded.
+    expect((await post("/api/docker-host/results", host.hostToken, expiry)).status).toBe(401);
+    for (const body of [
+      { ...expiry, expired: false },
+      { ...expiry, expired: "true" },
+      { ...expiry, outcome: "completed" },
+      { ...expiry, extra: true },
+    ])
+      expect((await post("/api/docker-host/results", host.hostToken, body)).status).toBe(400);
     const denied = await post("/api/docker-host/results", host.hostToken, {
       installationId,
       requestId: randomUUID(),

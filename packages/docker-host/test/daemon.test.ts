@@ -168,7 +168,7 @@ test("uncertain execution fails durably, never replays, and TTL sweep still runs
   expect(f.swept).toEqual([f.job.request.generation, f.job.request.generation]);
 });
 
-test("offline tick stops an expired owned Docker machine without exposing the host credential in argv", async () => {
+test("offline TTL stop confirmation survives restart and lost ACK without replaying compute or exposing credentials", async () => {
   const f = fixture();
   await tick(f.store, f.api, f.executor);
   f.deny();
@@ -220,9 +220,97 @@ test("offline tick stops an expired owned Docker machine without exposing the ho
       },
     },
   });
-  await expect(tick(f.store, f.api, executor)).rejects.toThrow("denied");
+  let offline = true,
+    loseAck = true,
+    reports = 0,
+    attempts = 0;
+  const api: Api = {
+    ...f.api,
+    async poll() {
+      if (offline) throw new Error("denied");
+      return { job: null };
+    },
+    async result(_state, receipt, expired) {
+      attempts++;
+      expect(expired).toBe(true);
+      expect((await f.store.load()).receipts[0]?.expired).toBe(true);
+      expect(receipt.requestId).toBe(f.job.requestId);
+      if (offline) throw new Error("offline");
+      reports++;
+      if (loseAck) {
+        loseAck = false;
+        throw new Error("lost ACK");
+      }
+    },
+  };
+  f.failSave(true);
+  await expect(tick(f.store, api, executor)).rejects.toThrow("denied");
   expect(running).toBe(false);
+  expect(attempts).toBe(0);
+  expect(f.state().receipts[0]?.expired).toBeUndefined();
+  f.failSave(false);
+  await expect(tick(f.store, api, executor)).rejects.toThrow("denied");
+  expect(running).toBe(false);
+  expect(f.state().receipts[0]).toMatchObject({ expired: true, outcome: "completed" });
+  expect(f.state().receipts[0]?.expiryReported).toBeUndefined();
   expect(JSON.stringify(calls)).not.toContain(state.hostToken);
+  // Reload the durable receipt; a later unavailable daemon cannot erase the proof.
+  const restarted = {
+    ...executor,
+    async stopIfExpired() {
+      throw new Error("Docker offline");
+    },
+  };
+  offline = false;
+  await tick(f.store, api, restarted);
+  expect(f.state().receipts[0]?.expiryReported).toBeUndefined();
+  await tick(f.store, api, restarted);
+  expect(f.state().receipts[0]?.expiryReported).toBe(true);
+  await tick(f.store, api, restarted);
+  expect(reports).toBe(2);
+  expect(attempts).toBe(3);
+  expect(f.executed).toEqual(["create"]);
+});
+
+test("all physical TTL stops precede bounded fair reporting across restarted ticks", async () => {
+  const f = fixture();
+  await tick(f.store, f.api, f.executor);
+  const first = f.job.requestId;
+  f.job.requestId = crypto.randomUUID();
+  f.job.request = { ...f.job.request, sandboxId: crypto.randomUUID(), generation: crypto.randomUUID() };
+  await tick(f.store, f.api, f.executor);
+  const second = f.job.requestId;
+  const swept: string[] = [],
+    reports: string[] = [],
+    sweepCounts: number[] = [];
+  const executor: Executor = {
+    ...f.executor,
+    async stopIfExpired(request) {
+      swept.push(request.sandboxId);
+      return true;
+    },
+  };
+  const api: Api = {
+    ...f.api,
+    async poll() {
+      return { job: null };
+    },
+    async result(_state, receipt, expired) {
+      if (!expired) throw new Error("Unexpected job execution");
+      reports.push(receipt.requestId);
+      sweepCounts.push(swept.length);
+      throw new Error("Timed-out HTTP transport");
+    },
+  };
+  await tick(f.store, api, executor);
+  expect(reports).toEqual([first]);
+  // Each tick reloads only durable state; no in-memory cursor is supplied by the fixture.
+  await tick(f.store, api, executor);
+  expect(reports).toEqual([first, second]);
+  await tick(f.store, api, executor);
+  expect(reports).toEqual([first, second, first]);
+  expect(sweepCounts).toEqual([2, 4, 6]);
+  expect(f.executed).toEqual(["create", "create"]);
 });
 
 test("HTTP registration is single-use and host credentials remain in authorization headers", async () => {
@@ -248,8 +336,15 @@ test("HTTP registration is single-use and host credentials remain in authorizati
     request: f.job.request,
     outcome: "completed",
   });
+  await api.result(state, { requestId: f.job.requestId, operation: "create", request: f.job.request }, true);
+  expect(JSON.parse(String(calls.at(-1)?.init.body))).toEqual({
+    installationId: state.installationId,
+    requestId: f.job.requestId,
+    expired: true,
+  });
   expect(calls.map((c) => c.init.headers)).toEqual([
     { authorization: `Bearer ${registrationToken}`, "content-type": "application/json" },
+    { authorization: `Bearer ${hostToken}`, "content-type": "application/json" },
     { authorization: `Bearer ${hostToken}`, "content-type": "application/json" },
     { authorization: `Bearer ${hostToken}`, "content-type": "application/json" },
   ]);
