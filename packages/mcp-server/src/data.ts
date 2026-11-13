@@ -96,7 +96,7 @@ const SANDBOX_USAGE = `(public.sandbox_usage(s) || jsonb_build_object('turnCount
     select prompt_id from public.sandbox_turn_models where sandbox_id=s.id
     union select value->>'promptId' from jsonb_array_elements(coalesce(s.usage_turns->'turns','[]'::jsonb))
   ) admitted_prompts))))`;
-const SANDBOX_COLUMNS = `${SANDBOX_USAGE} as usage, s.boat_runtime, s.preservation_note, s.task_outcome, s.task_prompt_id, s.credential_id, s.credential_version, s.id, s.provider::text as provider, s.provider_sandbox_id, s.golden_id, s.org_id, s.owner_id, s.harness::text as harness,
+const SANDBOX_COLUMNS = `${SANDBOX_USAGE} as usage, s.runtime_transport,s.boat_runtime, s.preservation_note, s.task_outcome, s.task_prompt_id, s.credential_id, s.credential_version, s.id, s.provider::text as provider, s.provider_sandbox_id, s.golden_id, s.org_id, s.owner_id, s.harness::text as harness,
   s.status::text as status, s.conversation_ids, s.created_at, s.stopped_at, s.deleted_at, s.status_reason,
   s.skills,s.expires_at,s.effective_ttl_seconds,s.requested_ttl_seconds,s.last_observed_at,s.lifecycle_error,s.lifecycle_generation,s.stop_requested_at,s.model, s.reasoning_effort, s.machine_size,s.resource_project, s.repository_dir, g.name as golden, s.visibility::text as visibility, s.access_owner_id,
   s.source_golden_visibility::text as source_golden_visibility, g.modal_workspace,
@@ -294,10 +294,10 @@ export function createSqlData(sql: Sql): DataSource {
         const result = await sql.query<SandboxViewRow>(
           `with visible as (select g.id,g.visibility from public.goldens g where ${GOLDEN_VISIBLE} and g.id = $3 and g.org_id = $8::uuid)
            insert into public.sandboxes (id, provider_sandbox_id, golden_id, org_id, owner_id, harness, status, model,
-             reasoning_effort, provider, visibility, access_owner_id, repository_dir, requested_ttl_seconds, effective_ttl_seconds, expires_at, activity_lease_id, activity_until, credential_id, credential_version, machine_size, resource_project, boat_runtime)
+             reasoning_effort, provider, visibility, access_owner_id, repository_dir, requested_ttl_seconds, effective_ttl_seconds, expires_at, activity_lease_id, activity_until, credential_id, credential_version, machine_size, resource_project, boat_runtime, runtime_transport)
            select $4::uuid, $5::text, visible.id, $8::uuid, $2::uuid, $6::public.harness, $7::public.sandbox_status,
-             $9::text, $10::text, $11::public.sandbox_provider,case when $21::text='private' then 'private'::public.visibility else visible.visibility end,$2::uuid,$12::text,$13::integer,$14::integer,coalesce($20::timestamptz,now()+$14 * interval '1 second'),$15::uuid,case when $15::uuid is not null then now()+interval '2 minutes' else null end,$16::uuid,$17::integer,$18::text::jsonb,$19::text::jsonb, $22::boolean from visible
-           returning boat_runtime, credential_id, credential_version, id, provider::text as provider, provider_sandbox_id, golden_id, org_id, owner_id, harness::text as harness, status::text as status,
+             $9::text, $10::text, $11::public.sandbox_provider,case when $21::text='private' then 'private'::public.visibility else visible.visibility end,$2::uuid,$12::text,$13::integer,$14::integer,coalesce($20::timestamptz,now()+$14 * interval '1 second'),$15::uuid,case when $15::uuid is not null then now()+interval '2 minutes' else null end,$16::uuid,$17::integer,$18::text::jsonb,$19::text::jsonb, $22::boolean,$23::text from visible
+           returning runtime_transport,boat_runtime, credential_id, credential_version, id, provider::text as provider, provider_sandbox_id, golden_id, org_id, owner_id, harness::text as harness, status::text as status,
              conversation_ids, created_at, stopped_at, deleted_at, status_reason, model, reasoning_effort,machine_size,resource_project,repository_dir,expires_at,effective_ttl_seconds,requested_ttl_seconds,last_observed_at,lifecycle_error,lifecycle_generation,visibility::text as visibility,access_owner_id,source_golden_visibility::text as source_golden_visibility`,
           [
             ...scope,
@@ -321,6 +321,7 @@ export function createSqlData(sql: Sql): DataSource {
             input.expiresAt ?? null,
             input.visibility ?? null,
             input.boatRuntime === true,
+            input.runtimeTransport ?? null,
           ],
         );
         const row = result.rows[0];

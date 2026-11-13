@@ -27,8 +27,8 @@ export function createRuntimeCheckpoint(sql: Sql, key: string, commands: ReturnT
     if (
       !row ||
       row.ownerId !== caller.userId ||
-      !row.boatRuntime ||
-      row.provider !== "boat" ||
+      (!row.boatRuntime && row.runtimeTransport !== "dialout") ||
+      !["boat", "modal"].includes(row.provider) ||
       row.harness !== "codex" ||
       row.deletedAt
     )

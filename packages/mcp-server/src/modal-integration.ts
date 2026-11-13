@@ -182,6 +182,7 @@ export async function createModalIntegration(options: {
     const provenance = await managementAuthority(context.target, context.caller);
     const sourceScope: Scope = { ...scope, visibility: provenance.sourceGoldenVisibility };
     const composed: ComposedModalOptions = {
+      ...(context.target.runtimeTransport === "dialout" ? { commonRuntime: true as const } : {}),
       measure: measureProviderPhase,
       storedReads,
       sql: options.sql,

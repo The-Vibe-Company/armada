@@ -3816,6 +3816,7 @@ export type Database = {
           docker_installation_id: string | null;
           docker_generation: string | null;
           docker_image: string | null;
+          runtime_transport: string | null;
         };
         Insert: {
           id?: string;
@@ -3874,6 +3875,7 @@ export type Database = {
           docker_installation_id?: string | null;
           docker_generation?: string | null;
           docker_image?: string | null;
+          runtime_transport?: string | null;
         };
         Update: {
           id?: string;
@@ -3932,6 +3934,7 @@ export type Database = {
           docker_installation_id?: string | null;
           docker_generation?: string | null;
           docker_image?: string | null;
+          runtime_transport?: string | null;
         };
         Relationships: [
           {

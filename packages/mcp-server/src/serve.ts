@@ -42,6 +42,7 @@ import { createMcpHttpIntegration } from "./mcp-http-integration.ts";
 import { bootstrapBoatMcp } from "./mcp-native.ts";
 import { createHistoricalSandboxProviderResolver, createMcpSandboxProviderResolver } from "./mcp-sandbox-provider.ts";
 import { createModalIntegration } from "./modal-integration.ts";
+import { modalRuntimeLaunch } from "./modal-runtime-launch.ts";
 import { createModelAuthOwnership } from "./model-auth.ts";
 import { createModelUsageApi } from "./model-usage.ts";
 import type { NamedLaunchCredentials } from "./named-credentials.ts";
@@ -288,6 +289,25 @@ export async function startServer(
       modelAuth,
     });
   }
+  let modalRuntimePolicy: ReturnType<typeof modalRuntimeLaunch> | undefined;
+  if (env.ARMADA_MODAL_DIALOUT === "1") {
+    if (!env.ARMADA_MODAL_RUNTIME_MANIFEST) throw Error("Modal runtime manifest required.");
+    const manifest = await Bun.file(env.ARMADA_MODAL_RUNTIME_MANIFEST).json();
+    if (
+      manifest?.protocol !== 1 ||
+      manifest.platform !== "linux" ||
+      manifest.libc !== "glibc" ||
+      !["x64", "arm64"].includes(manifest.architecture)
+    )
+      throw Error("Invalid Modal runtime manifest.");
+    modalRuntimePolicy = modalRuntimeLaunch({
+      sql,
+      encryptionKey: config.encryptionKey,
+      serverUrl: config.publicUrl,
+      manifest,
+      architecture: manifest.architecture,
+    });
+  }
   // Docker placement is a separate, explicit API preview. Host polling remains
   // enabled independently so disabling new placement does not strand cleanup.
   const dockerEnabled = env.ARMADA_DOCKER_HOSTS === "1" && env.ARMADA_DOCKER_PLACEMENT === "1";
@@ -340,6 +360,7 @@ export async function startServer(
     runtimeResume,
     ...(runtimeGitHub ? { runtimeGitHub } : {}),
     runtimeMcp,
+    ...(modalRuntimePolicy ? { modalRuntimeLaunch: modalRuntimePolicy } : {}),
     ...(runtimeLaunch
       ? { boatRuntimeLaunch: runtimeLaunch, runtimeHostFor: (apiKey: string) => createBoatProvider({ apiKey }) }
       : {}),

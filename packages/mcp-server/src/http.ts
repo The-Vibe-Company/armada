@@ -48,7 +48,11 @@ export interface HandlerOptions {
   runtimeResume?: RuntimeResume;
   runtimeCheckpoint?: RuntimeCheckpoint;
   runtimeSend?: RuntimeFollowup;
-  runtimeProviderFor?: (apiKey: string, target: ProviderTarget, caller: { userId: string }) => Promise<Provider>;
+  runtimeProviderFor?: (
+    apiKey: string | Provider,
+    target: ProviderTarget,
+    caller: { userId: string },
+  ) => Promise<Provider>;
   storedProviderFor?: (target: ProviderTarget, caller: { userId: string }) => Promise<Provider>;
   /** Runtime readiness of the serving database pool; no credentials in the result. */
   ready?: () => Promise<boolean>;
@@ -261,11 +265,16 @@ export function providerRegistry(
                   orgId: target.orgId,
                   visibility: target.sourceGoldenVisibility ?? target.visibility,
                 });
-            return modal({ tokenId: tokens.tokenId, tokenSecret: tokens.tokenSecret }, target.modal, {
+            const host = await modal({ tokenId: tokens.tokenId, tokenSecret: tokens.tokenSecret }, target.modal, {
               target,
               caller,
               credentialScope: tokens.scope,
             });
+            if (target.runtimeTransport === "dialout") {
+              if (!options.runtimeProviderFor || !target.id) throw new Error("Runtime routing unavailable.");
+              return options.runtimeProviderFor(host, target, caller);
+            }
+            return host;
           },
         }
       : {}),

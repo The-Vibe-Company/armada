@@ -18,6 +18,7 @@ import {
   parseMachineSize,
   resolveModelChoice,
 } from "@armada/core";
+import { runtimeBootstrapScript } from "@armada/core/server";
 import type { App, Sandbox } from "modal";
 import { chooseManagementAuthority, matchesManagementAuthority } from "./authority.ts";
 import { type ModalConnection, modalConnection } from "./client.ts";
@@ -40,6 +41,8 @@ import { scopeKey } from "./store.ts";
 
 export type ModalPromptPhase = "modal_prepare" | "modal_before_prompt" | "modal_admit" | "modal_health" | "modal_rpc";
 export interface ModalProviderOptions extends ModalConnection {
+  /** Trusted staging opt-in: allocate host only, never start the tunnel listener. */
+  commonRuntime?: true;
   measure?<T>(phase: ModalPromptPhase, work: () => Promise<T>): Promise<T>;
   /** Server-owned history projection only. No live App/runner calls in get/events/getPrompt.
    * Never use this provider for admission or lifecycle decisions. */
@@ -61,6 +64,13 @@ export interface ModalProviderOptions extends ModalConnection {
   beforePrompt?(provider: ModalProvider, sandboxId: string): Promise<void>;
 }
 export interface ModalProvider extends Provider {
+  startRuntime(input: {
+    sandboxId: string;
+    serverUrl: string;
+    enrolmentToken: string;
+    cacheDir: string;
+    artifact: { sha256: string; bytes: number };
+  }): Promise<void>;
   configureGitHub: NonNullable<Provider["configureGitHub"]>;
   findGoldenBuilder: NonNullable<Provider["findGoldenBuilder"]>;
   disposeGoldenBuilder: NonNullable<Provider["disposeGoldenBuilder"]>;
@@ -91,7 +101,14 @@ export function assertSourceTargetScopes(source: Scope, target: Scope): void {
     throw refusal("forbidden", "Source golden and target machine authority do not match.");
 }
 export function createModalProvider(options: ModalProviderOptions): ModalProvider {
-  const { store, runner, distribution } = options;
+  const { store, distribution } = options;
+  const runner: RunnerTransport = {
+    call(row, op, input) {
+      if (row.commonRuntime)
+        throw refusal("invalid_request", "Enrolled runtime commands require the common transport.");
+      return options.runner.call(row, op, input);
+    },
+  };
   const measure: NonNullable<ModalProviderOptions["measure"]> = options.measure ?? ((_phase, work) => work());
   const source = options.source ?? { scope: options.scope, store };
   assertSourceTargetScopes(source.scope, options.scope);
@@ -303,7 +320,8 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       row.runtimeEvidence = { version: 1, runtime: "vm", physicalId: sb.sandboxId, generation: row.generation };
     row.phase = "booting";
     await bootStage("binding", () => save(row));
-    if (distribution.prepareRuntime) await bootStage("runtime", () => distribution.prepareRuntime!(sb, row));
+    if (!row.commonRuntime && distribution.prepareRuntime)
+      await bootStage("runtime", () => distribution.prepareRuntime!(sb, row));
     await bootStage("baseline", async () => {
       if (distribution.captureProcessBaseline && !row.processBaseline) {
         if (row.freshStatePreparedGeneration === row.generation)
@@ -333,26 +351,32 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         await save(row);
       });
     }
-    await bootStage("start", () => distribution.start(sb, row, env));
-    let managedRunnerPid: unknown;
-    await bootStage("health", async () => {
-      let healthy = false;
-      for (let attempt = 0; attempt < 120; attempt++) {
-        try {
-          const health = await runner.call<{ generation?: string; ready?: boolean; pid?: unknown }>(row, "health", {});
-          if (health.generation !== String(row.generation) || health.ready !== true)
-            throw refusal("conflict", "Runner health belongs to another or closed generation.");
-          managedRunnerPid = health.pid;
-          healthy = true;
-          break;
-        } catch (error) {
-          if (attempt === 119) throw error;
-          await Bun.sleep(250);
+    if (!row.commonRuntime) {
+      await bootStage("start", () => distribution.start(sb, row, env));
+      let managedRunnerPid: unknown;
+      await bootStage("health", async () => {
+        let healthy = false;
+        for (let attempt = 0; attempt < 120; attempt++) {
+          try {
+            const health = await runner.call<{ generation?: string; ready?: boolean; pid?: unknown }>(
+              row,
+              "health",
+              {},
+            );
+            if (health.generation !== String(row.generation) || health.ready !== true)
+              throw refusal("conflict", "Runner health belongs to another or closed generation.");
+            managedRunnerPid = health.pid;
+            healthy = true;
+            break;
+          } catch (error) {
+            if (attempt === 119) throw error;
+            await Bun.sleep(250);
+          }
         }
-      }
-      if (!healthy) throw refusal("unavailable", "Runner did not become ready.");
-    });
-    await sealBaselineBeforeAdmission(sb, row, save, managedRunnerPid);
+        if (!healthy) throw refusal("unavailable", "Runner did not become ready.");
+      });
+      await sealBaselineBeforeAdmission(sb, row, save, managedRunnerPid);
+    }
     row.phase = "active";
     row.info.state = "ready";
     row.info.providerState = "active";
@@ -395,6 +419,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         createdAt: new Date(),
       },
       generation: 1,
+      ...(!golden && options.commonRuntime ? { commonRuntime: true as const } : {}),
       ...(!golden ? { runtimePolicy: "explicit-vm-v1" as const } : {}),
       launchUserId: options.scope.userId,
       managementAuthority: { ...managementAuthority },
@@ -411,6 +436,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     try {
       if (
         row.golden !== golden ||
+        Boolean(row.commonRuntime) !== Boolean(!golden && options.commonRuntime) ||
         row.size !== size ||
         row.imageId !== imageId ||
         row.sourceImage?.scopeKey !== sourceImage?.scopeKey ||
@@ -434,6 +460,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     assertMachineSource(row);
     if (row.golden && row.quiesced) throw refusal("sandbox_not_ready", "Sealed golden admission cannot be reopened.");
     if (row.phase === "stopped") {
+      if (row.commonRuntime) throw refusal("invalid_request", "Enrolled Modal resume is not enabled.");
       await options.beforeResume?.(provider, row.info.id);
       if (!row.recoveryImageId) throw refusal("conflict", "Stopped sandbox has no durable recovery image.");
       row.generation++;
@@ -469,6 +496,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     });
   }
   async function healthyAdmission(row: Machine, save: (row: Machine) => Promise<void>): Promise<Machine> {
+    if (row.commonRuntime) throw refusal("invalid_request", "Enrolled runtime commands require the common transport.");
     const active = await readyLeased(row, save);
     const health = await measure("modal_health", () =>
       runner.call<{ generation: string; ready: boolean }>(active, "health", {}),
@@ -493,7 +521,9 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     }
   }
   async function call<T>(id: string, op: string, input: object): Promise<T> {
-    return runner.call<T>(await ready(id), op, input);
+    const row = await ready(id);
+    if (row.commonRuntime) throw refusal("invalid_request", "Enrolled runtime commands require the common transport.");
+    return runner.call<T>(row, op, input);
   }
   async function checkpoint(row: Machine, save: (row: Machine) => Promise<void>) {
     const result = await runner.call<{ watermark: number; acknowledgedSequence: number; generation: string }>(
@@ -551,6 +581,20 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
   async function stopLeased(row: Machine, save: (row: Machine) => Promise<void>): Promise<void> {
     if (row.phase === "stopped") return;
     const sb = await physical(row);
+    if (row.commonRuntime) {
+      // Initial model-only lane deliberately retains no disk image or resume claim.
+      row.phase = "terminate";
+      row.info.state = "stopping";
+      await save(row);
+      await sb.terminate({ wait: true });
+      if ((await sb.poll()) === null) throw refusal("unavailable", "Termination has not completed.");
+      row.phase = "stopped";
+      row.info.state = "stopped";
+      row.info.providerState = "stopped";
+      row.info.stoppedAt = new Date();
+      await save(row);
+      return;
+    }
     if (row.phase !== "terminate") {
       if (!["active", "checkpoint"].includes(row.phase))
         throw refusal("conflict", "Snapshot outcome unknown; source retained for reconciliation.");
@@ -673,7 +717,56 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       }
       const snapshot = await source.store.image(r.from);
       assertAuthority(snapshot);
-      return source.store.lease(snapshot.sourceId, async () => launch(r, false));
+      return source.store.lease(snapshot.sourceId, async (sourceRow) => {
+        if (sourceRow.commonRuntime) throw refusal("invalid_request", "Enrolled Modal forks are not enabled.");
+        return launch(r, false);
+      });
+    },
+    async startRuntime(input) {
+      const server = new URL(input.serverUrl);
+      if (
+        server.protocol !== "https:" ||
+        server.origin !== input.serverUrl.replace(/\/$/, "") ||
+        !input.cacheDir.startsWith("/") ||
+        input.cacheDir === "/" ||
+        input.cacheDir.includes("\0") ||
+        !/^[a-f0-9]{64}$/.test(input.artifact.sha256) ||
+        !Number.isSafeInteger(input.artifact.bytes) ||
+        input.artifact.bytes <= 0 ||
+        input.artifact.bytes > 512 * 1024 * 1024 ||
+        !/^armada_enrol_[a-f0-9]{64}$/.test(input.enrolmentToken)
+      )
+        throw refusal("invalid_request", "Invalid enrolled Modal bootstrap.");
+      await store.lease(input.sandboxId, async (row, save) => {
+        assertMachineSource(row);
+        if (!row.commonRuntime || row.golden || row.phase !== "active" || row.runtimeStartAttempted)
+          throw refusal("conflict", "Enrolled runtime bootstrap requires a fresh host-only incarnation.");
+        const sb = await physical(row);
+        if ((await sb.poll()) !== null) throw refusal("sandbox_not_ready", "Physical machine has exited.");
+        // Persist before remote dispatch: retrying an uncertain spawn can create two runtimes.
+        row.runtimeStartAttempted = true;
+        await save(row);
+        try {
+          const child = await sb.exec(
+            [
+              "/usr/bin/env",
+              "-i",
+              "PATH=/usr/local/bin:/usr/bin:/bin",
+              "node",
+              "-e",
+              runtimeBootstrapScript(server.origin, input.artifact, input.cacheDir),
+            ],
+            { env: {}, secrets: [], timeoutMs: 150_000, workdir: "/home/user", stdout: "ignore", stderr: "ignore" },
+          );
+          await child.stdin.writeText(
+            JSON.stringify({ serverUrl: server.origin, enrolmentToken: input.enrolmentToken }),
+          );
+          await child.stdin.close();
+          if ((await child.wait()) !== 0) throw Error();
+        } catch {
+          throw refusal("unavailable", "Enrolled Modal bootstrap failed; spawn outcome must be reconciled.");
+        }
+      });
     },
     async observeResources(id) {
       await bound();
@@ -682,6 +775,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         const evidence = row.runtimeEvidence;
         if (
           row.golden ||
+          row.commonRuntime ||
           row.phase !== "active" ||
           !row.physicalId ||
           row.runtimePolicy !== "explicit-vm-v1" ||
@@ -1079,6 +1173,8 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       const row = await store.get(r.sandboxId);
       assertMachineSource(row);
       // Observation must never use ready(): a stop racing this read must not activate a new generation.
+      if (row.commonRuntime)
+        throw refusal("invalid_request", "Enrolled runtime history requires the common transport.");
       if (row.phase === "active" && !options.storedReads) return runner.call(row, "getPrompt", r);
       if (options.storedReads) {
         if (row.phase === "deleted") throw refusal("not_found", "Sandbox was deleted.");
@@ -1128,6 +1224,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     async exec(r) {
       if (r.onlyIfRunning)
         return admit(r.sandboxId, async (row) => {
+          if (row.commonRuntime) throw refusal("invalid_request", "Enrolled runtime exec is not enabled.");
           if (row.phase !== "active") throw refusal("sandbox_not_ready", "Recovery capture requires active compute.");
           return runner.call<ExecResult>(row, "exec", { input: r });
         });
@@ -1144,6 +1241,8 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       if (!options.storedReads) await bound();
       r.signal?.throwIfAborted();
       const row = await store.get(r.sandboxId);
+      if (row.commonRuntime)
+        throw refusal("invalid_request", "Enrolled runtime history requires the common transport.");
       // History is readable without live compute, but still belongs to this
       // immutable source/management authority and must not be a deleted machine.
       assertMachineSource(row);
