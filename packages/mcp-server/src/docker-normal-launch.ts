@@ -10,14 +10,28 @@ import {
   type LaunchCredentialResolver,
   ProviderError,
   resolveModelChoice,
+  type SkillReceipt,
   type Sql,
+  VaultError,
+  validateSkillPins,
 } from "@armada/core";
-import { createSqlSandboxStore, decryptSecret, encryptSecret } from "@armada/core/server";
+import {
+  createSkillDefaultsService,
+  createSqlMcpLaunchPort,
+  createSqlMcpRegistry,
+  createSqlSandboxStore,
+  decryptSecret,
+  encryptSecret,
+  mergeSkillPins,
+} from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import type { createDockerBootstrapService } from "./docker-bootstrap-service.ts";
 import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
+import { createRuntimeAgent } from "./runtime-agent.ts";
+import { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
+import type { RuntimeMcp } from "./runtime-mcp.ts";
 
 type Request = {
   org: string;
@@ -33,6 +47,9 @@ type Request = {
   reasoningEffort: string;
   ttlSeconds: number;
   prompt: string | null;
+  skills?: string[];
+  connections?: string[];
+  skipSkillDefaults?: boolean;
 };
 type Manifest = {
   request: Request;
@@ -40,6 +57,7 @@ type Manifest = {
   bootstrapId: string;
   healthId: string;
   promptId: string;
+  preparation?: { skills: string[]; connections: string[] };
 };
 type Receipt = { epoch: string; promptId?: string; conversationId?: string };
 type Claim = {
@@ -72,11 +90,13 @@ type Row = {
   credential_version: number;
   model: string;
   reasoning_effort: string;
+  skills: SkillReceipt[];
 };
 type Clock = { now(): number; wait(ms: number): Promise<void> };
 type Options = {
   enabled?: boolean;
-  credentials: Pick<LaunchCredentialResolver, "resolve">;
+  credentials: Pick<LaunchCredentialResolver, "resolve" | "skillpackKey">;
+  mcp?: RuntimeMcp;
   bootstrap?: ReturnType<typeof createDockerBootstrapService>;
   clock?: Clock;
   timeoutMs?: number;
@@ -124,6 +144,9 @@ function normalize(body: Record<string, unknown>): Request {
           "prompt",
           "ttlSeconds",
           "visibility",
+          "skills",
+          "connections",
+          "skipSkillDefaults",
         ].includes(field),
     ) ||
     body.provider !== "docker" ||
@@ -143,6 +166,22 @@ function normalize(body: Record<string, unknown>): Request {
     throw failure("invalid_request");
   const ttlSeconds = body.ttlSeconds === undefined ? DEFAULT_LAUNCH_TTL_SECONDS : body.ttlSeconds;
   if (typeof ttlSeconds !== "number" || !Number.isInteger(ttlSeconds) || ttlSeconds < 1 || ttlSeconds > 86400)
+    throw failure("invalid_request");
+  if (body.skipSkillDefaults !== undefined && typeof body.skipSkillDefaults !== "boolean")
+    throw failure("invalid_request");
+  if (body.skills !== undefined) {
+    try {
+      validateSkillPins(body.skills);
+    } catch {
+      throw failure("invalid_request");
+    }
+  }
+  if (
+    body.connections !== undefined &&
+    (!Array.isArray(body.connections) ||
+      body.connections.length > 32 ||
+      body.connections.some((id) => typeof id !== "string" || !uuid.test(id)))
+  )
     throw failure("invalid_request");
   let choice: ReturnType<typeof resolveModelChoice>;
   try {
@@ -167,6 +206,11 @@ function normalize(body: Record<string, unknown>): Request {
     reasoningEffort: choice.reasoningEffort,
     ttlSeconds,
     prompt: (body.prompt as string | undefined) ?? null,
+    ...(body.skills === undefined ? {} : { skills: [...(body.skills as string[])] }),
+    ...(body.skipSkillDefaults === undefined ? {} : { skipSkillDefaults: body.skipSkillDefaults as boolean }),
+    ...(body.connections === undefined
+      ? {}
+      : { connections: [...new Set((body.connections as string[]).map((id) => id.toLowerCase()))].sort() }),
   };
 }
 const scoped = (tx: Sql): Sql => ({ query: tx.query.bind(tx), transaction: (work) => work(tx) });
@@ -206,7 +250,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       await tx.query<Row>(
         `select id,org_id,owner_id,provider,harness,provider_sandbox_id,docker_host_id,docker_image,status,
         conversation_ids,created_at,stopped_at,deleted_at,stop_requested_at,expires_at,effective_ttl_seconds,
-        lifecycle_generation,requested_ttl_seconds,credential_id,credential_version,model,reasoning_effort,
+        lifecycle_generation,requested_ttl_seconds,credential_id,credential_version,model,reasoning_effort,skills,
         expires_at<=now() as expired from public.sandboxes where id=$1`,
         [request.requestId],
       )
@@ -234,6 +278,20 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
         (id) => typeof id === "string" && uuid.test(id),
       )
     )
+      throw failure("conflict");
+    if (manifest.preparation !== undefined) {
+      try {
+        validateSkillPins(manifest.preparation.skills);
+      } catch {
+        throw failure("conflict");
+      }
+      if (
+        !Array.isArray(manifest.preparation.connections) ||
+        manifest.preparation.connections.length > 32 ||
+        manifest.preparation.connections.some((id) => typeof id !== "string" || !uuid.test(id))
+      )
+        throw failure("conflict");
+    } else if (manifest.request.skills !== undefined || manifest.request.connections !== undefined)
       throw failure("conflict");
     if (
       claim.result_enc &&
@@ -275,6 +333,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       expiresAt: iso(row.expires_at),
       effectiveTtlSeconds: row.effective_ttl_seconds,
       requestedTtlSeconds: row.requested_ttl_seconds,
+      skills: row.skills ?? [],
     };
     return {
       sandbox,
@@ -289,7 +348,14 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
     };
   }
   return {
-    async launch(caller: Caller, body: Record<string, unknown>): Promise<DockerLaunchResult> {
+    async launch(
+      caller: Caller,
+      body: Record<string, unknown>,
+      admission?: {
+        beforeReserve(tx: Sql): Promise<void>;
+        beforeStart(): Promise<void>;
+      },
+    ): Promise<DockerLaunchResult> {
       try {
         const request = normalize(body);
         const actor = { userId: identifier(caller.userId), orgId: request.org };
@@ -315,12 +381,30 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
             (request.credentialVersion !== null && binding.credentialVersion !== request.credentialVersion)
           )
             throw failure("not_found");
+          const launchActor = { ...actor, role: state.membership.role };
+          const defaults = request.skipSkillDefaults
+            ? { org: [], personal: [] }
+            : await createSkillDefaultsService(sql).resolve(launchActor, null);
+          let skills: string[];
+          try {
+            skills = mergeSkillPins(defaults.org, defaults.personal, request.skills ?? []);
+          } catch {
+            throw failure("invalid_request");
+          }
+          const connections =
+            request.connections ??
+            (await createSqlMcpLaunchPort(sql, createSqlMcpRegistry(sql, key)).defaults(actor, "private"));
+          if (connections.length) {
+            if (!options.mcp) throw failure("unavailable");
+            await options.mcp.connections.validate(actor, connections, "private");
+          }
           const manifest: Manifest = {
             request,
             credentialVersion: binding.credentialVersion,
             bootstrapId: randomUUID(),
             healthId: randomUUID(),
             promptId: randomUUID(),
+            preparation: { skills, connections },
           };
           const encrypted = await encryptSecret(JSON.stringify(manifest), key);
           state = await transaction(async (tx) => {
@@ -332,22 +416,30 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
             const exists =
               (await tx.query(`select id from public.sandboxes where id=$1`, [request.requestId])).rows.length > 0;
             if (exists) return load(tx, actor, request, hash);
-            await createDockerSandboxService(scoped(tx), key, { enabled: true }).reserve(actor, {
-              requestId: request.requestId,
-              hostId: request.hostId,
-              image: request.image,
-              harness: request.harness,
-              credentialId: request.credentialId,
-              credentialVersion: manifest.credentialVersion,
-              model: request.model,
-              reasoningEffort: request.reasoningEffort,
-              ...(body.ttlSeconds === undefined ? {} : { ttlSeconds: request.ttlSeconds }),
-            });
+            await createDockerSandboxService(scoped(tx), key, { enabled: true }).reserve(
+              actor,
+              {
+                requestId: request.requestId,
+                hostId: request.hostId,
+                image: request.image,
+                harness: request.harness,
+                credentialId: request.credentialId,
+                credentialVersion: manifest.credentialVersion,
+                model: request.model,
+                reasoningEffort: request.reasoningEffort,
+                ...(body.ttlSeconds === undefined ? {} : { ttlSeconds: request.ttlSeconds }),
+              },
+              admission?.beforeReserve,
+            );
             if (resolved.usagePricing)
               await createSqlSandboxStore(scoped(tx), { turnModels: true }).recordUsagePricingContext?.(
                 request.requestId,
                 resolved.usagePricing,
               );
+            const connections = manifest.preparation?.connections ?? [];
+            const port = createSqlMcpLaunchPort(scoped(tx), createSqlMcpRegistry(scoped(tx), key));
+            await port.validate(actor, connections, "private");
+            await port.bind(request.requestId, connections);
             const current = await member(tx, actor);
             await tx.query(
               `insert into public.docker_launch_requests(sandbox_id,actor_epoch,request_hash,request_enc) values($1,$2,$3,$4)`,
@@ -381,6 +473,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
         }
         await acknowledged(request.requestId);
         await live();
+        await admission?.beforeStart();
         await options.bootstrap.bootstrap(actor, request.requestId, manifest.bootstrapId);
         await acknowledged(manifest.bootstrapId);
         let receipt: Receipt;
@@ -393,9 +486,39 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
           }
           await wait();
         }
+        const selections = manifest.preparation;
+        if (selections?.skills.length) {
+          const needsKey = selections.skills.some((reference) => !reference.includes("/"));
+          const skillKey = needsKey
+            ? ((await options.credentials.skillpackKey?.({ ...actor, role: state.membership.role })) ?? null)
+            : null;
+          if (needsKey && !skillKey) throw failure("unavailable");
+          const agent = createRuntimeAgent(
+            createRuntimeCommands(createRuntimeEnrolments(sql, key), key, {
+              now: clock.now,
+              wait: (ms) => clock.wait(ms),
+            }),
+            {
+              harness: request.harness,
+              ownerId: actor.userId,
+              sandboxId: request.requestId,
+              providerSandboxId: request.requestId,
+              cwd: "/home/user",
+              defaults: { model: request.model, reasoningEffort: request.reasoningEffort },
+            },
+          );
+          const receipts = await agent.installSkills(selections.skills, skillKey, receipt.epoch);
+          await createRuntimeEnrolments(sql, key).withOwner(request.requestId, actor.userId, async (tx, scope) => {
+            if (scope.epoch !== receipt.epoch) throw failure("sandbox_not_ready");
+            await createSqlSandboxStore(scoped(tx)).recordSkills!(request.requestId, receipts);
+          });
+        }
+        if (options.mcp) await options.mcp.prepare(caller, request.requestId);
+        else if (selections?.connections.length) throw failure("unavailable");
         if (manifest.request.prompt !== null) {
           for (;;) {
             await live();
+            await admission?.beforeStart();
             const result = await runtime.prompt(actor, request.requestId, {
               requestId: manifest.promptId,
               text: manifest.request.prompt,
@@ -434,7 +557,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
           return envelope(saved.row, saved.receipt);
         });
       } catch (error) {
-        if (error instanceof ProviderError) throw error;
+        if (error instanceof ProviderError || error instanceof VaultError) throw error;
         throw failure("unavailable");
       }
     },
