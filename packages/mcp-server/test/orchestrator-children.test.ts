@@ -17,13 +17,17 @@ import { createOrchestratorChildren, type OrchestratorChildExecutor } from "../s
 import { createLifecycleAwareOrchestratorRuntime } from "../src/orchestrator-lifecycle-integration.ts";
 import { configureOrchestratorLifecycle } from "../src/orchestrator-lifecycle-settings.ts";
 import { createOrchestratorWaits } from "../src/orchestrator-waits.ts";
+import { rowOnlyDatabase } from "./row-only-database.ts";
 import { database, ENCRYPTION_KEY, fakeBoat } from "./support.ts";
+
+const sharedDatabase = rowOnlyDatabase();
 
 async function fixture(
   parentState: "ready" | "running" = "running",
   accountKind: "anthropic" | "codex_auth" = "anthropic",
+  { isolated = false } = {},
 ) {
-  const { db, people: p } = await database();
+  const { db, people: p } = await (isolated ? database() : sharedDatabase());
   const sql: Sql = {
     query: (q, v) => db.query(q, v),
     transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
@@ -126,11 +130,25 @@ async function fixture(
     credentialVersion: 1,
     model: "m",
   };
-  return { db, sql, p, parent, id, authority, token, selection, golden };
+  return {
+    db,
+    sql,
+    p,
+    parent,
+    id,
+    authority,
+    token,
+    selection,
+    golden,
+    // The shared helper owns borrowed connections until afterAll.
+    close: async () => {
+      if (isolated) await db.close();
+    },
+  };
 }
 
 test("delegated child reservation precedes ambiguous allocation and retries cannot allocate twice", async () => {
-  const { db, sql, p, parent, authority, token, selection } = await fixture();
+  const { close, db, sql, p, parent, authority, token, selection } = await fixture();
   try {
     let allocations = 0;
     const executor: OrchestratorChildExecutor = {
@@ -215,12 +233,12 @@ test("delegated child reservation precedes ambiguous allocation and retries cann
       db.query("update orchestrator_child_operations set owner_id=$1 where id=$2", [p.admin, first.id]),
     ).rejects.toThrow("immutable child reservation");
   } finally {
-    await db.close();
+    await close();
   }
 });
 
 test("own children support independent target receipts while unrelated children remain denied", async () => {
-  const { db, sql, p, parent, id, authority, token, selection } = await fixture();
+  const { close, db, sql, p, parent, id, authority, token, selection } = await fixture();
   try {
     const boat = fakeBoat();
     const messages: string[] = [];
@@ -300,12 +318,12 @@ test("own children support independent target receipts while unrelated children 
     await db.query("delete from members where org_id=$1 and user_id=$2", [p.org, p.owner]);
     await expect(children.read(token, second)).rejects.toThrow("authority");
   } finally {
-    await db.close();
+    await close();
   }
 });
 
 test("revocation between reservation and dispatch cancels queued allocation", async () => {
-  const { db, sql, id, authority, token, selection } = await fixture();
+  const { close, db, sql, id, authority, token, selection } = await fixture();
   try {
     let admissions = 0,
       allocations = 0;
@@ -340,12 +358,12 @@ test("revocation between reservation and dispatch cancels queued allocation", as
     expect(allocations).toBe(0);
     expect(receipt.state).toBe("failed");
   } finally {
-    await db.close();
+    await close();
   }
 });
 
 test("actual owner prompt receipt survives delegated child admission before provider acknowledgement", async () => {
-  const { db, sql, p, parent, id, authority, token, selection } = await fixture();
+  const { close, db, sql, p, parent, id, authority, token, selection } = await fixture();
   try {
     const children = createOrchestratorChildren(sql, authority, {
       async launch() {
@@ -425,12 +443,12 @@ test("actual owner prompt receipt survives delegated child admission before prov
         ?.state,
     ).toBe("succeeded");
   } finally {
-    await db.close();
+    await close();
   }
 });
 
 test("owner waits and settings cannot invalidate an admitted owner operation", async () => {
-  const { db, sql, p, id, authority } = await fixture();
+  const { close, db, sql, p, id, authority } = await fixture();
   try {
     const services = createLifecycleAwareOrchestratorRuntime(sql, {
       reserveOperation: reserveOrchestratorOperation,
@@ -485,12 +503,12 @@ test("owner waits and settings cannot invalidate an admitted owner operation", a
       await services.store.complete(operation, { state: "succeeded", conversationId: "existing-native-conversation" }),
     ).toBe(true);
   } finally {
-    await db.close();
+    await close();
   }
 });
 
 test("missing actual named-account schema fails before fork without an uncertain allocation reservation", async () => {
-  const { db, sql, authority, token, selection } = await fixture();
+  const { close, db, sql, authority, token, selection } = await fixture("running", "anthropic", { isolated: true });
   try {
     const boat = fakeBoat();
     // Simulate a deployment missing the actual producer202 column, not a second account schema.
@@ -537,12 +555,12 @@ test("missing actual named-account schema fails before fork without an uncertain
       "failed",
     );
   } finally {
-    await db.close();
+    await close();
   }
 });
 
 test("read-only delegated scope cannot override the launch method through untrusted selection fields", async () => {
-  const { db, sql, p, parent, id, authority, selection, golden } = await fixture();
+  const { close, db, sql, p, parent, id, authority, selection, golden } = await fixture();
   try {
     const child = await createSqlSandboxStore(sql).insert({
       id: crypto.randomUUID(),
@@ -596,13 +614,13 @@ test("read-only delegated scope cannot override the launch method through untrus
     expect(allocations).toBe(0);
     await expect(children.launch(readToken, "well-formed-launch", selection)).rejects.toThrow("authority");
   } finally {
-    await db.close();
+    await close();
   }
 });
 
 for (const outcome of ["direct-success", "direct-failed", "discovery-success"] as const) {
   test(`child terminal receipt is not downgraded by delayed ${outcome} publication`, async () => {
-    const { db, sql, p, authority, token, selection, golden } = await fixture();
+    const { close, db, sql, p, authority, token, selection, golden } = await fixture();
     const deferred = <T>() => {
       let resolve: (value: T) => void = () => {};
       let reject: (reason: unknown) => void = () => {};
@@ -617,6 +635,8 @@ for (const outcome of ["direct-success", "direct-failed", "discovery-success"] a
     const launchReply = deferred<{ providerSandboxId: string }>();
     const discoverReply = deferred<Awaited<ReturnType<OrchestratorChildExecutor["reconcile"]>>>();
     let op: Parameters<OrchestratorChildExecutor["launch"]>[0] | undefined;
+    let launch: ReturnType<ReturnType<typeof createOrchestratorChildren>["launch"]> | undefined;
+    let reconcile: Promise<boolean> | undefined;
     try {
       const children = createOrchestratorChildren(sql, authority, {
         async launch(operation) {
@@ -652,9 +672,9 @@ for (const outcome of ["direct-success", "direct-failed", "discovery-success"] a
           throw Error("unexpected");
         },
       });
-      const launch = children.launch(token, "terminal-race", selection);
+      launch = children.launch(token, "terminal-race", selection);
       await entered.promise;
-      const reconcile = children.reconcileOne();
+      reconcile = children.reconcileOne();
       await discovered.promise;
       if (!op) throw Error("missing operation");
       if (outcome === "discovery-success") {
@@ -683,7 +703,9 @@ for (const outcome of ["direct-success", "direct-failed", "discovery-success"] a
       ).toBe(outcome === "direct-failed" ? "failed" : "succeeded");
     } finally {
       launchReply.reject(Error("fixture cleanup"));
-      await db.close();
+      if (op) discoverReply.resolve({ operationId: op.id, sandboxId: op.sandboxId, state: "unknown" });
+      await Promise.allSettled([launch, reconcile]);
+      await close();
     }
   });
 }
@@ -695,7 +717,7 @@ for (const proof of [
   "contradictory-no-allocation",
 ] as const) {
   test(`uncertain child allocation settles only on matching terminal provider evidence (${proof})`, async () => {
-    const { db, sql, p, id, authority, token, selection } = await fixture();
+    const { close, db, sql, p, id, authority, token, selection } = await fixture();
     try {
       await configureOrchestratorLifecycle(sql, {
         key: "explicit-child-policy",
@@ -751,13 +773,13 @@ for (const proof of [
         expect(allocations).toBe(1);
       }
     } finally {
-      await db.close();
+      await close();
     }
   });
 }
 
 test("registered failed child with confirmed stopped compute releases explicit capacity and does not block parent idle", async () => {
-  const { db, sql, p, id, authority, token, selection } = await fixture();
+  const { close, db, sql, p, id, authority, token, selection } = await fixture();
   try {
     await configureOrchestratorLifecycle(sql, {
       key: "one-child-policy",
@@ -889,12 +911,12 @@ test("registered failed child with confirmed stopped compute releases explicit c
       (await sql.query("select sandbox_id from orchestrator_children where sandbox_id=$1", [failed.sandboxId])).rows,
     ).toHaveLength(1);
   } finally {
-    await db.close();
+    await close();
   }
 });
 
 test("production scoped MCP/API gateway uses epoch child authority and never owner dispatch", async () => {
-  const { db, sql, p, id, parent, authority, token, selection } = await fixture("ready");
+  const { close, db, sql, p, id, parent, authority, token, selection } = await fixture("ready");
   const { ORCHESTRATOR_SCOPED_PATH, orchestratorScopedMcpUrl } = await import("../src/orchestrator-scoped-gateway.ts");
   const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
   const { StreamableHTTPClientTransport } = await import("@modelcontextprotocol/sdk/client/streamableHttp.js");
@@ -1115,12 +1137,12 @@ test("production scoped MCP/API gateway uses epoch child authority and never own
     expect(boat.forks).toHaveLength(1);
   } finally {
     for (const client of clients) await client.close();
-    await db.close();
+    await close();
   }
 });
 
 test("production owner lifecycle routes authenticate settings/waits without promoting delegated epochs", async () => {
-  const { db, sql, p, id, authority, token } = await fixture("ready");
+  const { close, db, sql, p, id, authority, token } = await fixture("ready");
   const { createMemoryAuthStore, generateToken, sha256Hex } = await import("@armada/auth");
   const { createOrchestratorServices } = await import("../src/orchestrator-services.ts");
   const { orchestratorScopedMcpUrl } = await import("../src/orchestrator-scoped-gateway.ts");
@@ -1291,6 +1313,6 @@ test("production owner lifecycle routes authenticate settings/waits without prom
     await sql.query("delete from members where org_id=$1 and user_id=$2", [p.org, p.owner]);
     expect((await request("settings")).status).toBe(404); // SQL membership recheck, even if auth cache fixture still lists it.
   } finally {
-    await db.close();
+    await close();
   }
 });
