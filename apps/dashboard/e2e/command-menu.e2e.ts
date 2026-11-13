@@ -15,7 +15,7 @@ test("the command menu opens from the keyboard, finds a page by a few letters an
   await expect(search).toHaveCount(0);
 
   // Arrows choose among several results; Escape closes without going anywhere.
-  await page.getByRole("button", { name: "Search", exact: true }).click();
+  await page.keyboard.press("ControlOrMeta+k");
   await search.fill("sandbox");
   await expect(page.getByRole("option")).toHaveText(["Sandboxes", "Launch a sandbox", "Connect a sandbox provider"]);
   await page.keyboard.press("ArrowUp");
@@ -28,8 +28,10 @@ test("the command menu opens from the keyboard, finds a page by a few letters an
   await expect(search).toHaveCount(0);
   await expect(page).toHaveURL(/\/tools$/);
 
-  const trigger = page.getByRole("button", { name: "Search", exact: true });
-  await trigger.click();
+  // The sidebar has no search box (#1474): the shortcut opens the menu and closing it returns focus where it was.
+  const trigger = page.getByRole("navigation", { name: "Main" }).getByRole("link", { name: "Tools", exact: true });
+  await trigger.focus();
+  await page.keyboard.press("ControlOrMeta+k");
   const close = page.getByRole("button", { name: "Close", exact: true });
   await expect(close).toBeVisible();
   await page.keyboard.press("Tab");
@@ -39,7 +41,7 @@ test("the command menu opens from the keyboard, finds a page by a few letters an
   await expect(trigger).toBeFocused();
   await expect(page).toHaveURL(/\/tools$/);
 
-  await trigger.click();
+  await page.keyboard.press("ControlOrMeta+k");
   await expect(search).toBeFocused();
   await expect(page.getByRole("listbox", { name: "Results" })).toContainText("Actions");
   await expect(page.getByRole("listbox", { name: "Results" })).toContainText("Go to");
@@ -57,8 +59,11 @@ test("the command menu opens from the keyboard, finds a page by a few letters an
   await page.waitForURL("**/settings");
   await expect(search).toHaveCount(0);
 
-  await trigger.click();
+  const settings = page.getByRole("navigation", { name: "Main" }).getByRole("link", { name: "Settings", exact: true });
+  await settings.focus();
+  await page.keyboard.press("ControlOrMeta+k");
+  await expect(search).toBeFocused();
   await page.keyboard.press("ControlOrMeta+k");
   await expect(search).toHaveCount(0);
-  await expect(trigger).toBeFocused();
+  await expect(settings).toBeFocused();
 });
