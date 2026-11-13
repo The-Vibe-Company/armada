@@ -18,6 +18,7 @@ export interface PricingInputs {
   cachedTokens: number | null;
   cacheWriteTokens: number | null;
   reasoningTokens: number | null;
+  cacheWriteTokensByTtl?: NonNullable<import("./sandbox-usage.ts").TurnTokenUsage["cacheWriteTokensByTtl"]>;
   cacheWriteTtl: "5m" | "30m" | "other" | null;
 }
 /** Server-owned output in usage.turns; null means no admitted price context, never a zero charge. */
