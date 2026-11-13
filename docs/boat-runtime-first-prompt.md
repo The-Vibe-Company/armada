@@ -15,8 +15,7 @@ and Modal launches remain unchanged.
    architectures and selected harness bytes in `ARMADA_RUNTIME_ARTIFACT_DIR`
    (default `/opt/armada/runtime-artifacts`), with build manifests in
    `/opt/armada/runtime-manifests/{x64,arm64}.json` (#1325). No separate publication
-   step is needed for that image. Non-Docker installs must build/publish matching
-   SHA-named public bytes via `bun scripts/publish-runtime-artifacts.ts`.
+   step is needed for staging.
 3. Set `ARMADA_BOAT_RUNTIME_MANIFEST=/opt/armada/runtime-manifests/x64.json` for
    the x64 Boat target (or the matching arm64 manifest for an arm64 host). This
    is a trusted server setting, never a client value. No setting means runtime
@@ -31,7 +30,8 @@ and Modal launches remain unchanged.
 With coordinator staging credentials supplied as environment (never argv/logs):
 
 ```sh
-# Set ARMADA_URL (HTTPS origin), ARMADA_TOKEN, ARMADA_RUNTIME_ORG,
+# Set ARMADA_URL (armada-server HTTPS origin, NOT the dashboard origin),
+# ARMADA_TOKEN, ARMADA_RUNTIME_ORG (organization UUID, NOT its name/slug),
 # ARMADA_RUNTIME_GOLDEN (existing snapshotted Boat golden name),
 # ARMADA_RUNTIME_CREDENTIAL_ID (authorized Codex account UUID).
 # Optional ARMADA_RUNTIME_MODEL chooses that account's available model.
@@ -74,3 +74,27 @@ stopped terminal status/history use the bounded archive. Native optional ports
 are not inherited. Full Claude/MCP/GitHub/variables/stop-resume parity and
 before/after launch-time measurements (>20% owner decision) remain programme
 follow-ups after staging proves this base.
+
+## Recovery and current staging gate
+
+The first staging attempt acknowledged launch but archived no events. Offline
+regression coverage identified initial activity completion revoking the newly
+enrolled epoch when it advanced the observation lifecycle generation. Migration
+`20261113023000_runtime_launch_epoch_handoff.sql` carries only that initial live
+epoch atomically into the completed generation. Stop, replacement, failed launch
+and membership removal still revoke it. Apply this new migration through the
+normal coordinator deployment, never by the worker.
+
+A server restart does not require a new Boat start or enrolment: session hashes,
+epochs, commands and acknowledged event prefixes live in SQL; the running guest
+keeps its SQLite outbox. WebSocket disconnect falls back to HTTPS. Tests cover
+that transport fallback and stable command receipt replay, and reconstruct all
+server-side session/event handlers after a committed upload loses its response:
+the same live runtime retries, gets its ACK without duplicate archive/usage, then
+uploads its terminal event. This is offline evidence, not a real redeploy smoke.
+
+**Do not spend the second Boat launch yet.** Bootstrap stage reporting and visible
+startup/turn failure diagnostics requested in the coordinator's failed-launch
+report are still a follow-up slice; the original empty-journal staging cause has
+not been conclusively established from guest evidence. Artifact publication is
+already supplied by #1325; no manual publication step is required.
