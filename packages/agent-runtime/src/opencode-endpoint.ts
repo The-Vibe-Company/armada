@@ -25,7 +25,7 @@ export function configureOpenCodeEndpoint(env: Record<string, string>): void {
     enabled_providers: [OPENCODE_CONNECTION_PROVIDER],
     provider: {
       [OPENCODE_CONNECTION_PROVIDER]: {
-        npm: "@ai-sdk/openai-compatible",
+        npm: endpoint.protocol === "anthropic" ? "@ai-sdk/anthropic" : "@ai-sdk/openai-compatible",
         name: "Armada model connection",
         options: { baseURL: endpoint.baseUrl, apiKey },
         models: Object.fromEntries(endpoint.models.map((id) => [id, { name: id }])),

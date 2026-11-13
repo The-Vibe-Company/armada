@@ -22,6 +22,7 @@ test("every preset names a model credential kind and offers its catalog's models
   expect(CONNECTION_PRESETS.map((entry) => entry.id)).toEqual([
     "openai",
     "anthropic",
+    "opencode-anthropic",
     "opencode",
     "deepseek",
     "azure-foundry",
@@ -172,4 +173,28 @@ test("a connection lists its declared models with saved prices, never its key or
   expect(await listConnectionModels(reader, randomBytes(32).toString("base64"), { userId: "u", orgId: "o" })).toEqual(
     [],
   );
+});
+
+// Protect the form-to-sealed-credential boundary: the fixed route cannot be redirected by browser input.
+test("Anthropic for OpenCode saves a Messages connection rather than a chat-completions connection", () => {
+  const value = JSON.parse(
+    presetConnectionValue(preset("opencode-anthropic"), {
+      apiKey: "fake-anthropic-key",
+      baseUrl: "https://wrong.example",
+      models: ["claude-test"],
+    }),
+  );
+  expect(value.endpoint).toEqual({
+    version: 1,
+    protocol: "anthropic",
+    baseUrl: "https://api.anthropic.com/v1",
+    models: ["claude-test"],
+  });
+  expect(value.apiKey).toBe("fake-anthropic-key");
+  expect(() =>
+    parseCredentialValue(
+      "opencode",
+      JSON.stringify({ ...value, endpoint: { ...value.endpoint, protocol: "arbitrary-package" } }),
+    ),
+  ).toThrow(VaultError);
 });

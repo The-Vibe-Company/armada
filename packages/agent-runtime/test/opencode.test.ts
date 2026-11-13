@@ -78,6 +78,27 @@ test("OpenCode translates a sealed-compatible endpoint into memory-only native c
     );
 });
 
+test("OpenCode uses the native Anthropic SDK for Messages connections and removes source secrets", () => {
+  const env: Record<string, string> = {
+    OPENCODE_API_KEY: "fake-key",
+    [OPENCODE_ENDPOINT_ENV]: JSON.stringify({
+      version: 1,
+      protocol: "anthropic",
+      baseUrl: "https://api.anthropic.com/v1/",
+      models: ["claude-test"],
+    }),
+  };
+  configureOpenCodeEndpoint(env);
+  const config = JSON.parse(env.OPENCODE_CONFIG_CONTENT ?? "{}");
+  expect(config.provider.armada).toMatchObject({
+    npm: "@ai-sdk/anthropic",
+    options: { baseURL: "https://api.anthropic.com/v1", apiKey: "fake-key" },
+    models: { "claude-test": { name: "claude-test" } },
+  });
+  expect(env.OPENCODE_API_KEY).toBeUndefined();
+  expect(env[OPENCODE_ENDPOINT_ENV]).toBeUndefined();
+});
+
 // A failed native export must not turn an older JSON export into a false continuity proof.
 test("OpenCode refuses stale history and checkpoint after an unacknowledged export", async () => {
   const { HarnessState } = await import("../src/state.ts");
