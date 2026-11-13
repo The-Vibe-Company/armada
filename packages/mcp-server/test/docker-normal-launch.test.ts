@@ -5,6 +5,7 @@ import {
   type AgentEvent,
   type DockerLaunchResult,
   type DockerSandboxStatus,
+  type Harness,
   type LaunchCredentialResolver,
   ProviderError,
   type SandboxListMetadata,
@@ -46,7 +47,7 @@ const bootstrap = createDockerBootstrapService(sql, key, {
     architecture: "x64",
     libc: "glibc",
     runtime: { sha256: "b".repeat(64), bytes: 42 },
-    harnesses: { codex: { files: [{ path: "bin/codex" }] } },
+    harnesses: { codex: { files: [{ path: "bin/codex" }] }, claude: { files: [{ path: "bin/claude" }] } },
   },
   credentials,
 });
@@ -59,7 +60,7 @@ afterAll(async () => {
 
 // The real migrated boundary owns normal-launch sequencing and durable retries.
 // Existing private-lane tests own the individual host/runtime protocol matrices.
-async function fixture(options: { lifecycleGenerationAfterCreate?: number } = {}) {
+async function fixture(options: { lifecycleGenerationAfterCreate?: number; harness?: Harness } = {}) {
   const orgId = randomUUID(),
     userId = randomUUID(),
     adminId = randomUUID(),
@@ -80,15 +81,28 @@ async function fixture(options: { lifecycleGenerationAfterCreate?: number } = {}
   const secret = `offline-normal-launch-${randomUUID()}`;
   // Omitted version must select the current pin, not fabricate version one.
   await db.query(
-    `insert into public.credentials(id,version,scope,owner_id,kind,value_enc) values($1,2,'user',$2,'openai',$3)`,
-    [credentialId, userId, await encryptSecret(secret, key)],
+    `insert into public.credentials(id,version,scope,owner_id,kind,value_enc) values($1,2,'user',$2,$4,$3)`,
+    [
+      credentialId,
+      userId,
+      await encryptSecret(
+        options.harness === "opencode"
+          ? JSON.stringify({
+              apiKey: secret,
+              endpoint: { version: 1, baseUrl: "https://models.example/v1", models: ["deepseek-flash"] },
+            })
+          : secret,
+        key,
+      ),
+      options.harness === "claude" ? "anthropic" : options.harness === "opencode" ? "opencode" : "openai",
+    ],
   );
   const body = {
     org: orgId,
     provider: "docker",
     hostId: host.hostId,
     image: `worker@sha256:${"a".repeat(64)}`,
-    harness: "codex",
+    harness: options.harness ?? "codex",
     credentialId,
     requestId: randomUUID(),
     visibility: "private",
@@ -342,7 +356,7 @@ test("normal admission rejects unsupported input before resolution, scopes owner
   for (const change of [
     { goldenId: randomUUID() },
     { env: { TOKEN: "private" } },
-    { harness: "claude" },
+    { harness: "unknown" },
     { visibility: "org" },
     { image: "worker:latest" },
     { ttlSeconds: 86401 },
@@ -654,4 +668,18 @@ test("normal launch claims remain service-only even for their owner's user JWT",
       }),
     ).rejects.toThrow("permission denied");
   }
+});
+
+// Normal launch owns selected-harness credential admission -> encrypted bootstrap -> command propagation.
+test.each(["claude", "opencode"] as const)("normal Docker launch selects and bootstraps %s", async (harness) => {
+  const f = await fixture({ harness });
+  const launched = await f.service().launch(f.caller, f.body);
+  expect(launched.sandbox.harness).toBe(harness);
+  const configuration = f.session()?.configuration as Record<string, unknown>;
+  expect(configuration.selectedHarness).toBe(harness);
+  const env = configuration[harness === "claude" ? "claudeEnv" : "opencodeEnv"] as Record<string, string>;
+  expect(env[harness === "claude" ? "ANTHROPIC_API_KEY" : "OPENCODE_API_KEY"]).toBe(f.secret);
+  expect(f.native).toContainEqual(
+    expect.objectContaining({ op: "prompt", input: expect.objectContaining({ harness }) }),
+  );
 });

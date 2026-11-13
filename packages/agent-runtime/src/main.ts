@@ -234,7 +234,7 @@ async function main(dialout = false) {
   if (restore) {
     if (
       !enrolled ||
-      (config.selectedHarness !== "codex" && config.selectedHarness !== "claude") ||
+      !["codex", "claude", "opencode"].includes(config.selectedHarness as string) ||
       !/^[1-9][0-9]{0,18}$/.test(restore.epoch) ||
       typeof restore.conversationId !== "string" ||
       !restore.conversationId ||
@@ -378,7 +378,7 @@ async function main(dialout = false) {
     opencodeEnv.OPENCODE_CONFIG_CONTENT || opencodeEnv.OPENCODE_API_KEY
       ? await prepareOpenCode({
           candidate: config.opencodeExecutable ?? "/usr/local/bin/opencode",
-          serverUrl: new URL(config.ingestUrl).origin,
+          serverUrl: enrolled ? input.serverUrl : new URL(config.ingestUrl).origin,
           cacheDir: `${config.root}/.harness-cache`,
         })
       : (config.opencodeExecutable ?? "/usr/local/bin/opencode");

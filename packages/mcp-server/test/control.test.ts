@@ -875,7 +875,11 @@ describe("control API", () => {
       const discovery = await call({ method: "POST", headers, body: JSON.stringify({ docker: { normalApi: true } }) });
       const publicOptions = (await discovery?.json()) as LaunchOptionsResponse;
       const docker = publicOptions.providers.find((provider) => provider.id === "docker");
-      expect(docker).toMatchObject({ enabled: true, launchSources: ["image"], harnesses: ["codex"] });
+      expect(docker).toMatchObject({
+        enabled: true,
+        launchSources: ["image"],
+        harnesses: ["codex", "claude", "opencode"],
+      });
       expect(docker?.capabilities).toMatchObject({
         launch: false,
         stop: false,

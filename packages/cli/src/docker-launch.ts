@@ -1,4 +1,11 @@
-import { type DockerLaunchRequest, type DockerLaunchResult, GoldenError, resolveModelChoice } from "@armada/core";
+import {
+  type DockerLaunchRequest,
+  type DockerLaunchResult,
+  GoldenError,
+  HARNESSES,
+  type Harness,
+  resolveModelChoice,
+} from "@armada/core";
 import { type Args, single } from "./args.ts";
 import { createArmadaApiClient } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
@@ -26,8 +33,8 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
       "invalid_config",
       "Docker launch takes at most one prompt and no golden, repository, size, connections or skills.",
     );
-  if (single(args, "--agent") !== undefined && single(args, "--agent") !== "codex")
-    throw new GoldenError("invalid_config", "Docker launches support Codex only.");
+  const harness = (single(args, "--agent") ?? "codex") as Harness;
+  if (!HARNESSES.includes(harness)) throw new GoldenError("invalid_config", "Unknown Docker harness.");
   const requiredId = (flag: string) => {
     const value = single(args, flag);
     if (!value || !uuid.test(value))
@@ -53,10 +60,10 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
     provider: "docker",
     hostId,
     image,
-    harness: "codex",
+    harness,
     credentialId,
     requestId,
-    ...resolveModelChoice("codex", {
+    ...resolveModelChoice(harness, {
       model: single(args, "--model"),
       reasoningEffort: single(args, "--reasoning-effort"),
     }),

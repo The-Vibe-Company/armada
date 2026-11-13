@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { prepareEnrolledHarness } from "../src/enrolled-harness.ts";
 
 // Owning boundary is bootstrap wiring: installer integrity already belongs to
@@ -62,6 +63,44 @@ test.each(["codex", "claude"] as const)(
         await expect(prepareEnrolledHarness("https://armada.example", input)).rejects.toThrow(
           "invalid_enrolled_harness",
         );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);
+
+// OpenCode uses a standalone checksum-pinned binary, not a harness archive.
+test.skipIf(process.platform !== "linux")(
+  "enrolled OpenCode selects the verified warm binary without unrelated harnesses",
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), "enrolled-opencode-"));
+    try {
+      const require = createRequire(import.meta.url);
+      const fromOpenCode = createRequire(require.resolve("opencode-ai/package.json"));
+      const candidate = join(root, "artifacts", "opencode");
+      await mkdir(join(root, "artifacts"), { mode: 0o700 });
+      await copyFile(
+        join(dirname(fromOpenCode.resolve(`opencode-linux-${process.arch}/package.json`)), "bin/opencode"),
+        candidate,
+      );
+      await chmod(candidate, 0o700);
+      const selected = await prepareEnrolledHarness(
+        "https://armada.example",
+        {
+          root,
+          selectedHarness: "opencode",
+          claudeEnv: {},
+          codexEnv: {},
+          opencodeEnv: { OPENCODE_API_KEY: "synthetic-opencode-material", PATH: "/fixture/tools" },
+        },
+        async () => {
+          throw Error("unexpected archive fetch");
+        },
+      );
+      expect(selected.opencodeExecutable).toBe(candidate);
+      expect(selected.opencodeEnv).toEqual({ OPENCODE_API_KEY: "synthetic-opencode-material", PATH: "/fixture/tools" });
+      expect(selected.codexExecutable).toBe("");
+      expect(selected.claudeExecutable).toBe("");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
