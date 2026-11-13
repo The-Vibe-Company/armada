@@ -1,8 +1,10 @@
-/** Private OpenCode OpenAI-compatible connection configuration; credentials are sealed separately from this DTO. */
+/** Private OpenCode provider connection configuration; credentials are sealed separately from this DTO. */
 export interface OpenCodeEndpoint {
   version: 1;
   baseUrl: string;
   models: string[];
+  /** Absent preserves existing OpenAI-compatible connections. */
+  protocol?: "anthropic";
 }
 export const OPENCODE_ENDPOINT_ENV = "ARMADA_OPENCODE_ENDPOINT";
 /**
@@ -18,9 +20,10 @@ export function parseOpenCodeEndpoint(value: unknown): OpenCodeEndpoint {
   const row = value as Record<string, unknown>;
   if (
     row.version !== 1 ||
+    (row.protocol !== undefined && row.protocol !== "anthropic") ||
     typeof row.baseUrl !== "string" ||
     row.baseUrl.length > 4096 ||
-    Object.keys(row).some((key) => !["version", "baseUrl", "models"].includes(key))
+    Object.keys(row).some((key) => !["version", "baseUrl", "models", "protocol"].includes(key))
   )
     return fail();
   let url: URL;
@@ -31,7 +34,12 @@ export function parseOpenCodeEndpoint(value: unknown): OpenCodeEndpoint {
   }
   if (url.protocol !== "https:" || url.username || url.password || url.hash || url.search) return fail();
   if (!isConnectionModelList(row.models)) return fail();
-  return { version: 1, baseUrl: url.toString().replace(/\/+$/, ""), models: [...new Set(row.models)] };
+  return {
+    version: 1,
+    baseUrl: url.toString().replace(/\/+$/, ""),
+    models: [...new Set(row.models)],
+    ...(row.protocol === "anthropic" ? { protocol: "anthropic" as const } : {}),
+  };
 }
 
 /** A provider's exact model or deployment ID, as a connection declares it. */

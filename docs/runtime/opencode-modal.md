@@ -128,3 +128,37 @@ true) without a model key. A fake-compatible-endpoint turn plus export/import
 checks redaction, no replay and fresh usage, but does not prove a deployed
 DeepSeek lifecycle or plan-key terms/acceptance. The coordinator-owned lifecycle
 check above remains the real-provider gate.
+
+## Anthropic Messages connections (#1579)
+
+The shared connection preset **Anthropic for OpenCode** creates a named OpenCode
+account with a fixed `https://api.anthropic.com/v1` address and the selected
+Anthropic model IDs. Choose this instead of **Anthropic API key**, which remains
+a Claude Code account. The dashboard renders this choice from the same core
+preset definition used to validate the saved credential; no new credential kind
+or migration is needed.
+
+The sealed endpoint additionally carries `protocol: "anthropic"`. The runtime
+selects the pinned OpenCode binary's native `@ai-sdk/anthropic` provider rather
+than sending Messages requests through its OpenAI-compatible adapter. The API
+key remains in private memory-only configuration, never project files. Existing
+connections without this field keep their OpenAI-compatible behavior. Arbitrary
+SDK/package names and unknown protocol values are refused. Models retain the
+`armada/<model-id>` namespace so existing launch selection and pricing bindings
+remain valid. A model without saved pricing remains honestly unpriced.
+
+Coordinator staging verification after the normal deployment: create the
+**Anthropic for OpenCode** connection with a real key, then add matching
+`account: "opencode-anthropic"` entries to the existing staging account cases
+(one Modal golden and one owned Docker host). Run:
+
+```sh
+ARMADA_SMOKE=create_real_compute bun scripts/post-deploy-smoke.ts --parity --accounts
+```
+
+Use the normal staging `ARMADA_URL`, `ARMADA_TOKEN`, and `ARMADA_SMOKE_CASES`.
+Verify both cells' answer, follow-up, stop/resume recall, token receipts, honest
+cost classification and cleanup. This procedure is not evidence of a successful
+real Anthropic request; deterministic tests cover sealed credential validation
+and native adapter selection, not the live provider. Azure-specific endpoint
+support remains a separate #1579 slice.

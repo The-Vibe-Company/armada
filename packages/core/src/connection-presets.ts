@@ -16,6 +16,7 @@ import { VaultError } from "./vault-error.ts";
 export type ConnectionPresetId =
   | "openai"
   | "anthropic"
+  | "opencode-anthropic"
   | "opencode"
   | "deepseek"
   | "azure-foundry"
@@ -42,6 +43,8 @@ export interface ConnectionPreset {
   addressHint?: string;
   /** Azure's optional api-version query parameter. */
   apiVersion?: boolean;
+  /** Runtime protocol, fixed by the preset rather than free-form SDK/package input. */
+  protocol?: "anthropic";
   /** The models.dev provider whose agent-capable models are offered. */
   catalog?: CatalogProvider;
   /** Where the key is created. */
@@ -66,6 +69,16 @@ export const CONNECTION_PRESETS: readonly ConnectionPreset[] = [
     models: "harness",
     baseUrl: null,
     keyHint: "From console.anthropic.com. Billed per token.",
+  },
+  {
+    id: "opencode-anthropic",
+    label: "Anthropic for OpenCode",
+    kind: "opencode",
+    hint: "Anthropic Messages API with OpenCode, billed per token",
+    models: "choose",
+    baseUrl: "https://api.anthropic.com/v1",
+    protocol: "anthropic",
+    keyHint: "From console.anthropic.com. For Claude Code, choose Anthropic API key instead.",
   },
   {
     id: "opencode",
@@ -197,7 +210,7 @@ export function presetConnectionValue(preset: ConnectionPreset, input: PresetCon
   const endpoint =
     preset.kind === "openai"
       ? { version: 1, baseUrl, ...(apiVersion ? { apiVersion } : {}) }
-      : { version: 1, baseUrl, models };
+      : { version: 1, baseUrl, models, ...(preset.protocol ? { protocol: preset.protocol } : {}) };
   const value = {
     endpoint,
     apiKey,
