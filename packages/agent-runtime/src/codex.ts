@@ -10,6 +10,7 @@ import type { ThreadStartResponse } from "./codex-schema/v2/ThreadStartResponse.
 import type { TurnCompletedNotification } from "./codex-schema/v2/TurnCompletedNotification.ts";
 import type { TurnStartParams } from "./codex-schema/v2/TurnStartParams.ts";
 import type { TurnStartResponse } from "./codex-schema/v2/TurnStartResponse.ts";
+import { codexResumeUsage } from "./codex-resume-usage.ts";
 import { validateHarnessCwd } from "./cwd.ts";
 import { bounded } from "./deadline.ts";
 import { HarnessError } from "./errors.ts";
@@ -444,6 +445,9 @@ export class CodexDriver implements Driver {
       c.session(threadId);
       resumeUsage.verified = true;
       adoptResumeUsage();
+      if (c.sessionId && !baseline && !resumeUsage.invalid) {
+        baseline = await codexResumeUsage(result.thread.path, threadId);
+      }
       if (!this.options.env.OPENAI_API_KEY && this.options.env.CODEX_HOME) {
         // Existing native ChatGPT session only: this documented RPC never starts inference.
         // Optional quota failure cannot turn a normal coding request into a harness failure.
