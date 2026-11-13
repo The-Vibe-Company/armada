@@ -8,6 +8,7 @@ const fixture = database();
 afterAll(async () => (await fixture).db.close());
 const pr = {
   number: 17,
+  updated_at: new Date().toISOString(),
   title: "Observed",
   state: "open",
   head: { ref: "codex/17-work", sha: "a".repeat(40), repo: { full_name: "example/web" } },
@@ -45,7 +46,7 @@ test("signed deliveries are scoped, immutable and replay-idempotent", async () =
   const signature = `sha256=${createHmac("sha256", "test-webhook-fixture").update(body).digest("hex")}`;
   expect((await send(signature))?.status).toBe(202);
   expect((await send(signature))?.status).toBe(202);
-  expect((await facts()).rows).toHaveLength(1);
+  expect((await facts()).rows).toHaveLength(2);
   await expect(sql.query("delete from otto_facts where repository='example/web'")).rejects.toThrow("append-only");
 });
 // The historical incident was partial pagination retiring missing PRs.
@@ -54,6 +55,7 @@ test("failed pagination is unknown and cached 304 pages still follow next links"
   let second = false;
   const fetcher = (async (url: string | URL | Request, init?: RequestInit) => {
     const u = String(url);
+    if (/\/pulls\/\d+/.test(u)) return new Response(null, { status: 404 });
     if (u.includes("/issues?")) return Response.json([]);
     if (u.includes("page=2"))
       return second ? Response.json([{ ...pr, number: 18 }]) : new Response(null, { status: 429 });
