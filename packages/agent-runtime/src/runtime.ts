@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { ExecRequest, ExecResult, Harness } from "@armada/core";
 import { HARNESSES, validateReadableVariables } from "@armada/core";
+import { PRIVATE_SKILL_FAILURES } from "../../core/src/private-skill-error.ts";
 import { validateHarnessCwd } from "./cwd.ts";
 import { HarnessError } from "./errors.ts";
 import { execCredentialValues, validateExecEnvironment } from "./exec-env.ts";
@@ -23,12 +24,14 @@ import {
   type Turn,
 } from "./protocol.ts";
 import { sampleVmResources } from "./resource-sampler.ts";
+import { installRuntimeSkills } from "./skills.ts";
 export class Runner {
   private active = new Map<
     string,
     { turn: Turn; done: Promise<void>; controller: AbortController; prompt: StoredPrompt; terminal: boolean }
   >();
   private barrier = false;
+  private installingSkills = false;
   private mcp: McpConfiguration | undefined;
   private nativeEpoch: NativeEpoch;
   private execEnvironment: Readonly<Record<string, string>>;
@@ -251,7 +254,7 @@ export class Runner {
         this.journal.db
           .query("INSERT INTO requests VALUES(?,?)")
           .run(r.requestId, JSON.stringify({ version: 1, requestId: r.requestId, error: "request_outcome_unknown" }));
-      const result = await this.dispatch(r);
+      const result = await this.dispatch(r, request.signal);
       const body = this.journal.redact(JSON.stringify({ version: 1, requestId: r.requestId, result }));
       if (!["events", "health", "getPrompt", "getExec", "checkpoint", "observeOrchestrator"].includes(r.op))
         this.journal.db.query("INSERT OR REPLACE INTO requests VALUES(?,?)").run(r.requestId, body);
@@ -318,6 +321,7 @@ export class Runner {
           | "scrubOrchestratorEpoch";
       }
     >,
+    signal: AbortSignal,
   ): Promise<unknown> {
     if (r.op === "observeOrchestrator") {
       if (
@@ -471,6 +475,7 @@ export class Runner {
         ...(this.execution.restoredFrom ? { restoredFrom: this.execution.restoredFrom } : {}),
         generation: this.grant.generation,
         mcpVersion: 1,
+        skillsVersion: 1,
         ready: !this.barrier,
         pid: process.pid,
       };
@@ -543,6 +548,44 @@ export class Runner {
       return { watermark, acknowledgedSequence: this.journal.ack, generation: this.grant.generation };
     }
     if (this.barrier) throw Error("checkpoint_in_progress");
+    if (this.installingSkills && !["getPrompt", "events", "getExec"].includes(r.op))
+      throw Error("skills_install_in_progress");
+    if (r.op === "installSkills") {
+      if (
+        this.credentialFreeBuilder ||
+        this.active.size ||
+        this.commands.size ||
+        this.resumingNative ||
+        !r.input ||
+        !(HARNESSES as readonly string[]).includes(r.input.harness) ||
+        !this.drivers[r.input.harness]
+      )
+        throw Error("skills_install_denied");
+      if (Object.keys(r.input).some((k) => !["harness", "references", "cwd", "key"].includes(k)))
+        throw Error("skills_install_denied");
+      const cwd = validateHarnessCwd(r.input.cwd);
+      this.installingSkills = true;
+      const work = installRuntimeSkills({ ...r.input, cwd }, this.journal, this.execEnvironment, signal);
+      this.commands.add(work);
+      try {
+        return { receipts: await work };
+      } catch (error) {
+        const reason =
+          error instanceof Error &&
+          [
+            ...PRIVATE_SKILL_FAILURES,
+            "skillpack_credential_missing",
+            "skillpack_credential_refused",
+            "skillpack_skill_unavailable",
+          ].includes(error.message as never)
+            ? error.message
+            : "skillpack_install_state_invalid";
+        return { failure: { reason } };
+      } finally {
+        this.commands.delete(work);
+        this.installingSkills = false;
+      }
+    }
     if (r.op === "exec") {
       this.refreshNativeSecrets?.();
       const work = this.exec(r.input);

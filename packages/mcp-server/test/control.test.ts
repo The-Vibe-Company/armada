@@ -2460,6 +2460,8 @@ test("versioned runtime launch is explicit/default-off and never selects native 
     const connection = "44444444-4444-4444-8444-444444444444";
     let mcpPrepared = false,
       expectedForks = 0;
+    const skillPin = "example/tool@1.0.0";
+    let skillsInstalled = false;
     options.connections = {
       async defaults() {
         throw Error("No native MCP defaults");
@@ -2511,7 +2513,22 @@ test("versioned runtime launch is explicit/default-off and never selects native 
         expect(input.credentials.env.OPENAI_API_KEY).toBe("fixture-model-key");
         return {
           epoch: "1",
+          async installSkills(references, key) {
+            expect(references).toEqual([skillPin]);
+            expect(key).toBeNull();
+            skillsInstalled = true;
+            return [
+              {
+                reference: skillPin,
+                version: "1.0.0",
+                skillId: connection,
+                checksum: `sha256:${"a".repeat(64)}`,
+                origin: "https://skillpack.app/v1",
+              },
+            ];
+          },
           async prompt() {
+            expect(skillsInstalled).toBe(true);
             expect(mcpPrepared).toBe(true);
             return { promptId: "runtime-initial", conversationId: "runtime-conversation", status: "queued" };
           },
@@ -2524,16 +2541,16 @@ test("versioned runtime launch is explicit/default-off and never selects native 
       { ...body, harness: "claude" },
       { ...body, provider: "modal" },
       { ...body, connections: "invalid" },
-      { ...body, skills: ["example/tool@1.0.0"] },
+      { ...body, skills: ["not-a-pin"] },
     ])
       expect((await request("sandbox/launch-runtime-v1", bad))?.status).toBe(400);
     expect((await request("sandbox/launch", body))?.status).toBe(400);
     expect(host.forks).toHaveLength(0);
-    const response = await request("sandbox/launch-runtime-v1", body);
+    const response = await request("sandbox/launch-runtime-v1", { ...body, skills: [skillPin] });
     expect(response?.status).toBe(200);
     expect(await response?.json()).toMatchObject({
       runtime: { kind: "armada", epoch: "1" },
-      sandbox: { boatRuntime: true },
+      sandbox: { boatRuntime: true, skills: [{ reference: skillPin }] },
       promptId: "runtime-initial",
     });
     if (!session) throw Error("missing enrolled runtime");

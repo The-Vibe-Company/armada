@@ -773,6 +773,7 @@ async function dispatch(
         resumeVersion: options.runtimeResume ? 1 : 0,
         githubVersion: options.runtimeGitHub ? 1 : 0,
         mcpVersion: options.runtimeMcp ? 2 : 0,
+        skillsVersion: options.boatRuntimeLaunch ? 1 : 0,
         enabled: Boolean(options.boatRuntimeLaunch && options.runtimeHostFor),
       },
     } satisfies import("@armada/core").LaunchOptionsResponse;
@@ -1158,16 +1159,14 @@ async function dispatch(
         body.harness !== "codex" ||
         (body.provider !== undefined && body.provider !== "boat") ||
         body.armadaAccess ||
-        (body.skills !== undefined && (!Array.isArray(body.skills) || body.skills.length)) ||
         (body.helperCapabilities !== undefined &&
-          (!Array.isArray(body.helperCapabilities) || body.helperCapabilities.length)) ||
-        (body.skipSkillDefaults !== undefined && body.skipSkillDefaults !== true)
+          (!Array.isArray(body.helperCapabilities) || body.helperCapabilities.length))
       )
         throw new VaultError("invalid", "Runtime v1 requires explicit Boat/Codex snapshot launch.");
       if (!options.boatRuntimeLaunch || !options.runtimeHostFor)
         throw new VaultError("unavailable", "Experimental Boat runtime launch is not configured.");
       required(body, "prompt");
-      return launchRoute(options, caller, { ...body, skipSkillDefaults: true }, true);
+      return launchRoute(options, caller, body, true);
     case "sandbox/launch-access-v1":
       if (body.armadaAccessVersion !== 1 || !parseSandboxArmadaAccess(body.armadaAccess))
         throw new VaultError("invalid", "The access launch route requires armadaAccessVersion 1 and armadaAccess.");

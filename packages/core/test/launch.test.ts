@@ -74,6 +74,21 @@ describe("launch", () => {
           };
         };
       }
+      const pins = ["catalog/public-skill@1.2.3", "private-skill@2.3.4"];
+      const skillKey = `cmp_pat_${"a".repeat(48)}`;
+      world.stores.skillDefaults = {
+        async resolve() {
+          return { environment: pins, org: [], personal: [] };
+        },
+      };
+      world.stores.credentials.skillpackKey = async () => skillKey;
+      world.stores.credentials.installPrivateSkill = async () => {
+        throw Error("No native skill install");
+      };
+      let recorded: unknown;
+      world.stores.sandboxes.recordSkills = async (_id, receipts) => {
+        recorded = receipts;
+      };
       const order: string[] = [];
       world.stores.connections = {
         async defaults() {
@@ -89,7 +104,7 @@ describe("launch", () => {
         async prepare(_provider, record, _actor, signal) {
           expect(record.boatRuntime).toBe(true);
           expect(signal?.aborted).toBe(false);
-          expect(order).toEqual(["bind", "start"]);
+          expect(order).toEqual(["bind", "start", "skills"]);
           order.push("mcp");
         },
       };
@@ -116,8 +131,21 @@ describe("launch", () => {
               expect(input.credentials.codexAuthJson).toBe(kind === "auth");
               return {
                 epoch: "3",
+                async installSkills(references, key) {
+                  expect(references).toEqual(pins);
+                  expect(key).toBe(skillKey);
+                  order.push("skills");
+                  return references.map((reference) => ({
+                    reference,
+                    version: reference.split("@")[1]!,
+                    skillId: ORG,
+                    checksum: `sha256:${"b".repeat(64)}`,
+                    origin: "https://skillpack.app/v1",
+                  }));
+                },
                 async prompt(request) {
-                  expect(order).toEqual(["bind", "start", "mcp"]);
+                  expect(order).toEqual(["bind", "start", "skills", "mcp"]);
+                  expect(recorded).toHaveLength(2);
                   calls.push(request);
                   return { promptId: "runtime-prompt", conversationId: "runtime-conversation", status: "queued" };
                 },
@@ -185,7 +213,7 @@ describe("launch", () => {
           harness: failure === "harness" ? "claude" : "codex",
           prompt: "answer",
           ...(["mcp", "mcp-prepare"].includes(failure) ? { connections: [ORG] } : {}),
-          ...(failure === "skills" ? { skills: ["example/tool@1.0.0"] } : {}),
+          ...(failure === "skills" ? { skills: ["not-a-pin"] } : {}),
         },
         {
           ...(failure === "parent" ? { privateParent: true as const } : {}),
@@ -204,7 +232,6 @@ describe("launch", () => {
         },
       ),
     ).rejects.toMatchObject({
-      ...(failure === "skills" ? { message: "The experimental runtime does not yet support skills or helpers." } : {}),
       code: ["harness", "mcp", "skills", "parent"].includes(failure)
         ? "invalid_request"
         : failure === "prompt"

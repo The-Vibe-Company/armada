@@ -118,6 +118,7 @@ export type RunnerRequest = { version: 1; requestId: string; sandboxId: string }
       input: Omit<RuntimePromptRequest, "text">;
     }
   | { op: "configureReadableVariables"; harness: Harness; variables: Record<string, string> }
+  | { op: "installSkills"; input: import("./skills.ts").SkillInstallInput }
   | { op: "configureGitHub"; configuration: GitHubBrokerConfiguration | null }
   | { op: "resourceObservation" }
   | ConfigureMcpRequest

@@ -35,7 +35,7 @@ import { sandboxActivity } from "./sandbox-activity.ts";
 import { DEFAULT_SANDBOX_EXTENSION_HEADROOM_SECONDS, SANDBOX_STOP_MARGIN_SECONDS } from "./sandbox-lifetime.ts";
 import { assertProviderOf, HOST_CAPABILITIES, PROVIDER_LIMITS, type SandboxProviderId } from "./sandbox-provider.ts";
 import { mergeSkillPins } from "./skill-merge.ts";
-import { installSkill, validateSkillPins } from "./skillpack.ts";
+import { installSkill, skillExclusionCommand, validateSkillPins } from "./skillpack.ts";
 
 /** Four hours: long enough for an autonomous run, short enough that a forgotten sandbox stops by itself. */
 export const DEFAULT_LAUNCH_TTL_SECONDS = 14_400;
@@ -172,7 +172,14 @@ export interface LaunchOptions extends GoldenLimits {
       /** Private resume policy: validate configuration before activating compute. */
       activate?: (signal: AbortSignal) => Promise<void>;
       restoreCheckpoint?: { epoch: string; watermark: number; conversationId: string };
-    }): Promise<{ prompt: Provider["prompt"]; epoch: string }>;
+    }): Promise<{
+      prompt: Provider["prompt"];
+      epoch: string;
+      installSkills?: (
+        references: string[],
+        key: string | null,
+      ) => Promise<import("./delegated-access.ts").SkillReceipt[]>;
+    }>;
   };
   /** Trusted server policy: extra physical Modal seconds reserved for extension. */
   extensionHeadroomSeconds?: number;
@@ -292,8 +299,8 @@ export async function launchSandbox(
   const connectionIds = [
     ...new Set(request.connections ?? (await stores.connections?.defaults?.(actor, visibility)) ?? []),
   ];
-  if (runtime && (request.skills?.length || request.helperCapabilities?.length))
-    throw new LaunchError("invalid_request", "The experimental runtime does not yet support skills or helpers.");
+  if (runtime && request.helperCapabilities?.length)
+    throw new LaunchError("invalid_request", "The experimental runtime does not yet support helpers.");
   if (connectionIds.length && !stores.connections)
     throw new LaunchError("invalid_request", "MCP launch connections are not configured.");
   await stores.connections?.validate(actor, connectionIds, visibility);
@@ -478,7 +485,7 @@ export async function launchSandbox(
       progress("initialization_cwd");
       if (!runtime && repositoryDir !== null && prepareNativeCwd)
         await prepareNativeCwd({ sandboxId: ready.id, harness, cwd: `${GOLDEN_ROOT}/${repositoryDir}` });
-      if (request.skills?.length) {
+      if (!runtime && request.skills?.length) {
         const receipts = [];
         let privateKey: string | null | undefined;
         for (const skill of request.skills) {
@@ -502,19 +509,11 @@ export async function launchSandbox(
         }
         if (repositoryDir !== null) {
           // Local Git metadata only: do not stage third-party launch skills with worker changes.
-          const paths = [
-            "/.companion/skills.lock.json",
-            "/.companion/skills.lock.json.lock",
-            ...request.skills.flatMap((skill) => {
-              const slug = skill.split("@")[0]!.split("/").at(-1);
-              return [`/.agents/skills/${slug}/`, ...(harness === "claude" ? [`/.claude/skills/${slug}/`] : [])];
-            }),
-          ];
           const excluded = await provider.exec({
             sandboxId: ready.id,
             cwd: `${GOLDEN_ROOT}/${repositoryDir}`,
             timeoutSeconds: 30,
-            command: `exclude=$(git rev-parse --git-path info/exclude) && mkdir -p "$(dirname "$exclude")" && printf '\\n%s\\n' ${paths.map((path) => `'${path}'`).join(" ")} >> "$exclude"`,
+            command: skillExclusionCommand(request.skills, harness),
           });
           if (excluded.detached || excluded.timedOut || excluded.truncated || excluded.exitCode !== 0)
             throw new Error("Skillpack checkout exclusions could not be prepared.");
@@ -534,6 +533,24 @@ export async function launchSandbox(
       const agent = startedRuntime ? await startedRuntime : undefined;
       if (runtime && (!agent || typeof agent.prompt !== "function" || !/^[1-9][0-9]{0,18}$/.test(agent.epoch)))
         throw new LaunchError("start_failed", "The runtime did not acknowledge a valid epoch.");
+      if (runtime && request.skills?.length) {
+        if (!agent?.installSkills) throw new PrivateSkillError("skillpack_transport_failed", "transport");
+        const needsKey = request.skills.some((ref) => !ref.includes("/"));
+        const key = needsKey ? ((await stores.credentials.skillpackKey?.(actor)) ?? null) : null;
+        if (needsKey && !key) throw new PrivateSkillError("skillpack_credential_missing", "credential");
+        try {
+          record.skills = await agent.installSkills(request.skills, key);
+        } catch (error) {
+          if (
+            error instanceof PrivateSkillError &&
+            error.reason === "skillpack_cli_unavailable" &&
+            golden.buildWarnings?.includes("skillpack_download_unavailable")
+          )
+            throw new PrivateSkillError("skillpack_download_unavailable", error.stage);
+          throw error;
+        }
+        await stores.sandboxes.recordSkills!(record.id, record.skills);
+      }
       if (runtime) await stores.connections?.prepare?.(provider, record, actor, signal);
       const provenance = agent ? { kind: "armada" as const, epoch: agent.epoch } : undefined;
       // Boat goldens carry the native CLI. A restored fork can be ready while its

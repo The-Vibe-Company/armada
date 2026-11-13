@@ -11,7 +11,9 @@ import {
   ProviderError,
   type ProviderErrorCode,
   resolveModelChoice,
+  type SkillReceipt,
 } from "@armada/core";
+import { PRIVATE_SKILL_FAILURES, PrivateSkillError } from "../../core/src/private-skill-error.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
 
 const errors: Record<string, ProviderErrorCode> = {
@@ -118,6 +120,71 @@ export function createRuntimeAgent(
       )
         throw refusal("sandbox_not_ready");
       return { runtime: "armada", epoch: reply.epoch };
+    },
+    async installSkills(
+      references: string[],
+      key: string | null,
+      epoch: string,
+      signal?: AbortSignal,
+    ): Promise<SkillReceipt[]> {
+      const health = await invoke<{ ready?: unknown; generation?: unknown; skillsVersion?: unknown }>(
+        { ...identity(), op: "health" },
+        signal,
+        epoch,
+      );
+      if (health.ready !== true || health.generation !== epoch || health.skillsVersion !== 1)
+        throw new PrivateSkillError("skillpack_transport_failed", "transport");
+      const result = await invoke<{ receipts?: SkillReceipt[]; failure?: { reason?: unknown } }>(
+        {
+          ...identity(`skills_${sandboxId}`),
+          op: "installSkills",
+          input: { harness: "codex", references, cwd, ...(key ? { key } : {}) },
+        },
+        signal,
+        epoch,
+      );
+      if (result?.failure) {
+        const reason = result.failure.reason;
+        if (
+          typeof reason === "string" &&
+          [
+            ...PRIVATE_SKILL_FAILURES,
+            "skillpack_credential_missing",
+            "skillpack_credential_refused",
+            "skillpack_skill_unavailable",
+          ].includes(reason as never)
+        )
+          throw new PrivateSkillError(reason as ConstructorParameters<typeof PrivateSkillError>[0], "install");
+        throw new PrivateSkillError("skillpack_install_state_invalid", "install");
+      }
+      if (!Array.isArray(result?.receipts) || result.receipts.length !== references.length)
+        throw new PrivateSkillError("skillpack_receipt_invalid", "receipt");
+      for (const [i, receipt] of result.receipts.entries()) {
+        const reference = references[i],
+          version = reference?.split("@")[1];
+        if (
+          !receipt ||
+          receipt.reference !== reference ||
+          receipt.version !== version ||
+          typeof receipt.checksum !== "string" ||
+          !/^sha256:[a-f0-9]{64}$/.test(receipt.checksum) ||
+          typeof receipt.skillId !== "string" ||
+          !/^[a-f0-9-]{36}$/.test(receipt.skillId) ||
+          receipt.origin !== "https://skillpack.app/v1" ||
+          (!reference?.includes("/") &&
+            (typeof receipt.workspaceId !== "string" ||
+              !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(receipt.workspaceId)))
+        )
+          throw new PrivateSkillError("skillpack_receipt_invalid", "receipt");
+      }
+      return result.receipts.map(({ reference, version, skillId, checksum, origin, workspaceId }) => ({
+        reference,
+        version,
+        skillId,
+        checksum,
+        origin,
+        ...(!reference.includes("/") && workspaceId ? { workspaceId } : {}),
+      }));
     },
     async configureGitHub(configuration: GitHubRuntimeConfiguration, requestId: string): Promise<void> {
       const result = await invoke<{ acknowledged?: boolean }>({

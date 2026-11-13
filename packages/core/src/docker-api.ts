@@ -85,6 +85,7 @@ export interface LaunchOptionsResponse {
     resumeVersion: number;
     githubVersion: number;
     mcpVersion: number;
+    skillsVersion?: number;
     enabled: boolean;
   };
 }
