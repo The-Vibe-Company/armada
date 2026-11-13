@@ -165,8 +165,15 @@ export function sandboxGateway(gateway: Gateway) {
     stop: (sandboxId: string) => gateway.call("stop", { id: sandboxId }),
     /** Permanent; the server refuses it unless the sandbox is stopped or failed. */
     delete: (sandboxId: string) => gateway.call("delete", { id: sandboxId }),
-    send: (sandboxId: string, prompt: string, override: SendArgs = {}, conversationId?: string) =>
-      gateway.call("send", { id: sandboxId, prompt, ...conversation(conversationId), ...override }),
+    /** `requestId` makes the send idempotent: a Docker sandbox requires it (#1526). */
+    send: (sandboxId: string, prompt: string, override: SendArgs = {}, conversationId?: string, requestId?: string) =>
+      gateway.call("send", {
+        id: sandboxId,
+        prompt,
+        ...conversation(conversationId),
+        ...override,
+        ...(requestId ? { request_id: requestId } : {}),
+      }),
     steer: (sandboxId: string, text: string, conversationId?: string) =>
       gateway.call("steer", { id: sandboxId, text, ...conversation(conversationId) }),
     interrupt: (sandboxId: string, conversationId?: string) =>

@@ -91,6 +91,7 @@ export interface LaunchOptionsResponse {
     followupVersion?: number;
     resumeVersion?: number;
     mcpVersion?: number;
+    skillsVersion?: number;
   };
   boatRuntime: {
     defaultPath?: "native" | "runtime";
@@ -108,6 +109,12 @@ export interface LaunchOptionsResponse {
   };
 }
 
+/** Why a host reports a failed machine operation, when the person can act on it (#1507). */
+export const DOCKER_JOB_FAILURE_REASONS = ["image_unavailable"] as const;
+export type DockerJobFailureReason = (typeof DOCKER_JOB_FAILURE_REASONS)[number];
+/** What a sandbox and its launch say when its host could not fetch the image. */
+export const DOCKER_IMAGE_UNAVAILABLE_MESSAGE =
+  "Your host could not fetch the image. Check that the image exists and that the host can reach its registry, then launch again.";
 /**
  * The plain Linux image a Docker host launch uses when none is given (#1507): Debian with HTTPS CA roots, pinned by
  * digest. The launch API, the CLI and the dashboard all default to it, so a person never has to know what an image is.

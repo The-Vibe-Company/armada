@@ -331,6 +331,7 @@ function DockerSandbox({
               conversations={sandbox.conversation_ids}
               configured={configured}
               composerUnavailable={reasons.followupPrompts}
+              pinnedModel
             />
           )}
         </div>

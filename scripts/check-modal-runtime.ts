@@ -1,5 +1,6 @@
 /** Coordinator-only staging check: exactly one Modal allocation, never retried. */
 import type { AgentEvent } from "../packages/core/src/provider.ts";
+import { readDefaultPins, verifyDefaultReceipts } from "./default-skill-smoke.ts";
 
 if (process.env.ARMADA_RUNTIME_SMOKE !== "one_real_modal_launch")
   throw Error("Set ARMADA_RUNTIME_SMOKE=one_real_modal_launch explicitly.");
@@ -27,8 +28,10 @@ interface Reply {
     followupVersion?: number;
     resumeVersion?: number;
     mcpVersion?: number;
+    skillsVersion?: number;
   };
-  sandbox?: { id?: string; provider?: string; runtimeTransport?: string };
+  skills?: unknown;
+  sandbox?: { id?: string; goldenId?: string; skills?: unknown; provider?: string; runtimeTransport?: string };
   runtime?: { kind?: string; epoch?: string };
   promptId?: string;
   conversationId?: string;
@@ -42,7 +45,7 @@ interface Reply {
   runtimeFailure?: unknown;
   sandboxes?: { id: string; status: string; stoppedAt?: string | null }[];
 }
-async function api(path: string, body: object): Promise<Reply> {
+async function api<T = Reply>(path: string, body: object): Promise<T> {
   let response: Response;
   try {
     response = await fetch(new URL(`/api/v1/${path}`, origin), {
@@ -57,7 +60,7 @@ async function api(path: string, body: object): Promise<Reply> {
   }
   if (!response.ok) throw Error(`Staging ${path} refused (${response.status}); no allocation retry.`);
   try {
-    return (await response.json()) as Reply;
+    return (await response.json()) as T;
   } catch {
     throw Error(`Staging ${path} returned an invalid receipt; no allocation retry.`);
   }
@@ -72,6 +75,11 @@ if (
 const resumeMode = process.argv.includes("--resume");
 if (resumeMode && options.modalRuntime.resumeVersion !== 1)
   throw Error("Modal retained resume v1 is unavailable; no launch attempted.");
+const skillsMode = process.argv.includes("--skills");
+if (skillsMode && options.modalRuntime.skillsVersion !== 1)
+  throw Error("Modal runtime skills v1 is unavailable; no launch attempted.");
+let defaultPins: string[] = [];
+let defaultGoldenId: string | undefined;
 const githubMode = process.argv.includes("--github");
 const mcpMode = process.argv.includes("--mcp");
 const repository = process.env.ARMADA_RUNTIME_GITHUB_REPOSITORY ?? "";
@@ -104,12 +112,21 @@ if (mcpMode) {
 }
 if (githubMode && !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository))
   throw Error("GitHub check requires existing ARMADA_RUNTIME_GITHUB_REPOSITORY=owner/repo; no launch attempted.");
-if (githubMode || mcpMode) {
+if (githubMode || mcpMode || skillsMode) {
   const choices = (await api("golden/list", { org })).goldens?.filter(
     (row) => row.provider === "modal" && (row.id === golden || row.name === golden),
   );
   if (choices?.length !== 1 || !choices[0])
     throw Error("No unique authorized Modal golden for preflight; no launch attempted.");
+  if (skillsMode) {
+    defaultGoldenId = choices[0].id;
+    defaultPins = await readDefaultPins(choices[0].orgId, defaultGoldenId, {
+      request: api,
+      step: async (_name, action) => action(),
+    });
+    if (!defaultPins.length)
+      throw Error("No default skills configured for the smoke golden/org/user; no launch attempted.");
+  }
   if (githubMode) {
     const preflight = await api("sandbox/github-preflight-v1", {
       runtimeVersion: 1,
@@ -152,6 +169,16 @@ let checkpointRequestId: string | undefined;
 let checkpointReceipt: Reply | undefined;
 let shouldStop = false;
 let initialGitHubRevision: string | undefined;
+let launchSkills: unknown;
+const verifySkillStatus = async () => {
+  if (!skillsMode) return;
+  const status = await api("sandbox/status", { id });
+  try {
+    verifyDefaultReceipts(launchSkills, status.skills, defaultPins);
+  } catch {
+    throw Error("Modal skill receipts do not match the effective default pins and launch identity.");
+  }
+};
 const githubToolPrompts = new Set<string>();
 const githubInstruction = `Run exactly: gh api repos/${repository} --jq .full_name successfully. After the tool succeeds, reply exactly with the token I originally asked you to remember. Do not change files.`;
 const recallInstruction =
@@ -281,8 +308,7 @@ try {
     credentialId,
     ...(process.env.ARMADA_RUNTIME_MODEL ? { model: process.env.ARMADA_RUNTIME_MODEL } : {}),
     connections: mcpMode ? [mcpConnection] : [],
-    skills: [],
-    skipSkillDefaults: true,
+    ...(!skillsMode ? { skills: [], skipSkillDefaults: true } : {}),
     ttlSeconds: 900,
     prompt: mcpMode
       ? `Remember token ${memory}. ${mcpInstruction} After it succeeds, reply exactly ${answer}. Do not change files.`
@@ -303,6 +329,10 @@ try {
     !launched.conversationId
   )
     throw Error("Missing Modal enrolled launch acknowledgement; reconcile existing allocation, never launch again.");
+  if (skillsMode && launched.sandbox.goldenId !== defaultGoldenId)
+    throw Error("Modal launch selected a different golden than the default-skill policy; no retry.");
+  launchSkills = launched.sandbox.skills;
+  await verifySkillStatus();
   await verifyPrompt(promptId, answer);
   initialGitHubRevision = githubMode ? await configureGitHub(epoch ?? "") : undefined;
   const followupRequestId = crypto.randomUUID();
@@ -353,6 +383,7 @@ try {
       checkpoint: "verified",
       ...(githubMode ? { github: "verified" } : {}),
       ...(mcpMode ? { mcp: "verified" } : {}),
+      ...(skillsMode ? { skills: "verified" } : {}),
     }),
   );
 } catch (error) {
@@ -384,6 +415,7 @@ const stopKnown = async () => {
       // Cleanup uncertainty is never hidden behind an earlier inference failure.
       throw Error(`Modal cleanup unconfirmed for ${id}; coordinator must inspect it, never launch again.`);
     }
+    await verifySkillStatus();
   }
 };
 try {
@@ -441,6 +473,7 @@ if (
       throw Error(
         "Modal resume lacks same-conversation/new-epoch/restored-checkpoint acknowledgement; reconcile request_id, never activate again.",
       );
+    await verifySkillStatus();
     await verifyPrompt(resumed.promptId, memory);
     await verifyPrompt(promptId, answer);
     await verifyPrompt(followupPromptId, memory);
@@ -493,6 +526,7 @@ if (
         resume: "verified",
         ...(githubMode ? { githubAfterResume: "verified" } : {}),
         ...(mcpMode ? { mcpAfterResume: "verified" } : {}),
+        ...(skillsMode ? { skillsAfterResume: "verified" } : {}),
       }),
     );
 }
