@@ -3481,6 +3481,7 @@ export type Database = {
           enrolment_expires_at: string | null;
           configuration_enc: string | null;
           runtime_hash: string | null;
+          docker_issuer_fence: string | null;
         };
         Insert: {
           sandbox_id: string;
@@ -3490,6 +3491,7 @@ export type Database = {
           enrolment_expires_at?: string | null;
           configuration_enc?: string | null;
           runtime_hash?: string | null;
+          docker_issuer_fence?: string | null;
         };
         Update: {
           sandbox_id?: string;
@@ -3499,6 +3501,7 @@ export type Database = {
           enrolment_expires_at?: string | null;
           configuration_enc?: string | null;
           runtime_hash?: string | null;
+          docker_issuer_fence?: string | null;
         };
         Relationships: [
           {

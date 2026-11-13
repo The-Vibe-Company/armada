@@ -402,3 +402,17 @@ test("pending bootstrap is terminally unknown on recovery, before invocation or 
     await expect(tick(f.store, f.api, f.executor)).rejects.toThrow("Changed machine generation");
   }
 });
+
+test("saved generation identity fences absolute expiry across repeated and fresh operation IDs", async () => {
+  const f = fixture();
+  f.job.request.expiresAt = 1_700_000_000_000;
+  await tick(f.store, f.api, f.executor);
+  f.job.request.expiresAt++;
+  await expect(tick(f.store, f.api, f.executor)).rejects.toThrow("Changed host job");
+  f.job.requestId = crypto.randomUUID();
+  f.job.operation = "stop";
+  await expect(tick(f.store, f.api, f.executor)).rejects.toThrow("Changed machine generation");
+  f.job.request.expiresAt--;
+  await tick(f.store, f.api, f.executor);
+  expect(f.executed).toEqual(["create", "stop"]);
+});

@@ -194,6 +194,73 @@ describe("Docker machine executor", () => {
     expect(f.volumes.size).toBe(0);
   });
 
+  test("absolute expiry survives delayed allocation and retry, stops at its deadline and permits cleanup", async () => {
+    const f = fixture();
+    const absolute = { ...request, expiresAt: 61000 };
+    f.setTime(21000);
+    f.fail("container create");
+    await expect(f.executor.create(absolute)).rejects.toMatchObject({ code: "docker_failed" });
+    const volume = [...f.volumes.values()][0];
+    expect(volume.Labels["dev.armada.machine.created-at"]).toBe("21000");
+    expect(volume.Labels["dev.armada.machine.expires-at"]).toBe("61000");
+    f.setTime(31000);
+    f.fail("");
+    const receipt = await f.executor.create(absolute);
+    expect(receipt.expiresAt).toBe(61000);
+    expect(await f.executor.create(absolute)).toEqual(receipt);
+    expect(f.calls.filter((c) => c.argv[0] === "volume" && c.argv[1] === "create")).toHaveLength(1);
+    expect(await f.executor.stopIfExpired(absolute)).toBe(false);
+    f.setTime(61000);
+    await expect(f.executor.create(absolute)).rejects.toMatchObject({ code: "expired" });
+    expect(await f.executor.stopIfExpired(absolute)).toBe(true);
+    expect(f.containers.get(receipt.containerName).State.Running).toBe(false);
+    await f.executor.stop(absolute);
+    await f.executor.delete(absolute);
+    expect(f.containers.size).toBe(0);
+    expect(f.volumes.size).toBe(0);
+  });
+
+  test("rejects expired queued allocation but caps future absolute deadlines to the local TTL", async () => {
+    for (const expiresAt of [1000, 999]) {
+      const f = fixture();
+      await expect(f.executor.create({ ...request, expiresAt })).rejects.toMatchObject({ code: "expired" });
+      expect(f.calls.some((c) => c.argv[1] === "create")).toBe(false);
+      expect(f.containers.size).toBe(0);
+      expect(f.volumes.size).toBe(0);
+    }
+    const f = fixture();
+    const absolute = { ...request, expiresAt: 62000 };
+    const receipt = await f.executor.create(absolute);
+    expect(receipt.expiresAt).toBe(61000);
+    expect(f.volumes.get(receipt.volumeName).Labels["dev.armada.machine.absolute-expiry"]).toBe("62000");
+    f.setTime(2000);
+    expect(await f.executor.create(absolute)).toEqual(receipt);
+    f.setTime(61000);
+    expect(await f.executor.stopIfExpired(absolute)).toBe(true);
+  });
+
+  test("changed or omitted absolute deadline cannot mutate the same generation even with an identical effective cap", async () => {
+    const f = fixture();
+    const absolute = { ...request, expiresAt: 62000 };
+    await f.executor.create(absolute);
+    const before = f.calls.length;
+    for (const changed of [{ ...absolute, expiresAt: 63000 }, request]) {
+      for (const operation of [
+        () => f.executor.create(changed),
+        () => f.executor.stop(changed),
+        () => f.executor.stopIfExpired(changed),
+        () => f.executor.delete(changed),
+        () => f.executor.bootstrap(changed, { command: ["/opt/armada/runtime"], stdin: "secret" }),
+        () => f.executor.installRuntime(changed, new Uint8Array([1])),
+      ]) {
+        await expect(operation()).rejects.toMatchObject({ code: "ownership_mismatch" });
+      }
+    }
+    expect(f.calls.slice(before).every((c) => ["ls", "inspect"].includes(c.argv[1] ?? ""))).toBe(true);
+    expect([...f.containers.values()][0].State.Running).toBe(true);
+    expect(f.volumes.size).toBe(1);
+  });
+
   test.each(["container-label", "volume-label", "image", "bind-mount"])(
     "refuses mismatched %s before mutating any resource",
     async (mutation) => {
@@ -284,6 +351,12 @@ describe("Docker machine executor", () => {
     { ttlSeconds: 0 },
     { ttlSeconds: 86401 },
     { ttlSeconds: 1.5 },
+    { expiresAt: 0 },
+    { expiresAt: -1 },
+    { expiresAt: 1.5 },
+    { expiresAt: Number.NaN },
+    { expiresAt: Number.POSITIVE_INFINITY },
+    { expiresAt: 8_640_000_000_000_001 },
   ])("rejects invalid admission before any CLI access: %j", async (change) => {
     const f = fixture();
     await expect(f.executor.create({ ...request, ...change })).rejects.toMatchObject({ code: "invalid_request" });

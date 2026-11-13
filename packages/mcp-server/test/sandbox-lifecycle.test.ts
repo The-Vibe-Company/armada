@@ -4,13 +4,17 @@ import { sandbox } from "../../provider-boat/test/support.ts";
 import { createSqlData } from "../src/data.ts";
 import { sandboxActivity } from "../src/sandbox-activity.ts";
 import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
-import { bunLikeSql, database } from "./support.ts";
+import { rowOnlyDatabase } from "./row-only-database.ts";
+import { bunLikeSql } from "./support.ts";
+
+const sharedDatabase = rowOnlyDatabase();
 
 test("an expired observation lease cannot publish a delayed terminal result", async () => {
-  const { db, people } = await database();
+  const { db, people } = await sharedDatabase();
   const publishing = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
   let lifecycle: ReturnType<typeof createSandboxLifecycle> | undefined;
+  let tick: Promise<boolean> | undefined;
   try {
     const sql = bunLikeSql(db);
     const store = createSqlData(sql)({
@@ -63,7 +67,7 @@ test("an expired observation lease cannot publish a delayed terminal result", as
       async () => provider,
     );
     const controller = new AbortController();
-    const tick = lifecycle.reconcileOne(controller.signal);
+    tick = lifecycle.reconcileOne(controller.signal);
     await publishing.promise;
     controller.abort();
     await db.query("update sandboxes set reconcile_lease_until=now()-interval '1 second' where id=$1", [id]);
@@ -86,8 +90,8 @@ test("an expired observation lease cannot publish a delayed terminal result", as
     expect(methods).toEqual(["GET", "GET"]);
   } finally {
     release.resolve();
+    await Promise.allSettled([tick]);
     await lifecycle?.drain();
-    await db.close();
   }
 });
 
@@ -106,249 +110,242 @@ for (const outcome of [
   const externalStop = outcome === "external-stop" || outcome === "invalid-stop-time";
   const validStoppedAt = "2026-11-11T00:00:00.000Z";
   test(`lifecycle reconciles Boat ${outcome} without deleting retained data`, async () => {
-    const { db, people } = await database();
-    try {
-      const sql = bunLikeSql(db);
-      const data = createSqlData(sql)({
-        via: "service",
-        userId: people.owner,
-        orgs: [{ orgId: people.org, role: "member" }],
-      });
-      const golden = (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0]!;
-      const id = crypto.randomUUID();
-      await data.sandboxes.insert({
-        id,
-        provider: "boat",
-        providerSandboxId: "bx_23456789",
-        goldenId: golden.id,
-        orgId: people.org,
-        ownerId: people.owner,
-        harness: "claude",
-        status: "running",
-        model: "test",
-        reasoningEffort: "medium",
-        requestedTtlSeconds: 60,
-        effectiveTtlSeconds: 60,
-      });
-      if (outcome === "manual-stop") await db.query("update sandboxes set status='stopping' where id=$1", [id]);
-      if (!externalStop && outcome !== "stale" && outcome !== "manual-stop")
-        await db.query("update sandboxes set expires_at=now()-interval '1 second' where id=$1", [id]);
-      const requests: string[] = [];
-      let stopped = false;
-      const provider = createBoatProvider({
-        apiKey: "test-only-key",
-        fetch: (async (input: Request | string | URL, init?: RequestInit) => {
-          const request = input instanceof Request ? new Request(input, init) : new Request(String(input), init);
-          requests.push(`${request.method} ${new URL(request.url).pathname}`);
-          if (request.method === "POST" && new URL(request.url).pathname.endsWith("/stop")) {
-            if (outcome === "stop-error")
-              return Response.json({ error: { code: "unavailable", message: "test failure" } }, { status: 503 });
-            stopped = outcome !== "unconfirmed";
-            return Response.json({ ok: true });
-          }
-          if (request.method === "POST") return Response.json({ ok: true });
-          if (outcome === "stale")
-            await db.query(
-              "update sandboxes set lifecycle_generation=lifecycle_generation+1,status='running' where id=$1",
-              [id],
-            );
-          if (new URL(request.url).pathname.endsWith("/conversations"))
-            return Response.json({
-              ok: true,
-              conversations: outcome === "interrupt-pending" ? [{ id: "conv-pending", running: true }] : [],
-            });
+    const { db, people } = await sharedDatabase();
+
+    const sql = bunLikeSql(db);
+    const data = createSqlData(sql)({
+      via: "service",
+      userId: people.owner,
+      orgs: [{ orgId: people.org, role: "member" }],
+    });
+    const golden = (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0]!;
+    const id = crypto.randomUUID();
+    await data.sandboxes.insert({
+      id,
+      provider: "boat",
+      providerSandboxId: "bx_23456789",
+      goldenId: golden.id,
+      orgId: people.org,
+      ownerId: people.owner,
+      harness: "claude",
+      status: "running",
+      model: "test",
+      reasoningEffort: "medium",
+      requestedTtlSeconds: 60,
+      effectiveTtlSeconds: 60,
+    });
+    if (outcome === "manual-stop") await db.query("update sandboxes set status='stopping' where id=$1", [id]);
+    if (!externalStop && outcome !== "stale" && outcome !== "manual-stop")
+      await db.query("update sandboxes set expires_at=now()-interval '1 second' where id=$1", [id]);
+    const requests: string[] = [];
+    let stopped = false;
+    const provider = createBoatProvider({
+      apiKey: "test-only-key",
+      fetch: (async (input: Request | string | URL, init?: RequestInit) => {
+        const request = input instanceof Request ? new Request(input, init) : new Request(String(input), init);
+        requests.push(`${request.method} ${new URL(request.url).pathname}`);
+        if (request.method === "POST" && new URL(request.url).pathname.endsWith("/stop")) {
+          if (outcome === "stop-error")
+            return Response.json({ error: { code: "unavailable", message: "test failure" } }, { status: 503 });
+          stopped = outcome !== "unconfirmed";
+          return Response.json({ ok: true });
+        }
+        if (request.method === "POST") return Response.json({ ok: true });
+        if (outcome === "stale")
+          await db.query(
+            "update sandboxes set lifecycle_generation=lifecycle_generation+1,status='running' where id=$1",
+            [id],
+          );
+        if (new URL(request.url).pathname.endsWith("/conversations"))
           return Response.json({
             ok: true,
-            sandbox: sandbox({
-              stoppedAt:
-                outcome === "external-stop"
-                  ? validStoppedAt
-                  : outcome === "invalid-stop-time"
-                    ? "not-a-date"
-                    : undefined,
-              state:
-                stopped || externalStop || outcome === "expired-external-stop" || outcome === "stale"
-                  ? "archived"
-                  : "running",
-            }),
+            conversations: outcome === "interrupt-pending" ? [{ id: "conv-pending", running: true }] : [],
           });
-        }) as typeof fetch,
-      });
-      await createSandboxLifecycle(sql, async () => provider).reconcileOne();
-      const row = (
-        await db.query<{
-          status: string;
-          lifecycle_error: string | null;
-          effective_ttl_seconds: number;
-          requested_ttl_seconds: number;
-          usage_runtime_seconds: number | null;
-          status_reason: string | null;
-          stop_time_finite: boolean | null;
-          provider_stop_retained: boolean | null;
-        }>(
-          "select *,isfinite(stopped_at) as stop_time_finite,stopped_at=$2::timestamptz as provider_stop_retained from sandboxes where id=$1",
-          [id, validStoppedAt],
-        )
-      ).rows[0]!;
-      expect(row.status).toBe(
-        externalStop || outcome === "expired" || outcome === "expired-external-stop" || outcome === "manual-stop"
-          ? "stopped"
-          : outcome === "stale"
-            ? "running"
-            : "stopping",
-      );
-      expect(row.status_reason).toBe(
-        ["expired", "expired-external-stop", "interrupt-pending", "unconfirmed", "stop-error"].includes(outcome)
-          ? "expired"
-          : null,
-      );
-      expect(row.effective_ttl_seconds).toBe(60);
-      expect(row.requested_ttl_seconds).toBe(60);
-      if (outcome === "external-stop") expect(row.provider_stop_retained).toBe(true);
-      // Confirmed stops close observed intervals; absent/bad timestamps fall back locally.
-      if (externalStop || ["expired", "expired-external-stop", "manual-stop"].includes(outcome)) {
-        expect(row.stop_time_finite).toBe(true);
-        expect(row.usage_runtime_seconds).not.toBeNull();
-        expect(row.usage_runtime_seconds!).toBeGreaterThanOrEqual(0);
-      }
-      if (outcome === "unconfirmed" || outcome === "stop-error" || outcome === "interrupt-pending")
-        expect(row.lifecycle_error).toContain("Retrying");
-      expect(requests.some((r) => r.startsWith("DELETE"))).toBe(false);
-      expect(requests.filter((r) => r.startsWith("POST") && r.endsWith("/stop")).length).toBe(
-        externalStop || outcome === "expired-external-stop" || outcome === "stale" || outcome === "interrupt-pending"
-          ? 0
-          : 1,
-      );
-    } finally {
-      await db.close();
+        return Response.json({
+          ok: true,
+          sandbox: sandbox({
+            stoppedAt:
+              outcome === "external-stop" ? validStoppedAt : outcome === "invalid-stop-time" ? "not-a-date" : undefined,
+            state:
+              stopped || externalStop || outcome === "expired-external-stop" || outcome === "stale"
+                ? "archived"
+                : "running",
+          }),
+        });
+      }) as typeof fetch,
+    });
+    await createSandboxLifecycle(sql, async () => provider).reconcileOne();
+    const row = (
+      await db.query<{
+        status: string;
+        lifecycle_error: string | null;
+        effective_ttl_seconds: number;
+        requested_ttl_seconds: number;
+        usage_runtime_seconds: number | null;
+        status_reason: string | null;
+        stop_time_finite: boolean | null;
+        provider_stop_retained: boolean | null;
+      }>(
+        "select *,isfinite(stopped_at) as stop_time_finite,stopped_at=$2::timestamptz as provider_stop_retained from sandboxes where id=$1",
+        [id, validStoppedAt],
+      )
+    ).rows[0]!;
+    expect(row.status).toBe(
+      externalStop || outcome === "expired" || outcome === "expired-external-stop" || outcome === "manual-stop"
+        ? "stopped"
+        : outcome === "stale"
+          ? "running"
+          : "stopping",
+    );
+    expect(row.status_reason).toBe(
+      ["expired", "expired-external-stop", "interrupt-pending", "unconfirmed", "stop-error"].includes(outcome)
+        ? "expired"
+        : null,
+    );
+    expect(row.effective_ttl_seconds).toBe(60);
+    expect(row.requested_ttl_seconds).toBe(60);
+    if (outcome === "external-stop") expect(row.provider_stop_retained).toBe(true);
+    // Confirmed stops close observed intervals; absent/bad timestamps fall back locally.
+    if (externalStop || ["expired", "expired-external-stop", "manual-stop"].includes(outcome)) {
+      expect(row.stop_time_finite).toBe(true);
+      expect(row.usage_runtime_seconds).not.toBeNull();
+      expect(row.usage_runtime_seconds!).toBeGreaterThanOrEqual(0);
     }
+    if (outcome === "unconfirmed" || outcome === "stop-error" || outcome === "interrupt-pending")
+      expect(row.lifecycle_error).toContain("Retrying");
+    expect(requests.some((r) => r.startsWith("DELETE"))).toBe(false);
+    expect(requests.filter((r) => r.startsWith("POST") && r.endsWith("/stop")).length).toBe(
+      externalStop || outcome === "expired-external-stop" || outcome === "stale" || outcome === "interrupt-pending"
+        ? 0
+        : 1,
+    );
   });
 }
 
 for (const observation of ["stopped", "expired", "unavailable"] as const) {
   test(`failed launch reason survives terminal reconciliation (${observation})`, async () => {
-    const { db, people } = await database();
-    try {
-      const sql = bunLikeSql(db);
-      const id = crypto.randomUUID();
-      const reason = "Repository initialization failed";
-      const golden = (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0];
-      if (!golden) throw Error("missing golden");
-      await db.query(
-        `insert into sandboxes(id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status,status_reason,expires_at)
+    const { db, people } = await sharedDatabase();
+
+    const sql = bunLikeSql(db);
+    const id = crypto.randomUUID();
+    const reason = "Repository initialization failed";
+    const golden = (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0];
+    if (!golden) throw Error("missing golden");
+    await db.query(
+      `insert into sandboxes(id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status,status_reason,expires_at)
         values($1,'boat','bx_23456789',$2,$3,$4,'claude','failed',$5,now()-interval '1 second')`,
-        [id, golden.id, people.org, people.owner, reason],
+      [id, golden.id, people.org, people.owner, reason],
+    );
+    const methods: string[] = [];
+    let stopped = observation === "stopped";
+    const provider = createBoatProvider({
+      apiKey: "test-key",
+      beforeResume: async () => true,
+      beforePrompt: async () => {},
+      fetch: (async (input: Request | string | URL, init?: RequestInit) => {
+        const request = input instanceof Request ? new Request(input, init) : new Request(String(input), init);
+        methods.push(request.method);
+        if (observation === "unavailable")
+          return Response.json({ error: { code: "unavailable", message: "test" } }, { status: 503 });
+        const path = new URL(request.url).pathname;
+        if (path.endsWith("/resume")) {
+          stopped = false;
+          return Response.json({ ok: true });
+        }
+        if (path.endsWith("/prompt"))
+          return Response.json({ ok: true, promptId: "prompt_1", conversationId: "conv_1", status: "queued" });
+        if (request.method === "POST" && new URL(request.url).pathname.endsWith("/stop")) {
+          stopped = true;
+          return Response.json({ ok: true });
+        }
+        if (request.method === "POST") return Response.json({ ok: true });
+        if (path.endsWith("/conversations")) return Response.json({ ok: true, conversations: [] });
+        return Response.json({ ok: true, sandbox: sandbox({ state: stopped ? "archived" : "running" }) });
+      }) as typeof fetch,
+    });
+    let resolutions = 0;
+    const lifecycle = createSandboxLifecycle(sql, async () => {
+      resolutions++;
+      return provider;
+    });
+    await lifecycle.reconcileOne();
+    const row = (
+      await db.query<{
+        status: string;
+        status_reason: string;
+        stopped_at: Date | null;
+        last_observed_at: Date | null;
+        reconcile_lease: string | null;
+        lifecycle_error: string | null;
+      }>(
+        "select status,status_reason,stopped_at,last_observed_at,reconcile_lease,lifecycle_error from sandboxes where id=$1",
+        [id],
+      )
+    ).rows[0];
+    expect(row?.status).toBe("failed");
+    expect(row?.status_reason).toBe(reason);
+    expect(row?.reconcile_lease).toBeNull();
+    expect(methods.includes("DELETE")).toBe(false);
+    if (observation === "unavailable") {
+      expect(row?.stopped_at).toBeNull();
+      expect(row?.lifecycle_error).toContain("Retrying");
+    } else {
+      expect(row?.stopped_at).not.toBeNull();
+      expect(row?.last_observed_at).not.toBeNull();
+      expect(row?.lifecycle_error).toBeNull();
+      expect(methods).toEqual(
+        observation === "expired" ? ["GET", "GET", "GET", "GET", "GET", "POST", "POST", "GET"] : ["GET"],
       );
-      const methods: string[] = [];
-      let stopped = observation === "stopped";
-      const provider = createBoatProvider({
-        apiKey: "test-key",
-        beforeResume: async () => true,
-        beforePrompt: async () => {},
-        fetch: (async (input: Request | string | URL, init?: RequestInit) => {
-          const request = input instanceof Request ? new Request(input, init) : new Request(String(input), init);
-          methods.push(request.method);
-          if (observation === "unavailable")
-            return Response.json({ error: { code: "unavailable", message: "test" } }, { status: 503 });
-          const path = new URL(request.url).pathname;
-          if (path.endsWith("/resume")) {
-            stopped = false;
-            return Response.json({ ok: true });
-          }
-          if (path.endsWith("/prompt"))
-            return Response.json({ ok: true, promptId: "prompt_1", conversationId: "conv_1", status: "queued" });
-          if (request.method === "POST" && new URL(request.url).pathname.endsWith("/stop")) {
-            stopped = true;
-            return Response.json({ ok: true });
-          }
-          if (request.method === "POST") return Response.json({ ok: true });
-          if (path.endsWith("/conversations")) return Response.json({ ok: true, conversations: [] });
-          return Response.json({ ok: true, sandbox: sandbox({ state: stopped ? "archived" : "running" }) });
-        }) as typeof fetch,
-      });
-      let resolutions = 0;
-      const lifecycle = createSandboxLifecycle(sql, async () => {
-        resolutions++;
-        return provider;
-      });
-      await lifecycle.reconcileOne();
-      const row = (
-        await db.query<{
-          status: string;
-          status_reason: string;
-          stopped_at: Date | null;
-          last_observed_at: Date | null;
-          reconcile_lease: string | null;
-          lifecycle_error: string | null;
-        }>(
-          "select status,status_reason,stopped_at,last_observed_at,reconcile_lease,lifecycle_error from sandboxes where id=$1",
-          [id],
-        )
-      ).rows[0];
-      expect(row?.status).toBe("failed");
-      expect(row?.status_reason).toBe(reason);
-      expect(row?.reconcile_lease).toBeNull();
-      expect(methods.includes("DELETE")).toBe(false);
-      if (observation === "unavailable") {
-        expect(row?.stopped_at).toBeNull();
-        expect(row?.lifecycle_error).toContain("Retrying");
-      } else {
-        expect(row?.stopped_at).not.toBeNull();
-        expect(row?.last_observed_at).not.toBeNull();
-        expect(row?.lifecycle_error).toBeNull();
-        expect(methods).toEqual(
-          observation === "expired" ? ["GET", "GET", "GET", "GET", "GET", "POST", "POST", "GET"] : ["GET"],
-        );
-      }
-      // Re-due historical failures: only unknown outcomes may consume provider work again.
-      await db.query("update sandboxes set reconcile_after=now()-interval '1 second' where id=$1", [id]);
-      const calls = methods.length;
-      expect(await lifecycle.reconcileOne()).toBe(observation === "unavailable");
-      expect(resolutions).toBe(observation === "unavailable" ? 2 : 1);
-      expect(methods.length).toBe(calls + (observation === "unavailable" ? 1 : 0));
-      if (observation !== "unavailable") {
-        const store = createSqlData(sql)({
-          via: "service",
-          userId: people.owner,
-          orgs: [{ orgId: people.org, role: "member" }],
-        }).sandboxes;
-        const confirmed = await store.get(id);
-        if (!confirmed) throw Error("missing confirmed failed sandbox");
-        // The production send-admission owner rearms the persisted policy, then the
-        // real SDK resumes the stopped machine and admits its next native prompt.
-        await sandboxActivity(
-          store,
-          confirmed,
-          { renewLifecycle: true, status: "starting", stoppedAt: null },
-          async (signal) => {
-            const receipt = await provider.prompt({
-              sandboxId: confirmed.providerSandboxId,
-              harness: "claude",
-              text: "continue",
-              signal,
-            });
-            return { result: receipt, patch: { status: "running", stoppedAt: null } };
-          },
-        );
-        const resumed = await store.get(id);
-        expect(resumed?.stoppedAt).toBeNull();
-        expect(resumed?.status).toBe("running");
-        expect(resumed?.lifecycleGeneration).toBe(3);
-        expect(Date.parse(resumed?.expiresAt ?? "")).toBeGreaterThan(Date.now());
-        const beforeObservation = methods.length;
-        expect(await lifecycle.reconcileOne()).toBe(true);
-        expect(resolutions).toBe(2);
-        expect(methods.slice(beforeObservation)).toEqual(["GET"]);
-        expect((await store.get(id))?.status).toBe("running");
-      }
-    } finally {
-      await db.close();
+    }
+    // Re-due historical failures: only unknown outcomes may consume provider work again.
+    await db.query("update sandboxes set reconcile_after=now()-interval '1 second' where id=$1", [id]);
+    const calls = methods.length;
+    expect(await lifecycle.reconcileOne()).toBe(observation === "unavailable");
+    expect(resolutions).toBe(observation === "unavailable" ? 2 : 1);
+    expect(methods.length).toBe(calls + (observation === "unavailable" ? 1 : 0));
+    if (observation !== "unavailable") {
+      const store = createSqlData(sql)({
+        via: "service",
+        userId: people.owner,
+        orgs: [{ orgId: people.org, role: "member" }],
+      }).sandboxes;
+      const confirmed = await store.get(id);
+      if (!confirmed) throw Error("missing confirmed failed sandbox");
+      // The production send-admission owner rearms the persisted policy, then the
+      // real SDK resumes the stopped machine and admits its next native prompt.
+      await sandboxActivity(
+        store,
+        confirmed,
+        { renewLifecycle: true, status: "starting", stoppedAt: null },
+        async (signal) => {
+          const receipt = await provider.prompt({
+            sandboxId: confirmed.providerSandboxId,
+            harness: "claude",
+            text: "continue",
+            signal,
+          });
+          return { result: receipt, patch: { status: "running", stoppedAt: null } };
+        },
+      );
+      const resumed = await store.get(id);
+      expect(resumed?.stoppedAt).toBeNull();
+      expect(resumed?.status).toBe("running");
+      expect(resumed?.lifecycleGeneration).toBe(3);
+      expect(Date.parse(resumed?.expiresAt ?? "")).toBeGreaterThan(Date.now());
+      const beforeObservation = methods.length;
+      expect(await lifecycle.reconcileOne()).toBe(true);
+      expect(resolutions).toBe(2);
+      expect(methods.slice(beforeObservation)).toEqual(["GET"]);
+      expect((await store.get(id))?.status).toBe("running");
     }
   });
 }
 
 test("replicas lease one observation and resume admission fences old writes while retaining requested TTL", async () => {
-  const { db, people } = await database();
+  const { db, people } = await sharedDatabase();
+  const gate = Promise.withResolvers<void>();
+  let worker: ReturnType<typeof createSandboxLifecycle> | undefined;
+  let first: Promise<boolean> | undefined;
   try {
     const sql = bunLikeSql(db);
     const data = createSqlData(sql)({
@@ -373,10 +370,6 @@ test("replicas lease one observation and resume admission fences old writes whil
       effectiveTtlSeconds: 90,
       requestedTtlSeconds: 90,
     });
-    let release: (() => void) | undefined;
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
     let entered: (() => void) | undefined;
     const observing = new Promise<void>((resolve) => {
       entered = resolve;
@@ -387,19 +380,19 @@ test("replicas lease one observation and resume admission fences old writes whil
       fetch: (async (_input: Request | string | URL, _init?: RequestInit) => {
         observations++;
         entered?.();
-        await gate;
+        await gate.promise;
         return Response.json({ ok: true, sandbox: sandbox({ state: "archived" }) });
       }) as typeof fetch,
     });
-    const worker = createSandboxLifecycle(sql, async () => provider);
-    const first = worker.reconcileOne();
+    worker = createSandboxLifecycle(sql, async () => provider);
+    first = worker.reconcileOne();
     await observing;
     await worker.reconcileOne();
     expect(observations).toBe(1);
     await expect(
       data.sandboxes.update(id, { renewLifecycle: true, advanceGeneration: true, expectedGeneration: 1 }),
     ).rejects.toThrow();
-    release?.();
+    gate.resolve();
     await first;
     const activityToken = crypto.randomUUID();
     await data.sandboxes.update(id, {
@@ -422,67 +415,66 @@ test("replicas lease one observation and resume admission fences old writes whil
     expect(row?.requestedTtlSeconds).toBe(90);
     expect(Date.parse(row?.expiresAt ?? "") - Date.now()).toBeGreaterThan(85000);
   } finally {
-    await db.close();
+    gate.resolve();
+    await Promise.allSettled([first]);
+    await worker?.drain();
   }
 });
 
 for (const status of ["running", "starting", "failed", "stopping"] as const) {
   test(`removed-owner ${status} sandbox reports blocked cleanup without provider authority`, async () => {
-    const { db, people } = await database();
-    try {
-      const id = crypto.randomUUID();
-      const golden = (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0]!;
-      await db.query(
-        `insert into sandboxes(id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status,expires_at)
+    const { db, people } = await sharedDatabase();
+
+    const id = crypto.randomUUID();
+    const golden = (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0]!;
+    await db.query(
+      `insert into sandboxes(id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status,expires_at)
         values($1,'boat','bx_23456789',$2,$3,$4,'claude',$5,now()-interval '1 second')`,
-        [id, golden.id, people.org, people.owner, status],
-      );
-      await db.query("delete from members where org_id=$1 and user_id=$2", [people.org, people.owner]);
-      let resolutions = 0;
-      const worker = createSandboxLifecycle(bunLikeSql(db), async () => {
-        resolutions++;
-        throw new Error("Provider authority must not be requested");
-      });
-      expect(await worker.reconcileOne()).toBe(true);
-      const row = (
-        await db.query<{
-          status: string;
-          lifecycle_error: string;
-          stopped_at: Date | null;
-          stop_requested_at: Date | null;
-          last_observed_at: Date | null;
-          reconcile_lease: string | null;
-          reconcile_lease_until: Date | null;
-          retry_seconds: number;
-        }>(
-          `select *,extract(epoch from (reconcile_after-now()))::float8 as retry_seconds
+      [id, golden.id, people.org, people.owner, status],
+    );
+    await db.query("delete from members where org_id=$1 and user_id=$2", [people.org, people.owner]);
+    let resolutions = 0;
+    const worker = createSandboxLifecycle(bunLikeSql(db), async () => {
+      resolutions++;
+      throw new Error("Provider authority must not be requested");
+    });
+    expect(await worker.reconcileOne()).toBe(true);
+    const row = (
+      await db.query<{
+        status: string;
+        lifecycle_error: string;
+        stopped_at: Date | null;
+        stop_requested_at: Date | null;
+        last_observed_at: Date | null;
+        reconcile_lease: string | null;
+        reconcile_lease_until: Date | null;
+        retry_seconds: number;
+      }>(
+        `select *,extract(epoch from (reconcile_after-now()))::float8 as retry_seconds
         from sandboxes where id=$1`,
-          [id],
-        )
-      ).rows[0]!;
-      expect(row.lifecycle_error).toBe(
-        "Cleanup blocked: removed-owner authority is unavailable. Automatic cleanup requires service-owned worker authority.",
-      );
-      expect(row.status).toBe(status);
-      expect(row.stopped_at).toBeNull();
-      expect(row.stop_requested_at).toBeNull();
-      expect(row.last_observed_at).toBeNull();
-      expect(row.reconcile_lease).toBeNull();
-      expect(row.reconcile_lease_until).toBeNull();
-      expect(row.retry_seconds).toBeGreaterThan(0);
-      expect(row.retry_seconds).toBeLessThanOrEqual(60);
-      expect(await worker.reconcileOne()).toBe(false);
-      await db.query("update sandboxes set reconcile_after=now()-interval '1 second' where id=$1", [id]);
-      expect(await worker.reconcileOne()).toBe(true);
-      expect(resolutions).toBe(0);
-    } finally {
-      await db.close();
-    }
+        [id],
+      )
+    ).rows[0]!;
+    expect(row.lifecycle_error).toBe(
+      "Cleanup blocked: removed-owner authority is unavailable. Automatic cleanup requires service-owned worker authority.",
+    );
+    expect(row.status).toBe(status);
+    expect(row.stopped_at).toBeNull();
+    expect(row.stop_requested_at).toBeNull();
+    expect(row.last_observed_at).toBeNull();
+    expect(row.reconcile_lease).toBeNull();
+    expect(row.reconcile_lease_until).toBeNull();
+    expect(row.retry_seconds).toBeGreaterThan(0);
+    expect(row.retry_seconds).toBeLessThanOrEqual(60);
+    expect(await worker.reconcileOne()).toBe(false);
+    await db.query("update sandboxes set reconcile_after=now()-interval '1 second' where id=$1", [id]);
+    expect(await worker.reconcileOne()).toBe(true);
+    expect(resolutions).toBe(0);
   });
 }
 
 test("timed-out provider observations stay bounded until their raw work settles", async () => {
-  const { db, people } = await database();
+  const { db, people } = await sharedDatabase();
   const arrived = Array.from({ length: 4 }, () => Promise.withResolvers<void>());
   const held = Array.from({ length: 4 }, () => Promise.withResolvers<void>());
   let lifecycle: ReturnType<typeof createSandboxLifecycle> | undefined;
@@ -553,68 +545,64 @@ test("timed-out provider observations stay bounded until their raw work settles"
   } finally {
     for (const gate of held) gate.resolve();
     await lifecycle?.drain();
-    await db.close();
   }
 });
 
 test("runtime lifecycle stops compute with explicit no-checkpoint note, without native quiescence or capture", async () => {
-  const { db, people } = await database();
-  try {
-    const sql = bunLikeSql(db);
-    const store = createSqlData(sql)({
-      userId: people.owner,
-      orgs: [{ orgId: people.org, role: "member" }],
-      via: "service",
-    }).sandboxes;
-    const golden = (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0];
-    if (!golden) throw Error("missing golden");
-    const row = await store.insert({
-      id: crypto.randomUUID(),
-      provider: "boat",
-      providerSandboxId: "runtime-compute",
-      goldenId: golden.id,
-      orgId: people.org,
-      ownerId: people.owner,
-      harness: "codex",
-      status: "ready",
-      model: "gpt-5.4",
-      reasoningEffort: "high",
-      boatRuntime: true,
-    });
-    await db.query("update sandboxes set stop_requested_at=now(),reconcile_after=now() where id=$1", [row.id]);
-    let stopped = false;
-    const calls: string[] = [];
-    const provider = {
-      id: "boat",
-      async get() {
-        return {
-          id: "runtime-compute",
-          name: "x",
-          labels: {},
-          state: stopped ? "stopped" : "ready",
-          providerState: "x",
-          ...(stopped ? { stoppedAt: new Date() } : {}),
-        };
-      },
-      async stop() {
-        calls.push("stop");
-        stopped = true;
-      },
-      async quiesce() {
-        throw Error("must not claim native quiescence");
-      },
-      async exec() {
-        throw Error("must not capture native work");
-      },
-    };
-    const lifecycle = createSandboxLifecycle(sql, async () => provider as unknown as import("@armada/core").Provider);
-    expect(await lifecycle.reconcileOne()).toBe(true);
-    expect(calls).toEqual(["stop"]);
-    const final = await store.get(row.id);
-    expect(final?.status).toBe("stopped");
-    expect(final?.preservationNote).toContain("no acknowledged runtime checkpoint");
-    await lifecycle.drain();
-  } finally {
-    await db.close();
-  }
+  const { db, people } = await sharedDatabase();
+
+  const sql = bunLikeSql(db);
+  const store = createSqlData(sql)({
+    userId: people.owner,
+    orgs: [{ orgId: people.org, role: "member" }],
+    via: "service",
+  }).sandboxes;
+  const golden = (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0];
+  if (!golden) throw Error("missing golden");
+  const row = await store.insert({
+    id: crypto.randomUUID(),
+    provider: "boat",
+    providerSandboxId: "runtime-compute",
+    goldenId: golden.id,
+    orgId: people.org,
+    ownerId: people.owner,
+    harness: "codex",
+    status: "ready",
+    model: "gpt-5.4",
+    reasoningEffort: "high",
+    boatRuntime: true,
+  });
+  await db.query("update sandboxes set stop_requested_at=now(),reconcile_after=now() where id=$1", [row.id]);
+  let stopped = false;
+  const calls: string[] = [];
+  const provider = {
+    id: "boat",
+    async get() {
+      return {
+        id: "runtime-compute",
+        name: "x",
+        labels: {},
+        state: stopped ? "stopped" : "ready",
+        providerState: "x",
+        ...(stopped ? { stoppedAt: new Date() } : {}),
+      };
+    },
+    async stop() {
+      calls.push("stop");
+      stopped = true;
+    },
+    async quiesce() {
+      throw Error("must not claim native quiescence");
+    },
+    async exec() {
+      throw Error("must not capture native work");
+    },
+  };
+  const lifecycle = createSandboxLifecycle(sql, async () => provider as unknown as import("@armada/core").Provider);
+  expect(await lifecycle.reconcileOne()).toBe(true);
+  expect(calls).toEqual(["stop"]);
+  const final = await store.get(row.id);
+  expect(final?.status).toBe("stopped");
+  expect(final?.preservationNote).toContain("no acknowledged runtime checkpoint");
+  await lifecycle.drain();
 });
