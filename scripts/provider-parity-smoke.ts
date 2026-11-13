@@ -51,6 +51,9 @@ const features = [
   "steer",
   "interrupt",
   "resume-recall",
+  // #1562: explicit debt rows; manual stop/resume is not idle-pause/wake proof.
+  "idle-pause",
+  "wake-on-send",
   "github",
   "repository-refresh",
   "readable-variables",
