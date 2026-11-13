@@ -650,7 +650,9 @@ describe("armada org and armada creds against the control API", () => {
         expect(timing).toMatch(/events;dur=\d+\.\d{2}/);
         expect(timing).toMatch(/dispatch;dur=\d+\.\d{2}/);
         expect(timing.includes("state;dur=")).toBe(follow);
-        expect(((await response.json()) as { settled: boolean }).settled).toBe(true);
+        const page = (await response.json()) as { settled: boolean; source?: string };
+        expect(page.settled).toBe(true);
+        expect(page.source).toBeUndefined();
         expect(reads).toBe(1);
       }
     });
@@ -667,7 +669,7 @@ describe("armada org and armada creds against the control API", () => {
             harnesses: ["claude", "codex"],
             capabilities: { claude: { reasoningEffort: true }, codex: { reasoningEffort: true } } as never,
             async events() {
-              return { events: [], cursor: undefined, hasMore: false };
+              return { events: [], cursor: undefined, hasMore: false, source: "armada-runtime" };
             },
             async get() {
               return { id: "bx_follow", name: "x", state: "ready", providerState: "ready", labels: {} };
@@ -688,6 +690,7 @@ describe("armada org and armada creds against the control API", () => {
       expect((await response?.json()) as object).toMatchObject({
         events: [],
         cursor: "keep",
+        source: "armada-runtime",
         hasMore: false,
         settled: true,
       });
