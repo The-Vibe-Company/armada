@@ -23,6 +23,43 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Bootstrap the Actions dashboard path before the owner disables Git builds.
+  # In gated mode the existing staging job owns this same deployment instead.
+  dashboard:
+    name: Build and deploy staging dashboard
+    if: vars.STAGING_GATED_DEPLOYS != 'true' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: staging
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      SOURCE_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - uses: ./.github/actions/setup-bun
+      - name: Validate staging dashboard configuration
+        run: |
+          for key in VERCEL_TOKEN VERCEL_ORG_ID VERCEL_PROJECT_ID; do
+            [[ -n "${!key:-}" ]] || { echo "::error::Missing staging configuration: $key"; exit 1; }
+          done
+      - name: Install pinned Vercel client
+        run: npm install --global vercel@65.14.0
+      # --prod targets the staging PROJECT's domain and production env values.
+      # The token is read from the environment, never passed in argv.
+      - name: Build in Actions and upload only prebuilt output
+        run: |
+          vercel pull --yes --environment=production
+          vercel build --prod
+          vercel deploy --prebuilt --prod --yes --meta "githubCommitSha=$SOURCE_SHA"
+
   configuration:
     runs-on: ubuntu-latest
     steps:
@@ -70,6 +107,7 @@ jobs:
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
       ARMADA_SERVER_URL: ${{ secrets.ARMADA_SERVER_URL }}
       RELEASE_SHA: ${{ inputs.source_sha || github.sha }}
+      PREBUILT_DASHBOARD: "true"
       ARMADA_URL: ${{ vars.ARMADA_ORIGIN }}
       ARMADA_TOKEN: ${{ secrets.ARMADA_SMOKE_TOKEN }}
       ARMADA_SMOKE_CASES: ${{ secrets.ARMADA_SMOKE_CASES }}
@@ -104,9 +142,9 @@ jobs:
           node-version: 24
       - name: Install pinned deployment clients
         run: npm install --global @railway/cli@5.71.0 vercel@65.14.0
+      - uses: ./.github/actions/setup-bun
       - name: Migrate then deploy pinned server and dashboard
         run: bash .release-tools/scripts/release/deploy-production.sh
-      - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
       - name: Restore staging smoke receipts across branches and tags
         env:

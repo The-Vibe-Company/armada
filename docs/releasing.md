@@ -351,3 +351,46 @@ APP_STORE_CONNECT_API_* and IOS_DISTRIBUTION_CERTIFICATE_* secrets remain in tha
 environment (see apps/ios/README.md); no new iOS credentials/settings are required.
 Changing TestFlight's beta cadence or coupling its app binary to release tags is
 outside this small deployment-gate PR.
+
+## Dashboard Actions cutover (#1547, step 1)
+
+This step establishes the staging path **beside** the existing Vercel Git
+integration. Step 0 already skips Git builds on every branch except main. This
+step preserves that skip, main Git deployments, Railway settings, and production's
+deployment cadence.
+Do not claim the final release-only policy is active yet. The target policy is
+staging on main commits, production only at a release, with dashboard builds in
+Actions rather than Vercel; steps 2 and 3 complete that policy after owner proof.
+
+On every main push, **Pinned staging smoke → Build and deploy staging dashboard**
+uses the triggering SHA and the GitHub **staging** environment's existing
+`VERCEL_TOKEN`, `VERCEL_ORG_ID`, and `VERCEL_PROJECT_ID`. These must identify
+**armada-dashboard-staging**, never armada-dashboard. Keep the project's Root
+Directory at **apps/dashboard** and enable **Include source files outside of the
+Root Directory in the Build Step**. Preserve its production-environment build
+variables (including public Supabase configuration). The checkout stays at repo
+root so Bun workspaces resolve correctly. Node 24, repository-pinned Bun and
+Vercel CLI 65.14.0 run `vercel pull --environment=production`, `vercel build --prod`,
+then `vercel deploy --prebuilt --prod`: here `--prod` promotes the **staging
+project's** domain, not Armada production. The token is environment-only.
+See Vercel's [Actions guide](https://vercel.com/kb/guide/how-can-i-use-github-actions-with-vercel)
+and [CLI token guidance](https://github.com/vercel-labs/agent-skills/blob/main/skills/vercel-cli-with-tokens/SKILL.md).
+
+When `STAGING_GATED_DEPLOYS=true`, the standalone dashboard job is skipped: the
+existing serialized staging deployment builds prebuilt output instead, after
+server health and before smoke, including exact-SHA release smoke calls. The
+existing opt-in checks, migrations, server deployment and smoke stay unchanged.
+Without that variable the new job deploys only the dashboard; existing server
+and smoke mechanisms remain in place. This adds no PR CI job or PR preview.
+Existing staging FIFO concurrency is retained for this bootstrap step.
+
+**Owner proof before step 2:** after merging, inspect this commit's Actions build
+and the staging project's deployment list. Confirm the CLI deployment is Ready,
+its `githubCommitSha` matches the main commit, and its staging domain renders and
+can log in. Confirm build logs are in Actions, not a Vercel remote build. Git may
+still create a second staging deployment in this temporary overlap. No agent
+performs a deployment or changes provider settings. Leave both Git integrations
+in place until this proof succeeds; if Actions fails, Git remains the fallback.
+Only after the owner confirms this merge and staging proof may the next PR turn
+off Git deployments on both projects. Intermediate PRs use `Refs #1547`; only the final
+production release-only cutover closes the issue.
