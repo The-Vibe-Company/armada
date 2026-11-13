@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   DEFAULT_LAUNCH_TTL_SECONDS,
+  DOCKER_DEFAULT_IMAGE,
   type DockerLaunchResult,
   type DockerSandboxRecord,
   type GoldenActor,
@@ -128,9 +129,10 @@ function normalize(body: Record<string, unknown>): Request {
     body.provider !== "docker" ||
     !HARNESSES.includes(body.harness as Harness) ||
     (body.visibility !== undefined && body.visibility !== "private") ||
-    typeof body.image !== "string" ||
-    body.image.length > 512 ||
-    !/^[a-z0-9][a-z0-9./:_-]*@sha256:[0-9a-f]{64}$/.test(body.image) ||
+    (body.image !== undefined &&
+      (typeof body.image !== "string" ||
+        body.image.length > 512 ||
+        !/^[a-z0-9][a-z0-9./:_-]*@sha256:[0-9a-f]{64}$/.test(body.image))) ||
     (body.credentialVersion !== undefined &&
       (!Number.isSafeInteger(body.credentialVersion) || (body.credentialVersion as number) < 1)) ||
     (body.model !== undefined && typeof body.model !== "string") ||
@@ -157,7 +159,7 @@ function normalize(body: Record<string, unknown>): Request {
     harness: body.harness as Harness,
     visibility: "private",
     hostId: identifier(body.hostId),
-    image: body.image,
+    image: (body.image as string | undefined) ?? DOCKER_DEFAULT_IMAGE,
     credentialId: identifier(body.credentialId),
     credentialVersion: (body.credentialVersion as number | undefined) ?? null,
     requestId: identifier(body.requestId),

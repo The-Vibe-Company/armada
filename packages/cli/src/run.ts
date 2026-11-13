@@ -85,8 +85,8 @@ Usage:
   armada host add [--name NAME] [--org UUID]
   armada host list [--json] [--org UUID]
   armada host revoke UUID [--org UUID]
-  armada launch [prompt] --provider docker --host UUID|NAME --image digest-ref --agent claude|codex|opencode --credential-id UUID --org UUID [--request-id UUID] [--json]
-                                           Opt-in plain-image Docker launch through the normal Armada API.
+  armada launch [prompt] --provider docker --host UUID|NAME [--image digest-ref] --agent claude|codex|opencode --credential-id UUID --org UUID [--request-id UUID] [--json]
+                                           Plain-image Docker launch through the normal Armada API (Armada's default image without --image).
   armada --version                         Print the version
   armada --help                            Show this help
   armada skill install (--project <directory> | --global) --yes [--revision <commit>]

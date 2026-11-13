@@ -5,7 +5,7 @@ import type {
   LaunchProviderCapabilities,
   LaunchProviderOption,
 } from "@armada/core";
-import { HARNESSES } from "@armada/core";
+import { DOCKER_DEFAULT_IMAGE, HARNESSES } from "@armada/core";
 import { isUuid } from "./action.ts";
 import type { DockerHost } from "./docker-hosts.ts";
 
@@ -138,6 +138,23 @@ export function checkImage(raw: string): { ok: true; image: string } | { ok: fal
       error: "Enter an image pinned by digest, such as buildpack-deps@sha256:<64 hex characters>.",
     };
   return { ok: true, image };
+}
+
+/**
+ * The dialog's image choice (#1507): Armada's default image unless the person opens "Custom image…" and types one.
+ * Nobody has to know what an image is to launch.
+ */
+export const IMAGE_CHOICES = [
+  { value: "default", label: "Armada default (Debian, recommended)" },
+  { value: "custom", label: "Custom image…" },
+] as const;
+export type ImageChoice = (typeof IMAGE_CHOICES)[number]["value"];
+
+/** The image a launch uses from the dialog's choice; only a custom image is checked, and only then can it fail. */
+export function chosenImage(choice: string, custom: string): ReturnType<typeof checkImage> {
+  if (choice === "custom") return checkImage(custom);
+  if (choice === "default" || choice === "") return { ok: true, image: DOCKER_DEFAULT_IMAGE };
+  return { ok: false, error: "Choose an image." };
 }
 
 export type DockerLaunchArgs = {

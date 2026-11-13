@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
+import { DOCKER_DEFAULT_IMAGE } from "@armada/core";
 import { launchProviderOptions } from "../../../packages/mcp-server/src/launch-options.ts";
 import {
   checkImage,
+  chosenImage,
   DOCKER_CAPABILITIES,
   dockerLaunchBlocker,
   dockerLaunchBody,
@@ -84,6 +86,15 @@ test("only a digest-pinned image is accepted", () => {
   expect(checkImage(`ghcr.io/org/image:tag@sha256:${"a".repeat(64)}`).ok).toBe(true);
   for (const bad of ["buildpack-deps:bookworm-curl", `x@sha256:${"a".repeat(63)}`, `x y@sha256:${"a".repeat(64)}`, ""])
     expect(checkImage(bad).ok).toBe(false);
+});
+
+test("the dialog launches Armada's default image unless a custom digest-pinned image is chosen", () => {
+  expect(chosenImage("default", "")).toEqual({ ok: true, image: DOCKER_DEFAULT_IMAGE });
+  expect(chosenImage("default", "ignored")).toEqual({ ok: true, image: DOCKER_DEFAULT_IMAGE });
+  expect(chosenImage("custom", ` ${DIGEST} `)).toEqual({ ok: true, image: DIGEST });
+  expect(chosenImage("custom", "").ok).toBe(false);
+  expect(chosenImage("other", DIGEST).ok).toBe(false);
+  expect(checkImage(DOCKER_DEFAULT_IMAGE).ok).toBe(true);
 });
 
 test("the launch body is the normal route's Docker shape: Codex, private, the form key as requestId", () => {

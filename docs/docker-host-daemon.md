@@ -112,7 +112,10 @@ The request and receipt are encrypted in a service-only ledger; no model secret
 is copied into it. A completed retry returns its original admission receipt with
 current sandbox metadata (even after stop/delete), never restarts the sandbox.
 
-The API-only CLI uses the same normal route, not the private preview:
+The API-only CLI uses the same normal route, not the private preview. `image` is
+optional everywhere (API, CLI, dashboard): without it the launch uses
+`DOCKER_DEFAULT_IMAGE` from `@armada/core`, a digest-pinned Debian
+`buildpack-deps` image (#1507). `--image` overrides it:
 
 ```sh
 bun run armada launch --provider docker --org "$ARMADA_ORG" \
@@ -580,7 +583,7 @@ reports pending, not failed registration or permission to replay a token.
 CLI: `armada host add [--name NAME] [--org UUID]` prints that command and waits
 boundedly for the exact host. `armada host list [--json]` shows safe metadata;
 `armada host revoke UUID` revokes through the admin API. Selected organization is
-reused. `armada launch --provider docker --host UUID_OR_NAME --image DIGEST_REF`
+reused. `armada launch --provider docker --host UUID_OR_NAME [--image DIGEST_REF]`
 resolves names exactly among nonrevoked hosts in the selected org and refuses
 ambiguous names. Names are optional, nonempty trimmed display strings up to64
 characters, never identity or authority.

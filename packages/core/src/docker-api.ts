@@ -107,12 +107,20 @@ export interface LaunchOptionsResponse {
   };
 }
 
+/**
+ * The plain Linux image a Docker host launch uses when none is given (#1507): Debian with HTTPS CA roots, pinned by
+ * digest. The launch API, the CLI and the dashboard all default to it, so a person never has to know what an image is.
+ */
+export const DOCKER_DEFAULT_IMAGE =
+  "buildpack-deps@sha256:58021c2a0204361b62a23d2e0244d144d74c29af2d678e2a1f7e6611885d6949";
+
 /** Normal API/CLI contract. Discover capabilities.launch before offering this source. */
 export interface DockerLaunchRequest {
   org: string;
   provider: "docker";
   hostId: string;
-  image: string;
+  /** A digest-pinned image; omitted means `DOCKER_DEFAULT_IMAGE`. */
+  image?: string;
   harness: Harness;
   credentialId: string;
   credentialVersion?: number;
