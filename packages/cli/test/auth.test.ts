@@ -193,7 +193,7 @@ describe("auth commands", () => {
       `${ORIGIN}/api/v1/auth/email/start`,
       `${ORIGIN}/api/v1/auth/email/verify`,
     ]);
-    expect(await auth.session.read()).toEqual(session());
+    expect(await auth.session.read()).toEqual({ ...session(), loginId: expect.any(String) });
   });
 
   test("email code refusal explains link consumption without exposing provider details", async () => {

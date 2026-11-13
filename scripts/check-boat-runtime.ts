@@ -31,6 +31,7 @@ interface Reply {
     githubVersion?: number;
     mcpVersion?: number;
     skillsVersion?: number;
+    workspaceVersion?: number;
     controlsVersion?: number;
   };
   githubReady?: boolean;
@@ -76,6 +77,54 @@ if (options.boatRuntime?.enabled !== true || options.boatRuntime.diagnosticsVers
   throw Error(
     "Use the armada-server origin with experimental Boat runtime diagnostics v1 enabled; no launch attempted.",
   );
+const workspaceMode = process.argv.includes("--workspace");
+const workspaceSteps = new Map<string, string>();
+const workspaceEvents = new Set<string>();
+let workspaceLocked = false;
+if (workspaceMode) {
+  if (options.boatRuntime.workspaceVersion !== 1)
+    throw Error("Server has no runtime workspace setup v1; no launch attempted.");
+  const listed = await api<{
+    goldens: {
+      id: string;
+      name: string;
+      orgId: string;
+      provider: string;
+      config: { repos: unknown[]; init: unknown[] };
+    }[];
+  }>("golden/list", {});
+  const selected = listed.goldens?.filter(
+    (g) => g.orgId === org && g.provider === "boat" && (g.name === golden || g.id === golden),
+  );
+  if (selected?.length !== 1 || !Array.isArray(selected[0]?.config?.repos) || !Array.isArray(selected[0]?.config?.init))
+    throw Error("Cannot resolve workspace recipe; no launch attempted.");
+  selected[0].config.repos.forEach((_, i) => {
+    workspaceSteps.set(`repository:${i}`, "pending");
+  });
+  selected[0].config.init.forEach((_, i) => {
+    workspaceSteps.set(`init:${i}`, "pending");
+  });
+  if (!workspaceSteps.size)
+    throw Error("Workspace check needs an existing recipe with setup work; no launch attempted.");
+}
+function observeWorkspace(event: AgentEvent) {
+  if (!workspaceMode) return;
+  if (event.kind === "other" && event.type === "armada/workspaceStep") {
+    if (workspaceEvents.has(event.id)) return;
+    if (workspaceLocked) throw Error("Workspace setup reran after first inference/resume.");
+    const data = event.data as { phase?: unknown; index?: unknown; status?: unknown };
+    const key = `${data?.phase}:${data?.index}`;
+    if (!workspaceSteps.has(key) || !["running", "finished", "failed"].includes(String(data?.status)))
+      throw Error("Unexpected runtime workspace step.");
+    workspaceEvents.add(event.id);
+    workspaceSteps.set(key, String(data.status));
+  }
+  if (event.promptId && !workspaceLocked) {
+    if ([...workspaceSteps.values()].some((s) => s !== "finished"))
+      throw Error("Runtime inference preceded successful repository/init setup.");
+    workspaceLocked = true;
+  }
+}
 const steerMode = process.argv.includes("--steer");
 const interruptMode = process.argv.includes("--interrupt");
 const execMode = process.argv.includes("--exec");
@@ -300,6 +349,7 @@ try {
         );
       if (page.source !== "armada-runtime") throw Error("History did not come from the Armada journal archive.");
       for (const event of page.events ?? []) {
+        observeWorkspace(event);
         if (event.promptId !== promptId) continue;
         if (usageMode) usageCheck.observe(event);
         if (requireMcp && event.kind === "message") {
@@ -504,6 +554,7 @@ try {
       ...(mcpProof ? { mcp: "verified", mcpProof } : {}),
       ...(skillsMode ? { skills: "verified", skillReferences: defaultPins } : {}),
       ...(usageMode ? { usage: "verified", usageProof } : {}),
+      ...(workspaceMode ? { workspace: "verified", workspaceSteps: workspaceSteps.size } : {}),
       ...(checkpointReceipt ? { checkpoint: "verified", watermark: checkpointReceipt.checkpoint?.watermark } : {}),
       ...(nextPromptId
         ? { followup: "verified", followupPromptId: nextPromptId, conversationId: launched.conversationId }
@@ -684,6 +735,7 @@ if (resumeMode && !failure && id && checkpointReceipt && initialConversation && 
         ...(githubMode ? { githubAfterResume: "verified", githubProof } : {}),
         ...(mcpMode ? { mcpAfterResume: "verified", mcpProof } : {}),
         ...(skillsMode ? { skillsAfterResume: "verified" } : {}),
+        ...(workspaceMode ? { workspaceAfterResume: "preserved_without_rerun" } : {}),
         ...(usageMode ? { usageAfterResume: "verified", usageProof, costAfterResume: usageProof?.cost.status } : {}),
         source: "armada-runtime",
         previousEpoch,

@@ -78,7 +78,7 @@ export async function loginCommand(
     const origin = how.url ?? io.env.ARMADA_URL ?? DEFAULT_ARMADA_API_URL;
     const email = assertEmail(how.email);
     const result = await emailLogin(io, email, origin);
-    await io.session.write({ armadaUrl: origin, ...result });
+    await io.session.write({ loginId: crypto.randomUUID(), armadaUrl: origin, ...result });
     io.out("Logged in.\n");
     return;
   }
@@ -95,6 +95,7 @@ export async function loginCommand(
         ...(io.timeoutMs === undefined ? {} : { timeoutMs: io.timeoutMs }),
       });
       await io.session.write({
+        loginId: crypto.randomUUID(),
         armadaUrl: origin,
         accessToken: result.accessToken,
         refreshToken: result.refreshToken,

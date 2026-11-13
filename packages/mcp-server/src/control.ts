@@ -65,6 +65,7 @@ import {
   type LaunchResult,
   type LaunchStores,
   launchSandbox,
+  listConnectionModels,
   listCredentials,
   listMembers,
   listOrgs,
@@ -804,6 +805,7 @@ async function dispatch(
         githubVersion: options.runtimeGitHub ? 1 : 0,
         mcpVersion: options.runtimeMcp ? 2 : 0,
         skillsVersion: options.boatRuntimeLaunch ? 1 : 0,
+        workspaceVersion: options.boatRuntimeLaunch ? 1 : 0,
         controlsVersion: options.runtimeHostFor ? 1 : 0,
         enabled: Boolean(options.boatRuntimeLaunch && options.runtimeHostFor),
       },
@@ -1127,6 +1129,11 @@ async function dispatch(
       return { ok: true };
     case "creds/list":
       return listCredentials(store, userId, org);
+    case "creds/accounts/models": {
+      // The declared models of visible custom connections (#1483): decrypted here, never the key or the address.
+      const member = await resolveOrg(store, userId, org);
+      return { connections: await listConnectionModels(store, encryptionKey, { userId, orgId: member.id }) };
+    }
     case "creds/rm":
       await removeCredential(store, userId, {
         scope: scope(body),
