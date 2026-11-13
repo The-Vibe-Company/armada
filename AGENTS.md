@@ -37,6 +37,10 @@ Owner-facing orchestrators have been removed, with no compatibility route or fea
 ## CI: what we test and what we do not
 
 One verdict, under two minutes. A pull request has a single required check, `Lint, typecheck and test`. If it takes more than two minutes, that is a defect to fix before anything else merges.
+Owner decision 2026-11-13: staging smoke (post-deploy, pinned and release gate)
+never tests Boat. Ignore Boat cases even if configured; print
+`boat: not run on staging (owner decision 2026-11-13)`. Retain Modal probes and
+the owner's Docker-host parity probes; Boat omission is not a Boat pass.
 No blocking PR or merge-queue check may exceed two minutes. The only slow gated
 path is a publishing release: release → exact-commit staging deployment/smoke →
 production. Staging smoke otherwise runs only after deploying a main commit,
@@ -52,7 +56,7 @@ What CI runs on every pull request and in the merge queue:
 What runs only when its files change: the iOS checks (`apps/ios`), the migration dry-run (`supabase/migrations`).
 
 What runs after a merge, not before: the staging dashboard build in GitHub Actions
-(`vercel pull`, `vercel build`, then `vercel deploy --prebuilt`), the deploy to staging and the post-deploy smoke, which launches real sandboxes on every enabled provider, builds goldens and exercises the whole lifecycle. Production deploys only from a publishing release after its exact-SHA staging
+(`vercel pull`, `vercel build`, then `vercel deploy --prebuilt`), the deploy to staging and the post-deploy smoke, which runs only the owner-enabled Modal/Docker staging probes, builds goldens and exercises the whole lifecycle. Production deploys only from a publishing release after its exact-SHA staging
 smoke succeeds; there is no opt-in bypass. The #1547 owner cutover in
 `docs/releasing.md` records which provider settings still need owner changes.
 Vercel Git deployments are disabled for both dashboard projects via

@@ -4,6 +4,7 @@ import type { LaunchProviderOption } from "../packages/core/src/index.ts";
 import type { SandboxUsage } from "../packages/core/src/sandbox-usage.ts";
 import { redactForLog } from "../packages/mcp-server/src/log.ts";
 import { STAGING_ORIGIN } from "./smoke-sandbox-cleanup.ts";
+import { BOAT_STAGING_NOTICE, smokeReceiptProvider, stagingSmokeCases } from "./staging-smoke-policy.ts";
 
 type Provider = "boat" | "modal" | "docker";
 type Diagnostic = { code: string; httpStatus?: number; message: string; quota?: boolean };
@@ -89,7 +90,7 @@ const accountMatrix = {
 
 interface Case {
   account?: keyof typeof accountMatrix;
-  provider: Provider;
+  provider: Exclude<Provider, "boat">;
   org: string;
   harness: string;
   model: string;
@@ -104,11 +105,19 @@ interface Io {
   out: (line: string) => void;
   sleep: (ms: number) => Promise<void>;
   now: () => number;
-  recordSandbox?: (org: string, id: string, key: string) => Promise<void>;
+  recordSandbox?: (org: string, id: string, key: string, provider?: "modal" | "docker") => Promise<void>;
 }
 
 /** Additive staging observation: never replaces the existing deploy-gating smoke. */
 export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: string[] = []): Promise<boolean> {
+  io.out(BOAT_STAGING_NOTICE);
+  const out = io.out;
+  io = {
+    ...io,
+    out: (line) => {
+      if (line !== BOAT_STAGING_NOTICE) out(line);
+    },
+  };
   if (args.includes("--accounts")) return accountsParity(env, io, args);
   let cases: Case[];
   let only: Provider | undefined;
@@ -125,18 +134,31 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     io.out(JSON.stringify({ step: "configure", pass: false, code: "invalid_parity_filter" }));
     return false;
   }
+  if (only === "boat") {
+    io.out(
+      JSON.stringify({
+        step: "provider_parity",
+        version: 2,
+        starts: 0,
+        features: Object.fromEntries(
+          features.map((name) => [name, { boat: { status: "not-run", reason: "owner_decision_2026_11_13" } }]),
+        ),
+      }),
+    );
+    return false;
+  }
   try {
     if (env.ARMADA_URL !== STAGING_ORIGIN || !env.ARMADA_TOKEN || env.ARMADA_SMOKE !== "create_real_compute")
       throw new Error();
-    cases = JSON.parse(env.ARMADA_SMOKE_CASES ?? "");
+    cases = stagingSmokeCases(JSON.parse(env.ARMADA_SMOKE_CASES ?? "")) as Case[];
     if (!Array.isArray(cases) || cases.length === 0 || new Set(cases.map((c) => c.provider)).size !== cases.length)
       throw new Error();
     if (only) cases = cases.filter((c) => c.provider === only);
-    else if (cases.length !== 3) throw new Error();
+    else if (cases.length !== 2) throw new Error();
     if (cases.length === 0) throw new Error();
     for (const c of cases) {
       if (
-        !["boat", "modal", "docker"].includes(c.provider) ||
+        !["modal", "docker"].includes(c.provider) ||
         !isHarness(c.harness) ||
         [c.org, c.model, c.modelAccountId].some((v) => typeof v !== "string" || !v.trim()) ||
         (c.provider === "docker"
@@ -186,7 +208,10 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         quota: response.status === 429 || ["quota_exceeded", "rate_limited", "start_limit_exceeded"].includes(code),
       });
     }
-    return response.json() as Promise<T>;
+    const result = (await response.json()) as { sandbox?: { provider?: unknown } } | null;
+    if (path === "sandbox/launch" && !["modal", "docker"].includes(String(smokeReceiptProvider(result))))
+      throw new ParityError({ code: "invalid_launch_receipt", message: "Unexpected staging provider" });
+    return result as T;
   }
   async function poll<T>(read: () => Promise<T>, done: (value: T) => boolean, attempts = 120) {
     for (let i = 0; i < attempts && io.now() < deadline; i++) {
@@ -204,7 +229,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     reason: string | null = null,
     detail?: Diagnostic,
   ) => {
-    report[step] ??= {};
+    report[step] ??= { boat: { status: "not-run", reason: "owner_decision_2026_11_13" } };
     report[step][provider] = { status, reason, ...(detail ? { diagnostic: detail } : {}) };
   };
   for (const name of features)
@@ -213,11 +238,13 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         name,
         provider,
         "not-run",
-        only && provider !== only
-          ? "provider_filtered"
-          : feature && name !== feature
-            ? "feature_filtered"
-            : "probe_not_implemented",
+        provider === "boat"
+          ? "owner_decision_2026_11_13"
+          : only && provider !== only
+            ? "provider_filtered"
+            : feature && name !== feature
+              ? "feature_filtered"
+              : "probe_not_implemented",
       );
   let starts = 0;
   for (const c of cases) {
@@ -532,7 +559,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           });
           if (typeof result.sandbox?.id === "string") {
             id = result.sandbox.id;
-            await io.recordSandbox?.(c.org, id, `post-deploy-smoke:${crypto.randomUUID()}`);
+            await io.recordSandbox?.(c.org, id, `post-deploy-smoke:${crypto.randomUUID()}`, c.provider);
           }
           if (!id || result.sandbox.provider !== c.provider) throw new Error("invalid_launch_receipt");
         } else {
@@ -672,7 +699,7 @@ async function accountsParity(env: NodeJS.ProcessEnv, io: Io, args: string[]): P
     else if (args.length !== 1 || args[0] !== "--accounts") throw new Error();
     if (env.ARMADA_URL !== STAGING_ORIGIN || !env.ARMADA_TOKEN || env.ARMADA_SMOKE !== "create_real_compute")
       throw new Error();
-    cases = JSON.parse(env.ARMADA_SMOKE_CASES ?? "[]");
+    cases = stagingSmokeCases(JSON.parse(env.ARMADA_SMOKE_CASES ?? "[]")) as Case[];
     if (!Array.isArray(cases)) throw new Error();
     const seen = new Set<string>();
     for (const c of cases) {

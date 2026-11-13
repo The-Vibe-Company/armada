@@ -6,7 +6,7 @@ export class ExpirySmokeFailure extends Error {
 interface Case {
   org: string;
   golden: string;
-  provider: string;
+  provider: "modal";
   harness: string;
   model: string;
   modelAccountId: string;
@@ -36,8 +36,7 @@ export async function runExpiryCase(item: Case, io: Io): Promise<boolean> {
   let stopped = false;
   let passed = true;
   const api = <T>(action: string, body: object) => io.request<T>(`sandbox/${action}`, { org: item.org, ...body });
-  const physicalStop = (status: Status) =>
-    status.status === "stopped" && status.providerState === (item.provider === "boat" ? "archived" : "stopped");
+  const physicalStop = (status: Status) => status.status === "stopped" && status.providerState === "stopped";
   async function observe(done: (status: Status) => boolean | Promise<boolean>, polls: number): Promise<Status> {
     for (let i = 0; i < polls; i++) {
       const status = await api<Status>("status", { id });

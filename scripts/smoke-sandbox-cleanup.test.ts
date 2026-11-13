@@ -82,7 +82,7 @@ test("a malformed launch receipt still gets deleted and a failed delete persists
           ARMADA_SMOKE_JOURNAL: path,
           ARMADA_SMOKE_CASES: JSON.stringify([
             {
-              provider: "boat",
+              provider: "modal",
               harness: "codex",
               org: row.org,
               golden: "smoke",
@@ -100,9 +100,10 @@ test("a malformed launch receipt still gets deleted and a failed delete persists
           fetch: async (url, init) => {
             const action = init.method === "DELETE" ? "delete" : url.split("/").at(-1)!;
             calls.push(action);
-            if (action === "launch") return Response.json({ sandbox: { id: row.id, provider: "wrong" } });
+            if (action === "launch")
+              return Response.json({ sandbox: { id: row.id, provider: "modal" }, promptId: "unexpected-prompt" });
             if (action === "stop") return Response.json({ status: "stopped" });
-            if (action === "status") return Response.json({ status: "stopped", providerState: "archived" });
+            if (action === "status") return Response.json({ status: "stopped", providerState: "stopped" });
             if (action === "delete") {
               const id = new URL(url).pathname.split("/").at(-1);
               return Response.json({ id, status: id === row.id && deleted ? "deleted" : "stopped" });
@@ -265,3 +266,158 @@ test.each([1, 32])("late parent settles before scoped child, even when the sweep
   expect(stopCalls).toBe(1);
   expect(clock).toBe(250_000);
 });
+
+test("excluded and unclassified historical receipts are preserved without Boat calls", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "smoke-deferred-"));
+  const path = join(directory, "journal.json");
+  const receipts = [row, { ...row, id: "33333333-3333-3333-3333-333333333333", provider: "boat" as const }];
+  try {
+    await saveSmokeJournal(path, receipts);
+    const lines: string[] = [];
+    let calls = 0;
+    expect(
+      await postDeploySmoke(
+        {
+          ARMADA_URL: STAGING_ORIGIN,
+          ARMADA_TOKEN: "token",
+          ARMADA_SMOKE: "create_real_compute",
+          ARMADA_SMOKE_JOURNAL: path,
+          ARMADA_SMOKE_CASES: JSON.stringify([{ provider: "boat" }]),
+        },
+        [],
+        {
+          now: () => 0,
+          sleep: async () => {},
+          out: (line) => lines.push(line),
+          fetch: async () => {
+            calls++;
+            throw Error("No excluded provider call");
+          },
+        },
+      ),
+    ).toBe(false);
+    expect(calls).toBe(0);
+    expect(await readSmokeJournal(path)).toEqual(receipts);
+    expect(lines.filter((line) => line === "boat: not run on staging (owner decision 2026-11-13)")).toHaveLength(1);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("an unexpected Boat receipt is retained for operator reconciliation without any Boat cleanup", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "smoke-unexpected-"));
+  const path = join(directory, "journal.json");
+  const calls: string[] = [];
+  try {
+    expect(
+      await postDeploySmoke(
+        {
+          ARMADA_URL: STAGING_ORIGIN,
+          ARMADA_TOKEN: "token",
+          ARMADA_SMOKE: "create_real_compute",
+          ARMADA_SMOKE_JOURNAL: path,
+          ARMADA_SMOKE_CASES: JSON.stringify([
+            {
+              provider: "modal",
+              harness: "codex",
+              org: row.org,
+              golden: "smoke",
+              model: "model",
+              modelAccountId: "account",
+              repo: "/repo",
+            },
+          ]),
+        },
+        [],
+        {
+          now: () => 0,
+          sleep: async () => {},
+          out: () => {},
+          fetch: async (url) => {
+            calls.push(url.split("/").at(-1)!);
+            return Response.json({ sandbox: { id: row.id, provider: "boat" } });
+          },
+        },
+      ),
+    ).toBe(false);
+    expect(calls).toEqual(["launch"]);
+    const retained = await readSmokeJournal(path);
+    expect(retained).toHaveLength(1);
+    expect(retained[0]?.provider).toBe("boat");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test.each([
+  { state: "failed", provider: "boat", manifestProvider: "boat" },
+  { state: "reconciling", provider: "boat", manifestProvider: "boat" },
+  { state: "reconciling", provider: undefined, manifestProvider: undefined },
+  { state: "failed", provider: "modal", manifestProvider: "boat" },
+])(
+  "$state template excluded/unverified handle is quarantined before helper cleanup adoption",
+  async ({ state, provider, manifestProvider }) => {
+    const directory = await mkdtemp(join(tmpdir(), "smoke-template-excluded-"));
+    const path = join(directory, "journal.json");
+    const routes: string[] = [];
+    try {
+      expect(
+        await postDeploySmoke(
+          {
+            ARMADA_URL: STAGING_ORIGIN,
+            ARMADA_TOKEN: "token",
+            ARMADA_SMOKE: "create_real_compute",
+            ARMADA_SMOKE_JOURNAL: path,
+            ARMADA_SMOKE_CASES: JSON.stringify([
+              {
+                provider: "modal",
+                harness: "codex",
+                org: row.org,
+                golden: "smoke",
+                goldenId: "golden",
+                model: "model",
+                modelAccountId: "account",
+                repo: "/repo",
+              },
+            ]),
+          },
+          ["--templates-skills"],
+          {
+            now: () => 0,
+            sleep: async () => {},
+            out: () => {},
+            fetch: async (url) => {
+              const route = url.split("/api/v1/")[1]!;
+              routes.push(route);
+              if (route === "creds/list")
+                return Response.json({
+                  user: [{ id: "account", version: 1, kind: "openai_api_key" }],
+                  orgs: [{ id: row.org, credentials: [] }],
+                });
+              if (route === "variables/set") return Response.json({ item: { id: "variable", version: 1 } });
+              if (route === "templates/create") return Response.json({ item: { id: "template", currentRevision: 1 } });
+              if (route === "templates/launch")
+                return Response.json({
+                  state,
+                  id: row.id,
+                  provider,
+                  manifest: { definition: { provider: manifestProvider } },
+                });
+              if (route === "templates/delete" || route === "variables/delete")
+                return Response.json({ item: { status: "deleted" } });
+              throw Error(`unexpected route ${route}`);
+            },
+          },
+        ),
+      ).toBe(false);
+      expect(routes).toContain("templates/launch");
+      expect(routes.some((route) => route.startsWith("sandbox/") || route.startsWith("sandboxes/"))).toBe(false);
+      const retained = await readSmokeJournal(path);
+      expect(retained).toHaveLength(1);
+      expect(retained[0]?.id).toBe(row.id);
+      expect(retained[0]?.provider).toBe(provider === "boat" ? "boat" : undefined);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);

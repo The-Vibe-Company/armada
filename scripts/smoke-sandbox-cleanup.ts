@@ -6,6 +6,7 @@ export interface SmokeSandboxReceipt {
   requestKey: string;
   org: string;
   id: string;
+  provider?: "boat" | "modal" | "docker";
 }
 const UUID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 
@@ -22,7 +23,14 @@ export function smokeReceipts(value: unknown): SmokeSandboxReceipt[] {
       !/^(?:post-deploy-smoke:|smoke-scoped-)[a-f0-9-]{36}$/.test(row.requestKey)
     )
       throw new Error("invalid_smoke_receipts");
-    return { id: row.id, org: row.org, requestKey: row.requestKey };
+    if (row.provider !== undefined && !["boat", "modal", "docker"].includes(row.provider))
+      throw new Error("invalid_smoke_receipts");
+    return {
+      id: row.id,
+      org: row.org,
+      requestKey: row.requestKey,
+      ...(row.provider ? { provider: row.provider } : {}),
+    };
   });
 }
 
