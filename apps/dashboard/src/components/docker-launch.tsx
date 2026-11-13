@@ -4,6 +4,7 @@ import { MODEL_CATALOG } from "@armada/core";
 import { RocketIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useFormStatus } from "react-dom";
 import { launchOnDockerHost } from "@/app/actions/docker-hosts";
 import { ActionForm, SubmitButton } from "@/components/action-form";
 import { AccountField } from "@/components/launch-dialog";
@@ -22,7 +23,7 @@ import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
 import { Textarea } from "@/components/ui/textarea";
 import type { ActionResult } from "@/lib/action";
-import { dockerLaunchKeyStorage, IMAGE_CHOICES, type ImageChoice, UNKNOWN_DOCKER_LAUNCH } from "@/lib/docker-launch";
+import { dockerLaunchKeyStorage, type HostImage, UNKNOWN_DOCKER_LAUNCH } from "@/lib/docker-launch";
 import { LAUNCH_KEY_FIELD, type LaunchKey, launchKeyFor } from "@/lib/launch-key";
 import { accountProblem, accountsFor, type LaunchAccounts } from "@/lib/model-accounts";
 
@@ -38,12 +39,15 @@ export function DockerLaunchDialog({
   hostName,
   accounts,
   unavailable,
+  images,
 }: {
   orgId: string;
   hostId: string;
   hostName: string;
   accounts: LaunchAccounts;
   unavailable: { name: string; reason: string }[];
+  /** Images already used for sandboxes on this host, newest first, proposed after Armada's default. */
+  images: HostImage[];
 }) {
   return (
     <Dialog>
@@ -57,7 +61,7 @@ export function DockerLaunchDialog({
           <DialogTitle>Launch on {hostName}</DialogTitle>
           <DialogDescription>Codex in a private sandbox, started from a plain image on this host.</DialogDescription>
         </DialogHeader>
-        <DockerLaunchForm orgId={orgId} hostId={hostId} accounts={accounts} unavailable={unavailable} />
+        <DockerLaunchForm orgId={orgId} hostId={hostId} accounts={accounts} unavailable={unavailable} images={images} />
       </DialogContent>
     </Dialog>
   );
@@ -68,14 +72,16 @@ function DockerLaunchForm({
   hostId,
   accounts,
   unavailable,
+  images,
 }: {
   orgId: string;
   hostId: string;
   accounts: LaunchAccounts;
   unavailable: { name: string; reason: string }[];
+  images: HostImage[];
 }) {
   const id = useId();
-  const [imageChoice, setImageChoice] = useState<ImageChoice>("default");
+  const [imageChoice, setImageChoice] = useState("default");
   const root = useRef<HTMLDivElement>(null);
   const storage = dockerLaunchKeyStorage(hostId);
   const router = useRouter();
@@ -130,9 +136,12 @@ function DockerLaunchForm({
         footer={
           <div className="flex items-center justify-end gap-3">
             {usable ? (
-              <SubmitButton>
-                <RocketIcon /> Launch
-              </SubmitButton>
+              <>
+                <LaunchProgress />
+                <SubmitButton>
+                  <RocketIcon /> Launch
+                </SubmitButton>
+              </>
             ) : (
               <>
                 <p id={`${id}-no-account`} className="mr-auto text-xs text-warning">
@@ -163,14 +172,20 @@ function DockerLaunchForm({
             id={`${id}-image-choice`}
             name="image_choice"
             value={imageChoice}
-            onChange={(event) => setImageChoice(event.target.value as ImageChoice)}
+            onChange={(event) => setImageChoice(event.target.value)}
             aria-describedby={`${id}-image-hint`}
           >
-            {IMAGE_CHOICES.map((choice) => (
-              <option key={choice.value} value={choice.value}>
-                {choice.label}
-              </option>
-            ))}
+            <option value="default">Armada default (Debian, recommended)</option>
+            {images.length > 0 && (
+              <optgroup label="Used on this host">
+                {images.map((item) => (
+                  <option key={item.image} value={item.image}>
+                    {item.label}
+                  </option>
+                ))}
+              </optgroup>
+            )}
+            <option value="custom">Custom image…</option>
           </NativeSelect>
           {imageChoice === "custom" ? (
             <Input
@@ -213,6 +228,19 @@ function DockerLaunchForm({
       </ActionForm>
     </div>
   );
+}
+
+/**
+ * What a launch is doing while it waits (#1507): the host fetches the image first if it does not have it yet, which can
+ * take a few minutes the first time.
+ */
+function LaunchProgress() {
+  const { pending } = useFormStatus();
+  return pending ? (
+    <p role="status" className="mr-auto text-xs text-muted-foreground" data-docker-launch-progress>
+      Preparing the image on your host and starting the sandbox… The first launch with an image can take a few minutes.
+    </p>
+  ) : null;
 }
 
 /** Longer than a launch's own deadline; after it, the same choices start a new sandbox. */

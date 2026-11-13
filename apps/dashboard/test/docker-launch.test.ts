@@ -10,7 +10,9 @@ import {
   dockerLaunchOption,
   dockerSandboxControls,
   dockerUnavailable,
+  imageLabel,
   launchedDockerSandbox,
+  recentHostImages,
 } from "../src/lib/docker-launch.ts";
 
 const ORG = "00000000-0000-4000-8000-000000000010";
@@ -97,6 +99,33 @@ test("the dialog launches Armada's default image unless a custom digest-pinned i
   expect(chosenImage("", "")).toEqual({ ok: true, image: DOCKER_DEFAULT_IMAGE });
   expect(chosenImage("", DIGEST)).toEqual({ ok: true, image: DIGEST });
   expect(checkImage(DOCKER_DEFAULT_IMAGE).ok).toBe(true);
+});
+
+test("the dialog proposes each image already used on the host once, newest first, by a readable name", () => {
+  const other = `ghcr.io/acme/worker:2@sha256:${"b".repeat(64)}`;
+  const rows = [
+    { docker_host_id: HOST, docker_image: DIGEST },
+    { docker_host_id: HOST, docker_image: DOCKER_DEFAULT_IMAGE },
+    { docker_host_id: ORG, docker_image: `elsewhere@sha256:${"c".repeat(64)}` },
+    { docker_host_id: HOST, docker_image: other },
+    { docker_host_id: HOST, docker_image: DIGEST },
+    { docker_host_id: HOST, docker_image: "not-pinned:latest" },
+    { docker_host_id: HOST, docker_image: null },
+  ];
+  expect(recentHostImages(rows, HOST)).toEqual([
+    { image: DIGEST, label: imageLabel(DIGEST) },
+    { image: other, label: `ghcr.io/acme/worker:2 (${"b".repeat(12)})` },
+  ]);
+  expect(imageLabel(`docker.io/library/debian@sha256:${"d".repeat(64)}`)).toBe(`debian (${"d".repeat(12)})`);
+  const many = Array.from({ length: 8 }, (_, i) => ({
+    docker_host_id: HOST,
+    docker_image: `img${i}@sha256:${"a".repeat(64)}`,
+  }));
+  expect(recentHostImages(many, HOST).map((item) => item.image)).toEqual(
+    many.slice(0, 5).map((row) => row.docker_image),
+  );
+  expect(chosenImage(other, "")).toEqual({ ok: true, image: other });
+  expect(chosenImage("evil@sha256:short", "").ok).toBe(false);
 });
 
 test("the launch body is the normal route's Docker shape: Codex, private, the form key as requestId", () => {

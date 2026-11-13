@@ -140,20 +140,50 @@ export function checkImage(raw: string): { ok: true; image: string } | { ok: fal
   return { ok: true, image };
 }
 
-/**
- * The dialog's image choice (#1507): Armada's default image unless the person opens "Custom image…" and types one.
- * Nobody has to know what an image is to launch.
- */
-export const IMAGE_CHOICES = [
-  { value: "default", label: "Armada default (Debian, recommended)" },
-  { value: "custom", label: "Custom image…" },
-] as const;
-export type ImageChoice = (typeof IMAGE_CHOICES)[number]["value"];
+/** An image already used for a sandbox on a host, as the dialog proposes it: the pinned reference and a readable name. */
+export type HostImage = { image: string; label: string };
 
-/** The image a launch uses from the dialog's choice; only a typed (custom) image is checked, and only then can it fail. */
+/** How many used images the dialog proposes after the default. */
+const RECENT_IMAGES = 5;
+
+/**
+ * A readable name for a pinned image: the repository and tag without the registry's `docker.io/library/` prefix,
+ * followed by the digest's first 12 characters, so two versions of one image stay distinguishable.
+ */
+export function imageLabel(image: string): string {
+  const at = image.lastIndexOf("@sha256:");
+  const name = (at < 0 ? image : image.slice(0, at)).replace(/^(docker\.io\/)?library\//, "");
+  return at < 0 ? name : `${name} (${image.slice(at + 8, at + 20)})`;
+}
+
+/**
+ * The images already used for sandboxes on `hostId`, from sandbox rows sorted newest first: each image once, at its
+ * newest use, without Armada's default (always offered first) or a malformed reference, at most RECENT_IMAGES.
+ */
+export function recentHostImages(
+  rows: readonly { docker_host_id: string | null; docker_image: string | null }[],
+  hostId: string,
+): HostImage[] {
+  const seen = new Set([DOCKER_DEFAULT_IMAGE]);
+  const images: HostImage[] = [];
+  for (const row of rows) {
+    const image = row.docker_image;
+    if (row.docker_host_id !== hostId || !image || seen.has(image) || !IMAGE.test(image)) continue;
+    seen.add(image);
+    images.push({ image, label: imageLabel(image) });
+    if (images.length === RECENT_IMAGES) break;
+  }
+  return images;
+}
+
+/**
+ * The image a launch uses from the dialog's choice: the default, an image already used on the host (its pinned
+ * reference is the choice) or a typed custom image. Every non-default image is checked again here.
+ */
 export function chosenImage(choice: string, custom: string): ReturnType<typeof checkImage> {
   // An empty choice with a typed image is a form from before the choice existed: honour what was typed.
   if (choice === "custom" || (choice === "" && custom.trim())) return checkImage(custom);
+  if (choice.includes("@sha256:")) return checkImage(choice);
   if (choice === "default" || choice === "") return { ok: true, image: DOCKER_DEFAULT_IMAGE };
   return { ok: false, error: "Choose an image." };
 }

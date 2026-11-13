@@ -8,8 +8,15 @@ import {
   parseDockerHostList,
   parseHostRegistration,
 } from "@/lib/docker-hosts";
-import { type DockerLaunchOption, dockerLaunchOption, LAUNCH_OPTIONS_ROUTE } from "@/lib/docker-launch";
+import {
+  type DockerLaunchOption,
+  dockerLaunchOption,
+  type HostImage,
+  LAUNCH_OPTIONS_ROUTE,
+  recentHostImages,
+} from "@/lib/docker-launch";
 import { mcpUrl } from "@/lib/env";
+import { createClient } from "@/lib/supabase/server";
 import { selectedOrganization } from "./selected-org";
 import { requireViewer } from "./viewer";
 
@@ -113,3 +120,31 @@ export const readDockerLaunchOption = cache(async (): Promise<DockerLaunchOption
     throw error;
   }
 });
+
+/** How many of the newest Docker sandboxes are read to find the images each host has already used. */
+const RECENT_SANDBOXES = 200;
+
+/**
+ * The images already used for sandboxes on each of `hostIds` (#1507), newest first, for the launch dialog to propose.
+ * Read as the viewer: row level security returns only the sandboxes they may see. A failed read proposes none.
+ */
+export async function readRecentHostImages(
+  orgId: string,
+  hostIds: readonly string[],
+): Promise<Map<string, HostImage[]>> {
+  if (hostIds.length === 0) return new Map();
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("sandboxes")
+    .select("docker_host_id,docker_image,created_at")
+    .eq("org_id", orgId)
+    .in("docker_host_id", [...hostIds])
+    .not("docker_image", "is", null)
+    .order("created_at", { ascending: false })
+    .limit(RECENT_SANDBOXES);
+  if (error) {
+    console.error(`Recent host images could not be read: ${error.message}`);
+    return new Map();
+  }
+  return new Map(hostIds.map((hostId) => [hostId, recentHostImages(data ?? [], hostId)]));
+}
