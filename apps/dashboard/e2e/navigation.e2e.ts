@@ -11,7 +11,8 @@ for (const phone of [false, true])
       await page.setViewportSize({ width: phone ? 390 : 1280, height: phone ? 844 : 900 });
       await page.addInitScript((value) => localStorage.setItem("theme", value), theme);
       await signIn(page, "alice@example.com", "/environments");
-      await expect(page.getByLabel("Active organization", { exact: true })).toHaveCount(1);
+      // Alice belongs to one organization, so nothing about organizations is in the sidebar (#1474).
+      await expect(page.getByLabel("Active organization", { exact: true })).toHaveCount(0);
       const nav = page.getByRole("navigation", { name: "Main", exact: true });
       const toggle = page.getByRole("button", { name: /Navigation/ });
       if (phone) {
@@ -54,7 +55,7 @@ for (const phone of [false, true])
           animations: "disabled",
         });
         await page.getByRole("button", { name: "Expand navigation", exact: true }).click();
-        await expect(page.getByLabel("Active organization", { exact: true })).toBeVisible();
+        await expect(nav.getByRole("link", { name: "Sandboxes", exact: true })).toBeVisible();
       }
       if (phone) {
         await expect(page.getByRole("dialog", { name: "Navigation" })).toBeVisible();
