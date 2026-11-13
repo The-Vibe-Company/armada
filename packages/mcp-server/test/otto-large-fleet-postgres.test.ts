@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import type { OttoResource } from "@armada/core";
+import type { OttoPage, OttoResource } from "@armada/core";
 import { encryptSecret } from "@armada/core/server";
 import { scopeKey } from "@armada/provider-modal";
 import { SQL } from "bun";
@@ -54,7 +54,7 @@ test.skipIf(!url)(
         [scope, org],
       );
       await db.unsafe(
-        "insert into modal_events(scope,sandbox_id,generation,producer_sequence,event) select $1,provider_sandbox_id,'g',1,$3::jsonb from sandboxes where org_id=$2",
+        "insert into modal_events(scope,sandbox_id,generation,producer_sequence,event) select $1,provider_sandbox_id,'g',1,$3::text::jsonb from sandboxes where org_id=$2",
         [scope, org, JSON.stringify(event)],
       );
       await db.unsafe(
@@ -88,13 +88,13 @@ test.skipIf(!url)(
         const elapsed = performance.now() - start;
         console.info(`Otto 20k view=${view} elapsed_ms=${Math.round(elapsed)} queries=${queries}`);
         expect(response?.status).toBe(200);
-        const page = await response?.json();
+        const page = (await response?.json()) as OttoPage<OttoResource>;
         expect(page.completeness).toBe("unknown");
         expect(queries).toBe(1);
         expect(elapsed).toBeLessThan(2000);
         if (view === "resources") {
           expect(page.items).toHaveLength(5);
-          expect(page.items.every((r: OttoResource) => r.activity?.state === "live")).toBe(true);
+          expect(page.items.map((r: OttoResource) => r.activity?.state)).toEqual(Array(5).fill("live"));
         }
       }
       // More live sandboxes than the hard cap must not assert that absent owners are orphans.
@@ -104,7 +104,10 @@ test.skipIf(!url)(
       );
       const capped = await api(new Request(`https://armada.example/api/v1/otto/resources?org_id=${org}&limit=100`));
       expect(capped?.status).toBe(200);
-      const page = await capped?.json();
+      const page = (await capped?.json()) as OttoPage<OttoResource> & {
+        fleetCompleteness: string;
+        orphanCompleteness: string;
+      };
       expect(["partial", "unknown"]).toContain(page.fleetCompleteness);
       expect(page.items.length).toBeLessThanOrEqual(100);
       expect(page.orphanCompleteness).toBe("unknown");

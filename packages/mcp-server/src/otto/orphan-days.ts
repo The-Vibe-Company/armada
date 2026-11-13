@@ -2,6 +2,7 @@ import type { OttoOrphan, OttoResource } from "@armada/core";
 import type { Sql } from "@armada/core/server";
 import type { Caller } from "../caller.ts";
 import type { OttoScope } from "./observation.ts";
+import { type OrphanDayRow, readOttoSnapshot } from "./snapshot.ts";
 
 /** Detections survive recovery; daily history is not an invented first-seen time. */
 export async function orphanDays(
@@ -12,17 +13,9 @@ export async function orphanDays(
   complete: boolean,
   now: Date,
   day: string,
+  supplied?: OrphanDayRow[],
 ) {
-  const rows = (
-    await sql.query<{ resource: OttoResource; reason: string; first_seen_at: string; last_seen_at: string }>(
-      `select d.resource,d.reason,d.first_seen_at,d.last_seen_at from public.otto_orphan_days d
- where d.org_id=$1 and d.repository=$2 and d.observer_id=$3 and d.day=$4
- and (d.resource#>>'{owner,sandboxId}' is null or exists(select 1 from public.sandboxes s where s.id::text=d.resource#>>'{owner,sandboxId}' and s.org_id=d.org_id and (s.visibility='org' or s.access_owner_id=$3)))
- and (d.kind='pr' or exists(select 1 from public.sandboxes s where s.id::text=d.external_id and s.org_id=d.org_id and (s.visibility='org' or s.access_owner_id=$3)))
- order by d.kind,d.external_id,d.reason`,
-      [scope.orgId, scope.repository, caller.userId, day],
-    )
-  ).rows;
+  const rows = [...(supplied ?? (await readOttoSnapshot(sql, scope, caller, day)).history)];
   if (day === now.toISOString().slice(0, 10)) {
     for (const r of resources.filter(isOrphan)) {
       if (
