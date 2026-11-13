@@ -5,11 +5,12 @@ import type { MachineSize, MachineSizeEvidence } from "./machine-size.ts";
 import type { HarnessModels } from "./models.ts";
 import type { PromptOutcome } from "./outcome.ts";
 import type { SandboxRecord } from "./sandbox.ts";
-import type { SandboxProviderId } from "./sandbox-provider.ts";
 import type { SandboxUsage } from "./sandbox-usage.ts";
 
 /** Placement is wider than golden identity: Docker plain images are not goldens. */
-export type SandboxPlacementProviderId = SandboxProviderId | "docker";
+export type { SandboxPlacementProviderId } from "./sandbox-provider.ts";
+
+import type { SandboxPlacementProviderId } from "./sandbox-provider.ts";
 export interface DockerHostListRequest {
   org: string;
 }
@@ -49,6 +50,8 @@ export interface DockerHostRevokeResponse {
 /** Code/feature support only. Authorization and selected-account admission remain server policy. */
 export interface LaunchProviderCapabilities {
   launch: boolean;
+  status: boolean;
+  logs: boolean;
   followupPrompts: boolean;
   stop: boolean;
   delete: boolean;

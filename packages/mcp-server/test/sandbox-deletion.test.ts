@@ -7,12 +7,17 @@ import { memorySessionStore } from "../../cli/src/session.ts";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { providerRegistry } from "../src/http.ts";
+import { rowOnlyDatabase } from "./row-only-database.ts";
 import { call, ENCRYPTION_KEY, harness, PUBLIC_URL, SECRETS } from "./support.ts";
+
+const sharedDatabase = rowOnlyDatabase();
 
 // The shared HTTP/MCP boundary, real migrations and SQL activity CAS own deletion policy.
 // A mocked store would miss authorization, archive cleanup and concurrent resume admission.
 test("sandbox deletion authorizes live owners/admins, fences activity, and preserves history only after provider success", async () => {
-  const server = await harness();
+  const server = await harness({}, await sharedDatabase());
+  let release: (() => void) | undefined;
+  let deletion: Promise<Response> | undefined;
   try {
     const { people: p, db, boat } = server;
     const ownerToken = await server.token(p.owner);
@@ -147,6 +152,39 @@ test("sandbox deletion authorizes live owners/admins, fences activity, and prese
       expect((await state(managed)).status).toBe("stopped");
     }
 
+    // Ordinary delegated children keep their history, but become removable only
+    // after permanent parent deletion has fenced all future delegated authority.
+    const delegatedParent = await insert();
+    const delegatedChild = await insert();
+    await db.query(
+      "insert into armada_access_parents(id,kind,org_id,owner_id,sandbox_id,state) values($1,'sandbox',$2,$3,$1,'stopped')",
+      [delegatedParent, p.org, p.owner],
+    );
+    await db.query(
+      "insert into orchestrator_children(sandbox_id,orchestrator_id,org_id,owner_id) values($1,$2,$3,$4)",
+      [delegatedChild, delegatedParent, p.org, p.owner],
+    );
+    boat.provider.delete = async ({ sandboxId }) => {
+      calls.push(sandboxId);
+      return { status: "deleted" };
+    };
+    const beforeDelegatedDeletion = calls.length;
+    expect((await request(delegatedChild)).status).toBe(409);
+    expect(calls).toHaveLength(beforeDelegatedDeletion);
+    expect((await request(delegatedParent)).status).toBe(200);
+    expect((await state(delegatedParent)).status).toBe("deleted");
+    const otherOrgToken = await server.token(p.member, p.otherOrg);
+    for (const token of [memberToken, otherOrgToken]) {
+      expect((await request(delegatedChild, token)).status).toBe(404);
+    }
+    expect(calls).toHaveLength(beforeDelegatedDeletion + 1);
+    expect((await request(delegatedChild)).status).toBe(200);
+    expect((await state(delegatedChild)).status).toBe("deleted");
+    expect(calls).toHaveLength(beforeDelegatedDeletion + 2);
+    expect(
+      (await db.query("select sandbox_id from orchestrator_children where sandbox_id=$1", [delegatedChild])).rows,
+    ).toEqual([{ sandbox_id: delegatedChild }]);
+
     const cliId = await insert();
     boat.provider.delete = async () => ({ status: "deleted" });
     let output = "",
@@ -187,7 +225,7 @@ test("sandbox deletion authorizes live owners/admins, fences activity, and prese
     const physical = await boat.provider.fork({ from: "snapshot" });
     await boat.provider.stop({ sandboxId: physical.id });
     const raced = await insert("stopped", physical.id);
-    let admitted!: () => void, release!: () => void;
+    let admitted!: () => void;
     const started = new Promise<void>((resolve) => {
       admitted = resolve;
     });
@@ -199,16 +237,18 @@ test("sandbox deletion authorizes live owners/admins, fences activity, and prese
       await wait;
       return { status: "deleted" };
     };
-    const deletion = request(raced);
+    deletion = request(raced);
     await started;
     const resumed = await call(owner, "send", { id: raced, prompt: "resume" });
     expect(resumed.isError).toBe(true);
     expect(resumed.text).toContain("error code: sandbox_not_ready");
     expect(boat.prompts).toHaveLength(0);
-    release();
+    release?.();
     expect((await deletion).status).toBe(200);
     expect((await state(raced)).status).toBe("deleted");
   } finally {
+    release?.();
+    await Promise.allSettled([deletion]);
     await server.close();
   }
 });
@@ -236,7 +276,7 @@ test("admin extension and deletion resolve private-source resources through thei
         return { status: "deleted" as const };
       },
     }) as unknown as Provider;
-  const server = await harness({ providerFor });
+  const server = await harness({ providerFor }, await sharedDatabase());
   try {
     const { people: p, db } = server;
     await db.query("insert into credentials(scope,owner_id,kind,value_enc) values('user',$1,'boat',$2)", [

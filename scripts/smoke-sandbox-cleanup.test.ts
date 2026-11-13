@@ -221,3 +221,47 @@ test("a terminal stop receipt goes directly to idempotent deletion even if the p
   });
   expect(remaining).toEqual([]);
 });
+
+test.each([1, 32])("late parent settles before scoped child, even when the sweep limit is %s", async (limit) => {
+  let clock = 0;
+  let parentDeleted = false;
+  let stopCalls = 0;
+  const child = {
+    ...row,
+    id: "33333333-3333-3333-3333-333333333333",
+    requestKey: "smoke-scoped-11111111-1111-1111-1111-111111111111",
+  };
+  const remaining = await deleteSmokeReceipts(
+    STAGING_ORIGIN,
+    "token",
+    [child, row],
+    {
+      now: () => clock,
+      sleep: async (ms) => {
+        clock += ms;
+      },
+      out: () => {},
+      fetch: async (url, init) => {
+        const id =
+          init.method === "DELETE" ? new URL(url).pathname.split("/").at(-1) : JSON.parse(String(init.body)).id;
+        if (id === child.id) {
+          expect(parentDeleted).toBe(true);
+          return Response.json({ id, status: init.method === "DELETE" ? "deleted" : "stopped" });
+        }
+        if (url.endsWith("/stop")) {
+          stopCalls++;
+          return Response.json({ id, status: "stopping" });
+        }
+        if (url.endsWith("/status")) return Response.json({ id, status: clock < 130_000 ? "stopping" : "stopped" });
+        if (clock < 250_000) return Response.json({ error: { code: "sandbox_not_ready" } }, { status: 409 });
+        parentDeleted = true;
+        return Response.json({ id, status: "deleted" });
+      },
+    },
+    limit,
+  );
+  expect(remaining).toEqual(limit === 1 ? [child] : []);
+  expect(parentDeleted).toBe(true);
+  expect(stopCalls).toBe(1);
+  expect(clock).toBe(250_000);
+});

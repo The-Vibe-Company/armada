@@ -87,7 +87,7 @@ test("the outcome and the preservation receipt are read, and an outcome off the 
 });
 
 test("a sandbox on a Docker host is listed, so one such row no longer fails the whole list", () => {
-  const docker = { ...row({ providerSandboxId: null, machineSize: null }), provider: "docker" };
+  const docker: SandboxListMetadata = row({ provider: "docker", providerSandboxId: null, machineSize: null });
   const [listed] = parseSandboxListMetadata([row(), docker]).rows.slice(1);
   expect(listed?.provider).toBe("docker");
   expect(parseSandboxFilters({ provider: ["docker", "aws"] }).provider).toEqual(["docker"]);
