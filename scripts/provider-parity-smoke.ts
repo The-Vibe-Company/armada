@@ -90,7 +90,7 @@ const accountMatrix = {
 
 interface Case {
   account?: keyof typeof accountMatrix;
-  provider: Exclude<Provider, "boat">;
+  provider: Provider;
   org: string;
   harness: string;
   model: string;
@@ -108,57 +108,87 @@ interface Io {
   recordSandbox?: (org: string, id: string, key: string, provider?: "modal" | "docker") => Promise<void>;
 }
 
-/** Additive staging observation: never replaces the existing deploy-gating smoke. */
+/** Observational parity; production Boat verification requires explicit coordinator opt-in. */
 export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: string[] = []): Promise<boolean> {
-  io.out(BOAT_STAGING_NOTICE);
+  const productionBoat = args.includes("--production-boat");
+  const notice = productionBoat ? "boat: production verification (coordinator opt-in)" : BOAT_STAGING_NOTICE;
+  io.out(notice);
   const out = io.out;
   io = {
     ...io,
     out: (line) => {
-      if (line !== BOAT_STAGING_NOTICE) out(line);
+      if (line !== notice) out(line);
     },
   };
-  if (args.includes("--accounts")) return accountsParity(env, io, args);
+  if (args.includes("--accounts") && !productionBoat) return accountsParity(env, io, args);
   let cases: Case[];
   let only: Provider | undefined;
   let feature: string | undefined;
+  let origin = STAGING_ORIGIN;
   try {
-    for (let i = 0; i < args.length; i += 2) {
+    let productionFlagSeen = false;
+    for (let i = 0; i < args.length; i++) {
       const flag = args[i];
-      const value = args[i + 1];
+      if (flag === "--production-boat" && !productionFlagSeen) {
+        productionFlagSeen = true;
+        continue;
+      }
+      const value = args[++i];
       if (flag === "--only" && !only && ["boat", "modal", "docker"].includes(value ?? "")) only = value as Provider;
       else if (flag === "--feature" && !feature && features.includes(value ?? "")) feature = value;
       else throw new Error();
     }
+    if (productionBoat && only !== "boat") throw new Error();
   } catch {
     io.out(JSON.stringify({ step: "configure", pass: false, code: "invalid_parity_filter" }));
     return false;
   }
-  if (only === "boat") {
+  if (only === "boat" && !productionBoat) {
     io.out(
       JSON.stringify({
         step: "provider_parity",
         version: 2,
         starts: 0,
         features: Object.fromEntries(
-          features.map((name) => [name, { boat: { status: "not-run", reason: "owner_decision_2026_11_13" } }]),
+          features.map((name) => [name, { boat: { status: "not-run", reason: "not_part_of_release_gate" } }]),
         ),
       }),
     );
     return false;
   }
   try {
-    if (env.ARMADA_URL !== STAGING_ORIGIN || !env.ARMADA_TOKEN || env.ARMADA_SMOKE !== "create_real_compute")
-      throw new Error();
-    cases = stagingSmokeCases(JSON.parse(env.ARMADA_SMOKE_CASES ?? "")) as Case[];
-    if (!Array.isArray(cases) || cases.length === 0 || new Set(cases.map((c) => c.provider)).size !== cases.length)
-      throw new Error();
-    if (only) cases = cases.filter((c) => c.provider === only);
-    else if (cases.length !== 2) throw new Error();
-    if (cases.length === 0) throw new Error();
+    if (!env.ARMADA_TOKEN || env.ARMADA_SMOKE !== "create_real_compute") throw new Error();
+    if (productionBoat) {
+      if (env.CI || env.GITHUB_ACTIONS || env.ARMADA_SMOKE_JOURNAL || !env.ARMADA_URL) throw new Error();
+      const url = new URL(env.ARMADA_URL);
+      if (
+        url.protocol !== "https:" ||
+        url.username ||
+        url.password ||
+        url.pathname !== "/" ||
+        url.search ||
+        url.hash ||
+        url.origin === STAGING_ORIGIN ||
+        ![url.origin, `${url.origin}/`].includes(env.ARMADA_URL)
+      )
+        throw new Error();
+      origin = url.origin;
+      const raw: unknown = JSON.parse(env.ARMADA_SMOKE_CASES ?? "");
+      if (!Array.isArray(raw)) throw new Error();
+      cases = raw.filter((c) => c && typeof c === "object" && c.provider === "boat");
+      if (cases.length !== 1) throw new Error();
+    } else {
+      if (env.ARMADA_URL !== STAGING_ORIGIN) throw new Error();
+      cases = stagingSmokeCases(JSON.parse(env.ARMADA_SMOKE_CASES ?? "")) as Case[];
+      if (!Array.isArray(cases) || cases.length === 0 || new Set(cases.map((c) => c.provider)).size !== cases.length)
+        throw new Error();
+      if (only) cases = cases.filter((c) => c.provider === only);
+      else if (cases.length !== 2) throw new Error();
+      if (cases.length === 0) throw new Error();
+    }
     for (const c of cases) {
       if (
-        !["modal", "docker"].includes(c.provider) ||
+        !(productionBoat ? c.provider === "boat" : ["modal", "docker"].includes(c.provider)) ||
         !isHarness(c.harness) ||
         [c.org, c.model, c.modelAccountId].some((v) => typeof v !== "string" || !v.trim()) ||
         (c.provider === "docker"
@@ -174,7 +204,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
   const deadline = io.now() + 35 * 60_000;
   async function request<T>(path: string, body: object): Promise<T> {
     // Never serialize the response envelope, details, or arbitrary caught errors.
-    const response = await io.fetch(`${STAGING_ORIGIN}/api/v1/${path}`, {
+    const response = await io.fetch(`${origin}/api/v1/${path}`, {
       method: "POST",
       redirect: "error",
       signal: AbortSignal.timeout(600_000),
@@ -209,8 +239,11 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       });
     }
     const result = (await response.json()) as { sandbox?: { provider?: unknown } } | null;
-    if (path === "sandbox/launch" && !["modal", "docker"].includes(String(smokeReceiptProvider(result))))
-      throw new ParityError({ code: "invalid_launch_receipt", message: "Unexpected staging provider" });
+    if (path === "sandbox/launch") {
+      const expected = (body as { provider?: unknown }).provider;
+      if (smokeReceiptProvider(result) !== expected)
+        throw new ParityError({ code: "invalid_launch_receipt", message: "Unexpected launch provider" });
+    }
     return result as T;
   }
   async function poll<T>(read: () => Promise<T>, done: (value: T) => boolean, attempts = 120) {
@@ -229,7 +262,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     reason: string | null = null,
     detail?: Diagnostic,
   ) => {
-    report[step] ??= { boat: { status: "not-run", reason: "owner_decision_2026_11_13" } };
+    report[step] ??= productionBoat ? {} : { boat: { status: "not-run", reason: "not_part_of_release_gate" } };
     report[step][provider] = { status, reason, ...(detail ? { diagnostic: detail } : {}) };
   };
   for (const name of features)
@@ -238,8 +271,8 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         name,
         provider,
         "not-run",
-        provider === "boat"
-          ? "owner_decision_2026_11_13"
+        provider === "boat" && !productionBoat
+          ? "not_part_of_release_gate"
           : only && provider !== only
             ? "provider_filtered"
             : feature && name !== feature
@@ -557,11 +590,11 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
               ? { hostId: c.hostId, requestId: crypto.randomUUID() }
               : { golden: c.golden, connections: [] }),
           });
-          if (typeof result.sandbox?.id === "string") {
-            id = result.sandbox.id;
+          if (typeof result.sandbox?.id !== "string" || !result.sandbox.id || result.sandbox.provider !== c.provider)
+            throw new Error("invalid_launch_receipt");
+          id = result.sandbox.id;
+          if (c.provider !== "boat")
             await io.recordSandbox?.(c.org, id, `post-deploy-smoke:${crypto.randomUUID()}`, c.provider);
-          }
-          if (!id || result.sandbox.provider !== c.provider) throw new Error("invalid_launch_receipt");
         } else {
           if (!id) throw new Error("launch_not_available");
           if (step === "send") {

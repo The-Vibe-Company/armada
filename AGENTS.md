@@ -37,10 +37,13 @@ Owner-facing orchestrators have been removed, with no compatibility route or fea
 ## CI: what we test and what we do not
 
 One verdict, under two minutes. A pull request has a single required check, `Lint, typecheck and test`. If it takes more than two minutes, that is a defect to fix before anything else merges.
-Owner decision 2026-11-13: staging smoke (post-deploy, pinned and release gate)
-never tests Boat. Ignore Boat cases even if configured; print
-`boat: not run on staging (owner decision 2026-11-13)`. Retain Modal probes and
+Owner decision 2026-11-13: Boat remains a first-class product provider, but
+staging acceptance (post-deploy, pinned and release gate) never tests Boat.
+Ignore Boat cases even if configured; print
+`boat: not part of the release gate`. Retain Modal probes and
 the owner's Docker-host parity probes; Boat omission is not a Boat pass.
+Boat production verification is coordinator-only/on-demand, never CI or workers:
+parity requires `--only boat --production-boat`, and touches only its own sandbox.
 No blocking PR or merge-queue check may exceed two minutes. The only slow gated
 path is a publishing release: release → exact-commit staging deployment/smoke →
 production. Staging smoke otherwise runs only after deploying a main commit,

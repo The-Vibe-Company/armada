@@ -1,4 +1,4 @@
-export const BOAT_STAGING_NOTICE = "boat: not run on staging (owner decision 2026-11-13)";
+export const BOAT_STAGING_NOTICE = "boat: not part of the release gate";
 
 /** Filter before validating unused Boat account/model/golden fields. Never infer provider from text. */
 export function stagingSmokeCases(value: unknown): unknown[] {
