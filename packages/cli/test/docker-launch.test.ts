@@ -94,7 +94,7 @@ test.each(["codex", "claude", "opencode"] as const)(
 test("Docker launch without --image sends Armada's default image", async () => {
   const calls: Request[] = [];
   const withoutImage = args.filter((arg, index) => arg !== "--image" && args[index - 1] !== "--image");
-  const result = await capture(withoutImage, async (request) => {
+  const result = await capture([...withoutImage, "--repo", "acme/web@feature/work"], async (request) => {
     calls.push(request);
     return Response.json({
       sandbox: { id: requestId, provider: "docker", status: "running" },
@@ -103,7 +103,10 @@ test("Docker launch without --image sends Armada's default image", async () => {
     });
   });
   expect(result.code).toBe(0);
-  expect(await calls[0]?.json()).toMatchObject({ image: DOCKER_DEFAULT_IMAGE });
+  expect(await calls[0]?.json()).toMatchObject({
+    image: DOCKER_DEFAULT_IMAGE,
+    repos: [{ url: "https://github.com/acme/web", branch: "feature/work", dir: "web" }],
+  });
 });
 
 test("Docker incompatible or malformed options fail before HTTP", async () => {
@@ -113,7 +116,7 @@ test("Docker incompatible or malformed options fail before HTTP", async () => {
     ["--image", "sha256:short"],
     ["--image", `sha256:${"A".repeat(64)}`],
     ["--skill", "foo@1"],
-    ["--repo", "acme/web"],
+    ["--repo", "https://user:secret@example.test/web"],
     ["--connections", "a"],
     ["--credential-version", "0"],
     ["--host", "x".repeat(65)],
@@ -160,7 +163,11 @@ test("Docker launch resolves an exact unique non-revoked host name and refuses m
     golden: null,
     runtime: { epoch: "1" },
   };
-  const namedArgs = args.map((arg) => (arg === host ? "office" : arg === image ? `sha256:${"b".repeat(64)}` : arg));
+  const namedArgs = [
+    ...args.map((arg) => (arg === host ? "office" : arg === image ? `sha256:${"b".repeat(64)}` : arg)),
+    "--repo",
+    "acme/web@feature/work",
+  ];
   const summary = {
     id: host,
     name: "office",
@@ -187,11 +194,49 @@ test("Docker launch resolves an exact unique non-revoked host name and refuses m
         });
       }
       launched++;
-      expect(await request.json()).toMatchObject({ hostId: host, image: `sha256:${"b".repeat(64)}` });
+      expect(await request.json()).toMatchObject({
+        hostId: host,
+        image: `sha256:${"b".repeat(64)}`,
+        repos: [{ url: "https://github.com/acme/web", branch: "feature/work", dir: "web" }],
+      });
       return Response.json(receipt);
     });
     expect(result.code === 0).toBe(mode === "unique");
     expect(launched).toBe(mode === "unique" ? 1 : 0);
     if (mode !== "unique") expect(result.err).toContain(mode === "missing" ? "No non-revoked" : "ambiguous");
   }
+});
+
+test("Docker CLI translates repeated repository flags with golden branch and directory rules", async () => {
+  let body: unknown;
+  const result = await capture(
+    [
+      ...args,
+      "--repo",
+      "acme/web@feature/work",
+      "--repo",
+      "acme/api@main",
+      "--skill",
+      "catalog/notes@1.0.0",
+      "--connections",
+      credential,
+    ],
+    async (request) => {
+      body = await request.json();
+      return Response.json({
+        sandbox: { id: requestId, provider: "docker", providerSandboxId: "docker-logical", status: "ready" },
+        golden: null,
+        runtime: { epoch: "1" },
+      });
+    },
+  );
+  expect(result.code).toBe(0);
+  expect(body).toMatchObject({
+    skills: ["catalog/notes@1.0.0"],
+    connections: [credential],
+    repos: [
+      { url: "https://github.com/acme/web", branch: "feature/work", dir: "web" },
+      { url: "https://github.com/acme/api", branch: "main", dir: "api" },
+    ],
+  });
 });
