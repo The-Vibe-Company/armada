@@ -41,6 +41,8 @@ async function addAccount(page: Page, name: string, token: string, makeDefault: 
   await page.getByRole("button", { name: "Add a model account", exact: true }).click();
   const dialog = page.getByRole("dialog");
   await dialog.getByRole("radio", { name: /Claude subscription/ }).check();
+  // No server-run sign-in exists for a subscription: one step names the exact local command.
+  await expect(dialog.locator("[data-paste-sign-in] code")).toHaveText("claude setup-token");
   await dialog.getByLabel("Name").fill(name);
   await dialog.getByLabel("OAuth token").fill(token);
   if (makeDefault) await dialog.getByLabel(/Make it the default/).check();
@@ -490,6 +492,9 @@ test("a ChatGPT subscription signs in from the terminal; pasting auth.json stays
     .check();
   await expect(page.getByRole("dialog").locator("[data-terminal-login]")).toHaveCount(0);
   await expect(page.getByRole("dialog").getByLabel("auth.json")).toBeVisible();
+  await expect(page.getByRole("dialog").locator("[data-paste-sign-in] code")).toHaveText(
+    "codex login && cat ~/.codex/auth.json",
+  );
 });
 
 test("on a phone the terminal sign-in stays inside the add dialog, even for a long name", async ({ page }) => {

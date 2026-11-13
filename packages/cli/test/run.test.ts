@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { VERSION } from "@armada/core";
-import { run } from "../src/run.ts";
+import { type Deps, run } from "../src/run.ts";
+import { memorySessionStore } from "../src/session.ts";
 
-async function capture(argv: string[]) {
+async function capture(argv: string[], deps: Deps = {}) {
   let out = "";
   let err = "";
-  const code = await run(argv, { out: (text) => (out += text), err: (text) => (err += text) });
+  const code = await run(argv, { out: (text) => (out += text), err: (text) => (err += text) }, deps);
   return { code, out, err };
 }
 
@@ -15,7 +16,19 @@ describe("run", () => {
   });
 
   test("no command prints the help", async () => {
-    const { code, out } = await capture([]);
+    const { code, out } = await capture([], {
+      auth: {
+        out: () => undefined,
+        err: () => undefined,
+        env: {},
+        now: () => new Date(0),
+        open: () => {
+          throw new Error("Help must not open a browser");
+        },
+        fetch: async () => Response.json({}),
+        session: memorySessionStore({ accessToken: "saved", refreshToken: "refresh", expiresAt: "2099-01-01" }),
+      },
+    });
     expect(code).toBe(0);
     expect(out).toContain("armada golden create");
     expect(out).toContain("armada launch <golden> --agent claude|codex");
