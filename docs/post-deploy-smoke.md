@@ -673,3 +673,56 @@ receipts; preserve `smoke_sandbox_receipt` output as independent audit evidence.
 Coordinator checks: compare org counts before/after a normal run; deliberately
 fail a probe after launch; restore one known smoke receipt on the next run and
 verify its deletion while an unrelated stopped sandbox remains unchanged.
+
+### Provisioning the dashboard smoke password
+
+Armada's login page sends an email link/code; it does **not** create a password.
+The password grant is an automation credential for the same dedicated **staging**
+Supabase user, not a second Armada login flow. Before enabling dashboard reads:
+
+1. Sign in once using the smoke mailbox's existing email link/code. Confirm the
+   user's UUID matches both `ARMADA_SMOKE_DASHBOARD_USER_ID` and the smoke token's
+   owner; keep its current staging-org membership.
+2. A coordinator with staging Supabase administration authority sets a strong,
+   unique password on that **existing UUID** using the supported
+   [`supabase.auth.admin.updateUserById(userId, { password })`](https://supabase.com/docs/reference/javascript/auth-admin-updateuserbyid)
+   in a trusted, staging-only administrative process. Read the password from
+   protected input, not argv, source code, shell history or logs. Confirm the
+   returned user UUID without printing the credential or full auth response.
+   This is one-time provisioning, not something the smoke does. Never give the
+   admin/service-role key to the smoke, GitHub workflows, PR code or a worker.
+3. Store that password as staging environment secret
+   `ARMADA_SMOKE_DASHBOARD_PASSWORD`, and the confirmed email as
+   `ARMADA_SMOKE_DASHBOARD_EMAIL`. The smoke itself retains only the public anon
+   key and user credential, obtains a fresh session, and verifies the UUID.
+   Rotate the user password and GitHub secret together. Ordinary Armada users
+   continue signing in by emailed link/code; no dashboard password UI is required.
+
+### Diagnosing and reconciling deletion
+
+`delete_smoke_sandbox` failures now include `phase`, `httpStatus` and a closed,
+non-secret `code`. No error message, provider body, bearer or cookie is printed;
+unrecognized remote codes become `api_failed`. Retry diagnostics use the named
+`delete_smoke_sandbox_retry` step with the same safe fields.
+
+A successful stop request may return `stopping`, not physical completion. Cleanup accepts a matching terminal stop receipt or
+observes terminal status before calling the public
+`DELETE /api/v1/sandboxes/<id>?org=<org>` endpoint. The former POST alias is also
+routed to the same server tool; changing verbs alone is not the fix. A Boat
+provider deletion can return pending, which the server reports as `409 conflict`;
+that admission intentionally retains a two-minute activity lease, so immediate
+retries can return `sandbox_not_ready`. Cleanup now reconciles the same idempotent
+delete within a bounded four-minute window, with up to two minutes per HTTP
+request instead of 15 seconds. It never replays stop while waiting or deletes a
+row merely because it disappeared from a fleet list. Authorization/refusal codes
+are reported without retrying indefinitely; failed receipts stay in the journal.
+
+Run 43399781555 discarded all HTTP/error information, so its nine failures cannot
+retrospectively distinguish pending deletion, lease contention, authorization or
+provider failure. The source confirms the asynchronous-state/lease defects above,
+not that every historical refusal had that cause. Coordinator check: restore that
+run's exact receipt artifact, run the next staging smoke, require zero remaining
+rows, and inspect any named failure's status/code before attributing it. No worker
+needs staging access to run the fake-fetch regression tests.
+The startup sweep, probe phase and final cleanup share the existing 40-minute
+smoke deadline; waiting for deletion does not add a new unbounded grace period.
