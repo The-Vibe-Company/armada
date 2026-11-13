@@ -130,6 +130,33 @@ SHA; deployment tooling comes from the executing workflow revision for recovery.
 Pulled settings/env and generated artifacts live only in disposable runner files,
 not the repository. See [Vercel's Actions guide](https://vercel.com/kb/guide/how-can-i-use-github-actions-with-vercel).
 
+### Fail-fast release configuration
+
+Before a publishing run can announce/tag a GitHub release, upload an image,
+publish npm or deploy a host, the first step of each staging/production
+configuration job checks the names below. A missing value fails with one line:
+`Missing release configuration (<environment>): <missing names>`; values are
+never printed. Both environment checks must succeed. Production rechecks at its
+own first step, before checkout or mutation, in case configuration changed later.
+
+A credential-free intent job reads the current source version and the published
+GitHub release-by-tag endpoint: HTTP 200 permits **preparation only**, HTTP 404
+requires both environment checks, and any other/API/transport error fails closed.
+Ordinary main pushes with an already-published version still prepare the next
+Release Please PR without entering deployment environments. They explicitly set
+Release Please's [skip-github-release](https://github.com/googleapis/release-please-action#action-inputs)
+input: absence of publication intent is an enforced no-publication mode, not a
+heuristic permission to publish unchecked. Tag pushes and reviewed publish=true
+recovery require both checks; tags must exist, match source version and belong
+to main before secrets are loaded. Dry runs skip these environments and keep
+existing no-publication behavior.
+
+Environment approvals/protections still apply, potentially earlier in a release.
+Presence is not credential validity, network connectivity or scope verification.
+Do not remove/rotate required configuration mid-release: later changes can still
+fail after an earlier stage published, so the existing partial-recovery rules
+remain necessary. No PR CI jobs or required checks are added by this workflow.
+
 ### Owner cutover prerequisites (no agent performs these operations)
 
 Before merging the default-policy switch, freeze merges and drain active release,
@@ -170,19 +197,33 @@ waive deployed proof; local checks do not prove provider settings or credentials
    under the freeze, confirm staging proof, then use an owner-reviewed release.
    Do not restore legacy production Git deployment or standalone SQL apply.
 
-| production environment secret | Required value |
+### Release configuration names
+
+Names only; resolve each from its matching environment or authorized inherited
+scope. Never paste values into logs, argv, issues, dispatch inputs or repo files.
+
+| Name | GitHub environments |
 | --- | --- |
-| `SUPABASE_ACCESS_TOKEN` | Authorized Supabase personal access token (existing) |
-| `SUPABASE_PROJECT_ID` | Production project reference (existing) |
-| `SUPABASE_DB_PASSWORD` | Production database password (existing) |
-| `RAILWAY_TOKEN` | Railway project token scoped to the production environment |
-| `RAILWAY_PROJECT_ID` | Existing Railway project ID |
-| `RAILWAY_ENVIRONMENT_ID` | Existing production environment ID |
-| `RAILWAY_SERVICE_ID` | Existing armada-server service ID |
-| `ARMADA_SERVER_URL` | Public HTTPS origin of that server, without `/healthz` |
-| `VERCEL_TOKEN` | Release owner's Vercel token authorized for this project/team |
-| `VERCEL_ORG_ID` | Existing Vercel team/account ID |
-| `VERCEL_PROJECT_ID` | Existing dashboard project ID |
+| `SUPABASE_ACCESS_TOKEN` | staging + production |
+| `SUPABASE_DB_PASSWORD` | staging + production |
+| `SUPABASE_PROJECT_ID` | staging + production |
+| `RAILWAY_TOKEN` | staging + production |
+| `RAILWAY_PROJECT_ID` | staging + production |
+| `RAILWAY_ENVIRONMENT_ID` | staging + production |
+| `RAILWAY_SERVICE_ID` | staging + production |
+| `VERCEL_TOKEN` | staging + production |
+| `VERCEL_ORG_ID` | staging + production |
+| `VERCEL_PROJECT_ID` | staging + production |
+| `ARMADA_SERVER_URL` | staging + production |
+| `ARMADA_SMOKE_TOKEN` | staging |
+| `ARMADA_SMOKE_CASES` | staging |
+| `ARMADA_ORIGIN` | staging **variable**, not a secret |
+
+Use distinct matching-environment Railway tokens; staging ARMADA_ORIGIN must
+match ARMADA_SERVER_URL. Existing server runtime/model secrets and npm OIDC
+configuration remain intact; this is workflow configuration, not a request to
+recreate runtime credentials. GITHUB_TOKEN is automatically supplied by GitHub;
+RELEASE_SHA/RELEASE_VERSION are workflow outputs, not owner-managed secrets.
 
 
 ### Ordering, failures, recovery and deployed proof
@@ -269,11 +310,5 @@ writer is proven should normal merges resume. If credentials are wrong, fix
 configuration; never re-enable Git as a fallback or restore production following
 main without its release migrations. No agent performs provider changes or deploys.
 
-Required secret names that must resolve in **both** matching environments:
-SUPABASE_ACCESS_TOKEN, SUPABASE_DB_PASSWORD, SUPABASE_PROJECT_ID, RAILWAY_TOKEN,
-RAILWAY_PROJECT_ID, RAILWAY_ENVIRONMENT_ID, RAILWAY_SERVICE_ID, VERCEL_TOKEN,
-VERCEL_ORG_ID, VERCEL_PROJECT_ID, ARMADA_SERVER_URL.
-Staging additionally requires ARMADA_SMOKE_TOKEN and ARMADA_SMOKE_CASES, plus
-ARMADA_ORIGIN as a variable (not secret) matching ARMADA_SERVER_URL. Use distinct
-matching-environment Railway project tokens; inherited Vercel secrets may resolve
-as before. Never put credential values in logs, argv, issues or repo files.
+The canonical [release configuration list](#release-configuration-names) above
+applies to both environments. No tokenless exception remains.
