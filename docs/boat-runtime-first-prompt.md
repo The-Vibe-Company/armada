@@ -127,7 +127,9 @@ uploaded; following that failure does not query dead compute. This diagnostic is
 **server metadata, not a fabricated journal event**. If a prompt had already been
 admitted but has no archived terminal status, its status reads failed;
 pre-admission failure returns a failed launch, not an invented prompt receipt. The one-launch check fails immediately on this
-metadata, then attempts stop once. The no-retry rule still applies.
+metadata, then attempts stop once. A failed sandbox retains its failed status and
+reason after compute stops; cleanup requires its confirmed `stoppedAt` timestamp.
+The no-retry rule still applies.
 
 Expected success is unchanged: exact nonce assistant answer plus finished event
 with `source:"armada-runtime"`, then stopped compute. Stage lines alone, or an

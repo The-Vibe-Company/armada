@@ -20,7 +20,7 @@ interface Reply {
   runtimeFailure?: { status: string; reason: string };
   cursor?: string | null;
   events?: AgentEvent[];
-  sandboxes?: { id: string; status: string }[];
+  sandboxes?: { id: string; status: string; stoppedAt?: string | null }[];
 }
 async function api(path: string, body: object): Promise<Reply> {
   const response = await fetch(new URL(`/api/v1/${path}`, origin), {
@@ -114,7 +114,16 @@ try {
     let stopped = false;
     while (Date.now() < deadline) {
       const page = await api("sandbox/list", { owner: "me", ...(goldenId ? { golden: goldenId } : {}), limit: 200 });
-      if (page.sandboxes?.some((row) => row.id === id && row.status === "stopped")) {
+      if (
+        page.sandboxes?.some(
+          (row) =>
+            row.id === id &&
+            (row.status === "stopped" ||
+              (row.status === "failed" &&
+                typeof row.stoppedAt === "string" &&
+                Number.isFinite(Date.parse(row.stoppedAt)))),
+        )
+      ) {
         stopped = true;
         break;
       }

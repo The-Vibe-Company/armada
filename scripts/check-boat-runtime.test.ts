@@ -11,7 +11,8 @@ test.each(["success", "disabled", "wrong-source", "runtime-failed", "old-diagnos
       const preload = join(root, "api.ts");
       await writeFile(
         preload,
-        `let launches=0,stops=0,marker='';
+        `let launches=0,stops=0,marker='',now=0;
+Date.now=()=>now;Bun.sleep=async(ms)=>{now+=Number(ms);};
 process.on('exit',()=>console.log('COUNTERS '+JSON.stringify({launches,stops})));
 globalThis.fetch=async(url,options)=>{
  if(new Headers(options.headers).get('authorization')!=='Bearer '+process.env.ARMADA_TOKEN)throw Error('bad auth transport');
@@ -23,7 +24,7 @@ globalThis.fetch=async(url,options)=>{
  if(path.endsWith('/logs/read') && ${mode === "runtime-failed"})return Response.json({source:'armada-runtime',events:[],runtimeFailure:{status:'failed',reason:'Armada runtime process failed.'}});
  if(path.endsWith('/logs/read'))return Response.json({source:'${mode === "wrong-source" ? "native" : "armada-runtime"}',events:[{id:'answer',at:1,kind:'message',promptId:'prompt',partial:false,responseKind:'assistant',text:marker,tools:[]},{id:'terminal',at:2,kind:'prompt',promptId:'prompt',status:'finished',text:''}],hasMore:false});
  if(path.endsWith('/sandbox/stop')){stops++;return Response.json({status:'stopping'});}
- if(path.endsWith('/sandbox/list')){if(stops!==1)throw Error('no cleanup');return Response.json({sandboxes:[{id:'worker',status:'stopped'}]});}
+ if(path.endsWith('/sandbox/list')){if(stops!==1)throw Error('no cleanup');return Response.json({sandboxes:[{id:'worker',status:'${mode === "runtime-failed" ? "failed" : "stopped"}',stoppedAt:'2026-11-13T02:00:00.000Z'}]});}
  throw Error('unexpected API path');};`,
       );
       const token = crypto.randomUUID();
@@ -49,6 +50,7 @@ globalThis.fetch=async(url,options)=>{
         `COUNTERS ${JSON.stringify({ launches: ["disabled", "old-diagnostics"].includes(mode) ? 0 : 1, stops: ["disabled", "old-diagnostics"].includes(mode) ? 0 : 1 })}`,
       );
       if (mode === "success") expect(out).toContain('"source":"armada-runtime"');
+      if (mode === "runtime-failed") expect(out).toContain("Experimental runtime compute stopped;");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
