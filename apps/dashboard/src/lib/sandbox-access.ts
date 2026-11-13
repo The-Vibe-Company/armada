@@ -8,28 +8,49 @@ export { LISTED_PROVIDER_LABELS, LISTED_PROVIDERS, type ListedProvider } from ".
 
 export type ListedSandbox = Omit<SandboxListMetadata, "provider"> & { provider: ListedProvider };
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** A listed row left out of the page: its id when it is a UUID, and the first contract check it failed. No value. */
+export type SkippedSandboxRow = { id: string | null; reason: string };
+
 /**
  * Reads the rows of `public.sandbox_list_metadata()` (#680, `docs/contracts/sandbox-access-v1.md`). Only the
  * contract's allowlisted fields are kept, so an interior field a producer might add never reaches a page. A row that
- * does not match the contract fails the whole read: the list is never shown from a guess.
+ * does not match the contract is left out, never guessed, and reported in `skipped` (#1398): one unexpected row must
+ * not make the whole organization's list unreadable. A response that is not a list still fails the read.
  */
-export function parseSandboxListMetadata(value: unknown): ListedSandbox[] {
+export function parseSandboxListMetadata(value: unknown): { rows: ListedSandbox[]; skipped: SkippedSandboxRow[] } {
   if (!Array.isArray(value)) throw new Error("The sandbox list did not match its contract.");
-  return value.map((row) => {
-    const parsed = parseRow(row);
-    if (!parsed) throw new Error("The sandbox list did not match its contract.");
-    return parsed;
-  });
+  const rows: ListedSandbox[] = [];
+  const skipped: SkippedSandboxRow[] = [];
+  for (const item of value) {
+    const parsed = parseRow(item);
+    if (typeof parsed !== "string") rows.push(parsed);
+    else {
+      const id = item && typeof item === "object" ? (item as Record<string, unknown>).id : undefined;
+      skipped.push({ id: typeof id === "string" && UUID.test(id) ? id : null, reason: parsed });
+    }
+  }
+  return { rows, skipped };
 }
 
-function parseRow(value: unknown): ListedSandbox | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+/** The one line a list says when it left rows out, or null when it showed every row the server listed. */
+export function skippedRowsNote(skipped: number): string | null {
+  if (skipped <= 0) return null;
+  return `${skipped} ${skipped === 1 ? "sandbox" : "sandboxes"} could not be shown.`;
+}
+
+/** The row, or the name of the first contract check it failed. */
+function parseRow(value: unknown): ListedSandbox | string {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "not an object";
   const row = value as Record<string, unknown>;
   const { id, orgId, ownerId, provider, harness, status, createdAt, displayLabel, canOpen, canManage } = row;
   const created = instant(createdAt);
-  if (!text(id) || !text(orgId) || !text(ownerId) || !created || !text(displayLabel)) return null;
-  if (!oneOf(LISTED_PROVIDERS, provider) || !oneOf(HARNESSES, harness) || !oneOf(SANDBOX_STATUSES, status)) return null;
-  if (typeof canOpen !== "boolean" || typeof canManage !== "boolean") return null;
+  if (!text(id) || !text(orgId) || !text(ownerId) || !created || !text(displayLabel)) return "identity";
+  if (!oneOf(LISTED_PROVIDERS, provider)) return "provider";
+  if (!oneOf(HARNESSES, harness)) return "harness";
+  if (!oneOf(SANDBOX_STATUSES, status)) return "status";
+  if (typeof canOpen !== "boolean" || typeof canManage !== "boolean") return "permissions";
   const providerSandboxId = nullable(row.providerSandboxId, text);
   const boatId = nullable(row.boatId, text);
   const model = nullable(row.model, text);
@@ -50,7 +71,7 @@ function parseRow(value: unknown): ListedSandbox | null {
     machineSize === undefined ||
     (row.preservationNote !== undefined && preservationNote === undefined)
   )
-    return null;
+    return "optional fields";
   return {
     id,
     orgId,

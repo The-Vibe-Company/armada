@@ -32,7 +32,8 @@ export type DockerHost = {
   sandboxes: number;
 };
 
-export type DockerHostList = { placement: boolean; hosts: DockerHost[] };
+/** `skipped`: hosts the server listed that do not match the contract, left out of the list (#1398). */
+export type DockerHostList = { placement: boolean; hosts: DockerHost[]; skipped: number };
 
 const STATES: readonly DockerHostState[] = ["pending", "online", "offline", "revoked"];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -72,14 +73,15 @@ function parseHost(value: unknown): DockerHost | null {
   };
 }
 
-/** The list answer, or null when it is not the expected shape (one bad row refuses the whole answer). */
+/**
+ * The list answer, or null when its envelope is not the expected shape or a host id repeats. A host that does not
+ * match the contract is left out and counted in `skipped`, so one unexpected host never hides the others (#1398).
+ */
 export function parseDockerHostList(value: unknown): DockerHostList | null {
   if (!isRecord(value) || typeof value.placement !== "boolean" || !Array.isArray(value.hosts)) return null;
-  const hosts = value.hosts.map(parseHost);
-  if (hosts.some((host) => host === null)) return null;
-  const list = hosts as DockerHost[];
+  const list = value.hosts.map(parseHost).filter((host): host is DockerHost => host !== null);
   if (new Set(list.map((host) => host.id)).size !== list.length) return null;
-  return { placement: value.placement, hosts: list };
+  return { placement: value.placement, hosts: list, skipped: value.hosts.length - list.length };
 }
 
 /** A one-use registration ticket as `register-token` returns it. */
