@@ -372,6 +372,9 @@ export type Database = {
           revoked_at: string | null;
           last_seen_at: string | null;
           created_at: string;
+          daemon_version: string | null;
+          draining_at: string | null;
+          name: string | null;
         };
         Insert: {
           id: string;
@@ -384,6 +387,9 @@ export type Database = {
           revoked_at?: string | null;
           last_seen_at?: string | null;
           created_at?: string;
+          daemon_version?: string | null;
+          draining_at?: string | null;
+          name?: string | null;
         };
         Update: {
           id?: string;
@@ -396,6 +402,9 @@ export type Database = {
           revoked_at?: string | null;
           last_seen_at?: string | null;
           created_at?: string;
+          daemon_version?: string | null;
+          draining_at?: string | null;
+          name?: string | null;
         };
         Relationships: [
           {
@@ -4064,7 +4073,7 @@ export type Database = {
           template_id: string;
           revision_id: string;
           manifest: Json;
-          golden_operation_fence_id: string;
+          golden_operation_fence_id: string | null;
           sandbox_id: string;
           state: string;
           result: Json | null;
@@ -4081,7 +4090,7 @@ export type Database = {
           template_id: string;
           revision_id: string;
           manifest: Json;
-          golden_operation_fence_id: string;
+          golden_operation_fence_id?: string | null;
           sandbox_id: string;
           state?: string;
           result?: Json | null;
@@ -4098,7 +4107,7 @@ export type Database = {
           template_id?: string;
           revision_id?: string;
           manifest?: Json;
-          golden_operation_fence_id?: string;
+          golden_operation_fence_id?: string | null;
           sandbox_id?: string;
           state?: string;
           result?: Json | null;

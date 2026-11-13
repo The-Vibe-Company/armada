@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
-import type { Sql } from "@armada/core";
+import { DOCKER_IMAGE_UNAVAILABLE_MESSAGE, type Sql } from "@armada/core";
 import { decryptSecret } from "@armada/core/server";
 import { createDockerHostStore, DockerHostDenied } from "../src/docker-host-store.ts";
 import { migratedDatabase } from "./migrated-database.ts";
@@ -695,4 +695,44 @@ test("failed startup ACK or rejected admission fails logical startup without cla
       expect((await lifecycle(a.sandboxId))?.status).toBe("deleted");
     }
   }
+});
+
+test("a host that could not fetch the image fails the sandbox in plain words; a reason never rides on success", async () => {
+  for (const operation of ["create", "bootstrap"] as const) {
+    const a = await boundStartup(operation);
+    const startup = { requestId: a.startup.requestId };
+    await denied(
+      store.complete(a.hostToken, a.installationId, { ...startup, outcome: "completed", reason: "image_unavailable" }),
+    );
+    await store.complete(a.hostToken, a.installationId, { ...startup, outcome: "failed", reason: "image_unavailable" });
+    const failed = await lifecycle(a.sandboxId);
+    expect(failed?.status).toBe("failed");
+    // Only a create fetches the image; another operation's reason is not believed.
+    expect(failed?.status_reason).toBe(
+      operation === "create" ? DOCKER_IMAGE_UNAVAILABLE_MESSAGE : "Docker sandbox startup failed.",
+    );
+  }
+});
+
+// Real migrated mailbox/ACK flow protects drain order and lost-revocation-response recovery.
+test("uninstall drains bound machines through stop/delete ACKs before idempotent revocation", async () => {
+  const a = await boundFixture();
+  await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
+  await store.complete(a.hostToken, a.installationId, { requestId: a.create.requestId, outcome: "completed" });
+  expect(await store.unregister(a.hostToken, a.installationId)).toBe(false);
+  const stop = await store.poll(a.hostToken, a.installationId, "2.27.0");
+  expect(stop?.operation).toBe("stop");
+  if (!stop) throw new Error("Missing stop");
+  expect(await store.unregister(a.hostToken, a.installationId)).toBe(false);
+  expect((await store.poll(a.hostToken, a.installationId))?.requestId).toBe(stop.requestId);
+  await store.complete(a.hostToken, a.installationId, { requestId: stop.requestId, outcome: "completed" });
+  expect(await store.unregister(a.hostToken, a.installationId)).toBe(false);
+  const remove = await store.poll(a.hostToken, a.installationId);
+  expect(remove?.operation).toBe("delete");
+  if (!remove) throw new Error("Missing delete");
+  await store.complete(a.hostToken, a.installationId, { requestId: remove.requestId, outcome: "completed" });
+  expect(await store.unregister(a.hostToken, a.installationId)).toBe(true);
+  expect(await store.unregister(a.hostToken, a.installationId)).toBe(true);
+  await denied(store.poll(a.hostToken, a.installationId));
+  await denied(store.unregister(a.hostToken, randomUUID()));
 });

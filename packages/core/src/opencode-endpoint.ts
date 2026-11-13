@@ -5,6 +5,11 @@ export interface OpenCodeEndpoint {
   models: string[];
 }
 export const OPENCODE_ENDPOINT_ENV = "ARMADA_OPENCODE_ENDPOINT";
+/**
+ * The provider ID the runtime gives a custom OpenCode connection; OpenCode reports its models, and so prices are
+ * keyed, as `armada/<model>` (packages/agent-runtime/src/opencode-endpoint.ts).
+ */
+export const OPENCODE_CONNECTION_PROVIDER = "armada";
 export function parseOpenCodeEndpoint(value: unknown): OpenCodeEndpoint {
   const fail = (): never => {
     throw new Error("Invalid OpenCode endpoint: HTTPS baseUrl and 1-32 model IDs required.");
@@ -25,12 +30,26 @@ export function parseOpenCodeEndpoint(value: unknown): OpenCodeEndpoint {
     return fail();
   }
   if (url.protocol !== "https:" || url.username || url.password || url.hash || url.search) return fail();
-  if (
-    !Array.isArray(row.models) ||
-    row.models.length < 1 ||
-    row.models.length > 32 ||
-    row.models.some((id) => typeof id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:/[\]-]{0,192}$/.test(id))
-  )
-    return fail();
-  return { version: 1, baseUrl: url.toString().replace(/\/+$/, ""), models: [...new Set(row.models as string[])] };
+  if (!isConnectionModelList(row.models)) return fail();
+  return { version: 1, baseUrl: url.toString().replace(/\/+$/, ""), models: [...new Set(row.models)] };
+}
+
+/** A provider's exact model or deployment ID, as a connection declares it. */
+export const CONNECTION_MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:/[\]-]{0,192}$/;
+/** At most this many models per connection. */
+export const MAX_CONNECTION_MODELS = 32;
+
+function isConnectionModelList(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.length >= 1 &&
+    value.length <= MAX_CONNECTION_MODELS &&
+    value.every((id) => typeof id === "string" && CONNECTION_MODEL_ID.test(id))
+  );
+}
+
+/** 1-32 exact model IDs, deduplicated in order. */
+export function parseConnectionModels(value: unknown): string[] {
+  if (!isConnectionModelList(value)) throw new Error("A connection lists 1-32 exact model IDs.");
+  return [...new Set(value)];
 }

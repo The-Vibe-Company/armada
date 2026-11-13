@@ -706,13 +706,13 @@ describe("armada org and armada creds against the control API", () => {
   test("the CLI needs a login and a server address", async () => {
     await withServer(async ({ cli }) => {
       const nobody = cli(STAN, { session: false });
-      expect((await nobody.run(["org", "list"])).err).toContain("run armada login.");
+      expect((await nobody.run(["org", "list"])).err).toContain("You are not signed in. Run armada login.");
       const lost = cli(STAN, { armadaUrl: false });
       expect((await lost.run(["org", "list"])).err).toContain("Armada could not reach the server.");
       const refused = cli(STAN, { token: "revoked" });
       const result = await refused.run(["org", "list"]);
       expect(result.code).toBe(1);
-      expect(result.err).toContain("Run armada login again.");
+      expect(result.err).toContain("You are not signed in. Run armada login.");
     });
   });
 });
@@ -2517,6 +2517,9 @@ test("versioned runtime launch is explicit/default-off and never selects native 
         expect(input.credentials.env.OPENAI_API_KEY).toBe("fixture-model-key");
         return {
           epoch: "1",
+          async prepareWorkspace() {
+            return { status: "not_connected" as const };
+          },
           async installSkills(references, key) {
             expect(references).toEqual([skillPin]);
             expect(key).toBeNull();
@@ -2618,11 +2621,70 @@ test("versioned runtime launch is explicit/default-off and never selects native 
       golden: body.golden,
       org: body.org,
       harness: "codex",
-      prompt: "ordinary request",
     });
     expect(ordinary?.status).toBe(400);
-    expect(JSON.stringify(await ordinary?.json())).toContain("repository refresh");
+    expect(JSON.stringify(await ordinary?.json())).toContain("idle sandbox");
     expect(host.forks).toHaveLength(1);
+    expect(host.prompts).toHaveLength(0);
+    const account = (
+      await db.query<{ id: string; version: number }>(
+        "select id,version from credentials where owner_id=$1 and kind='openai'",
+        [STAN],
+      )
+    ).rows[0]!;
+    let workspacePrepared = false;
+    options.launch.boatRuntimeDefault = {
+      provider: async () => host.provider,
+      credentials: {
+        async resolve() {
+          return {
+            env: { OPENAI_API_KEY: "fixture-model-key" },
+            secrets: ["fixture-model-key"],
+            codexAuthJson: false,
+            binding: { credentialId: account.id, credentialVersion: account.version },
+          };
+        },
+      },
+      connections: {
+        async validate() {},
+        async bind() {},
+        async prepare() {
+          expect(workspacePrepared).toBe(true);
+        },
+      },
+      policy: {
+        async start() {
+          return {
+            epoch: "1",
+            async prepareWorkspace(g) {
+              expect(g.config.repos).toHaveLength(1);
+              workspacePrepared = true;
+              return { status: "not_connected" as const };
+            },
+            async prompt() {
+              expect(workspacePrepared).toBe(true);
+              return { promptId: "default-initial", conversationId: "default-conversation", status: "queued" as const };
+            },
+          };
+        },
+      },
+    };
+    const defaulted = await request("sandbox/launch", {
+      golden: body.golden,
+      org: body.org,
+      harness: "codex",
+      prompt: "ordinary default request",
+      credentialId: account.id,
+    });
+    expect(defaulted?.status).toBe(200);
+    expect(await defaulted?.json()).toMatchObject({
+      runtime: { kind: "armada", epoch: "1" },
+      sandbox: { boatRuntime: true },
+      promptId: "default-initial",
+    });
+    expect(host.forks).toHaveLength(2);
+    expect(host.forks[1]?.env).toEqual({});
+    expect(host.execs).toHaveLength(0);
     expect(host.prompts).toHaveLength(0);
     if (priorLaunch) options.launch = priorLaunch;
     else delete options.launch;
@@ -2630,7 +2692,7 @@ test("versioned runtime launch is explicit/default-off and never selects native 
       boatRuntime: { defaultPath: "native" },
     });
     // Actual startup timeout -> launch failure persistence -> public logs response.
-    expectedForks = 1;
+    expectedForks = 2;
     options.boatRuntimeLaunch = {
       async start(input) {
         let now = 0;

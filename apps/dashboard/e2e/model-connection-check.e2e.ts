@@ -28,6 +28,7 @@ test("Models checks only a matching owned sandbox, shows pending/error/success a
         updated_at: "2026-11-08T10:00:00Z",
       },
     ],
+    connectionModels: { [accountId]: [{ model: "team-deployment", input: null, output: null }] },
   });
   await setup("/__test/sandbox-lifecycle", {
     id: IDS.running,
@@ -45,6 +46,11 @@ test("Models checks only a matching owned sandbox, shows pending/error/success a
   const dialog = page.getByRole("dialog");
   await expect(dialog.locator('input[type="password"]')).toHaveCount(0);
   await expect(dialog).toContainText("one tiny billable request");
+  // The connection's declared models are listed on its row and prefill the check.
+  await expect(page.locator('[data-account="Foundry check"] [data-account-models]')).toHaveText(
+    "Models: team-deployment",
+  );
+  await expect(dialog.getByLabel("Deployment or model name")).toHaveValue("team-deployment");
   await dialog.getByLabel("Running Modal sandbox UUID").fill(IDS.bobSecret);
   await dialog.getByLabel("Deployment or model name").fill("deployment");
   await dialog.getByRole("button", { name: "Send tiny check" }).click();

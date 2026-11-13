@@ -8,7 +8,12 @@ import type { GoldenActor } from "./golden.ts";
 import { HARNESS_CATALOG, mapHarnesses } from "./harnesses.ts";
 import { LaunchError } from "./launch-error.ts";
 import { type ModelPriceOverrides, parseModelPriceOverrides } from "./model-price-overrides.ts";
-import { OPENCODE_ENDPOINT_ENV, parseOpenCodeEndpoint } from "./opencode-endpoint.ts";
+import {
+  OPENCODE_CONNECTION_PROVIDER,
+  OPENCODE_ENDPOINT_ENV,
+  parseConnectionModels,
+  parseOpenCodeEndpoint,
+} from "./opencode-endpoint.ts";
 import { SKILLPACK_TOKEN_PATTERN } from "./skillpack-token.ts";
 import { redactKnownTokens } from "./token-redaction.ts";
 import type { UsagePricingContext } from "./usage-pricing.ts";
@@ -265,7 +270,7 @@ export function parseCredentialValue(kind: CredentialKind, raw: string): string 
   }
   if (kind === "openai" && value.startsWith("{")) {
     try {
-      const { endpoint, apiKey, prices, ...extra } = JSON.parse(value);
+      const { endpoint, apiKey, prices, models, ...extra } = JSON.parse(value);
       if (
         Object.keys(extra).length ||
         typeof apiKey !== "string" ||
@@ -277,13 +282,15 @@ export function parseCredentialValue(kind: CredentialKind, raw: string): string 
       return JSON.stringify({
         endpoint: parseCodexEndpoint(endpoint),
         apiKey,
+        // Server-side catalogue of the connection's deployments; never delivered to the sandbox.
+        ...(models === undefined ? {} : { models: parseConnectionModels(models) }),
         ...(prices === undefined ? {} : { prices: parseModelPriceOverrides(prices) }),
       });
     } catch (error) {
       if (error instanceof VaultError) throw error;
       throw new VaultError(
         "invalid",
-        "A custom OpenAI connection needs endpoint {version:1,baseUrl,apiVersion?} and apiKey.",
+        "A custom OpenAI connection needs endpoint {version:1,baseUrl,apiVersion?}, apiKey and optional models.",
       );
     }
   }
@@ -527,6 +534,76 @@ export async function resolveBoatKey(
       ? "No boat.dev key for you or your org. Run 'armada creds set boat' or ask an org admin to set the org key."
       : "Your org has no boat.dev key. An org admin sets it with 'armada creds set boat --org <name>'.",
   );
+}
+
+/** One model a custom connection declares, as the agent reports it, with its saved price when there is one. */
+export interface ConnectionModelInfo {
+  /** The exact model to launch with: `armada/<id>` for an OpenCode connection, the deployment ID for Codex. */
+  model: string;
+  /** USD per million tokens; null is unknown. */
+  input: string | null;
+  output: string | null;
+}
+
+/**
+ * The models a stored custom connection declares (#1483), from its decrypted value: never the key, the address or
+ * any other field. A plain key, a subscription or an unreadable value declares none.
+ */
+export function connectionModels(kind: CredentialKind, plaintext: string): ConnectionModelInfo[] {
+  if ((kind !== "opencode" && kind !== "openai") || !plaintext.trimStart().startsWith("{")) return [];
+  let parsed: { endpoint?: { models?: string[] }; models?: string[]; prices?: ModelPriceOverrides };
+  try {
+    parsed = JSON.parse(parseCredentialValue(kind, plaintext));
+  } catch {
+    return [];
+  }
+  const prices = parsed.prices ?? {};
+  const declared =
+    kind === "opencode"
+      ? (parsed.endpoint?.models ?? []).map((id) => `${OPENCODE_CONNECTION_PROVIDER}/${id}`)
+      : (parsed.models ?? Object.keys(prices));
+  return declared.map((model) => {
+    const price = Object.hasOwn(prices, model) ? prices[model] : undefined;
+    return { model, input: price?.input ?? null, output: price?.output ?? null };
+  });
+}
+
+/** One visible account's declared models; accounts that declare none are left out. */
+export interface AccountConnectionModels {
+  id: string;
+  scope: CredentialScope;
+  models: ConnectionModelInfo[];
+}
+
+/**
+ * The declared models of the caller's own active custom connections and of one org's. The caller must already be
+ * a member of `orgId`. A value that cannot be decrypted is left out rather than failing the whole list.
+ */
+export async function listConnectionModels(
+  reader: CredentialReader,
+  encryptionKey: string | undefined,
+  input: { userId: string; orgId: string },
+): Promise<AccountConnectionModels[]> {
+  const result: AccountConnectionModels[] = [];
+  for (const [scope, ownerId] of [
+    ["user", input.userId],
+    ["org", input.orgId],
+  ] as const) {
+    for (const row of await reader.credentials(scope, ownerId)) {
+      if (!row.id || (row.kind !== "opencode" && row.kind !== "openai")) continue;
+      if (row.status !== undefined && row.status !== "active") continue;
+      if (row.expiresAt && new Date(row.expiresAt).getTime() <= Date.now()) continue;
+      let plaintext: string;
+      try {
+        plaintext = await open(row.valueEnc, encryptionKey);
+      } catch {
+        continue;
+      }
+      const models = connectionModels(row.kind, plaintext);
+      if (models.length) result.push({ id: row.id, scope, models });
+    }
+  }
+  return result;
 }
 
 function open(sealed: Uint8Array, encryptionKey: string | undefined): Promise<string> {

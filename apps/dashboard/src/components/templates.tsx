@@ -684,7 +684,7 @@ function Preset({ target }: { target: TemplateLaunchTarget }) {
       key: "environment",
       icon: <LayersIcon />,
       label: "Environment",
-      text: `${target.goldenName ?? "Unavailable"} on ${PROVIDER_LABELS[target.definition.provider]}`,
+      text: `${target.goldenName ?? "Unavailable"} on ${target.definition.provider === "docker" ? "Docker" : PROVIDER_LABELS[target.definition.provider]}`,
     },
     { key: "agent", icon: <CpuIcon />, label: "Agent", text: target.agent },
     ...(target.definition.skills.length
@@ -837,7 +837,7 @@ export function TemplateLaunchForm({ target }: { target: TemplateLaunchTarget })
           {target.repositories.length > 0 && (
             <RepositoryField idPrefix={id} repositories={target.repositories} onChange={setProject} />
           )}
-          {target.sizing && (
+          {target.sizing && target.definition.provider !== "docker" && (
             <MachineSizeField
               idPrefix={id}
               provider={target.definition.provider}

@@ -126,7 +126,7 @@ describe("auth commands", () => {
   test("token commands without a session ask for login", async () => {
     const result = await capture(["token", "list"], io());
     expect(result.code).toBe(1);
-    expect(result.err).toContain("Set ARMADA_TOKEN or run armada login.");
+    expect(result.err).toContain("You are not signed in. Run armada login.");
   });
 
   test("ARMADA_TOKEN owns token requests without reading a saved session", async () => {
@@ -160,6 +160,94 @@ describe("auth commands", () => {
     expect(result.err).toContain("github or google");
   });
 
+  test("default login discovers email, prompts, and saves the verified session without opening a browser", async () => {
+    const auth = io();
+    auth.env = { ARMADA_URL: ORIGIN };
+    auth.readEmail = async () => "ada@example.com";
+    auth.readCode = async () => "123456";
+    auth.open = () => {
+      throw new Error("must not open browser");
+    };
+    const calls: string[] = [];
+    auth.fetch = async (input, init) => {
+      const url = String(input);
+      calls.push(url);
+      if (url.endsWith("/auth/methods")) {
+        expect(init?.method).toBe("GET");
+        expect(authHeader(init)).toBeNull();
+        return Response.json({ methods: ["email"] });
+      }
+      if (url.endsWith("/email/start")) return Response.json({});
+      if (url.endsWith("/email/verify")) {
+        expect(JSON.parse(String(init?.body))).toEqual({ email: "ada@example.com", code: "123456" });
+        return Response.json({ accessToken: ACCESS, refreshToken: REFRESH, expiresAt: "2099-01-01T00:00:00.000Z" });
+      }
+      throw new Error("unexpected request");
+    };
+    expect((await capture(["login"], auth)).code).toBe(0);
+    expect(calls).toEqual(
+      ["auth/methods", "auth/email/start", "auth/email/verify"].map((path) => `${ORIGIN}/api/v1/${path}`),
+    );
+    expect(await auth.session.read()).toEqual({ ...session(), loginId: expect.any(String) });
+  });
+
+  test("default login offers only enabled choices and prefills the last successful email", async () => {
+    const auth = io();
+    auth.env = { ARMADA_URL: ORIGIN };
+    let remembered = "last@example.com";
+    auth.emailPreferences = {
+      read: async (origin) => {
+        expect(origin).toBe(ORIGIN);
+        return remembered;
+      },
+      write: async (_origin, email) => {
+        remembered = email ?? "";
+      },
+    };
+    auth.chooseMethod = async (methods, preferred) => {
+      expect(methods).toEqual(["email", "google"]);
+      expect(preferred).toBe("email");
+      return "email";
+    };
+    auth.readEmail = async (previous) => {
+      expect(previous).toBe("last@example.com");
+      return "new@example.com";
+    };
+    auth.readCode = async () => "123456";
+    auth.fetch = async (input) => {
+      if (String(input).endsWith("/auth/methods")) return Response.json({ methods: ["email", "google"] });
+      if (String(input).endsWith("/email/start")) return Response.json({});
+      return Response.json({ accessToken: ACCESS, refreshToken: REFRESH, expiresAt: "2099-01-01T00:00:00.000Z" });
+    };
+    expect((await capture(["login"], auth)).code).toBe(0);
+    expect(remembered).toBe("new@example.com");
+  });
+
+  test("disabled providers fail in the terminal before opening a browser", async () => {
+    const auth = io();
+    auth.open = () => {
+      throw new Error("must not open browser");
+    };
+    auth.fetch = async (input) => {
+      expect(String(input)).toContain("/api/v1/auth/methods");
+      return Response.json({ methods: ["email"] });
+    };
+    const result = await capture(["login", "--provider", "github"], auth);
+    expect(result.code).toBe(2);
+    expect(result.err).toContain("github sign-in is not enabled; enabled methods: email.");
+  });
+
+  test("method discovery failure never guesses a browser provider", async () => {
+    const auth = io();
+    auth.open = () => {
+      throw new Error("must not open browser");
+    };
+    auth.fetch = async () => Response.json({}, { status: 503 });
+    const result = await capture(["login"], auth);
+    expect(result.code).not.toBe(0);
+    expect(result.err).toContain("Could not discover");
+  });
+
   test("email login calls only Armada auth endpoints and persists its API session", async () => {
     const auth = io();
     auth.env = { ARMADA_URL: ORIGIN };
@@ -188,12 +276,12 @@ describe("auth commands", () => {
     };
 
     const result = await capture(["login", "--email", "ada@example.com"], auth);
-    expect(result).toMatchObject({ code: 0, out: "Logged in.\n", err: expect.stringContaining("Type the code") });
+    expect(result).toMatchObject({ code: 0, out: "Logged in.\n", err: expect.stringContaining("type the code") });
     expect(calls.map(({ url }) => url)).toEqual([
       `${ORIGIN}/api/v1/auth/email/start`,
       `${ORIGIN}/api/v1/auth/email/verify`,
     ]);
-    expect(await auth.session.read()).toEqual(session());
+    expect(await auth.session.read()).toEqual({ ...session(), loginId: expect.any(String) });
   });
 
   test("email code refusal explains link consumption without exposing provider details", async () => {

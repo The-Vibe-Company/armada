@@ -112,7 +112,14 @@ The request and receipt are encrypted in a service-only ledger; no model secret
 is copied into it. A completed retry returns its original admission receipt with
 current sandbox metadata (even after stop/delete), never restarts the sandbox.
 
-The API-only CLI uses the same normal route, not the private preview:
+The API-only CLI uses the same normal route, not the private preview. `image` is
+optional everywhere (API, CLI, dashboard): without it the launch uses
+`DOCKER_DEFAULT_IMAGE` from `@armada/core`, a digest-pinned Debian
+`buildpack-deps` image (#1507). The resolved image is part of the request's
+identity: the CLI and dashboard send it explicitly, so a retry with the same
+`requestId` stays identical even if a later release changes the default. A raw API
+caller that omits `image` should do the same when it retries across an upgrade.
+`--image` overrides the default:
 
 ```sh
 bun run armada launch --provider docker --org "$ARMADA_ORG" \
@@ -154,6 +161,41 @@ and reported tokens, then normal stop/delete ACKs. It prints
 `PASS: normal Docker launch route created, bootstrapped and admitted one prompt; list/status/logs/answer/stop/delete confirmed.`
 The host remains registered/running. Compare container/volume inventories with
 the baseline; no prune, registration replacement or worker host access.
+
+## Installing through the CLI
+
+On the Docker machine, `armada host install --server https://ARMADA_ORIGIN`
+reads the five-minute, single-use registration token **only from stdin**. It needs
+no Armada login or organization selection. Use the one-line command from
+`armada host add` or the dashboard rather than putting a token in CLI arguments.
+
+A follow-up bootstrap slice will prefer the published CLI through bunx, then npx,
+pinned to the server's exact Armada version (not `latest`), retain the standalone
+no-Node fallback and offer an optional global CLI installation.
+
+The CLI fetches the public `/api/docker-host/install.json` manifest and the
+selected Linux x64/arm64 artifact from the same HTTPS origin, rejects redirects,
+checks SHA-256 **before execution**, then atomically installs
+`~/.local/bin/armada-docker-host`. Installation paths must not contain symlinks.
+The separate binary owns Docker checks, registration and systemd user-service
+installation. The CLI waits up to 60 seconds for a connected status; timeout is
+not permission to exchange another registration token blindly.
+
+Re-running reports the existing host ID, version and connectivity. Registered
+hosts keep their existing binary and registration; the new token is not consumed.
+An offline registered host restarts its existing user service and gets the same
+bounded reconnect wait. In-place registered-binary upgrades are deliberately not
+performed: the managed install records the binary digest for safe uninstall.
+Unregistered binaries without retained installation files can be replaced;
+unreadable or partially registered state is preserved for diagnosis.
+
+`armada host status` prints public local status; `armada host uninstall` delegates
+to the separate binary's drain/revoke/removal procedure. Both work without login.
+Uninstall can wait for active sandbox cleanup and must be retried, not bypassed,
+if drain is unresolved. Native diagnostic output is not relayed by the wrapper;
+run `armada-docker-host status` or `armada-docker-host uninstall` directly when
+repairing local service or ownership problems. Never delete registration state or
+force-clear a daemon lock to make installation succeed.
 
 ## Host authority, ownership and failure recovery
 
@@ -332,7 +374,7 @@ using normal private bearer delivery. Verify the saved PID belongs to the exact
 installed `armada-docker-host run --state-dir ...armada-docker-smoke` process before
 sending SIGTERM; wait for it to exit (up to a poll period). Only then remove that
 private smoke state directory and `.local/bin/armada-docker-host`. Do not remove
-a pre-existing binary/state or a shared pulled image. No uninstall CLI is claimed.
+a pre-existing binary/state or a shared pulled image. The managed installer below provides an ownership-checked uninstall CLI.
 
 ## Local checks
 
@@ -406,7 +448,7 @@ not include mounted volume contents; it cannot by itself promise workspace
 preservation. Future stop/resume must prove quiescence, retained disk/journal and
 fresh enrolment/health, not assume a container start is conversation continuity.
 
-No automatic uninstall/purge CLI exists. Any future implementation must drain,
+Managed uninstall below drains through normal bound stop/delete jobs and never prunes. Any future implementation must drain,
 revoke, reconcile exact labelled/receipt-owned resources, refuse shared/in-use or
 uncertain data, preserve unrelated workloads and report offline remote revocation
 pending. Current manual cleanup above is narrower; it does not delete shared
@@ -424,6 +466,26 @@ The existing machine results endpoint accepts either the original job outcome or
 `{installationId,requestId,expired:true}` referring to a bound create/bootstrap.
 The two packets are separate facts; expiry never rewrites the original job outcome.
 Older servers reject the new packet safely and it remains pending until upgrade.
+
+### Fetching the image (#1507)
+
+Before it creates a container, the host checks whether it has the image. If it does
+not, it runs `docker image pull` with its own 5-minute bound (half the launch
+deadline), longer than the 30-second bound on other Docker commands. If the fetch fails or times out, the
+failed create result carries `reason: "image_unavailable"`:
+`{installationId,requestId,outcome:"failed",reason:"image_unavailable"}`.
+
+- **What the person sees:** the server stores `DOCKER_IMAGE_UNAVAILABLE_MESSAGE`
+  from `@armada/core` as the sandbox's status reason, in plain words. The launch
+  answers with the same words instead of "did not become ready".
+- **Where the reason counts:** only for a create, the only operation that fetches
+  an image. Any other failure keeps the generic reason.
+- **Older servers:** they refuse the extra field with a 400. The host then sends
+  the plain failed outcome again, so the result is never left pending. Any other
+  error keeps the reason for the next attempt.
+- **Known limit:** the daemon is serial. While it pulls, it does not sweep expired
+  sandboxes or take other jobs, and the host can show as offline (no poll for
+  more than 60 seconds) until the pull ends.
 
 The server validates the current host/installation and the original frozen machine
 identity, then records a terminal stop and revokes runtime authority. Server time
@@ -517,6 +579,80 @@ stop/resume and a third same-conversation recall, then confirmed stop/delete. Ke
 `ARMADA_TOKEN` private in the environment. This procedure is not evidence of a passed
 real-host run.
 
+
+## Managed owner installation (#1453)
+
+The server image publishes Linux x64/arm64 host executables by SHA-256 alongside
+runtime artifacts. `/install-host.sh` serves a script pinned to those
+build digests and the configured public server URL. Deploy all replicas from this
+revision and apply `20261113150000_docker_host_version.sql` through the normal
+operator release process before using it. No deployment or remote migration was
+performed here.
+
+Use **Add a host** in the dashboard or `armada host add --org ORG_UUID`.
+Paste its one command on the Linux Docker machine; the one-use token is included
+under the owner-approved five-minute registration-token exception. Never share
+or persist the command. Requires curl, sha256sum, util-linux flock/loginctl
+and a working systemd user session. The binary is verified before execution,
+registered over stdin and installed as a user service with linger. If the user
+cannot enable linger or use Docker, an administrator must configure linger and
+rootless Docker (or explicitly grant powerful Docker access). No sudo is run.
+Existing binaries/registration are refused rather than overwritten. Failed or
+uncertain registration must be inspected, never blindly replayed.
+
+`~/.local/bin/armada-docker-host status` reports registration, recent successful
+poll (not inferred runtime health), daemon version and labelled running count.
+The dashboard list displays the reported version; old hosts report unknown.
+`systemctl --user restart armada-docker-host.service` restarts the daemon.
+Kernel-held locks release on process death; legacy manual locks require inspection.
+
+`~/.local/bin/armada-docker-host uninstall` fences new placements, drains through
+normal bound stop/delete jobs and confirmed physical ACKs, revokes, stops/disables
+the service and removes only the verified installation. The host registration's
+issuer must retain cleanup authority (current admin for other owners' sandboxes).
+Offline/uncertain cleanup, unknown labelled resources and changed managed files
+refuse removal, preserving state for reconciliation. Shared images, other workloads
+and account-wide linger are preserved. Drain is bounded; failure is not deletion.
+
+Single coordinator check on the real machine previously registered as
+`70bde9cd-36c9-40af-b15e-65b2f9d3c2a2`: record container/volume baseline,
+reconcile/delete its old sandboxes, revoke and remove the hand-made installation
+using the manual runbook. Run the new Add-a-host command interactively there.
+Retain the new registration's host ID, not the revoked ID. Run the existing smoke
+with server/org/credential/SSH/image arguments plus
+`--host-id NEW_HOST_ID --service-install`. It restarts only the user service,
+proves a normal launch/answer/stop/delete and uninstalls; compare inventories with
+the baseline. No reboot, prune, shared-image removal or worker host access.
+This procedure has not been run here.
+
+
+### One-click command contract (owner clarification)
+
+`POST /api/v1/docker/hosts/register-token` accepts `{org,name?}` and returns
+`{hostId,registrationToken,command,expiresAt}`. `command` is server-generated using
+the configured public origin and includes the single-use token:
+`curl -fsSL --proto '=https' --proto-redir '=https' '<origin>/install-host.sh' | sh -s -- --token <one-time>`.
+Expiry is the actual database expiry in ISO UTC. Show/copy once, no persistence
+or telemetry. This is the sole token-in-argv exception in AGENTS.md; the exchanged
+host credential still travels only in private state and authenticated requests.
+The POSIX script verifies the architecture's digest, installs the existing user
+service and prints `connected` after the daemon has successfully polled. A timeout
+reports pending, not failed registration or permission to replay a token.
+
+CLI: `armada host add [--name NAME] [--org UUID]` prints that command and waits
+boundedly for the exact host. `armada host list [--json]` shows safe metadata;
+`armada host revoke UUID` revokes through the admin API. Selected organization is
+reused. `armada launch --provider docker --host UUID_OR_NAME [--image DIGEST_REF]`
+resolves names exactly among nonrevoked hosts in the selected org and refuses
+ambiguous names. Names are optional, nonempty trimmed display strings up to64
+characters, never identity or authority.
+
+Additional prerequisite: `20261113160000_docker_host_names.sql` after the prior
+host-version migration, deployed by the authorized coordinator only. Same single
+real-host smoke `--service-install` applies; use the one-click command instead of
+manual binary installation or a second token prompt. Dashboard contract posted on
+#1380; dialog redesign belongs to that agent.
+
 ### Harness and cost acceptance (#1454)
 
 Coordinator only, on host `70bde9cd-36c9-40af-b15e-65b2f9d3c2a2`:
@@ -533,3 +669,18 @@ Armada bearer privately through `ARMADA_TOKEN`, never argv.
 Each flag uses normal launch/status/logs/send/stop/resume routes, and cleans up
 with normal stop/delete. These are coordinator acceptance procedures, not claims
 that the real-host runs passed. No worker needs staging or host access.
+
+
+### Dashboard server contract (#1380 / #1481)
+
+`POST /api/v1/docker/hosts/register-token` accepts `{org,name?}` and returns
+`{hostId,registrationToken,command,expiresAt}`. The dashboard consumes
+`{hostId,command,expiresAt}` and discards the extra bare registration token.
+`command` uses the configured public origin and POSIX `/install-host.sh` with
+`--token` containing only the five-minute single-use registration capability.
+`expiresAt` is the database expiry, ISO UTC. Optional names are trimmed visible
+strings up to64 characters. The host credential is never in command/argv/public
+responses. Additional migration: `20261113160000_docker_host_names.sql`, applied
+only by the authorized coordinator after the host-version migration. This server
+contract is included here so the merged dashboard does not wait on the stacked
+CLI follow-up. Existing `--service-install` real-host acceptance remains pending.

@@ -12,8 +12,8 @@ import {
   githubAppFromEnv,
   githubInstallationAppFromEnv,
   type LaunchOptions,
-  promptOutcome,
   resolveBoatKey,
+  type Sql,
   VaultError,
 } from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
@@ -29,6 +29,7 @@ import { retryDatabaseBoot } from "./database-boot.ts";
 import { createDatabaseReadiness } from "./database-readiness.ts";
 import { requireDatabaseSchema } from "./database-schema.ts";
 import { createDockerBootstrapService } from "./docker-bootstrap-service.ts";
+import { createDockerHostInstallRoute } from "./docker-host-install.ts";
 import { createDockerHostRoutes } from "./docker-host-routes.ts";
 import { createDockerHostStore } from "./docker-host-store.ts";
 import { createDockerNormalLaunch } from "./docker-normal-launch.ts";
@@ -56,6 +57,7 @@ import { createOttoApi } from "./otto/api.ts";
 import { createOttoRuntime } from "./otto/runtime.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
 import { pruneServerRetention } from "./retention-maintenance.ts";
+import { observeRoutinePrompt } from "./routine-observer.ts";
 import { startRoutineWorker } from "./routine-worker.ts";
 import { createRuntimeArtifactRoute } from "./runtime-artifacts.ts";
 import { createRuntimeCheckpoint } from "./runtime-checkpoint.ts";
@@ -267,6 +269,7 @@ export async function startServer(
         sql,
         encryptionKey: config.encryptionKey,
         serverUrl: config.publicUrl,
+        ...(runtimeGitHub ? { github: runtimeGitHub } : {}),
         manifest: deployed.manifest,
         architecture: deployed.architecture,
         modelAuth,
@@ -374,8 +377,10 @@ export async function startServer(
   const dockerControls =
     env.ARMADA_DOCKER_HOSTS === "1"
       ? createDockerSandboxControls(sql, config.encryptionKey, {
+          prepareMcp: runtimeMcp.prepare,
           ...(dockerBootstrap ? { resume: dockerBootstrap } : {}),
           send: createDockerNormalSend(sql, config.encryptionKey, {
+            prepareMcp: runtimeMcp.prepare,
             enabled: dockerEnabled && Boolean(dockerBootstrap),
           }),
         })
@@ -384,6 +389,7 @@ export async function startServer(
   const dockerLaunch =
     env.ARMADA_DOCKER_HOSTS === "1"
       ? createDockerNormalLaunch(sql, config.encryptionKey, {
+          mcp: runtimeMcp,
           enabled: dockerLaunchEnabled,
           credentials: dockerCredentials,
           ...(dockerBootstrap ? { bootstrap: dockerBootstrap } : {}),
@@ -546,7 +552,7 @@ export async function startServer(
                   supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
                   now: new Date(),
                 }),
-              { placement: dockerLaunchEnabled },
+              { placement: dockerLaunchEnabled, publicUrl: config.publicUrl },
             ),
           ]
         : []),
@@ -567,6 +573,7 @@ export async function startServer(
             ),
           ]
         : []),
+      createDockerHostInstallRoute(env.ARMADA_RUNTIME_ARTIFACT_DIR, config.publicUrl),
       createRuntimeArtifactRoute(env.ARMADA_RUNTIME_ARTIFACT_DIR),
       runtimeEnrolments.route,
       createRuntimeProgress(runtimeEnrolments),
@@ -673,16 +680,11 @@ export async function startServer(
       ).rows[0];
       if (!member) return "unknown";
       const caller = { userId: actor.userId, orgs: [{ orgId: orgId!, role: member.role }], via: "service" as const };
-      const sandbox = await data(caller).sandboxes.get(turn.sandboxId);
-      if (!sandbox || sandbox.status === "deleted") return "unknown";
-      const provider = await providers.resolve(sandbox, caller);
-      const result = await promptOutcome(provider, {
-        sandboxId: sandbox.providerSandboxId,
-        promptId: turn.promptId,
-        ...(turn.conversationId ? { conversationId: turn.conversationId } : {}),
+      return observeRoutinePrompt(caller, turn, {
+        ...(control.dockerControls ? { docker: control.dockerControls } : {}),
+        get: (id) => data(caller).sandboxes.get(id),
+        provider: (sandbox) => providers.resolve(sandbox, caller),
       });
-      // Never persist a provider message or a later turn's state in routine history.
-      return result.state;
     },
     launch: async (actor, input, admission) => {
       // Re-read the persisted execution owner's role, never impersonate the editing admin.
@@ -697,9 +699,9 @@ export async function startServer(
       const caller = { userId: actor.userId, orgs: [{ orgId, role: member.role }], via: "service" as const };
       const runtime = templateRuntime(control, caller);
       if (!runtime) throw new VaultError("unavailable", "Routine launch runtime unavailable.");
-      const authorize = async () => {
+      const authorize = async (tx: Sql = sql) => {
         const grant = (
-          await sql.query(
+          await tx.query(
             `select m.user_id from public.routine_runs run
           join public.routines r on r.id=run.routine_id
           join public.members m on m.org_id=r.org_id and m.user_id=run.owner_id
@@ -712,6 +714,12 @@ export async function startServer(
       };
       return templates.command(caller, "launch", input, {
         ...runtime,
+        beforeDockerReserve: async (tx: Sql, id: string) => {
+          await authorize(tx);
+          await admission.beforeFork(tx);
+          await runtime.options?.beforeFork?.(id);
+        },
+        beforeDockerStart: () => authorize(),
         options: {
           ...runtime.options,
           beforeFork: async (id) => {

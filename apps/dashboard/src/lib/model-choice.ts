@@ -9,6 +9,7 @@ import {
   resolveModelChoice,
   type SandboxProviderId,
 } from "@armada/core";
+import { decodeModelValue } from "./model-picker";
 
 /** The select value that means "a model id typed in the field next to it". */
 export const OTHER_MODEL = "other";
@@ -123,8 +124,14 @@ export function sendOverride(harness: string, fields: ModelFields, launched: str
 }
 
 function chosenModel(fields: ModelFields): string | undefined {
-  const value = fields.model === OTHER_MODEL ? fields.otherModel : fields.model;
+  // A connection model's value also names its account; the account travels in its own field.
+  const value = fields.model === OTHER_MODEL ? fields.otherModel : decodeModelValue(fields.model).model;
   return value.trim() || undefined;
+}
+
+/** The account a connection model names, so the server action can refuse a model billed to another account. */
+export function chosenConnection(fields: Pick<ModelFields, "model">): string | null {
+  return decodeModelValue(fields.model).accountId;
 }
 
 function checked(

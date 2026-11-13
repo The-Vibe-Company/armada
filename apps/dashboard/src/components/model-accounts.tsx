@@ -1,6 +1,12 @@
 "use client";
 
-import type { Harness } from "@armada/core";
+import {
+  CONNECTION_PRESETS,
+  type ConnectionPreset,
+  type ConnectionPresetId,
+  connectionPreset,
+  type Harness,
+} from "@armada/core";
 import {
   CircleAlertIcon,
   CircleCheckIcon,
@@ -26,6 +32,7 @@ import {
   testAccountConnection,
 } from "@/app/actions/model-accounts";
 import { SubmitButton } from "@/components/action-form";
+import { PresetConnectionFields } from "@/components/connection-preset-fields";
 import { ChoiceCard, ResultLine } from "@/components/connections";
 import { Disclosure } from "@/components/disclosure";
 import { Empty } from "@/components/page-header";
@@ -79,11 +86,13 @@ import {
   type LaunchDefault,
   MAX_ACCOUNT_NAME,
   type ModelAccount,
+  PASTE_SIGN_IN,
   relativeTime,
   terminalLogin,
   type UsageView,
   usageView,
 } from "@/lib/model-accounts";
+import { connectionModelsNote } from "@/lib/model-picker";
 import { cn } from "@/lib/utils";
 
 type Action = (previous: ActionResult | null, data: FormData) => Promise<ActionResult>;
@@ -160,8 +169,18 @@ function ConnectionTestForm({ account, orgId }: { account: ModelAccount; orgId: 
           maxLength={200}
           autoComplete="off"
           spellCheck={false}
+          // The connection's declared models are offered; any other deployment can still be typed.
+          defaultValue={account.models?.[0]?.model ?? ""}
+          list={account.models?.length ? `${id}-models` : undefined}
           placeholder="Your endpoint's deployment/model"
         />
+        {account.models?.length ? (
+          <datalist id={`${id}-models`}>
+            {account.models.map((info) => (
+              <option key={info.model} value={info.model} />
+            ))}
+          </datalist>
+        ) : null}
       </div>
       <p className="text-xs text-muted-foreground">
         Only your sandbox in this organization, bound to this account and version. No keys or URLs are accepted. A
@@ -458,7 +477,13 @@ export function AccountRow({
               Updated <time dateTime={account.updatedAt}>{relativeTime(account.updatedAt, now)}</time>
             </span>
           </p>
-          {info.billing === "api" && account.status === "active" && (
+          {account.models?.length ? (
+            <p data-account-models className="text-xs text-muted-foreground">
+              {connectionModelsNote(account.models.map((declared) => declared.model))}
+            </p>
+          ) : null}
+          {/* The check runs Codex and Claude endpoints only; an OpenCode account would always be refused. */}
+          {info.billing === "api" && account.kind !== "opencode" && account.status === "active" && (
             <div className="pt-1.5">
               <ConnectionTestDialog account={account} orgId={orgId} />
             </div>
@@ -717,6 +742,12 @@ function ReplaceDialog({
                   re-enter its URL and key. Choosing OpenAI default changes routing to OpenAI.
                 </p>
               )}
+              {account.kind === "opencode" && (
+                <p>
+                  Choose the destination again: an existing provider address and models are not returned. To keep a
+                  DeepSeek, OpenRouter or other connection, choose it and tick its models again.
+                </p>
+              )}
               {account.kind === "anthropic" && (
                 <p>
                   Choose the destination again: existing gateway details are not returned. To keep a custom gateway,
@@ -739,6 +770,8 @@ function ReplaceDialog({
             <CustomEndpointFields idPrefix={id} kind="openai" requireChoice />
           ) : account.kind === "anthropic" ? (
             <ClaudeReplacementFields idPrefix={id} />
+          ) : account.kind === "opencode" ? (
+            <OpenCodeReplacementFields idPrefix={id} />
           ) : (
             <SecretField idPrefix={id} kind={account.kind} />
           )}
@@ -958,6 +991,8 @@ function CustomEndpointFields({
   const codex = kind === "openai";
   const [custom, setCustom] = useState(false);
   const [chosen, setChosen] = useState(!requireChoice);
+  // Replacement may re-enter a provider-preset connection with its models (#1483).
+  const [preset, setPreset] = useState<ConnectionPreset | null>(null);
   return (
     <div className="space-y-4">
       {requireChoice ? (
@@ -967,10 +1002,11 @@ function CustomEndpointFields({
             id={`${idPrefix}-mode`}
             name="connectionMode"
             required
-            value={chosen ? (custom ? "custom" : "openai") : ""}
+            value={chosen ? (preset ? preset.id : custom ? "custom" : "openai") : ""}
             onChange={(event) => {
               setChosen(Boolean(event.target.value));
               setCustom(event.target.value === "custom");
+              setPreset(replacementPreset(kind, event.target.value));
             }}
           >
             <option value="" disabled>
@@ -978,6 +1014,11 @@ function CustomEndpointFields({
             </option>
             <option value="openai">OpenAI default endpoint</option>
             <option value="custom">Custom endpoint (Modal)</option>
+            {replacementPresets(kind).map((option) => (
+              <option key={option.id} value={option.id}>
+                {option.label}
+              </option>
+            ))}
           </NativeSelect>
         </div>
       ) : (
@@ -1038,12 +1079,79 @@ function CustomEndpointFields({
           <ModelPriceFields idPrefix={idPrefix} />
         </fieldset>
       )}
-      {chosen && <SecretField key={`${kind}:${custom}`} idPrefix={idPrefix} kind={kind} />}
+      {preset ? (
+        <>
+          <input type="hidden" name="preset" value={preset.id} />
+          <PresetConnectionFields
+            key={preset.id}
+            preset={preset}
+            secretField={<SecretField idPrefix={idPrefix} kind={kind} />}
+          />
+        </>
+      ) : (
+        chosen && <SecretField key={`${kind}:${custom}`} idPrefix={idPrefix} kind={kind} />
+      )}
+    </div>
+  );
+}
+
+/** The provider presets that save this kind with chosen models: what a replacement may re-enter. */
+function replacementPresets(kind: AccountKind): ConnectionPreset[] {
+  return CONNECTION_PRESETS.filter((option) => option.kind === kind && option.models === "choose");
+}
+
+function replacementPreset(kind: AccountKind, value: string): ConnectionPreset | null {
+  return replacementPresets(kind).find((option) => option.id === value) ?? null;
+}
+
+/** OpenCode rotation names its destination: a plan key, or a provider connection re-entered with its models. */
+function OpenCodeReplacementFields({ idPrefix }: { idPrefix: string }) {
+  const [mode, setMode] = useState("");
+  const preset = replacementPreset("opencode", mode);
+  return (
+    <div className="space-y-4">
+      <div className="space-y-2">
+        <Label htmlFor={`${idPrefix}-connection-mode`}>Connection type</Label>
+        <NativeSelect
+          id={`${idPrefix}-connection-mode`}
+          name="connectionMode"
+          required
+          value={mode}
+          onChange={(event) => setMode(event.target.value)}
+        >
+          <option value="" disabled>
+            Choose a destination
+          </option>
+          <option value="opencode">OpenCode plan key</option>
+          {replacementPresets("opencode").map((option) => (
+            <option key={option.id} value={option.id}>
+              {option.label}
+            </option>
+          ))}
+        </NativeSelect>
+      </div>
+      {preset ? (
+        <>
+          <input type="hidden" name="preset" value={preset.id} />
+          <PresetConnectionFields
+            key={preset.id}
+            preset={preset}
+            secretField={<SecretField idPrefix={idPrefix} kind="opencode" />}
+          />
+        </>
+      ) : (
+        mode && <SecretField idPrefix={idPrefix} kind="opencode" />
+      )}
     </div>
   );
 }
 
 /* ---------------------------------------------------------------- add an account */
+
+/** Subscriptions sign in; every other connection starts from a provider preset (#1483). */
+const SUBSCRIPTION_KINDS = ACCOUNT_KINDS.filter((value) => KIND_INFO[value].billing === "subscription");
+/** A subscription kind, or a provider preset; a plain-key kind's id is also its preset's id. */
+type AddChoice = AccountKind | ConnectionPresetId;
 
 /** Adds subscriptions and API keys in one short form, with equal-weight connection choices. */
 export function AddAccountDialog({
@@ -1069,13 +1177,16 @@ export function AddAccountDialog({
   const [open, setOpen] = useState(false);
   const [generation, setGeneration] = useState(0);
   const [state, formAction] = useActionState(addAccount, null);
-  const [kind, setKind] = useState<AccountKind>(initialKind);
+  const [choice, setChoice] = useState<AddChoice>(initialKind);
+  const preset = connectionPreset(choice);
+  const kind: AccountKind = preset ? preset.kind : (choice as AccountKind);
   const [scope, setScope] = useState<"user" | "org">("user");
   const [name, setName] = useState("");
   const router = useRouter();
   const id = useId();
   const info = KIND_INFO[kind];
   const subscription = info.billing === "subscription";
+  const pasteSignIn = PASTE_SIGN_IN[kind];
   // Only a personal account signs in from the terminal; an org account is pasted by its admin.
   const terminal = scope === "user" ? terminalLogin(capabilities, kind, name) : null;
   const defaultBox = (
@@ -1089,7 +1200,7 @@ export function AddAccountDialog({
   useEffect(() => {
     if (state?.ok) {
       setName("");
-      setKind(initialKind);
+      setChoice(initialKind);
       setScope("user");
       setOpen(false);
       setGeneration((value) => value + 1);
@@ -1108,7 +1219,7 @@ export function AddAccountDialog({
         onOpenChange={(next) => {
           setOpen(next);
           if (next) return;
-          setKind(initialKind);
+          setChoice(initialKind);
           setScope("user");
           setGeneration((value) => value + 1);
         }}
@@ -1122,8 +1233,8 @@ export function AddAccountDialog({
           <DialogHeader>
             <DialogTitle>Add a model account</DialogTitle>
             <DialogDescription>
-              {kind === "opencode"
-                ? "Use an OpenCode plan/provider key. Create custom endpoint accounts with the Armada CLI."
+              {preset?.models === "choose"
+                ? "Paste the key and tick the models you want. Billed per token by the provider."
                 : subscription
                   ? "Sign in with the plan you already pay for. Add as many as you have; each launch names the one it bills."
                   : "Billed per token by the provider. Add as many as you have; each launch names the one it bills."}
@@ -1132,28 +1243,32 @@ export function AddAccountDialog({
           <form ref={formRef} key={generation} action={formAction} className="min-w-0 space-y-5">
             <input type="hidden" name="org" value={orgId} />
             <input type="hidden" name="kind" value={kind} />
+            {preset?.models === "choose" && <input type="hidden" name="preset" value={preset.id} />}
             <input type="hidden" name="scope" value={scope} />
             <fieldset className="space-y-2">
               <legend className="text-sm font-medium">Connection</legend>
               <RadioGroup
-                value={kind}
-                onValueChange={(value) => setKind(value as AccountKind)}
+                value={choice}
+                onValueChange={(value) => setChoice(value as AddChoice)}
                 aria-label="Connection"
                 className="sm:grid-cols-2"
               >
-                {ACCOUNT_KINDS.toSorted((a, b) =>
-                  KIND_INFO[a].billing === KIND_INFO[b].billing ? 0 : KIND_INFO[a].billing === "subscription" ? -1 : 1,
-                ).map((value) => (
+                {SUBSCRIPTION_KINDS.map((value) => (
                   <ChoiceCard
                     key={value}
                     value={value}
-                    icon={KIND_INFO[value].billing === "subscription" ? <StarIcon /> : <KeyRoundIcon />}
+                    icon={<StarIcon />}
                     title={KIND_INFO[value].label}
-                    hint={
-                      value === "opencode"
-                        ? "OpenCode plan key or custom endpoint"
-                        : `${KIND_INFO[value].harnessLabel}${KIND_INFO[value].billing === "subscription" ? "" : ", billed per token"}`
-                    }
+                    hint={`For ${KIND_INFO[value].harnessLabel}`}
+                  />
+                ))}
+                {CONNECTION_PRESETS.map((option) => (
+                  <ChoiceCard
+                    key={option.id}
+                    value={option.id}
+                    icon={<KeyRoundIcon />}
+                    title={option.label}
+                    hint={`For ${KIND_INFO[option.kind].harnessLabel} · ${option.hint}`}
                   />
                 ))}
               </RadioGroup>
@@ -1199,7 +1314,11 @@ export function AddAccountDialog({
                 />
                 <Disclosure summary={`Paste ${info.valueLabel} instead`} defaultOpen={false}>
                   <div className="space-y-4">
-                    <p className="text-xs text-muted-foreground">{info.hint}</p>
+                    {pasteSignIn ? (
+                      <PasteSignIn key={kind} command={pasteSignIn.command} paste={pasteSignIn.paste} />
+                    ) : (
+                      <p className="text-xs text-muted-foreground">{info.hint}</p>
+                    )}
                     {kind === "openai" || kind === "anthropic" ? (
                       <CustomEndpointFields key={kind} idPrefix={id} kind={kind} />
                     ) : (
@@ -1217,14 +1336,25 @@ export function AddAccountDialog({
                   <p className="text-sm">
                     <span className="font-medium">{subscription ? "Sign in on your machine" : "Paste the key"}.</span>{" "}
                     <span className="text-muted-foreground">
-                      {kind === "openai"
-                        ? "From OpenAI or your gateway. Billed per token."
-                        : kind === "anthropic"
-                          ? "From Anthropic or your gateway. Billed per token."
-                          : info.hint}
+                      {pasteSignIn
+                        ? "The vendor's own CLI signs you in; Armada stores the result encrypted."
+                        : preset?.models === "choose" || kind === "opencode"
+                          ? (preset?.keyHint ?? info.hint)
+                          : kind === "openai"
+                            ? "From OpenAI or your gateway. Billed per token."
+                            : kind === "anthropic"
+                              ? "From Anthropic or your gateway. Billed per token."
+                              : info.hint}
                     </span>
                   </p>
-                  {kind === "openai" || kind === "anthropic" ? (
+                  {pasteSignIn && <PasteSignIn key={kind} command={pasteSignIn.command} paste={pasteSignIn.paste} />}
+                  {preset?.models === "choose" ? (
+                    <PresetConnectionFields
+                      key={preset.id}
+                      preset={preset}
+                      secretField={<SecretField idPrefix={id} kind={kind} />}
+                    />
+                  ) : kind === "openai" || kind === "anthropic" ? (
                     <CustomEndpointFields key={kind} idPrefix={id} kind={kind} />
                   ) : (
                     <SecretField idPrefix={id} kind={kind} />
@@ -1232,7 +1362,9 @@ export function AddAccountDialog({
                 </div>
                 {defaultBox}
                 {state && !state.ok && <ResultLine result={state} />}
-                <SubmitButton>{subscription ? "Add subscription" : "Add API key"}</SubmitButton>
+                <SubmitButton>
+                  {subscription ? "Add subscription" : preset?.models === "choose" ? "Add connection" : "Add API key"}
+                </SubmitButton>
               </>
             )}
           </form>
@@ -1257,25 +1389,7 @@ function TerminalSignIn({ command, onDone }: { command: string; onDone: () => vo
         <span className="font-medium">Sign in from your terminal.</span>{" "}
         <span className="text-muted-foreground">It opens the official sign-in, then saves the account here.</span>
       </p>
-      {/* The command wraps rather than scrolls: on a phone the quoted --name must stay on screen. */}
-      <div className="flex items-start gap-2 rounded-md bg-muted px-3 py-2">
-        <code className="min-w-0 flex-1 self-center font-mono text-xs break-words whitespace-pre-wrap">{command}</code>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          onClick={() => {
-            // No clipboard outside a secure context: say so rather than throw.
-            if (!navigator.clipboard) return setCopied("failed");
-            navigator.clipboard.writeText(command).then(
-              () => setCopied("copied"),
-              () => setCopied("failed"),
-            );
-          }}
-        >
-          <CopyIcon /> Copy
-        </Button>
-      </div>
+      <CommandLine command={command} onCopied={setCopied} />
       <div className="flex flex-wrap items-center gap-3">
         <Button type="button" variant="outline" size="sm" onClick={onDone}>
           I signed in
@@ -1284,6 +1398,48 @@ function TerminalSignIn({ command, onDone }: { command: string; onDone: () => vo
           {copied === "copied" ? "Copied." : copied === "failed" ? "Copy failed: select the command instead." : ""}
         </p>
       </div>
+    </div>
+  );
+}
+
+/** One step for a pasted subscription (#1483): the exact command to run locally, then what to paste. */
+function PasteSignIn({ command, paste }: { command: string; paste: string }) {
+  const [copied, setCopied] = useState<"idle" | "copied" | "failed">("idle");
+  return (
+    <div className="min-w-0 space-y-2" data-paste-sign-in>
+      <p className="text-sm text-muted-foreground">Run this on your computer:</p>
+      <CommandLine command={command} onCopied={setCopied} />
+      <p className="text-xs text-muted-foreground">
+        {paste}{" "}
+        <span role="status">
+          {copied === "copied" ? "Copied." : copied === "failed" ? "Copy failed: select the command instead." : ""}
+        </span>
+      </p>
+    </div>
+  );
+}
+
+/** A command shown whole, with a Copy button. */
+function CommandLine({ command, onCopied }: { command: string; onCopied: (state: "copied" | "failed") => void }) {
+  return (
+    /* The command wraps rather than scrolls: on a phone the quoted --name must stay on screen. */
+    <div className="flex items-start gap-2 rounded-md bg-muted px-3 py-2">
+      <code className="min-w-0 flex-1 self-center font-mono text-xs break-words whitespace-pre-wrap">{command}</code>
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        onClick={() => {
+          // No clipboard outside a secure context: say so rather than throw.
+          if (!navigator.clipboard) return onCopied("failed");
+          navigator.clipboard.writeText(command).then(
+            () => onCopied("copied"),
+            () => onCopied("failed"),
+          );
+        }}
+      >
+        <CopyIcon /> Copy
+      </Button>
     </div>
   );
 }
@@ -1336,7 +1492,10 @@ export function HarnessAccounts({
             {subscriptionAvailable ? (
               <>Add one to launch {harnessLabel}. An API key works too.</>
             ) : (
-              <>Add an OpenCode key, or create a custom endpoint account with the Armada CLI. Modal only.</>
+              <>
+                Add an OpenCode plan key, or connect DeepSeek, OpenRouter or another OpenAI-compatible provider. Modal
+                only.
+              </>
             )}
           </Empty>
         </div>

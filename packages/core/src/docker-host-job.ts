@@ -1,3 +1,4 @@
+import { isDockerImageReference } from "./docker-image.ts";
 import type { DockerMachineRequest } from "./docker-machine.ts";
 
 export type BootstrapDescriptor = {
@@ -38,9 +39,7 @@ export function parseDockerHostJob(value: unknown): DockerHostJob {
   id(r.sandboxId);
   id(r.generation);
   if (
-    typeof r.image !== "string" ||
-    r.image.length > 512 ||
-    !/^[a-z0-9][a-z0-9./:_-]*@sha256:[0-9a-f]{64}$/.test(r.image) ||
+    !isDockerImageReference(r.image) ||
     typeof r.ttlSeconds !== "number" ||
     !Number.isInteger(r.ttlSeconds) ||
     r.ttlSeconds < 1 ||

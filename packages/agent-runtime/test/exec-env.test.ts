@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdir, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { githubEnv, gitSetupCommand } from "@armada/core";
@@ -37,15 +37,24 @@ function call(runner: Runner, op: string, extra: Record<string, unknown> = {}) {
 }
 // Production core command and actual shell/Git credential helper, with only synthetic credentials.
 test.skipIf(process.platform !== "linux")(
-  "private exec env authenticates the real core Git helper without model keys, argv credentials or durable token bytes",
+  "private exec env authenticates the real core Git helper without model keys, argv credentials or journal token bytes",
   async () => {
     const root = await mkdtemp(join(tmpdir(), "armada-exec-github-")),
       home = join(root, "home");
     await mkdir(home);
-    const path = join(root, "journal.sqlite");
-    const journal = new Journal(path, (s) => s);
+    // Like the broker boundary tests, use Git's installed binary rather than host tool wrappers.
+    const git = Bun.spawnSync(["git", "--exec-path"]);
+    if (git.exitCode !== 0) throw Error("Cannot locate the installed Git executable");
+    await symlink(join(git.stdout.toString().trim(), "git"), join(home, "git"));
+    // Runner instances share one connection here; state.test.ts owns physical WAL-byte scrubbing.
+    const journal = new Journal(":memory:", (s) => s);
     const execution: RunnerExecutionOptions = {
-      execEnv: { ...githubEnv(gitCredential), HOME: home, GIT_CONFIG_GLOBAL: join(home, "gitconfig") },
+      execEnv: {
+        ...githubEnv(gitCredential),
+        PATH: `${home}:/usr/bin:/bin`,
+        HOME: home,
+        GIT_CONFIG_GLOBAL: join(home, "gitconfig"),
+      },
     };
     const runner = new Runner(
       journal,
@@ -61,12 +70,14 @@ test.skipIf(process.platform !== "linux")(
         input: {
           sandboxId: "s",
           cwd: home,
-          command: `export GIT_CONFIG_GLOBAL='${join(home, "gitconfig")}'\n${gitSetupCommand({ id: 123, login: "fixture", name: "Runtime Fixture", email: "runtime@example.invalid" })}`,
+          command: `export GIT_CONFIG_NOSYSTEM=1
+export GIT_CONFIG_GLOBAL='${join(home, "gitconfig")}'\n${gitSetupCommand({ id: 123, login: "fixture", name: "Runtime Fixture", email: "runtime@example.invalid" })}`,
         },
       });
       let body = (await response.json()) as { result: { exitCode: number; stdout: string; stderr: string } };
       expect(body.result.exitCode).toBe(0);
       const command = `set -e
+ export GIT_CONFIG_NOSYSTEM=1
  test -n "\${GH_TOKEN:-}"
  test "$GH_TOKEN" = "$GITHUB_TOKEN"
  test "$HOME" = '${home}'
@@ -119,10 +130,7 @@ test.skipIf(process.platform !== "linux")(
       );
       const fresh = await call(reissued, "exec", { input: { sandboxId: "s", cwd: home, command } });
       expect(((await fresh.json()) as typeof body).result.exitCode).toBe(0);
-      journal.flush();
-      for (const name of await readdir(root))
-        if (name.startsWith("journal.sqlite"))
-          expect((await readFile(join(root, name))).includes(Buffer.from(gitCredential))).toBe(false);
+      expect(journal.db.serialize().includes(Buffer.from(gitCredential))).toBe(false);
     } finally {
       journal.close();
       await rm(root, { recursive: true, force: true });

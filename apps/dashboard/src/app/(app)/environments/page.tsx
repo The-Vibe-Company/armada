@@ -68,7 +68,7 @@ import {
 } from "@/lib/golden-form";
 import { goldenSizing, sizePolicyBlocker } from "@/lib/machine-size";
 import type { LaunchAccounts } from "@/lib/model-accounts";
-import { connectedProviders, PROVIDER_SETTINGS_PATH } from "@/lib/provider-setup";
+import { CLOUD_PROVIDERS_PATH, connectedProviders } from "@/lib/provider-setup";
 import { relativeAge } from "@/lib/relative-time";
 import { goldenRepositoryDirs } from "@/lib/repository-context";
 import { type Bucket, ITEM_PARAM, sortResources } from "@/lib/resource-list";
@@ -77,7 +77,7 @@ import { launchTarget, type TemplateLaunchTarget } from "@/lib/template-launch";
 import type { TemplateLookups } from "@/lib/templates";
 import { cn } from "@/lib/utils";
 
-export const metadata: Metadata = { title: "Environments" };
+export const metadata: Metadata = { title: "Snapshots" };
 export const dynamic = "force-dynamic";
 // The create, rebuild and launch server actions run in this route's function and wait for the server (a launch up to
 // LAUNCH_TIMEOUT_MS). This is the same bound as `/api/v1/*`, so the fetch times out before the function.
@@ -135,7 +135,7 @@ export default async function GoldensPage({ searchParams }: Props) {
     goldens.filter((golden) => tracked(`rebuild.${golden.id}`)).map((golden) => golden.id),
   );
   if (setupPending && goldens.length === 0 && !createTracked && rebuildsTracked.size === 0)
-    redirect(PROVIDER_SETTINGS_PATH);
+    redirect(CLOUD_PROVIDERS_PATH);
   const orgs = new Map(memberships.map((item) => [item.org.id, item]));
   // Usage comes only from caller-visible server bindings, never historical row counts.
   const capacities = capabilities
@@ -218,7 +218,7 @@ export default async function GoldensPage({ searchParams }: Props) {
     <>
       {skipped > 0 && (
         <p role="status" className="text-sm text-muted-foreground">
-          {skipped} {skipped === 1 ? "environment" : "environments"} could not be shown.
+          {skipped} {skipped === 1 ? "snapshot" : "snapshots"} could not be shown.
         </p>
       )}
       {setup?.state === "unavailable" && (
@@ -263,10 +263,10 @@ export default async function GoldensPage({ searchParams }: Props) {
 
   return (
     <ResourceBrowser
-      title="Environments"
-      description="Goldens: what a sandbox contains when it starts."
+      title="Snapshots"
+      description="A saved machine, with its repositories and setup already done, that your sandboxes start from."
       meta={shown.length > 0 ? shown.length : undefined}
-      label="Environments"
+      label="Snapshots"
       rows={rows}
       blockers={blockers}
       notices={notices}
@@ -299,7 +299,7 @@ export default async function GoldensPage({ searchParams }: Props) {
       }
       empty={
         selected ? (
-          <Empty title="No environments yet" icon={<LayersIcon />}>
+          <Empty title="No snapshots yet" icon={<LayersIcon />}>
             {create
               ? "Use New to build the first one: the repositories an agent starts with, saved as a snapshot."
               : "Connect a sandbox provider to build the first one."}
@@ -309,7 +309,7 @@ export default async function GoldensPage({ searchParams }: Props) {
             <Link className="underline underline-offset-4" href="/orgs">
               Create or join an organization
             </Link>{" "}
-            to build environments.
+            to build snapshots.
           </Empty>
         )
       }
@@ -411,8 +411,8 @@ function CreatePanel({
           <AlertDescription className="space-y-2">
             <p>
               {boatLive > 0
-                ? `Every Boat slot is used. Rebuild an existing environment with new repositories instead${modalOpen ? ", or build on Modal" : ""}.`
-                : `A removed Boat environment holds the slot${modalOpen ? ": build on Modal" : ""}.`}
+                ? `Every Boat slot is used. Rebuild an existing snapshot with new repositories instead${modalOpen ? ", or build on Modal" : ""}.`
+                : `A removed Boat snapshot holds the slot${modalOpen ? ": build on Modal" : ""}.`}
             </p>
             {boatLive > 0 && rebuildable.length > 0 && (
               <ul className="flex flex-wrap gap-2">
@@ -556,7 +556,7 @@ function environmentRow(golden: Golden, context: RowContext, now: number): Envir
       </SelectItem>
     ) : state.action === "connect" ? (
       <Button variant="outline" size="sm" asChild>
-        <Link href={PROVIDER_SETTINGS_PATH} aria-label={`Connect ${label} to launch ${golden.name}`}>
+        <Link href={CLOUD_PROVIDERS_PATH} aria-label={`Connect ${label} to launch ${golden.name}`}>
           Connect {label}
         </Link>
       </Button>

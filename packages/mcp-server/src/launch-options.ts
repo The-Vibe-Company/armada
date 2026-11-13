@@ -80,11 +80,11 @@ export function launchProviderOptions(
     repositories: false,
     machineSizes: false,
     github: false,
-    mcp: false,
-    skills: false,
-    exec: false,
-    steer: false,
-    interrupt: false,
+    mcp: normal && docker.normalLaunch === true && docker.placement === true,
+    skills: normal && docker.normalLaunch === true && docker.placement === true,
+    exec: normal,
+    steer: normal,
+    interrupt: normal,
   };
   const unsupportedReasons: LaunchProviderOption["unsupportedReasons"] = {};
   const reasons: Record<keyof LaunchProviderCapabilities, string> = {

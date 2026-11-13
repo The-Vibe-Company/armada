@@ -5,7 +5,15 @@ import { revalidatePath } from "next/cache";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { type ActionResult, done, fail, formString, isUuid } from "@/lib/action";
-import { chosenConversation, INCOMPLETE_MODEL, modelChange, STEER_KEEPS_MODEL } from "@/lib/composer";
+import {
+  chosenConversation,
+  dockerSend,
+  INCOMPLETE_MODEL,
+  modelChange,
+  plainSendFailure,
+  SEND_KEY_FIELD,
+  STEER_KEEPS_MODEL,
+} from "@/lib/composer";
 import { CONNECTION_CHOICE_FIELD, launchSelection } from "@/lib/connections";
 import { ControlError } from "@/lib/control";
 import { listSelectedConnections } from "@/lib/data/connections";
@@ -30,7 +38,7 @@ import {
 import { LAUNCH_KEY_FIELD } from "@/lib/launch-key";
 import { MACHINE_SIZE_LABELS, PROVIDER_REFUSALS, policyHasDefaults } from "@/lib/machine-size";
 import { checkAccountChoice } from "@/lib/model-accounts";
-import { launchArgs, type ModelFields, sendOverride } from "@/lib/model-choice";
+import { chosenConnection, launchArgs, type ModelFields, type SendArgs, sendOverride } from "@/lib/model-choice";
 import { goldenRepositoryDirs, repositoryChoice } from "@/lib/repository-context";
 import { filtersToSearch } from "@/lib/sandbox-filters";
 import { createClient } from "@/lib/supabase/server";
@@ -111,11 +119,23 @@ export async function sendToSandbox(_previous: ActionResult | null, data: FormDa
   if (target.error) return target.error;
   const conversation = chosenConversation(formString(data, "conversation"), target.sandbox.conversation_ids);
   if (!conversation.ok) return fail(conversation.error);
-  const override = sendOverride(target.sandbox.harness, modelFields(data), target.sandbox.model);
-  if (!override.ok) return fail(override.error);
+  let override: SendArgs = {};
+  let requestId: string | undefined;
+  if (target.sandbox.provider === "docker") {
+    // A Docker sandbox keeps its launch model and admits each message once per request key (#1526).
+    const docker = dockerSend(modelFields(data), formString(data, SEND_KEY_FIELD));
+    if (!docker.ok) return fail(docker.error);
+    requestId = docker.requestId;
+  } else {
+    const chosen = sendOverride(target.sandbox.harness, modelFields(data), target.sandbox.model);
+    if (!chosen.ok) return fail(chosen.error);
+    override = chosen.args;
+  }
   try {
-    await target.gateway.send(id, prompt, override.args, conversation.id);
+    await target.gateway.send(id, prompt, override, conversation.id, requestId);
   } catch (error) {
+    if (error instanceof GatewayError && requestId && error.code !== "credential_binding_required")
+      return fail(plainSendFailure(error.message));
     if (error instanceof GatewayError) return drivingFailure(error, target.owner);
     throw error;
   }
@@ -185,6 +205,10 @@ export async function launchFromGolden(_previous: ActionResult | null, data: For
   });
   if (!parsed.ok) return fail(parsed.error);
   if (!isUuid(parsed.args.org)) return fail("That request is not valid.");
+  // A connection model is billed to its own connection: never run it on another account.
+  const connection = chosenConnection(modelFields(data));
+  if (connection !== null && connection !== formString(data, "credential"))
+    return fail("That model belongs to another connection. Choose the model again.");
   if (!(await isSelectedOrganization(parsed.args.org))) return fail("Switch to that organization first.");
   const blocker = await newWorkBlocker(parsed.args.org, parsed.args.provider);
   if (blocker) return fail(blocker);

@@ -1,5 +1,11 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import type { DockerHostSummary, Sql } from "@armada/core";
+import {
+  DOCKER_IMAGE_UNAVAILABLE_MESSAGE,
+  DOCKER_JOB_FAILURE_REASONS,
+  type DockerHostSummary,
+  type DockerJobFailureReason,
+  type Sql,
+} from "@armada/core";
 import { decryptSecret, encryptSecret } from "@armada/core/server";
 import {
   type BootstrapDescriptor,
@@ -265,12 +271,17 @@ export function createDockerHostStore(sql: Sql, key: string) {
     if (input(delivered) !== input({ ...delivered, request: frozen })) deny();
     return logical;
   }
-  async function startupFailed(tx: Sql, row: Sandbox, operation: string | null) {
+  async function startupFailed(tx: Sql, row: Sandbox, operation: string | null, reason?: DockerJobFailureReason) {
     if (operation !== "create" && operation !== "bootstrap" && operation !== "resume") return;
     await tx.query(
-      `update public.sandboxes set status='failed',status_reason='Docker sandbox startup failed.',
+      `update public.sandboxes set status='failed',status_reason=$2,
        lifecycle_generation=lifecycle_generation+1 where id=$1 and status in ('starting','ready','running','stopping')`,
-      [row.id],
+      [
+        row.id,
+        reason === "image_unavailable" && operation === "create"
+          ? DOCKER_IMAGE_UNAVAILABLE_MESSAGE
+          : "Docker sandbox startup failed.",
+      ],
     );
   }
   return {
@@ -291,6 +302,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
           last_seen_at: Date | string | null;
           revoked_at: Date | string | null;
           sandboxes: number;
+          daemon_version: string | null;
+          name: string | null;
         }>(
           `select h.id,
             case when h.revoked_at is not null then 'revoked'
@@ -299,7 +312,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
                 and exists(select 1 from public.members m where m.org_id=h.org_id and m.user_id=h.owner_id)
                 and h.last_seen_at>=now()-interval '60 seconds' then 'online'
               else 'offline' end as state,
-            h.created_at,h.last_seen_at,h.revoked_at,
+            h.created_at,h.last_seen_at,h.revoked_at,h.daemon_version,h.name,
             (select count(*)::integer from public.sandboxes s
               where s.org_id=h.org_id and s.docker_host_id=h.id
                 and s.provider='docker' and s.status<>'deleted') as sandboxes
@@ -308,26 +321,36 @@ export function createDockerHostStore(sql: Sql, key: string) {
         );
         return hosts.rows.map((host) => ({
           id: host.id,
-          name: null,
+          name: host.name,
           state: host.state,
           createdAt: new Date(host.created_at).toISOString(),
           lastSeenAt: host.last_seen_at === null ? null : new Date(host.last_seen_at).toISOString(),
           revokedAt: host.revoked_at === null ? null : new Date(host.revoked_at).toISOString(),
           sandboxes: host.sandboxes,
+          version: host.daemon_version,
         }));
       });
     },
-    issueRegistration(actor: Actor) {
+    issueRegistration(actor: Actor, name?: string) {
+      if (
+        name !== undefined &&
+        (typeof name !== "string" || name !== name.trim() || !name || name.length > 64 || /[\p{C}]/u.test(name))
+      )
+        deny();
       return transaction(async (tx) => {
         await admin(tx, actor);
         const hostId = randomUUID(),
           registrationToken = randomBytes(32).toString("hex");
-        await tx.query(
-          `insert into public.docker_hosts(id,org_id,owner_id,registration_hash,registration_expires_at)
-          values($1,$2,$3,$4,now()+interval '5 minutes')`,
-          [hostId, actor.orgId, actor.userId, hash(registrationToken)],
+        const issued = await tx.query<{ registration_expires_at: Date | string }>(
+          `insert into public.docker_hosts(id,org_id,owner_id,registration_hash,registration_expires_at,name)
+          values($1,$2,$3,$4,now()+interval '5 minutes',$5) returning registration_expires_at`,
+          [hostId, actor.orgId, actor.userId, hash(registrationToken), name ?? null],
         );
-        return { hostId, registrationToken };
+        return {
+          hostId,
+          registrationToken,
+          expiresAt: new Date(issued.rows[0]!.registration_expires_at).toISOString(),
+        };
       });
     },
     exchangeRegistration(registrationToken: string, installationId: string) {
@@ -406,6 +429,12 @@ export function createDockerHostStore(sql: Sql, key: string) {
               [hint.docker_host_id, actor.orgId, hint.issuer_id, hint.docker_installation_id],
             )
           ).rows[0] ?? deny();
+        if (selection.operation === "bootstrap" || selection.operation === "resume") {
+          const draining = await tx.query(`select 1 from public.docker_hosts where id=$1 and draining_at is not null`, [
+            host.id,
+          ]);
+          if (draining.rows.length) deny();
+        }
         const row = await sandbox(tx, sandboxId, host, hint.docker_installation_id);
         if (row.owner_id !== hint.owner_id) deny();
         const epoch = await permission(tx, actor, row, selection.operation);
@@ -464,7 +493,48 @@ export function createDockerHostStore(sql: Sql, key: string) {
         return enqueue();
       });
     },
-    poll(hostToken: string, installationId: string): Promise<Job | null> {
+    async unregister(hostToken: string, installationId: string): Promise<boolean> {
+      const drain = await transaction(async (tx) => {
+        id(installationId);
+        // A revoked hash authorizes only idempotent uninstall reconciliation.
+        const revoked = await tx.query(
+          `select 1 from public.docker_hosts where hash=$1 and installation_id=$2 and revoked_at is not null`,
+          [hash(hostToken), installationId],
+        );
+        if (revoked.rows.length) return null;
+        const host = await authenticate(tx, hostToken, installationId);
+        await tx.query(`update public.docker_hosts set draining_at=coalesce(draining_at,now()) where id=$1`, [host.id]);
+        const retained = await tx.query<{ id: string; status: string }>(
+          `select id,status from public.sandboxes where docker_host_id=$1 and status<>'deleted' order by id`,
+          [host.id],
+        );
+        const pending = await tx.query(
+          `select 1 from public.docker_host_jobs where host_id=$1 and outcome is null limit 1`,
+          [host.id],
+        );
+        if (!retained.rows.length && !pending.rows.length) {
+          await tx.query(`update public.docker_hosts set revoked_at=now(),registration_hash=null where id=$1`, [
+            host.id,
+          ]);
+          return null;
+        }
+        return { host, rows: pending.rows.length ? [] : retained.rows };
+      });
+      if (drain === null) return true;
+      // Reuse normal bound cleanup admission and physical ACK reconciliation, never
+      // fabricate a deleted state from server intent or delete unlabelled resources.
+      for (const row of drain.rows) {
+        const operation = ["stopped", "failed"].includes(row.status) ? "delete" : "stop";
+        const hex = createHash("sha256").update(`uninstall:${installationId}:${row.id}:${operation}`).digest("hex");
+        const requestId = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+        await this.enqueueSandbox({ userId: drain.host.owner_id, orgId: drain.host.org_id }, row.id, {
+          operation,
+          requestId,
+        });
+      }
+      return false;
+    },
+    poll(hostToken: string, installationId: string, version?: string): Promise<Job | null> {
       return transaction(async (tx) => {
         // Peek before member/host locks: never acquire a late actor lock behind the host.
         const hint = (
@@ -475,7 +545,10 @@ export function createDockerHostStore(sql: Sql, key: string) {
           )
         ).rows[0];
         const host = await authenticate(tx, hostToken, installationId, hint?.bound_actor_id ?? undefined);
-        await tx.query(`update public.docker_hosts set last_seen_at=now() where id=$1`, [host.id]);
+        await tx.query(`update public.docker_hosts set last_seen_at=now(),daemon_version=$2 where id=$1`, [
+          host.id,
+          version ?? null,
+        ]);
         // Older servers acknowledged failed startup without terminalizing the
         // logical row. Reconcile that saved fact without replaying the machine.
         const histories = (
@@ -565,10 +638,15 @@ export function createDockerHostStore(sql: Sql, key: string) {
     complete(
       hostToken: string,
       installationId: string,
-      result: { requestId: string; outcome: "completed" | "failed" },
+      result: { requestId: string; outcome: "completed" | "failed"; reason?: DockerJobFailureReason },
     ) {
       return transaction(async (tx) => {
-        exact(result, ["requestId", "outcome"]);
+        exact(result, "reason" in result ? ["requestId", "outcome", "reason"] : ["requestId", "outcome"]);
+        if (
+          result.reason !== undefined &&
+          (result.outcome !== "failed" || !DOCKER_JOB_FAILURE_REASONS.includes(result.reason))
+        )
+          deny();
         id(result.requestId);
         if (result.outcome !== "completed" && result.outcome !== "failed") deny();
         const host = await authenticate(tx, hostToken, installationId);
@@ -588,7 +666,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
         if (job.outcome !== null && job.outcome !== result.outcome) deny();
         // A repeated same-outcome machine fact also repairs a logical transition
         // missed by an earlier server; conflicting facts still fail above.
-        if (result.outcome === "failed" && logical) await startupFailed(tx, logical, job.bound_operation);
+        if (result.outcome === "failed" && logical)
+          await startupFailed(tx, logical, job.bound_operation, result.reason);
         if (result.outcome === "completed" && job.bound_sandbox_id) {
           if (job.bound_operation === "stop")
             await tx.query(

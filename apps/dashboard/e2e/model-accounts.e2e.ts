@@ -41,6 +41,8 @@ async function addAccount(page: Page, name: string, token: string, makeDefault: 
   await page.getByRole("button", { name: "Add a model account", exact: true }).click();
   const dialog = page.getByRole("dialog");
   await dialog.getByRole("radio", { name: /Claude subscription/ }).check();
+  // No server-run sign-in exists for a subscription: one step names the exact local command.
+  await expect(dialog.locator("[data-paste-sign-in] code")).toHaveText("claude setup-token");
   await dialog.getByLabel("Name").fill(name);
   await dialog.getByLabel("OAuth token").fill(token);
   if (makeDefault) await dialog.getByLabel(/Make it the default/).check();
@@ -490,6 +492,9 @@ test("a ChatGPT subscription signs in from the terminal; pasting auth.json stays
     .check();
   await expect(page.getByRole("dialog").locator("[data-terminal-login]")).toHaveCount(0);
   await expect(page.getByRole("dialog").getByLabel("auth.json")).toBeVisible();
+  await expect(page.getByRole("dialog").locator("[data-paste-sign-in] code")).toHaveText(
+    "codex login && cat ~/.codex/auth.json",
+  );
 });
 
 test("on a phone the terminal sign-in stays inside the add dialog, even for a long name", async ({ page }) => {
@@ -619,3 +624,44 @@ for (const legacy of [false, true]) {
     expect(await launches()).toEqual([]);
   });
 }
+
+test("the launch model picker offers a connection's models grouped by connection, and bills that connection", async ({
+  page,
+}, info) => {
+  const foundry = account(60, "Foundry", { kind: "openai", is_default: true });
+  const direct = account(61, "Direct", { kind: "openai" });
+  await mock("/__test/accounts", {
+    seed: [foundry, direct],
+    connectionModels: {
+      [String(foundry.id)]: [
+        { model: "team-gpt-deployment", input: "2", output: "10" },
+        { model: "team-mini-deployment", input: null, output: null },
+      ],
+    },
+  });
+  await signIn(page, "alice@example.com", "/environments");
+  const dialog = await openLaunchDialog(page, "shared-golden");
+  await dialog.getByRole("radio", { name: "Codex" }).check();
+  const model = dialog.getByLabel("Model", { exact: true });
+  // The default account declares models: its first one is preselected.
+  await expect(model.locator("option:checked")).toHaveText("team-gpt-deployment · $2 in · $10 out per M tokens");
+  await expect(model.locator('optgroup[label="Foundry"] option')).toHaveCount(2);
+  await expect(model.locator('optgroup[label="Codex models"] option', { hasText: "(default)" })).toHaveCount(1);
+  await dialog.getByRole("searchbox", { name: "Search models" }).fill("mini");
+  await page.screenshot({ path: info.outputPath("launch-picker.png"), fullPage: true, animations: "disabled" });
+  // Enter in the search box never launches.
+  await dialog.getByRole("searchbox", { name: "Search models" }).press("Enter");
+  expect(await launches()).toHaveLength(0);
+  // Choosing another account drops the connection's model; choosing a connection model moves the billing back.
+  await dialog.getByLabel("Account").selectOption({ label: "Direct (OpenAI API key)" });
+  await expect(model.locator("option:checked")).toHaveText(/\(default\)/);
+  await model.selectOption({ label: "team-mini-deployment" });
+  await expect(dialog.getByLabel("Account").locator("option:checked")).toHaveText(/^Foundry/);
+  await dialog.getByRole("button", { name: "Launch", exact: true }).click();
+  await page.waitForURL(/\/sandboxes\/[0-9a-f-]{36}$/);
+  expect((await launches()).at(-1)).toMatchObject({
+    harness: "codex",
+    model: "team-mini-deployment",
+    credentialId: foundry.id,
+  });
+});

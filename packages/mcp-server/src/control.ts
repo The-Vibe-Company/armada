@@ -65,6 +65,7 @@ import {
   type LaunchResult,
   type LaunchStores,
   launchSandbox,
+  listConnectionModels,
   listCredentials,
   listMembers,
   listOrgs,
@@ -263,6 +264,7 @@ export async function handleControlRequest(request: Request, options: ControlOpt
       ? options.githubAccount.callback(request)
       : fail(503, "dependency_unavailable", "GitHub account authorization is not configured.");
   }
+  if (route === "auth/methods") return authMethodsRoute(request, options);
   if (route === "auth/authorize") return authorizeRoute(request, options);
   if (route === "auth/exchange") return exchangeRoute(request, options);
   if (route === "auth/email/start") return emailStartRoute(request, options);
@@ -300,7 +302,10 @@ export async function handleControlRequest(request: Request, options: ControlOpt
           route.startsWith("secrets/")
         ? await readVaultBody(request)
         : await readBody(request);
-    if (route === "sandbox/launch" && body.provider === "docker" && options.dockerLaunch)
+    if (
+      ((route === "sandbox/launch" && body.provider === "docker") || route === "templates/launch") &&
+      options.dockerLaunch
+    )
       options.configureDockerLaunchRequest?.(request);
     if (route === "account/logout") {
       if (caller.via !== "supabase")
@@ -567,6 +572,24 @@ async function tokenListRoute(request: Request, options: ControlOptions): Promis
   }
 }
 
+/** Expose only supported sign-in methods, never upstream configuration. */
+async function authMethodsRoute(request: Request, options: ControlOptions): Promise<Response> {
+  if (request.method !== "GET") return fail(405, "invalid", "Use GET.");
+  try {
+    const response = await (options.supabase.fetch ?? fetch)(
+      new URL("/auth/v1/settings", options.supabase.supabaseUrl),
+      { headers: { apikey: options.supabase.anonKey }, signal: AbortSignal.timeout(10_000) },
+    );
+    if (!response.ok) throw new Error();
+    const settings = (await response.json()) as { external?: Record<string, unknown> };
+    if (!settings.external || typeof settings.external !== "object") throw new Error();
+    const methods = ["email", "github", "google"].filter((method) => settings.external?.[method] === true);
+    return Response.json({ methods }, { headers: { "cache-control": "no-store" } });
+  } catch {
+    return fail(503, "unavailable", "Sign-in methods are unavailable; try again later.");
+  }
+}
+
 async function emailVerifyRoute(request: Request, options: ControlOptions): Promise<Response> {
   if (request.method !== "POST") return fail(405, "invalid", "Use POST.");
   try {
@@ -600,6 +623,8 @@ async function emailStartRoute(request: Request, options: ControlOptions): Promi
     const challenge = required(body, "code_challenge");
     const state = required(body, "state");
     const callback = new URL(redirectTo);
+    if (body.cli_email_link !== undefined && typeof body.cli_email_link !== "boolean") throw new Error();
+    const cliEmailLink = body.cli_email_link === true;
     if (
       callback.protocol !== "http:" ||
       !["127.0.0.1", "localhost"].includes(callback.hostname) ||
@@ -607,17 +632,21 @@ async function emailStartRoute(request: Request, options: ControlOptions): Promi
       callback.username ||
       callback.password ||
       callback.hash ||
+      (cliEmailLink && (callback.pathname !== "/callback" || callback.search)) ||
       !/^[A-Za-z0-9._~-]{43,128}$/.test(challenge) ||
       !/^[A-Za-z0-9._~-]{8,512}$/.test(state)
     )
       throw new Error();
+    if (cliEmailLink) callback.searchParams.set("state", state);
     await sendEmailLink({
       fetch: options.supabase.fetch ?? fetch,
       supabaseUrl: options.supabase.supabaseUrl,
       anonKey: options.supabase.anonKey,
       email,
-      // API email clients consume the numeric code, not a browser callback.
-      redirectTo: new URL("/login?flow=code", options.publicUrl ?? "https://armada.thevibecompany.co").toString(),
+      // Existing clients (including iOS) remain numeric-code-only unless explicitly opted in.
+      redirectTo: cliEmailLink
+        ? callback.toString()
+        : new URL("/login?flow=code", options.publicUrl ?? "https://armada.thevibecompany.co").toString(),
       challenge,
     });
     return Response.json({ ok: true }, { headers: { "cache-control": "no-store" } });
@@ -800,6 +829,7 @@ async function dispatch(
         githubVersion: options.runtimeGitHub ? 1 : 0,
         mcpVersion: options.runtimeMcp ? 2 : 0,
         skillsVersion: options.boatRuntimeLaunch ? 1 : 0,
+        workspaceVersion: options.boatRuntimeLaunch ? 1 : 0,
         controlsVersion: options.runtimeHostFor ? 1 : 0,
         enabled: Boolean(options.boatRuntimeLaunch && options.runtimeHostFor),
       },
@@ -1123,6 +1153,11 @@ async function dispatch(
       return { ok: true };
     case "creds/list":
       return listCredentials(store, userId, org);
+    case "creds/accounts/models": {
+      // The declared models of visible custom connections (#1483): decrypted here, never the key or the address.
+      const member = await resolveOrg(store, userId, org);
+      return { connections: await listConnectionModels(store, encryptionKey, { userId, orgId: member.id }) };
+    }
     case "creds/rm":
       await removeCredential(store, userId, {
         scope: scope(body),
@@ -1799,6 +1834,17 @@ export function templateRuntime(options: ControlOptions, caller: Caller) {
       ),
       ...(options.connections ? { connections: options.connections } : {}),
     },
+    ...(options.dockerLaunch
+      ? {
+          launchDocker: (
+            body: Record<string, unknown>,
+            admission: {
+              beforeReserve(tx: import("@armada/core").Sql): Promise<void>;
+              beforeStart(): Promise<void>;
+            },
+          ) => options.dockerLaunch!.launch(caller, body, admission),
+        }
+      : {}),
     provider: (golden: GoldenRecord) => providerForGolden(options, caller, golden),
     ...(options.launch ? { options: options.launch } : {}),
   };

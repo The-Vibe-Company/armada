@@ -5,7 +5,7 @@ import type {
   LaunchProviderCapabilities,
   LaunchProviderOption,
 } from "@armada/core";
-import { HARNESSES } from "@armada/core";
+import { DOCKER_DEFAULT_IMAGE, HARNESSES, isDockerImageReference } from "@armada/core";
 import { isUuid } from "./action.ts";
 import type { DockerHost } from "./docker-hosts.ts";
 
@@ -127,17 +127,32 @@ export function dockerUnavailable(option: DockerLaunchOption): { name: string; r
   }));
 }
 
-/** A digest-pinned image reference: `repository@sha256:<64 hex>`, as the server requires. */
-const IMAGE = /^[a-z0-9][a-z0-9._\-/:]{0,254}@sha256:[0-9a-f]{64}$/;
-
 export function checkImage(raw: string): { ok: true; image: string } | { ok: false; error: string } {
   const image = raw.trim();
-  if (!IMAGE.test(image))
+  if (!isDockerImageReference(image))
     return {
       ok: false,
-      error: "Enter an image pinned by digest, such as buildpack-deps@sha256:<64 hex characters>.",
+      error: "Enter repository@sha256:<64 lowercase hex> or a host-approved local sha256:<64 lowercase hex> image ID.",
     };
   return { ok: true, image };
+}
+
+/**
+ * The dialog's image choice (#1507): Armada's default image unless the person opens "Custom image…" and types one.
+ * Nobody has to know what an image is to launch.
+ */
+export const IMAGE_CHOICES = [
+  { value: "default", label: "Armada default (Debian, recommended)" },
+  { value: "custom", label: "Custom image…" },
+] as const;
+export type ImageChoice = (typeof IMAGE_CHOICES)[number]["value"];
+
+/** The image a launch uses from the dialog's choice; only a typed (custom) image is checked, and only then can it fail. */
+export function chosenImage(choice: string, custom: string): ReturnType<typeof checkImage> {
+  // An empty choice with a typed image is a form from before the choice existed: honour what was typed.
+  if (choice === "custom" || (choice === "" && custom.trim())) return checkImage(custom);
+  if (choice === "default" || choice === "") return { ok: true, image: DOCKER_DEFAULT_IMAGE };
+  return { ok: false, error: "Choose an image." };
 }
 
 export type DockerLaunchArgs = {
