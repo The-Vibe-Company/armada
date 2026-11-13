@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import type { AgentEvent, PromptStatus } from "@armada/core";
-import { HARNESSES } from "@armada/core";
+import { HARNESSES, isFinalPromptStatus } from "@armada/core";
 import { checkpointIdentity, checkpointIdentityKey } from "./identity.ts";
 import type { CheckpointIdentity, StoredPrompt } from "./protocol.ts";
 import { createRedactor } from "./state.ts";
@@ -142,6 +142,26 @@ export class Journal {
     this.db
       .query("INSERT OR REPLACE INTO metadata VALUES('runner:identity',?)")
       .run(JSON.stringify(checkpointIdentity(identity)));
+  }
+  /** A resume must not treat an empty/rolled-back disk as a fresh conversation. */
+  requireCheckpoint(identity: CheckpointIdentity, watermark: number, conversationId: string) {
+    const source = this.assertRestoreSource(identity);
+    const seal = this.db
+      .query("SELECT value FROM metadata WHERE key=?")
+      .get(`checkpoint:v2:${checkpointIdentityKey(identity)}`) as { value: string } | null;
+    const high = (this.db.query("SELECT coalesce(max(seq),0) AS n FROM events").get() as { n: number }).n;
+    if (
+      !source ||
+      checkpointIdentityKey(source) !== checkpointIdentityKey(identity) ||
+      seal?.value !== "complete" ||
+      !Number.isSafeInteger(watermark) ||
+      watermark < 0 ||
+      high !== watermark ||
+      this.ack !== watermark ||
+      !this.session(conversationId) ||
+      this.prompts().some((prompt) => !isFinalPromptStatus(prompt.status))
+    )
+      throw Error("resume_checkpoint_mismatch");
   }
   checkpointPending(identity: CheckpointIdentity): boolean {
     this.assertRestoreSource(identity);

@@ -15,7 +15,7 @@ import { database, ENCRYPTION_KEY } from "./support.ts";
 export async function runtimeFixture() {
   const { db, people } = await database();
   const root = await mkdtemp(join(tmpdir(), "runtime-followup-"));
-  const journal = new Journal(join(root, "journal"), (value) => value);
+  let journal = new Journal(join(root, "journal"), (value) => value);
   const sql: Sql = {
     query: (q, v) => db.query(q, v),
     transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
@@ -51,7 +51,7 @@ export async function runtimeFixture() {
     credentialVersion: account.version,
   });
   const authority = createRuntimeEnrolments(sql, ENCRYPTION_KEY);
-  const active = await authority.enrol(
+  let active = await authority.enrol(
     (await authority.issue({ sandboxId: row.id, ownerId: people.owner, configuration: {} })).enrolmentToken,
   );
   const starts: (string | undefined)[] = [];
@@ -77,6 +77,9 @@ export async function runtimeFixture() {
         },
       };
     },
+    async resumeSession(context) {
+      return { sessionId: context.sessionId };
+    },
     async close() {},
   };
   const grant = {
@@ -85,9 +88,9 @@ export async function runtimeFixture() {
     token: active.runtimeToken,
     expiresAt: Date.now() + 60000,
   };
-  const state = new HarnessState(root, (value) => value);
+  let state = new HarnessState(root, (value) => value);
   await state.restore(grant, journal.assertRestoreSource(grant));
-  const runner = new Runner(
+  let runner = new Runner(
     journal,
     grant,
     { codex: driver },
@@ -147,7 +150,11 @@ export async function runtimeFixture() {
         afterProbe = undefined;
         await competing();
       }
-      if (lost && command.op === "prompt" && command.requestId.startsWith("follow_")) {
+      if (
+        lost &&
+        command.op === "prompt" &&
+        (command.requestId.startsWith("follow_") || command.requestId.startsWith("resume_"))
+      ) {
         lost = false;
         throw Error("lost_wait_after_commit");
       }
@@ -202,16 +209,81 @@ export async function runtimeFixture() {
     caller,
     row,
     account,
-    active,
+    get active() {
+      return active;
+    },
     starts,
     first,
-    runner,
-    journal,
+    get runner() {
+      return runner;
+    },
+    get journal() {
+      return journal;
+    },
     authority,
     bridge,
     send,
     context,
     input,
+    async reboot(restore: { epoch: string; watermark: number; conversationId: string }, attest = true) {
+      await runner.flushOutbox().catch(() => {});
+      journal.close();
+      active = await authority.enrol(
+        (await authority.issue({ sandboxId: row.id, ownerId: people.owner, configuration: {} })).enrolmentToken,
+      );
+      journal = new Journal(join(root, "journal"), (value) => value);
+      const next = {
+        sandboxId: row.id,
+        generation: active.epoch,
+        token: active.runtimeToken,
+        expiresAt: Date.now() + 60000,
+      };
+      const source = { sandboxId: row.id, generation: restore.epoch };
+      journal.requireCheckpoint(source, restore.watermark, restore.conversationId);
+      state = new HarnessState(root, (value) => value);
+      await state.restore(next, journal.assertRestoreSource(next), source);
+      runner = new Runner(
+        journal,
+        next,
+        { codex: driver },
+        {
+          async append(batch) {
+            const result = await createRuntimeEvents(authority, ENCRYPTION_KEY).append(
+              active.runtimeToken,
+              active.epoch,
+              batch,
+            );
+            if (!("acknowledgedSequence" in result)) throw Error("missing ACK");
+            return result;
+          },
+        },
+        undefined,
+        async () => {
+          await state.checkpoint(next);
+          journal.sanitize();
+        },
+        attest ? { restoredFrom: restore } : {},
+      );
+      if (attest) {
+        const response = await runner.handle(
+          new Request("http://runtime/v1", {
+            method: "POST",
+            headers: { "x-armada-runner-grant": next.token },
+            body: JSON.stringify({
+              version: 1,
+              sandboxId: row.id,
+              requestId: `restore_${active.epoch}`,
+              op: "resumeNativeSession",
+              conversationId: restore.conversationId,
+              expectedSessionId: journal.session(restore.conversationId),
+              input: { sandboxId: row.id, harness: "codex", model: "gpt-5.4", reasoningEffort: "high", cwd: root },
+            }),
+          }),
+        );
+        if (response.status !== 200) throw Error("native restore preflight failed");
+      }
+      return { epoch: active.epoch };
+    },
     tamper(mode: "generation" | "prefix" | "ack") {
       checkpointFault = mode;
     },

@@ -169,6 +169,9 @@ export interface LaunchOptions extends GoldenLimits {
       sandbox: SandboxRecord;
       credentials: HarnessCredentials;
       signal: AbortSignal;
+      /** Private resume policy: validate configuration before activating compute. */
+      activate?: (signal: AbortSignal) => Promise<void>;
+      restoreCheckpoint?: { epoch: string; watermark: number; conversationId: string };
     }): Promise<{ prompt: Provider["prompt"]; epoch: string }>;
   };
   /** Trusted server policy: extra physical Modal seconds reserved for extension. */

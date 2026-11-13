@@ -3542,6 +3542,62 @@ export type Database = {
           },
         ];
       };
+      runtime_resumes: {
+        Row: {
+          sandbox_id: string;
+          request_id: string;
+          source_epoch: number;
+          target_epoch: number;
+          watermark: number;
+          request_hash: string;
+          conversation_id: string;
+          model: string;
+          reasoning_effort: string;
+          phase: string;
+          verified_at: string | null;
+          receipt: Json | null;
+          created_at: string;
+        };
+        Insert: {
+          sandbox_id: string;
+          request_id: string;
+          source_epoch: number;
+          target_epoch: number;
+          watermark: number;
+          request_hash: string;
+          conversation_id: string;
+          model: string;
+          reasoning_effort: string;
+          phase?: string;
+          verified_at?: string | null;
+          receipt?: Json | null;
+          created_at?: string;
+        };
+        Update: {
+          sandbox_id?: string;
+          request_id?: string;
+          source_epoch?: number;
+          target_epoch?: number;
+          watermark?: number;
+          request_hash?: string;
+          conversation_id?: string;
+          model?: string;
+          reasoning_effort?: string;
+          phase?: string;
+          verified_at?: string | null;
+          receipt?: Json | null;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "runtime_resumes_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: false;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       sandbox_turn_models: {
         Row: {
           sandbox_id: string;
@@ -4073,6 +4129,7 @@ export type RuntimeCheckpointRow = Database["public"]["Tables"]["runtime_checkpo
 export type RuntimeCommandRow = Database["public"]["Tables"]["runtime_commands"]["Row"];
 export type RuntimeEnrolmentRow = Database["public"]["Tables"]["runtime_enrolments"]["Row"];
 export type RuntimeEventRow = Database["public"]["Tables"]["runtime_events"]["Row"];
+export type RuntimeResumeRow = Database["public"]["Tables"]["runtime_resumes"]["Row"];
 export type SandboxTurnModelRow = Database["public"]["Tables"]["sandbox_turn_models"]["Row"];
 export type SandboxUsagePricingRow = Database["public"]["Tables"]["sandbox_usage_pricing"]["Row"];
 export type SandboxWorkRecovery = Database["public"]["Tables"]["sandbox_work_recovery"]["Row"];

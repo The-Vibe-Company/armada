@@ -57,6 +57,8 @@ export interface ExecEnvironment {
   GIT_TERMINAL_PROMPT?: "0";
 }
 export interface RunnerExecutionOptions {
+  /** Set by enrolled main only after required checkpoint/native restore verification. */
+  restoredFrom?: { epoch: string; watermark: number; conversationId: string };
   /** Only runtime bootstrap supplies this callback; RPC cannot supply credentials or destinations. */
   testModelConnection?: (
     harness: "claude" | "codex",

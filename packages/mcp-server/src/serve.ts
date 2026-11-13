@@ -17,6 +17,7 @@ import {
 } from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
 import { boatRuntimeLaunch } from "./boat-runtime-launch.ts";
+import { boatRuntimeResume } from "./boat-runtime-resume.ts";
 import { authenticateCaller } from "./caller.ts";
 import { configFromEnv } from "./config.ts";
 import { type ConfiguredControlOptions, handleControlRequest, templateRuntime } from "./control.ts";
@@ -59,6 +60,7 @@ import { createRuntimeFollowup } from "./runtime-followup.ts";
 import { createRuntimeModelAccess } from "./runtime-model-access.ts";
 import { createRuntimeNativeAuth } from "./runtime-native-auth.ts";
 import { createRuntimeProgress } from "./runtime-progress.ts";
+import { createRuntimeResume } from "./runtime-resume.ts";
 import { createRuntimeServing } from "./runtime-serving.ts";
 import { createRuntimeSockets, type RuntimeSocketData } from "./runtime-sockets.ts";
 import { createSandboxArmadaAccess } from "./sandbox-armada-access.ts";
@@ -281,9 +283,18 @@ export async function startServer(
       modelAuth,
     });
   }
+  const runtimeResume = createRuntimeResume(
+    sql,
+    config.encryptionKey,
+    runtimeCommands,
+    runtimeLaunch
+      ? boatRuntimeResume({ vault: store, key: config.encryptionKey, policy: runtimeLaunch, modelAuth })
+      : undefined,
+  );
   const control: ConfiguredControlOptions = {
     runtimeSend,
     runtimeCheckpoint,
+    runtimeResume,
     ...(runtimeLaunch
       ? { boatRuntimeLaunch: runtimeLaunch, runtimeHostFor: (apiKey: string) => createBoatProvider({ apiKey }) }
       : {}),
@@ -378,6 +389,7 @@ export async function startServer(
   const handler = createHandler({
     runtimeSend,
     runtimeCheckpoint,
+    runtimeResume,
     ready: createDatabaseReadiness(sql),
     runtimeProviderFor,
     launch,

@@ -79,7 +79,10 @@ export function createRuntimeAgent(
   const identity = (requestId: string = randomUUID()) => ({ version: 1 as const, sandboxId, requestId });
   return {
     /** The launcher must first await enrolment; no native readiness/resume is implied. */
-    async health(signal?: AbortSignal): Promise<{ runtime: "armada"; epoch: string }> {
+    async health(
+      signal?: AbortSignal,
+      expectedRestore?: { epoch: string; watermark: number; conversationId: string },
+    ): Promise<{ runtime: "armada"; epoch: string }> {
       const command = { ...identity(), op: "health" as const };
       // Retain epoch alongside the result for provenance validation.
       let reply: Awaited<ReturnType<typeof commands.call>>;
@@ -89,7 +92,13 @@ export function createRuntimeAgent(
         throw refusal("sandbox_not_ready");
       }
       const body = reply.body;
-      const result = body.result as { ready?: unknown; generation?: unknown } | undefined;
+      const result = body.result as
+        | {
+            ready?: unknown;
+            generation?: unknown;
+            restoredFrom?: { epoch?: unknown; watermark?: unknown; conversationId?: unknown };
+          }
+        | undefined;
       if (
         reply.status !== 200 ||
         body.version !== 1 ||
@@ -97,7 +106,11 @@ export function createRuntimeAgent(
         body.error !== undefined ||
         !result ||
         result.ready !== true ||
-        result.generation !== reply.epoch
+        result.generation !== reply.epoch ||
+        (expectedRestore &&
+          (result.restoredFrom?.epoch !== expectedRestore.epoch ||
+            result.restoredFrom.watermark !== expectedRestore.watermark ||
+            result.restoredFrom.conversationId !== expectedRestore.conversationId))
       )
         throw refusal("sandbox_not_ready");
       return { runtime: "armada", epoch: reply.epoch };

@@ -136,8 +136,14 @@ export class HarnessState {
     for (const name of names) if (await walk(join(this.root, name))) return true;
     return false;
   }
-  async restore(identity?: CheckpointIdentity, verifiedSource?: CheckpointIdentity) {
+  async restore(
+    identity?: CheckpointIdentity,
+    verifiedSource?: CheckpointIdentity,
+    expectedSource?: CheckpointIdentity,
+  ) {
     const manifest = await this.verifySaved();
+    if (expectedSource && (!manifest?.identity || !sameCheckpointIdentity(manifest.identity, expectedSource)))
+      throw Error("resume_checkpoint_mismatch");
     if (identity) {
       const target = checkpointIdentity(identity),
         source = verifiedSource ? checkpointIdentity(verifiedSource) : undefined;
