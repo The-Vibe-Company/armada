@@ -144,38 +144,3 @@ export function sandboxCost(usage: SandboxUsage | null, harness: Harness, basis:
     models,
   };
 }
-
-/**
- * Several sandboxes' costs as one: a parent's own plus its children'. The amount sums the priced turns; compute
- * time is known only when every part's is. The basis is "estimated" only when every part is, else "API-equivalent",
- * which is true of any account.
- */
-export function combineCosts(costs: readonly SandboxCost[]): SandboxCost {
-  const basis: CostBasis =
-    costs.length > 0 && costs.every((cost) => cost.basis === "estimated") ? "estimated" : "api_equivalent";
-  const tokens: SandboxCost["tokens"] = { input: 0, cached: 0, cacheWrite: 0, output: 0 };
-  let usd: number | null = null;
-  let computeSeconds: number | null = costs.length > 0 ? 0 : null;
-  const models: string[] = [];
-  for (const cost of costs) {
-    tokens.input = add(tokens.input, cost.tokens.input);
-    tokens.cached = add(tokens.cached, cost.tokens.cached);
-    tokens.cacheWrite = add(tokens.cacheWrite, cost.tokens.cacheWrite);
-    tokens.output = add(tokens.output, cost.tokens.output);
-    if (cost.usd !== null) usd = (usd ?? 0) + cost.usd;
-    computeSeconds =
-      computeSeconds === null || cost.computeSeconds === null ? null : computeSeconds + cost.computeSeconds;
-    for (const model of cost.models) if (!models.includes(model)) models.push(model);
-  }
-  return {
-    basis,
-    label: COST_BASIS_LABELS[basis],
-    turns: costs.flatMap((cost) => cost.turns),
-    turnCount: costs.reduce((sum, cost) => sum + cost.turnCount, 0),
-    computeSeconds,
-    tokens,
-    usd,
-    unpricedTurns: costs.reduce((sum, cost) => sum + cost.unpricedTurns, 0),
-    models,
-  };
-}
