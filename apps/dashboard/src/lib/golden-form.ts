@@ -172,11 +172,6 @@ export function goldenInit(config: Golden["config"]): string[] {
   return init.filter((command): command is string => typeof command === "string");
 }
 
-/** The launch form's repository choices: distinct `owner/repo` recorded in the golden, in order. */
-export function launchRepoOptions(config: Golden["config"]): string[] {
-  return [...new Set(goldenRepos(config).flatMap((repo) => (repo.slug ? [repo.slug] : [])))];
-}
-
 /** The form's starting values when rebuilding a golden: what it records today. */
 export function editDefaults(golden: Pick<Golden, "config">): { repos: RepoRow[]; init: string } {
   const repos = goldenRepos(golden.config).map((repo) => ({
