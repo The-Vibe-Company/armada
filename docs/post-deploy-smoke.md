@@ -841,3 +841,30 @@ rows, and inspect any named failure's status/code before attributing it. No work
 needs staging access to run the fake-fetch regression tests.
 The startup sweep, probe phase and final cleanup share the existing 40-minute
 smoke deadline; waiting for deletion does not add a new unbounded grace period.
+
+### Final delegated cleanup order (#1383)
+
+Cleanup uses two waves over its existing exact-ID receipts: ordinary sandboxes
+(including delegated parents) first, then `smoke-scoped-*` child receipts. Ordering
+is applied before the sweep limit, so a child cannot occupy every bounded slot
+while its parent waits behind it. Sandboxes within a wave still run in parallel.
+
+The server permits owner/admin deletion of an ordinary delegated child only
+**after its ordinary parent is durably deleted**. Both authorization and atomic
+activity admission enforce the same rule. Relation/history rows remain intact;
+legacy orchestrator parents and children remain refused. A merely stopped parent
+is not sufficient because it could resume and issue delegated work again.
+
+Stop settling and transient `sandbox_not_ready`/pending deletion now share the
+full existing five-minute cleanup reserve across both waves, also capped by the
+smoke's existing 40-minute deadline. This replaces the previous four-minute
+per-row cutoff; it adds no new overall grace period. A still-busy provider or
+unsettled lease at the bound remains a named failure with its safe HTTP/code
+and a retained receipt, never a falsely successful cleanup.
+
+Coordinator validation: rerun staging with run 43405042771's two exact receipts,
+verify parent deletion precedes scoped-child deletion and
+`smoke_cleanup_summary.remainingRows` is zero. Confirm unrelated stopped rows
+remain untouched. Offline regression tests cover a late-settling stop/lease,
+bounded parent-first selection, and real-SQL child-before-parent refusal followed
+by successful parent/child deletion under current owner/org authorization.

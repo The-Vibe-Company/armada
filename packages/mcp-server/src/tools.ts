@@ -1771,7 +1771,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     {
       title: "Delete a stopped sandbox",
       description:
-        "Owner/admin only. Permanently removes provider resources and recovery archives. Stop first. Managed orchestrator parents and children are refused.",
+        "Owner/admin only. Permanently removes provider resources and recovery archives. Stop first. Legacy orchestrator parents and children are refused; ordinary delegated children require a deleted parent.",
       input: { id },
       output: { id: z.string(), status: z.literal("deleted") },
       destructive: true,
