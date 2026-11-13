@@ -26,30 +26,38 @@ function fixture(responses: Record<string, unknown>) {
   return { auth, paths, output: () => out };
 }
 
-test("doctor reports server skew, authenticated session, host daemon and model metadata in one table", async () => {
-  const f = fixture({
-    "/api/v1/account/status": { version: "0.0.1", orgs: [{ orgId: "org", name: "Team" }] },
-    "/api/v1/docker/hosts/list": {
-      placement: true,
-      hosts: [
-        {
-          id: "11111111-1111-4111-8111-111111111111",
-          name: "desk",
-          state: "online",
-          lastSeenAt: null,
-          version: VERSION,
-          sandboxes: 0,
-        },
-      ],
-    },
-    "/api/v1/creds/list": { user: [{ id: "model", name: "Work", kind: "openai", status: "active" }], orgs: [] },
-  });
-  expect(await doctor([], f.auth)).toBe(0);
-  expect(f.output()).toContain("CHECK\tSTATUS\tDETAIL / NEXT STEP");
-  expect(f.output()).toContain("npm i -g @the-vibe-company/armada");
-  expect(f.output()).toContain(`online; daemon ${VERSION}`);
-  expect(f.output()).toContain("Account Work\tactive");
-});
+test.each([VERSION, "0.0.1", null])(
+  "doctor reports server and host version diagnostics (%s) in one table",
+  async (hostVersion) => {
+    const f = fixture({
+      "/api/v1/account/status": { version: "0.0.1", orgs: [{ orgId: "org", name: "Team" }] },
+      "/api/v1/docker/hosts/list": {
+        placement: true,
+        hosts: [
+          {
+            id: "11111111-1111-4111-8111-111111111111",
+            name: "desk",
+            state: "online",
+            lastSeenAt: null,
+            version: hostVersion,
+            sandboxes: 0,
+          },
+        ],
+      },
+      "/api/v1/creds/list": { user: [{ id: "model", name: "Work", kind: "openai", status: "active" }], orgs: [] },
+    });
+    expect(await doctor([], f.auth)).toBe(0);
+    expect(f.output()).toContain("CHECK\tSTATUS\tDETAIL / NEXT STEP");
+    expect(f.output()).toContain("npm i -g @the-vibe-company/armada");
+    expect(f.output()).toContain(`online; daemon ${hostVersion ?? "unknown"}`);
+    expect(f.output()).toContain(
+      `Host desk\t${hostVersion === VERSION ? "ok" : hostVersion ? "warning" : "unknown"}\t`,
+    );
+    if (hostVersion && hostVersion !== VERSION)
+      expect(f.output()).toContain("Check the host installation with armada host status on the host machine.");
+    expect(f.output()).toContain("Account Work\tactive");
+  },
+);
 
 test("doctor fails honestly when health and session cannot be confirmed", async () => {
   const f = fixture({});
