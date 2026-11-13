@@ -53,6 +53,37 @@ const owner: GoldenActor = { userId: OWNER, orgId: ORG, role: "member" };
 const other: GoldenActor = { userId: OTHER, orgId: ORG, role: "member" };
 
 describe("launch", () => {
+  test("deployment runtime default refuses unsupported ordinary golden work before native credentials or compute", async () => {
+    const world = setup({ golden: golden("org") });
+    let selected = 0;
+    const forbidden = async (): Promise<never> => {
+      throw Error("native fallback must never be used");
+    };
+    world.stores.credentials.resolve = forbidden;
+    world.provider.fork = forbidden;
+    await expect(
+      launchSandbox(
+        world.provider,
+        world.stores,
+        owner,
+        { golden: "web", harness: "codex", prompt: "ordinary client request" },
+        {
+          boatRuntimeDefault: {
+            policy: { start: forbidden },
+            provider: async () => {
+              selected++;
+              return world.provider;
+            },
+            credentials: world.stores.credentials,
+            connections: { validate: forbidden, bind: forbidden },
+          },
+        },
+      ),
+    ).rejects.toMatchObject({ code: "invalid_request", message: expect.stringContaining("repository refresh") });
+    expect(selected).toBe(0);
+    expect(world.forks).toHaveLength(0);
+  });
+
   test.each(["key", "auth"] as const)(
     "experimental %s launch hands off after persisted selection, never native setup/prompt",
     async (kind) => {

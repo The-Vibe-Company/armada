@@ -776,6 +776,7 @@ async function dispatch(
       providers: launchProviderOptions(options.docker),
       modalRuntime: { version: 1, enabled: Boolean(options.modalRuntimeLaunch) },
       boatRuntime: {
+        defaultPath: options.launch?.boatRuntimeDefault ? "runtime" : "native",
         version: 1,
         diagnosticsVersion: 1,
         followupVersion: options.runtimeSend ? 1 : 0,

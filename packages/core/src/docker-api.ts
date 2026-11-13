@@ -82,6 +82,7 @@ export interface LaunchOptionsResponse {
   providers: LaunchProviderOption[];
   modalRuntime?: { version: number; enabled: boolean };
   boatRuntime: {
+    defaultPath?: "native" | "runtime";
     version: number;
     diagnosticsVersion: number;
     followupVersion: number;

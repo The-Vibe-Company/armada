@@ -160,6 +160,18 @@ export interface LaunchResult {
 }
 
 export interface LaunchOptions extends GoldenLimits {
+  /** Trusted deployment-wide default, never a client launch option. Boat only. */
+  boatRuntimeDefault?: {
+    policy: NonNullable<LaunchOptions["boatRuntime"]>;
+    provider(actor: GoldenActor, golden: GoldenRecord): Promise<Provider>;
+    credentials: LaunchCredentialResolver;
+    connections: NonNullable<LaunchStores["connections"]>;
+  };
+  /** Frozen template account version, not a public launch override. */
+  credentialVersion?: number;
+  /** Templates with native-only readable/secret environment delivery. */
+  nativeEnvironmentBindings?: boolean;
+
   /** Trusted per-launch opt-in, never public request configuration. Codex
    * snapshot launch: no native setup/refresh or runner fallback. */
   runtime?: LaunchOptions["boatRuntime"];
@@ -227,6 +239,26 @@ export async function launchSandbox(
   }
   if (request.skipSkillDefaults !== undefined && typeof request.skipSkillDefaults !== "boolean")
     throw new LaunchError("invalid_request", "skipSkillDefaults must be a boolean.");
+  const golden = await goldenForLaunch(stores.goldens, actor, request.golden, request.provider);
+  if (golden.visibility === "private" && golden.ownerId !== actor.userId)
+    throw new GoldenError("not_found", `No golden named '${golden.name}'.`);
+  const defaultRuntime =
+    golden.provider === "boat" && !options.runtime && !options.boatRuntime ? options.boatRuntimeDefault : undefined;
+  if (defaultRuntime) {
+    const refuse = (feature: string): never => {
+      throw new LaunchError(
+        "invalid_request",
+        `Boat runtime default cannot launch ${feature}; no native fallback. Set ARMADA_BOAT_AGENT_PATH=native for rollback.`,
+      );
+    };
+    if (golden.config.repos.length || golden.config.init.length)
+      refuse("repository refresh, GitHub initialization or golden init commands");
+    if (!request.prompt?.trim()) refuse("an idle sandbox without an initial prompt");
+    if (options.nativeEnvironmentBindings) refuse("template readable-variable or application-secret bindings");
+    provider = await defaultRuntime.provider(actor, golden);
+    stores = { ...stores, credentials: defaultRuntime.credentials, connections: defaultRuntime.connections };
+    options = { ...options, boatRuntime: defaultRuntime.policy };
+  }
   const harness = checkHarness(provider, request.harness);
   const runtime = options.runtime ?? options.boatRuntime;
   if (
@@ -243,7 +275,6 @@ export async function launchSandbox(
   const prompt = checkPrompt(request.prompt);
   const choice = checkModel(provider, harness, request);
 
-  const golden = await goldenForLaunch(stores.goldens, actor, request.golden, request.provider);
   const defaults = !request.skipSkillDefaults ? await stores.skillDefaults?.resolve(actor, golden) : undefined;
   try {
     request = {
@@ -294,9 +325,6 @@ export async function launchSandbox(
     extensionHeadroom > PROVIDER_LIMITS.modal.maxTtlSeconds - SANDBOX_STOP_MARGIN_SECONDS
   )
     throw new LaunchError("invalid_request", "Invalid server sandbox extension headroom policy.");
-  if (golden.visibility === "private" && golden.ownerId !== actor.userId) {
-    throw new GoldenError("not_found", `No golden named '${golden.name}'.`);
-  }
   const repositoryDir = resolveRepositoryDir(golden, request.repo);
   const resourceProject = golden.config.repos.find((repo) => repo.dir === repositoryDir);
   const machineSize = resolveMachineSize(golden.provider, request.size, repositoryDir, golden.sizePolicy);
@@ -316,7 +344,12 @@ export async function launchSandbox(
   await stores.connections?.validate(actor, connectionIds, visibility);
   const snapshot = golden.providerSnapshotId;
   if (!snapshot) throw new GoldenError("conflict", `Golden '${golden.name}' has no snapshot yet.`);
-  const credentials = await stores.credentials.resolve(actor, harness, request.credentialId);
+  const credentials = await stores.credentials.resolve(actor, harness, request.credentialId, options.credentialVersion);
+  if (defaultRuntime && !credentials.binding)
+    throw new LaunchError(
+      "invalid_request",
+      "Boat runtime default requires a bound model account; no native fallback.",
+    );
   if (credentials.env[CLAUDE_ENDPOINT_ENV] && provider.id !== "modal")
     throw new LaunchError("invalid_request", "Custom Claude gateways currently require Modal.");
   if (credentials.env[CODEX_ENDPOINT_ENV] && provider.id !== "modal" && !runtime)

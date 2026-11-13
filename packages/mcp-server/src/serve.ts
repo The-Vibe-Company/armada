@@ -11,7 +11,9 @@ import {
   GoldenSnapshotRetirements,
   githubAppFromEnv,
   githubInstallationAppFromEnv,
+  type LaunchOptions,
   promptOutcome,
+  resolveBoatKey,
   VaultError,
 } from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
@@ -91,7 +93,7 @@ export async function startServer(
   } = {},
 ) {
   const config = configFromEnv(env);
-  const launch = { extensionHeadroomSeconds: config.sandboxExtensionHeadroomSeconds };
+  const launch: LaunchOptions = { extensionHeadroomSeconds: config.sandboxExtensionHeadroomSeconds };
   const catalogAuthentication = catalogAuthenticationFromEnv(
     env,
     config.encryptionKey,
@@ -253,9 +255,17 @@ export async function startServer(
     provider: (actor, target) => providers.resolve(target, { userId: actor.userId }),
   });
   let manifest: unknown;
-  if (env.ARMADA_BOAT_RUNTIME_MANIFEST) {
+  const imageBoatManifest = `/opt/armada/runtime-manifests/${process.arch}.json`;
+  // Keep existing runtime sessions serviceable after rolling new launches back
+  // to native. Native-only local installations need not contain artifacts.
+  const boatManifestPath =
+    env.ARMADA_BOAT_RUNTIME_MANIFEST ??
+    (config.boatAgentPath === "runtime" || (await Bun.file(imageBoatManifest).exists())
+      ? imageBoatManifest
+      : undefined);
+  if (boatManifestPath) {
     try {
-      manifest = JSON.parse(await Bun.file(env.ARMADA_BOAT_RUNTIME_MANIFEST).text());
+      manifest = JSON.parse(await Bun.file(boatManifestPath).text());
     } catch {
       throw Error("Invalid Boat runtime deployment manifest.");
     }
@@ -289,6 +299,24 @@ export async function startServer(
       architecture: row.architecture,
       modelAuth,
     });
+  }
+  if (config.boatAgentPath === "runtime") {
+    if (!runtimeLaunch) throw Error("Boat runtime default requires installed runtime artifacts.");
+    launch.boatRuntimeDefault = {
+      policy: runtimeLaunch,
+      credentials: launchCredentials(store, config.encryptionKey, undefined, modelAuth),
+      connections: runtimeMcp.connections,
+      provider: async (actor, golden) =>
+        createBoatProvider({
+          apiKey: (
+            await resolveBoatKey(store, config.encryptionKey, {
+              userId: actor.userId,
+              orgId: actor.orgId,
+              visibility: golden.visibility,
+            })
+          ).key,
+        }),
+    };
   }
   let modalRuntimePolicy: ReturnType<typeof modalRuntimeLaunch> | undefined;
   if (env.ARMADA_MODAL_DIALOUT === "1") {
