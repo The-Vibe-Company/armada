@@ -34,11 +34,27 @@ test("installer publishes both build digests without credentials and refuses mis
 // This boundary owns digest-before-execution, token-on-stdin and connected confirmation.
 test("one-line installer verifies bytes, delivers the one-use token privately and confirms a poll", async () => {
   const { createHash } = await import("node:crypto");
-  const { mkdir, readFile, writeFile } = await import("node:fs/promises");
+  const { mkdir, readFile, writeFile, symlink } = await import("node:fs/promises");
   const home = await mkdtemp(join(tmpdir(), "host-one-click-"));
   try {
     const tools = join(home, "tools");
     await mkdir(tools);
+    // Hermetic PATH: do not discover the machine's real npm/npx in no-runtime cases.
+    for (const command of [
+      "sha256sum",
+      "base64",
+      "grep",
+      "install",
+      "mkdir",
+      "mktemp",
+      "rm",
+      "chmod",
+      "cat",
+      "cp",
+      "touch",
+      "id",
+    ])
+      await symlink(`/usr/bin/${command}`, join(tools, command));
     const artifact = join(home, "artifact");
     const host =
       '#!/bin/sh\ncase "$1" in install) cat > "$HOME/registration" ;; status) printf \'{"registered":true,"connected":true,"hostId":"22222222-2222-4222-8222-222222222222"}\\n\' ;; *) exit 1 ;; esac\n';
@@ -57,9 +73,9 @@ test("one-line installer verifies bytes, delivers the one-use token privately an
     const script = await (await route(new Request("http://internal/install-host.sh")))!.text();
     const token = "b".repeat(64);
     const run = (value: string) =>
-      Bun.spawnSync(["sh", "-s", "--", "--token", value], {
+      Bun.spawnSync(["/bin/sh", "-s", "--", "--token", value], {
         stdin: new TextEncoder().encode(script),
-        env: { ...process.env, HOME: home, PATH: `${tools}:/usr/bin:/bin`, FIXTURE_ARTIFACT: artifact },
+        env: { ...process.env, HOME: home, PATH: tools, FIXTURE_ARTIFACT: artifact },
       });
     expect(run("bad").exitCode).not.toBe(0);
     // Corrupt bytes must not be installed or executed.
@@ -69,7 +85,9 @@ test("one-line installer verifies bytes, delivers the one-use token privately an
     await writeFile(artifact, host);
     const result = run(token);
     expect(result.exitCode).toBe(0);
-    expect(result.stdout.toString().trim()).toBe("connected");
+    expect(result.stdout.toString()).toContain("connected");
+    expect(result.stdout.toString()).toContain("Node is not required");
+    expect(result.stdout.toString()).toContain(`npm install -g @the-vibe-company/armada@${VERSION}`);
     expect(result.stdout.toString() + result.stderr.toString()).not.toContain(token);
     expect((await readFile(join(home, "registration"), "utf8")).trim()).toBe(token);
     // Reusing a healthy registration must not exchange the fresh token.
@@ -107,6 +125,29 @@ echo '{"registered":false,"connected":false}'
     expect(replaced.exitCode).toBe(0);
     expect(replaced.stdout.toString()).toContain("Replacing the unregistered host binary");
     expect((await readFile(join(home, "registration"), "utf8")).trim()).toBe("d".repeat(64));
+    // Package runners receive only the pinned package/command, with the token on stdin.
+    const runner = `#!/bin/sh
+printf '%s\\n' "$@" > "$HOME/runner-args"
+cat > "$HOME/runner-stdin"
+`;
+    await writeFile(join(tools, "bun"), runner, { mode: 0o700 });
+    const viaBun = run("e".repeat(64));
+    expect(viaBun.exitCode).toBe(0);
+    expect(await readFile(join(home, "runner-args"), "utf8")).toBe(
+      `x\n--bun\n@the-vibe-company/armada@${VERSION}\nhost\ninstall\n--server\nhttps://armada.example\n`,
+    );
+    expect((await readFile(join(home, "runner-stdin"), "utf8")).trim()).toBe("e".repeat(64));
+    expect(viaBun.stdout.toString()).toContain(`bun add -g @the-vibe-company/armada@${VERSION}`);
+    await rm(join(tools, "bun"));
+    await writeFile(join(tools, "npm"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    await writeFile(join(tools, "npx"), runner, { mode: 0o700 });
+    const viaNpx = run("f".repeat(64));
+    expect(viaNpx.exitCode).toBe(0);
+    expect(await readFile(join(home, "runner-args"), "utf8")).toBe(
+      `-y\n@the-vibe-company/armada@${VERSION}\nhost\ninstall\n--server\nhttps://armada.example\n`,
+    );
+    expect((await readFile(join(home, "runner-stdin"), "utf8")).trim()).toBe("f".repeat(64));
+    expect(viaNpx.stdout.toString()).not.toContain("Install the armada command on this machine? [y/N]");
   } finally {
     await rm(home, { recursive: true, force: true });
   }
