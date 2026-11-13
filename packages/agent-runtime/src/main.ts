@@ -342,23 +342,27 @@ async function main(dialout = false) {
   const githubRoot = `${config.root}/github-${createHash("sha256").update(config.grant.generation).digest("hex").slice(0, 16)}`;
   let githubSocket: Awaited<ReturnType<GitHubBroker["listen"]>> | undefined;
   let githubConfiguration = Promise.resolve();
+  const ensureGitHubTools = async (identity?: { name: string; email: string }) => {
+    githubSocket ??= await github.listen(githubRoot);
+    const tools: Parameters<typeof installGitHubTools>[0] = {
+      root: githubRoot,
+      socket: githubSocket.socket,
+      gh: "/usr/bin/gh",
+      git: "/usr/bin/git",
+      ghWrapper: "/usr/local/bin/gh",
+      gitWrapper: "/usr/local/bin/git",
+      homes: ["/home/user", config.claudeEnv.HOME!, config.codexEnv.HOME!, opencodeEnv.HOME!],
+      activation: githubSocket.activation,
+      ...(identity ? { identity } : {}),
+    };
+    await prepareGitHubTools(tools);
+  };
   const configureGitHub = (value: GitHubBrokerConfiguration | null): Promise<void> => {
     const work = githubConfiguration.then(async () => {
       github.configure(value);
       if (!value) return;
       try {
-        githubSocket ??= await github.listen(githubRoot);
-        const tools: Parameters<typeof installGitHubTools>[0] = {
-          root: githubRoot,
-          socket: githubSocket.socket,
-          gh: "/usr/bin/gh",
-          git: "/usr/bin/git",
-          ghWrapper: "/usr/local/bin/gh",
-          gitWrapper: "/usr/local/bin/git",
-          homes: ["/home/user", config.claudeEnv.HOME!, config.codexEnv.HOME!, opencodeEnv.HOME!],
-          activation: githubSocket.activation,
-        };
-        await prepareGitHubTools(tools);
+        await ensureGitHubTools(value.identity);
       } catch {
         github.configure(null);
         throw Error("github_configuration_denied");
@@ -367,6 +371,9 @@ async function main(dialout = false) {
     githubConfiguration = work.catch(() => {});
     return work;
   };
+  // Previous-epoch wrappers cannot point at a dead socket during native restore.
+  // Rebind redaction-only IPC first; no GitHub credential authority is restored.
+  if (enrolled && (await Bun.file(`${config.root}/github-socket`).exists())) await ensureGitHubTools();
   const opencodeExecutable =
     opencodeEnv.OPENCODE_CONFIG_CONTENT || opencodeEnv.OPENCODE_API_KEY
       ? await prepareOpenCode({

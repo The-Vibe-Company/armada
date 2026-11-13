@@ -3545,6 +3545,50 @@ export type Database = {
           },
         ];
       };
+      runtime_github_capabilities: {
+        Row: {
+          sandbox_id: string;
+          epoch: number;
+          revision: number;
+          hash: string;
+          binding: Json;
+          expires_at: string;
+          delivered_at: string | null;
+          credential_requests: number;
+          last_accessed_at: string | null;
+        };
+        Insert: {
+          sandbox_id: string;
+          epoch: number;
+          revision?: number;
+          hash: string;
+          binding: Json;
+          expires_at: string;
+          delivered_at?: string | null;
+          credential_requests?: number;
+          last_accessed_at?: string | null;
+        };
+        Update: {
+          sandbox_id?: string;
+          epoch?: number;
+          revision?: number;
+          hash?: string;
+          binding?: Json;
+          expires_at?: string;
+          delivered_at?: string | null;
+          credential_requests?: number;
+          last_accessed_at?: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "runtime_github_capabilities_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: false;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       runtime_resumes: {
         Row: {
           sandbox_id: string;
@@ -4132,6 +4176,7 @@ export type RuntimeCheckpointRow = Database["public"]["Tables"]["runtime_checkpo
 export type RuntimeCommandRow = Database["public"]["Tables"]["runtime_commands"]["Row"];
 export type RuntimeEnrolmentRow = Database["public"]["Tables"]["runtime_enrolments"]["Row"];
 export type RuntimeEventRow = Database["public"]["Tables"]["runtime_events"]["Row"];
+export type RuntimeGitHubCapabilityRow = Database["public"]["Tables"]["runtime_github_capabilities"]["Row"];
 export type RuntimeResumeRow = Database["public"]["Tables"]["runtime_resumes"]["Row"];
 export type SandboxTurnModelRow = Database["public"]["Tables"]["sandbox_turn_models"]["Row"];
 export type SandboxUsagePricingRow = Database["public"]["Tables"]["sandbox_usage_pricing"]["Row"];

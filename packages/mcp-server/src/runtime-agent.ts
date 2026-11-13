@@ -3,6 +3,7 @@ import type { RunnerRequest } from "@armada/agent-runtime";
 import {
   type EventPage,
   type EventsRequest,
+  type GitHubRuntimeConfiguration,
   type ModelChoice,
   type PromptReceipt,
   type PromptRequest,
@@ -114,6 +115,14 @@ export function createRuntimeAgent(
       )
         throw refusal("sandbox_not_ready");
       return { runtime: "armada", epoch: reply.epoch };
+    },
+    async configureGitHub(configuration: GitHubRuntimeConfiguration, requestId: string): Promise<void> {
+      const result = await invoke<{ acknowledged?: boolean }>({
+        ...identity(requestId),
+        op: "configureGitHub",
+        configuration,
+      });
+      if (result?.acknowledged !== true) throw refusal("unavailable", requestId);
     },
     /** Supply the same requestId to reconcile an uncertain prompt admission. */
     async prompt(request: PromptRequest, requestId: string = randomUUID()): Promise<PromptReceipt> {
