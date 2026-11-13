@@ -18,7 +18,7 @@ PRs ahead of it. Merge limits control merges, not the contents of CI builds.
 
 Dashboard browser tests are manual-only for now (owner decision, 2026-11-12).
 Run `bun run e2e` when browser validation is wanted; it is not a PR or merge-queue
-gate. Screenshot evidence workflows are removed; their capture scripts remain.
+gate. Screenshot evidence workflows and their one-off capture scripts are removed.
 
 ## What runs in the queue
 
