@@ -30,11 +30,15 @@ export default async function VariablesPage({ searchParams }: Props) {
     return (
       <>
         {header}
-        <Empty title="No organization yet">
-          <Link className="underline" href="/orgs">
-            Create an organization
-          </Link>{" "}
-          to add variables and secrets.
+        <Empty
+          title="No organization yet"
+          action={
+            <Button asChild>
+              <Link href="/orgs">Choose an organization</Link>
+            </Button>
+          }
+        >
+          Create or join an organization before adding variables and secrets.
         </Empty>
       </>
     );
@@ -46,10 +50,18 @@ export default async function VariablesPage({ searchParams }: Props) {
         {header}
         <Alert>
           <InfoIcon />
+          <AlertTitle>
+            {list.state === "unsupported" ? "Variable management needs an update" : "Variable setup is not ready here"}
+          </AlertTitle>
           <AlertDescription>
-            {list.state === "unsupported"
-              ? list.message
-              : "The Armada server is not configured: variables cannot be managed here."}
+            <p>
+              {list.state === "unsupported"
+                ? "Ask an Armada administrator to update Armada before managing variables and secrets here."
+                : "Ask an Armada administrator to finish setup, then reload Variables."}
+            </p>
+            <Button asChild variant="outline" size="sm" className="mt-2">
+              <a href="/variables">Reload Variables</a>
+            </Button>
           </AlertDescription>
         </Alert>
       </>
@@ -63,9 +75,12 @@ export default async function VariablesPage({ searchParams }: Props) {
           <CircleAlertIcon />
           <AlertTitle>Variables could not be loaded</AlertTitle>
           <AlertDescription>
-            <p>{list.message}</p>
+            <p>
+              Check your connection and reload Variables. If this continues, ask an Armada administrator to check
+              variable management.
+            </p>
             <Button asChild variant="outline" size="sm" className="mt-2">
-              <Link href="/variables">Try again</Link>
+              <a href="/variables">Reload Variables</a>
             </Button>
           </AlertDescription>
         </Alert>
@@ -95,14 +110,17 @@ export default async function VariablesPage({ searchParams }: Props) {
       actions={<AddVaultDialog orgId={selected.org.id} orgName={orgName} isAdmin={isAdmin} />}
       footer={
         <p className="text-xs text-pretty text-muted-foreground">
-          Personal entries are yours alone. Org entries are shared with every member of {orgName};{" "}
-          {isAdmin ? "you manage them." : "only an admin changes them."} A secret is write-only: once stored, nobody can
-          read it back. Launches do not deliver these values to sandboxes yet.
+          Personal entries are visible only to you in Armada. Org entries are shared with every member of {orgName};{" "}
+          {isAdmin ? "you manage them." : "only an admin changes them."} Variables are readable configuration, not
+          secrets. Stored secret values cannot be read back from this page. Bind entries through templates on supported
+          sandboxes. Delivered values can be inspected by people or agents with access to the sandbox; changing or
+          revoking an entry does not erase copies already delivered.
         </p>
       }
       empty={
         <Empty title="No variables or secrets yet" icon={<VariableIcon />}>
-          Add readable configuration, or a secret that is stored encrypted and never shown again.
+          Choose Add to store readable configuration or a write-only secret, then bind it through a template on a
+          supported sandbox.
         </Empty>
       }
     />
