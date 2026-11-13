@@ -2,21 +2,22 @@
 
 Design-only first PR for #1164 under #1160. The issue's **Binding design
 decisions (2026-11-12)** override the earlier server/client proposal.
-No harness is enabled here. NOW scope: this realignment, then a separate
-behavior-preserving one-harness-table cleanup. No ACP implementation yet.
+Status update (2026-11-12): the cleanup is complete and the coordinator released
+ACP step 4 on Modal after verifying model connections/cost. Boat runs in parallel
+and does not block OpenCode. Implementation and operator checks are documented
+in `docs/runtime/acp-v1.md` and `docs/runtime/opencode-modal.md`.
 
 ## Current state
 
-- `packages/core/src/contract.ts` defines `HARNESSES`; `models.ts` and
-  `credentials.ts` separately define `MODEL_CATALOG` and `HARNESS_KINDS`.
-- `packages/provider-boat/src/provider.ts` maps native Boat agents/capabilities;
-  `packages/provider-modal/src/composed.ts` separately declares capabilities.
-- `packages/agent-runtime/src/runtime.ts` hard-codes two drivers and validation;
-  `claude.ts` and `codex.ts` implement `protocol.ts`'s Driver/Turn contract.
-- The database harness enum, dashboard pickers and
-  `apps/ios/Armada/Model/AgentValues.swift` also encode the two choices.
-- Modal uses our runtime; Boat still uses its native runner. Neither gains
-  OpenCode through this design or the cleanup slice.
+- `packages/core/src/harnesses.ts` owns IDs, models, credential kinds, native
+  aliases and capabilities; existing exports are derived from it. iOS harness
+  identity/labels/steering are generated and checked in CI.
+- Codex and Claude retain their native runtime drivers. OpenCode uses one ACP v1
+  transport and a native JSON export/import session adapter on Modal.
+- The database harness/credential enums and private Modal binding support OpenCode.
+  Named connection resolution remains sealed, owner-scoped and version-pinned.
+- Boat still supports only its existing native harnesses. Its parity work and
+  later removal of native runners are owned by #1161, not blocked on this ticket.
 
 ## Binding target
 
@@ -56,7 +57,7 @@ nonzero cost and a real DeepSeek call remain unverified. The later driver PR
 must record the tested CLI version/digest, configuration mapping and fixtures;
 this design does not select an unproven V2 artifact or credential-store schema.
 
-## NOW: independently mergeable cleanup
+## Completed cleanup slice
 
 One browser-safe core descriptor table owns harness IDs and shared metadata.
 Derive existing exports/validators instead of introducing a new list. Keep
@@ -79,22 +80,23 @@ Staging checks, run only by the coordinator after deploy:
    Repeat on Boat using its then-current supported path; expect no behavior change.
    Locally run existing affected tests, typecheck and any generated-artifact check.
 
-## Deferred: coordinator-gated order step 4
+## Step 4: released on Modal
 
-Do not start the ACP driver until the coordinator confirms order steps 1–3
-passed the staging lifecycle smoke: Codex opt-in on Boat with compiled bootstrap,
-dial-out/enrolment/epoch; Claude on Boat then default and native-runner removal;
-model connections and session cost on Modal. #1161–#1163 own those steps.
-Only then propose small ACP/launch/UI PRs, each with explicit staging checks.
-Reuse the same driver across hosts; do not create a Boat-native OpenCode path.
-Docker hosts follow at step 5 (#1165); Modal dial-out migration and tunnel removal
-are step 6, not prerequisites to the NOW cleanup or work for this ticket.
+The coordinator released OpenCode on Modal after verifying model connections and
+cost in production. Boat steps run in parallel and do not block this work.
+Implementation slices are a pinned ACP driver, private session/configuration
+adapter, then catalog/connection/Modal launch integration. Each is independently
+reviewable and stacked without waiting for its predecessor to merge.
 
-Final OpenCode acceptance remains future: coordinator uses its owner-supplied
-DeepSeek staging connection, runs launch/follow-up/steer/interrupt/resume/events
-smoke on Modal, and observes an answer and reported per-turn tokens. Workers use
-a fake compatible endpoint and never receive the owner's key. Adding the harness
-must not introduce another hand-maintained harness list.
+The coordinator uses its DeepSeek key for the deployed lifecycle check in
+`docs/runtime/opencode-modal.md`: launch, follow-up, active steer, interrupt,
+stop/resume, events and per-turn tokens. Workers use only fake compatible endpoints.
+The pinned real CLI was verified against a local fake streaming endpoint, including
+export/checkpoint/import/resume; this does not claim a real deployed DeepSeek pass.
+
+Docker hosts remain step 5 (#1165); Modal dial-out migration and tunnel removal
+remain step 6. Interactive subscription login and real-plan-key validation are
+not silently substituted for the API-key/custom-endpoint delivery in this slice.
 
 ## Later
 

@@ -6,6 +6,14 @@ import { join } from "node:path";
 import type { Subprocess } from "bun";
 import { GitHubBroker } from "../src/github-broker.ts";
 
+// Use Git's installed executable, not a PATH launcher that can inject a real
+// credential helper. The fixture must exercise only its private offline broker.
+function installedGit(): string {
+  const result = Bun.spawnSync(["git", "--exec-path"]);
+  if (result.exitCode !== 0) throw Error("Cannot locate the installed Git executable");
+  return join(result.stdout.toString().trim(), "git");
+}
+
 // Owning process boundary: an already-running shell, actual gh executable and Git credential IPC.
 // No network, user HOME, fixed sleeps, test-only production hooks or token-bearing argv.
 test("existing native children use new GitHub material and register it before gh/git consumption", async () => {
@@ -38,7 +46,7 @@ test("existing native children use new GitHub material and register it before gh
     await mkdir(home);
     await mkdir(bin);
     const gh = Bun.which("gh");
-    const git = Bun.which("git");
+    const git = installedGit();
     if (!gh || !git) throw Error("Actual gh and git executables required for credential-boundary verification");
     const observer = join(root, "observe-gh");
     // A consumer may read stdin: it must see EOF, never the shell control pipe.
@@ -237,138 +245,145 @@ test("late acquisition cannot publish across replacement/scrub and retired value
 
 // Installed wrapper, counting broker and offline downstream: authorization must
 // use only the positional REST endpoint, even when GH_REPO or flag values decoy it.
-test("managed REST binds acquisition to one canonical endpoint before executing gh", async () => {
-  const root = await mkdtemp(join(tmpdir(), "gh1066-"));
-  const acquired: string[] = [];
-  const broker = new GitHubBroker(() => {}, (async (_url, init) => {
-    acquired.push(JSON.parse(String(init?.body)).repository);
-    return Response.json({ token: "offline-rest-fixture" });
-  }) as typeof fetch);
-  broker.configure({
-    version: 1,
-    revision: "1",
-    generation: "1",
-    url: "https://armada.example/api/internal/github/credentials",
-    capability: `armada_gh_${"a".repeat(64)}`,
-    expiresAt: Date.now() + 60000,
-  });
-  const socket = await broker.listen(join(root, "private"));
-  try {
-    const home = join(root, "home"),
-      bin = join(root, "bin");
-    await mkdir(home);
-    await mkdir(bin);
-    const gh = join(root, "offline-gh"),
-      git = join(root, "offline-git");
-    await writeFile(gh, '#!/bin/sh\nprintf "DOWNSTREAM\\n"\nprintf "%s\\n" "$@"\n', { mode: 0o755 });
-    await writeFile(git, `#!/bin/sh\nexec "${Bun.which("git")}" "$@"\n`, { mode: 0o755 });
-    const installer = Bun.spawn(
-      ["sudo", "-n", process.execPath, join(import.meta.dir, "../dist/main.js"), "github-install"],
-      { stdin: "pipe", stdout: "pipe", stderr: "pipe" },
-    );
-    installer.stdin.write(
-      JSON.stringify({
-        root: join(root, "private"),
-        activation: socket.activation,
-        socket: socket.socket,
-        gh,
-        git,
-        ghWrapper: join(bin, "gh"),
-        gitWrapper: join(bin, "git"),
-        homes: [home],
-      }),
-    );
-    installer.stdin.end();
-    expect(await installer.exited).toBe(0);
-    const run = async (args: string[], prefix = ["api"]) => {
-      const child = Bun.spawn([join(bin, "gh"), ...prefix, ...args], {
-        env: { PATH: process.env.PATH, HOME: home, GH_REPO: "decoy/repo" },
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-      return { status: await child.exited, output: await new Response(child.stdout).text() };
-    };
-    for (const args of [
-      ["--repo", "acme/repo", "pr", "view", "1"],
-      ["-R", "acme/repo", "issue", "view", "1"],
-      ["--repo=acme/repo", "repo", "view"],
-    ]) {
-      acquired.length = 0;
-      const result = await run(args, []);
-      expect(result.status).toBe(0);
-      expect(result.output).toBe(`DOWNSTREAM\n${args.join("\n")}\n`);
-      expect(acquired).toEqual(["acme/repo"]);
+test.each(["canonical", "denied-endpoint", "denied-prefix"] as const)(
+  "managed REST binds acquisition before executing gh (%s)",
+  async (group) => {
+    const root = await mkdtemp(join(tmpdir(), "gh1066-"));
+    const acquired: string[] = [];
+    const broker = new GitHubBroker(() => {}, (async (_url, init) => {
+      acquired.push(JSON.parse(String(init?.body)).repository);
+      return Response.json({ token: "offline-rest-fixture" });
+    }) as typeof fetch);
+    broker.configure({
+      version: 1,
+      revision: "1",
+      generation: "1",
+      url: "https://armada.example/api/internal/github/credentials",
+      capability: `armada_gh_${"a".repeat(64)}`,
+      expiresAt: Date.now() + 60000,
+    });
+    const socket = await broker.listen(join(root, "private"));
+    try {
+      const home = join(root, "home"),
+        bin = join(root, "bin");
+      await mkdir(home);
+      await mkdir(bin);
+      const gh = join(root, "offline-gh"),
+        git = join(root, "offline-git");
+      await writeFile(gh, '#!/bin/sh\nprintf "DOWNSTREAM\\n"\nprintf "%s\\n" "$@"\n', { mode: 0o755 });
+      await writeFile(git, `#!/bin/sh\nexec "${installedGit()}" "$@"\n`, { mode: 0o755 });
+      const installer = Bun.spawn(
+        ["sudo", "-n", process.execPath, join(import.meta.dir, "../dist/main.js"), "github-install"],
+        { stdin: "pipe", stdout: "pipe", stderr: "pipe" },
+      );
+      installer.stdin.write(
+        JSON.stringify({
+          root: join(root, "private"),
+          activation: socket.activation,
+          socket: socket.socket,
+          gh,
+          git,
+          ghWrapper: join(bin, "gh"),
+          gitWrapper: join(bin, "git"),
+          homes: [home],
+        }),
+      );
+      installer.stdin.end();
+      expect(await installer.exited).toBe(0);
+      const run = async (args: string[], prefix = ["api"]) => {
+        const child = Bun.spawn([join(bin, "gh"), ...prefix, ...args], {
+          env: { PATH: process.env.PATH, HOME: home, GH_REPO: "decoy/repo" },
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+        return { status: await child.exited, output: await new Response(child.stdout).text() };
+      };
+      if (group === "canonical") {
+        for (const args of [
+          ["--repo", "acme/repo", "pr", "view", "1"],
+          ["-R", "acme/repo", "issue", "view", "1"],
+          ["--repo=acme/repo", "repo", "view"],
+        ]) {
+          acquired.length = 0;
+          const result = await run(args, []);
+          expect(result.status).toBe(0);
+          expect(result.output).toBe(`DOWNSTREAM\n${args.join("\n")}\n`);
+          expect(acquired).toEqual(["acme/repo"]);
+        }
+        for (const args of [["--help"], ["-h"], ["--version"]]) {
+          acquired.length = 0;
+          const result = await run(args, []);
+          expect(result.status).toBe(0);
+          expect(result.output).toBe(`DOWNSTREAM\n${args.join("\n")}\n`);
+          expect(acquired).toEqual(["decoy/repo"]);
+        }
+        const allowed = [
+          ["repos/acme/repo/pulls"],
+          ["--method", "POST", "/repos/acme/repo/issues", "--field", "title=example"],
+          ["repos/acme/repo/pulls/1/reviews", "-X", "POST", "--raw-field=body=example"],
+          ["--header", "repos/decoy/repo", "repos/acme/repo/issues", "--hostname=github.com"],
+          ["repos/acme/repo", "--jq", ".name", "--include"],
+        ];
+        for (const args of allowed) {
+          acquired.length = 0;
+          const result = await run(args);
+          expect(result.status).toBe(0);
+          expect(result.output).toBe(`DOWNSTREAM\napi\n${args.join("\n")}\n`);
+          expect(acquired).toEqual(["acme/repo"]);
+        }
+      }
+      const denied = [
+        ["user"],
+        ["repositories/123/issues"],
+        ["graphql"],
+        ["https://api.github.com/repos/acme/repo/issues"],
+        ["repos/{owner}/{repo}/issues"],
+        ["//repos/acme/repo/issues"],
+        ["repos/acme/repo/../other"],
+        ["repos/acme/repo/%2e%2e/other"],
+        ["repos/acme%2frepo/issues"],
+        ["repos/acme/repo?path=other"],
+        ["repos/../repo/issues"],
+        ["repos/acme/repo/"],
+        ["user", "--field", "repos/acme/repo"],
+        ["--header", "repos/acme/repo", "user"],
+        ["--field=repos/acme/repo", "repositories/123"],
+        ["repos/acme/repo", "user"],
+        ["user", "repos/acme/repo"],
+        ["--unknown", "repos/acme/repo"],
+        ["repos/acme/repo", "--field"],
+        ["--hostname=elsewhere.example", "repos/acme/repo"],
+        ["--", "repos/acme/repo"],
+        ["-XPOST", "repos/acme/repo"],
+      ];
+      for (const args of group === "denied-endpoint" ? denied : []) {
+        acquired.length = 0;
+        const result = await run(args);
+        expect(result.status).toBe(1);
+        expect(result.output).toBe("");
+        expect(acquired).toEqual([]);
+      }
+      if (group === "denied-prefix") {
+        for (const args of [
+          ["--repo", "acme/repo", "api", "user"],
+          ["--repo=acme/repo", "api", "repositories/123/issues"],
+          ["--repo", "acme/repo", "repo", "delete"],
+          ["--method", "GET", "api", "user"],
+          ["--hostname", "github.com", "api", "repositories/123/issues"],
+          ["--method=GET", "api", "graphql"],
+          ["-X", "GET", "api", "user"],
+          ["--header", "repos/acme/repo", "api", "user"],
+        ]) {
+          acquired.length = 0;
+          const result = await run(args, []);
+          expect(result.status).toBe(1);
+          expect(result.output).toBe("");
+          expect(acquired).toEqual([]);
+        }
+      }
+    } finally {
+      socket.close();
+      await rm(root, { recursive: true, force: true });
     }
-    for (const args of [["--help"], ["-h"], ["--version"]]) {
-      acquired.length = 0;
-      const result = await run(args, []);
-      expect(result.status).toBe(0);
-      expect(result.output).toBe(`DOWNSTREAM\n${args.join("\n")}\n`);
-      expect(acquired).toEqual(["decoy/repo"]);
-    }
-    const allowed = [
-      ["repos/acme/repo/pulls"],
-      ["--method", "POST", "/repos/acme/repo/issues", "--field", "title=example"],
-      ["repos/acme/repo/pulls/1/reviews", "-X", "POST", "--raw-field=body=example"],
-      ["--header", "repos/decoy/repo", "repos/acme/repo/issues", "--hostname=github.com"],
-      ["repos/acme/repo", "--jq", ".name", "--include"],
-    ];
-    for (const args of allowed) {
-      acquired.length = 0;
-      const result = await run(args);
-      expect(result.status).toBe(0);
-      expect(result.output).toBe(`DOWNSTREAM\napi\n${args.join("\n")}\n`);
-      expect(acquired).toEqual(["acme/repo"]);
-    }
-    const denied = [
-      ["user"],
-      ["repositories/123/issues"],
-      ["graphql"],
-      ["https://api.github.com/repos/acme/repo/issues"],
-      ["repos/{owner}/{repo}/issues"],
-      ["//repos/acme/repo/issues"],
-      ["repos/acme/repo/../other"],
-      ["repos/acme/repo/%2e%2e/other"],
-      ["repos/acme%2frepo/issues"],
-      ["repos/acme/repo?path=other"],
-      ["repos/../repo/issues"],
-      ["repos/acme/repo/"],
-      ["user", "--field", "repos/acme/repo"],
-      ["--header", "repos/acme/repo", "user"],
-      ["--field=repos/acme/repo", "repositories/123"],
-      ["repos/acme/repo", "user"],
-      ["user", "repos/acme/repo"],
-      ["--unknown", "repos/acme/repo"],
-      ["repos/acme/repo", "--field"],
-      ["--hostname=elsewhere.example", "repos/acme/repo"],
-      ["--", "repos/acme/repo"],
-      ["-XPOST", "repos/acme/repo"],
-    ];
-    for (const args of denied) {
-      acquired.length = 0;
-      const result = await run(args);
-      expect(result.status).toBe(1);
-      expect(result.output).toBe("");
-      expect(acquired).toEqual([]);
-    }
-    for (const args of [
-      ["--repo", "acme/repo", "api", "user"],
-      ["--repo=acme/repo", "api", "repositories/123/issues"],
-      ["--repo", "acme/repo", "repo", "delete"],
-      ["--method", "GET", "api", "user"],
-      ["--hostname", "github.com", "api", "repositories/123/issues"],
-      ["--method=GET", "api", "graphql"],
-      ["-X", "GET", "api", "user"],
-      ["--header", "repos/acme/repo", "api", "user"],
-    ]) {
-      acquired.length = 0;
-      const result = await run(args, []);
-      expect(result.status).toBe(1);
-      expect(result.output).toBe("");
-      expect(acquired).toEqual([]);
-    }
-  } finally {
-    socket.close();
-    await rm(root, { recursive: true, force: true });
-  }
-});
+  },
+);

@@ -6,6 +6,7 @@ export const HARNESS_LABELS: Record<Harness, string> = mapHarnesses((descriptor)
 
 /** A reasoning effort as the model pickers name it. */
 export const EFFORT_LABEL: Record<string, string> = {
+  default: "Default",
   low: "Low",
   medium: "Medium",
   high: "High",

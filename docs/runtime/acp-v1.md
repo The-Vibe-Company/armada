@@ -27,7 +27,7 @@ steering therefore cancels and starts a continuation on the same session,
 matching Armada's existing restart semantics rather than pretending native
 injection is supported. Cancelled and continued usage is combined into the same
 Armada prompt. Missing native counters remain unknown, not zero or estimated.
-Only the harness's prompt-response usage is used, never context/cost snapshots.
+The generic ACP transport forwards prompt-response usage, never context/cost snapshots. The OpenCode integration meters new exported native assistant messages because this pin's ACP response contains only the final model step.
 
 ## Transport and safety
 

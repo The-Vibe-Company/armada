@@ -69,6 +69,7 @@ describe("database", () => {
         "codex_auth",
         "modal",
         "skillpack",
+        "opencode",
       ]);
       expect(await labels(db, "notify_status")).toEqual(["finished", "failed"]);
     } finally {

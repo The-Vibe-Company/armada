@@ -54,8 +54,8 @@ ownership replacement during refresh cannot return it. Unknown broker metadata
 and private diagnostics are not reflected. In-memory upstream port avoids OAuth
 or inference; existing broker and Codex native-driver tests own those contracts.
 
-Before a future opt-in uses this mode, rebuild/publish the compiled runtime and
-selected harness artifacts from this change and select that manifest on the
-server. No prerequisite changes for existing default/native/Modal launches.
+Before a future opt-in uses this mode, deploy the normal artifact-bearing Docker
+image and select its matching compiled build manifest on the server (see
+[publication](runtime-bootstrap-cache.md)); no separate publication is needed. No prerequisite changes for existing default/native/Modal launches.
 Per-launch opt-in/durable routing and launch/startup/cleanup binding still remain
 for ONE real Boat answer; its exact coordinator check will follow on #1161.

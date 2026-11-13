@@ -26,6 +26,7 @@ import { type HelperNegotiation, negotiateHelper } from "./helper.ts";
 import { LaunchError, type LaunchInitializationStage } from "./launch-error.ts";
 import { type MachineSize, resolveMachineSize } from "./machine-size.ts";
 import { type ModelChoice, resolveModelChoice } from "./models.ts";
+import { OPENCODE_ENDPOINT_ENV, parseOpenCodeEndpoint } from "./opencode-endpoint.ts";
 import { PrivateSkillError } from "./private-skill-error.ts";
 import { isNonMutatingProviderRefusal, type Provider, ProviderError } from "./provider.ts";
 import { resolveRepositoryDir } from "./repository-context.ts";
@@ -300,6 +301,21 @@ export async function launchSandbox(
     throw new LaunchError("invalid_request", "Custom Claude gateways currently require Modal.");
   if (credentials.env[CODEX_ENDPOINT_ENV] && provider.id !== "modal" && !runtime)
     throw new LaunchError("invalid_request", "Custom Codex endpoints currently require Modal.");
+  if (harness === "opencode") {
+    if (provider.id !== "modal") throw new LaunchError("invalid_request", "OpenCode currently requires Modal.");
+    const configured = credentials.env[OPENCODE_ENDPOINT_ENV];
+    if (configured) {
+      const endpoint = parseOpenCodeEndpoint(JSON.parse(configured));
+      const wanted = choice.model;
+      if (!endpoint.models.some((id) => wanted === `armada/${id}`))
+        throw new LaunchError("invalid_request", "Choose an armada/<model> configured on the OpenCode connection.");
+    } else if (!choice.model.startsWith("opencode/") && !choice.model.startsWith("opencode-go/")) {
+      throw new LaunchError(
+        "invalid_request",
+        "An OpenCode key requires an explicit opencode/<model> or opencode-go/<model> selection.",
+      );
+    }
+  }
   const github: GitHubAccess = credentials.github ?? { status: "not_connected", message: GITHUB_NOT_CONNECTED };
   const connected = github.status === "connected" ? github : null;
   const env = connected ? { ...credentials.env, ...githubEnv(connected.token) } : credentials.env;
@@ -884,7 +900,7 @@ function checkHarness(provider: Provider, harness: string): Harness {
 /** Before anything is allocated: an unknown model or effort is refused, never replaced by another. */
 function checkModel(provider: Provider, harness: Harness, request: LaunchRequest): ModelChoice {
   const choice = resolveModelChoice(harness, request);
-  if (!provider.capabilities[harness].reasoningEffort) {
+  if (!provider.capabilities[harness]?.reasoningEffort) {
     throw new LaunchError("invalid_request", `${provider.id} cannot set a reasoning effort for ${harness}.`);
   }
   return choice;

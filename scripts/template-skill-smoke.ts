@@ -1,10 +1,11 @@
+import type { Harness } from "../packages/core/src/contract.ts";
 import { PRIVATE_SKILL_FAILURES } from "../packages/core/src/private-skill-error.ts";
 import { TEMPLATE_REFUSAL_HELP } from "../packages/core/src/templates.ts";
 
 /** API-only deployed template/skill checks. Readable canaries are never printed. */
 export interface TemplateSkillCase {
   provider: "boat" | "modal";
-  harness: "claude" | "codex";
+  harness: Harness;
   org: string;
   goldenId: string;
   model: string;

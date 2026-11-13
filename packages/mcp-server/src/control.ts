@@ -858,7 +858,7 @@ async function dispatch(
       async () => {
         const result = await provider.testModelConnection!({
           sandboxId: found.providerSandboxId,
-          harness: found.harness,
+          harness,
           model,
         });
         if (!isModelConnectionTestResult(result))

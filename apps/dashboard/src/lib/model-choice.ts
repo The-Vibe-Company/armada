@@ -1,4 +1,5 @@
 import {
+  HARNESS_CATALOG,
   HARNESSES,
   type Harness,
   isSandboxProvider,
@@ -65,7 +66,8 @@ export function launchArgs(
   } & ModelFields,
 ): Parsed<Omit<LaunchArgs, "connections">> {
   const harness = HARNESSES.find((candidate) => candidate === fields.harness);
-  if (!harness) return { ok: false, error: "Choose Claude Code or Codex." };
+  if (!harness)
+    return { ok: false, error: `Choose an agent: ${HARNESSES.map((id) => HARNESS_CATALOG[id].label).join(", ")}.` };
   if (!fields.golden.trim() || !fields.org.trim() || !isSandboxProvider(fields.provider)) {
     return { ok: false, error: "That request is not valid." };
   }
@@ -73,6 +75,8 @@ export function launchArgs(
   if (fields.armadaAccess === "on" && harness !== "codex")
     return { ok: false, error: "Armada access is available for Codex only." };
   const provider = fields.provider;
+  if (provider === "boat" && HARNESS_CATALOG[harness].boatProvider === null)
+    return { ok: false, error: `${HARNESS_CATALOG[harness].label} currently requires Modal.` };
   const repo = fields.repo?.trim() ?? "";
   if (repo && !REPO.test(repo)) return { ok: false, error: "Choose a repository recorded in the golden." };
   const size = fields.size?.trim() ?? "";

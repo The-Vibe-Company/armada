@@ -1468,7 +1468,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     },
     async (args) => {
       const { sandbox: found, provider } = await live(args.id);
-      const delivery = provider.capabilities[found.harness].steer;
+      const delivery = provider.capabilities[found.harness]?.steer ?? "none";
       if (delivery === "none") throw new ToolError("unsupported", `${found.harness} cannot be steered here.`);
       if (delivery === "restart" && found.credentialId)
         await context.launchCredentials.resolve(
@@ -1551,7 +1551,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     },
     async (args) => {
       const { sandbox: found, provider } = await live(args.id);
-      if (!provider.capabilities[found.harness].interrupt) {
+      if (!provider.capabilities[found.harness]?.interrupt) {
         throw new ToolError("unsupported", `${found.harness} cannot be interrupted here.`);
       }
       await provider

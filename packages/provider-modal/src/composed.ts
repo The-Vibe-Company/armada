@@ -16,6 +16,7 @@ import { createRunnerTransport } from "./transport.ts";
 
 export type { McpConfiguration } from "./ports.ts";
 export interface HarnessEnvironment {
+  opencodeEnv?: Record<string, string>;
   claudeEnv: Record<string, string>;
   codexEnv: Record<string, string>;
   codexAuthJson?: string;
@@ -133,6 +134,8 @@ async function composeModalProvider(options: ComposedModalOptions) {
         cwd: "/home/user",
         port,
         grant: grants.issue(row),
+        opencodeExecutable: "/opt/armada/opencode",
+        opencodeEnv: withTrustedHarnessPath(harness.opencodeEnv ?? {}),
         claudeExecutable: "/usr/local/bin/claude",
         codexExecutable: "/usr/local/bin/codex",
         claudeEnv: withTrustedHarnessPath(harness.claudeEnv),

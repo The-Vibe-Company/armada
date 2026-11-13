@@ -365,3 +365,41 @@ test.each(
   expect(reads).toBe(0);
   expect(h.requests).toHaveLength(0);
 });
+
+test("CLI creates an OpenCode chat-compatible account with explicit upstream models and a stdin-only key", async () => {
+  const h = setup();
+  const apiKey = randomUUID();
+  expect(
+    await run(
+      [
+        "creds",
+        "set",
+        "opencode",
+        "--name",
+        "DeepSeek",
+        "--base-url",
+        "https://api.deepseek.com/v1/",
+        "--models",
+        "deepseek-flash,deepseek-v4-pro",
+      ],
+      { out: h.auth.out, err: h.auth.err },
+      {
+        auth: h.auth,
+        readFile: async () => {
+          throw Error("unexpected file");
+        },
+        readStdin: async () => apiKey,
+      },
+    ),
+  ).toBe(0);
+  const request = h.requests[0]!;
+  expect(new URL(request.url).pathname).toBe("/api/v1/creds/accounts/set");
+  const body = (await request.json()) as { kind: string; value: string };
+  expect(body.kind).toBe("opencode");
+  expect(JSON.parse(body.value)).toEqual({
+    endpoint: { version: 1, baseUrl: "https://api.deepseek.com/v1", models: ["deepseek-flash", "deepseek-v4-pro"] },
+    apiKey,
+  });
+  expect(h.output.join("")).not.toContain(apiKey);
+  expect(h.output.join("")).toContain("armada/<upstream-model>");
+});

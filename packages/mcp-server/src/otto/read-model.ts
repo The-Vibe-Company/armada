@@ -94,7 +94,16 @@ export async function readOttoModel(sql: Sql, scope: OttoScope, caller: Caller, 
   for (const s of sandboxes) {
     const repo = repositoryOf(s.resource_project?.url);
     if (repo && repo !== scope.repository) continue;
-    const task = repo === scope.repository ? issueFromBranch(s.branch) : null;
+    const linkedPrs = resources.filter(
+      (r) => r.kind === "pr" && (r.owner.sandboxId === s.id || r.owner.candidateSandboxIds?.includes(s.id)),
+    );
+    const linkedTasks = [
+      ...new Set(linkedPrs.map((r) => r.taskIssue).filter((issue): issue is number => issue !== null)),
+    ];
+    const task =
+      linkedTasks.length > 1
+        ? null
+        : (linkedTasks[0] ?? (repo === scope.repository ? issueFromBranch(s.branch) : null));
     if (task !== null && !tasks.has(task)) {
       const observed = facts.find((f) => f.kind === "issue" && f.evidence.number === task);
       tasks.set(task, {
@@ -104,9 +113,7 @@ export async function readOttoModel(sql: Sql, scope: OttoScope, caller: Caller, 
         factId: observed?.id ?? null,
       });
     }
-    const linked = resources.some(
-      (r) => r.kind === "pr" && (r.owner.sandboxId === s.id || r.owner.candidateSandboxIds?.includes(s.id)),
-    );
+    const linked = linkedPrs.length > 0;
     const orphan =
       repo === scope.repository &&
       s.branchComplete &&
@@ -128,6 +135,7 @@ export async function readOttoModel(sql: Sql, scope: OttoScope, caller: Caller, 
       activity: { state: s.activity, observedAt: s.activityObservedAt, since: s.activityAt },
       evidence: {
         status: s.status,
+        linkedTaskIssues: linkedTasks,
         launchBranch: s.resource_project?.branch ?? null,
         branch: s.branch,
         branchIsCurrent: false,

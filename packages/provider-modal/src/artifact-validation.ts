@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { OPENCODE_ARTIFACT } from "../../agent-runtime/src/opencode-artifact.ts";
 import { refusal } from "./errors.ts";
 
 /** Shared portable artifact contract; native resources belong to the disk adapter. */
@@ -15,7 +16,14 @@ export function validateRunnerArtifact(manifest: unknown, bundle: Uint8Array): {
     !("claude" in manifest) ||
     manifest.claude !== "2.1.322" ||
     !("codex" in manifest) ||
-    manifest.codex !== "0.167.0"
+    manifest.codex !== "0.167.0" ||
+    !("opencode" in manifest) ||
+    !manifest.opencode ||
+    typeof manifest.opencode !== "object" ||
+    !("version" in manifest.opencode) ||
+    manifest.opencode.version !== OPENCODE_ARTIFACT.version ||
+    !("sha256" in manifest.opencode) ||
+    !(Object.values(OPENCODE_ARTIFACT.sha256) as readonly unknown[]).includes(manifest.opencode.sha256)
   )
     throw refusal("invalid_request", "Runtime artifact manifest does not match pinned toolchain.");
   if (!bundle.length) throw refusal("invalid_request", "Runtime artifact is empty.");

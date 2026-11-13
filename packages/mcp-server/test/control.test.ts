@@ -446,9 +446,9 @@ describe("armada org and armada creds against the control API", () => {
       const extra = await stan.run(["creds", "set", "openai", "sk-pasted-on-the-command-line"]);
       expect(extra.code).toBe(2);
       expect(extra.err).not.toContain("sk-pasted");
-      const unknown = await stan.run(["creds", "set", "opencode"], { stdin: "x" });
+      const unknown = await stan.run(["creds", "set", "not-a-credential"], { stdin: "x" });
       expect(unknown.code).toBe(2);
-      expect(unknown.err).toContain("Unknown credential 'opencode'");
+      expect(unknown.err).toContain("Unknown credential 'not-a-credential'");
       const spaced = await stan.run(["creds", "set", "openai"], { stdin: "sk one two" });
       expect(spaced.code).toBe(2);
       expect(spaced.err).not.toContain("one two");

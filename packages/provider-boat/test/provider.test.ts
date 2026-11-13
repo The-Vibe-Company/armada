@@ -1205,3 +1205,14 @@ test.each(["provisioning", "archived", "suspended", "PRIVATE_STATE"])(
     }
   },
 );
+
+// Unsupported harness admission must not wake compute or run a native bootstrap on Boat.
+test("OpenCode is not advertised or dispatched through Boat's native API", async () => {
+  const boat = fakeBoat();
+  expect(boat.provider.harnesses).not.toContain("opencode");
+  expect(boat.provider.capabilities.opencode).toBeUndefined();
+  await expect(boat.provider.prompt({ sandboxId: ID, harness: "opencode", text: "hello" })).rejects.toMatchObject({
+    code: "invalid_request",
+  });
+  expect(boat.requests).toHaveLength(0);
+});

@@ -35,7 +35,14 @@ test.skipIf(process.platform !== "linux")(
     };
     try {
       await absent();
-      for (const variables of [{ PATH: "bad" }, { OPENAI_API_KEY: "bad" }, { APP_REGION: "bad\0value" }])
+      for (const variables of [
+        { PATH: "bad" },
+        { OPENAI_API_KEY: "bad" },
+        { OPENCODE_CONFIG_CONTENT: "bad" },
+        { XDG_DATA_HOME: "/tmp/outside-native-state" },
+        { XDG_CONFIG_HOME: "/tmp/outside-native-state" },
+        { APP_REGION: "bad\0value" },
+      ])
         expect((await call("configureReadableVariables", { harness: "codex", variables })).status).toBe(409);
       const variables = { APP_REGION: "eu\n$(not-shell)", APP_EMPTY: "" };
       expect((await call("configureReadableVariables", { harness: "codex", variables })).status).toBe(200);

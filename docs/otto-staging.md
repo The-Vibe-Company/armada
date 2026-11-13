@@ -44,7 +44,7 @@ A hidden or unknown active binding prevents absence-based orphan assertions.
 
 Exact repository/ref matching from recorded project or prompt branch tokens gives
 `owner.state=candidate`, never confirmed ownership. Multiple matches are UNKNOWN.
-A report of this PR and exact head, or an observed head transition between two
+A consistent recorded report of this PR and exact head, or an observed head transition between two
 observations inside that sandbox's running turn, gives `owned` with
 `confirmation=confirmed`. A repeated listing of an unchanged head is not a move.
 Candidate IDs are restricted to visible sandboxes; prompts and sealed events are
@@ -104,3 +104,14 @@ cannot replace a newer observed head. Missing/future PR timestamps are rejected.
 Reconciliation points retain page-observation times, not transaction admission
 or later per-PR work-query time. Work evidence IDs/times are returned in resource
 `evidence.workFacts` for inspection.
+
+
+Existing canonical final assistant `READY TO MERGE: PR #N head SHA` reports also
+confirm a sandbox in the same recorded repository, even when launch branch
+metadata lags behind current work. Only a primary first-line report qualifies;
+embedded mentions, tool echoes, partial/delta messages, retractions and nested
+agent output cannot. No new worker reporting tool is needed. Contradictory
+PR-number/URL metadata reports do not confirm ownership.
+Journal reads cap event size and total Boat bytes; an oversized/truncated tail is
+UNKNOWN, never an old idle state. Modal journal reads use the exact immutable
+workspace/environment/App scope, not an unscoped provider sandbox ID.

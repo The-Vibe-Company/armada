@@ -154,6 +154,18 @@ test("requested production pairs stay unavailable and explain their independent 
         })),
         accountKinds: ["openai", "codex_auth"],
       },
+      {
+        harness: "opencode",
+        defaultModel: MODEL_CATALOG.opencode.defaultModel,
+        defaultReasoningEffort: MODEL_CATALOG.opencode.defaultReasoningEffort,
+        reasoningEfforts: [...MODEL_CATALOG.opencode.reasoningEfforts],
+        models: MODEL_CATALOG.opencode.models.map(({ id, label, reasoningEfforts }) => ({
+          id,
+          label,
+          reasoningEfforts: [...reasoningEfforts],
+        })),
+        accountKinds: ["opencode"],
+      },
     ],
   };
   expect(await response.json()).toEqual(expected);
