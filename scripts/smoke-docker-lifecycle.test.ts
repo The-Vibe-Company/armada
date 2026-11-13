@@ -200,3 +200,30 @@ assert "offline-only" not in output.getvalue()
   );
   expect(result.status).toBe(0);
 });
+
+test("snapshot smoke refuses repository overrides before config or host work", () => {
+  const result = spawnSync(
+    "python3",
+    [
+      "-c",
+      `
+import contextlib, io, runpy, sys
+from unittest.mock import patch
+main = runpy.run_path("smoke-docker-lifecycle.py")["main"]
+error = io.StringIO()
+argv = ["smoke", "--server", "https://armada.test", "--org", "org", "--credential", "account", "--host-id", "retained-host", "--snapshot", "--config", "never-read.json", "--repository", "example/project", "--github"]
+with patch.object(sys, "argv", argv), patch("builtins.open", side_effect=AssertionError("No config or host work")), contextlib.redirect_stderr(error):
+    try:
+        main()
+    except SystemExit as refused:
+        assert refused.code == 2
+    else:
+        raise AssertionError("Snapshot repository override was accepted")
+assert "--snapshot cannot combine with --repository or --github" in error.getvalue()
+`,
+    ],
+    { cwd: import.meta.dir, encoding: "utf8" },
+  );
+  expect(result.stderr).toBe("");
+  expect(result.status).toBe(0);
+});
