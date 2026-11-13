@@ -57,9 +57,52 @@ current `runtime.kind: "armada"`, matching epoch/revision and
 `credentialRequests > 0` from the private broker status. Expect `github: "verified"`
 and `githubProof` in safe JSON. The same sandbox is stopped once even on failure.
 Optional `--checkpoint` adds sealed/stopped history readback without another start.
-`--github --resume` is refused before allocation: that combined acceptance needs
-explicit new-epoch setup and is not claimed by this check.
+Prefer the combined check below when validating resume and GitHub together rather
+than spending another sandbox allocation on a separate resume check.
 
 This does not prove GitHub access on staging until the coordinator runs it. It
 creates no commits, PRs or other GitHub mutations. Existing milestone and follow-up
 staging passes do not establish this additional GitHub behavior.
+
+
+## Preferred batched check: checkpoint, resume, GitHub in both epochs
+
+Both runtime slices are merged (#1356 and #1360). This client-only addition needs
+no new migration or server feature. Their existing migrations must already be
+applied normally, with the matching server/runtime image and the opt-in enabled.
+Use the same coordinator environment and owner-accessible golden repository above:
+
+```sh
+ARMADA_RUNTIME_GITHUB_REPOSITORY=The-Vibe-Company/armada \
+ARMADA_RUNTIME_SMOKE=one_real_boat_launch \
+bun scripts/check-boat-runtime.ts --github --resume
+```
+
+**Budget: ONE fresh sandbox allocation plus ONE explicit same-VM resume activation
+(two host starts, not a promise of one plan quota charge), FOUR prompts, TWO stops.**
+No allocation/activation retry, additional sandbox or separate smoke is needed.
+All diagnostics/follow-up/checkpoint/resume/GitHub capabilities and owner repository
+access are checked before allocation.
+
+1. Initial prompt teaches a random token and returns an exact ACK.
+2. Explicit GitHub refresh in epoch 1, read-only `gh api` + memory recall in the
+   same conversation. Require actual command success and broker acquisition proof.
+3. Checkpoint epoch 1, stop, re-read its receipt and both histories while stopped.
+4. Resume the SAME physical/logical sandbox and conversation into epoch 2. The
+   resumed prompt recalls the token without receiving it again. Native restore
+   must succeed before inference; no native runner fallback.
+5. Before GitHub refresh, require current-epoch status `configured:false` (old
+   authority must not survive). Explicitly configure a DIFFERENT revision in
+   epoch 2. A fourth same-conversation prompt runs the read-only `gh api` command
+   and recalls the token. Require a successful command result belonging to THIS
+   fourth prompt, matching epoch/revision and `credentialRequests > 0`; an old
+   epoch's successful command cannot satisfy the new proof.
+6. Checkpoint epoch 2, stop, re-read its receipt and ALL FOUR prompts' histories.
+
+Expected final JSON includes `resume:"verified"`, `githubAfterResume:"verified"`,
+`source:"armada-runtime"`, epoch 2 and `githubProof` naming the fourth prompt,
+new revision and positive acquisition count, followed by
+`Runtime resume and stopped history verified.` Initial-phase success alone is
+not a combined pass. Unknown delivery or any mismatch stops known compute and
+fails; retain printed request UUIDs rather than launching or activating again.
+This command is a coordinator acceptance check, not a claim that staging passed.
