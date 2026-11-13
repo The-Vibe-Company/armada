@@ -893,3 +893,29 @@ The parity probe's shared 35-minute polling deadline still applies; exhausted
 budget can leave cleanup unconfirmed. The journal-enabled wrapper additionally
 runs its own reserved cleanup phase. This slice does not prove the cause of the
 historical five remaining rows or guarantee deletion after provider refusal.
+
+#### Idle pause and wake-on-send (#1562)
+
+The same table now includes distinct `idle-pause` and `wake-on-send` rows.
+They are **not** aliases for `stop`, `resume` or `resume-recall`: those rows
+prove explicit control, not the server's idle timer or an ordinary message
+waking a stopped conversation. Until dedicated probes are implemented, all
+three providers report `not-run: probe_not_implemented` for these rows.
+Selecting either row with `--feature` prints that debt without allocating
+compute or implying a pass; the existing feature/provider filters still apply.
+
+Outstanding proof belongs to #1562 and #1532. The coordinator must observe an
+eligible enrolled runtime's last terminal turn, unchanged absolute deadline,
+checkpoint acknowledgement, and confirmed provider compute shutdown after the
+configured idle delay. Then send through the dashboard's ordinary message
+request and verify a recalled token in the same conversation, with one accepted
+turn on identical request-ID replay. Record the actual times/provider evidence;
+an HTTP stop acknowledgement or a locally mocked test is not sufficient.
+Run the same sequence on Boat, Modal and the owner's Docker host. Docker idle
+checkpoint/pause and ordinary-send wake are not implemented by the Boat/Modal
+runtime paths; do not infer Docker support from those implementations.
+
+A default ten-minute idle delay cannot be proven in a two-minute feature run.
+Any shortened staging-only global idle setting and its restoration require
+coordinator/operator control. This procedure neither changes that setting nor
+adds a new script, CI job, provider call or staging success claim.
