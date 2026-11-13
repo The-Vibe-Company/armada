@@ -445,6 +445,8 @@ export interface EventsRequest {
 }
 
 export interface EventPage {
+  /** Only an authenticated Armada journal archive reader sets this provenance. */
+  source?: "armada-runtime";
   events: AgentEvent[];
   /** Exclusive oldest boundary for the next backward read. Events are always chronological. */
   olderCursor?: string;

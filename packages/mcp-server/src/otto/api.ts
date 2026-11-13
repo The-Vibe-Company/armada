@@ -3,6 +3,7 @@ import type { Sql } from "@armada/core/server";
 import type { CallerResult } from "../caller.ts";
 import type { Route } from "../http.ts";
 import type { OttoScope } from "./observation.ts";
+import { orphanDays } from "./orphan-days.ts";
 import { readOttoModel } from "./read-model.ts";
 
 /** Auth is deliberately per request; service role reads never bypass caller membership. */
@@ -11,6 +12,7 @@ export function createOttoApi(
   scope: OttoScope,
   authenticate: (request: Request) => Promise<CallerResult>,
   now = () => new Date(),
+  encryptionKey?: string,
 ): Route {
   return async (request) => {
     const url = new URL(request.url);
@@ -69,22 +71,42 @@ export function createOttoApi(
               : null,
         });
       }
-      const model = await readOttoModel(sql, scope, auth.caller, now());
-      const orphans = model.resources
-        .filter((r) => r.kind === "pr" || r.taskIssue === null)
-        .map((resource) => ({
-          resource,
-          state: "unknown",
-          reason: resource.reason,
-          day: now().toISOString().slice(0, 10),
-        }));
+      const observedNow = now();
+      const day = url.searchParams.get("day") ?? observedNow.toISOString().slice(0, 10);
+      if (
+        !/^\d{4}-\d{2}-\d{2}$/.test(day) ||
+        !Number.isFinite(Date.parse(day)) ||
+        new Date(day).toISOString().slice(0, 10) !== day ||
+        day > observedNow.toISOString().slice(0, 10)
+      )
+        return reply({ error: "invalid_day" }, 400);
+      const model = await readOttoModel(sql, scope, auth.caller, observedNow, encryptionKey);
+      const daily = await orphanDays(
+        sql,
+        scope,
+        auth.caller,
+        model.resources,
+        model.completeness === "complete",
+        observedNow,
+        day,
+      );
+      const unknown = model.resources
+        .filter(
+          (r) =>
+            r.owner.state === "unknown" ||
+            r.owner.state === "candidate" ||
+            r.activity?.state === "unknown" ||
+            (r.activity?.state === "idle" && r.needsWork === "unknown"),
+        )
+        .map((resource) => ({ resource, state: "unknown", reason: resource.reason, day }));
+      const orphans = day === observedNow.toISOString().slice(0, 10) ? [...daily, ...unknown] : daily;
       const values =
         view === "resources"
           ? model.resources.map((r) => ({ key: `${r.kind}:${r.externalId}`, value: r }))
           : view === "tasks"
             ? model.tasks.map((t) => ({ key: String(t.issueNumber).padStart(16, "0"), value: t }))
             : view === "orphans"
-              ? orphans.map((o) => ({ key: `${o.resource.kind}:${o.resource.externalId}`, value: o }))
+              ? orphans.map((o) => ({ key: `${o.resource.kind}:${o.resource.externalId}:${o.reason}`, value: o }))
               : [
                   {
                     key: "summary",
@@ -93,13 +115,15 @@ export function createOttoApi(
                         model.completeness === "complete"
                           ? model.resources.filter((r) => r.kind === "pr").length
                           : null,
-                      orphanCount: null,
-                      ownershipCompleteness: "unknown",
-                      fleetCoverage: "armada_registered_only",
-                      limitations: [
-                        "Current sandbox checkout/task responsibility is not observed by existing metadata.",
-                        "Unknown candidates are not confirmed orphans; historical orphan detection unavailable.",
-                      ],
+                      orphanCount:
+                        model.orphanCompleteness === "complete" ? daily.filter((o) => o.current === true).length : null,
+                      confirmedDailyOrphanCount: daily.length,
+                      ownershipCompleteness: model.ownershipCompleteness,
+                      orphanCompleteness: model.orphanCompleteness,
+                      fleetCompleteness: model.fleetCompleteness,
+                      fleetCoverage: "armada_database",
+                      fleetScope: "caller_visible",
+                      notObservable: ["external_workstations"],
                     },
                   },
                 ];
@@ -109,7 +133,10 @@ export function createOttoApi(
       return reply({
         items: sorted.slice(0, limit).map((v) => v.value),
         observedAt: model.observedAt,
-        completeness: view === "summary" ? model.completeness : "unknown",
+        completeness: model.completeness,
+        ownershipCompleteness: model.ownershipCompleteness,
+        orphanCompleteness: model.orphanCompleteness,
+        fleetCompleteness: model.fleetCompleteness,
         githubCompleteness: model.completeness,
         nextCursor: sorted.length > limit ? sorted[limit - 1]?.key : null,
       });
