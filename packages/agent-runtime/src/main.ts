@@ -494,8 +494,17 @@ async function main(dialout = false) {
         }),
       }),
     );
-    const body = (await response.json()) as { result?: { sessionId?: string } };
-    if (response.status !== 200 || body.result?.sessionId !== session) throw Error("runtime_native_restore_failed");
+    const body = (await response.json()) as {
+      result?: { nativeSessionId?: string; physicalGeneration?: string; conversationId?: string; verified?: boolean };
+    };
+    if (
+      response.status !== 200 ||
+      body.result?.verified !== true ||
+      body.result.nativeSessionId !== session ||
+      body.result.physicalGeneration !== config.grant.generation ||
+      body.result.conversationId !== restore.conversationId
+    )
+      throw Error("runtime_native_restore_failed");
   }
   const flush = setInterval(() => {
     void runner.flushOutbox().catch(() => {});

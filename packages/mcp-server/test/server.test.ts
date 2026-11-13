@@ -362,6 +362,7 @@ describe("tools", () => {
         "resource_advice",
         "send",
         "runtime_checkpoint",
+        "runtime_resume",
         "status",
         "steer",
         "stop",
