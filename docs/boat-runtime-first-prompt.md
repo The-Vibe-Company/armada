@@ -305,7 +305,7 @@ ARMADA_RUNTIME_HARNESS=claude ARMADA_RUNTIME_SMOKE=one_real_boat_launch \
   bun scripts/check-boat-runtime.ts --usage --resume
 ```
 
-Prerequisites: apply the new `20261113123000_boat_runtime_claude.sql` migration
+Prerequisites: apply the new `20261113131000_boat_runtime_claude.sql` migration
 through the operator migration process and deploy matching server/runtime artifacts.
 No manual artifact publication. Workers neither apply remote migrations nor deploy.
 One allocation, one retained-VM activation, three prompts, two stops; no allocation
