@@ -323,7 +323,7 @@ test("own children support independent target receipts while unrelated children 
 });
 
 test("revocation between reservation and dispatch cancels queued allocation", async () => {
-  const { close, db, sql, id, authority, token, selection } = await fixture();
+  const { close, sql, id, authority, token, selection } = await fixture();
   try {
     let admissions = 0,
       allocations = 0;
@@ -448,7 +448,7 @@ test("actual owner prompt receipt survives delegated child admission before prov
 });
 
 test("owner waits and settings cannot invalidate an admitted owner operation", async () => {
-  const { close, db, sql, p, id, authority } = await fixture();
+  const { close, sql, p, id, authority } = await fixture();
   try {
     const services = createLifecycleAwareOrchestratorRuntime(sql, {
       reserveOperation: reserveOrchestratorOperation,
@@ -717,7 +717,7 @@ for (const proof of [
   "contradictory-no-allocation",
 ] as const) {
   test(`uncertain child allocation settles only on matching terminal provider evidence (${proof})`, async () => {
-    const { close, db, sql, p, id, authority, token, selection } = await fixture();
+    const { close, sql, p, id, authority, token, selection } = await fixture();
     try {
       await configureOrchestratorLifecycle(sql, {
         key: "explicit-child-policy",
@@ -779,7 +779,7 @@ for (const proof of [
 }
 
 test("registered failed child with confirmed stopped compute releases explicit capacity and does not block parent idle", async () => {
-  const { close, db, sql, p, id, authority, token, selection } = await fixture();
+  const { close, sql, p, id, authority, token, selection } = await fixture();
   try {
     await configureOrchestratorLifecycle(sql, {
       key: "one-child-policy",
@@ -916,7 +916,7 @@ test("registered failed child with confirmed stopped compute releases explicit c
 });
 
 test("production scoped MCP/API gateway uses epoch child authority and never owner dispatch", async () => {
-  const { close, db, sql, p, id, parent, authority, token, selection } = await fixture("ready");
+  const { close, sql, p, id, parent, authority, token, selection } = await fixture("ready");
   const { ORCHESTRATOR_SCOPED_PATH, orchestratorScopedMcpUrl } = await import("../src/orchestrator-scoped-gateway.ts");
   const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
   const { StreamableHTTPClientTransport } = await import("@modelcontextprotocol/sdk/client/streamableHttp.js");
@@ -1142,7 +1142,7 @@ test("production scoped MCP/API gateway uses epoch child authority and never own
 });
 
 test("production owner lifecycle routes authenticate settings/waits without promoting delegated epochs", async () => {
-  const { close, db, sql, p, id, authority, token } = await fixture("ready");
+  const { close, sql, p, id, authority, token } = await fixture("ready");
   const { createMemoryAuthStore, generateToken, sha256Hex } = await import("@armada/auth");
   const { createOrchestratorServices } = await import("../src/orchestrator-services.ts");
   const { orchestratorScopedMcpUrl } = await import("../src/orchestrator-scoped-gateway.ts");
