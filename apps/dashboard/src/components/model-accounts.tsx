@@ -71,6 +71,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
 import { usePreservedActionForm } from "@/components/use-preserved-action-form";
 import type { ActionResult } from "@/lib/action";
+import { HARNESS_LABELS } from "@/lib/labels";
 import {
   ACCOUNT_KINDS,
   type AccountKind,
@@ -81,6 +82,7 @@ import {
   creditText,
   formatDuration,
   formatMoney,
+  HARNESS_PATH,
   KIND_INFO,
   kindNote,
   type LaunchDefault,
@@ -92,6 +94,7 @@ import {
   type UsageView,
   usageView,
 } from "@/lib/model-accounts";
+import type { ConnectionTestChoices } from "@/lib/model-connection-check";
 import { connectionModelsNote } from "@/lib/model-picker";
 import { cn } from "@/lib/utils";
 
@@ -114,7 +117,15 @@ function TargetFields({ account, orgId }: { account: ModelAccount; orgId: string
 }
 
 /** Testing uses only a bound running sandbox; account secrets/endpoint details never enter this form. */
-function ConnectionTestDialog({ account, orgId }: { account: ModelAccount; orgId: string }) {
+function ConnectionTestDialog({
+  account,
+  orgId,
+  choices,
+}: {
+  account: ModelAccount;
+  orgId: string;
+  choices: ConnectionTestChoices;
+}) {
   return (
     <Dialog>
       <DialogTrigger asChild>
@@ -130,13 +141,31 @@ function ConnectionTestDialog({ account, orgId }: { account: ModelAccount; orgId
             request through its runtime, without starting or resuming a machine.
           </DialogDescription>
         </DialogHeader>
-        <ConnectionTestForm key={`${account.id}:${account.version}:${orgId}`} account={account} orgId={orgId} />
+        <ConnectionTestForm
+          key={`${account.id}:${account.version}:${orgId}`}
+          account={account}
+          orgId={orgId}
+          choices={choices}
+        />
       </DialogContent>
     </Dialog>
   );
 }
-function ConnectionTestForm({ account, orgId }: { account: ModelAccount; orgId: string }) {
+function ConnectionTestForm({
+  account,
+  orgId,
+  choices,
+}: {
+  account: ModelAccount;
+  orgId: string;
+  choices: ConnectionTestChoices;
+}) {
   const [state, action, pending] = useActionState(testAccountConnection, null);
+  const candidates =
+    choices.state === "ready"
+      ? choices.sandboxes.filter((sandbox) => sandbox.accountId === account.id && sandbox.version === account.version)
+      : [];
+
   const [edited, setEdited] = useState(false);
   const formRef = usePreservedActionForm();
   const id = useId();
@@ -149,17 +178,39 @@ function ConnectionTestForm({ account, orgId }: { account: ModelAccount; orgId: 
       className="space-y-4"
     >
       <TargetFields account={account} orgId={orgId} />
-      <div className="space-y-2">
-        <Label htmlFor={`${id}-sandbox`}>Running Modal sandbox UUID</Label>
-        <Input
-          id={`${id}-sandbox`}
-          name="sandboxId"
-          required
-          autoComplete="off"
-          spellCheck={false}
-          placeholder="Public Armada sandbox UUID"
-        />
-      </div>
+      {candidates.length > 0 ? (
+        <div className="space-y-2">
+          <Label htmlFor={`${id}-sandbox`}>Running sandbox</Label>
+          <NativeSelect id={`${id}-sandbox`} name="sandboxId" required defaultValue={candidates[0]?.id}>
+            {candidates.map((sandbox) => (
+              <option key={sandbox.id} value={sandbox.id}>
+                {HARNESS_LABELS[sandbox.harness]} —{" "}
+                {new Date(sandbox.createdAt).toLocaleString("en", {
+                  dateStyle: "medium",
+                  timeStyle: "short",
+                  timeZone: "UTC",
+                })}{" "}
+                UTC
+              </option>
+            ))}
+          </NativeSelect>
+        </div>
+      ) : (
+        <div className="space-y-2 rounded-md border p-3 text-sm" role="status">
+          <p>
+            {choices.state === "unavailable"
+              ? "Available sandboxes could not be loaded. Reload Models to check again."
+              : "No matching sandbox is running. Launch a Modal sandbox with this account, then reload Models to test it."}
+          </p>
+          <Button asChild variant="outline" size="sm">
+            {choices.state === "unavailable" ? (
+              <a href={HARNESS_PATH}>Reload Models</a>
+            ) : (
+              <a href="/environments">Choose a snapshot</a>
+            )}
+          </Button>
+        </div>
+      )}
       <div className="space-y-2">
         <Label htmlFor={`${id}-model`}>Deployment or model name</Label>
         <Input
@@ -183,7 +234,7 @@ function ConnectionTestForm({ account, orgId }: { account: ModelAccount; orgId: 
         ) : null}
       </div>
       <p className="text-xs text-muted-foreground">
-        Only your sandbox in this organization, bound to this account and version. No keys or URLs are accepted. A
+        Only your recent running Modal sandboxes using this account are listed. No machine is started or resumed. A
         successful check does not prove streaming or tool compatibility.
       </p>
       {pending ? (
@@ -193,7 +244,9 @@ function ConnectionTestForm({ account, orgId }: { account: ModelAccount; orgId: 
       ) : (
         !edited && <ResultLine result={state} />
       )}
-      <SubmitButton>{pending ? "Checking…" : "Send tiny check"}</SubmitButton>
+      <SubmitButton {...(candidates.length === 0 ? { disabled: true } : {})}>
+        {pending ? "Checking…" : "Send tiny check"}
+      </SubmitButton>
     </form>
   );
 }
@@ -416,11 +469,13 @@ export function AccountRow({
   canManage,
   usage,
   now,
+  testChoices,
 }: {
   account: ModelAccount;
   orgId: string;
   orgName: string;
   canManage: boolean;
+  testChoices: ConnectionTestChoices;
   /** The account's usage report, or null when this server does not report usage. */
   usage: AccountUsage | null;
   now: number;
@@ -485,7 +540,7 @@ export function AccountRow({
           {/* The check runs Codex and Claude endpoints only; an OpenCode account would always be refused. */}
           {info.billing === "api" && account.kind !== "opencode" && account.status === "active" && (
             <div className="pt-1.5">
-              <ConnectionTestDialog account={account} orgId={orgId} />
+              <ConnectionTestDialog account={account} orgId={orgId} choices={testChoices} />
             </div>
           )}
           {/* A revoked or removed account has no usage to read: its state already says what to do. */}
@@ -1457,7 +1512,9 @@ export function HarnessAccounts({
   usage,
   now,
   emptyAction,
+  testChoices,
 }: {
+  testChoices: ConnectionTestChoices;
   harness: Harness;
   harnessLabel: string;
   /** What fills an agent with no account yet: the add dialog opened on its kind. */
@@ -1511,6 +1568,7 @@ export function HarnessAccounts({
               canManage={account.scope === "user" || isAdmin}
               usage={usage[account.id] ?? null}
               now={now}
+              testChoices={testChoices}
             />
           ))}
         </ul>
