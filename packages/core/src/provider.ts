@@ -416,6 +416,8 @@ export interface DeleteReceipt {
 }
 
 export interface ToolCall {
+  /** MCP server provenance when reported by the harness. */
+  server?: string;
   id: string;
   name: string;
   input?: unknown;

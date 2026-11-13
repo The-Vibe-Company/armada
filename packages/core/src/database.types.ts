@@ -1515,6 +1515,7 @@ export type Database = {
           operations: string[];
           expires_at: string;
           revoked_at: string | null;
+          runtime_epoch: number | null;
         };
         Insert: {
           id?: string;
@@ -1529,6 +1530,7 @@ export type Database = {
           operations: string[];
           expires_at: string;
           revoked_at?: string | null;
+          runtime_epoch?: number | null;
         };
         Update: {
           id?: string;
@@ -1543,6 +1545,7 @@ export type Database = {
           operations?: string[];
           expires_at?: string;
           revoked_at?: string | null;
+          runtime_epoch?: number | null;
         };
         Relationships: [
           {

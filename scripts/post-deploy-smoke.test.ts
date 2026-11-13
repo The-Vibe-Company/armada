@@ -1642,7 +1642,7 @@ test("the advertised smoke workflow invocation admits ordinary staging checks", 
   const directory = mkdtempSync(join(tmpdir(), "smoke-workflow-admission-"));
   try {
     const bun = join(directory, "bun");
-    writeFileSync(bun, '#!/bin/bash\nprintf "%s\\0" "$@"\n');
+    writeFileSync(bun, '#!/bin/bash\nif [[ "$1" == "scripts/post-deploy-smoke.ts" ]]; then printf "%s\\0" "$@"; fi\n');
     chmodSync(bun, 0o755);
     const command = Bun.spawnSync(["bash", "-eu", "-c", exercise.run!], {
       env: { ...process.env, PATH: `${directory}:${process.env.PATH}` },

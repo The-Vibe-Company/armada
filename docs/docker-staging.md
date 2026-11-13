@@ -1,4 +1,4 @@
-# Docker placement: coordinator one-prompt smoke (#1165)
+# Docker placement: coordinator conversation smoke (#1165)
 
 API-only preview for a **private, plain-image Codex sandbox**. Machine lifecycle
 is the dial-out host daemon; enrolment, health, prompt and journal are the existing
@@ -35,8 +35,11 @@ existing Codex subscription broker are reused; no provider credential is a model
 Defaults pending later owner decisions: host credential has no expiry and is
 revocable; default sandbox TTL is the existing four hours; no disk quota. Ordinary
 owner-trusted Docker only. Goldens, resume, Hosts UI, gVisor and multi-tenancy are
-not part of this preview. It deliberately admits **one distinct prompt per sandbox**;
-retries reuse the same request UUID and input, never start a second turn.
+not part of this preview. It admits **one native conversation per sandbox**, with explicit follow-up prompts
+using the returned conversationId. Retries reuse the same request UUID and input;
+a new request without that conversation or for another conversation is refused.
+Wait for the previous turn's acknowledged finished event before sending a follow-up.
+Unresolved RPC admission blocks new requests; the runtime owns busy-turn refusal.
 
 ## Exact commands: build/install, register on stdin, answer, stop/delete
 
@@ -94,7 +97,9 @@ private daemon log, not tokens or credential state. No readiness is inferred fro
 a host ACK or an HTTP enqueue response. Cost may remain unknown in this preview.
 
 Run with `--host-id <printed-HOST_ID>` to reuse a host that is already registered
-and running. That skips registration/startup, but allocates a new one-prompt sandbox.
+and running. Add `--start-host` if its daemon was stopped: the script starts it
+detached but refuses a live/stale lock rather than deleting it. That skips
+registration and allocates a new sandbox.
 Do not do this to retry an unknown launch: first reconcile the original printed
 sandbox/request IDs. A successful smoke removes its sandbox/container/workspace
 volume, **not** the host registration, daemon or shared pulled image.
@@ -109,7 +114,7 @@ authority. Every body has `org`; all except launch have `sandboxId`.
 | `launch` | `requestId`, `hostId`, digest-pinned `image`, `credentialId`, `credentialVersion`; optional `ttlSeconds`, `model`, `reasoningEffort` | 201 private Docker record, initially starting; requestId is sandbox/create ID |
 | `bootstrap` | `requestId` | 202 original bound bootstrap phase; call only after create job completes |
 | `ready` | `requestId` | 202 pending, or 200 ready after real same-epoch health |
-| `prompt` | `requestId`, `text` | 202 pending, or 200 admitted with native receipt; same UUID/text reconciles |
+| `prompt` | `requestId`, `text`, optional `conversationId` for a follow-up | 202 pending, or 200 admitted with native receipt; same UUID/text/conversation reconciles |
 | `journal` | optional numeric sequence `cursor`, `limit` 1..100 | 200 events with sequence, cursor, hasMore and saved usage |
 | `get` | none | 200 safe retained metadata/status |
 | `stop`, `delete` | `requestId` | 202 machine job; delete requires confirmed stopped/failed/deleted state |
@@ -146,3 +151,49 @@ Migrated SQL plus fake host facts/Docker CLI protect dispatch, admission, durabl
 retries, real runtime command/enrolment/journal protocol, token projection and
 stop/delete facts. No test network or wall-clock waits; no required CI job/budget
 added. The real-host commands above are the coordinator's external acceptance.
+
+## Follow-up acceptance on the existing host (current increment)
+
+The coordinator already proved the original model-only lifecycle on staging
+(#1376): DOCKER_OK, input/output tokens 13170/7, stop/delete ACKs and unchanged
+container/volume inventory. This increment's real-host follow-up remains unverified
+until the coordinator runs this check. No resume or cost/status claim is made.
+
+After deploying this revision with the same explicit flags, run in Bash using
+that host's existing SSH config and the staging org/account from the first check.
+The host daemon must have exited cleanly; do not delete a lock to force startup.
+The following intentionally updates only the binary retained from the previous
+smoke, not an unrelated installation. Confirm no other daemon uses that binary.
+
+```sh
+set -euo pipefail
+export DOCKER_SSH='YOUR_EXISTING_SSH_CONFIG_NAME'
+export ARMADA_STAGING='https://armada-mcp-staging.up.railway.app'
+export ARMADA_ORG='YOUR_STAGING_ORG_UUID'
+export ARMADA_CREDENTIAL='YOUR_CODEX_ACCOUNT_UUID'
+export ARMADA_CREDENTIAL_VERSION='1' # current pin from the passed check
+export DOCKER_IMAGE='buildpack-deps@sha256:58021c2a0204361b62a23d2e0244d144d74c29af2d678e2a1f7e6611885d6949'
+bun build packages/docker-host/src/main.ts --compile --target=bun-linux-x64 --outfile dist/armada-docker-host
+ssh -- "$DOCKER_SSH" 'set -eu; state="$HOME/.local/state/armada-docker-smoke"; test -f "$state/state.json"; test ! -e "$state/daemon.lock"; test ! -L "$state/daemon.lock"; test ! -e "$HOME/.local/bin/armada-docker-host-1165-next"; test ! -L "$HOME/.local/bin/armada-docker-host-1165-next"'
+scp dist/armada-docker-host "$DOCKER_SSH:.local/bin/armada-docker-host-1165-next"
+ssh -- "$DOCKER_SSH" 'set -eu; binary="$HOME/.local/bin/armada-docker-host"; state="$HOME/.local/state/armada-docker-smoke"; test ! -e "$state/daemon.lock"; test ! -L "$state/daemon.lock"; test -f "$binary"; test ! -L "$binary"; chmod 700 "$binary-1165-next"; mv "$binary-1165-next" "$binary"; "$binary" --help'
+read -r -s -p 'Staging org-admin Armada bearer: ' ARMADA_TOKEN; printf '\n'
+export ARMADA_TOKEN
+python3 scripts/smoke-docker-lifecycle.py \
+  --server "$ARMADA_STAGING" --org "$ARMADA_ORG" \
+  --credential "$ARMADA_CREDENTIAL" --credential-version "$ARMADA_CREDENTIAL_VERSION" \
+  --ssh "$DOCKER_SSH" --image "$DOCKER_IMAGE" \
+  --host-id 70bde9cd-36c9-40af-b15e-65b2f9d3c2a2 --start-host --follow-up
+unset ARMADA_TOKEN
+```
+
+Expected: binary --help prints usage and exits zero, not a failure message.
+The helper **starts the stopped daemon**, reuses the registration, creates a fresh
+sandbox and sends two prompts in one returned conversation. Only the first prompt
+contains a random DOCKER_MEMORY marker; the second asks it to recall that marker
+without resending it. Require two distinct native prompt IDs, the same conversation
+ID, both answers and reported tokens in the acknowledged journal. It then confirms
+stop/delete and prints `PASS: same-conversation follow-up recalled marker; both turns
+reported tokens; stop/delete ACKed.` The host/daemon remain for inspection and may
+be stopped by the coordinator again. Container/volume inventories must match the
+baseline. No registration replacement, prune, migration or worker host access.

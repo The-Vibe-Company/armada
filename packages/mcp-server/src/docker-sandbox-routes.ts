@@ -86,7 +86,12 @@ export function createDockerSandboxRoutes(
           { headers },
         );
       }
-      fields(body, ["org", "sandboxId", "requestId", ...(operation === "prompt" ? ["text"] : [])]);
+      fields(
+        body,
+        ["org", "sandboxId", "requestId", ...(operation === "prompt" ? ["text"] : [])],
+        operation === "prompt" ? ["conversationId"] : [],
+      );
+      if (Object.hasOwn(body, "conversationId") && !uuid.test(string(body.conversationId))) throw new InvalidInput();
       const requestId = string(body.requestId);
       if (!uuid.test(requestId)) throw new InvalidInput();
       if (operation === "bootstrap") {
@@ -97,7 +102,11 @@ export function createDockerSandboxRoutes(
         const result =
           operation === "ready"
             ? await services.runtime.ready(actor, sandboxId, requestId)
-            : await services.runtime.prompt(actor, sandboxId, { requestId, text: string(body.text) });
+            : await services.runtime.prompt(actor, sandboxId, {
+                requestId,
+                text: string(body.text),
+                ...(body.conversationId === undefined ? {} : { conversationId: string(body.conversationId) }),
+              });
         return Response.json(result, { status: result.state === "pending" ? 202 : 200, headers });
       }
       if (operation === "job")
