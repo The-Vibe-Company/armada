@@ -868,3 +868,27 @@ verify parent deletion precedes scoped-child deletion and
 remain untouched. Offline regression tests cover a late-settling stop/lease,
 bounded parent-first selection, and real-SQL child-before-parent refusal followed
 by successful parent/child deletion under current owner/org authorization.
+
+### Three-provider parity observation (#1467)
+
+Run `bun scripts/post-deploy-smoke.ts --parity` against staging with the usual
+`ARMADA_TOKEN`, `ARMADA_SMOKE=create_real_compute`, and `ARMADA_URL` guards.
+`ARMADA_SMOKE_CASES` must contain exactly one Boat, Modal and Docker case. All
+cases supply `org`, `harness`, `model`, and `modelAccountId`. Boat/Modal also
+supply `golden`; Docker instead supplies `hostId` (an already registered owned
+host) and `image` (the pulled immutable image digest). No SSH, registration,
+host startup, preview lifecycle endpoint or provider credentials are used.
+The configured host is checked through host discovery; an offline host produces
+one explicit `host_offline` diagnostic without preventing Boat/Modal probes.
+
+This is an **additive observation**, not a replacement for any existing deploy
+gate or its flags. No workflow/deploy failure policy changes. The command fails
+if any advertised operation fails; unsupported operations are reported separately
+with the server's `launch/options` reason, never as passes. Dependent operations
+that cannot run are failures with a dependency reason, not unsupported claims.
+Every provider has launch/send/status/logs/stop/resume/delete rows. The final
+`provider_parity` JSON line contains the entire matrix, and the Markdown table is
+appended to `GITHUB_STEP_SUMMARY` (or printed locally). Normal sandbox cleanup
+journaling via `ARMADA_SMOKE_JOURNAL` remains available; retain that journal after
+unknown outcomes for reconciliation. This command creates real staging compute;
+a procedure or fake-API test is not evidence of a successful staging run.
