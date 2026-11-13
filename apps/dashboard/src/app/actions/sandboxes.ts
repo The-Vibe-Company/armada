@@ -24,6 +24,7 @@ import {
   encodeLaunchAttempt,
   type FollowedLaunch,
   followLaunch,
+  launchAttemptCookie,
   launchSandbox,
 } from "@/lib/launch";
 import { LAUNCH_KEY_FIELD } from "@/lib/launch-key";
@@ -208,37 +209,45 @@ export async function launchFromGolden(_previous: ActionResult | null, data: For
   if (parsed.args.armadaAccess && !account.id) return fail("Armada access requires an explicit named Codex account.");
 
   const jar = await cookies();
+  const key = formString(data, LAUNCH_KEY_FIELD);
+  const cookie = isUuid(key) ? launchAttemptCookie(key) : "";
   let launched: FollowedLaunch;
   try {
     launched = await followLaunch({
-      key: formString(data, LAUNCH_KEY_FIELD),
-      previous: decodeLaunchAttempt(jar.get(LAUNCH_ATTEMPT_COOKIE)?.value),
+      key,
+      previous: cookie ? decodeLaunchAttempt(jar.get(cookie)?.value) : null,
       now: Date.now,
       remember: (attempt) => {
-        jar.set(LAUNCH_ATTEMPT_COOKIE, encodeLaunchAttempt(attempt), {
+        jar.set(cookie, encodeLaunchAttempt(attempt), {
           httpOnly: true,
           sameSite: "lax",
           secure: process.env.NODE_ENV === "production",
           path: "/",
-          maxAge: 86_400,
+          maxAge: 3_600,
         });
       },
-      // The viewer's own sandboxes from the chosen golden since the first attempt: what this submission created.
+      forget: () => {
+        jar.delete(cookie);
+      },
+      // The viewer's own live sandboxes from the chosen golden and agent since the first attempt: what this
+      // submission created. A failed or removed one is not followed: launching again is then the right retry.
       created: async (since) => {
         const { data: rows, error } = await supabase
           .from("sandboxes")
           .select("id")
           .eq("owner_id", viewer.id)
           .eq("org_id", parsed.args.org)
+          .eq("harness", parsed.args.harness)
           .in(
             "golden_id",
             matches.map((golden) => golden.id),
           )
+          .not("status", "in", "(failed,deleted)")
           // A few seconds of slack for the dashboard and database clocks.
           .gte("created_at", new Date(since - 5_000).toISOString())
           .order("created_at", { ascending: false })
           .limit(1);
-        if (error) return null;
+        if (error) throw new ControlError("Your sandboxes could not be checked. Open them before launching again.");
         return rows?.[0]?.id ?? null;
       },
       launch: () =>
@@ -272,16 +281,13 @@ export async function launchFromGolden(_previous: ActionResult | null, data: For
       sort: "newest",
     });
     return fail(
-      "The Armada server did not confirm the launch in time and no sandbox from it is listed yet. It may still be starting: check your sandboxes before launching again.",
+      "The Armada server did not confirm the launch and no sandbox from it is listed yet. It may still be starting: check your sandboxes before launching again.",
       { href: `/sandboxes${search}`, label: "Your newest sandboxes" },
     );
   }
   revalidatePath("/sandboxes");
   redirect(`/sandboxes/${launched.id}`);
 }
-
-/** The last launch submission this browser sent (its request key and first send time), so a retry can follow it. */
-const LAUNCH_ATTEMPT_COOKIE = "armada_launch_attempt";
 
 function modelFields(data: FormData): ModelFields {
   return {

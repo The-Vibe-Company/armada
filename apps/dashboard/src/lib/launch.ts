@@ -67,21 +67,23 @@ export type FollowedLaunch = { state: "started"; id: string } | { state: "unknow
 
 /**
  * Launches once per request key and follows the launch when its outcome is unknown. The server's launch route has
- * no idempotency key, so the identity is the viewer's own sandboxes created from the chosen golden since the key's
- * first attempt (`created`, read under row level security):
+ * no idempotency key, so the identity is the viewer's own live sandboxes created from the chosen golden and agent
+ * since the key's first attempt (`created`, read under row level security):
  *
  * - a repeated submission of the same key goes to the sandbox its earlier attempt created instead of launching again;
  * - a launch that got no answer (deadline, connection lost) is looked up the same way, so the person lands on the
  *   sandbox it started; only when none exists yet is the outcome reported as unknown.
  *
- * `remember` keeps the attempt for the next submission before anything is sent. A key that is not a UUID is not
- * followed: the launch is sent once, as before.
+ * `remember` keeps the attempt before anything is sent; `forget` drops it once the server answered with a refusal,
+ * so the next submission of the same choices is a new launch, not a visit to what the refused one left behind. A key
+ * that is not a UUID is not followed: the launch is sent once, as before.
  */
 export async function followLaunch(deps: {
   key: string;
   previous: LaunchAttempt | null;
   now: () => number;
   remember: (attempt: LaunchAttempt) => Promise<void> | void;
+  forget: () => Promise<void> | void;
   created: (since: number) => Promise<string | null>;
   launch: () => Promise<{ id: string }>;
 }): Promise<FollowedLaunch> {
@@ -95,10 +97,19 @@ export async function followLaunch(deps: {
   try {
     return { state: "started", id: (await deps.launch()).id };
   } catch (error) {
-    if (!(error instanceof ControlError) || !error.outcomeUnknown || !keyed) throw error;
+    if (!keyed) throw error;
+    if (!(error instanceof ControlError) || !error.outcomeUnknown) {
+      await deps.forget();
+      throw error;
+    }
     const id = await deps.created(since);
     return id ? { state: "started", id } : { state: "unknown", since };
   }
+}
+
+/** The cookie holding one request key's attempt: one per key, so launches from two tabs do not overwrite each other. */
+export function launchAttemptCookie(key: string): string {
+  return `armada_launch_${key}`;
 }
 
 /** The cookie value of a {@link LaunchAttempt}, and back; anything else reads as no attempt. */

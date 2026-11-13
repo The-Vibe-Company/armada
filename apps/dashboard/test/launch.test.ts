@@ -198,6 +198,7 @@ test("a retry of the same request key goes to the sandbox its first attempt crea
     previous: { key: KEY, since: 1_000 },
     now: () => 5_000,
     remember: () => {},
+    forget: () => {},
     created: async (since) => (since === 1_000 ? "s1" : null),
     launch: async () => ({ id: `s${++launches + 1}` }),
   });
@@ -213,6 +214,9 @@ test("an unanswered launch is followed to the sandbox it started, else reported 
     now: () => 2_000,
     remember: (attempt: unknown) => {
       remembered.push(attempt);
+    },
+    forget: () => {
+      remembered.push("forgotten");
     },
     launch: async () => {
       throw unanswered();
@@ -234,6 +238,34 @@ test("an unanswered launch is followed to the sandbox it started, else reported 
     },
   }).catch((e) => e);
   expect(error).toBe(refused);
+  // The refused attempt is forgotten: the next submission of the same choices launches again.
+  expect(remembered.at(-1)).toBe("forgotten");
+});
+
+test("a retry after a refusal the server answered launches again under the same key", async () => {
+  let previous: { key: string; since: number } | null = null;
+  let launches = 0;
+  const deps = {
+    key: KEY,
+    now: () => 1_000 + launches,
+    remember: (attempt: { key: string; since: number }) => {
+      previous = attempt;
+    },
+    forget: () => {
+      previous = null;
+    },
+    // The refused attempt left only a failed row, which the live lookup does not return.
+    created: async () => null,
+    launch: async () => {
+      launches += 1;
+      if (launches === 1) throw new ControlError("The provider refused.", 409);
+      return { id: "s2" };
+    },
+  };
+  await followLaunch({ ...deps, previous }).catch(() => {});
+  expect(previous).toBeNull();
+  expect(await followLaunch({ ...deps, previous })).toEqual({ state: "started", id: "s2" });
+  expect(launches).toBe(2);
 });
 
 test("the launch attempt cookie round-trips and refuses anything else", () => {
