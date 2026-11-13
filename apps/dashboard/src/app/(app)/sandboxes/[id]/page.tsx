@@ -28,13 +28,13 @@ import { bindableStatus, needsAccountChoice } from "@/lib/account-recovery";
 import { isUuid } from "@/lib/action";
 import { readAccountChoices } from "@/lib/data/account-recovery";
 import { listSandboxConnections, type SandboxConnections } from "@/lib/data/connections";
-import { readDockerLaunchOption } from "@/lib/data/docker-hosts";
+import { hostListForPage, readDockerLaunchOption } from "@/lib/data/docker-hosts";
 import { findGoldenLabel } from "@/lib/data/goldens";
 import { credentialKinds, getSandbox, getSandboxMetadata } from "@/lib/data/sandboxes";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { displayUser, listMemberships, memberDirectory, requireViewer } from "@/lib/data/viewer";
-import { shortHostId } from "@/lib/docker-hosts";
-import { type DockerSandboxControls, dockerSandboxControls } from "@/lib/docker-launch";
+import { dockerSandboxName, sandboxHostLabel } from "@/lib/docker-hosts";
+import { type DockerSandboxControls, dockerImageLabel, dockerSandboxControls } from "@/lib/docker-launch";
 import { mcpUrl } from "@/lib/env";
 import { isActiveStatus } from "@/lib/events";
 import { PROVIDER_LABELS } from "@/lib/golden-form";
@@ -83,9 +83,10 @@ export default async function SandboxPage({ params }: Props) {
   if (sandbox.provider === "docker") {
     // A sandbox on an owned Docker host (#1165): the same page, with what the server supports on Docker. A control the
     // server marks unsupported is listed with its reason, never offered as a button it would refuse.
-    const [option, kinds] = await Promise.all([
+    const [option, kinds, hosts] = await Promise.all([
       readDockerLaunchOption(),
       credentialKinds(supabase, [sandbox.credential_id]),
+      hostListForPage(),
     ]);
     return (
       <DockerSandbox
@@ -94,6 +95,7 @@ export default async function SandboxPage({ params }: Props) {
         org={memberships.find((item) => item.org.id === sandbox.org_id)?.org.name ?? "Unknown"}
         owner={displayUser(directory, sandbox.owner_id, viewer.id)}
         cost={costOfRow(sandbox, kinds.get(sandbox.credential_id ?? "") ?? null)}
+        host={sandboxHostLabel(hosts, sandbox.docker_host_id)}
       />
     );
   }
@@ -239,22 +241,26 @@ function DockerSandbox({
   org,
   owner,
   cost,
+  host,
 }: {
   sandbox: Sandbox;
   controls: DockerSandboxControls;
   org: string;
   owner: string;
   cost: ReturnType<typeof costOfRow>;
+  host: string;
 }) {
   const configured = mcpUrl() !== null;
   const lifecycle = readLifecycle(sandbox);
   const life = lifecycleView(sandbox.status, lifecycle, new Date());
   const { reasons } = controls;
-  const facts: [string, string][] = [
+  const image = dockerImageLabel(sandbox.docker_image);
+  const facts: Fact[] = [
     ["Org", org],
     ["Provider", SANDBOX_PLACEMENT_LABELS.docker],
-    ["Host", sandbox.docker_host_id ? `Host ${shortHostId(sandbox.docker_host_id)}` : "Unknown"],
-    ["Image", sandbox.docker_image ?? "Unknown"],
+    ["Host", host],
+    ["Image", image.label, image.detail ?? undefined],
+    ...(sandbox.provider_sandbox_id ? [["Container", sandbox.provider_sandbox_id] as Fact] : []),
     ["Harness", HARNESS_LABELS[sandbox.harness] ?? sandbox.harness],
     ["Model", sandbox.model ?? "Provider default"],
     ["Reasoning effort", sandbox.reasoning_effort ?? "Provider default"],
@@ -285,8 +291,8 @@ function DockerSandbox({
         </Button>
         <div className="flex items-center justify-between gap-3">
           <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-2 sm:gap-x-3">
-            <h1 className="min-w-0 font-mono text-xl font-semibold tracking-tight break-all">
-              {sandbox.provider_sandbox_id || `Sandbox ${sandbox.id}`}
+            <h1 className="min-w-0 font-mono text-xl font-semibold tracking-tight break-all" title={sandbox.id}>
+              {dockerSandboxName(sandbox.id)}
             </h1>
             <StatusBadge status={sandbox.status} />
             <CopyButton value={sandbox.id} label="Copy sandbox ID" className="-ml-1.5" />
@@ -432,13 +438,18 @@ function RestrictedSandbox({ sandbox, owner }: { sandbox: SandboxListMetadata; o
   );
 }
 
-function Facts({ facts }: { facts: [string, string][] }) {
+/** A detail row: its label, its value and, optionally, the full value for a tooltip (an image's digest). */
+type Fact = [string, string] | [string, string, string | undefined];
+
+function Facts({ facts }: { facts: Fact[] }) {
   return (
     <dl className="divide-y divide-border/70 text-[13px]">
-      {facts.map(([label, value]) => (
+      {facts.map(([label, value, detail]) => (
         <div key={label} className="flex min-w-0 items-baseline justify-between gap-4 py-2 first:pt-0 last:pb-0">
           <dt className="shrink-0 text-muted-foreground">{label}</dt>
-          <dd className="min-w-0 text-right break-words">{value}</dd>
+          <dd className="min-w-0 text-right break-words" title={detail}>
+            {value}
+          </dd>
         </div>
       ))}
     </dl>
