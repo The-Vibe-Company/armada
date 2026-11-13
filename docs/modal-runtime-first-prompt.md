@@ -1,15 +1,16 @@
-# Modal: first enrolled Codex prompt (#1421)
+# Modal: enrolled Codex prompt and follow-up (#1421)
 
 This is a coordinator-owned, **billable staging check**, not a worker task or a
 production cutover. It creates exactly one Modal sandbox, never retries an
-allocation, proves one model answer through the common runtime archive, performs
-an acknowledged checkpoint, and requests compute stop exactly once. No follow-up,
-resume, filesystem preservation, GitHub, MCP, skills or harness parity is claimed.
+allocation, proves a model answer and same-conversation recall through the common
+runtime archive, performs an acknowledged checkpoint, and requests compute stop
+exactly once. No resume, filesystem preservation, GitHub, MCP, skills or harness
+parity is claimed. This remains model-only: the golden checkout is used as-is.
 The existing Modal tunnel path remains the default.
 
 ## Prerequisites
 
-Deploy the matching server/runtime revision and its new schema through the normal
+Deploy the matching server/runtime revision and current schema through the normal
 staging deployment process. The worker does not apply migrations or deploy.
 The server image publishes the compiled artifact and manifest automatically;
 there is no manual artifact-publication step.
@@ -39,12 +40,17 @@ In the coordinator's secure environment, supply:
 ARMADA_RUNTIME_SMOKE=one_real_modal_launch bun scripts/check-modal-runtime.ts
 ```
 
-The script preflights `launch/options.modalRuntime {version:1,enabled:true}`
+The script preflights `launch/options.modalRuntime {version:1,enabled:true,followupVersion:1}`
 before allocating. It sends one `sandbox/launch-modal-runtime-v1` request with
 `runtimeVersion:1`, `runtimeTransport:"dialout"`, `provider:"modal"`,
 `harness:"codex"`, a 900-second TTL, empty connections/skills and skill defaults
-skipped. The golden checkout is used as-is. A random literal-answer prompt tells
-the model not to use tools or change files.
+skipped. The golden checkout is used as-is. The first prompt stores a random
+memory token and asks for a separate literal
+nonce answer, without tools or file changes. After verifying that archived first
+answer, the script sends exactly one follow-up on the same conversation asking
+for the remembered token **without repeating it in the follow-up prompt**.
+The follow-up request UUID is printed before dispatch. A lost/uncertain response
+is not retried; reconcile that same request UUID.
 
 Success requires all of:
 
@@ -54,13 +60,19 @@ Success requires all of:
    non-partial, non-retracted main assistant nonce answer plus a finished event.
    Tool-result text, another prompt, Modal native ingest or selection metadata
    alone cannot pass.
-3. `sandbox/checkpoint-runtime-v1` returns the same epoch and request ID with a
+3. The one `sandbox/send` receipt identifies its original request UUID, a new
+   prompt ID, the same conversation and current epoch. The archive must contain
+   that follow-up prompt’s exact recalled token and finished event. An old
+   answer, another prompt, wrong epoch/conversation or reused prompt ID fails.
+4. `sandbox/checkpoint-runtime-v1` returns the same epoch and request ID with a
    complete, nonnegative watermark equal to the durable acknowledged sequence.
-4. The one stop request is followed by confirmed stopped metadata. Stop is also
-   attempted after inference/checkpoint failure when the sandbox ID is known.
+5. The one stop request is followed by confirmed stopped metadata. Stop is also
+   attempted after inference/follow-up/checkpoint failure when the sandbox ID
+   is known.
 
 Expected output: a JSON receipt with sandbox/prompt IDs, epoch, archive source,
-`answer:"verified"`, `checkpoint:"verified"`, then a compute-stopped message.
+`answer:"verified"`, `followup:"verified"`, `checkpoint:"verified"`, both prompt
+IDs and the conversation ID, then a compute-stopped message.
 No response text or model/provider credentials are printed.
 
 If launch transport fails or its receipt omits the sandbox ID, allocation outcome

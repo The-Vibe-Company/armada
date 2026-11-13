@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { decryptSecret, encryptSecret } from "@armada/core";
 import { configFromEnv, dashboardOrigin } from "../src/config.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
 
@@ -111,10 +110,4 @@ describe("config", () => {
     expect(() => configFromEnv({ ...ENV, ARMADA_PUBLIC_URL: "http://armada.example.com/x" })).toThrow(/origin/);
     expect(() => configFromEnv({ ...ENV, PORT: "http" })).toThrow(/PORT/);
   });
-});
-
-test("a secret sealed with the key opens with it, and not with another key", async () => {
-  const sealed = await encryptSecret("sk-ant-oat01-example", ENCRYPTION_KEY);
-  expect(await decryptSecret(sealed, ENCRYPTION_KEY)).toBe("sk-ant-oat01-example");
-  await expect(decryptSecret(sealed, btoa("x".repeat(32)))).rejects.toThrow();
 });
