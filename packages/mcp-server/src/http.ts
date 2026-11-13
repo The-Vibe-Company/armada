@@ -11,6 +11,7 @@ import {
   type ModalTokenPair,
   type Provider,
   type ProviderRegistry,
+  ProviderRoutingError,
   type ProviderTarget,
   resolveBoatKey,
   resolveModalTokens,
@@ -41,6 +42,7 @@ import type { OrchestratorPair } from "./orchestrator-activation.ts";
 import type { OrchestratorRuntime } from "./orchestrator-runtime.ts";
 
 export interface HandlerOptions {
+  runtimeProviderFor?: (apiKey: string, target: ProviderTarget, caller: { userId: string }) => Promise<Provider>;
   storedProviderFor?: (target: ProviderTarget, caller: { userId: string }) => Promise<Provider>;
   /** Runtime readiness of the serving database pool; no credentials in the result. */
   ready?: () => Promise<boolean>;
@@ -209,17 +211,25 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
  * Boat, the Modal token pair for Modal. Neither ever leaves this process.
  */
 export function providerRegistry(
-  options: Pick<HandlerOptions, "vault" | "encryptionKey" | "providerFor" | "modalProviderFor" | "modalTokensFor">,
+  options: Pick<
+    HandlerOptions,
+    "vault" | "encryptionKey" | "providerFor" | "modalProviderFor" | "modalTokensFor" | "runtimeProviderFor"
+  >,
 ): ProviderRegistry {
   const modal = options.modalProviderFor;
   return createProviderRegistry({
     boat: async (target, caller) => {
+      const runtime = target.boatRuntime ? options.runtimeProviderFor : undefined;
+      if (target.boatRuntime && (!target.id || !runtime))
+        throw new ProviderRoutingError("provider_not_configured", "boat", "Armada runtime routing is not configured.");
       const { key, scope } = await resolveBoatKey(options.vault, options.encryptionKey, {
         userId: caller.userId,
         orgId: target.orgId,
         visibility: target.sourceGoldenVisibility ?? target.visibility,
       });
-      const provider = options.providerFor(key, { userId: caller.userId, orgId: target.orgId });
+      const provider = runtime
+        ? await runtime(key, target, caller)
+        : options.providerFor(key, { userId: caller.userId, orgId: target.orgId });
       const authority = Object.freeze({ scope, ownerId: scope === "org" ? target.orgId : caller.userId });
       // Keep source authority immutable even if a provider factory caches a shared client.
       return new Proxy(provider, {

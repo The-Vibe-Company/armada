@@ -98,6 +98,9 @@ export interface ModalBinding {
 
 /** What routing needs to know about a golden or a sandbox. It never holds a credential. */
 export interface ProviderTarget {
+  /** Persisted sandbox hints; goldens never opt in. Runtime routing fails closed without id. */
+  readonly id?: string;
+  readonly boatRuntime?: true;
   provider: SandboxProviderId;
   orgId: string;
   visibility: Visibility;

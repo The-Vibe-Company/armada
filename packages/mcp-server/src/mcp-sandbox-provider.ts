@@ -5,6 +5,8 @@ export function createMcpSandboxProviderResolver(sql: Sql, providers: ProviderRe
   return async (id: string): Promise<Provider> => {
     const row = (
       await sql.query<{
+        id: string;
+        boat_runtime: boolean;
         provider: SandboxProviderId;
         org_id: string;
         owner_id: string;
@@ -14,7 +16,7 @@ export function createMcpSandboxProviderResolver(sql: Sql, providers: ProviderRe
         modal_environment: string | null;
         modal_app_id: string | null;
       }>(
-        `select s.provider::text as provider,s.org_id,s.owner_id,s.visibility::text as visibility,s.source_golden_visibility::text as source_golden_visibility,g.modal_workspace,g.modal_environment,g.modal_app_id
+        `select s.id,s.boat_runtime,s.provider::text as provider,s.org_id,s.owner_id,s.visibility::text as visibility,s.source_golden_visibility::text as source_golden_visibility,g.modal_workspace,g.modal_environment,g.modal_app_id
         from public.sandboxes s join public.goldens g on g.id=s.golden_id join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
         where s.id=$1::uuid and s.status not in ('stopped','deleted')`,
         [id],
@@ -27,6 +29,8 @@ export function createMcpSandboxProviderResolver(sql: Sql, providers: ProviderRe
         : null;
     return providers.resolve(
       {
+        id: row.id,
+        ...(row.boat_runtime ? { boatRuntime: true as const } : {}),
         provider: row.provider,
         orgId: row.org_id,
         visibility: row.visibility,
@@ -45,6 +49,8 @@ export function createHistoricalSandboxProviderResolver(providers: ProviderRegis
   return async (sql: Sql, id: string): Promise<{ provider: Provider; providerSandboxId: string }> => {
     const row = (
       await sql.query<{
+        id: string;
+        boat_runtime: boolean;
         provider: SandboxProviderId;
         provider_sandbox_id: string | null;
         org_id: string;
@@ -55,7 +61,7 @@ export function createHistoricalSandboxProviderResolver(providers: ProviderRegis
         modal_environment: string | null;
         modal_app_id: string | null;
       }>(
-        `select s.provider::text as provider,s.provider_sandbox_id,s.org_id,s.owner_id,
+        `select s.id,s.boat_runtime,s.provider::text as provider,s.provider_sandbox_id,s.org_id,s.owner_id,
        coalesce(s.visibility,g.visibility)::text as visibility,
        coalesce(s.source_golden_visibility,g.visibility)::text as source_golden_visibility,
        g.modal_workspace,g.modal_environment,g.modal_app_id
@@ -72,6 +78,8 @@ export function createHistoricalSandboxProviderResolver(providers: ProviderRegis
         : null;
     const provider = await providers.resolve(
       {
+        id: row.id,
+        ...(row.boat_runtime ? { boatRuntime: true as const } : {}),
         provider: row.provider,
         orgId: row.org_id,
         visibility: row.visibility,
