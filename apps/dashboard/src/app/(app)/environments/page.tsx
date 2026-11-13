@@ -68,7 +68,7 @@ import {
 } from "@/lib/golden-form";
 import { goldenSizing, sizePolicyBlocker } from "@/lib/machine-size";
 import type { LaunchAccounts } from "@/lib/model-accounts";
-import { connectedProviders, CLOUD_PROVIDERS_PATH } from "@/lib/provider-setup";
+import { CLOUD_PROVIDERS_PATH, connectedProviders } from "@/lib/provider-setup";
 import { relativeAge } from "@/lib/relative-time";
 import { goldenRepositoryDirs } from "@/lib/repository-context";
 import { type Bucket, ITEM_PARAM, sortResources } from "@/lib/resource-list";
