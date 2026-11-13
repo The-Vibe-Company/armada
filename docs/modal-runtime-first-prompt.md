@@ -120,3 +120,26 @@ staging secrets are needed for this extension. Workers do not run this check.
 Record the exact server revision, receipt and observed result on #1421's parity
 table. Local fixtures and green CI are not real Modal inference evidence. Do not
 flip defaults or delete the tunnel path until the later parity and cutover gates.
+
+## GitHub delivery (`--github`)
+
+Reuse the existing staging `ARMADA_RUNTIME_GITHUB_REPOSITORY=owner/repo` input
+and connected GitHub account/App, with that repository in the selected Modal
+golden's recipe. No new credentials are requested. The script resolves the
+selected visible Modal golden's organization, preflights repository access and
+requires an explicit `provider:"modal"` receipt **before allocation**. Old servers
+or ambiguous same-name provider goldens refuse rather than preflighting Boat.
+
+```sh
+ARMADA_RUNTIME_SMOKE=one_real_modal_launch bun scripts/check-modal-runtime.ts --github --resume
+```
+
+Still ONE allocation, ONE restore activation and TWO stops. Before the initial
+follow-up it delivers GitHub configuration via the existing common private RPC.
+The follow-up must actually run `gh api repos/<repository> --jq .full_name`:
+archived successful command provenance AND current-epoch broker acquisition count
+with the same delivered revision are required. A literal answer or a configured
+receipt alone is not proof. After restore, the old configuration must be absent;
+a new revision is delivered and a fourth same-conversation prompt proves a fresh
+current-epoch acquisition. No token/capability is printed or archived. This flag
+does not pull/init the golden, enable MCP/skills/variables, or authorize cutover.

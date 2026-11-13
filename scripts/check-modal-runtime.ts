@@ -13,6 +13,13 @@ const credentialId = process.env.ARMADA_RUNTIME_CREDENTIAL_ID;
 if (!token || !golden || !org || !credentialId) throw Error("Missing coordinator staging inputs.");
 
 interface Reply {
+  provider?: import("../packages/core/src/sandbox-provider.ts").SandboxProviderId;
+  githubReady?: boolean;
+  status?: string;
+  revision?: string;
+  configured?: boolean;
+  credentialRequests?: number;
+  goldens?: { id: string; name: string; provider: string; orgId: string }[];
   modalRuntime?: { version?: number; enabled?: boolean; followupVersion?: number; resumeVersion?: number };
   sandbox?: { id?: string; provider?: string; runtimeTransport?: string };
   runtime?: { kind?: string; epoch?: string };
@@ -58,6 +65,25 @@ if (
 const resumeMode = process.argv.includes("--resume");
 if (resumeMode && options.modalRuntime.resumeVersion !== 1)
   throw Error("Modal retained resume v1 is unavailable; no launch attempted.");
+const githubMode = process.argv.includes("--github");
+const repository = process.env.ARMADA_RUNTIME_GITHUB_REPOSITORY ?? "";
+if (githubMode) {
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository))
+    throw Error("GitHub check requires existing ARMADA_RUNTIME_GITHUB_REPOSITORY=owner/repo; no launch attempted.");
+  const choices = (await api("golden/list", { org })).goldens?.filter(
+    (row) => row.provider === "modal" && (row.id === golden || row.name === golden),
+  );
+  if (choices?.length !== 1 || !choices[0])
+    throw Error("No unique authorized Modal golden for GitHub preflight; no launch attempted.");
+  const preflight = await api("sandbox/github-preflight-v1", {
+    runtimeVersion: 1,
+    org: choices[0].orgId,
+    golden: choices[0].name,
+    repository,
+  });
+  if (preflight.githubReady !== true || preflight.provider !== "modal")
+    throw Error("Modal GitHub preflight unavailable; no launch attempted.");
+}
 const answer = `ARMADA_MODAL_${crypto.randomUUID().replaceAll("-", "")}`;
 const memory = `ARMADA_MEMORY_${crypto.randomUUID().replaceAll("-", "")}`;
 let id: string | undefined;
@@ -69,6 +95,32 @@ let followupPromptId: string | undefined;
 let checkpointRequestId: string | undefined;
 let checkpointReceipt: Reply | undefined;
 let shouldStop = false;
+const githubToolPrompts = new Set<string>();
+const githubInstruction = `Run gh api repos/${repository} --jq .full_name successfully. After the tool succeeds, reply exactly with the token I originally asked you to remember. Do not change files.`;
+const configureGitHub = async (expectedEpoch: string) => {
+  const receipt = await api("github/refresh", { id });
+  if (
+    receipt.status !== "connected" ||
+    receipt.runtime?.kind !== "armada" ||
+    receipt.runtime.epoch !== expectedEpoch ||
+    !receipt.revision
+  )
+    throw Error("GitHub configuration lacks current runtime epoch/revision.");
+  return receipt.revision;
+};
+const verifyGitHub = async (expectedPromptId: string, expectedEpoch: string, revision: string) => {
+  const audit = await api("github/runtime-status", { id });
+  if (
+    !githubToolPrompts.has(expectedPromptId) ||
+    audit.configured !== true ||
+    audit.runtime?.kind !== "armada" ||
+    audit.runtime.epoch !== expectedEpoch ||
+    audit.revision !== revision ||
+    !Number.isSafeInteger(audit.credentialRequests) ||
+    (audit.credentialRequests ?? 0) < 1
+  )
+    throw Error("Missing archived gh command and current-epoch credential acquisition proof.");
+};
 const verifyPrompt = async (expectedPromptId: string, expectedAnswer: string) => {
   let cursor: string | undefined;
   let foundAnswer = false;
@@ -80,6 +132,21 @@ const verifyPrompt = async (expectedPromptId: string, expectedAnswer: string) =>
     if (page.runtimeFailure) throw Error("Modal enrolled runtime failed; inspect server diagnostics.");
     for (const event of page.events ?? []) {
       if (event.promptId !== expectedPromptId) continue;
+      if (githubMode && event.kind === "message" && !event.parentToolUseId && !event.retracted) {
+        for (const tool of event.tools) {
+          const command = (tool.input as { command?: unknown } | undefined)?.command;
+          if (
+            tool.name === "commandExecution" &&
+            typeof command === "string" &&
+            command.includes("gh api") &&
+            command.includes(`repos/${repository}`) &&
+            tool.result?.isError === false &&
+            typeof tool.result.output === "string" &&
+            tool.result.output.toLowerCase().includes(repository.toLowerCase())
+          )
+            githubToolPrompts.add(expectedPromptId);
+        }
+      }
       if (
         event.kind === "message" &&
         event.partial === false &&
@@ -153,6 +220,7 @@ try {
   )
     throw Error("Missing Modal enrolled launch acknowledgement; reconcile existing allocation, never launch again.");
   await verifyPrompt(promptId, answer);
+  const githubRevision = githubMode ? await configureGitHub(epoch ?? "") : undefined;
   const followupRequestId = crypto.randomUUID();
   console.log(
     JSON.stringify({
@@ -164,7 +232,9 @@ try {
   );
   const followed = await api("sandbox/send", {
     id,
-    prompt: "Reply exactly with the token I originally asked you to remember. Do not use tools or change files.",
+    prompt: githubMode
+      ? githubInstruction
+      : "Reply exactly with the token I originally asked you to remember. Do not use tools or change files.",
     request_id: followupRequestId,
     conversation_id: launched.conversationId,
   });
@@ -180,6 +250,7 @@ try {
       "Missing same-conversation/current-epoch Modal follow-up acknowledgement; reconcile request_id, never send again.",
     );
   await verifyPrompt(followed.promptId, memory);
+  if (githubRevision) await verifyGitHub(followed.promptId, epoch ?? "", githubRevision);
   followupPromptId = followed.promptId;
   const firstCheckpoint = await checkpoint(epoch ?? "");
   checkpointRequestId = firstCheckpoint.requestId;
@@ -195,6 +266,7 @@ try {
       source: "armada-runtime",
       answer: "verified",
       checkpoint: "verified",
+      ...(githubMode ? { github: "verified" } : {}),
     }),
   );
 } catch (error) {
@@ -285,6 +357,32 @@ if (
     await verifyPrompt(resumed.promptId, memory);
     await verifyPrompt(promptId, answer);
     await verifyPrompt(followupPromptId, memory);
+    if (githubMode) {
+      const currentEpoch = resumed.runtime.epoch ?? "";
+      const before = await api("github/runtime-status", { id });
+      if (before.configured !== false || before.runtime?.epoch !== currentEpoch)
+        throw Error("Old GitHub configuration survived the runtime epoch change.");
+      const revision = await configureGitHub(currentEpoch);
+      const requestId = crypto.randomUUID();
+      console.log(JSON.stringify({ operation: "runtime_github_followup", sandboxId: id, conversationId, requestId }));
+      const sent = await api("sandbox/send", {
+        id,
+        request_id: requestId,
+        conversation_id: conversationId,
+        prompt: githubInstruction,
+      });
+      if (
+        sent.requestId !== requestId ||
+        sent.runtime?.epoch !== currentEpoch ||
+        sent.runtime.kind !== "armada" ||
+        sent.conversationId !== conversationId ||
+        !sent.promptId ||
+        [promptId, followupPromptId, resumed.promptId].includes(sent.promptId)
+      )
+        throw Error("Missing current-epoch GitHub follow-up acknowledgement.");
+      await verifyPrompt(sent.promptId, memory);
+      await verifyGitHub(sent.promptId, currentEpoch, revision);
+    }
     await checkpoint(resumed.runtime.epoch ?? "");
     resumedReceipt = resumed;
   } catch (error) {
@@ -305,6 +403,7 @@ if (
         epoch: resumedReceipt.runtime?.epoch,
         source: "armada-runtime",
         resume: "verified",
+        ...(githubMode ? { githubAfterResume: "verified" } : {}),
       }),
     );
 }
