@@ -234,7 +234,7 @@ async function main(dialout = false) {
   if (restore) {
     if (
       !enrolled ||
-      config.selectedHarness !== "codex" ||
+      (config.selectedHarness !== "codex" && config.selectedHarness !== "claude") ||
       !/^[1-9][0-9]{0,18}$/.test(restore.epoch) ||
       typeof restore.conversationId !== "string" ||
       !restore.conversationId ||
@@ -493,7 +493,7 @@ async function main(dialout = false) {
           expectedSessionId: session,
           input: {
             sandboxId: config.grant.sandboxId,
-            harness: "codex",
+            harness: config.selectedHarness,
             model: restore.model,
             reasoningEffort: restore.reasoningEffort,
             cwd: config.cwd,
