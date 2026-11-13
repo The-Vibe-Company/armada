@@ -156,6 +156,8 @@ export interface ControlOptions {
   runtimeResume?: RuntimeResume;
   runtimeCheckpoint?: RuntimeCheckpoint;
   runtimeSend?: RuntimeFollowup;
+  modalRuntimeHostFor?: (target: import("@armada/core").ProviderTarget, caller: Caller) => Promise<Provider>;
+  modalRuntimeLaunch?: NonNullable<LaunchOptions["runtime"]>;
   boatRuntimeLaunch?: NonNullable<LaunchOptions["boatRuntime"]>;
   runtimeHostFor?: (apiKey: string) => Provider;
   skillCatalog?: ReturnType<typeof createSkillCatalog>;
@@ -772,6 +774,7 @@ async function dispatch(
     return {
       ...launchOptions,
       providers: launchProviderOptions(options.docker),
+      modalRuntime: { version: 1, enabled: Boolean(options.modalRuntimeLaunch) },
       boatRuntime: {
         version: 1,
         diagnosticsVersion: 1,
@@ -1160,6 +1163,29 @@ async function dispatch(
         golden: required(body, "golden"),
         repository: required(body, "repository"),
       });
+    case "sandbox/launch-modal-runtime-v1":
+      if (
+        body.runtimeVersion !== 1 ||
+        body.runtimeTransport !== "dialout" ||
+        body.provider !== "modal" ||
+        body.harness !== "codex" ||
+        body.boatRuntime !== undefined ||
+        body.armadaAccess ||
+        body.skipSkillDefaults !== true ||
+        !Array.isArray(body.connections) ||
+        body.connections.length ||
+        (body.skills !== undefined && (!Array.isArray(body.skills) || body.skills.length)) ||
+        (body.helperCapabilities !== undefined &&
+          (!Array.isArray(body.helperCapabilities) || body.helperCapabilities.length))
+      )
+        throw new VaultError(
+          "invalid",
+          "Modal runtime v1 requires explicit model-only Codex launch, no setup capabilities.",
+        );
+      if (!options.modalRuntimeLaunch || !options.modalRuntimeHostFor)
+        throw new VaultError("unavailable", "Modal runtime staging opt-in is disabled.");
+      required(body, "prompt");
+      return launchRoute(options, caller, body, "modal");
     case "sandbox/launch-runtime-v1":
       if (
         body.runtimeVersion !== 1 ||
@@ -1548,13 +1574,14 @@ async function launchRoute(
   options: ControlOptions,
   caller: Caller,
   body: Record<string, unknown>,
-  runtime = false,
+  runtime: boolean | "modal" = false,
 ): Promise<unknown> {
-  const runtimePolicy = runtime ? options.boatRuntimeLaunch : undefined;
-  const runtimeHost = runtime ? options.runtimeHostFor : undefined;
-  if (runtime && (!runtimePolicy || !runtimeHost))
+  const modalRuntime = runtime === "modal";
+  const runtimePolicy = modalRuntime ? options.modalRuntimeLaunch : runtime ? options.boatRuntimeLaunch : undefined;
+  const runtimeHost = runtime && !modalRuntime ? options.runtimeHostFor : undefined;
+  if (runtime && (!runtimePolicy || (!modalRuntime && !runtimeHost)))
     throw new VaultError("unavailable", "Experimental Boat runtime launch is not configured.");
-  if (!runtime && body.boatRuntime !== undefined)
+  if (!runtime && (body.boatRuntime !== undefined || body.runtimeTransport !== undefined))
     throw new VaultError("invalid", "Use sandbox/launch-runtime-v1 for experimental runtime selection.");
   if (!options.data || !options.providerFor)
     throw new VaultError("unavailable", "Launching is not configured on this server.");
@@ -1587,23 +1614,34 @@ async function launchRoute(
   resolveRepositoryDir(golden, optional(body, "repo"));
   if (armadaAccess && harness !== "codex")
     throw new VaultError("unavailable", "Sandbox Armada access is unavailable for this provider/harness.");
-  if (runtime && golden.provider !== "boat") throw new VaultError("invalid", "Runtime v1 requires a Boat golden.");
-  const provider = runtimeHost
-    ? runtimeHost(
-        (
-          await resolveBoatKey(options.store, options.encryptionKey, {
-            userId: caller.userId,
-            orgId: actor.orgId,
-            visibility: golden.visibility,
-          })
-        ).key,
-      )
-    : await providerForGolden(
-        options,
-        caller,
-        armadaAccess ? { ...golden, visibility: "private", sourceGoldenVisibility: golden.visibility } : golden,
-      );
-  const connectionLifecycle = runtime ? options.runtimeMcp?.connections : options.connections;
+  if (runtime && golden.provider !== (modalRuntime ? "modal" : "boat"))
+    throw new VaultError("invalid", "Runtime v1 requires a Boat golden.");
+  const provider = modalRuntime
+    ? await options.modalRuntimeHostFor!({ ...golden, runtimeTransport: "dialout" }, caller)
+    : runtimeHost
+      ? runtimeHost(
+          (
+            await resolveBoatKey(options.store, options.encryptionKey, {
+              userId: caller.userId,
+              orgId: actor.orgId,
+              visibility: golden.visibility,
+            })
+          ).key,
+        )
+      : await providerForGolden(
+          options,
+          caller,
+          modalRuntime
+            ? { ...golden, runtimeTransport: "dialout" }
+            : armadaAccess
+              ? { ...golden, visibility: "private", sourceGoldenVisibility: golden.visibility }
+              : golden,
+        );
+  const connectionLifecycle = modalRuntime
+    ? undefined
+    : runtime
+      ? options.runtimeMcp?.connections
+      : options.connections;
   const result = await launchSandbox(
     provider,
     {
@@ -1644,7 +1682,7 @@ async function launchRoute(
     },
     {
       ...options.launch,
-      ...(runtimePolicy ? { boatRuntime: runtimePolicy } : {}),
+      ...(runtimePolicy ? (modalRuntime ? { runtime: runtimePolicy } : { boatRuntime: runtimePolicy }) : {}),
       ...(armadaAccess
         ? {
             privateVisibility: true as const,
@@ -1709,7 +1747,7 @@ export function templateRuntime(options: ControlOptions, caller: Caller) {
 async function providerForGolden(
   options: ControlOptions,
   caller: Caller,
-  golden: GoldenRecord & { sourceGoldenVisibility?: Visibility },
+  golden: GoldenRecord & { sourceGoldenVisibility?: Visibility; runtimeTransport?: "dialout" },
 ): Promise<Provider> {
   if (options.providers) return options.providers.resolve(golden, caller);
   if (golden.provider !== "boat")

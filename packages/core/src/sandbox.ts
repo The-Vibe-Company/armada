@@ -21,6 +21,7 @@ export interface ResourceProject {
 export interface SandboxRecord {
   /** Immutable Boat Codex opt-in. Absent means no Boat opt-in, not a readiness receipt. */
   readonly boatRuntime?: true;
+  readonly runtimeTransport?: "dialout";
   skills?: SkillReceipt[];
   usage?: SandboxUsage | null;
   preservationNote?: string | null;
@@ -106,6 +107,7 @@ export interface SandboxStore {
   insert(input: {
     /** Trusted routing selection; never a mutable sandbox patch. */
     boatRuntime?: true;
+    runtimeTransport?: "dialout";
     credentialId?: string;
     credentialVersion?: number;
     id: string;
@@ -182,6 +184,7 @@ export async function cleanupSandboxes(
 
 export interface SandboxRow {
   boat_runtime?: boolean;
+  runtime_transport?: "dialout" | null;
   usage?: SandboxUsage | null;
   preservation_note?: string | null;
   task_outcome?: TaskOutcome | null;
@@ -220,7 +223,7 @@ export interface SandboxRow {
 /** The longest failure reason kept; a longer one is cut. */
 export const MAX_STATUS_REASON_LENGTH = 2000;
 
-const COLUMNS = `boat_runtime,skills, preservation_note, task_outcome, task_prompt_id, credential_id, credential_version, id, provider::text as provider, provider_sandbox_id, golden_id, org_id, owner_id, harness::text as harness, status::text as status,
+const COLUMNS = `runtime_transport,boat_runtime,skills, preservation_note, task_outcome, task_prompt_id, credential_id, credential_version, id, provider::text as provider, provider_sandbox_id, golden_id, org_id, owner_id, harness::text as harness, status::text as status,
   conversation_ids, created_at, stopped_at, deleted_at, status_reason, model, reasoning_effort, machine_size, resource_project, visibility, repository_dir, expires_at, effective_ttl_seconds, requested_ttl_seconds, last_observed_at, lifecycle_error, lifecycle_generation, stop_requested_at`;
 
 /** Turn and pricing evidence is service-role-only; caller-role stores must not gain these ports. */
@@ -237,8 +240,8 @@ export function createSqlSandboxStore(sql: Sql, options: { turnModels?: true } =
     async insert(input): Promise<SandboxRecord> {
       const result = await sql.query<SandboxRow>(
         `insert into public.sandboxes (id, provider_sandbox_id, golden_id, org_id, owner_id, harness, status, model,
-           reasoning_effort, provider, visibility, repository_dir, requested_ttl_seconds, effective_ttl_seconds, expires_at, activity_lease_id, activity_until, credential_id, credential_version, machine_size, resource_project, boat_runtime)
-         values ($1, $2, $3, $4, $5, $6::public.harness, $7::public.sandbox_status, $8, $9, $10::public.sandbox_provider, $11::public.visibility, $12::text, $13::integer, $14::integer, coalesce($20::timestamptz, now() + $14::integer * interval '1 second'), $15::uuid, case when $15::uuid is not null then now()+interval '2 minutes' else null end, $16::uuid, $17::integer, $18::text::jsonb, $19::text::jsonb, $21::boolean)
+           reasoning_effort, provider, visibility, repository_dir, requested_ttl_seconds, effective_ttl_seconds, expires_at, activity_lease_id, activity_until, credential_id, credential_version, machine_size, resource_project, boat_runtime, runtime_transport)
+         values ($1, $2, $3, $4, $5, $6::public.harness, $7::public.sandbox_status, $8, $9, $10::public.sandbox_provider, $11::public.visibility, $12::text, $13::integer, $14::integer, coalesce($20::timestamptz, now() + $14::integer * interval '1 second'), $15::uuid, case when $15::uuid is not null then now()+interval '2 minutes' else null end, $16::uuid, $17::integer, $18::text::jsonb, $19::text::jsonb, $21::boolean,$22::text)
          returning ${COLUMNS}`,
         [
           input.id,
@@ -262,6 +265,7 @@ export function createSqlSandboxStore(sql: Sql, options: { turnModels?: true } =
           JSON.stringify(input.resourceProject ?? null),
           input.expiresAt ?? null,
           input.boatRuntime === true,
+          input.runtimeTransport ?? null,
         ],
       );
       const row = result.rows[0];
@@ -314,6 +318,7 @@ export function mapSandboxRow(row: SandboxRow): SandboxRecord {
   if (row.golden_id === null) throw new Error("Sandbox row has no supported golden binding.");
   const lifecycleGeneration = decodeLifecycleGeneration(row.lifecycle_generation);
   return {
+    ...(row.runtime_transport === "dialout" ? { runtimeTransport: "dialout" as const } : {}),
     ...(row.boat_runtime === true ? { boatRuntime: true as const } : {}),
     ...(row.expires_at
       ? {

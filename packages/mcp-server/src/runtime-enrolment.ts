@@ -83,7 +83,7 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
     const row = (
       await tx.query<{ id: string; lifecycle_generation: string }>(
         `select s.id,s.lifecycle_generation::text from public.sandboxes s
-       where s.id=$1 and s.provider in ('boat','docker') and s.status in ('starting','ready','running')
+       where s.id=$1 and (s.provider in ('boat','docker') or (s.provider='modal' and s.runtime_transport='dialout')) and s.status in ('starting','ready','running')
        and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>now()
        and s.org_id=$2 and s.owner_id=$3 and s.provider=$4
        and s.docker_host_id is not distinct from $5::uuid and s.docker_installation_id is not distinct from $6::uuid

@@ -620,7 +620,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
   };
   const live = async (sandboxId: string, allowUnbound = false, known?: SandboxView) => {
     const found = known ?? (await visible(sandboxId));
-    if (found.boatRuntime && !allowUnbound)
+    if ((found.boatRuntime || found.runtimeTransport === "dialout") && !allowUnbound)
       throw new ToolError(
         "unsupported",
         "Experimental runtime supports initial launch, reads and compute stop/delete only.",

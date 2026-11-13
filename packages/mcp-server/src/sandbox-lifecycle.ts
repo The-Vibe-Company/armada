@@ -37,6 +37,7 @@ export function createSandboxLifecycle(sql: Sql, providerFor: (id: string) => Pr
           id: string;
           provider_sandbox_id: string;
           boat_runtime: boolean;
+          runtime_transport: string | null;
           lifecycle_generation: number;
           expires_at: Date | string;
           status: string;
@@ -54,7 +55,7 @@ export function createSandboxLifecycle(sql: Sql, providerFor: (id: string) => Pr
           and (candidate.activity_until is null or candidate.activity_until<now())
           and (candidate.reconcile_lease_until is null or candidate.reconcile_lease_until<now())
           order by candidate.reconcile_after limit 1 for update of candidate skip locked)
-        returning s.id,s.provider_sandbox_id,s.boat_runtime,s.lifecycle_generation,s.expires_at,s.status::text as status,s.stop_requested_at,s.preservation_note,
+        returning s.id,s.provider_sandbox_id,s.runtime_transport,s.boat_runtime,s.lifecycle_generation,s.expires_at,s.status::text as status,s.stop_requested_at,s.preservation_note,
           exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id) as owner_is_member`,
           [token],
         )
@@ -110,7 +111,7 @@ export function createSandboxLifecycle(sql: Sql, providerFor: (id: string) => Pr
           if (!owned.rows[0]) return true;
           signal?.throwIfAborted();
           // A best-effort preservation timeout is NOT proof the active turn settled.
-          if (!row.boat_runtime && ["ready", "running"].includes(info.state))
+          if (!row.boat_runtime && row.runtime_transport !== "dialout" && ["ready", "running"].includes(info.state))
             await operation(signal, () =>
               (provider.quiesce ?? provider.interrupt).call(provider, { sandboxId: row.provider_sandbox_id }),
             );
