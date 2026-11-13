@@ -65,6 +65,16 @@ describe("sandbox filters", () => {
       parseSandboxFilters({ owner: "someone", page: "3junk", sort: "wrong", size: "huge", golden: "hidden" }),
     ).toEqual(parseSandboxFilters({}));
     expect(filtersToSearch(parseSandboxFilters({}))).toBe("");
+  });
+
+  test("the list opens newest first; the default sort keeps the URL clean and every other sort is kept", () => {
+    expect(parseSandboxFilters({}).sort).toBe("newest");
+    expect(parseSandboxFilters({ sort: "wrong" }).sort).toBe("newest");
+    expect(filtersToSearch({ sort: "newest" })).toBe("");
+    for (const sort of ["attention", "oldest", "name"] as const) {
+      expect(parseSandboxFilters({ sort }).sort).toBe(sort);
+      expect(filtersToSearch({ sort })).toBe(`?sort=${sort}`);
+    }
     for (const page of ["0", "-1", "1.5", "Infinity", "9007199254740992"])
       expect(parseSandboxFilters({ page }).page).toBe(1);
   });
