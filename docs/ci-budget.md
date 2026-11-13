@@ -7,7 +7,7 @@ Required names to retain:
 - Golden OS recipe (actual provider image)
 - Binary (linux-x64), Binary (linux-arm64), Binary (darwin-arm64)
 
-Coordinator ruleset changes: **remove Binary (darwin-x64)** and **add CI budget (120s)**.
+Coordinator ruleset changes: **remove Binary (darwin-x64)** and **remove CI budget (120s)**.
 Intel macOS still builds/tests on main, manual runs, and the unchanged release workflow.
 
 PR and merge-group expensive checks compare the entire candidate against its event
@@ -16,18 +16,23 @@ shared core, providers and runtime artifacts), migrations (embedded binary schem
 version), the lockfile/root package/tsconfig, build/npm/runtime/image scripts, fixtures,
 local actions and CI workflow. Dashboard-only and documentation-only changes report
 the existing required names without building. Main/manual runs always build everything.
-A classifier failure cannot produce a green budget gate.
+A classifier failure cannot produce a green budget diagnostic.
 
-The actual budget guard runs inside the required **Lint, typecheck and test**
-verification aggregate, after its normal static/unit admission checks and all other
-required prerequisites. The **CI budget (120s)** name is retained as an independent
-fast compatibility marker pointing to that combined enforcement. Neither a second
-serial runner queue nor a concurrent snapshot of an unfinished verification gate is
-needed. A budget violation fails the required verification aggregate itself.
-It counts elapsed
-time from workflow start, including job queue/setup and aggregate gates, not just step
-execution. It fails with an author-facing summary on late or unsuccessful verdicts.
-It does not poll, cancel work, raise timeouts or turn skipped tests green.
+## Non-required timing diagnostics (urgent coordinator decision, 2026-11-13)
+
+**Lint, typecheck and test** depends only on the real verification jobs and
+checks every dependency's result. It never depends on or executes the budget
+check. Runner timing cannot turn successful code checks red.
+
+**CI budget (120s)** is a separate, visible, **non-required** job on PRs and merge
+groups, after the required verdict and its prerequisites. **Remove this name
+from the ruleset if present.** Its own runner queue, checkout, API calls and setup
+are not admission latency: the script measures the latest completed required-path
+verdict minus workflow start, including the required aggregate. Only known
+required-path names participate; informational Golden OS, Intel macOS, unrelated
+informational jobs and the budget job itself are ignored. A late required path
+still fails this diagnostic and writes its summary, without failing the required
+gate. No threshold increase, polling or test/assertion weakening.
 
 ## Informative recipe policy (coordinator decision, 2026-11-12)
 
