@@ -12,7 +12,8 @@ plan with a one-second estimate. `test-durations.json` supplies measured weights
 obsolete entries never affect coverage. Longest-first greedy placement with path
 tie-breaking is deterministic across runners.
 
-Static checks own native build/validation and native-only conformance cases.
+**Native runtime contracts** owns native build/validation and native-only
+conformance cases, in parallel with lint/typecheck.
 Unit shards prepare the portable runtime but do not start PostgreSQL or apply
 migrations. **Golden PostgreSQL concurrency** owns the disposable PostgreSQL 17
 service and runs every tracked `*.test.ts` referencing
@@ -23,7 +24,8 @@ current tests do, so they join the real-database job automatically. No test is
 deleted or excluded from unit discovery.
 
 The always-run **Lint, typecheck and test** aggregate still requires successful
-static checks, the entire unit matrix, PostgreSQL concurrency, migration versions,
+static checks, native runtime contracts, the entire unit matrix, PostgreSQL
+concurrency, migration versions,
 golden OS gate and binaries. Failure, cancellation and skipping cannot produce a
 green aggregate. PR and merge-group triggers and required names are unchanged.
 
@@ -54,3 +56,24 @@ The MCP server's common fixtures clone an immutable migrated PGlite snapshot per
 database (`scripts/test-support/migrated-database.ts`). Connections, schemas,
 roles and rows remain independent. Fresh migration tests still call
 `openDatabase` + `applyMigrations` directly.
+
+## Current shard weights
+
+`test-durations.json` is refreshed from successful main run **43421358505**
+(2026-11-13, commit `a786becaefb01cefe4439dfb821deefc5183ec95`), after database
+setup was removed from unit shards. All 374 discovered files have an observation.
+Values are the runner's `Completed <path> in <seconds>s` measurements: the entire
+isolated Bun child process, including startup and cleanup, not just test bodies.
+
+The observed shard work ranged from **25.598 to 50.079 seconds**. Replaying the
+same measurements through the unchanged longest-first planner assigns
+**42.964 to 42.970 seconds** to each shard, reducing the predicted longest shard
+by **7.109 seconds**. This is a replay estimate, not proof of a faster future run;
+runner contention and changed tests can move actual times. No tests, execution
+isolation, shard count, or coverage rules changed. New files still default to 1s.
+
+That run's unit jobs took 42–71s including install (6–15s). Lint/typecheck took
+39s, native contracts 41s, and PostgreSQL concurrency 61s (10s container start,
+10s install, 16s migration application, 18s test work). Unit balance is therefore
+the next measured critical-path opportunity. The owner collects the ten-run
+verdict window after merge; a main-run sample does not count as PR acceptance.
