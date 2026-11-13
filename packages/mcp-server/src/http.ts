@@ -58,6 +58,8 @@ export interface HandlerOptions {
   ready?: () => Promise<boolean>;
   /** Public Git deployment identity; never a credential or arbitrary environment value. */
   commitSha?: string;
+  /** Non-secret, already-resolved global policy. Not proof a provider paused. */
+  idlePauseDelayMs?: number;
   modelAuth?: ModelAuthOwnership;
   publicUrl: string;
   /** Enabled social login providers. Empty by default: email login always works. */
@@ -144,6 +146,11 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
           ok: ready,
           version: VERSION,
           ...(options.commitSha && /^[a-f0-9]{40}$/.test(options.commitSha) ? { commit: options.commitSha } : {}),
+          ...(typeof options.idlePauseDelayMs === "number" &&
+          Number.isSafeInteger(options.idlePauseDelayMs) &&
+          options.idlePauseDelayMs > 0
+            ? { idlePauseDelayMs: options.idlePauseDelayMs }
+            : {}),
           ...(!ready ? { reason: "database_unavailable" } : {}),
         },
         {

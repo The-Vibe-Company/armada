@@ -59,6 +59,7 @@ await reservation.stop(true);
 const env = {
   ARMADA_DATABASE_URL: "postgres://fixture",
   ARMADA_DATABASE_POOL_MAX: "5",
+  ARMADA_RUNTIME_IDLE_MINUTES: "2.5",
   SUPABASE_URL: "https://auth.example",
   SUPABASE_ANON_KEY: "public",
   ARMADA_AUTH_SECRET: "test-only-auth-secret",
@@ -111,7 +112,13 @@ try {
     assert.equal(intervals.mock.calls.length > 0, true);
     const response = await fetch(`http://127.0.0.1:${server.port}/healthz`);
     assert.equal(response.status, 200);
-    assert.equal(((await response.json()) as { ok: boolean }).ok, true);
+    const healthy = (await response.json()) as { ok: boolean; idlePauseDelayMs: number };
+    assert.equal(healthy.ok, true);
+    assert.equal(
+      healthy.idlePauseDelayMs,
+      150_000,
+      "Health reports the configured startup delay, not a guessed default",
+    );
     // Runtime failure after successful boot must not keep reporting healthy.
     now += 1_001;
     schemaVersion = "20000101000000";
@@ -124,7 +131,12 @@ try {
     assert.equal(unavailable.status, 503);
     assert.equal(unavailable.headers.get("cache-control"), "no-store");
     assert.equal(unavailable.headers.get("retry-after"), "5");
-    assert.deepEqual(await unavailable.json(), { ok: false, version: VERSION, reason: "database_unavailable" });
+    assert.deepEqual(await unavailable.json(), {
+      ok: false,
+      version: VERSION,
+      idlePauseDelayMs: 150_000,
+      reason: "database_unavailable",
+    });
     now += 1_001;
     failUntil = 0;
     const recovered = await fetch(`http://127.0.0.1:${server.port}/healthz`);
