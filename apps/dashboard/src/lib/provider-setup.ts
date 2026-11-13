@@ -1,4 +1,5 @@
 import type { MemberRole, SandboxProviderId } from "@armada/core";
+import { isRecord, isSandboxProvider, SANDBOX_PROVIDERS } from "@armada/core";
 import { checkModalToken, checkSecretValue, type SecretCheck } from "./credentials.ts";
 
 /**
@@ -13,20 +14,23 @@ export type ProviderStatus = {
   providers: { provider: SandboxProviderId; configured: boolean }[];
 };
 
-export const SETUP_PROVIDERS = ["boat", "modal"] as const satisfies readonly SandboxProviderId[];
+export const SETUP_PROVIDERS = SANDBOX_PROVIDERS;
 
-export function isSetupProvider(value: unknown): value is SandboxProviderId {
-  return value === "boat" || value === "modal";
-}
+export const isSetupProvider = isSandboxProvider;
 
-export const SETUP_PROVIDER_INFO: Record<SandboxProviderId, { label: string; docs: string; docsLabel: string }> = {
+export const SETUP_PROVIDER_INFO: Record<
+  SandboxProviderId,
+  { label: string; docs: string; docsLabel: string; credentialNoun: "key" | "token" }
+> = {
   boat: {
     label: "Boat",
+    credentialNoun: "key",
     docs: "https://docs.boat.dev",
     docsLabel: "Get a Boat API key",
   },
   modal: {
     label: "Modal",
+    credentialNoun: "token",
     docs: "https://modal.com/docs/reference/cli/token",
     docsLabel: "Get a Modal token",
   },
@@ -34,10 +38,6 @@ export const SETUP_PROVIDER_INFO: Record<SandboxProviderId, { label: string; doc
 
 /** Where the active organization's cloud sandbox providers (Boat, Modal) are connected, replaced and disconnected (#1474). */
 export const CLOUD_PROVIDERS_PATH = "/providers/cloud";
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 /**
  * The server's status, accepted only for the organization asked about and only when it is self-consistent (ready

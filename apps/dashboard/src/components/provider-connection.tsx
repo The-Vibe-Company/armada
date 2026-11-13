@@ -91,7 +91,7 @@ export function ProviderConnection({
                 setOpen(true);
               }}
             >
-              {connected ? `Replace ${provider === "boat" ? "key" : "token"}` : `Connect ${info.label}`}
+              {connected ? `Replace ${info.credentialNoun}` : `Connect ${info.label}`}
             </Button>
             {connected && (
               <DisconnectProvider
