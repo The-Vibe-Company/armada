@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { randomBytes, randomUUID } from "node:crypto";
-import { resolveCredentials } from "../src/credentials.ts";
+import { listConnectionModels, resolveCredentials } from "../src/credentials.ts";
 import { encryptSecret } from "../src/crypto.ts";
 import {
   CONNECTION_PRESETS,
@@ -122,4 +122,54 @@ test("preset input errors never repeat the key", () => {
 
 test("ticked and typed model IDs merge in order without duplicates", () => {
   expect(connectionModelList(["a", "b"], " b, c\nd  ,, ")).toEqual(["a", "b", "c", "d"]);
+});
+
+test("a connection lists its declared models with saved prices, never its key or address", async () => {
+  const secret = randomBytes(32).toString("base64");
+  const deepseek = presetConnectionValue(preset("deepseek"), {
+    baseUrl: "",
+    apiKey: "sk-deepseek-secret",
+    models: ["deepseek-flash", "typed-model"],
+  });
+  const azure = presetConnectionValue(preset("azure-foundry"), {
+    baseUrl: "https://resource.services.ai.azure.com/openai/v1",
+    apiKey: "azure-secret",
+    models: ["my-deployment"],
+  });
+  const row = async (id: string, kind: "opencode" | "openai" | "anthropic", value: string, status = "active") => ({
+    id,
+    kind,
+    status,
+    valueEnc: await encryptSecret(value, secret),
+  });
+  const rows = {
+    user: [
+      await row("a", "opencode", deepseek),
+      await row("b", "opencode", "plain-plan-key"),
+      await row("c", "openai", azure, "revoked"),
+    ],
+    org: [await row("d", "openai", azure), await row("e", "anthropic", "sk-ant")],
+  };
+  const reader = {
+    credentials: async (scope: "user" | "org", owner: string) => (owner === "x" ? [] : rows[scope]),
+    orgBoatKey: async () => null,
+  };
+  const listed = await listConnectionModels(reader, secret, { userId: "u", orgId: "o" });
+  const flash = presetModels(preset("deepseek")).find((model) => model.id === "deepseek-flash");
+  expect(listed).toEqual([
+    {
+      id: "a",
+      scope: "user",
+      models: [
+        { model: "armada/deepseek-flash", input: flash?.input ?? null, output: flash?.output ?? null },
+        { model: "armada/typed-model", input: null, output: null },
+      ],
+    },
+    { id: "d", scope: "org", models: [{ model: "my-deployment", input: null, output: null }] },
+  ]);
+  expect(JSON.stringify(listed)).not.toMatch(/secret|sk-|azure\.com|deepseek\.com/);
+  // A value that cannot be decrypted is left out instead of failing the list.
+  expect(await listConnectionModels(reader, randomBytes(32).toString("base64"), { userId: "u", orgId: "o" })).toEqual(
+    [],
+  );
 });

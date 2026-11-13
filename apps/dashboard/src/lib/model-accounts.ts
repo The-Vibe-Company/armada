@@ -3,7 +3,7 @@
  * interfaces matching the published contract, so the dashboard compiles on its own; no DTO carries a token, a
  * refresh token or auth state, and the parsers keep only the named fields, so nothing else is ever rendered.
  */
-import type { Harness } from "@armada/core";
+import type { ConnectionModelInfo, Harness } from "@armada/core";
 import { HARNESS_CATALOG, HARNESSES, harnessForCredential, MODEL_CREDENTIAL_KINDS } from "@armada/core";
 
 export const ACCOUNT_KINDS = MODEL_CREDENTIAL_KINDS;
@@ -27,6 +27,8 @@ export interface ModelAccount {
   updatedAt: string;
   /** Compare-and-swap version: every mutation names the version the person saw. */
   version: number;
+  /** The models a custom connection declares (#1483), read separately; absent for every other account. */
+  models?: ConnectionModelInfo[];
 }
 
 export type KindInfo = {
@@ -721,4 +723,26 @@ export function relativeTime(iso: string, now: number): string {
 
 export function formatMoney(amount: number, currency: string): string {
   return new Intl.NumberFormat("en", { style: "currency", currency }).format(amount);
+}
+
+const PRICE = /^(0|[1-9]\d{0,11})(\.\d{1,12})?$/;
+const MODEL = /^[A-Za-z0-9][A-Za-z0-9._:/[\]-]{0,255}$/;
+
+/**
+ * `creds/accounts/models`' `{connections: [{id, models: [{model, input, output}]}]}`, by account id. Anything that
+ * does not match is left out: a model is offered only when its ID and prices are well formed.
+ */
+export function connectionModelsFrom(payload: unknown): Map<string, ConnectionModelInfo[]> {
+  const result = new Map<string, ConnectionModelInfo[]>();
+  const rows = isRow(payload) && Array.isArray(payload.connections) ? payload.connections : [];
+  const price = (value: unknown) => (typeof value === "string" && PRICE.test(value) ? value : null);
+  for (const row of rows) {
+    if (!isRow(row) || typeof row.id !== "string" || !UUID.test(row.id) || !Array.isArray(row.models)) continue;
+    const models = row.models
+      .filter((info): info is Row => isRow(info) && typeof info.model === "string" && MODEL.test(info.model))
+      .slice(0, 64)
+      .map((info) => ({ model: info.model as string, input: price(info.input), output: price(info.output) }));
+    if (models.length) result.set(row.id, models);
+  }
+  return result;
 }
