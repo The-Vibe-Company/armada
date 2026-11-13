@@ -109,6 +109,9 @@ export interface DockerLaunchRequest {
   reasoningEffort?: string;
   ttlSeconds?: number;
   visibility?: "private";
+  skills?: string[];
+  connections?: string[];
+  skipSkillDefaults?: boolean;
 }
 export interface DockerSandboxRecord extends Omit<SandboxRecord, "provider" | "goldenId" | "harness"> {
   provider: "docker";

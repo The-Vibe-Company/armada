@@ -122,3 +122,17 @@ test("unknown Docker launch outcome retains a stable request UUID for exact retr
     expect(result.err).toContain("do not create a replacement");
   }
 });
+
+test.each([{ flags: ["--skill", "team/notes@1.2.3", "--connections", host] }, { flags: ["--no-connections"] }])(
+  "Docker forwards existing skill/MCP flags %j",
+  async ({ flags }: { flags: readonly string[] }) => {
+    let body: Record<string, unknown> = {};
+    const result = await capture([...args, ...flags], async (request) => {
+      body = (await request.json()) as Record<string, unknown>;
+      return Response.json({ sandbox: { id: requestId, provider: "docker" }, golden: null, runtime: { epoch: "1" } });
+    });
+    expect(result.code).toBe(0);
+    expect(body.connections).toEqual(flags.includes("--no-connections") ? [] : [host]);
+    if (flags.includes("--skill")) expect(body.skills).toEqual(["team/notes@1.2.3"]);
+  },
+);
