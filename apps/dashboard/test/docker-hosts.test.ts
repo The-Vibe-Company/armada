@@ -1,9 +1,11 @@
 import { expect, test } from "bun:test";
 import {
+  connectedHostName,
   type DockerHost,
-  hasCheckedIn,
+  expiryCountdown,
+  hostFact,
   hostName,
-  hostRegistrationCommand,
+  hostNameInput,
   hostState,
   isRouteAbsent,
   parseDockerHostList,
@@ -22,6 +24,7 @@ const host = (overrides: Partial<DockerHost> = {}): DockerHost => ({
   lastSeenAt: "2026-11-13T11:59:50Z",
   revokedAt: null,
   sandboxes: 2,
+  version: "1.4.0",
   ...overrides,
 });
 
@@ -48,25 +51,55 @@ test("one malformed host is left out and counted; a bad envelope or a duplicated
     expect(parseDockerHostList(bad)).toBeNull();
 });
 
-test("a registration is a host ID and a 64-hex one-use token, nothing else", () => {
-  const token = "a".repeat(64);
-  expect(parseHostRegistration({ hostId: ID, registrationToken: token })).toEqual({
-    hostId: ID,
-    registrationToken: token,
-  });
-  expect(parseHostRegistration({ hostId: ID, registrationToken: "short" })).toBeNull();
-  expect(parseHostRegistration({ hostId: "x", registrationToken: token })).toBeNull();
+test("a registration is a host ID, a one-line command and an expiry, nothing stored as a bare token", () => {
+  const command = "curl -fsSL https://armada.example.com/install-host.sh | sh -s -- --token abc";
+  const expiresAt = "2026-11-13T12:05:00Z";
+  expect(parseHostRegistration({ hostId: ID, command, expiresAt })).toEqual({ hostId: ID, command, expiresAt });
+  // Surrounding whitespace is trimmed; the command itself may not span lines.
+  expect(parseHostRegistration({ hostId: ID, command: `  ${command}  `, expiresAt })?.command).toBe(command);
+  for (const bad of [
+    { hostId: "x", command, expiresAt },
+    { hostId: ID, command: "", expiresAt },
+    { hostId: ID, command: "a\nb", expiresAt },
+    { hostId: ID, command: `x${"y".repeat(3000)}`, expiresAt },
+    { hostId: ID, command, expiresAt: "soon" },
+    { hostId: ID, command },
+  ])
+    expect(parseHostRegistration(bad)).toBeNull();
 });
 
-test("the command reads the token without echo on stdin, never in argv, and runs the daemon against the server origin", () => {
-  const command = hostRegistrationCommand("https://armada.example.com/mcp?x=1");
-  expect(command).toContain("read -rs token");
-  expect(command).toContain(`printf '%s\\n' "$token" |`);
-  expect(command).toContain("armada-docker-host register --server 'https://armada.example.com' --state-dir");
-  expect(command).toContain('armada-docker-host run --state-dir "$HOME/.local/state/armada-docker-host"');
-  expect(hostRegistrationCommand("ftp://armada.example.com")).toBeNull();
-  expect(hostRegistrationCommand("https://user:pass@armada.example.com")).toBeNull();
-  expect(hostRegistrationCommand("not a url")).toBeNull();
+test("an optional host name is trimmed, blank becomes none, and an over-long name is refused", () => {
+  expect(hostNameInput("  ")).toEqual({ ok: true, name: null });
+  expect(hostNameInput("  build-box ")).toEqual({ ok: true, name: "build-box" });
+  expect(hostNameInput("x".repeat(65))).toMatchObject({ ok: false });
+});
+
+test("the expiry counts down as m:ss and reads expired once it passes", () => {
+  const expiresAt = "2026-11-13T12:05:00Z";
+  expect(expiryCountdown(expiresAt, NOW)).toBe("5:00");
+  expect(expiryCountdown(expiresAt, NOW + 211_000)).toBe("1:29");
+  expect(expiryCountdown(expiresAt, NOW + 300_000)).toBeNull();
+  expect(expiryCountdown(expiresAt, NOW + 600_000)).toBeNull();
+});
+
+test("a row's fact names its sandboxes and daemon version, unknown when the host has not reported one", () => {
+  expect(hostFact({ sandboxes: 2, version: "1.4.0" })).toBe("2 sandboxes · v1.4.0");
+  expect(hostFact({ sandboxes: 0, version: "v2.0.0" })).toBe("No sandboxes · v2.0.0");
+  expect(hostFact({ sandboxes: 1, version: null })).toBe("1 sandbox · version unknown");
+});
+
+test("a host's reported daemon version is parsed; a blank or missing one reads as unknown", () => {
+  expect(parseDockerHostList({ placement: true, hosts: [host({ version: "1.4.0" })] })?.hosts[0]?.version).toBe(
+    "1.4.0",
+  );
+  expect(
+    parseDockerHostList({ placement: true, hosts: [host({ version: "  " } as Partial<DockerHost>)] })?.hosts[0]
+      ?.version,
+  ).toBeNull();
+  expect(
+    parseDockerHostList({ placement: true, hosts: [host({ version: undefined } as Partial<DockerHost>)] })?.hosts[0]
+      ?.version,
+  ).toBeNull();
 });
 
 test("a host's state reads in plain words and an offline or unregistered host sorts first", () => {
@@ -91,16 +124,17 @@ test("a host's state reads in plain words and an offline or unregistered host so
   expect(hostName(host({ name: "Workstation" }))).toBe("Workstation");
 });
 
-test("the dialog's host has checked in once it is listed online or offline, not while pending or revoked", () => {
+test("the dialog's host is connected, with its name, once listed online or offline, not while pending or revoked", () => {
   const list = (state: DockerHost["state"]) => ({
     placement: true,
-    hosts: [host({ state, revokedAt: state === "revoked" ? "2026-11-13T09:00:00Z" : null })],
+    hosts: [host({ state, name: "build-box", revokedAt: state === "revoked" ? "2026-11-13T09:00:00Z" : null })],
+    skipped: 0,
   });
-  expect(hasCheckedIn(list("online"), ID)).toBe(true);
-  expect(hasCheckedIn(list("offline"), ID)).toBe(true);
-  expect(hasCheckedIn(list("pending"), ID)).toBe(false);
-  expect(hasCheckedIn(list("revoked"), ID)).toBe(false);
-  expect(hasCheckedIn(list("online"), OTHER)).toBe(false);
+  expect(connectedHostName(list("online"), ID)).toBe("build-box");
+  expect(connectedHostName(list("offline"), ID)).toBe("build-box");
+  expect(connectedHostName(list("pending"), ID)).toBeNull();
+  expect(connectedHostName(list("revoked"), ID)).toBeNull();
+  expect(connectedHostName(list("online"), OTHER)).toBeNull();
 });
 
 test("revoking warns that a revoked host can no longer clean up its sandboxes", () => {
