@@ -1,9 +1,10 @@
 import { expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { dockerRuntimeInstaller } from "../src/runtime-install.ts";
+import { dockerRuntimeInstaller, dockerRuntimeStarter } from "../src/runtime-install.ts";
 
 const executable = new TextEncoder().encode("public compiled runtime fixture");
 const artifact = { sha256: createHash("sha256").update(executable).digest("hex"), bytes: executable.length };
@@ -70,6 +71,57 @@ test("host installation refuses invalid artifact bytes before Docker mutation an
       install({ machine, serverUrl: "https://staging.example", cacheDir: join(directory, "cache"), artifact }),
     ).rejects.toThrow("Docker runtime installation failed");
     expect(copies).toBe(0);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+// Exercise the actual fixed shell launcher against a local executable fixture.
+// Its extra observation FD emits only a digest: no credential file, sockets or sleeps.
+test("runtime starter delivers only enrolment on private stdin and detaches runtime output", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "armada-host-runtime-start-"));
+  try {
+    const token = "armada_enrol_" + "b".repeat(64);
+    const events: string[] = [];
+    const fakeBinary = join(directory, "runtime");
+    await writeFile(fakeBinary, "#!/bin/sh\nexec sha256sum >&3\n", { mode: 0o700 });
+    const start = dockerRuntimeStarter(
+      {
+        async installRuntime(target, bytes) {
+          expect(target).toEqual(machine);
+          expect(bytes).toEqual(executable);
+          events.push("install");
+        },
+        async bootstrap(target, input) {
+          expect(target).toEqual(machine);
+          events.push("start");
+          expect(JSON.parse(input.stdin)).toEqual({ serverUrl: "https://staging.example", enrolmentToken: token });
+          expect(JSON.stringify(input.command).includes(token)).toBe(false);
+          // Remap only the fixed executable path into the local fixture; run the real script.
+          const program = input.command[0];
+          if (!program) throw new Error("Missing bootstrap program");
+          const result = spawnSync(
+            "/bin/sh",
+            ["-c", 'exec 3>&1; exec "$@"', "observe-runtime", program, ...input.command.slice(1, -1), fakeBinary],
+            {
+              input: input.stdin,
+              timeout: 5000,
+            },
+          );
+          expect(result.status).toBe(0);
+          expect(result.stderr.toString()).toBe("");
+          expect(result.stdout.toString().trim()).toBe(createHash("sha256").update(input.stdin).digest("hex") + "  -");
+        },
+      },
+      { serverUrl: "https://staging.example", cacheDir: join(directory, "cache") },
+      (async () => new Response(executable)) as unknown as typeof fetch,
+    );
+    await start(machine, { serverUrl: "https://staging.example", artifact, enrolmentToken: token });
+    expect(events).toEqual(["install", "start"]);
+    await expect(
+      start(machine, { serverUrl: "https://other.example", artifact, enrolmentToken: token }),
+    ).rejects.toThrow("Docker runtime bootstrap failed");
+    expect(events).toEqual(["install", "start"]);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

@@ -3,14 +3,15 @@ import { randomBytes } from "node:crypto";
 import { chmod, mkdtemp, readFile, rm, stat, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { BootstrapDescriptor } from "../../core/src/docker-host-job.ts";
 import { createDockerMachineExecutor } from "../../core/src/docker-machine.ts";
 import { type Api, type Executor, type Job, register, type State, type Store, tick } from "../src/daemon.ts";
 import { fileStore, httpApi } from "../src/native.ts";
 
-function fixture(operation: Job["operation"] = "create") {
+function fixture(operation: Exclude<Job["operation"], "bootstrap"> = "create", bootstrap?: BootstrapDescriptor) {
   const job: Job = {
     requestId: crypto.randomUUID(),
-    operation,
+    ...(bootstrap ? { operation: "bootstrap" as const, bootstrap } : { operation }),
     request: {
       sandboxId: crypto.randomUUID(),
       generation: crypto.randomUUID(),
@@ -43,10 +44,11 @@ function fixture(operation: Job["operation"] = "create") {
   const run = async () => {
     // Receipt comes from the actual store write, not a fixture-supplied pending record.
     expect(state.receipts.some((r) => r.requestId === job.requestId && !r.outcome)).toBe(true);
-    executed.push(operation);
+    executed.push(job.operation);
     if (failure) throw new Error("uncertain side effect");
   };
   const executor: Executor = {
+    startRuntime: run,
     create: run,
     stop: run,
     delete: run,
@@ -240,7 +242,12 @@ test("HTTP registration is single-use and host credentials remain in authorizati
   expect(JSON.parse(String(calls[0]?.init.body)).installationId).toBe(state.installationId);
   expect(state.installationId).toMatch(/^[0-9a-f-]{36}$/);
   await api.poll(state);
-  await api.result(state, { ...f.job, outcome: "completed" });
+  await api.result(state, {
+    requestId: f.job.requestId,
+    operation: "create",
+    request: f.job.request,
+    outcome: "completed",
+  });
   expect(calls.map((c) => c.init.headers)).toEqual([
     { authorization: `Bearer ${registrationToken}`, "content-type": "application/json" },
     { authorization: `Bearer ${hostToken}`, "content-type": "application/json" },
@@ -303,7 +310,12 @@ test("native state writes remain readable or preserve the previous durable state
     await store.save(previous);
     const next = {
       ...previous,
-      receipts: Array.from({ length: 100_000 }, () => ({ ...f.job, outcome: "completed" as const })),
+      receipts: Array.from({ length: 100_000 }, () => ({
+        requestId: f.job.requestId,
+        operation: "create" as const,
+        request: f.job.request,
+        outcome: "completed" as const,
+      })),
     };
     let accepted = false;
     try {
@@ -316,5 +328,77 @@ test("native state writes remain readable or preserve the previous durable state
     expect(JSON.stringify(restored) === JSON.stringify(accepted ? next : previous)).toBe(true);
   } finally {
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+function bootstrapDescriptor(): BootstrapDescriptor {
+  return {
+    serverUrl: "https://armada.example",
+    artifact: { sha256: "b".repeat(64), bytes: 123 },
+    enrolmentToken: `armada_enrol_${"c".repeat(64)}`,
+  };
+}
+
+test("bootstrap executes once with a private descriptor; identity changes and off-origin delivery cannot execute", async () => {
+  const descriptor = bootstrapDescriptor();
+  const f = fixture("create", descriptor);
+  let delivered: BootstrapDescriptor | undefined;
+  const executor = {
+    ...f.executor,
+    async startRuntime(request: Job["request"], bootstrap: BootstrapDescriptor) {
+      expect(request).toEqual(f.job.request);
+      expect(JSON.stringify(f.state())).not.toContain(descriptor.enrolmentToken);
+      await f.executor.startRuntime?.(request, bootstrap);
+      delivered = bootstrap;
+    },
+  };
+  await tick(f.store, f.api, executor);
+  await tick(f.store, f.api, executor);
+  expect(delivered).toEqual(descriptor);
+  expect(f.executed).toEqual(["bootstrap"]);
+  expect(f.acknowledgements).toEqual(["completed", "completed"]);
+  expect(f.state().receipts[0]).toEqual({
+    requestId: f.job.requestId,
+    operation: "bootstrap",
+    request: f.job.request,
+    inputHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+    outcome: "completed",
+  });
+  if (f.job.operation !== "bootstrap") throw new Error("Expected bootstrap");
+  f.job.bootstrap.enrolmentToken = `armada_enrol_${"d".repeat(64)}`;
+  await expect(tick(f.store, f.api, executor)).rejects.toThrow("Changed host job");
+  f.job.requestId = crypto.randomUUID();
+  await expect(tick(f.store, f.api, executor)).rejects.toThrow("Changed machine generation");
+  const wrong = fixture("create", { ...descriptor, serverUrl: "https://other.example" });
+  await expect(tick(wrong.store, wrong.api, wrong.executor)).rejects.toThrow("Wrong bootstrap origin");
+  expect(wrong.state().receipts).toEqual([]);
+  expect(wrong.executed).toEqual([]);
+  const denied = fixture("create", descriptor);
+  denied.deny();
+  await expect(tick(denied.store, denied.api, denied.executor)).rejects.toThrow("denied");
+  expect(denied.executed).toEqual([]);
+});
+
+test("pending bootstrap is terminally unknown on recovery, before invocation or after an outcome-save failure", async () => {
+  for (const interruptedAfter of ["intent", "execution"]) {
+    const f = fixture("create", bootstrapDescriptor());
+    let saves = 0;
+    const store: Store = {
+      load: f.store.load,
+      async save(state) {
+        saves++;
+        if (saves === 2 && interruptedAfter === "execution") throw new Error("disk unavailable");
+        await f.store.save(state);
+        if (saves === 1 && interruptedAfter === "intent") throw new Error("interrupted");
+      },
+    };
+    await expect(tick(store, f.api, f.executor)).rejects.toThrow();
+    expect(f.state().receipts[0]?.outcome).toBeUndefined();
+    await tick(f.store, f.api, f.executor);
+    await tick(f.store, f.api, f.executor);
+    expect(f.executed).toEqual(interruptedAfter === "execution" ? ["bootstrap"] : []);
+    expect(f.acknowledgements).toEqual(["failed", "failed"]);
+    f.job.requestId = crypto.randomUUID();
+    await expect(tick(f.store, f.api, f.executor)).rejects.toThrow("Changed machine generation");
   }
 });
