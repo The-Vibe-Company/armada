@@ -1,7 +1,9 @@
 #!/usr/bin/env bun
+import { join } from "node:path";
 import { createDockerMachineExecutor } from "../../core/src/docker-machine.ts";
 import { register, tick } from "./daemon.ts";
 import { dockerCli, fileStore, httpApi } from "./native.ts";
+import { dockerRuntimeStarter } from "./runtime-install.ts";
 
 async function main(args: string[]) {
   const [command, ...flags] = args;
@@ -36,6 +38,13 @@ async function main(args: string[]) {
       cli: dockerCli,
       now: Date.now,
     });
+    const runtime = {
+      ...executor,
+      startRuntime: dockerRuntimeStarter(executor, {
+        serverUrl: state.server,
+        cacheDir: join(options.get("--state-dir") ?? "", "runtime-cache"),
+      }),
+    };
     let stopping = false;
     const stop = () => {
       stopping = true;
@@ -44,7 +53,7 @@ async function main(args: string[]) {
     process.once("SIGTERM", stop);
     while (!stopping) {
       try {
-        await tick(store, api, executor);
+        await tick(store, api, runtime);
       } catch {
         console.error("Docker host iteration failed; local TTL sweep continues.");
       }
