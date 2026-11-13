@@ -32,12 +32,17 @@ def main():
     parser.add_argument("--normal-lifecycle", action="store_true", help="Prove normal follow-up and same-host stop/resume with retained history; implies --normal-launch")
     parser.add_argument("--service-install", action="store_true", help="Restart an installed user service, normal launch and uninstall after cleanup")
     parser.add_argument("--cost", action="store_true", help="Prove exact per-turn and total USD before/after resume; implies --normal-lifecycle")
+    parser.add_argument("--exec", action="store_true", help="Prove normal runtime exec and stable request replay")
+    parser.add_argument("--steer", action="store_true", help="Redirect an active native turn through normal control")
+    parser.add_argument("--interrupt", action="store_true", help="Interrupt an active native turn through normal control")
     harnesses = parser.add_mutually_exclusive_group()
     harnesses.add_argument("--claude", action="store_true", help="Prove Claude launch/follow-up/stop/resume via normal routes")
     harnesses.add_argument("--opencode", action="store_true", help="Prove OpenCode with the supplied custom OpenAI-compatible connection via normal routes")
     parser.add_argument("--timeout", type=int, default=600, help="Seconds per bounded stage")
     args = parser.parse_args()
     harness = "claude" if args.claude else "opencode" if args.opencode else "codex"
+    if args.exec or args.steer or args.interrupt:
+        args.normal_launch = True
     if args.cost or args.claude or args.opencode:
         args.normal_lifecycle = True
     if args.service_install:
@@ -252,6 +257,40 @@ def main():
         if args.follow_up:
             turn("Reply with exactly the marker I gave you in my previous message. Do not run tools or modify files.",
                  marker, conversation)
+        if args.exec:
+            command = {"id": sandbox_id, "request_id": str(uuid.uuid4()), "command": "printf DOCKER_EXEC_OK", "timeout_seconds": 10}
+            result = api("sandbox/exec", command, normal=True)
+            replay = api("sandbox/exec", command, normal=True)
+            if (result.get("exitCode") != 0 or result.get("stdout") != "DOCKER_EXEC_OK"
+                    or result.get("timedOut") or result != replay):
+                raise RuntimeError("Normal Docker exec or stable replay failed")
+            print("PASS: runtime exec returned expected output; identical request replay matched.")
+        for operation, enabled in (("steer", args.steer), ("interrupt", args.interrupt)):
+            if not enabled:
+                continue
+            receipt = api("sandbox/send", {"id": sandbox_id, "request_id": str(uuid.uuid4()),
+                "conversation_id": conversation,
+                "prompt": "Run the shell command sleep 120, then reply DOCKER_NOT_REDIRECTED. Wait for the command to finish."}, normal=True)
+            control = {"id": sandbox_id, "request_id": str(uuid.uuid4()), "conversation_id": conversation}
+            if operation == "steer":
+                control["text"] = "Stop waiting. Reply with exactly DOCKER_STEER_OK. Do not run more tools."
+            redirected = api("sandbox/" + operation, control, normal=True)
+            if operation == "steer":
+                if (redirected.get("conversationId") != conversation or redirected.get("promptId") != receipt["promptId"]):
+                    raise RuntimeError("Steering changed turn identity")
+                turn("", "DOCKER_STEER_OK", conversation, receipt)
+            else:
+                if redirected.get("interrupted") is not True:
+                    raise RuntimeError("Interrupt was not acknowledged")
+                deadline = time.monotonic() + args.timeout
+                while True:
+                    summary = api("sandbox/detail", {"id": sandbox_id, "prompt_id": receipt["promptId"]}, normal=True)
+                    if summary.get("prompt", {}).get("state") == "interrupted":
+                        break
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError("Interrupted native turn was not confirmed in retained history")
+                    time.sleep(2)
+            print("PASS: normal Docker " + operation + " acknowledged by the native turn.")
         if args.normal_lifecycle:
             stopped = api("sandbox/stop", {"id": sandbox_id, "request_id": str(uuid.uuid4())}, normal=True)
             if stopped.get("status") != "stopped":
