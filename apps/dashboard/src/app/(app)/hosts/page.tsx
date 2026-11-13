@@ -15,7 +15,7 @@ import { Button } from "@/components/ui/button";
 import { readDockerLaunchOption, readSelectedDockerHosts } from "@/lib/data/docker-hosts";
 import { launchAccounts, listSelectedAccounts } from "@/lib/data/model-accounts";
 import { selectedOrganization } from "@/lib/data/selected-org";
-import { type DockerHost, HOSTS_PATH, hostFact, hostName, hostState, sandboxCount } from "@/lib/docker-hosts";
+import { type DockerHost, HOSTS_PATH, hostFact, hostState, sandboxCount } from "@/lib/docker-hosts";
 import { type DockerLaunchOption, dockerHarnesses, dockerLaunchBlocker, dockerUnavailable } from "@/lib/docker-launch";
 import type { LaunchAccounts } from "@/lib/model-accounts";
 import { relativeAge } from "@/lib/relative-time";
@@ -43,7 +43,10 @@ export default async function HostsPage({ searchParams }: Props) {
           <CircleAlertIcon />
           <AlertTitle>Hosts could not be loaded</AlertTitle>
           <AlertDescription>
-            <p>{hosts.message}</p>
+            <p>
+              Check your connection and try again. If this continues, ask an organization admin to check the Armada
+              connection.
+            </p>
             <Button asChild variant="outline" size="sm" className="mt-2">
               <Link href={HOSTS_PATH}>Try again</Link>
             </Button>
@@ -71,8 +74,12 @@ export default async function HostsPage({ searchParams }: Props) {
     unavailable: option ? dockerUnavailable(option) : [],
     harnesses: dockerHarnesses(option),
   };
-  const rows = sortResources(hosts.list.hosts.map((host) => row(host, orgId, isAdmin, now, launch)));
   const requested = typeof query[ITEM_PARAM] === "string" ? query[ITEM_PARAM] : null;
+  const unfinished = hosts.list.hosts.filter((host) => host.state === "pending");
+  // Old links to an unfinished registration still open its cleanup controls.
+  const showSetup = query.setup === "unfinished" || unfinished.some((host) => host.id === requested);
+  const visible = hosts.list.hosts.filter((host) => (host.state === "pending") === showSetup);
+  const rows = sortResources(visible.map((host) => row(host, orgId, isAdmin, now, launch)));
 
   return (
     <ResourceBrowser
@@ -83,11 +90,34 @@ export default async function HostsPage({ searchParams }: Props) {
       rows={rows}
       blockers={[]}
       notices={
-        hosts.list.skipped > 0 ? (
-          <p role="status" className="text-sm text-muted-foreground">
-            {hosts.list.skipped} {hosts.list.skipped === 1 ? "host" : "hosts"} could not be shown.
-          </p>
-        ) : undefined
+        <div className="space-y-3">
+          {(unfinished.length > 0 || showSetup) && (
+            <nav aria-label="Host setup" className="flex flex-wrap gap-2">
+              <Button asChild variant={showSetup ? "outline" : "secondary"} size="sm">
+                <Link href={HOSTS_PATH} aria-current={!showSetup ? "page" : undefined}>
+                  Machines
+                </Link>
+              </Button>
+              <Button asChild variant={showSetup ? "secondary" : "outline"} size="sm">
+                <Link href={`${HOSTS_PATH}?setup=unfinished`} aria-current={showSetup ? "page" : undefined}>
+                  Unfinished setup ({unfinished.length})
+                </Link>
+              </Button>
+            </nav>
+          )}
+          {showSetup && (
+            <p className="text-sm text-muted-foreground">
+              {isAdmin
+                ? "These machines have not connected yet. If you no longer have the install command, revoke the entry and add the host again to get a new one. Revoking an entry does not uninstall anything on your machine."
+                : "These machines have not connected yet. Ask an organization admin to finish setup or remove unused entries."}
+            </p>
+          )}
+          {hosts.list.skipped > 0 && (
+            <p role="status" className="text-sm text-muted-foreground">
+              {hosts.list.skipped} {hosts.list.skipped === 1 ? "host" : "hosts"} could not be shown.
+            </p>
+          )}
+        </div>
       }
       initial={requested}
       actions={isAdmin ? <AddHostDialog orgId={orgId} /> : undefined}
@@ -98,8 +128,12 @@ export default async function HostsPage({ searchParams }: Props) {
         </p>
       }
       empty={
-        <Empty title="No hosts yet" icon={<ServerIcon />}>
-          A host is a machine you own, running Docker, where Armada starts sandboxes instead of a cloud provider.
+        <Empty title={showSetup ? "No unfinished setup" : "No machines connected yet"} icon={<ServerIcon />}>
+          {showSetup
+            ? "Your machines have completed setup or their entries have been revoked. Choose Machines to see them."
+            : isAdmin
+              ? "Choose Add host to connect a Linux machine running Docker. After you run its install command, it appears here."
+              : "Ask an organization admin to add a Docker host. It appears here after its install command runs."}
         </Empty>
       }
     />
@@ -122,7 +156,7 @@ function row(
   now: number,
   launch: Launch,
 ): ResourceRow & { bucket: Bucket } {
-  const name = hostName(host);
+  const name = host.name ?? "Unnamed machine";
   const blocker = dockerLaunchBlocker(launch.option, launch.placement, host);
   const state = hostState(host, now);
   const added = relativeAge(host.createdAt, now);

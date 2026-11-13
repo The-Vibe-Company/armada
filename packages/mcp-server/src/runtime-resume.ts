@@ -5,6 +5,7 @@ import { createSqlData, type SandboxView } from "./data.ts";
 import { createRuntimeAgent } from "./runtime-agent.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
+import type { RuntimeGitHub } from "./runtime-github.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
 
 export interface RuntimeResumeInput {
@@ -56,6 +57,7 @@ export function createRuntimeResume(
   commands: ReturnType<typeof createRuntimeCommands>,
   prepare?: RuntimeResumePrepare,
   prepareMcp?: RuntimeMcp["prepare"],
+  prepareGitHub?: RuntimeGitHub["prepareLaunch"],
 ) {
   const authority = createRuntimeEnrolments(sql, key);
   const read = async (tx: Sql, id: string, request: string) =>
@@ -284,7 +286,12 @@ export function createRuntimeResume(
             `resume_${requestId}`,
             admitted.op.target_epoch,
           );
-          if (existing.state === "missing") await prepareMcp?.(caller, found.id, signal);
+          if (existing.state === "missing") {
+            // Restored disk state carries revoked epoch authority. Reauthorize before
+            // inference, never on a replay of an already dispatched prompt.
+            if (found.provider === "boat") await prepareGitHub?.(caller, found.id);
+            await prepareMcp?.(caller, found.id, signal);
+          }
           const accepted = await agent.prompt(
             {
               sandboxId: found.providerSandboxId,

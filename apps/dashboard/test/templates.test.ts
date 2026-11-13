@@ -315,12 +315,13 @@ describe("template launch", () => {
     );
   });
 
-  test("lifetimes stay within the provider's limit", () => {
-    expect(ttlOptions("modal").map((option) => option.value)).toEqual(["", "3600", "28800", "86400"]);
-    expect(ttlOptions("boat").at(-1)?.value).toBe("604800");
-    expect(ttlChoice("604800", "modal").ok).toBe(false);
-    expect(ttlChoice("3600", "modal")).toEqual({ ok: true, value: 3600 });
-    expect(ttlChoice("", "boat")).toEqual({ ok: true, value: undefined });
+  test.each(["boat", "modal", "docker"] as const)("lifetimes stay within the %s limit", (provider) => {
+    const longRunning = provider === "boat";
+    const options = ["", "3600", "28800", "86400"];
+    expect(ttlOptions(provider).map((option) => option.value)).toEqual(longRunning ? [...options, "604800"] : options);
+    expect(ttlChoice("604800", provider).ok).toBe(longRunning);
+    expect(ttlChoice("3600", provider)).toEqual({ ok: true, value: 3600 });
+    expect(ttlChoice("", provider)).toEqual({ ok: true, value: undefined });
   });
 
   test("a launch target names the environment's projects, the tools and the first blocker", () => {
