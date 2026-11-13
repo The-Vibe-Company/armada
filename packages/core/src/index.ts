@@ -272,13 +272,9 @@ export {
   type ResourceAdviceResponse,
   type ResourceAdviceScope,
 } from "./resource-advice.ts";
-export {
-  type ProviderResourceObservation,
-  RESOURCE_OBSERVATION_VERSION,
-  type ResourceCounters,
-  type ResourceInterval,
-  resourceInterval,
-  type VmResourceReading,
+export type {
+  ProviderResourceObservation,
+  VmResourceReading,
 } from "./resource-observation.ts";
 export { ROUTINE_REASON_HELP, type Routine, routineReasonHelp } from "./routines.ts";
 export {
