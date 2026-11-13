@@ -253,3 +253,46 @@ test.skipIf(process.platform !== "linux")(
     }
   },
 );
+
+test("cancelled synchronous runtime exec terminates its process group before returning", async () => {
+  const s = setup();
+  const stop = new AbortController();
+  const socket = join(s.dir, "ready.sock");
+  const sink = Bun.serve({
+    unix: socket,
+    fetch() {
+      stop.abort();
+      return new Response("ready");
+    },
+  });
+  try {
+    const response = await s.runner.handle(
+      new Request("http://runtime/v1", {
+        method: "POST",
+        signal: stop.signal,
+        headers: { [AUTH_HEADER]: grant.token },
+        body: JSON.stringify({
+          version: 1,
+          requestId: "cancelled-exec",
+          sandboxId: grant.sandboxId,
+          op: "exec",
+          input: {
+            sandboxId: grant.sandboxId,
+            command: `printf '%s' "$$" > '${s.dir}/pid'; curl -s --unix-socket '${socket}' http://private/ready; exec sleep 60`,
+            timeoutSeconds: 60,
+          },
+        }),
+      }),
+    );
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { result: { exitCode: number | null; detached: boolean } };
+    expect(body.result.detached).toBe(false);
+    expect(body.result.exitCode).not.toBe(0);
+    const pid = Number(await Bun.file(join(s.dir, "pid")).text());
+    expect(pid).toBeGreaterThan(0);
+    expect(() => process.kill(pid, 0)).toThrow();
+  } finally {
+    sink.stop(true);
+    s.close();
+  }
+});
