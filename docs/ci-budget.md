@@ -6,6 +6,9 @@ supersedes the earlier CI slices (#1269, #1423). There is one required check:
 typecheck and migration guards, sharing its checkout and dependency setup. No separate timing diagnostic, compatibility verdict or informational
 job remains. The coordinator measures elapsed verdict time, including runner
 queue/setup and aggregate overhead; exceeding two minutes is a defect to fix.
+Automatic unit runs cover pull requests and merge-group candidates, not main
+pushes that duplicate the queue verdict. Staging deployment/smoke runs separately
+on main and owns its receipts; it does not require a main-push unit run.
 
 See [unit shard sizing](../scripts/ci/README.md) for the current six-shard
 starting estimate and [merge queue](merge-queue.md) for the required-check policy.

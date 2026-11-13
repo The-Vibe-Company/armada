@@ -44,6 +44,10 @@ remain free of global hooks/mocks. Shared-worker savings require hosted measurem
 PR/merge-queue CI uses six unit runners plus one final aggregate (seven, formerly
 ten). PR-ref concurrency keys stay stable across pushes and explicitly cancel
 superseded PR runs; distinct merge-group candidates never cancel each other.
+Automatic unit CI runs only on `pull_request` and `merge_group`, not again on
+pushes to main. Manual dispatch remains for bot-authored release PR checks.
+Staging deploy/smoke has its own main-push workflow and produces its own receipts;
+it does not depend on a duplicate unit-suite run on main.
 Static checks no longer pay a separate checkout/Bun/dependency installation.
 Each unit runner still uses `bun install --frozen-lockfile`; no multi-gigabyte
 node_modules archive is added to the critical path.
