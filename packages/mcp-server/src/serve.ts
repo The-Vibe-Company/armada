@@ -78,7 +78,9 @@ import { createRuntimeServing } from "./runtime-serving.ts";
 import { createRuntimeSockets, type RuntimeSocketData } from "./runtime-sockets.ts";
 import { orchestratorScopedMcpUrl } from "./sandbox-access-scoped-gateway.ts";
 import { createSandboxAccessServices } from "./sandbox-access-services.ts";
+import { createSandboxAccountChange } from "./sandbox-account-change.ts";
 import { createSandboxArmadaAccess } from "./sandbox-armada-access.ts";
+import { createSandboxBillingAccount } from "./sandbox-billing-account.ts";
 import { createSandboxLifecycle } from "./sandbox-lifecycle.ts";
 import { startServerWorkers } from "./server-workers.ts";
 import { bunSql } from "./sql.ts";
@@ -441,7 +443,12 @@ export async function startServer(
     launch,
     publicUrl: config.publicUrl,
     modelAuth,
-    credentialBindingRecovery: createCredentialBindingRecovery(sql, config.encryptionKey),
+    sandboxBillingAccount: createSandboxBillingAccount(sql),
+    credentialBindingRecovery: createSandboxAccountChange(
+      sql,
+      dockerCredentials,
+      createCredentialBindingRecovery(sql, config.encryptionKey),
+    ),
     modelUsage: createModelUsageApi(sql),
     goldenRetirements,
     invitations: invitationsFromEnv(sql, env),

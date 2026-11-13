@@ -151,6 +151,10 @@ const MAX_BODY_BYTES = 128 * 1024;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface ControlOptions {
+  sandboxBillingAccount?: (
+    caller: Caller,
+    id: string,
+  ) => Promise<import("./sandbox-billing-account.ts").SandboxBillingAccount | null>;
   dockerLaunch?: import("./docker-normal-launch.ts").DockerNormalLaunch;
   /** Listener-local keepalive for the bounded synchronous Docker launch pipeline. */
   configureDockerLaunchRequest?: (request: Request) => void;
@@ -234,6 +238,7 @@ const STATUS: Record<VaultErrorCode, number> = {
   credential_busy: 409,
   credential_binding_required: 409,
   credential_binding_unsafe: 409,
+  credential_binding_unsupported: 409,
   invalid: 400,
   forbidden: 403,
   not_found: 404,
@@ -996,7 +1001,7 @@ async function dispatch(
     )
       throw new VaultError("forbidden", "You are not a member of this org.");
     const scopedCaller = await selectedCaller(options, caller, optional(body, "org"));
-    return callSharedTool(
+    const result = await callSharedTool(
       {
         ...(options.goldenAdoption ? { goldenAdoption: options.goldenAdoption } : {}),
         caller: scopedCaller,
@@ -1043,6 +1048,13 @@ async function dispatch(
       toolName,
       body,
     );
+    if (toolName === "status") {
+      const billingAccount = (await options.sandboxBillingAccount?.(scopedCaller, required(body, "id"))) ?? null;
+      if (!result || typeof result !== "object" || Array.isArray(result))
+        throw new VaultError("unavailable", "Invalid sandbox status receipt.");
+      return { ...result, billingAccount };
+    }
+    return result;
   }
   const { store, encryptionKey } = options;
   const userId = caller.userId;
@@ -1175,12 +1187,23 @@ async function dispatch(
     case "sandbox/bind-credential":
       if (!options.credentialBindingRecovery)
         throw new VaultError("unavailable", "Binding recovery is not configured.");
-      return options.credentialBindingRecovery(caller, {
-        id: required(body, "id"),
-        credentialId: required(body, "credentialId"),
-        // An org name or ID, resolved against fresh memberships like every other sandbox route.
-        ...(org ? { org: (await resolveOrg(store, userId, org)).id } : {}),
-      });
+      return options.credentialBindingRecovery(
+        caller,
+        {
+          id: required(body, "id"),
+          credentialId: required(body, "credentialId"),
+          // An org name or ID, resolved against fresh memberships like every other sandbox route.
+          ...(org ? { org: (await resolveOrg(store, userId, org)).id } : {}),
+        },
+        async (id, sandboxOrg) => {
+          await dispatch(
+            "sandbox/stop",
+            caller,
+            { id, org: sandboxOrg, only_if_idle: true, request_id: crypto.randomUUID() },
+            options,
+          );
+        },
+      );
     case "golden/size-policy": {
       if (!options.data) throw new VaultError("unavailable", "Golden policies are not configured.");
       const data = options.data(caller);

@@ -1,5 +1,6 @@
 import type { CredentialKind, Sandbox, SandboxCost, SandboxListMetadata } from "@armada/core";
 import { isUuid } from "@/lib/action";
+import type { BillingAccountMetadata } from "@/lib/billing-account";
 import { parseSandboxListMetadata, type SkippedSandboxRow } from "@/lib/sandbox-access";
 import { costOfRow } from "@/lib/sandbox-cost";
 import {
@@ -109,6 +110,20 @@ export async function credentialKinds(supabase: Supabase, ids: readonly (string 
   if (error) throw new Error(error.message);
   for (const row of data ?? []) kinds.set(row.id, row.kind);
   return kinds;
+}
+
+/** Only user-JWT-readable billing metadata; absent/private accounts and failed reads remain unavailable. */
+export async function credentialMetadata(
+  supabase: Supabase,
+  ids: readonly (string | null)[],
+): Promise<Map<string, BillingAccountMetadata>> {
+  const wanted = [...new Set(ids.filter((id): id is string => typeof id === "string"))];
+  const accounts = new Map<string, BillingAccountMetadata>();
+  if (wanted.length === 0) return accounts;
+  const { data, error } = await supabase.from("credentials").select("id,name,kind").in("id", wanted);
+  if (error) return accounts;
+  for (const row of data ?? []) accounts.set(row.id, { id: row.id, name: row.name, kind: row.kind });
+  return accounts;
 }
 
 /**

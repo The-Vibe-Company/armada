@@ -1,4 +1,5 @@
 import {
+  accountBindingAvailability,
   isSandboxProvider,
   MODEL_CATALOG,
   SANDBOX_PLACEMENT_LABELS,
@@ -24,13 +25,14 @@ import { OutcomeBadge, OutcomeDetail, PreservationNotice } from "@/components/ta
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { bindableStatus, needsAccountChoice } from "@/lib/account-recovery";
+import { bindableStatus } from "@/lib/account-recovery";
 import { isUuid } from "@/lib/action";
-import { readAccountChoices } from "@/lib/data/account-recovery";
+import { type BillingAccount, billingAccount } from "@/lib/billing-account";
+import { type AccountChoices, readAccountChoices } from "@/lib/data/account-recovery";
 import { listSandboxConnections, type SandboxConnections } from "@/lib/data/connections";
 import { hostListForPage, readDockerLaunchOption } from "@/lib/data/docker-hosts";
 import { findGoldenLabel } from "@/lib/data/goldens";
-import { credentialKinds, getSandbox, getSandboxMetadata } from "@/lib/data/sandboxes";
+import { credentialMetadata, getSandbox, getSandboxMetadata } from "@/lib/data/sandboxes";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { displayUser, listMemberships, memberDirectory, requireViewer } from "@/lib/data/viewer";
 import { sandboxHostLabel } from "@/lib/docker-hosts";
@@ -83,10 +85,13 @@ export default async function SandboxPage({ params }: Props) {
   if (sandbox.provider === "docker") {
     // A sandbox on an owned Docker host (#1165): the same page, with what the server supports on Docker. A control the
     // server marks unsupported is listed with its reason, never offered as a button it would refuse.
-    const [option, kinds, hosts] = await Promise.all([
+    const [option, accounts, hosts, choices] = await Promise.all([
       readDockerLaunchOption(),
-      credentialKinds(supabase, [sandbox.credential_id]),
+      credentialMetadata(supabase, [sandbox.credential_id]),
       hostListForPage(),
+      sandbox.owner_id === viewer.id && sandbox.status !== "deleted"
+        ? readAccountChoices(viewer, sandbox.harness, sandbox.org_id)
+        : undefined,
     ]);
     return (
       <DockerSandbox
@@ -94,7 +99,10 @@ export default async function SandboxPage({ params }: Props) {
         controls={dockerSandboxControls(option)}
         org={memberships.find((item) => item.org.id === sandbox.org_id)?.org.name ?? "Unknown"}
         owner={displayUser(directory, sandbox.owner_id, viewer.id)}
-        cost={costOfRow(sandbox, kinds.get(sandbox.credential_id ?? "") ?? null)}
+        cost={costOfRow(sandbox, accounts.get(sandbox.credential_id ?? "")?.kind ?? null)}
+        billing={billingAccount(sandbox.credential_id, accounts)}
+        ownerCanChange={sandbox.owner_id === viewer.id && sandbox.status !== "deleted"}
+        {...(choices ? { choices } : {})}
         host={sandboxHostLabel(hosts, sandbox.docker_host_id)}
       />
     );
@@ -102,17 +110,22 @@ export default async function SandboxPage({ params }: Props) {
   if (!isSandboxProvider(sandbox.provider) || sandbox.golden_id === null) notFound();
   const org = memberships.find((item) => item.org.id === sandbox.org_id);
   const configured = mcpUrl() !== null;
-  const recovery = needsAccountChoice(sandbox);
+  const bindingAvailability = accountBindingAvailability({
+    provider: sandbox.provider,
+    boatRuntime: sandbox.boat_runtime,
+  });
+  const recovery = sandbox.status !== "deleted" && bindingAvailability.available;
   const owner = sandbox.owner_id === viewer.id;
-  const [golden, applied, kinds, choices] = await Promise.all([
+  const [golden, applied, accounts, choices] = await Promise.all([
     findGoldenLabel(supabase, sandbox.golden_id),
     listSandboxConnections(sandbox),
-    credentialKinds(supabase, [sandbox.credential_id]),
+    credentialMetadata(supabase, [sandbox.credential_id]),
     recovery && owner && bindableStatus(sandbox.status) !== "failed"
       ? readAccountChoices(viewer, sandbox.harness, sandbox.org_id)
       : undefined,
   ]);
-  const cost = costOfRow(sandbox, kinds.get(sandbox.credential_id ?? "") ?? null);
+  const account = billingAccount(sandbox.credential_id, accounts);
+  const cost = costOfRow(sandbox, accounts.get(sandbox.credential_id ?? "")?.kind ?? null);
   const repositoryDir = sandboxRepositoryDir(sandbox);
   const lifecycle = readLifecycle(sandbox);
   const life = lifecycleView(sandbox.status, lifecycle, new Date());
@@ -128,6 +141,8 @@ export default async function SandboxPage({ params }: Props) {
     ["Org", org?.org.name ?? "Unknown"],
     ["Provider", PROVIDER_LABELS[sandbox.provider] ?? sandbox.provider],
     ["Harness", HARNESS_LABELS[sandbox.harness] ?? sandbox.harness],
+    ["Account", account.name],
+    ["Billing type", account.billing],
     ["Model", sandbox.model ?? "Provider default"],
     ["Reasoning effort", sandbox.reasoning_effort ?? "Provider default"],
     ...(repositoryDir ? [["Repository context", repositoryDir] as [string, string]] : []),
@@ -192,6 +207,9 @@ export default async function SandboxPage({ params }: Props) {
 
       <div data-fit="body" className="grid items-start gap-2 md:gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
         <div data-fit="column" className="min-w-0 space-y-2 md:space-y-6">
+          {owner && !bindingAvailability.available && (
+            <p className="text-sm text-muted-foreground">{bindingAvailability.reason}</p>
+          )}
           {recovery && (
             <SandboxAccountChoice
               sandboxId={sandbox.id}
@@ -255,6 +273,9 @@ function DockerSandbox({
   org,
   owner,
   cost,
+  billing,
+  ownerCanChange,
+  choices,
   host,
 }: {
   sandbox: Sandbox;
@@ -262,6 +283,9 @@ function DockerSandbox({
   org: string;
   owner: string;
   cost: ReturnType<typeof costOfRow>;
+  billing: BillingAccount;
+  ownerCanChange: boolean;
+  choices?: AccountChoices;
   host: string;
 }) {
   const configured = mcpUrl() !== null;
@@ -277,6 +301,8 @@ function DockerSandbox({
     ["Image", image.label, image.detail ?? undefined],
     ...(sandbox.provider_sandbox_id ? [["Container", sandbox.provider_sandbox_id] as Fact] : []),
     ["Harness", HARNESS_LABELS[sandbox.harness] ?? sandbox.harness],
+    ["Account", billing.name],
+    ["Billing type", billing.billing],
     ["Model", sandbox.model ?? "Provider default"],
     ["Reasoning effort", sandbox.reasoning_effort ?? "Provider default"],
     ["Owner", owner],
@@ -340,6 +366,15 @@ function DockerSandbox({
 
       <div data-fit="body" className="grid items-start gap-2 md:gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
         <div data-fit="column" className="min-w-0 space-y-2 md:space-y-6">
+          {ownerCanChange && (
+            <SandboxAccountChoice
+              sandboxId={sandbox.id}
+              status={sandbox.status}
+              owner
+              {...(choices ? { choices } : {})}
+              harnessLabel={HARNESS_LABELS[sandbox.harness] ?? sandbox.harness}
+            />
+          )}
           {reasons.logs ? (
             <Alert data-docker-conversation-unavailable role="status">
               <ContainerIcon />

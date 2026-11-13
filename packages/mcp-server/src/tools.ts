@@ -1944,12 +1944,17 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         "Stops the machine. Modal keeps its disk only if checkpoint succeeds; fallback termination returns " +
         "checkpoint_failed_disk_not_retained and cannot resume. Other retained stops can resume on send. Use it when the " +
         "agent is done, so the sandbox stops costing.",
-      input: { id, request_id: z.string().uuid().optional() },
+      input: { id, request_id: z.string().uuid().optional(), only_if_idle: z.boolean().optional() },
       output: { id: z.string(), status: z.enum(SANDBOX_STATUSES), preservationNote: z.string().optional() },
       destructive: true,
     },
     async (args) => {
       const found = await visible(args.id);
+      if (args.only_if_idle && !["ready", "stopped"].includes(found.status))
+        throw new VaultError(
+          "credential_binding_unsafe",
+          "Wait for the running turn or lifecycle operation to finish before changing accounts.",
+        );
       // A repeated stop observes the admitted request; it must not compete with
       // its activity/reconciliation lease or replay provider hooks on archiving compute.
       if (found.stopRequestedAt || ["stopping", "stopped"].includes(found.status))

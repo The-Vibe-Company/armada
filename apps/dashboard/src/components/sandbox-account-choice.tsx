@@ -81,8 +81,8 @@ export function SandboxAccountChoice({ sandboxId, status, owner, choices, harnes
           Choose this sandbox's account
         </h2>
         <p className="text-sm text-muted-foreground">
-          It was launched before accounts were pinned. Its turns will run on the account you choose, which cannot be
-          changed later. The workspace and conversations are kept.
+          Future turns use the account you choose. A ready sandbox is safely stopped first; the next message resumes the
+          same workspace and conversation. Existing usage keeps its original billing record.
         </p>
       </div>
 
@@ -150,8 +150,8 @@ export function SandboxAccountChoice({ sandboxId, status, owner, choices, harnes
           <AlertDialogHeader>
             <AlertDialogTitle>Use {account?.name} for this sandbox?</AlertDialogTitle>
             <AlertDialogDescription>
-              Its turns run on this {account?.scope === "org" ? "org" : "personal"} {account?.kindLabel}. This cannot be
-              changed later.
+              Future turns run on this {account?.scope === "org" ? "org" : "personal"} {account?.kindLabel}. A ready
+              sandbox is safely stopped first; workspace and conversation history are kept.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
