@@ -50,9 +50,10 @@ import {
   toolSummary,
   toolText,
 } from "@/lib/chat";
-import { INCOMPLETE_MODEL, modelChange } from "@/lib/composer";
+import { INCOMPLETE_MODEL, modelChange, PINNED_MODEL, SEND_KEY_FIELD } from "@/lib/composer";
 import { type ChatEvent, isActiveStatus, mergeEvents, parseEventPage } from "@/lib/events";
 import { describeFailure } from "@/lib/failure";
+import { type LaunchKey, launchKeyFor } from "@/lib/launch-key";
 import { cn } from "@/lib/utils";
 
 const POLL_MS = 2000;
@@ -86,6 +87,11 @@ type Props = {
   configured: boolean;
   /** Why this sandbox takes no messages from here whatever its status (a Docker sandbox, for now): shown instead. */
   composerUnavailable?: string | undefined;
+  /**
+   * A Docker sandbox: the model and effort stay as launched, and each message carries a request key that a retry of
+   * the same message reuses, so the server never runs it twice (#1526).
+   */
+  pinnedModel?: boolean;
 };
 
 type Poll = {
@@ -922,6 +928,7 @@ function Composer({
   harness,
   catalog,
   launchedModel,
+  pinnedModel,
   status,
   conversation,
   running,
@@ -934,6 +941,8 @@ function Composer({
   const [, startTransition] = useTransition();
   const [showModel, setShowModel] = useState(false);
   const [override, setOverride] = useState(false);
+  /** The Docker request key of the message not yet accepted: kept across a retry of the same text. */
+  const sendKey = useRef<LaunchKey | null>(null);
   const fieldId = useId();
   const enabled = (CAN_SEND as readonly SandboxStatus[]).includes(status);
   const restarts = STEER_RESTARTS_TURN[harness];
@@ -967,6 +976,13 @@ function Composer({
       setResult({ ok: false, error: INCOMPLETE_MODEL });
       return;
     }
+    if (intent === "send" && pinnedModel) {
+      sendKey.current = launchKeyFor(sendKey.current, [
+        ["prompt", String(data.get("prompt") ?? "")],
+        ["conversation", String(data.get("conversation") ?? "")],
+      ]);
+      data.set(SEND_KEY_FIELD, sendKey.current.key);
+    }
     const action = intent === "send" ? sendToSandbox : intent === "steer" ? steerSandbox : interruptSandbox;
     setPending(intent);
     setResult(null);
@@ -980,6 +996,7 @@ function Composer({
       setPending(null);
       setResult(outcome);
       if (!outcome.ok) return;
+      if (intent === "send") sendKey.current = null;
       if (intent !== "interrupt") {
         // An accepted action owns only the draft it submitted, not text typed during its round trip.
         const submitted = String(data.get("prompt") ?? "");
@@ -1042,37 +1059,48 @@ function Composer({
         className="max-h-60 min-h-14 resize-y bg-card shadow-xs sm:min-h-20 dark:bg-card"
       />
       <Collapsible open={showModel} onOpenChange={setShowModel} className="space-y-3">
-        <CollapsibleContent forceMount className="data-[state=closed]:hidden">
-          <fieldset disabled={pending !== null}>
-            <ModelFields
-              idPrefix={`send-${sandboxId}`}
-              harness={harness}
-              catalog={catalog}
-              keepLabel="As launched"
-              launchedModel={launchedModel}
-            />
-          </fieldset>
-        </CollapsibleContent>
+        {!pinnedModel && (
+          <CollapsibleContent forceMount className="data-[state=closed]:hidden">
+            <fieldset disabled={pending !== null}>
+              <ModelFields
+                idPrefix={`send-${sandboxId}`}
+                harness={harness}
+                catalog={catalog}
+                keepLabel="As launched"
+                launchedModel={launchedModel}
+              />
+            </fieldset>
+          </CollapsibleContent>
+        )}
         <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
-          <CollapsibleTrigger asChild>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className={cn("relative text-muted-foreground max-sm:px-2", override && "text-foreground")}
-            >
-              <SlidersHorizontalIcon />
-              {/* A changed model is marked by more than colour: a dot, and the word where there is room. */}
-              {override && (
-                <span
-                  className="absolute top-1 right-1 size-1.5 rounded-full bg-primary sm:hidden"
-                  aria-hidden="true"
-                />
-              )}
-              {/* Icon only on a phone, where the controls must fit one row; the name stays for assistive tech. */}
-              <span className="max-sm:sr-only">{override ? "Model changed" : "Model"}</span>
-            </Button>
-          </CollapsibleTrigger>
+          {pinnedModel ? (
+            // No model picker on Docker: the launch model serves every message, said plainly instead of refused.
+            <p className="flex items-center gap-1.5 px-1 text-xs text-muted-foreground" title={PINNED_MODEL}>
+              <SlidersHorizontalIcon className="size-3.5" aria-hidden />
+              <span className="max-sm:sr-only">Model as launched</span>
+              <span className="sr-only">: {PINNED_MODEL}</span>
+            </p>
+          ) : (
+            <CollapsibleTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className={cn("relative text-muted-foreground max-sm:px-2", override && "text-foreground")}
+              >
+                <SlidersHorizontalIcon />
+                {/* A changed model is marked by more than colour: a dot, and the word where there is room. */}
+                {override && (
+                  <span
+                    className="absolute top-1 right-1 size-1.5 rounded-full bg-primary sm:hidden"
+                    aria-hidden="true"
+                  />
+                )}
+                {/* Icon only on a phone, where the controls must fit one row; the name stays for assistive tech. */}
+                <span className="max-sm:sr-only">{override ? "Model changed" : "Model"}</span>
+              </Button>
+            </CollapsibleTrigger>
+          )}
           {steerHint ? (
             // Why Steer is unavailable, visible on a touch screen too (a title never shows there); one line, never a row.
             // It takes the place of an earlier success message, never of an error.
