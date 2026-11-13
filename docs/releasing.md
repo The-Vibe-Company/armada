@@ -354,9 +354,10 @@ outside this small deployment-gate PR.
 
 ## Dashboard Actions cutover (#1547, step 1)
 
-This first PR establishes the staging path **beside** the existing Vercel Git
-integration. It does not disable either project's Git deployments, remove PR
-previews, change Railway settings, or change production's deployment cadence.
+This step establishes the staging path **beside** the existing Vercel Git
+integration. Step 0 already skips Git builds on every branch except main. This
+step preserves that skip, main Git deployments, Railway settings, and production's
+deployment cadence.
 Do not claim the final release-only policy is active yet. The target policy is
 staging on main commits, production only at a release, with dashboard builds in
 Actions rather than Vercel; steps 2 and 3 complete that policy after owner proof.
@@ -391,5 +392,5 @@ still create a second staging deployment in this temporary overlap. No agent
 performs a deployment or changes provider settings. Leave both Git integrations
 in place until this proof succeeds; if Actions fails, Git remains the fallback.
 Only after the owner confirms this merge and staging proof may the next PR turn
-off Git deployments on both projects. That PR uses `Refs #1547`; only the final
+off Git deployments on both projects. Intermediate PRs use `Refs #1547`; only the final
 production release-only cutover closes the issue.
