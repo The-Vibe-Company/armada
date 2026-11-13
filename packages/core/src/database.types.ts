@@ -3554,7 +3554,7 @@ export type Database = {
           binding: Json;
           expires_at: string;
           delivered_at: string | null;
-          credential_requests: number;
+          acquisition_count: number;
           last_accessed_at: string | null;
         };
         Insert: {
@@ -3565,7 +3565,7 @@ export type Database = {
           binding: Json;
           expires_at: string;
           delivered_at?: string | null;
-          credential_requests?: number;
+          acquisition_count?: number;
           last_accessed_at?: string | null;
         };
         Update: {
@@ -3576,7 +3576,7 @@ export type Database = {
           binding?: Json;
           expires_at?: string;
           delivered_at?: string | null;
-          credential_requests?: number;
+          acquisition_count?: number;
           last_accessed_at?: string | null;
         };
         Relationships: [

@@ -1,9 +1,11 @@
 import { expect, test } from "bun:test";
+import { createMemoryAuthStore } from "@armada/auth";
 import { createSqlVaultStore, encryptSecret, type GitHubRuntimeConfiguration } from "@armada/core/server";
 import { GitHubBroker } from "../../agent-runtime/src/github-broker.ts";
+import { handleControlRequest } from "../src/control.ts";
+import { createSqlData } from "../src/data.ts";
 import { createRuntimeCheckpoint } from "../src/runtime-checkpoint.ts";
 import { createRuntimeGitHub } from "../src/runtime-github.ts";
-import { callSharedTool } from "../src/tool-api.ts";
 import { runtimeFixture } from "./runtime-fixture.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
 
@@ -19,6 +21,7 @@ async function fixture() {
       await encryptSecret(access, ENCRYPTION_KEY),
     ],
   );
+  let repositoryAccessible = true;
   let userHook: (() => Promise<void>) | undefined;
   const service = createRuntimeGitHub({
     sql: f.sql,
@@ -29,7 +32,11 @@ async function fixture() {
       store: createSqlVaultStore(f.sql),
       encryptionKey: ENCRYPTION_KEY,
       app: { clientId: "app", clientSecret: "offline-app-secret" },
-      fetch: (async () => {
+      fetch: (async (url: string | URL | Request) => {
+        if (String(url).includes("/repos/"))
+          return repositoryAccessible
+            ? Response.json({ full_name: "example/web" })
+            : new Response(null, { status: 404 });
         await userHook?.();
         return Response.json({ id: 123, login: "owner", name: "Owner" });
       }) as unknown as typeof fetch,
@@ -47,7 +54,41 @@ async function fixture() {
     broker.configure(value);
     configured = value ?? undefined;
   });
+  const authStore = createMemoryAuthStore();
+  authStore.addMembership(f.people.owner, { orgId: f.people.org, name: "Fixture", role: "member" });
+  const bearer = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: f.people.owner })).replace(/=+$/, "")}.sig`;
   return {
+    async api(path: string, body: object) {
+      const response = await handleControlRequest(
+        new Request(`https://armada.test/api/v1/${path}`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${bearer}` },
+          body: JSON.stringify(body),
+        }),
+        {
+          authStore,
+          store: createSqlVaultStore(f.sql),
+          encryptionKey: ENCRYPTION_KEY,
+          supabase: {
+            supabaseUrl: "https://supabase.test",
+            anonKey: "fixture",
+            fetch: async () => Response.json({ id: f.people.owner }),
+          },
+          data: createSqlData(f.sql),
+          providers: {
+            async resolve() {
+              throw Error("Runtime GitHub must not resolve a host provider");
+            },
+          },
+          runtimeGitHub: service,
+        },
+      );
+      if (!response) throw Error("Missing API response");
+      return response;
+    },
+    repositoryAccess(value: boolean) {
+      repositoryAccessible = value;
+    },
     f,
     service,
     access,
@@ -86,7 +127,21 @@ test("runtime GitHub uses durable private RPC, owner identity and epoch/reposito
     await expect(
       service.preflight(f.caller, { org: f.people.org, golden: golden.name, repository: "foreign/repo" }),
     ).rejects.toThrow();
-    const result = await callSharedTool({ ...f.context, runtimeGitHub: service }, "github_refresh", { id: f.row.id });
+    x.repositoryAccess(false);
+    expect(
+      (
+        await x.api("sandbox/github-preflight-v1", {
+          runtimeVersion: 1,
+          org: f.people.org,
+          golden: golden.name,
+          repository: "example/web",
+        })
+      ).status,
+    ).toBe(403);
+    x.repositoryAccess(true);
+    const response = await x.api("github/refresh", { id: f.row.id });
+    expect(response.status).toBe(200);
+    const result = await response.json();
     expect(result).toMatchObject({ status: "connected", runtime: { kind: "armada", epoch: "1" } });
     expect(JSON.stringify(result)).not.toMatch(/armada_gh_|ghu_/);
     expect(x.config()).toMatchObject({
@@ -97,7 +152,9 @@ test("runtime GitHub uses durable private RPC, owner identity and epoch/reposito
     const token = await x.broker.acquire("example/web", "gh");
     expect(token === x.access).toBe(true);
     expect(f.journal.redact(token).includes(token)).toBe(false);
-    const status = await service.status(f.caller, f.row.id);
+    const statusResponse = await x.api("github/runtime-status", { id: f.row.id });
+    expect(statusResponse.status).toBe(200);
+    const status = await statusResponse.json();
     expect(status).toMatchObject({ configured: true, credentialRequests: 1 });
     await expect(x.broker.acquire("foreign/repo", "gh")).rejects.toThrow();
     await expect(service.prepare({ ...f.caller, userId: f.people.admin }, f.row.id)).rejects.toThrow();

@@ -8,7 +8,7 @@ create table public.runtime_github_capabilities (
  binding jsonb not null,
  expires_at timestamptz not null,
  delivered_at timestamptz,
- credential_requests bigint not null default 0 check(credential_requests>=0),
+ acquisition_count bigint not null default 0 check(acquisition_count>=0),
  last_accessed_at timestamptz,
  primary key(sandbox_id,epoch)
 );

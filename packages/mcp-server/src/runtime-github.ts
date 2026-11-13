@@ -88,11 +88,11 @@ export function createRuntimeGitHub(options: {
         epoch: string;
         revision: string;
         binding: Binding;
-        credential_requests: string;
+        acquisition_count: string;
         delivered_at: string | null;
         last_accessed_at: string | null;
       }>(
-        "select sandbox_id,epoch::text,revision::text,binding,credential_requests::text,delivered_at::text,last_accessed_at::text from public.runtime_github_capabilities where hash=$1 and expires_at>now()",
+        "select sandbox_id,epoch::text,revision::text,binding,acquisition_count::text,delivered_at::text,last_accessed_at::text from public.runtime_github_capabilities where hash=$1 and expires_at>now()",
         [capHash],
       )
     ).rows[0] ?? denied();
@@ -111,9 +111,29 @@ export function createRuntimeGitHub(options: {
         [caller.userId, input.org, input.golden],
       )
     ).rows;
-    if (golden.length !== 1 || !allowed(golden[0]!, input.repository)) return denied();
+    if (golden.length !== 1 || !golden[0] || !allowed(golden[0], input.repository)) return denied();
     const access = await resolveGitHubAccess({ ...options.github, caller: "managed_runtime" }, caller.userId);
     if (access.status !== "connected") return denied();
+    const response = await (options.github.fetch ?? fetch)(`https://api.github.com/repos/${input.repository}`, {
+      method: "GET",
+      redirect: "error",
+      headers: {
+        authorization: `Bearer ${access.token}`,
+        accept: "application/vnd.github+json",
+        "x-github-api-version": "2022-11-28",
+      },
+      signal: AbortSignal.timeout(15000),
+    }).catch(() => denied());
+    const repository: unknown = await response.json().catch(() => null);
+    if (
+      !response.ok ||
+      !repository ||
+      typeof repository !== "object" ||
+      !("full_name" in repository) ||
+      typeof repository.full_name !== "string" ||
+      repository.full_name.toLowerCase() !== input.repository.toLowerCase()
+    )
+      return denied();
     return { githubReady: true, repository: input.repository, login: access.identity.login };
   }
   async function status(caller: Caller, id: string) {
@@ -143,7 +163,7 @@ export function createRuntimeGitHub(options: {
           configured: true,
           runtime: { kind: "armada" as const, epoch: scope.epoch },
           revision: cap.revision,
-          credentialRequests: Number(cap.credential_requests),
+          credentialRequests: Number(cap.acquisition_count),
           lastAccessedAt: cap.last_accessed_at,
         };
       });
@@ -169,7 +189,7 @@ export function createRuntimeGitHub(options: {
         .digest("hex")}`;
       await tx.query(
         `insert into runtime_github_capabilities(sandbox_id,epoch,revision,hash,binding,expires_at) values($1,$2,$3,$4,$5::jsonb,$6)
-    on conflict(sandbox_id,epoch) do update set revision=excluded.revision,hash=excluded.hash,binding=excluded.binding,expires_at=excluded.expires_at,delivered_at=null,credential_requests=0,last_accessed_at=null`,
+    on conflict(sandbox_id,epoch) do update set revision=excluded.revision,hash=excluded.hash,binding=excluded.binding,expires_at=excluded.expires_at,delivered_at=null,acquisition_count=0,last_accessed_at=null`,
         [id, scope.epoch, revision, hash(capability), JSON.stringify(now.binding), now.expires_at],
       );
       await issued(tx, now.binding, capability);
@@ -259,7 +279,7 @@ export function createRuntimeGitHub(options: {
           return denied();
         await issued(tx, now.binding, access.token);
         await tx.query(
-          "update runtime_github_capabilities set credential_requests=credential_requests+1,last_accessed_at=now() where hash=$1",
+          "update runtime_github_capabilities set acquisition_count=acquisition_count+1,last_accessed_at=now() where hash=$1",
           [hash(token)],
         );
         return Response.json({ token: access.token }, { headers });
