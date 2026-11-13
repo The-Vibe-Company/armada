@@ -1,6 +1,7 @@
 import { ProviderError } from "@armada/core";
 import { decryptSecret, type Sql } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
+import { createDockerLaunchVariables } from "./docker-launch-variables.ts";
 import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
 
@@ -56,7 +57,10 @@ export function createDockerNormalSend(
       // runtime.prompt still validates exact input, current owner and epoch.
       if (args.conversation_id === undefined && previous)
         conversationId = JSON.parse(await decryptSecret(previous.request_enc, key)).input.conversationId;
-      if (!previous) await options.github?.prepareTurn(caller, row.id);
+      if (!previous) {
+        await createDockerLaunchVariables(sql, key, clock)(caller, row.id);
+        await options.github?.prepareTurn(caller, row.id);
+      }
       const deadline = clock.now() + (options.timeoutMs ?? 25_000);
       for (;;) {
         let result: Awaited<ReturnType<typeof runtime.prompt>>;

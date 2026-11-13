@@ -15,6 +15,9 @@ test.each([
   "github",
   "github-no-proof",
   "github-no-broker",
+  "variable",
+  "variable-no-proof",
+  "variable-whitespace",
 ])("normal Docker smoke uses normal routes (%s)", (mode) => {
   const result = spawnSync(
     "python3",
@@ -46,6 +49,9 @@ class Opener:
             assert body["provider"] == "docker" and body["harness"] == (mode if mode in ("claude", "opencode") else "codex")
             assert body["visibility"] == "private" and "DOCKER_OK" in body["prompt"]
             assert "credentialVersion" not in body
+            if mode.startswith("variable"):
+                assert body["variables"] == [{"key": "APP_REGION", "variableId": "11111111-1111-4111-8111-111111111111", "version": 1}]
+                assert "printenv APP_REGION" in body["prompt"] and "offline-region" not in body["prompt"]
             if mode.startswith(("repository", "github")):
                 assert body["repos"] == [{"url": "https://github.com/example/project.git", "branch": "feature/work", "dir": "project"}]
                 assert "git -C /home/user/project log -1" in body["prompt"]
@@ -75,7 +81,8 @@ class Opener:
                  [{"name": "commandExecution", "input": {"command": "git -C /home/user/project log -1 --format=%H"},
                    "result": {"isError": False, "output": "a" * 40}}] +
                  ([{"name": "commandExecution", "input": {"command": "gh api repos/example/project --jq .full_name"},
-                   "result": {"isError": False, "output": "example/project"}}] if mode != "github-no-proof" else []) if mode.startswith("github") else []},
+                   "result": {"isError": False, "output": "example/project"}}] if mode != "github-no-proof" else []) if mode.startswith("github") else
+                 [{"name": "commandExecution", "input": {"command": "printenv APP_REGION"}, "result": {"isError": False, "output": "offline-region\\n"}}] if mode in ("variable", "variable-whitespace") else []},
                 {"kind": "prompt", "promptId": prompt, "status": "finished"}]}
         elif path == "sandbox/detail":
             if not any(t["promptId"] == prompt for t in prices):
@@ -102,6 +109,8 @@ if mode.startswith(("repository", "github")):
     argv += ["--repository", "example/project", "--branch", "feature/work"]
 if mode.startswith("github"):
     argv.append("--github")
+if mode.startswith("variable"):
+    argv += ["--variable", "APP_REGION:11111111-1111-4111-8111-111111111111:1"]
 if lifecycle:
     argv.append("--normal-lifecycle")
 if mode in ("cost", "bad-cost"):
@@ -109,16 +118,16 @@ if mode in ("cost", "bad-cost"):
 if mode in ("claude", "opencode"):
     argv.append("--" + mode)
 output = io.StringIO()
-with patch.dict(os.environ, {"ARMADA_TOKEN": "offline-only"}), patch.object(sys, "argv", argv), \\
+with patch.dict(os.environ, {"ARMADA_TOKEN": "offline-only", "ARMADA_DOCKER_VARIABLE_EXPECTED": " offline-region\\n" if mode == "variable-whitespace" else "offline-region"}), patch.object(sys, "argv", argv), \\
      patch("urllib.request.build_opener", return_value=Opener()), patch("subprocess.run", side_effect=command), \\
      patch("time.sleep", side_effect=AssertionError("No wall-clock waits")), contextlib.redirect_stdout(output):
     try:
         runpy.run_path(argv[0], run_name="__main__")
     except SystemExit as error:
-        assert mode in ("bad-cost", "repository-no-proof", "github-no-proof", "github-no-broker") and error.code == 1
+        assert mode in ("bad-cost", "repository-no-proof", "github-no-proof", "github-no-broker", "variable-no-proof", "variable-whitespace") and error.code == 1
         assert stops == 1
         sys.exit(0)
-    assert mode not in ("bad-cost", "repository-no-proof", "github-no-proof", "github-no-broker"), "Missing proof was accepted"
+    assert mode not in ("bad-cost", "repository-no-proof", "github-no-proof", "github-no-broker", "variable-no-proof", "variable-whitespace"), "Missing proof was accepted"
 assert len(ssh) == 1 and " run --state-dir " in ssh[0][0][-1]
 assert "nohup setsid" in ssh[0][0][-1] and "daemon.lock" in ssh[0][0][-1]
 assert (not lifecycle or (sends == 2 and stops == 2))
@@ -139,7 +148,9 @@ assert "offline-only" not in output.getvalue()
           ? "GitHub proof missing: successful gh API command result required\n"
           : mode === "github-no-broker"
             ? "GitHub proof requires current-epoch broker credential delivery\n"
-            : "",
+            : mode === "variable-no-proof" || mode === "variable-whitespace"
+              ? "Variable proof missing: successful printenv result required\n"
+              : "",
   );
   expect(result.status).toBe(0);
 });

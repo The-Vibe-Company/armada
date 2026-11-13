@@ -8,11 +8,12 @@ import { GOLDEN_SELECT, type GoldenRow, mapGoldenRow, type Sql } from "./golden-
 import { isHarness } from "./harnesses.ts";
 import { type LaunchOptions, type LaunchStores, launchSandbox } from "./launch.ts";
 import { LaunchError } from "./launch-error.ts";
+import { resolveLaunchVariables } from "./launch-variables.ts";
 import { parseMachineSize } from "./machine-size.ts";
 import { resolveModelChoice } from "./models.ts";
 import { PRIVATE_SKILL_FAILURES } from "./private-skill-error.ts";
 import { isNonMutatingProviderRefusal, type Provider, ProviderError } from "./provider.ts";
-import { validateReadableVariables } from "./readable-variables.ts";
+import { parseReadableVariableBindings, validateReadableVariables } from "./readable-variables.ts";
 import { ProviderRoutingError } from "./sandbox-provider.ts";
 import { createSkillDefaultsService } from "./skill-defaults.ts";
 import { skillRefusalMessage } from "./skill-diagnostics.ts";
@@ -219,18 +220,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       )
     ).rows.length;
     if (retired) unavailable("environment_snapshot_unavailable");
-    const values: Record<string, string> = {};
-    for (const binding of def.variables) {
-      const v = (
-        await tx.query<{ value: string; version: number; scope: string; owner_id: string }>(
-          "select value,version,scope,owner_id from public.readable_variables where id=$1 and org_id=$2 and status='active' and (scope='org' or owner_id=$3) for share",
-          [binding.variableId, actor.orgId, actor.userId],
-        )
-      ).rows[0];
-      if (!v || (scope === "org" && v.scope !== "org")) unavailable("variable_unavailable");
-      if (v.version !== binding.version) unavailable("variable_version_changed");
-      values[binding.key] = v.value;
-    }
+    const values = await resolveLaunchVariables(tx, actor, def.variables, scope === "org");
     // Metadata only: publication and admission must never fetch ciphertext or plaintext.
     for (const binding of def.secrets ?? []) {
       const secret = (
@@ -309,19 +299,11 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       if (connections.includes(connectionId)) invalid();
       connections.push(connectionId);
     }
-    const variables: TemplateDefinition["variables"] = [];
-    if (d.variables !== undefined && (!Array.isArray(d.variables) || d.variables.length > 64)) invalid();
-    for (const binding of (d.variables ?? []) as unknown[]) {
-      const b = object(binding);
-      fields(b, ["key", "variableId", "version"]);
-      const key = text(b.key, 128);
-      try {
-        validateReadableVariables({ [key]: "" });
-      } catch {
-        invalid();
-      }
-      if (variables.some((v) => v.key === key)) invalid();
-      variables.push({ key, variableId: id(b.variableId), version: integer(b.version) });
+    let variables: TemplateDefinition["variables"];
+    try {
+      variables = parseReadableVariableBindings(d.variables === undefined ? [] : d.variables);
+    } catch {
+      invalid();
     }
     const secrets: NonNullable<TemplateDefinition["secrets"]> = [];
     if (d.secrets !== undefined && (!Array.isArray(d.secrets) || d.secrets.length > 64)) invalid();

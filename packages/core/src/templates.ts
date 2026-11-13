@@ -10,7 +10,7 @@ export interface TemplateDefinition {
   modelAccount?: { id: string; version: number };
   /** Stable connection identities; live connected grant versions resolve only at launch admission. */
   connections: string[];
-  variables: { key: string; variableId: string; version: number }[];
+  variables: import("./readable-variables.ts").ReadableVariableBinding[];
   /** Value-free references; optional for revisions published before secret bindings. */
   secrets?: { key: string; secretId: string; version: number }[];
   skills: string[];

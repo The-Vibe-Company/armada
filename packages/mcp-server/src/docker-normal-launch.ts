@@ -11,12 +11,15 @@ import {
   normalizeGitHubGoldenConfig,
   ProviderError,
   parseGoldenConfig,
+  parseReadableVariableBindings,
+  type ReadableVariableBinding,
   resolveModelChoice,
   type Sql,
 } from "@armada/core";
-import { createSqlSandboxStore, decryptSecret, encryptSecret } from "@armada/core/server";
+import { createSqlSandboxStore, decryptSecret, encryptSecret, resolveLaunchVariables } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import type { createDockerBootstrapService } from "./docker-bootstrap-service.ts";
+import { createDockerLaunchVariables } from "./docker-launch-variables.ts";
 import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
@@ -25,6 +28,7 @@ import type { RuntimeGitHub } from "./runtime-github.ts";
 
 type Request = {
   repos?: GoldenRepo[];
+  variables?: ReadableVariableBinding[];
   org: string;
   provider: "docker";
   harness: Harness;
@@ -40,6 +44,7 @@ type Request = {
   prompt: string | null;
 };
 type Manifest = {
+  variables?: Record<string, string>;
   request: Request;
   credentialVersion: number;
   bootstrapId: string;
@@ -123,6 +128,7 @@ function normalize(body: Record<string, unknown>): Request {
       (field) =>
         ![
           "repos",
+          "variables",
           "org",
           "provider",
           "hostId",
@@ -164,6 +170,14 @@ function normalize(body: Record<string, unknown>): Request {
   } catch {
     throw failure("invalid_request");
   }
+  let variables: ReadableVariableBinding[] | undefined;
+  if (body.variables !== undefined) {
+    try {
+      variables = parseReadableVariableBindings(body.variables);
+    } catch {
+      throw failure("invalid_request");
+    }
+  }
   let repos: GoldenRepo[] | undefined;
   if (body.repos !== undefined) {
     try {
@@ -179,6 +193,7 @@ function normalize(body: Record<string, unknown>): Request {
   }
   return {
     ...(repos ? { repos } : {}),
+    ...(variables ? { variables } : {}),
     org: identifier(body.org),
     provider: "docker",
     harness: body.harness as Harness,
@@ -351,7 +366,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
             healthId: randomUUID(),
             promptId: randomUUID(),
           };
-          const encrypted = await encryptSecret(JSON.stringify(manifest), key);
+
           state = await transaction(async (tx) => {
             await tx.query(`select pg_advisory_xact_lock(hashtextextended($1,0))`, [
               `docker-normal-launch:${request.requestId}`,
@@ -377,6 +392,9 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
                 request.requestId,
                 resolved.usagePricing,
               );
+            if (request.variables?.length)
+              manifest.variables = await resolveLaunchVariables(scoped(tx), actor, request.variables);
+            const encrypted = await encryptSecret(JSON.stringify(manifest), key);
             const current = await member(tx, actor);
             await tx.query(
               `insert into public.docker_launch_requests(sandbox_id,actor_epoch,request_hash,request_enc) values($1,$2,$3,$4)`,
@@ -422,6 +440,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
           }
           await wait();
         }
+        await createDockerLaunchVariables(sql, key, clock)(caller, request.requestId);
         if (manifest.request.repos) {
           if (!options.github) throw failure("unavailable");
           const github = await options.github.prepare(caller, request.requestId);

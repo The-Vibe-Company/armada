@@ -15,6 +15,7 @@ import type { Caller } from "./caller.ts";
 import { createSqlData } from "./data.ts";
 import type { createDockerBootstrapService } from "./docker-bootstrap-service.ts";
 import { createDockerHostStore, DockerHostDenied } from "./docker-host-store.ts";
+import { createDockerLaunchVariables } from "./docker-launch-variables.ts";
 import type { createDockerNormalSend } from "./docker-normal-send.ts";
 import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
 import { isPrivateModelEvent } from "./model-usage.ts";
@@ -399,6 +400,7 @@ export function createDockerSandboxControls(
       if (state?.outcome === "completed") {
         const ready = await runtime.ready(actor, row.id, requestId);
         if (ready.state === "ready") {
+          await createDockerLaunchVariables(sql, key, clock)(caller, row.id);
           await options.github?.prepareTurn(caller, row.id);
           return { id: row.id, status: "ready" as const };
         }

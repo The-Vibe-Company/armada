@@ -94,6 +94,8 @@ test("Docker incompatible or malformed options fail before HTTP", async () => {
   const calls: Request[] = [];
   for (const flags of [
     ["--agent", "unknown"],
+    ["--variable", "PATH:33333333-3333-4333-8333-333333333333:1"],
+    ["--variable", "APP_REGION:not-a-uuid:1"],
     ["--skill", "foo@1"],
     ["--repo", "https://user:secret@example.test/web"],
     ["--connections", "a"],
@@ -126,7 +128,7 @@ test("unknown Docker launch outcome retains a stable request UUID for exact retr
 test("Docker CLI translates repeated repository flags with golden branch and directory rules", async () => {
   let body: unknown;
   const result = await capture(
-    [...args, "--repo", "acme/web@feature/work", "--repo", "acme/api@main"],
+    [...args, "--repo", "acme/web@feature/work", "--repo", "acme/api@main", "--variable", `APP_REGION:${credential}:2`],
     async (request) => {
       body = await request.json();
       return Response.json({
@@ -138,6 +140,7 @@ test("Docker CLI translates repeated repository flags with golden branch and dir
   );
   expect(result.code).toBe(0);
   expect(body).toMatchObject({
+    variables: [{ key: "APP_REGION", variableId: credential, version: 2 }],
     repos: [
       { url: "https://github.com/acme/web", branch: "feature/work", dir: "web" },
       { url: "https://github.com/acme/api", branch: "main", dir: "api" },

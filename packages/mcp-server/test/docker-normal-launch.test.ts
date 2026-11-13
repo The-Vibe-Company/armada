@@ -11,7 +11,7 @@ import {
   type SandboxListMetadata,
   type Sql,
 } from "@armada/core";
-import { createSqlVaultStore, decryptSecret, encryptSecret } from "@armada/core/server";
+import { createApplicationVault, createSqlVaultStore, decryptSecret, encryptSecret } from "@armada/core/server";
 import { dockerLaunchBody, launchedDockerSandbox } from "../../../apps/dashboard/src/lib/docker-launch.ts";
 import type { Caller } from "../src/caller.ts";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
@@ -151,7 +151,7 @@ async function fixture(
             result:
               command.op === "health"
                 ? { ready: true, generation: session.epoch }
-                : command.op === "configureGitHub"
+                : command.op === "configureGitHub" || command.op === "configureReadableVariables"
                   ? { acknowledged: true }
                   : command.op === "exec"
                     ? {
@@ -849,3 +849,83 @@ for (const checkoutExitCode of [0, 1])
     await hosts.revoke(f.admin, f.hostId);
     expect((await acquire("example/project"))?.status).toBe(403);
   });
+
+test("Docker freezes versioned readable bindings and re-delivers them before the first resumed prompt", async () => {
+  const f = await fixture();
+  const vault = createApplicationVault(sql, undefined);
+  const value = "europe\n$(not-a-command)";
+  const variable = await vault.command(f.caller, "variable", "set", {
+    org: f.actor.orgId,
+    scope: "personal",
+    name: "APP_REGION",
+    value,
+  });
+  const variableId = (variable.item as { id: string }).id;
+  const body = { ...f.body, variables: [{ key: "APP_REGION", variableId, version: 1 }] };
+  const launched = await f.service().launch(f.caller, body);
+  expect((f.native as { op: string }[]).map((command) => command.op)).toEqual([
+    "health",
+    "configureReadableVariables",
+    "prompt",
+  ]);
+  expect(JSON.stringify(launched)).not.toContain(value);
+  expect(JSON.stringify(f.jobs)).not.toContain(value);
+  await vault.command(f.caller, "variable", "update", {
+    org: f.actor.orgId,
+    id: variableId,
+    expectedVersion: 1,
+    value: "changed",
+  });
+  expect(await f.service().launch(f.caller, body)).toMatchObject({ promptId: launched.promptId });
+  const controls = createDockerSandboxControls(sql, key, { clock: f.clock, resume: bootstrap });
+  await controls.invoke(f.caller, "stop", { id: f.body.requestId });
+  await controls.invoke(f.caller, "resume", { id: f.body.requestId, request_id: randomUUID() });
+  const configurations = (f.native as { op: string; variables: Record<string, string> }[]).filter(
+    (command) => command.op === "configureReadableVariables",
+  );
+  expect(configurations.map((command) => command.variables)).toEqual([{ APP_REGION: value }, { APP_REGION: value }]);
+  const row = (
+    await db.query<{ id: string; org_id: string; owner_id: string; status: string; conversation_ids: string[] }>(
+      "select id,org_id,owner_id,status,conversation_ids from public.sandboxes where id=$1",
+      [f.body.requestId],
+    )
+  ).rows[0];
+  if (!row) throw Error("missing sandbox");
+  await createDockerNormalSend(sql, key, { enabled: true, clock: f.clock }).send(
+    f.caller,
+    { request_id: randomUUID(), prompt: "Read the variable again" },
+    row,
+  );
+  expect((f.native as { op: string }[]).filter((command) => command.op === "configureReadableVariables")).toHaveLength(
+    2,
+  );
+  const fresh = { ...body, requestId: randomUUID() };
+  await rejected(f.service().launch(f.caller, fresh), "unavailable");
+  expect((await db.query("select id from public.sandboxes where id=$1", [fresh.requestId])).rows).toHaveLength(0);
+});
+
+test("Docker variable admission rejects unsafe names and inaccessible personal references without allocating", async () => {
+  const f = await fixture();
+  const vault = createApplicationVault(sql, undefined);
+  const other = await vault.command({ ...f.caller, userId: f.otherId }, "variable", "set", {
+    org: f.actor.orgId,
+    scope: "personal",
+    name: "PRIVATE_REGION",
+    value: "private",
+  });
+  const variableId = (other.item as { id: string }).id;
+  await rejected(
+    f.service().launch(f.caller, { ...f.body, variables: [{ key: "APP_REGION", variableId, version: 1 }] }),
+    "unavailable",
+  );
+  for (const variables of [
+    [{ key: "PATH", variableId, version: 1 }],
+    [{ key: "APP_REGION", variableId, version: 0 }],
+    [
+      { key: "APP_REGION", variableId, version: 1 },
+      { key: "APP_REGION", variableId, version: 1 },
+    ],
+  ])
+    await rejected(f.service().launch(f.caller, { ...f.body, variables }), "invalid_request");
+  expect(await counts(f)).toEqual({ sandboxes: 0, claims: 0, jobs: 0, commands: 0 });
+});

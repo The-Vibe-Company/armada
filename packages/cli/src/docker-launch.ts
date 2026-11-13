@@ -5,6 +5,7 @@ import {
   GoldenError,
   HARNESSES,
   type Harness,
+  parseReadableVariableBindings,
   resolveModelChoice,
 } from "@armada/core";
 import { type Args, single, values } from "./args.ts";
@@ -17,6 +18,7 @@ const uuid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
 export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, auth: AuthIo): Promise<number> {
   const allowed = new Set([
     "--repo",
+    "--variable",
     "--provider",
     "--host",
     "--image",
@@ -58,7 +60,20 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
     throw new GoldenError("invalid_config", "--credential-version must be a positive integer.");
   const ttl = single(args, "--ttl");
   const repos = values(args, "--repo");
+  const variables = values(args, "--variable").map((binding) => {
+    const [key, variableId, version, extra] = binding.split(":");
+    if (extra !== undefined || !version || !/^[1-9][0-9]*$/.test(version))
+      throw new GoldenError("invalid_config", "Use --variable KEY:UUID:VERSION.");
+    return { key, variableId, version: Number(version) };
+  });
+  let variableBindings: ReturnType<typeof parseReadableVariableBindings>;
+  try {
+    variableBindings = parseReadableVariableBindings(variables);
+  } catch {
+    throw new GoldenError("invalid_config", "Invalid readable variable bindings.");
+  }
   const body: DockerLaunchRequest = {
+    ...(variableBindings.length ? { variables: variableBindings } : {}),
     ...(repos.length
       ? {
           repos: configFromFlags(

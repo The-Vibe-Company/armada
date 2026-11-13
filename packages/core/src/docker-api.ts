@@ -58,6 +58,8 @@ export interface LaunchProviderCapabilities {
   resume: boolean;
   goldens: boolean;
   repositories: boolean;
+  /** Absent on older servers: no readable-variable delivery support. */
+  variables?: boolean;
   machineSizes: boolean;
   github: boolean;
   mcp: boolean;
@@ -96,6 +98,7 @@ export interface LaunchOptionsResponse {
 
 /** Normal API/CLI contract. Discover capabilities.launch before offering this source. */
 export interface DockerLaunchRequest {
+  variables?: import("./readable-variables.ts").ReadableVariableBinding[];
   /** GitHub checkouts, using the same single-segment directory rules as goldens. */
   repos?: import("./golden-config.ts").GoldenRepo[];
   org: string;

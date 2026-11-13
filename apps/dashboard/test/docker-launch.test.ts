@@ -36,6 +36,10 @@ const options = (docker: Record<string, unknown> = {}) => ({
 test("the Docker launch option is read strictly from launch/options; anything unexpected means no launch", () => {
   const option = dockerLaunchOption(options());
   expect(option?.capabilities.launch).toBe(true);
+  expect(dockerLaunchOption(options({ capabilities: { launch: true, variables: true } }))?.capabilities.variables).toBe(
+    true,
+  );
+  expect(dockerLaunchOption(options({ capabilities: { launch: true } }))?.capabilities.variables).toBe(false);
   expect(option?.unsupportedReasons).toEqual({ resume: "Resume is not built for Docker yet." });
   expect(dockerLaunchOption({})).toBeNull();
   expect(dockerLaunchOption({ providers: [] })).toBeNull();

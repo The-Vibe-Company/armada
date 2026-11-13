@@ -26,6 +26,7 @@ def main():
     parser.add_argument("--image", required=True, help="Pulled Linux x64 glibc image@sha256 digest")
     parser.add_argument("--model")
     parser.add_argument("--repository", help="Clone owner/repo before the first prompt and prove git log -1; implies --normal-launch")
+    parser.add_argument("--variable", help="Readable binding KEY:UUID:VERSION; expected value in ARMADA_DOCKER_VARIABLE_EXPECTED; implies --normal-launch")
     parser.add_argument("--github", action="store_true", help="Prove gh API credential delivery, explicit refresh and follow-up; requires --repository")
     parser.add_argument("--branch", default="main", help="Repository branch for --repository")
     parser.add_argument("--host-id", help="Reuse an existing host registration")
@@ -43,6 +44,20 @@ def main():
     harness = "claude" if args.claude else "opencode" if args.opencode else "codex"
     if args.cost or args.claude or args.opencode:
         args.normal_lifecycle = True
+    variable_binding = None
+    variable_expected = os.environ.get("ARMADA_DOCKER_VARIABLE_EXPECTED")
+    if args.variable:
+        parts = args.variable.split(":")
+        if len(parts) != 3 or not re.fullmatch(r"[A-Z][A-Z0-9_]{0,127}", parts[0]) or not parts[2].isdigit() or int(parts[2]) < 1:
+            parser.error("--variable requires KEY:UUID:VERSION")
+        try:
+            variable_id = str(uuid.UUID(parts[1]))
+        except ValueError:
+            parser.error("--variable requires KEY:UUID:VERSION")
+        if not variable_expected or args.claude or args.opencode:
+            parser.error("--variable requires nonempty ARMADA_DOCKER_VARIABLE_EXPECTED and Codex command evidence")
+        variable_binding = {"key": parts[0], "variableId": variable_id, "version": int(parts[2])}
+        args.normal_launch = True
     if args.github:
         if not args.repository:
             parser.error("--github requires --repository")
@@ -145,6 +160,10 @@ def main():
     github_task = f"Run gh api repos/{args.repository} --jq .full_name using your command tool. " if args.github else ""
     if args.github:
         initial_task = first + f"Run git -C {shlex.quote(directory)} log -1 --format=%H using your command tool. " + github_task + "Then reply with exactly DOCKER_OK."
+    variable_task = f"Run printenv {variable_binding['key']} using your command tool. " if variable_binding else ""
+    if variable_binding:
+        launch["variables"] = [variable_binding]
+        initial_task = variable_task + initial_task
     cleanup_needed = True
     try:
         launch_receipt = None
@@ -226,6 +245,7 @@ def main():
             native_prompt = receipt["promptId"]
             deadline = time.monotonic() + args.timeout
             answer, finished = False, False
+            variable_proven = variable_binding is None
             github_proven = not prove_github
             repository_proven = not (args.repository and receipt is launch_receipt)
             while True:
@@ -235,7 +255,7 @@ def main():
                     if summary.get("provider") != "docker" or summary.get("golden") is not None:
                         raise RuntimeError("Normal Docker status did not match its contract")
                     page["usage"] = summary.get("usage")
-                    if args.repository and page.get("source") != "armada-runtime":
+                    if (args.repository or variable_binding) and page.get("source") != "armada-runtime":
                         raise RuntimeError("Repository proof requires the archived Armada runtime journal")
                 else:
                     page = api("sandboxes/journal", {"sandboxId": sandbox_id, "cursor": cursor})
@@ -246,6 +266,15 @@ def main():
                         continue
                     if event.get("kind") == "message" and expected_answer in event.get("text", ""):
                         answer = True
+                    if variable_binding and event.get("kind") == "message":
+                        for tool in event.get("tools", []):
+                            command = (tool.get("input") or {}).get("command", "")
+                            result = tool.get("result") or {}
+                            if (tool.get("name") == "commandExecution" and isinstance(command, str)
+                                    and re.search(r"\bprintenv\s+" + re.escape(variable_binding["key"]) + r"\b", command)
+                                    and result.get("isError") is False
+                                    and str(result.get("output", "")) == variable_expected + "\n"):
+                                variable_proven = True
                     if prove_github and event.get("kind") == "message":
                         for tool in event.get("tools", []):
                             command = (tool.get("input") or {}).get("command", "")
@@ -272,7 +301,7 @@ def main():
                 usage = next((t for t in turns if t.get("promptId") == native_prompt
                               and isinstance(t.get("inputTokens"), int)
                               and isinstance(t.get("outputTokens"), int)), None)
-                if answer and finished and usage and repository_proven and github_proven:
+                if answer and finished and usage and repository_proven and github_proven and variable_proven:
                     if prove_github:
                         status = api("github/runtime-status", {"id": sandbox_id}, normal=True)
                         if not status.get("configured") or status.get("credentialRequests", 0) < 1:
@@ -284,6 +313,8 @@ def main():
                                       "inputTokens": usage["inputTokens"], "outputTokens": usage["outputTokens"]}),
                           flush=True)
                     return receipt["conversationId"]
+                if finished and not variable_proven and not page["hasMore"]:
+                    raise RuntimeError("Variable proof missing: successful printenv result required")
                 if finished and not github_proven and not page["hasMore"]:
                     raise RuntimeError("GitHub proof missing: successful gh API command result required")
                 if finished and not repository_proven and not page["hasMore"]:
@@ -300,7 +331,7 @@ def main():
                 refreshed = api("github/refresh", {"id": sandbox_id}, normal=True)
                 if refreshed.get("status") != "connected":
                     raise RuntimeError("GitHub explicit refresh was not confirmed")
-            turn(github_task + "Reply with exactly the marker I gave you in my previous message.",
+            turn(variable_task + github_task + "Reply with exactly the marker I gave you in my previous message.",
                  marker, conversation, prove_github=args.github)
         if args.normal_lifecycle:
             stopped = api("sandbox/stop", {"id": sandbox_id, "request_id": str(uuid.uuid4())}, normal=True)
@@ -312,7 +343,7 @@ def main():
             summary = api("sandbox/detail", {"id": sandbox_id}, normal=True)
             if summary.get("hostId") != host_id or conversation not in summary.get("conversationIds", []):
                 raise RuntimeError("Resume changed host or conversation identity")
-            turn(github_task + "Reply with exactly the marker I asked you to remember.", marker, conversation, prove_github=args.github)
+            turn(variable_task + github_task + "Reply with exactly the marker I asked you to remember.", marker, conversation, prove_github=args.github)
     finally:
         if cleanup_needed:
             # Never delete an unconfirmed running allocation. Offline cleanup remains honest/pending.
