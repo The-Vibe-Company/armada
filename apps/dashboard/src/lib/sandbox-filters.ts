@@ -1,6 +1,4 @@
-import { HARNESSES, MACHINE_SIZES } from "@armada/core";
-import { LISTED_PROVIDERS } from "./listed-provider.ts";
-import type { ListedSandbox } from "./sandbox-access.ts";
+import { HARNESSES, MACHINE_SIZES, SANDBOX_PLACEMENT_PROVIDERS, type SandboxListMetadata } from "@armada/core";
 
 export const SANDBOX_STATUSES = ["starting", "ready", "running", "stopping", "stopped", "failed", "deleted"] as const;
 export const PAGE_SIZE = 25;
@@ -28,7 +26,7 @@ export function parseSandboxFilters(params: Params): SandboxFilters {
   const sort = one(params.sort);
   return {
     status: known("status", SANDBOX_STATUSES),
-    provider: known("provider", LISTED_PROVIDERS),
+    provider: known("provider", SANDBOX_PLACEMENT_PROVIDERS),
     harness: known("harness", HARNESSES),
     model: values(params.model).filter((value) => value.length <= 160),
     owner: values(params.owner).filter((value) => value === "me" || UUID.test(value)),
@@ -49,16 +47,16 @@ export function filtersToSearch(filters: Partial<SandboxFilters>): string {
 export function hasSandboxFilters(filters: SandboxFilters): boolean {
   return Boolean(filters.q || FACETS.some((key) => filters[key].length));
 }
-export function facetValue(row: ListedSandbox, key: Facet): string {
+export function facetValue(row: SandboxListMetadata, key: Facet): string {
   return key === "owner" ? row.ownerId : key === "size" ? (row.machineSize ?? "unknown") : (row[key] ?? "unknown");
 }
 /** Runs over the full authorized metadata inventory, never only the visible page. */
 export function filterSandboxes(
-  rows: readonly ListedSandbox[],
+  rows: readonly SandboxListMetadata[],
   filters: SandboxFilters,
   viewerId: string,
   except?: Facet,
-): ListedSandbox[] {
+): SandboxListMetadata[] {
   const q = filters.q.toLocaleLowerCase();
   return rows.filter((row) => {
     if (except !== "status" && !filters.status.length && row.status === "deleted") return false;
@@ -72,11 +70,14 @@ export function filterSandboxes(
     );
   });
 }
-export function sortSandboxes(rows: readonly ListedSandbox[], sort: SandboxFilters["sort"]): ListedSandbox[] {
+export function sortSandboxes(
+  rows: readonly SandboxListMetadata[],
+  sort: SandboxFilters["sort"],
+): SandboxListMetadata[] {
   const priority = { failed: 0, ready: 1, stopped: 2, running: 3, starting: 4, stopping: 5, deleted: 6 };
   return [...rows].sort((a, b) => {
     const age = b.createdAt.localeCompare(a.createdAt);
-    const attention = (row: ListedSandbox) => {
+    const attention = (row: SandboxListMetadata) => {
       if (
         row.status === "failed" ||
         ((row.status === "ready" || row.status === "stopped") && row.taskOutcome?.state === "blocked")
@@ -98,7 +99,7 @@ export function sortSandboxes(rows: readonly ListedSandbox[], sort: SandboxFilte
 }
 export type FacetOption = { value: string; label: string; count: number };
 export function sandboxFacetCounts(
-  rows: readonly ListedSandbox[],
+  rows: readonly SandboxListMetadata[],
   filters: SandboxFilters,
   viewerId: string,
 ): Record<Facet, Map<string, number>> {

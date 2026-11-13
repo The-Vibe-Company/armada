@@ -37,8 +37,17 @@ test("the Docker launch option is read strictly from launch/options; anything un
   expect(option?.unsupportedReasons).toEqual({ resume: "Resume is not built for Docker yet." });
   expect(dockerLaunchOption({})).toBeNull();
   expect(dockerLaunchOption({ providers: [] })).toBeNull();
-  expect(dockerLaunchOption(options({ capabilities: { launch: true } }))).toBeNull();
+  expect(dockerLaunchOption(options({ capabilities: { launch: "yes" } }))).toBeNull();
   expect(dockerLaunchOption(options({ harnesses: "codex" }))).toBeNull();
+  // A newer server's unknown values are ignored; a capability it does not name is unsupported.
+  const newer = dockerLaunchOption(options({ harnesses: ["codex", "future"], launchSources: ["image", "snapshot"] }));
+  expect(newer?.harnesses).toEqual(["codex"]);
+  expect(newer?.launchSources).toEqual(["image"]);
+  expect(dockerLaunchOption(options({ capabilities: { stop: true } }))?.capabilities).toMatchObject({
+    stop: true,
+    launch: false,
+    logs: false,
+  });
 });
 
 test("a host takes a launch only when the server launches Codex from an image on Docker and the host is online", () => {

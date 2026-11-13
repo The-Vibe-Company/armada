@@ -1,40 +1,25 @@
+import type {
+  DockerLaunchRequest,
+  Harness,
+  LaunchCapabilityName,
+  LaunchProviderCapabilities,
+  LaunchProviderOption,
+} from "@armada/core";
+import { HARNESSES } from "@armada/core";
 import { isUuid } from "./action.ts";
 import type { DockerHost } from "./docker-hosts.ts";
 
 /**
- * Launching a sandbox on an owned Docker host (#1380), against the contract the #1165 server lane published on #1380
- * (issue comment of 2026-11-13 08:26Z): the Docker entry of `launch/options`' `providers`, and the normal
- * `sandbox/launch` route with `provider: "docker"`. Until the server exports these DTOs from `@armada/core`, this file
- * mirrors only the fields the dashboard reads, and reads them strictly: anything unexpected disables the launch.
+ * Launching a sandbox on an owned Docker host (#1380) through the server's contract (#1165, `@armada/core`): the Docker
+ * entry of `launch/options`' `providers` (`LaunchProviderOption`), and the normal `sandbox/launch` route with
+ * `provider: "docker"` (`DockerLaunchRequest`). A wrong shape disables Docker; an unknown value is ignored.
  */
 export const LAUNCH_OPTIONS_ROUTE = "launch/options";
 
-export const DOCKER_CAPABILITIES = [
-  "launch",
-  "followupPrompts",
-  "stop",
-  "delete",
-  "resume",
-  "goldens",
-  "repositories",
-  "github",
-  "mcp",
-  "skills",
-  "exec",
-  "steer",
-  "interrupt",
-] as const;
+export type DockerCapability = LaunchCapabilityName;
+export type DockerLaunchOption = Omit<LaunchProviderOption, "id"> & { id: "docker" };
 
-export type DockerCapability = (typeof DOCKER_CAPABILITIES)[number];
-
-export type DockerLaunchOption = {
-  enabled: boolean;
-  launchSources: string[];
-  harnesses: string[];
-  capabilities: Record<DockerCapability, boolean>;
-  unsupportedReasons: Partial<Record<DockerCapability, string>>;
-};
-
+/** How each capability reads in the dialog; exhaustive, so a capability the server adds must be named here. */
 const CAPABILITY_LABELS: Record<DockerCapability, string> = {
   launch: "Launch",
   followupPrompts: "Follow-up messages",
@@ -49,24 +34,38 @@ const CAPABILITY_LABELS: Record<DockerCapability, string> = {
   exec: "Commands",
   steer: "Steering",
   interrupt: "Interrupt",
+  machineSizes: "Machine sizes",
+  status: "Status",
+  logs: "Conversation",
 };
+
+export const DOCKER_CAPABILITIES = Object.keys(CAPABILITY_LABELS) as DockerCapability[];
+const SOURCES = ["golden", "image"] as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-const strings = (value: unknown): value is string[] =>
-  Array.isArray(value) && value.every((item) => typeof item === "string");
+/** The values of a string list this dashboard knows; an unknown one (a newer server's) is ignored, not fatal. */
+const knownOf = <T extends string>(value: unknown, known: readonly T[]): T[] | null =>
+  Array.isArray(value) && value.every((item) => typeof item === "string")
+    ? value.filter((item): item is T => known.includes(item as T))
+    : null;
 
-/** The Docker entry of a `launch/options` answer, or null when the server has none or sends something unexpected. */
+/**
+ * The Docker entry of a `launch/options` answer, or null when the server has none or its shape is wrong. A value this
+ * dashboard does not know (a newer source, harness or capability) is ignored, and a capability the answer does not
+ * name is unsupported: a newer or older server never takes away what it does say it supports.
+ */
 export function dockerLaunchOption(payload: unknown): DockerLaunchOption | null {
   if (!isRecord(payload) || !Array.isArray(payload.providers)) return null;
   const entry = payload.providers.find((provider) => isRecord(provider) && provider.id === "docker");
   if (!isRecord(entry)) return null;
   const { enabled, launchSources, harnesses, capabilities, unsupportedReasons } = entry;
-  if (typeof enabled !== "boolean" || !strings(launchSources) || !strings(harnesses)) return null;
-  if (!isRecord(capabilities) || !DOCKER_CAPABILITIES.every((name) => typeof capabilities[name] === "boolean"))
-    return null;
+  const sources = knownOf(launchSources, SOURCES);
+  const agents = knownOf<Harness>(harnesses, HARNESSES);
+  if (typeof enabled !== "boolean" || !sources || !agents || !isRecord(capabilities)) return null;
+  if (Object.values(capabilities).some((value) => typeof value !== "boolean")) return null;
   const reasons: Partial<Record<DockerCapability, string>> = {};
   if (unsupportedReasons !== undefined) {
     if (!isRecord(unsupportedReasons)) return null;
@@ -76,13 +75,13 @@ export function dockerLaunchOption(payload: unknown): DockerLaunchOption | null 
     }
   }
   return {
+    id: "docker",
     enabled,
-    launchSources,
-    harnesses,
-    capabilities: Object.fromEntries(DOCKER_CAPABILITIES.map((name) => [name, capabilities[name] === true])) as Record<
-      DockerCapability,
-      boolean
-    >,
+    launchSources: sources,
+    harnesses: agents,
+    capabilities: Object.fromEntries(
+      DOCKER_CAPABILITIES.map((name) => [name, capabilities[name] === true]),
+    ) as unknown as LaunchProviderCapabilities,
     unsupportedReasons: reasons,
   };
 }
@@ -153,7 +152,7 @@ export type DockerLaunchArgs = {
 };
 
 /** The `sandbox/launch` body for a Docker host: Codex from a plain image, private, nothing a golden would carry. */
-export function dockerLaunchBody(args: DockerLaunchArgs): Record<string, unknown> {
+export function dockerLaunchBody(args: DockerLaunchArgs): DockerLaunchRequest {
   if (![args.org, args.hostId, args.credentialId, args.requestId].every(isUuid))
     throw new Error("Docker launch identifiers must be UUIDs.");
   return {
