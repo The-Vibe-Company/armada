@@ -9,14 +9,36 @@ import { database, ENCRYPTION_KEY } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
 
-async function fixture({ isolated = false } = {}) {
+async function fixture({
+  isolated = false,
+  provider = "boat",
+}: {
+  isolated?: boolean;
+  provider?: "boat" | "modal";
+} = {}) {
   const { db, people } = await (isolated ? database() : sharedDatabase());
   const id = crypto.randomUUID();
-  await db.query(
-    `insert into sandboxes(id,golden_id,org_id,owner_id,boat_id,harness,status,boat_runtime)
+  if (provider === "modal") {
+    const golden = (
+      await db.query<{ id: string }>(
+        `insert into goldens(org_id,owner_id,name,visibility,provider,provider_sandbox_id,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config)
+       values($1,$2,'event-modal','private','modal','modal-master','modal-image','workspace','main','app',
+       '{"repos":[{"url":"https://github.com/example/web.git","branch":"main","dir":"web"}],"init":[]}') returning id`,
+        [people.org, people.owner],
+      )
+    ).rows[0]!;
+    await db.query(
+      `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status,runtime_transport)
+       values($1,$2,$3,$4,'modal','event-modal','codex','ready','dialout')`,
+      [id, golden.id, people.org, people.owner],
+    );
+  } else {
+    await db.query(
+      `insert into sandboxes(id,golden_id,org_id,owner_id,boat_id,harness,status,boat_runtime)
     select $1,id,org_id,owner_id,'event-native','codex','ready',true from goldens where owner_id=$2 and visibility='private' limit 1`,
-    [id, people.owner],
-  );
+      [id, people.owner],
+    );
+  }
   const sql: Sql = {
     query: (q, v) => db.query(q, v),
     transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
@@ -470,91 +492,97 @@ test("runtime archive rechecks membership after decryption before returning hist
   }
 });
 
-test("runtime archive projects coherent observed costs from the frozen admission across replay and resume, never guest money or missing tokens", async () => {
-  const f = await fixture();
-  const caller = {
-    userId: f.people.owner,
-    via: "service" as const,
-    orgs: [{ orgId: f.people.org, role: "member" as const }],
-  };
-  const store = createSqlData(f.sql)(caller).sandboxes;
-  const read = async () => {
-    const usage = (await store.get(f.id))?.usage;
-    if (!usage) throw Error("Missing usage fixture");
-    // The live compute clock is not part of the immutable token/cost snapshot.
-    return { cost: usage.cost, turns: usage.turns, tokenTotals: usage.tokenTotals, turnCount: usage.turnCount };
-  };
-  const book = createUsagePricingContext({
-    harness: "codex",
-    credentialKind: "openai",
-    customEndpoint: true,
-    credentialId: crypto.randomUUID(),
-    credentialVersion: 1,
-    modelPrices: { "gpt-6.1-sol": { input: "2", output: "5", cacheRead: "1", cacheWrite: null, reasoning: null } },
-  });
-  await store.recordUsagePricingContext!(f.id, book);
-  const first = {
-    sequence: 1,
-    event: {
-      ...f.usage("priced-first"),
-      data: { ...(f.usage("template").data as object), cacheWriteTokens: 0, usd: "999", pricing: { usd: "999" } },
-    },
-  };
-  const active = await f.enrol();
-  expect((await f.publish(active, [first])).status).toBe(200);
-  const initial = await read();
-  expect(initial?.cost).toMatchObject({ usd: "0.00029", basis: "estimated", unknown: null, unpricedTurns: 0 });
-  expect(initial?.turns[0]?.pricing).toMatchObject({
-    snapshot: book.prices["gpt-6.1-sol"],
-    inputs: { inputTokens: 100, outputTokens: 20, cachedTokens: 10, cacheWriteTokens: 0 },
-  });
-  // A catalog/account edit does not rewrite the pre-work session admission.
-  await store.recordUsagePricingContext!(f.id, {
-    ...book,
-    prices: {
-      "gpt-6.1-sol": { ...book.prices["gpt-6.1-sol"]!, rates: { ...book.prices["gpt-6.1-sol"]!.rates, input: "200" } },
-    },
-  });
-  expect((await f.publish(active, [first])).status).toBe(200);
-  expect(await read()).toEqual(initial);
-  const resumed = await f.enrol();
-  const second = {
-    sequence: 2,
-    event: {
-      ...f.usage("priced-resumed"),
-      promptId: "prompt-b",
-      data: {
-        model: "gpt-6.1-sol",
-        inputTokens: 50,
-        outputTokens: 4,
-        cachedTokens: 0,
-        cacheWriteTokens: 0,
-        reasoningTokens: null,
+test.each(["boat", "modal"] as const)(
+  "runtime archive projects coherent observed costs from the frozen admission across replay and resume, never guest money or missing tokens (%s)",
+  async (provider) => {
+    const f = await fixture({ provider });
+    const caller = {
+      userId: f.people.owner,
+      via: "service" as const,
+      orgs: [{ orgId: f.people.org, role: "member" as const }],
+    };
+    const store = createSqlData(f.sql)(caller).sandboxes;
+    const read = async () => {
+      const usage = (await store.get(f.id))?.usage;
+      if (!usage) throw Error("Missing usage fixture");
+      // The live compute clock is not part of the immutable token/cost snapshot.
+      return { cost: usage.cost, turns: usage.turns, tokenTotals: usage.tokenTotals, turnCount: usage.turnCount };
+    };
+    const book = createUsagePricingContext({
+      harness: "codex",
+      credentialKind: "openai",
+      customEndpoint: true,
+      credentialId: crypto.randomUUID(),
+      credentialVersion: 1,
+      modelPrices: { "gpt-6.1-sol": { input: "2", output: "5", cacheRead: "1", cacheWrite: null, reasoning: null } },
+    });
+    await store.recordUsagePricingContext!(f.id, book);
+    const first = {
+      sequence: 1,
+      event: {
+        ...f.usage("priced-first"),
+        data: { ...(f.usage("template").data as object), cacheWriteTokens: 0, usd: "999", pricing: { usd: "999" } },
       },
-    },
-  };
-  expect((await f.publish(active, [second])).status).toBe(401);
-  expect((await f.publish(resumed, [first, second])).status).toBe(200);
-  const two = await read();
-  expect(two?.turnCount).toBe(2);
-  expect(two?.cost).toMatchObject({ usd: "0.00041", unknown: null, unpricedTurns: 0 });
-  expect(two?.tokenTotals).toMatchObject({ inputTokens: 150, outputTokens: 24 });
-  expect((await f.publish(resumed, [second])).status).toBe(200);
-  expect(await read()).toEqual(two);
-  const missing = { sequence: 3, event: { ...f.usage("missing-counter"), promptId: "prompt-c" } };
-  expect((await f.publish(resumed, [missing])).status).toBe(200);
-  const incomplete = await read();
-  expect(incomplete?.turns.find((r) => r.promptId === "prompt-c")?.pricing).toMatchObject({
-    unknown: "tokens",
-    usd: null,
-    snapshot: book.prices["gpt-6.1-sol"],
-  });
-  expect(incomplete?.turns.find((r) => r.promptId === "prompt-c")?.cacheWriteTokens).toBeNull();
-  expect(incomplete?.tokenTotals).toMatchObject({
-    inputTokens: 250,
-    outputTokens: 44,
-    cacheWriteTokens: 0,
-    incomplete: true,
-  });
-  expect(incomplete?.cost).toMatchObject({ usd: null, unknown: "tokens", unpricedTurns: 1 });
-});
+    };
+    const active = await f.enrol();
+    expect((await f.publish(active, [first])).status).toBe(200);
+    const initial = await read();
+    expect(initial?.cost).toMatchObject({ usd: "0.00029", basis: "estimated", unknown: null, unpricedTurns: 0 });
+    expect(initial?.turns[0]?.pricing).toMatchObject({
+      snapshot: book.prices["gpt-6.1-sol"],
+      inputs: { inputTokens: 100, outputTokens: 20, cachedTokens: 10, cacheWriteTokens: 0 },
+    });
+    // A catalog/account edit does not rewrite the pre-work session admission.
+    await store.recordUsagePricingContext!(f.id, {
+      ...book,
+      prices: {
+        "gpt-6.1-sol": {
+          ...book.prices["gpt-6.1-sol"]!,
+          rates: { ...book.prices["gpt-6.1-sol"]!.rates, input: "200" },
+        },
+      },
+    });
+    expect((await f.publish(active, [first])).status).toBe(200);
+    expect(await read()).toEqual(initial);
+    const resumed = await f.enrol();
+    const second = {
+      sequence: 2,
+      event: {
+        ...f.usage("priced-resumed"),
+        promptId: "prompt-b",
+        data: {
+          model: "gpt-6.1-sol",
+          inputTokens: 50,
+          outputTokens: 4,
+          cachedTokens: 0,
+          cacheWriteTokens: 0,
+          reasoningTokens: null,
+        },
+      },
+    };
+    expect((await f.publish(active, [second])).status).toBe(401);
+    expect((await f.publish(resumed, [first, second])).status).toBe(200);
+    const two = await read();
+    expect(two?.turnCount).toBe(2);
+    expect(two?.cost).toMatchObject({ usd: "0.00041", unknown: null, unpricedTurns: 0 });
+    expect(two?.tokenTotals).toMatchObject({ inputTokens: 150, outputTokens: 24 });
+    expect((await f.publish(resumed, [second])).status).toBe(200);
+    expect(await read()).toEqual(two);
+    const missing = { sequence: 3, event: { ...f.usage("missing-counter"), promptId: "prompt-c" } };
+    expect((await f.publish(resumed, [missing])).status).toBe(200);
+    const incomplete = await read();
+    expect(incomplete?.turns.find((r) => r.promptId === "prompt-c")?.pricing).toMatchObject({
+      unknown: "tokens",
+      usd: null,
+      snapshot: book.prices["gpt-6.1-sol"],
+    });
+    expect(incomplete?.turns.find((r) => r.promptId === "prompt-c")?.cacheWriteTokens).toBeNull();
+    expect(incomplete?.tokenTotals).toMatchObject({
+      inputTokens: 250,
+      outputTokens: 44,
+      cacheWriteTokens: 0,
+      incomplete: true,
+    });
+    expect(incomplete?.cost).toMatchObject({ usd: null, unknown: "tokens", unpricedTurns: 1 });
+  },
+);

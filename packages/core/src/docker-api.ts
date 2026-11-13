@@ -90,6 +90,7 @@ export interface LaunchOptionsResponse {
     mcpVersion?: number;
     skillsVersion?: number;
     variablesVersion?: number;
+    usageVersion?: number;
   };
   boatRuntime: {
     defaultPath?: "native" | "runtime";
