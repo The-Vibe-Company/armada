@@ -5,14 +5,18 @@ import { notFound } from "next/navigation";
 import { CopyButton } from "@/components/copy-button";
 import { CreatedAt } from "@/components/created-at";
 import { AddHostDialog, HostMark, RevokeHost } from "@/components/docker-hosts";
+import { DockerLaunchDialog } from "@/components/docker-launch";
 import { Empty, PageHeader } from "@/components/page-header";
 import { ResourceBrowser, type ResourceRow } from "@/components/resource-browser";
 import { PanelSection, StateCell } from "@/components/state-cell";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { readSelectedDockerHosts } from "@/lib/data/docker-hosts";
+import { readDockerLaunchOption, readSelectedDockerHosts } from "@/lib/data/docker-hosts";
+import { launchAccounts, listSelectedAccounts } from "@/lib/data/model-accounts";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { type DockerHost, HOSTS_PATH, hostName, hostState, sandboxCount } from "@/lib/docker-hosts";
+import { type DockerLaunchOption, dockerLaunchBlocker, dockerUnavailable } from "@/lib/docker-launch";
+import type { LaunchAccounts } from "@/lib/model-accounts";
 import { relativeAge } from "@/lib/relative-time";
 import { type Bucket, ITEM_PARAM, sortResources } from "@/lib/resource-list";
 
@@ -25,7 +29,13 @@ const TITLE = "Hosts";
 const DESCRIPTION = "Machines you own that run sandboxes in Docker.";
 
 export default async function HostsPage({ searchParams }: Props) {
-  const [selected, hosts, query] = await Promise.all([selectedOrganization(), readSelectedDockerHosts(), searchParams]);
+  const [selected, hosts, option, accountList, query] = await Promise.all([
+    selectedOrganization(),
+    readSelectedDockerHosts(),
+    readDockerLaunchOption(),
+    listSelectedAccounts(),
+    searchParams,
+  ]);
   // Behind the server's opt-in (and an organization): otherwise there is no page, as there is no menu entry.
   if (!selected || hosts.state === "disabled") notFound();
   const header = <PageHeader title={TITLE} description={DESCRIPTION} />;
@@ -51,7 +61,13 @@ export default async function HostsPage({ searchParams }: Props) {
   const isAdmin = selected.role === "admin";
   const orgId = selected.org.id;
   const now = Date.now();
-  const rows = sortResources(hosts.list.hosts.map((host) => row(host, orgId, isAdmin, now)));
+  const launch: Launch = {
+    option,
+    placement: hosts.list.placement,
+    accounts: launchAccounts(accountList, now),
+    unavailable: option ? dockerUnavailable(option) : [],
+  };
+  const rows = sortResources(hosts.list.hosts.map((host) => row(host, orgId, isAdmin, now, launch)));
   const requested = typeof query[ITEM_PARAM] === "string" ? query[ITEM_PARAM] : null;
 
   return (
@@ -79,8 +95,22 @@ export default async function HostsPage({ searchParams }: Props) {
   );
 }
 
-function row(host: DockerHost, orgId: string, isAdmin: boolean, now: number): ResourceRow & { bucket: Bucket } {
+type Launch = {
+  option: DockerLaunchOption | null;
+  placement: boolean;
+  accounts: LaunchAccounts;
+  unavailable: { name: string; reason: string }[];
+};
+
+function row(
+  host: DockerHost,
+  orgId: string,
+  isAdmin: boolean,
+  now: number,
+  launch: Launch,
+): ResourceRow & { bucket: Bucket } {
   const name = hostName(host);
+  const blocker = dockerLaunchBlocker(launch.option, launch.placement, host);
   const state = hostState(host, now);
   const added = relativeAge(host.createdAt, now);
   const meta = `Docker${added ? ` · added ${added}` : ""}`;
@@ -101,6 +131,21 @@ function row(host: DockerHost, orgId: string, isAdmin: boolean, now: number): Re
           <p id={`host-${host.id}-title`} tabIndex={-1} className="text-sm outline-none">
             {state.detail}
           </p>
+        </PanelSection>
+        <PanelSection title="Launch">
+          {blocker ? (
+            <p className="text-sm text-muted-foreground" data-docker-launch-blocker>
+              {blocker}
+            </p>
+          ) : (
+            <DockerLaunchDialog
+              orgId={orgId}
+              hostId={host.id}
+              hostName={name}
+              accounts={launch.accounts}
+              unavailable={launch.unavailable}
+            />
+          )}
         </PanelSection>
         <PanelSection title="Facts">
           <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
