@@ -352,6 +352,7 @@ export class CodexDriver implements Driver {
                 {
                   id: item.id,
                   name: item.tool,
+                  server: item.server,
                   input: item.arguments,
                   ...(complete ? { result: { output: item.result ?? item.error, isError: item.error !== null } } : {}),
                 },

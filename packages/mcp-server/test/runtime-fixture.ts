@@ -55,6 +55,7 @@ export async function runtimeFixture() {
     (await authority.issue({ sandboxId: row.id, ownerId: people.owner, configuration: {} })).enrolmentToken,
   );
   const starts: (string | undefined)[] = [];
+  const mcpSnapshots: (import("@armada/agent-runtime").McpConfiguration | undefined)[] = [];
   let lost = false,
     now = 0;
   let nextDone: Promise<"finished" | "interrupted"> | undefined;
@@ -67,6 +68,7 @@ export async function runtimeFixture() {
   const driver: Driver = {
     start(context) {
       starts.push(context.sessionId);
+      mcpSnapshots.push(context.mcp);
       context.session("native-thread");
       const done = nextDone ?? Promise.resolve("finished" as const);
       nextDone = undefined;
@@ -214,6 +216,7 @@ export async function runtimeFixture() {
   });
   return {
     root,
+    mcpSnapshots,
     db,
     people,
     sql,

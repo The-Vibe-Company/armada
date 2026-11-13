@@ -117,6 +117,7 @@ test.each(["key", "endpoint", "native", "native-fresh", "shared"] as const)(
       claudeExecutable: "",
       codexExecutable: "",
     });
+    expect(plan.configuration.mcp).toEqual({ revision: "boat_runtime_empty_v1", servers: {} });
     expect(Object.keys(plan).sort()).toEqual(["artifact", "cacheDir", "configuration"]);
     expect(plan.configuration.codexEnv[CODEX_AUTH_ENV]).toBeUndefined();
     expect(plan.configuration.codexEnv.ARMADA_SERVER_CODEX).toBeUndefined();

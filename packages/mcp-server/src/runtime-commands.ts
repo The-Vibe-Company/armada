@@ -68,13 +68,14 @@ export function createRuntimeCommands(
   key: string,
   time: Clock = clock,
 ) {
-  async function enqueue(ownerId: string, request: RunnerRequest) {
+  async function enqueue(ownerId: string, request: RunnerRequest, expectedEpoch?: string) {
     if (request.version !== 1 || !requestId(request.requestId) || typeof request.op !== "string")
       throw new RuntimeCommandConflict();
     const serialized = JSON.stringify(request);
     if (Buffer.byteLength(serialized) > MAX_COMMAND) throw new RuntimeCommandConflict();
     const sealed = await encryptSecret(serialized, key);
     return authority.withOwner(request.sandboxId, ownerId, async (tx, scope) => {
+      if (expectedEpoch !== undefined && scope.epoch !== expectedEpoch) throw new RuntimeCommandConflict();
       // Include BOTH published wire envelopes, not merely the inner RunnerRequest.
       // A head-of-line command must always fit the client's 1 MiB JSON/frame cap.
       const overhead =
@@ -180,14 +181,14 @@ export function createRuntimeCommands(
   async function call(
     ownerId: string,
     request: RunnerRequest,
-    options: { signal?: AbortSignal; timeoutMs?: number } = {},
+    options: { signal?: AbortSignal; timeoutMs?: number; expectedEpoch?: string } = {},
   ): Promise<RuntimeCommandReply> {
     const timeout = options.timeoutMs ?? 120_000;
     if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 120_000) throw new RuntimeCommandConflict();
     const signal = options.signal ?? new AbortController().signal;
     signal.throwIfAborted();
     const deadline = time.now() + timeout;
-    const admitted = await enqueue(ownerId, request);
+    const admitted = await enqueue(ownerId, request, options.expectedEpoch);
     while (true) {
       signal.throwIfAborted();
       const response = await result(ownerId, request.sandboxId, request.requestId, admitted.epoch);
