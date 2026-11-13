@@ -3,6 +3,8 @@ import type { AgentEvent, OttoOrphan, OttoPage, OttoResource } from "@armada/cor
 import { encryptSecret, type Sql } from "@armada/core/server";
 import { scopeKey } from "@armada/provider-modal";
 import { createOttoApi } from "../src/otto/api.ts";
+import { recordOrphanDays } from "../src/otto/orphan-days.ts";
+import { readOttoModel } from "../src/otto/read-model.ts";
 import { database, ENCRYPTION_KEY } from "./support.ts";
 
 const shared = database();
@@ -80,7 +82,13 @@ async function fixture() {
     if (!response || response.status !== 200) throw Error(`otto_api_${response?.status}: ${await response?.text()}`);
     return (await response.json()) as OttoPage<T>;
   };
-  return { db, org, people, repository, fact, pr, inventory, sandbox, prompt, get };
+  const observe = async (now: Date) => {
+    const scope = { orgId: org, repository };
+    const caller = { userId: people.owner, orgs: [{ orgId: org, role: "member" as const }], via: "service" as const };
+    const model = await readOttoModel(sql, scope, caller, now, ENCRYPTION_KEY);
+    await recordOrphanDays(sql, scope, caller, model.resources, now);
+  };
+  return { db, org, people, repository, fact, pr, inventory, sandbox, prompt, get, observe };
 }
 
 test("branch match is only candidate; exact-head report confirms, ambiguity and stale evidence remain unknown", async () => {
@@ -125,6 +133,7 @@ test("head movement during a running turn confirms ownership; idle failure detec
   expect((await f.get<OttoOrphan>("orphans")).items.filter((o) => o.state === "orphan")).toHaveLength(0);
   await f.fact("pr:42", "pr.work.required_check", { headSha: SHA }, new Date(NOW.getTime() + 1));
   const when = new Date(NOW.getTime() + 2);
+  await f.observe(when);
   const first = (await f.get<OttoOrphan>("orphans", when)).items.find((o) => o.state === "orphan");
   expect(first).toMatchObject({ reason: "idle_owner_needs_work", day: "2026-11-12", current: true });
   expect(first?.resource.owner).toMatchObject({ state: "owned", confirmation: "confirmed", sandboxId: id });

@@ -21,7 +21,17 @@ export function createOttoApi(
     const reply = (value: unknown, status = 200) =>
       Response.json(value, { status, headers: { "cache-control": "no-store" } });
     if (request.method !== "GET") return reply({ error: "read_only" }, 405);
-    try {
+    const started = performance.now();
+    const deadline = started + 3_000;
+    // Stop scheduling further SQL after expiry, even if an in-flight driver call settles late.
+    const readSql: Sql = {
+      query: (text, params) => {
+        if (performance.now() >= deadline) throw Error("otto_read_deadline");
+        return sql.query(text, params);
+      },
+    };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const read = async () => {
       const auth = await authenticate(request);
       if (!auth.ok) return reply({ error: "unauthorized" }, 401);
       if (
@@ -54,7 +64,7 @@ export function createOttoApi(
           }
         }
         const rows = (
-          await sql.query<OttoFact>(
+          await readSql.query<OttoFact>(
             `select * from public.otto_facts where org_id=$1 and repository=$2 and ($3::timestamptz is null or (observed_at,id)<($3::timestamptz,$4::uuid)) order by observed_at desc,id desc limit $5`,
             [scope.orgId, scope.repository, at, id, limit + 1],
           )
@@ -80,9 +90,9 @@ export function createOttoApi(
         day > observedNow.toISOString().slice(0, 10)
       )
         return reply({ error: "invalid_day" }, 400);
-      const model = await readOttoModel(sql, scope, auth.caller, observedNow, encryptionKey);
+      const model = await readOttoModel(readSql, scope, auth.caller, observedNow, encryptionKey);
       const daily = await orphanDays(
-        sql,
+        readSql,
         scope,
         auth.caller,
         model.resources,
@@ -140,8 +150,19 @@ export function createOttoApi(
         githubCompleteness: model.completeness,
         nextCursor: sorted.length > limit ? sorted[limit - 1]?.key : null,
       });
+    };
+    try {
+      return await Promise.race([
+        read(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(Error("otto_read_deadline")), 3_000);
+        }),
+      ]);
     } catch {
-      return reply({ error: "observation_unavailable" }, 503);
+      console.warn(`Otto read unavailable view=${view} elapsed_ms=${Math.round(performance.now() - started)}`);
+      return reply({ error: "unavailable" }, 503);
+    } finally {
+      clearTimeout(timer);
     }
   };
 }

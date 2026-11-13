@@ -59,3 +59,14 @@ test.skipIf(!url)("all Otto reads answer with unknown completeness while project
     await Promise.all([db.close(), writer.close()]);
   }
 });
+
+test.skipIf(!url)("bounded Otto SQL cancels a stalled query and releases its connection", async () => {
+  const { bunSql } = await import("../src/sql.ts");
+  const db = bunSql(url ?? "", 1, 50);
+  try {
+    await expect(db.query("select pg_sleep(10)")).rejects.toThrow();
+    expect((await db.query<{ value: number }>("select 1 as value")).rows).toEqual([{ value: 1 }]);
+  } finally {
+    await db.close();
+  }
+});

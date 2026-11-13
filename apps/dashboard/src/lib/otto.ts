@@ -85,7 +85,7 @@ export async function readOtto(options: {
       body = await response.json().catch(() => null);
       signal.throwIfAborted();
     } catch {
-      throw new ReadFailure("unreachable");
+      throw new ReadFailure(signal.aborted ? "unavailable" : "unreachable");
     }
     // Without Otto the server mounts no Otto route: the control API answers a GET with 405, an unknown path with 404.
     if (response.status === 404 || response.status === 405) throw new ReadFailure("not-observed");

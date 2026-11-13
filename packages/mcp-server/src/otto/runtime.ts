@@ -21,17 +21,21 @@ export function createOttoRuntime(sql: Sql, env: Record<string, string | undefin
       async reconcileOne(signal: AbortSignal) {
         if (Date.now() < nextAt) return false;
         nextAt = Date.now() + 60_000;
-        const members = (
-          await sql.query<{ user_id: string; role: "admin" | "member" }>(
-            "select user_id,role from public.members where org_id=$1",
-            [orgId],
-          )
-        ).rows;
-        for (const member of members) {
-          const caller = { userId: member.user_id, orgs: [{ orgId, role: member.role }], via: "service" as const };
-          const now = new Date();
-          const model = await readOttoModel(sql, scope, caller, now, env.ARMADA_ENCRYPTION_KEY);
-          await recordOrphanDays(sql, scope, caller, model.resources, now);
+        try {
+          const members = (
+            await sql.query<{ user_id: string; role: "admin" | "member" }>(
+              "select user_id,role from public.members where org_id=$1",
+              [orgId],
+            )
+          ).rows;
+          for (const member of members) {
+            const caller = { userId: member.user_id, orgs: [{ orgId, role: member.role }], via: "service" as const };
+            const now = new Date();
+            const model = await readOttoModel(sql, scope, caller, now, env.ARMADA_ENCRYPTION_KEY);
+            await recordOrphanDays(sql, scope, caller, model.resources, now);
+          }
+        } catch {
+          console.warn("Otto history observation unavailable");
         }
         if (!env.ARMADA_OTTO_GITHUB_TOKEN) return false;
         if (!sql.transaction) throw Error("Otto reconciliation requires transactions");
