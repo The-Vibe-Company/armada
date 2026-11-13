@@ -1,5 +1,6 @@
 import { redact } from "./credentials.ts";
 import { decryptSecret, EncryptionKeyError, encryptSecret } from "./crypto.ts";
+import { isRecord } from "./record.ts";
 
 /**
  * GitHub user-to-server access for a launch. The person authorizes the Armada GitHub App once (the
@@ -587,10 +588,6 @@ export const GH_MISSING_NOTE =
 
 function shQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function githubApiHeaders(accessToken: string): Record<string, string> {

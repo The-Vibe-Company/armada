@@ -1,3 +1,4 @@
+import { isRecord } from "./record.ts";
 /** Where a golden's repositories are cloned. Launch pulls the same directories. */
 export const GOLDEN_ROOT = "/home/user";
 
@@ -377,10 +378,6 @@ function secretAssignment(command: string): string | null {
 
 function shQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function showUrl(value: string): string {
