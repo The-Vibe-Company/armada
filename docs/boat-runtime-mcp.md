@@ -45,7 +45,8 @@ old native thread configuration cannot silently regain authority.
 
 Apply new migration `20261113074000_runtime_mcp_epochs.sql` through normal delivery
 before deploying the matching server/runtime image. The updated compiled runtime
-is needed for MCP server provenance in journal events. Existing experimental Boat
+must advertise MCP v1 health before receiving configuration (older guests fail
+closed); it also supplies MCP server provenance in journal events. Existing experimental Boat
 runtime/manifest settings and merged resume/GitHub prerequisites remain. Normal
 images publish the pinned artifacts; **no manual publication**. No deployment in
 flight while checking.

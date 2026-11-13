@@ -124,6 +124,18 @@ export function createRuntimeAgent(
       requestId: string,
       epoch: string,
     ): Promise<void> {
+      const health = await invoke<{ ready?: unknown; generation?: unknown; mcpVersion?: unknown }>(
+        { ...identity(), op: "health" },
+        undefined,
+        epoch,
+      );
+      if (health?.ready !== true || health.generation !== epoch || health.mcpVersion !== 1)
+        throw new ProviderError({
+          provider: "boat",
+          code: "sandbox_not_ready",
+          message: "Runtime MCP v1 requires an updated runtime artifact.",
+          retryable: false,
+        });
       const result = await invoke<{ revision?: unknown }>(
         {
           ...identity(requestId),

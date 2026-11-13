@@ -260,3 +260,30 @@ test("epoch replacement before RPC enqueue cannot install old configuration; old
     await f.close();
   }
 });
+
+test("old runtime health cannot receive newly enabled MCP capabilities", async () => {
+  const x = await fixture(),
+    { f } = x,
+    ops: string[] = [];
+  try {
+    const old = createRuntimeMcp({
+      sql: f.sql,
+      key: ENCRYPTION_KEY,
+      origin: "https://armada.test",
+      commands: {
+        ...f.bridge,
+        async call(owner, command, options) {
+          ops.push(command.op);
+          const reply = await f.bridge.call(owner, command, options);
+          if (command.op !== "health") return reply;
+          return { ...reply, body: { ...reply.body, result: { ready: true, generation: reply.epoch } } };
+        },
+      },
+    });
+    await expect(old.refresh(f.caller, x.input)).rejects.toMatchObject({ code: "sandbox_not_ready" });
+    expect(ops).toEqual(["health"]);
+    expect(f.mcpSnapshots.at(-1)).toBeUndefined();
+  } finally {
+    await f.close();
+  }
+});
