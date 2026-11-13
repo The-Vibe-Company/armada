@@ -9,7 +9,13 @@ import { listSelectedAccounts } from "@/lib/data/model-accounts";
 import { isSelectedOrganization, selectedOrganization } from "@/lib/data/selected-org";
 import { requireViewer } from "@/lib/data/viewer";
 import { HOSTS_PATH, hasCheckedIn, hostRegistrationCommand } from "@/lib/docker-hosts";
-import { checkImage, dockerLaunchBlocker, dockerLaunchBody, launchedDockerSandbox } from "@/lib/docker-launch";
+import {
+  checkImage,
+  dockerLaunchBlocker,
+  dockerLaunchBody,
+  launchedDockerSandbox,
+  UNKNOWN_DOCKER_LAUNCH,
+} from "@/lib/docker-launch";
 import { mcpUrl } from "@/lib/env";
 import { LAUNCH_PATH, LAUNCH_TIMEOUT_MS } from "@/lib/launch";
 import { LAUNCH_KEY_FIELD } from "@/lib/launch-key";
@@ -147,10 +153,7 @@ export async function launchOnDockerHost(_previous: ActionResult | null, data: F
     );
   } catch (error) {
     if (!(error instanceof ControlError)) throw error;
-    if (error.outcomeUnknown || error.code === "outcome_unknown")
-      return fail(
-        "The Armada server did not confirm the launch. Launch again without changing anything: the server recognises the same request and does not start a second sandbox.",
-      );
+    if (error.outcomeUnknown || error.code === "outcome_unknown") return fail(UNKNOWN_DOCKER_LAUNCH);
     return fail(error.message);
   }
   if (!id) return fail("The Armada server did not answer with a Docker sandbox.");

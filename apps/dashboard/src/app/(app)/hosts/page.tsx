@@ -29,13 +29,7 @@ const TITLE = "Hosts";
 const DESCRIPTION = "Machines you own that run sandboxes in Docker.";
 
 export default async function HostsPage({ searchParams }: Props) {
-  const [selected, hosts, option, accountList, query] = await Promise.all([
-    selectedOrganization(),
-    readSelectedDockerHosts(),
-    readDockerLaunchOption(),
-    listSelectedAccounts(),
-    searchParams,
-  ]);
+  const [selected, hosts, query] = await Promise.all([selectedOrganization(), readSelectedDockerHosts(), searchParams]);
   // Behind the server's opt-in (and an organization): otherwise there is no page, as there is no menu entry.
   if (!selected || hosts.state === "disabled") notFound();
   const header = <PageHeader title={TITLE} description={DESCRIPTION} />;
@@ -61,10 +55,15 @@ export default async function HostsPage({ searchParams }: Props) {
   const isAdmin = selected.role === "admin";
   const orgId = selected.org.id;
   const now = Date.now();
+  // The launch's own reads only when some host could take one: today's servers never pay for them.
+  const launchable = hosts.list.placement && hosts.list.hosts.some((host) => host.state === "online");
+  const [option, accountList] = launchable
+    ? await Promise.all([readDockerLaunchOption(), listSelectedAccounts()])
+    : [null, null];
   const launch: Launch = {
     option,
     placement: hosts.list.placement,
-    accounts: launchAccounts(accountList, now),
+    accounts: accountList ? launchAccounts(accountList, now) : { state: "unavailable", reason: "Not read." },
     unavailable: option ? dockerUnavailable(option) : [],
   };
   const rows = sortResources(hosts.list.hosts.map((host) => row(host, orgId, isAdmin, now, launch)));

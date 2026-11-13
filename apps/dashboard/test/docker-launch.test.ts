@@ -50,6 +50,8 @@ test("a host takes a launch only when the server launches Codex from an image on
     options({ capabilities: capabilities([]), unsupportedReasons: { launch: "Wired in the next increment." } }),
   );
   expect(dockerLaunchBlocker(off, true, { state: "online" })).toBe("Wired in the next increment.");
+  // Before the normal launch ships, placement is false too: the server's own reason is still what is said.
+  expect(dockerLaunchBlocker(off, false, { state: "online" })).toBe("Wired in the next increment.");
   expect(
     dockerLaunchBlocker(dockerLaunchOption(options({ harnesses: ["claude"] })), true, { state: "online" }),
   ).toContain("Codex from an image");

@@ -97,14 +97,27 @@ export function dockerLaunchBlocker(
   placement: boolean,
   host: Pick<DockerHost, "state">,
 ): string | null {
-  if (!option?.enabled || !placement) return "This Armada server does not launch on Docker hosts yet.";
+  if (!option?.enabled) return "This Armada server does not launch on Docker hosts yet.";
   if (!option.capabilities.launch)
     return option.unsupportedReasons.launch ?? "This Armada server does not launch on Docker hosts yet.";
+  if (!placement) return "This Armada server does not launch on Docker hosts yet.";
   if (!option.launchSources.includes("image") || !option.harnesses.includes("codex"))
     return "This Armada server does not launch Codex from an image on Docker hosts.";
   if (host.state === "revoked") return "This host is revoked.";
   if (host.state !== "online") return "The host must be online to launch on it.";
   return null;
+}
+
+/**
+ * The refusal for a launch whose outcome nobody knows. Only then does the dialog keep its request key, so launching
+ * again with the same choices is reconciled by the server; after any other answer the next launch is a new request.
+ */
+export const UNKNOWN_DOCKER_LAUNCH =
+  "The Armada server did not confirm the launch. Launch again without changing anything: the server recognises the same request and does not start a second sandbox.";
+
+/** Where the dialog keeps one host's unconfirmed launch key, across closing and reopening it. */
+export function dockerLaunchKeyStorage(hostId: string): string {
+  return `armada-docker-launch:${hostId}`;
 }
 
 /** What is not available on Docker yet, each with the server's short reason, for the launch dialog to say. */

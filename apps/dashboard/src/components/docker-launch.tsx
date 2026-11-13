@@ -2,7 +2,7 @@
 
 import { MODEL_CATALOG } from "@armada/core";
 import { RocketIcon } from "lucide-react";
-import { useEffect, useId, useRef } from "react";
+import { useCallback, useEffect, useId, useRef } from "react";
 import { launchOnDockerHost } from "@/app/actions/docker-hosts";
 import { ActionForm, SubmitButton } from "@/components/action-form";
 import { AccountField } from "@/components/launch-dialog";
@@ -19,8 +19,10 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import type { ActionResult } from "@/lib/action";
+import { dockerLaunchKeyStorage, UNKNOWN_DOCKER_LAUNCH } from "@/lib/docker-launch";
 import { LAUNCH_KEY_FIELD, type LaunchKey, launchKeyFor } from "@/lib/launch-key";
-import type { LaunchAccounts } from "@/lib/model-accounts";
+import { accountProblem, accountsFor, type LaunchAccounts } from "@/lib/model-accounts";
 
 /**
  * Launch a sandbox on one Docker host (#1380): Codex from a digest-pinned plain image, with a model account and an
@@ -72,7 +74,12 @@ function DockerLaunchForm({
 }) {
   const id = useId();
   const root = useRef<HTMLDivElement>(null);
-  const launchKey = useRef<LaunchKey | null>(null);
+  const storage = dockerLaunchKeyStorage(hostId);
+  // The key of the submission in flight, so its answer decides whether the key is kept.
+  const sent = useRef<LaunchKey | null>(null);
+  const usable =
+    accounts.state === "ready" &&
+    accountsFor(accounts.accounts, "codex").some((account) => accountProblem(account, accounts.now) === null);
 
   useEffect(() => {
     const node = root.current;
@@ -82,12 +89,15 @@ function DockerLaunchForm({
       event.preventDefault();
       event.stopPropagation();
     };
-    // The request key is the server's `requestId`: kept while the choices stay the same, so launching again after
-    // an unanswered launch is reconciled by the server instead of starting a second sandbox.
+    // The request key is the server's `requestId`. It is reused only after a launch nobody knows the outcome of,
+    // and only with the same choices, even if the dialog was closed in between: the server then reconciles it
+    // instead of starting a second sandbox. Any other answer makes the next launch a new request.
     const keyed = (event: Event) => {
       if (!(event instanceof FormDataEvent)) return;
-      launchKey.current = launchKeyFor(launchKey.current, event.formData.entries());
-      event.formData.set(LAUNCH_KEY_FIELD, launchKey.current.key);
+      const key = launchKeyFor(readKey(storage), event.formData.entries());
+      sent.current = key;
+      writeKey(storage, null);
+      event.formData.set(LAUNCH_KEY_FIELD, key.key);
     };
     node.addEventListener("reset", keep, true);
     node.addEventListener("formdata", keyed, true);
@@ -95,19 +105,39 @@ function DockerLaunchForm({
       node.removeEventListener("reset", keep, true);
       node.removeEventListener("formdata", keyed, true);
     };
-  }, []);
+  }, [storage]);
+
+  const launch = useCallback(
+    async (previous: ActionResult | null, data: FormData) => {
+      const result = await launchOnDockerHost(previous, data);
+      if (!result.ok && result.error === UNKNOWN_DOCKER_LAUNCH) writeKey(storage, sent.current);
+      return result;
+    },
+    [storage],
+  );
 
   return (
     <div ref={root}>
       <ActionForm
-        action={launchOnDockerHost}
+        action={launch}
         focusError
         className="space-y-4"
         footer={
-          <div className="flex justify-end">
-            <SubmitButton>
-              <RocketIcon /> Launch
-            </SubmitButton>
+          <div className="flex items-center justify-end gap-3">
+            {usable ? (
+              <SubmitButton>
+                <RocketIcon /> Launch
+              </SubmitButton>
+            ) : (
+              <>
+                <p id={`${id}-no-account`} className="mr-auto text-xs text-warning">
+                  A usable Codex account is needed to launch.
+                </p>
+                <Button type="button" disabled aria-describedby={`${id}-no-account`}>
+                  <RocketIcon /> Launch
+                </Button>
+              </>
+            )}
           </div>
         }
       >
@@ -160,4 +190,31 @@ function DockerLaunchForm({
       </ActionForm>
     </div>
   );
+}
+
+function readKey(name: string): LaunchKey | null {
+  try {
+    const value: unknown = JSON.parse(sessionStorage.getItem(name) ?? "null");
+    if (
+      typeof value === "object" &&
+      value !== null &&
+      "key" in value &&
+      "fingerprint" in value &&
+      typeof value.key === "string" &&
+      typeof value.fingerprint === "string"
+    )
+      return { key: value.key, fingerprint: value.fingerprint };
+  } catch {
+    // Storage refused or unreadable: the launch is a new request.
+  }
+  return null;
+}
+
+function writeKey(name: string, key: LaunchKey | null): void {
+  try {
+    if (key) sessionStorage.setItem(name, JSON.stringify(key));
+    else sessionStorage.removeItem(name);
+  } catch {
+    // Storage refused: a later retry is a new request, as without this dialog's memory.
+  }
 }
