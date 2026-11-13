@@ -20,11 +20,10 @@ permissions:
   contents: read
   actions: read
 
-# Lock staging deployment and smoke together. A newer merge cannot
-# replace staging under an active smoke or evict an already queued release.
+# Preserve active main work, but retain only the newest pending ordinary main.
+# Pinned release/manual calls use separate outer groups and the FIFO job lock.
 concurrency:
-  group: staging-gated-production
-  queue: max
+  group: ${{ inputs.source_sha != '' && format('staging-pinned-{0}', github.run_id) || 'staging-main-latest' }}
   cancel-in-progress: false
 
 jobs:
@@ -53,6 +52,7 @@ jobs:
     environment: staging
     concurrency:
       group: post-deploy-smoke-staging
+      queue: max
       cancel-in-progress: false
     env:
       SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}

@@ -193,8 +193,10 @@ the source version. Only then does it build/upload the dashboard. Vercel waits
 for Ready. npm only follows successful production for publishing releases.
 No deploy hook or moving main checkout substitutes for the validated source.
 
-Deployment/smoke and release queues retain waiting runs with queue:max and
-cancellation disabled, preserving cleanup and queued release calls. Immediately
+Ordinary main workflows retain only the latest pending main without cancelling
+active work. Pinned release/manual calls use separate outer groups; the shared
+staging deployment/smoke job lock retains waiters FIFO with queue:max, preserving
+queued release evidence. Immediately
 before the first mutation, an ordinary main run resolves current main over Git
 and skips migration/provider builds/deployment/smoke if a newer SHA superseded
 it. This avoids stale deployments without evicting a pending release. Resolution
@@ -262,7 +264,7 @@ Production's owner-verified disabled Git trigger must remain off too.
 Token presence is not an authentication/scope check. Perform one owner-authorized
 pinned staging Actions upload with no parallel Git deployment; verify the returned
 Railway deployment ID reaches SUCCESS, public health/version, source message and
-Ready dashboard/smoke or explicit cadence/quota receipts. Only after the exclusive
+Ready dashboard and the remaining non-Boat release-gate smoke. Only after the exclusive
 writer is proven should normal merges resume. If credentials are wrong, fix
 configuration; never re-enable Git as a fallback or restore production following
 main without its release migrations. No agent performs provider changes or deploys.
