@@ -661,13 +661,3 @@ export function githubInstallationAppFromEnv(env: Record<string, string | undefi
   const privateKey = env[GITHUB_APP_PRIVATE_KEY_ENV]?.replace(/\\n/g, "\n").trim();
   return appId && privateKey ? { appId, privateKey } : null;
 }
-/** Refuse to silently use a user OAuth token where an installation token is required. */
-export function requireGitHubInstallationApp(env: Record<string, string | undefined>): GitHubInstallationApp {
-  const app = githubInstallationAppFromEnv(env);
-  if (!app)
-    throw new GitHubAuthError(
-      "misconfigured",
-      "Secure golden checkout requires GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY; OAuth client credentials cannot mint installation tokens.",
-    );
-  return app;
-}

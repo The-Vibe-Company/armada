@@ -103,7 +103,6 @@ export {
   gitIdentity,
   gitSetupCommand,
   refreshGitHubToken,
-  requireGitHubInstallationApp,
   resolveGitHubAccess,
   type StoredGitHubConnection,
 } from "./github.ts";

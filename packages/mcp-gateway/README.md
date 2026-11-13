@@ -32,9 +32,6 @@ https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization
   - `revoke(actorId, connectionId)` → `{upstreamRevocation: done|unsupported|failed}`.
     Local tombstone precedes upstream I/O. `done` means endpoint acknowledged the
     request, not independent proof that the provider invalidated every token.
-- `createOAuthCallbackHandler({broker, redirectUri, actor})`: Request → Response.
-  Mount on the broker's exact fixed callback URI, behind browser authentication.
-  No return-target query parameter or upstream error text is reflected.
 - `createClientMetadataHandler({clientMetadataUrl, redirectUri})`: public static
   CIMD Request → Response. Use precisely the same configuration as the broker.
 - `createMcpGateway(GatewayOptions): McpGateway`
@@ -230,8 +227,6 @@ not request org/actor claims. It invokes `broker.callback({actorId,state,code,is
 the broker consumes actor/generation-bound pending state and exchanges with the
 same exact dashboard redirect URI used at authorization time. Do not accept arbitrary
 return URLs or trust a browser-supplied org. Keep codes/state out of request logs.
-`createOAuthCallbackHandler` remains available for a deployment where browser auth
-and the callback actually share a host; it does not establish Railway browser auth.
 No control/Next route is wired by this package. Multi-replica stream cancellation
 also remains a coordinator broadcast-composition obligation, not an implemented
 cross-process guarantee here.
