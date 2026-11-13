@@ -454,12 +454,12 @@ export function SandboxChat(props: Props) {
           onMore={() => void tick()}
         />
 
-        {props.configured && props.composerUnavailable ? (
-          <p className="border-t px-4 py-3 text-sm text-muted-foreground sm:px-6" data-composer-unavailable>
-            {props.composerUnavailable}
-          </p>
-        ) : (
-          props.configured && (
+        {props.configured &&
+          (props.composerUnavailable ? (
+            <p className="border-t px-4 py-3 text-sm text-muted-foreground sm:px-6" data-composer-unavailable>
+              {props.composerUnavailable}
+            </p>
+          ) : (
             <Composer
               {...props}
               status={status}
@@ -470,8 +470,7 @@ export function SandboxChat(props: Props) {
                 resumePolling();
               }}
             />
-          )
-        )}
+          ))}
       </Card>
 
       <TechnicalEvents events={chat.technical} />

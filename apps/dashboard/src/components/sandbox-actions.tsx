@@ -70,7 +70,7 @@ function DeleteButton({ sandboxId }: { sandboxId: string }) {
         <AlertDialogHeader>
           <AlertDialogTitle>Delete this sandbox?</AlertDialogTitle>
           <AlertDialogDescription>
-            Its container and workspace are removed from the host for good. The conversation stays readable here.
+            Its container and workspace are removed from the host for good. This cannot be undone.
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>

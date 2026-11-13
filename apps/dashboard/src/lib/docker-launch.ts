@@ -196,7 +196,7 @@ export type DockerSandboxControls = {
   unavailable: { name: string; reason: string }[];
 };
 
-const NO_OPTIONS = "This Armada server does not say what Docker sandboxes support.";
+const NO_OPTIONS = "What Docker sandboxes support could not be read from the Armada server.";
 
 /**
  * What a Docker sandbox's page may offer, from the server's Docker capabilities. Without a readable Docker option
@@ -206,9 +206,8 @@ export function dockerSandboxControls(option: DockerLaunchOption | null): Docker
   const reasons: DockerSandboxControls["reasons"] = {};
   for (const name of SANDBOX_CAPABILITIES) {
     if (option?.enabled && option.capabilities[name]) continue;
-    reasons[name] = option?.enabled
-      ? (option.unsupportedReasons[name] ?? "Not available on Docker hosts yet.")
-      : NO_OPTIONS;
+    // A present option says why, even when Docker is disabled there; only an unreadable one is unknown.
+    reasons[name] = option ? (option.unsupportedReasons[name] ?? "Not available on Docker hosts yet.") : NO_OPTIONS;
   }
   return {
     reasons,

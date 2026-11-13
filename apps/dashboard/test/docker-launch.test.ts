@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { launchProviderOptions } from "../../../packages/mcp-server/src/launch-options.ts";
 import {
   checkImage,
   DOCKER_CAPABILITIES,
@@ -151,6 +152,25 @@ test("a Docker sandbox's page offers only what the server supports, and gives th
   ]);
   // No readable option: nothing is offered, every control says why.
   const unknown = dockerSandboxControls(null);
-  expect(unknown.reasons.stop).toContain("does not say");
-  expect(unknown.reasons.logs).toContain("does not say");
+  expect(unknown.reasons.stop).toContain("could not be read");
+  expect(unknown.reasons.logs).toContain("could not be read");
+});
+
+test("the server's own launch options drive the Docker sandbox page and the launch, enabled or not", () => {
+  const off = dockerLaunchOption({ providers: launchProviderOptions({}) });
+  expect(off?.enabled).toBe(false);
+  expect(dockerSandboxControls(off).reasons.stop).toBe("Docker hosts are not enabled on this server.");
+
+  const controls = dockerLaunchOption({ providers: launchProviderOptions({ hosts: true, normalApi: true }) });
+  const page = dockerSandboxControls(controls);
+  expect(page.reasons.logs).toBeUndefined();
+  expect(page.reasons.stop).toBeUndefined();
+  expect(page.reasons.delete).toBeUndefined();
+  expect(page.reasons.followupPrompts).toBeString();
+  expect(dockerLaunchBlocker(controls, false, { state: "online" })).toBeString();
+
+  const launch = dockerLaunchOption({
+    providers: launchProviderOptions({ hosts: true, normalApi: true, placement: true, normalLaunch: true }),
+  });
+  expect(dockerLaunchBlocker(launch, true, { state: "online" })).toBeNull();
 });

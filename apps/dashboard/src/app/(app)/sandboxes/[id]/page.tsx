@@ -297,7 +297,7 @@ function DockerSandbox({
               status={sandbox.status}
               canStop={!reasons.stop}
               canDelete={!reasons.delete}
-              stopDescription="The container stops and its workspace stays on the host. Docker sandboxes cannot be resumed yet."
+              stopDescription={`The container stops and its workspace stays on the host.${reasons.resume ? ` It cannot be resumed from here: ${reasons.resume}` : ""}`}
             />
           )}
         </div>

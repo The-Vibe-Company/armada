@@ -71,7 +71,11 @@ export async function stopSandbox(_previous: ActionResult | null, data: FormData
   }
   revalidatePath(`/sandboxes/${id}`);
   revalidatePath("/sandboxes");
-  return done("Stop requested. The machine is removed and the disk is kept.");
+  return done(
+    target.sandbox.provider === "docker"
+      ? "Stop requested. The container stops and its workspace stays on the host."
+      : "Stop requested. The machine is removed and the disk is kept.",
+  );
 }
 
 /**
