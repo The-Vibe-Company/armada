@@ -2437,6 +2437,49 @@ test("versioned runtime launch is explicit/default-off and never selects native 
     };
     expect((await request("sandbox/launch-runtime-v1", body))?.status).toBe(503);
     expect(host.forks).toHaveLength(0);
+    const connection = "44444444-4444-4444-8444-444444444444";
+    let mcpPrepared = false,
+      expectedForks = 0;
+    options.connections = {
+      async defaults() {
+        throw Error("No native MCP defaults");
+      },
+      async validate() {
+        throw Error("No native MCP validation");
+      },
+      async bind() {
+        throw Error("No native MCP binding");
+      },
+      async prepare() {
+        throw Error("No native MCP setup");
+      },
+    };
+    options.runtimeMcp = {
+      async prepare() {
+        throw Error("Lifecycle port must own MCP preparation");
+      },
+      async preflight() {
+        throw Error("No staging probe during product launch");
+      },
+      connections: {
+        async defaults() {
+          return [connection];
+        },
+        async validate(_actor, ids) {
+          expect(ids).toEqual([connection]);
+          expect(host.forks).toHaveLength(expectedForks);
+        },
+        async bind(_id, ids) {
+          expect(ids).toEqual([connection]);
+        },
+        async prepare(_provider, sandbox, _actor, signal) {
+          expect(starts).toBe(1);
+          expect(sandbox.id).toBeDefined();
+          expect(signal?.aborted).toBe(false);
+          mcpPrepared = true;
+        },
+      },
+    };
     options.runtimeHostFor = () => host.provider;
     options.boatRuntimeLaunch = {
       async start(input) {
@@ -2449,6 +2492,7 @@ test("versioned runtime launch is explicit/default-off and never selects native 
         return {
           epoch: "1",
           async prompt() {
+            expect(mcpPrepared).toBe(true);
             return { promptId: "runtime-initial", conversationId: "runtime-conversation", status: "queued" };
           },
         };
@@ -2513,6 +2557,7 @@ test("versioned runtime launch is explicit/default-off and never selects native 
     expect(host.prompts).toHaveLength(0);
     expect(host.execs).toHaveLength(0);
     // Actual startup timeout -> launch failure persistence -> public logs response.
+    expectedForks = 1;
     options.boatRuntimeLaunch = {
       async start(input) {
         let now = 0;

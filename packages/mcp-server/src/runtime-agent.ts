@@ -119,34 +119,6 @@ export function createRuntimeAgent(
         throw refusal("sandbox_not_ready");
       return { runtime: "armada", epoch: reply.epoch };
     },
-    async configureMcp(
-      configuration: Extract<RunnerRequest, { op: "configureMcp" }>["configuration"],
-      requestId: string,
-      epoch: string,
-    ): Promise<void> {
-      const health = await invoke<{ ready?: unknown; generation?: unknown; mcpVersion?: unknown }>(
-        { ...identity(), op: "health" },
-        undefined,
-        epoch,
-      );
-      if (health?.ready !== true || health.generation !== epoch || health.mcpVersion !== 1)
-        throw new ProviderError({
-          provider: "boat",
-          code: "sandbox_not_ready",
-          message: "Runtime MCP v1 requires an updated runtime artifact.",
-          retryable: false,
-        });
-      const result = await invoke<{ revision?: unknown }>(
-        {
-          ...identity(requestId),
-          op: "configureMcp",
-          configuration,
-        },
-        undefined,
-        epoch,
-      );
-      if (result?.revision !== configuration.revision) throw refusal("unavailable", requestId);
-    },
     async configureGitHub(configuration: GitHubRuntimeConfiguration, requestId: string): Promise<void> {
       const result = await invoke<{ acknowledged?: boolean }>({
         ...identity(requestId),
@@ -156,7 +128,11 @@ export function createRuntimeAgent(
       if (result?.acknowledged !== true) throw refusal("unavailable", requestId);
     },
     /** Supply the same requestId to reconcile an uncertain prompt admission. */
-    async prompt(request: PromptRequest, requestId: string = randomUUID()): Promise<PromptReceipt> {
+    async prompt(
+      request: PromptRequest,
+      requestId: string = randomUUID(),
+      expectedEpoch?: string,
+    ): Promise<PromptReceipt> {
       target(request.sandboxId);
       if (request.harness !== "codex" || !request.text.trim()) throw refusal("invalid_request");
       const choice = resolveModelChoice("codex", request, defaults);
@@ -175,6 +151,7 @@ export function createRuntimeAgent(
           },
         },
         request.signal,
+        expectedEpoch,
       );
     },
     async getPrompt(request: { sandboxId: string; promptId: string; signal?: AbortSignal }): Promise<PromptState> {

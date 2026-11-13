@@ -129,7 +129,7 @@ export interface LaunchStores {
     validate(actor: GoldenActor, ids: string[], visibility: "private" | "org"): Promise<void>;
     bind(sandboxId: string, ids: string[]): Promise<void>;
     /** After init, before any first prompt (including an idle launch). */
-    prepare?(provider: Provider, sandbox: SandboxRecord, actor: GoldenActor): Promise<void>;
+    prepare?(provider: Provider, sandbox: SandboxRecord, actor: GoldenActor, signal?: AbortSignal): Promise<void>;
   };
 }
 
@@ -160,7 +160,7 @@ export interface LaunchResult {
 }
 
 export interface LaunchOptions extends GoldenLimits {
-  /** Trusted per-launch opt-in, never public request configuration. Model-only
+  /** Trusted per-launch opt-in, never public request configuration. Codex
    * snapshot launch: no native setup/refresh or runner fallback. */
   boatRuntime?: {
     start(input: {
@@ -292,8 +292,8 @@ export async function launchSandbox(
   const connectionIds = [
     ...new Set(request.connections ?? (await stores.connections?.defaults?.(actor, visibility)) ?? []),
   ];
-  if (runtime && (connectionIds.length || request.skills?.length || request.helperCapabilities?.length))
-    throw new LaunchError("invalid_request", "The experimental runtime does not yet support MCP, skills or helpers.");
+  if (runtime && (request.skills?.length || request.helperCapabilities?.length))
+    throw new LaunchError("invalid_request", "The experimental runtime does not yet support skills or helpers.");
   if (connectionIds.length && !stores.connections)
     throw new LaunchError("invalid_request", "MCP launch connections are not configured.");
   await stores.connections?.validate(actor, connectionIds, visibility);
@@ -525,7 +525,7 @@ export async function launchSandbox(
       progress("initialization_mcp");
       if (record.expiresAt && new Date(record.expiresAt).getTime() <= Date.now())
         throw new LaunchError("invalid_request", "Provider lifetime has no remaining preservation headroom.");
-      if (!runtime) await stores.connections?.prepare?.(provider, record, actor);
+      if (!runtime) await stores.connections?.prepare?.(provider, record, actor, signal);
       await options.beforeStart?.(provider, record);
       if (runtime && !startedRuntime)
         startedRuntime = Promise.resolve().then(() =>
@@ -534,6 +534,7 @@ export async function launchSandbox(
       const agent = startedRuntime ? await startedRuntime : undefined;
       if (runtime && (!agent || typeof agent.prompt !== "function" || !/^[1-9][0-9]{0,18}$/.test(agent.epoch)))
         throw new LaunchError("start_failed", "The runtime did not acknowledge a valid epoch.");
+      if (runtime) await stores.connections?.prepare?.(provider, record, actor, signal);
       const provenance = agent ? { kind: "armada" as const, epoch: agent.epoch } : undefined;
       // Boat goldens carry the native CLI. A restored fork can be ready while its
       // executable cannot even boot; probe the installed wrapper (including its

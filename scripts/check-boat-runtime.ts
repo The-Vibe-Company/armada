@@ -23,7 +23,7 @@ interface Reply {
   };
   githubReady?: boolean;
   mcpReady?: boolean;
-  connections?: string[];
+  connections?: (string | { id: string; defaultForLaunch?: boolean })[];
   servers?: string[];
   status?: string;
   revision?: string;
@@ -68,7 +68,7 @@ let mcpArguments: Record<string, unknown> = {};
 const mcpServer = `armada_${mcpConnection.replaceAll("-", "_")}`;
 if (mcpMode) {
   if (
-    options.boatRuntime.mcpVersion !== 1 ||
+    options.boatRuntime.mcpVersion !== 2 ||
     !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(mcpConnection) ||
     !/^[A-Za-z0-9_.-]{1,64}$/.test(mcpTool) ||
     !mcpExpected ||
@@ -76,7 +76,7 @@ if (mcpMode) {
     Buffer.byteLength(mcpArgumentsJson) > 4096
   )
     throw Error(
-      "MCP check requires v1, connection UUID, read-only tool, non-secret JSON args and expected substring; no launch attempted.",
+      "MCP check requires automatic delivery v2, connection UUID, read-only tool, non-secret JSON args and expected substring; no launch attempted.",
     );
   let parsed: unknown;
   try {
@@ -89,6 +89,11 @@ if (mcpMode) {
   mcpArguments = parsed as Record<string, unknown>;
   const preflight = await api("sandbox/mcp-preflight-v1", { runtimeVersion: 1, org, connections: [mcpConnection] });
   if (preflight.mcpReady !== true) throw Error("MCP preflight refused; no launch attempted.");
+  const available = await api("mcp/list", { org });
+  if (
+    !available.connections?.some((c) => typeof c !== "string" && c.id === mcpConnection && c.defaultForLaunch === true)
+  )
+    throw Error("Choose an existing default-for-launch MCP connection; no launch attempted.");
 }
 const githubMode = process.argv.includes("--github");
 const repository = process.env.ARMADA_RUNTIME_GITHUB_REPOSITORY ?? "";
@@ -126,21 +131,16 @@ interface GitHubProof {
 }
 let githubProof: GitHubProof | undefined;
 const githubToolPrompts = new Set<string>();
+const mcpInstruction = `Call the read-only MCP tool ${mcpTool} on server ${mcpServer} with exactly these non-secret JSON arguments: ${JSON.stringify(mcpArguments)}. Do not substitute a shell or another tool.`;
 const checks = [
   ...(githubMode
     ? [`Run this read-only shell command using your command tool: \`gh api repos/${repository} --jq .full_name\`.`]
     : []),
-  ...(mcpMode
-    ? [
-        `Call the read-only MCP tool ${mcpTool} on server ${mcpServer} with exactly these non-secret JSON arguments: ${JSON.stringify(mcpArguments)}. Do not substitute a shell or another tool.`,
-      ]
-    : []),
+  ...(mcpMode ? [mcpInstruction] : []),
 ];
 const toolsPrompt = `${checks.join(" ")} After all tools succeed, reply exactly with the token I originally asked you to remember. Do not change files.`;
 const mcpToolPrompts = new Set<string>();
-let mcpProof:
-  | { epoch: string; revision: string; promptId: string; connectionId: string; server: string; tool: string }
-  | undefined;
+let mcpProof: ReturnType<typeof verifyMcp> | undefined;
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
   if (value && typeof value === "object")
@@ -150,24 +150,10 @@ function canonical(value: unknown): string {
       .join(",")}}`;
   return JSON.stringify(value) ?? "undefined";
 }
-async function configureMcp(epoch: string) {
-  const result = await api("sandbox/configure-mcp-runtime-v1", { id, connections: [mcpConnection] });
-  if (
-    result.runtime?.kind !== "armada" ||
-    result.runtime.epoch !== epoch ||
-    !result.revision ||
-    result.connections?.length !== 1 ||
-    result.connections[0] !== mcpConnection ||
-    result.servers?.length !== 1 ||
-    result.servers[0] !== mcpServer
-  )
-    throw Error("Missing current-epoch runtime MCP configuration acknowledgement.");
-  return result.revision;
-}
-function verifyMcp(promptId: string, epoch: string, revision: string) {
+function verifyMcp(promptId: string, epoch: string) {
   if (!mcpToolPrompts.has(promptId))
     throw Error("Missing this prompt's successful MCP result from the selected runtime server and exact arguments.");
-  return { epoch, revision, promptId, connectionId: mcpConnection, server: mcpServer, tool: mcpTool };
+  return { epoch, promptId, connectionId: mcpConnection, server: mcpServer, tool: mcpTool };
 }
 async function configureGitHub(epoch: string) {
   const result = await api("github/refresh", { id });
@@ -221,8 +207,10 @@ try {
     org,
     credentialId,
     ...(process.env.ARMADA_RUNTIME_MODEL ? { model: process.env.ARMADA_RUNTIME_MODEL } : {}),
-    prompt: `${followup ? `Remember token ${memory}. ` : ""}Reply exactly ${marker}. Do not use tools or change files.`,
-    connections: [],
+    prompt: mcpMode
+      ? `Remember token ${memory}. ${mcpInstruction} After it succeeds, reply exactly ${marker}. Do not change files.`
+      : `${followup ? `Remember token ${memory}. ` : ""}Reply exactly ${marker}. Do not use tools or change files.`,
+    ...(mcpMode ? {} : { connections: [] }),
     skipSkillDefaults: true,
     ttlSeconds: 900,
   });
@@ -241,7 +229,8 @@ try {
     let cursor: string | undefined;
     let answer = false,
       finished = false;
-    while (Date.now() < deadline && (!answer || !finished)) {
+    mcpToolPrompts.delete(promptId);
+    while (Date.now() < deadline && (!answer || !finished || (mcpMode && !mcpToolPrompts.has(promptId)))) {
       const page = await api("logs/read", { id, all: true, ...(cursor ? { cursor } : {}) });
       if (page.runtimeFailure?.status === "failed")
         throw Error(
@@ -288,18 +277,21 @@ try {
           throw Error("Runtime prompt did not finish successfully.");
       }
       cursor = page.cursor ?? cursor;
-      if (!answer || !finished) await Bun.sleep(1000);
+      if (finished && answer && mcpMode && !mcpToolPrompts.has(promptId))
+        throw Error("Missing this prompt's automatic MCP tool evidence.");
+      if (!answer || !finished || (mcpMode && !mcpToolPrompts.has(promptId))) await Bun.sleep(1000);
     }
-    if (!answer || !finished) throw Error("Timed out waiting for archived runtime answer/terminal event.");
+    if (!answer || !finished || (mcpMode && !mcpToolPrompts.has(promptId)))
+      throw Error("Missing archived runtime answer, terminal event or this prompt's MCP tool evidence.");
   };
   verifyPrompt = verify;
   initialConversation = launched.conversationId;
   firstPrompt = launched.promptId;
   await verify(launched.promptId, marker);
+  if (mcpMode) mcpProof = verifyMcp(launched.promptId, launched.runtime.epoch ?? "");
   let nextPromptId: string | undefined;
   if (followup) {
     if (!launched.conversationId) throw Error("Launch did not return a conversation ID.");
-    const mcpRevision = mcpMode ? await configureMcp(launched.runtime.epoch ?? "") : undefined;
     const revision = githubMode ? await configureGitHub(launched.runtime.epoch ?? "") : undefined;
     const requestId = crypto.randomUUID();
     console.log(
@@ -331,7 +323,7 @@ try {
         "Missing same-conversation/epoch runtime follow-up acknowledgement. Reconcile with the original request_id; do not launch again.",
       );
     await verify(sent.promptId, memory);
-    if (mcpRevision) mcpProof = verifyMcp(sent.promptId, launched.runtime.epoch ?? "", mcpRevision);
+    if (mcpMode) mcpProof = verifyMcp(sent.promptId, launched.runtime.epoch ?? "");
     if (revision) githubProof = await verifyGitHub(sent.promptId, launched.runtime.epoch ?? "", revision);
     nextPromptId = sent.promptId;
     followupPrompt = sent.promptId;
@@ -436,8 +428,9 @@ if (resumeMode && !failure && id && checkpointReceipt && initialConversation && 
       request_id: requestId,
       runtimeVersion: 1,
       conversation_id: initialConversation,
-      prompt:
-        "Again reply exactly with the token I originally asked you to remember. Do not use tools or change files.",
+      prompt: mcpMode
+        ? `${mcpInstruction} After it succeeds, reply exactly with the token I originally asked you to remember. Do not change files.`
+        : "Again reply exactly with the token I originally asked you to remember. Do not use tools or change files.",
     });
     if (
       !previousEpoch ||
@@ -456,13 +449,12 @@ if (resumeMode && !failure && id && checkpointReceipt && initialConversation && 
         "Missing restored same-conversation/new-epoch acknowledgement. Reconcile the original request_id; do not activate again.",
       );
     await check(resumed.promptId, memory);
+    if (mcpMode) mcpProof = verifyMcp(resumed.promptId, resumed.runtime.epoch ?? "");
     await priorHistory?.();
     const third = resumed.promptId;
     let fourth: string | undefined;
-    if (githubMode || mcpMode) {
+    if (githubMode) {
       const epoch = resumed.runtime.epoch ?? "";
-      const mcpRevision = mcpMode ? await configureMcp(epoch) : undefined;
-      if (mcpRevision && mcpRevision === mcpProof?.revision) throw Error("Resume reused the previous MCP revision.");
       let revision: string | undefined;
       if (githubMode) {
         const unconfigured = await api("github/runtime-status", { id });
@@ -503,7 +495,7 @@ if (resumeMode && !failure && id && checkpointReceipt && initialConversation && 
         );
       await check(sent.promptId, memory);
       if (revision) githubProof = await verifyGitHub(sent.promptId, epoch, revision);
-      if (mcpRevision) mcpProof = verifyMcp(sent.promptId, epoch, mcpRevision);
+      if (mcpMode) mcpProof = verifyMcp(sent.promptId, epoch);
       fourth = sent.promptId;
     }
     verifyStoppedHistory = async () => {

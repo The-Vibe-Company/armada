@@ -632,7 +632,7 @@ export function createMcpHttpIntegration(options: {
     managedConnections: {
       ...lifecycle.connections,
       prepare: async (...args: Parameters<NonNullable<typeof lifecycle.connections.prepare>>) => {
-        await managedMcp.prepare(...args);
+        await managedMcp.prepare(args[0], args[1], args[2]);
         await refreshActiveExpiries(args[1].id);
       },
     },

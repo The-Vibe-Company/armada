@@ -4,6 +4,7 @@ import { createSqlData } from "./data.ts";
 import { createRuntimeAgent } from "./runtime-agent.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
+import type { RuntimeMcp } from "./runtime-mcp.ts";
 
 export interface RuntimeFollowupInput {
   id: string;
@@ -18,7 +19,12 @@ export type RuntimeFollowup = ReturnType<typeof createRuntimeFollowup>;
  * hooks, resume, model switching or new conversation. Commands are durable;
  * the client MUST reuse request_id and identical input on uncertain delivery.
  */
-export function createRuntimeFollowup(sql: Sql, key: string, commands: ReturnType<typeof createRuntimeCommands>) {
+export function createRuntimeFollowup(
+  sql: Sql,
+  key: string,
+  commands: ReturnType<typeof createRuntimeCommands>,
+  prepareMcp?: RuntimeMcp["prepare"],
+) {
   const authority = createRuntimeEnrolments(sql, key);
   return async (caller: Caller, input: RuntimeFollowupInput) => {
     const requestId = input.request_id?.toLowerCase();
@@ -167,6 +173,7 @@ export function createRuntimeFollowup(sql: Sql, key: string, commands: ReturnTyp
           ...(signal ? { signal } : {}),
         },
         commandId,
+        admitted.epoch,
       );
     const receipt = (value: Awaited<ReturnType<typeof submit>>) => ({
       id: found.id,
@@ -189,6 +196,8 @@ export function createRuntimeFollowup(sql: Sql, key: string, commands: ReturnTyp
       admitted.current,
       {},
       async (signal) => {
+        const existing = await commands.result(caller.userId, found.id, commandId, admitted.epoch);
+        if (existing.state === "missing") await prepareMcp?.(caller, found.id, signal);
         const accepted = await submit(signal);
         try {
           await store.recordTurnModel?.(found.id, accepted.promptId, found.model);

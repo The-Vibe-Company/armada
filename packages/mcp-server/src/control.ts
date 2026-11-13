@@ -785,7 +785,7 @@ async function dispatch(
         checkpointVersion: options.runtimeCheckpoint ? 1 : 0,
         resumeVersion: options.runtimeResume ? 1 : 0,
         githubVersion: options.runtimeGitHub ? 1 : 0,
-        mcpVersion: options.runtimeMcp ? 1 : 0,
+        mcpVersion: options.runtimeMcp ? 2 : 0,
         enabled: Boolean(options.boatRuntimeLaunch && options.runtimeHostFor),
       },
     };
@@ -901,7 +901,6 @@ async function dispatch(
       "sandbox/advice": "resource_advice",
       "sandbox/send": "send",
       "sandbox/checkpoint-runtime-v1": "runtime_checkpoint",
-      "sandbox/configure-mcp-runtime-v1": "runtime_mcp_refresh",
       "sandbox/resume-runtime-v1": "runtime_resume",
       "sandbox/report": "report",
       "sandbox/stop": "stop",
@@ -952,7 +951,6 @@ async function dispatch(
         ...(options.runtimeCheckpoint ? { runtimeCheckpoint: options.runtimeCheckpoint } : {}),
         ...(options.runtimeResume ? { runtimeResume: options.runtimeResume } : {}),
         ...(options.runtimeGitHub ? { runtimeGitHub: options.runtimeGitHub } : {}),
-        ...(options.runtimeMcp ? { runtimeMcp: options.runtimeMcp } : {}),
         ...(options.connections ? { connections: options.connections } : {}),
         data: options.data(scopedCaller),
         measure: (phase, work) => measured(options, phase, work),
@@ -1173,17 +1171,16 @@ async function dispatch(
         body.harness !== "codex" ||
         (body.provider !== undefined && body.provider !== "boat") ||
         body.armadaAccess ||
-        (body.connections !== undefined && (!Array.isArray(body.connections) || body.connections.length)) ||
         (body.skills !== undefined && (!Array.isArray(body.skills) || body.skills.length)) ||
         (body.helperCapabilities !== undefined &&
           (!Array.isArray(body.helperCapabilities) || body.helperCapabilities.length)) ||
         (body.skipSkillDefaults !== undefined && body.skipSkillDefaults !== true)
       )
-        throw new VaultError("invalid", "Runtime v1 requires explicit Boat/Codex model-only snapshot launch.");
+        throw new VaultError("invalid", "Runtime v1 requires explicit Boat/Codex snapshot launch.");
       if (!options.boatRuntimeLaunch || !options.runtimeHostFor)
         throw new VaultError("unavailable", "Experimental Boat runtime launch is not configured.");
       required(body, "prompt");
-      return launchRoute(options, caller, { ...body, connections: [], skipSkillDefaults: true }, true);
+      return launchRoute(options, caller, { ...body, skipSkillDefaults: true }, true);
     case "sandbox/launch-access-v1":
       if (body.armadaAccessVersion !== 1 || !parseSandboxArmadaAccess(body.armadaAccess))
         throw new VaultError("invalid", "The access launch route requires armadaAccessVersion 1 and armadaAccess.");
@@ -1604,13 +1601,14 @@ async function launchRoute(
         caller,
         armadaAccess ? { ...golden, visibility: "private", sourceGoldenVisibility: golden.visibility } : golden,
       );
+  const connectionLifecycle = runtime ? options.runtimeMcp?.connections : options.connections;
   const result = await launchSandbox(
     provider,
     {
       ...(options.skillDefaults ? { skillDefaults: options.skillDefaults } : {}),
       goldens: data.goldens,
       sandboxes: data.sandboxes,
-      ...(options.connections ? { connections: options.connections } : {}),
+      ...(connectionLifecycle ? { connections: connectionLifecycle } : {}),
       credentials: launchCredentials(
         options.store,
         options.encryptionKey,

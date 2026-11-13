@@ -33,7 +33,6 @@ import type { ProviderMetadataFor } from "./provider-metadata.ts";
 import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
-import type { RuntimeMcp } from "./runtime-mcp.ts";
 import type { RuntimeResume } from "./runtime-resume.ts";
 import { createArmadaServer } from "./tools.ts";
 
@@ -47,7 +46,6 @@ import type { OrchestratorPair } from "./orchestrator-activation.ts";
 import type { OrchestratorRuntime } from "./orchestrator-runtime.ts";
 
 export interface HandlerOptions {
-  runtimeMcp?: RuntimeMcp;
   runtimeGitHub?: RuntimeGitHub;
   runtimeResume?: RuntimeResume;
   runtimeCheckpoint?: RuntimeCheckpoint;
@@ -178,7 +176,6 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
         ...(options.runtimeCheckpoint ? { runtimeCheckpoint: options.runtimeCheckpoint } : {}),
         ...(options.runtimeResume ? { runtimeResume: options.runtimeResume } : {}),
         ...(options.runtimeGitHub ? { runtimeGitHub: options.runtimeGitHub } : {}),
-        ...(options.runtimeMcp ? { runtimeMcp: options.runtimeMcp } : {}),
         ...(options.skillDefaults ? { skillDefaults: options.skillDefaults } : {}),
         ...(options.templates ? { templates: options.templates } : {}),
         ...(options.applicationVault ? { applicationVault: options.applicationVault } : {}),
