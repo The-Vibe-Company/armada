@@ -1,11 +1,15 @@
 # Deployed checks
 
-**Owner decision 2026-11-13: no Boat staging smoke.** Post-deploy, pinned and
+**Owner decision 2026-11-13: Boat is not part of the release gate.**
+Boat remains a first-class provider, not disabled or retired. Post-deploy, pinned and
 release-gate entry points ignore Boat cases before validating their unused
 credentials/model/golden fields. They print exactly once per invocation:
-`boat: not run on staging (owner decision 2026-11-13)`. This supersedes Boat
+`boat: not part of the release gate`. This supersedes Boat
 acceptance procedures below for automated staging/release use, not Boat product
 support. Modal full smoke and existing owner Docker-host parity probes remain.
+Boat verification belongs to the coordinator on demand against production,
+with an explicit production-only parity opt-in delivered separately. Workers
+and CI must never perform production verification.
 Boat omission is explicit not-run evidence, never a claimed pass or quota guess.
 
 > **Mandatory deployment gate:** Main staging deployments and exact-SHA publishing
@@ -463,7 +467,7 @@ repair, so a later repair cannot mask broken launch access.
 
 The Boat-only successful refresh/idempotency phase is deleted. Modal retains
 its existing unsupported-refusal check; its positive legacy-refresh proof is
-explicitly skipped with owner_decision_2026_11_13. Do not add a Boat worker to
+explicitly skipped with not_part_of_release_gate. Do not add a Boat worker to
 satisfy this phase. A new positive Modal refresh capability would require its
 own implementation/proof, not renaming the old Boat probe.
 

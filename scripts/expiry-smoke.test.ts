@@ -32,7 +32,7 @@ function fixture(provider: "modal", fault: Fault = "none") {
       clock += ms;
     },
     out: (line: string) => {
-      if (line !== "boat: not run on staging (owner decision 2026-11-13)") reports.push(JSON.parse(line));
+      if (line !== "boat: not part of the release gate") reports.push(JSON.parse(line));
     },
     fetch: async (url: string, init: RequestInit) => {
       expect(new URL(url).origin).toBe(origin);

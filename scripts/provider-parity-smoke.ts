@@ -141,7 +141,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         version: 2,
         starts: 0,
         features: Object.fromEntries(
-          features.map((name) => [name, { boat: { status: "not-run", reason: "owner_decision_2026_11_13" } }]),
+          features.map((name) => [name, { boat: { status: "not-run", reason: "not_part_of_release_gate" } }]),
         ),
       }),
     );
@@ -229,7 +229,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     reason: string | null = null,
     detail?: Diagnostic,
   ) => {
-    report[step] ??= { boat: { status: "not-run", reason: "owner_decision_2026_11_13" } };
+    report[step] ??= { boat: { status: "not-run", reason: "not_part_of_release_gate" } };
     report[step][provider] = { status, reason, ...(detail ? { diagnostic: detail } : {}) };
   };
   for (const name of features)
@@ -239,7 +239,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         provider,
         "not-run",
         provider === "boat"
-          ? "owner_decision_2026_11_13"
+          ? "not_part_of_release_gate"
           : only && provider !== only
             ? "provider_filtered"
             : feature && name !== feature

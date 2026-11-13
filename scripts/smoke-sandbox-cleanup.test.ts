@@ -298,7 +298,7 @@ test("excluded and unclassified historical receipts are preserved without Boat c
     ).toBe(false);
     expect(calls).toBe(0);
     expect(await readSmokeJournal(path)).toEqual(receipts);
-    expect(lines.filter((line) => line === "boat: not run on staging (owner decision 2026-11-13)")).toHaveLength(1);
+    expect(lines.filter((line) => line === "boat: not part of the release gate")).toHaveLength(1);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

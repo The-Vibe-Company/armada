@@ -2,8 +2,8 @@ import { expect, test } from "bun:test";
 import { postDeploySmoke } from "./post-deploy-smoke.ts";
 import { smokeReceipts } from "./smoke-sandbox-cleanup.ts";
 
-const boatNotice = "boat: not run on staging (owner decision 2026-11-13)";
-const boatNotRun = { status: "not-run", reason: "owner_decision_2026_11_13" };
+const boatNotice = "boat: not part of the release gate";
+const boatNotRun = { status: "not-run", reason: "not_part_of_release_gate" };
 
 // The CLI boundary owns parity reporting: independent fake HTTP receipts catch
 // route/receipt regressions without provider compute, credentials, or sleeps.
