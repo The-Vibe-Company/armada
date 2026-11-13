@@ -425,8 +425,20 @@ test.each([
   if (mode === "missing-approval") delete labels[DOCKER_LOCAL_IMAGE_LABELS.scope];
   if (mode !== "missing-image")
     f.images.set(image, { Id: mode === "wrong-id" ? `sha256:${"c".repeat(64)}` : image, Config: { Labels: labels } });
-  const local = { ...request, image };
-  if (mode !== "approved") {
+  const local = {
+    ...request,
+    image,
+    ...(mode.startsWith("private-")
+      ? {
+          snapshot: {
+            id: request.sandboxId,
+            ownerId: mode === "private-wrong-owner" ? "55555555-5555-5555-5555-555555555555" : request.sandboxId,
+            visibility: "private" as const,
+          },
+        }
+      : {}),
+  };
+  if (mode !== "approved" && mode !== "private-authorized") {
     await expect(f.executor.create(local)).rejects.toMatchObject({
       code: mode === "missing-image" ? "docker_failed" : "ownership_mismatch",
     });

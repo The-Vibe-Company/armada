@@ -1298,6 +1298,13 @@ test.each(["private", "org"] as const)(
     await expect(
       f.snapshots.command(f.caller, "create", { ...input, requestId: randomUUID(), visibility: "org" }),
     ).rejects.toMatchObject({ code: "forbidden" });
+    const beforeReplay = f.native.length;
+    await db.query("update public.docker_hosts set last_seen_at=now()-interval '5 minutes' where id=$1", [f.hostId]);
+    expect((await f.service().launch(f.caller, { ...body, snapshotId: id })).sandbox.id).toBe(launched.sandbox.id);
+    expect(f.native).toHaveLength(beforeReplay);
+    await hosts.revoke(f.admin, f.hostId);
+    expect((await f.service().launch(f.caller, { ...body, snapshotId: id })).sandbox.id).toBe(launched.sandbox.id);
+    expect(f.native).toHaveLength(beforeReplay);
     await db.transaction(async (tx) => {
       await tx.query("select set_config('request.jwt.claim.sub',$1,true)", [
         visibility === "private" ? f.admin.userId : f.otherId,

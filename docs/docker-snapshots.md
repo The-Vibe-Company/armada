@@ -37,7 +37,9 @@ frame and the shared fail-closed filesystem/Git-object scanner. The GitHub token
 is available only to trusted root checkout. Each project init step runs separately
 as UID1000 with no-new-privileges; it cannot read the root-only mount, replace the
 root-owned controller/scanner, skip later steps with `exit 0`, or suppress the
-independent final root scan. No model/application credentials enter a build.
+independent final root scan. Trusted root supervision subreaps and kills all init
+process descendants (including new sessions), using process birth and pidfds,
+before the next step or scan can start. No model/application credentials enter a build.
 Build context and durable host receipts contain no token. Publication occurs only
 after successful build/scan and exact immutable provenance verification. Known
 pattern scanning is not a proof against arbitrary encoded/user-supplied secrets:

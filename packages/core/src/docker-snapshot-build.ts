@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { type DockerHostJob, parseDockerHostJob } from "./docker-host-job.ts";
 import { DOCKER_LOCAL_IMAGE_LABELS } from "./docker-image.ts";
 import type { DockerMachineCli } from "./docker-machine.ts";
+import { SNAPSHOT_INIT_SUPERVISOR } from "./docker-snapshot-init.ts";
 import { normalizeGitHubGoldenConfig } from "./golden-config.ts";
 import { goldenCheckoutScript } from "./golden-create-service.ts";
 import { goldenScanScript } from "./golden-scan.ts";
@@ -90,11 +91,9 @@ export async function buildDockerSnapshot(
       }),
       { mode: 0o600, flag: "wx" },
     );
+    await writeFile(join(directory, "public", "supervise.py"), SNAPSHOT_INIT_SUPERVISOR, { mode: 0o600, flag: "wx" });
     const initCommands = config.init
-      .map(
-        (_, index) =>
-          `setpriv --reuid=1000 --regid=1000 --init-groups --no-new-privs bash /opt/armada-build/init-${index}.sh`,
-      )
+      .map((_, index) => `python3 /opt/armada-build/supervise.py /opt/armada-build/init-${index}.sh`)
       .join(" && ");
     const directories = config.repos.map((repo) => `'/home/user/${repo.dir}'`).join(" ");
     const dockerfile = `# syntax=docker/dockerfile:1

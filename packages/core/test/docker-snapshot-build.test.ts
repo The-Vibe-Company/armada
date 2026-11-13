@@ -66,7 +66,7 @@ test("snapshot builds mount credentials privately, publish automatic ownership l
           }
           const dockerfile = await readFile(join(directory, "Dockerfile"), "utf8");
           expect(dockerfile).toContain("uid=0,gid=0,mode=0400");
-          expect(dockerfile).toContain("setpriv --reuid=1000 --regid=1000 --init-groups --no-new-privs");
+          expect(dockerfile).toContain("python3 /opt/armada-build/supervise.py /opt/armada-build/init-0.sh");
           expect(dockerfile).not.toContain("exit 0");
           expect(dockerfile.indexOf("/opt/armada-build/init-0.sh")).toBeLessThan(
             dockerfile.indexOf("/opt/armada-build/init-1.sh"),

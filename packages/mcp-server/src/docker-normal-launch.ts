@@ -391,16 +391,31 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       try {
         const snapshotId = body.snapshotId === undefined ? undefined : identifier(body.snapshotId);
         if (snapshotId && (body.image !== undefined || body.repos !== undefined)) throw failure("invalid_request");
-        const source = snapshotId
-          ? await resolveDockerSnapshot(sql, { userId: caller.userId, orgId: identifier(body.org) }, snapshotId)
+        const org = identifier(body.org);
+        if (!caller.orgs.some((member) => member.orgId === org)) throw failure("not_found");
+        const retained = snapshotId
+          ? (
+              await sql.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
+                `select d.request_enc from public.docker_launch_requests d join public.sandboxes s on s.id=d.sandbox_id
+           join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
+           join public.mcp_actor_epochs e on e.org_id=s.org_id and e.user_id=s.owner_id and e.epoch=d.actor_epoch
+           where s.id=$1 and s.owner_id=$2 and s.org_id=$3 and s.provider='docker' and s.docker_snapshot_id=$4`,
+                [identifier(body.requestId), caller.userId, org, snapshotId],
+              )
+            ).rows[0]
           : undefined;
-        if (
-          source &&
-          (!caller.orgs.some((m) => m.orgId === source.org_id) ||
-            (body.hostId !== undefined && identifier(body.hostId) !== source.host_id))
-        )
+        const frozen = retained
+          ? (JSON.parse(await decryptSecret(retained.request_enc, key)) as Manifest).request
+          : undefined;
+        const source =
+          snapshotId && !frozen
+            ? await resolveDockerSnapshot(sql, { userId: caller.userId, orgId: org }, snapshotId)
+            : undefined;
+        const sourceHost = frozen?.hostId ?? source?.host_id,
+          sourceImage = frozen?.image ?? source?.image_id;
+        if (sourceHost && body.hostId !== undefined && identifier(body.hostId) !== sourceHost)
           throw failure("not_found");
-        const request = normalize(source ? { ...body, hostId: source.host_id, image: source.image_id } : body);
+        const request = normalize(sourceHost ? { ...body, hostId: sourceHost, image: sourceImage } : body);
         const actor = { userId: identifier(caller.userId), orgId: request.org };
         if (!caller.orgs.some((org) => org.orgId.toLowerCase() === request.org)) throw failure("not_found");
         const hash = createHash("sha256").update(JSON.stringify(request)).digest("hex");
