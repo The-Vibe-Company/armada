@@ -48,7 +48,7 @@ force these cases. No migration, transport change, provider API call or transcri
 copy. Source contract: pinned native types and the
 [official app-server protocol](https://developers.openai.com/codex/app-server/).
 
-## Resume smoke contract (#1246)
+## Historical resume smoke contract (#1246, superseded below by #1329)
 
 The [coordinator capture on #1246](https://github.com/The-Vibe-Company/armada/issues/1246)
 records a real Modal Codex stop/resume/send at 18:41 UTC on 2026-11-12, using
@@ -91,3 +91,30 @@ tolerance for this step can be removed once the updated smoke runs. The supplied
 Modal observation establishes the contract; running the changed smoke against
 a deployed server remains a coordinator rollout check, not a deployment by this
 worker. No runtime inference, pricing, provider transport or migration changes.
+
+## Native rollout recovery (#1329)
+
+The runtime now reads the verified resumed thread's native `thread.path`
+before dispatching the prompt. It checks the rollout's `session_meta.payload.id`
+and recovers only the last `event_msg/token_count.info.total_token_usage`
+accounting fields. This is a pre-dispatch cumulative baseline, not a sum of
+`last` notifications and not the ambiguous historical notification delivered
+after dispatch. Transcript text is neither retained nor emitted. Unreadable,
+malformed, mismatched or missing accounting remains unknown.
+
+The recorded notification replay now also has a driver-boundary regression with
+persisted native accounting fields. It expects exactly 13163 input, 5 output,
+13140 cached, 20 cache-write and 0 reasoning tokens, excluding the old prompt.
+
+Coordinator check: run staging smoke `resume_usage` on Modal with Codex/API-key,
+then check the exact resumed prompt's tokens, complete totals and computed cost.
+This check has not been run by the worker; no deployment or production access
+is authorized. Claude still uses its independent conservative
+`resumed_baseline_unverified` path; this Codex rollout recovery does not change
+Claude SDK accounting.
+
+The notification recording is pinned 0.167.0 evidence. The persisted snake_case
+shape is independently documented in `docs/design/boat-native-usage.md`
+(0.167.1) and observed locally in 0.167.2 accounting records; the regression
+constructs a rollout in that shape from the recorded counters. It is not a new
+authenticated 0.167.0 or Modal capture.
