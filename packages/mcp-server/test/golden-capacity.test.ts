@@ -1,18 +1,15 @@
 import { expect, test } from "bun:test";
 import type { Sql } from "@armada/core/server";
 import { createSqlVaultStore } from "@armada/core/server";
-import { sqlGoldenBackendSlots } from "../../core/src/golden-create.ts";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { call, ENCRYPTION_KEY, harness, PUBLIC_URL } from "./support.ts";
 
-test("HTTP and MCP report real capacity, pending, busy and binding conflicts without allocating or leaking", async () => {
-  let sql: Sql;
+test("HTTP and MCP report real capacity, busy and binding conflicts without allocating or leaking", async () => {
   let allocations = 0;
   const account = "backend-hidden-account";
 
   const server = await harness();
-  sql = server.db;
   try {
     const { db, people, boat } = server;
     boat.provider.backendIdentity = async () => ({ id: account });
@@ -92,18 +89,7 @@ test("HTTP and MCP report real capacity, pending, busy and binding conflicts wit
     expect((await db.query("select * from golden_backend_slots")).rows).toEqual(ready);
     Object.defineProperty(boat.provider, "maxGoldens", { value: 1, configurable: true });
     await db.query("delete from golden_backend_slots");
-    const pending = await sqlGoldenBackendSlots(sql).reserve({
-      provider: "boat",
-      backendId: account,
-      capacity: 1,
-      orgId: people.org,
-      ownerId: people.admin,
-    });
-    await request(people.admin, people.org, false);
-    expect((await db.query<{ build_id: string }>("select build_id from golden_backend_slots")).rows).toEqual([
-      { build_id: pending },
-    ]);
-    await sqlGoldenBackendSlots(sql).release(pending);
+    // Pending slots count toward capacity in core/test/golden-backend-slots-reserve.test.ts.
     // Exercise a reservation race after a caller's binding precheck: busy existing binding.
     await db.query(
       `insert into golden_backend_slots(provider,backend_id,max_goldens,org_id,owner_id,golden_id,build_id)

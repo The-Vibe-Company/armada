@@ -798,6 +798,7 @@ async function dispatch(
         githubVersion: options.runtimeGitHub ? 1 : 0,
         mcpVersion: options.runtimeMcp ? 2 : 0,
         skillsVersion: options.boatRuntimeLaunch ? 1 : 0,
+        workspaceVersion: options.boatRuntimeLaunch ? 1 : 0,
         controlsVersion: options.runtimeHostFor ? 1 : 0,
         enabled: Boolean(options.boatRuntimeLaunch && options.runtimeHostFor),
       },

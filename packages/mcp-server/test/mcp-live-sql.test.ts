@@ -1,7 +1,4 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { createServiceToken, createSqlAuthStore, sha256Hex } from "@armada/auth";
 import type { Provider } from "@armada/core/server";
 import {
@@ -20,14 +17,13 @@ import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { createMcpHttpIntegration } from "../src/mcp-http-integration.ts";
 import { createMcpLifecycle } from "../src/mcp-lifecycle.ts";
-import { nativeMcpInstallScript } from "../src/mcp-native.ts";
+import type { McpBootstrap } from "../src/mcp-native.ts";
 import { migratedDatabase } from "./migrated-database.ts";
 
 // Distinct integration risk: real SQL grants/leases, real control discovery/capability counts,
 // and SDK protocol delivery must agree, including generation rotation and registry disable.
-test("SQL gateway delivers MCP objects and native configuration survives concurrent starts/restart, rotating only on physical restore", async () => {
+test("SQL gateway delivers MCP objects and provider configuration is reused across concurrent starts/restart, rotating only on physical restore", async () => {
   const db = await migratedDatabase();
-  const home = await mkdtemp(join(tmpdir(), "armada-native-lifecycle-"));
   const encryptionKey = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64");
   const servers: McpServer[] = [],
     clients: Client[] = [];
@@ -255,6 +251,8 @@ test("SQL gateway delivers MCP objects and native configuration survives concurr
     let boot = "11111111-1111-4111-8111-111111111111",
       writes = 0,
       failInstall = false;
+    // Native file formats/rotation/scrub belong to mcp-native.test.ts; capture real provider delivery here.
+    const nativeConfigurations: McpBootstrap[] = [];
     let physicalState: "ready" | "stopped" = "ready";
     let nativeTurns = 0;
     const physicalExpiry = new Date(Date.now() + 6 * 3600000);
@@ -284,15 +282,9 @@ test("SQL gateway delivers MCP objects and native configuration survives concurr
         nativeTurns++;
         return { conversationId: "resume-conversation", promptId: "resume-prompt", status: "queued" };
       },
-      configureMcp: async ({ configuration }: { configuration: unknown }) => {
+      configureMcp: async ({ configuration }: { configuration: McpBootstrap }) => {
         if (failInstall) throw Error("Native configuration I/O failed");
-        const child = Bun.spawn(["bash"], {
-          stdin: new Blob([nativeMcpInstallScript]),
-          stdout: "pipe",
-          stderr: "pipe",
-          env: { ...process.env, HOME: home, ARMADA_GIT_TOKEN: JSON.stringify(configuration) },
-        });
-        expect(await child.exited).toBe(0);
+        nativeConfigurations.push(structuredClone(configuration));
         writes++;
       },
     } as unknown as Provider;
@@ -304,11 +296,11 @@ test("SQL gateway delivers MCP objects and native configuration survives concurr
       lifecycle.connections.prepare?.(provider, record, { userId: user, orgId: org, role: "admin" }),
       lifecycle.connections.prepare?.(provider, record, { userId: user, orgId: org, role: "admin" }),
     ]);
-    const config = JSON.parse(await readFile(join(home, ".claude.json"), "utf8")) as {
-      mcpServers: Record<string, { headers: { Authorization: string } }>;
-    };
-    const installed = Object.values(config.mcpServers)[0];
-    if (!installed) throw Error("Native config not installed");
+    const config = nativeConfigurations.at(-1);
+    if (!config) throw Error("Native config not delivered");
+    const installed = Object.values(config.servers)[0];
+    if (!installed || installed.type !== "http" || !installed.headers?.Authorization)
+      throw Error("Native gateway credential not delivered");
     const firstHash = await sha256Hex(installed.headers.Authorization.slice(7));
     expect(await leases.validate(firstHash, "tools")).not.toBeNull();
     expect(writes).toBe(1);
@@ -335,9 +327,11 @@ test("SQL gateway delivers MCP objects and native configuration survives concurr
     expect(await leases.validate(firstHash, "tools")).toBeNull(); // Failure cannot roll back the physical-generation fence.
     failInstall = false;
     await lifecycle.beforePrompt(provider, record.providerSandboxId, { userId: user, orgId: org });
-    const restored = JSON.parse(await readFile(join(home, ".claude.json"), "utf8")) as typeof config;
-    const restoredServer = Object.values(restored.mcpServers)[0];
-    if (!restoredServer) throw Error("Restore config missing");
+    const restored = nativeConfigurations.at(-1);
+    if (!restored) throw Error("Restore config missing");
+    const restoredServer = Object.values(restored.servers)[0];
+    if (!restoredServer || restoredServer.type !== "http" || !restoredServer.headers?.Authorization)
+      throw Error("Restore gateway credential missing");
     expect(
       await leases.validate(await sha256Hex(restoredServer.headers.Authorization.slice(7)), "tools"),
     ).not.toBeNull();
@@ -348,8 +342,7 @@ test("SQL gateway delivers MCP objects and native configuration survives concurr
     expect(await leases.validate(restoredHash, "tools")).toBeNull();
     failInstall = false;
     await lifecycle.beforeSnapshot(provider, record.providerSandboxId);
-    expect((await readFile(join(home, ".claude.json"), "utf8")).includes("armada_gw_")).toBe(false);
-    expect((await readFile(join(home, ".codex/config.toml"), "utf8")).includes("armada_gw_")).toBe(false);
+    expect(nativeConfigurations.at(-1)).toEqual({ revision: "snapshot_scrub", servers: {} });
     // An advanced credential is verified upstream, but only a newly scoped lease reaches native config.
     upstreamCredential = crypto.randomUUID();
     await post("update", {
@@ -365,8 +358,7 @@ test("SQL gateway delivers MCP objects and native configuration survives concurr
     expect(connected.connection.status).toBe("connected");
     expect(JSON.stringify(connected).includes(upstreamCredential)).toBe(false);
     await lifecycle.beforePrompt(provider, record.providerSandboxId, { userId: user, orgId: org });
-    for (const file of [".claude.json", ".codex/config.toml", ".armada/mcp-owned.json"])
-      expect((await readFile(join(home, file), "utf8")).includes(upstreamCredential)).toBe(false);
+    expect(JSON.stringify(nativeConfigurations)).not.toContain(upstreamCredential);
     const advancedToken = await issue();
     const advanced = await connect(advancedToken);
     expect((await advanced.callTool({ name: "counter" })).content).toEqual([{ type: "text", text: "3" }]);
@@ -438,6 +430,5 @@ test("SQL gateway delivers MCP objects and native configuration survives concurr
     await Promise.all([...readers.values()].map((reader) => reader.cancel().catch(() => {})));
     await Promise.all(servers.map((s) => s.close()));
     await db.close();
-    await rm(home, { recursive: true, force: true });
   }
 });

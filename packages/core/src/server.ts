@@ -44,6 +44,7 @@ export { GITHUB_TOKEN_PATTERN, scanGoldenSandbox } from "./golden-scan.ts";
 export * from "./golden-snapshot-retirement.ts";
 export { assertSqlGoldenMutation } from "./golden-store.ts";
 export * from "./index.ts";
+export { prepareLaunchWorkspace } from "./launch.ts";
 export {
   installPrivateSkill,
   PRIVATE_SKILL_FAILURES,

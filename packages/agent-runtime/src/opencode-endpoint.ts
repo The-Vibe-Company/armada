@@ -1,4 +1,4 @@
-import { OPENCODE_ENDPOINT_ENV, parseOpenCodeEndpoint } from "@armada/core";
+import { OPENCODE_CONNECTION_PROVIDER, OPENCODE_ENDPOINT_ENV, parseOpenCodeEndpoint } from "@armada/core";
 
 /** Memory-only private configuration. Never write API keys or provider options into project/golden files. */
 export function configureOpenCodeEndpoint(env: Record<string, string>): void {
@@ -22,9 +22,9 @@ export function configureOpenCodeEndpoint(env: Record<string, string>): void {
     $schema: "https://opencode.ai/config.json",
     // Armada owns names; avoid unreported title traffic and uncheckpointed native child sessions.
     ...execution,
-    enabled_providers: ["armada"],
+    enabled_providers: [OPENCODE_CONNECTION_PROVIDER],
     provider: {
-      armada: {
+      [OPENCODE_CONNECTION_PROVIDER]: {
         npm: "@ai-sdk/openai-compatible",
         name: "Armada model connection",
         options: { baseURL: endpoint.baseUrl, apiKey },

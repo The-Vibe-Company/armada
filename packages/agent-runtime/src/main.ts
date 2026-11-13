@@ -447,6 +447,9 @@ async function main(dialout = false) {
     },
     {
       configureGitHub,
+      prepareWorkspace: async () => {
+        if (!githubSocket) await ensureGitHubTools();
+      },
       ...(restore
         ? {
             restoredFrom: {
