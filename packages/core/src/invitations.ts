@@ -1,5 +1,4 @@
 /** Organization invitations control API, version 1. All operations use POST and bearer auth. */
-export const INVITATIONS_CONTRACT_VERSION = 1 as const;
 export type InvitationRole = "member" | "admin";
 export interface OrganizationInvitation {
   id: string;
