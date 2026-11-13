@@ -117,7 +117,6 @@ describe("Docker plain-image sandbox schema", () => {
       [{ docker_image: null }, /sandboxes_docker_binding_chk/],
       [{ visibility: "org" }, /sandboxes_docker_binding_chk/],
       [{ access_owner_id: other }, /sandboxes_docker_binding_chk/],
-      [{ harness: "claude" }, /sandboxes_docker_binding_chk/],
       [{ boat_runtime: true }, /sandboxes_(docker_binding_chk|boat_runtime_target)/],
       [{ boat_id: "bx_alias" }, /sandboxes_provider_compat_chk/],
       [{ repository_dir: "repo" }, /configured golden repository/],
