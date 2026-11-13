@@ -59,11 +59,15 @@ async function fixture() {
   const starts: (string | undefined)[] = [];
   let lost = false,
     now = 0;
+  let nextDone: Promise<"finished"> | undefined;
+  let afterProbe: (() => Promise<void>) | undefined;
   const driver: Driver = {
     start(context) {
       starts.push(context.sessionId);
       context.session("native-thread");
-      return { done: Promise.resolve("finished"), async steer() {}, async interrupt() {} };
+      const done = nextDone ?? Promise.resolve("finished" as const);
+      nextDone = undefined;
+      return { done, async steer() {}, async interrupt() {} };
     },
     async close() {},
   };
@@ -106,6 +110,11 @@ async function fixture() {
         status: reply.status,
         body: await reply.json(),
       });
+      if (afterProbe && command.op === "getPrompt") {
+        const competing = afterProbe;
+        afterProbe = undefined;
+        await competing();
+      }
       if (lost && command.op === "prompt" && command.requestId.startsWith("follow_")) {
         lost = false;
         throw Error("lost_wait_after_commit");
@@ -170,6 +179,12 @@ async function fixture() {
     send,
     context,
     input,
+    hold(done: Promise<"finished">) {
+      nextDone = done;
+    },
+    race(work: () => Promise<void>) {
+      afterProbe = work;
+    },
     lose() {
       lost = true;
     },
@@ -247,6 +262,35 @@ test("stop committing after runtime acceptance fences late turn publication and 
     expect(f.starts).toHaveLength(2); // Accepted before stop, not replayed or resumed.
     await expect(f.authority.withSession(f.active.runtimeToken, f.active.epoch, async () => true)).rejects.toThrow();
   } finally {
+    await f.close();
+  }
+});
+
+test("a competing accepted turn invalidates an older finished probe before admission can clear its task", async () => {
+  const f = await fixture();
+  const done = Promise.withResolvers<"finished">();
+  try {
+    const generation = (await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))!.lifecycleGeneration!;
+    let competing: Awaited<ReturnType<typeof f.send>> | undefined;
+    f.race(async () => {
+      f.hold(done.promise);
+      competing = await f.send(f.caller, f.input("competing"));
+    });
+    await expect(f.send(f.caller, f.input("stale"))).rejects.toThrow();
+    if (!competing) throw Error("No competing turn was accepted");
+    const row = (await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))!;
+    expect(row.taskPromptId).toBe(competing.promptId);
+    expect(row.lifecycleGeneration).toBe(generation + 2);
+    expect(f.starts).toHaveLength(2);
+  } finally {
+    done.resolve("finished");
+    await f.runner.handle(
+      new Request("http://runtime/v1", {
+        method: "POST",
+        headers: { "x-armada-runner-grant": f.active.runtimeToken },
+        body: JSON.stringify({ version: 1, sandboxId: f.row.id, requestId: crypto.randomUUID(), op: "checkpoint" }),
+      }),
+    );
     await f.close();
   }
 });

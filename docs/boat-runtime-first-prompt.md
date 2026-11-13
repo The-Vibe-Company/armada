@@ -165,7 +165,8 @@ The API/MCP `send` path requires `request_id` for runtime work. Retain it and
 reuse **identical input** after an uncertain response: durable command replay
 never creates a second turn, and replay of an older completed request does not
 overwrite the latest task. An unresolved admission retains its lease, rather
-than guessing that no work ran. Other request IDs are refused until it settles
+than guessing that no work ran. A definitive post-admission refusal also keeps
+the workspace fenced for inspection/stop in this narrow slice. Other request IDs are refused until it settles
 or the owner stops/inspects it. Wait for the current prompt to finish before a
 new send. Only the sandbox owner can send; current membership and active pinned
 account/version are revalidated under membership→credential→sandbox→epoch locks.

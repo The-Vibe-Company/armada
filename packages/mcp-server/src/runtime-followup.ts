@@ -115,6 +115,11 @@ export function createRuntimeFollowup(sql: Sql, key: string, commands: ReturnTyp
             [found.id, commandId],
           )
         ).rows[0];
+        if (!saved && current.taskPromptId !== found.taskPromptId)
+          throw new VaultError(
+            "conflict",
+            "Another runtime turn was admitted; inspect status before sending new work.",
+          );
         if (saved && saved.epoch !== scope.epoch)
           throw new VaultError("conflict", "Runtime command belongs to an older epoch.");
         if (saved?.finished && lease.activity_lease_id !== requestId)
