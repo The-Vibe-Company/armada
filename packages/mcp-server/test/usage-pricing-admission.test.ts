@@ -8,12 +8,21 @@ import {
 } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
-import { database, ENCRYPTION_KEY, fakeBoat, SECRETS } from "./support.ts";
+import { migratedDatabase } from "./migrated-database.ts";
+import { ENCRYPTION_KEY, fakeBoat, SECRETS } from "./support.ts";
 
 // Real credential resolution -> launch -> authorized SQL admission; provider alone is a wire-free fake.
 test("Modal freezes a secret-free credential/catalog context before inference and cannot reprice it", async () => {
-  const { db, people: p } = await database();
+  const db = await migratedDatabase();
+  const p = { org: crypto.randomUUID(), owner: crypto.randomUUID() };
   try {
+    await db.query("insert into auth.users(id) values($1)", [p.owner]);
+    await db.query("insert into orgs(id,name) values($1,'Pricing admission')", [p.org]);
+    await db.query("insert into members(org_id,user_id,role) values($1,$2,'member')", [p.org, p.owner]);
+    await db.query("insert into credentials(scope,owner_id,kind,value_enc) values('user',$1,'claude_oauth',$2)", [
+      p.owner,
+      await encryptSecret(SECRETS.ownerClaude, ENCRYPTION_KEY),
+    ]);
     await db.query(
       `insert into goldens(org_id,owner_id,name,visibility,provider,provider_sandbox_id,provider_snapshot_id,
       modal_workspace,modal_environment,modal_app_id,config)

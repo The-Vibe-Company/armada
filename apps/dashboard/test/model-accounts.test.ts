@@ -1,15 +1,18 @@
 import { describe, expect, test } from "bun:test";
 import { createAccountControl } from "../src/lib/account-control.ts";
 import {
+  ACCOUNT_KINDS,
   type AccountUsage,
   accountState,
   accountsFromList,
   checkAccountChoice,
   checkDefaultChoice,
+  KIND_INFO,
   kindFor,
   launchDefault,
   type ModelAccount,
   orderAccounts,
+  PASTE_SIGN_IN,
   parseAuthCapabilities,
   parseUsage,
   terminalLogin,
@@ -442,4 +445,13 @@ describe("the Harness list (#805)", () => {
     ];
     expect(orderAccounts(list, NOW).map((item) => item.name)).toEqual(["Old", "Alpha", "Beta", "Aaron", "Zed"]);
   });
+});
+
+test("every subscription pasted by hand names the exact local command to run", () => {
+  const subscriptions = ACCOUNT_KINDS.filter((kind) => KIND_INFO[kind].billing === "subscription");
+  expect(subscriptions.map((kind) => PASTE_SIGN_IN[kind]?.command)).toEqual([
+    "claude setup-token",
+    "codex login && cat ~/.codex/auth.json",
+  ]);
+  expect(ACCOUNT_KINDS.filter((kind) => PASTE_SIGN_IN[kind] && !subscriptions.includes(kind))).toEqual([]);
 });

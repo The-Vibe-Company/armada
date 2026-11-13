@@ -34,6 +34,159 @@ def successful_mcp_tool(tools, matching_calls, harness, connection, name):
     return success
 
 
+def placement_smoke(api, args, host_id, harness):
+    """Real coordinator proof only: no synthetic prompt/receipt or manual routine dispatch."""
+    from datetime import datetime, timedelta, timezone
+    template_id, routine_id = None, None
+    unresolved_template_key = None
+    sandboxes = set()
+    name = "docker-placement-" + uuid.uuid4().hex
+    print("PLACEMENT_TEMPLATE_NAME=" + name, flush=True)
+
+    def native_answer(sandbox, expected, prompt_id=None):
+        cursor, answer, finished = None, False, False
+        deadline = time.monotonic() + args.timeout
+        while time.monotonic() < deadline:
+            summary = api("sandbox/detail", {"id": sandbox}, normal=True)
+            if summary.get("provider") != "docker" or summary.get("hostId") != host_id:
+                raise RuntimeError("Placement did not use the selected Docker host")
+            prompt_id = prompt_id or (summary.get("prompt") or {}).get("promptId")
+            page = api("logs/read", {"id": sandbox, **({"cursor": cursor} if cursor else {})}, normal=True)
+            cursor = page.get("cursor")
+            for event in page.get("events", []):
+                if not prompt_id or event.get("promptId") != prompt_id:
+                    continue
+                answer |= event.get("kind") == "message" and expected in event.get("text", "")
+                if event.get("kind") == "prompt":
+                    if event.get("status") in ("failed", "interrupted"):
+                        raise RuntimeError("Placement native prompt failed")
+                    finished |= event.get("status") == "finished"
+            usage = (summary.get("usage") or {}).get("turns", [])
+            tokens = any(t.get("promptId") == prompt_id and isinstance(t.get("inputTokens"), int)
+                         and isinstance(t.get("outputTokens"), int) for t in usage)
+            if answer and finished and tokens:
+                print("PLACEMENT_PROMPT_ID=" + prompt_id, flush=True)
+                return
+            if not page.get("hasMore"):
+                time.sleep(2)
+        raise RuntimeError("Placement native answer/finished/token proof incomplete; retain printed IDs")
+
+    try:
+        definition = {"provider": "docker", "hostId": host_id, "image": args.image, "harness": harness,
+                      "modelAccount": {"id": args.credential, "version": args.credential_version},
+                      "connections": [args.mcp] if args.mcp else [], "skills": args.skills}
+        if args.model:
+            definition["model"] = args.model
+        created = api("templates/create", {"name": name, "scope": "personal", "definition": definition}, normal=True)
+        template_id = created["item"]["id"]
+        revision = created["revision"]["revision"]
+        print("PLACEMENT_TEMPLATE_ID=" + template_id, flush=True)
+        key = "docker-smoke:" + uuid.uuid4().hex
+        print("PLACEMENT_TEMPLATE_REQUEST_KEY=" + key, flush=True)
+        unresolved_template_key = key
+        result = api("templates/launch", {"id": template_id, "revision": revision, "requestKey": key,
+                     "ttlSeconds": 600, "prompt": "Reply exactly DOCKER_TEMPLATE_OK. Do not run tools or modify files."}, normal=True)
+        if result.get("id"):
+            unresolved_template_key = None
+            sandboxes.add(result["id"])
+            print("PLACEMENT_TEMPLATE_SANDBOX_ID=" + result["id"], flush=True)
+        if result.get("state") != "succeeded" or not result.get("promptId"):
+            raise RuntimeError("Template launch not confirmed; reconcile its printed request key")
+        native_answer(result["id"], "DOCKER_TEMPLATE_OK", result["promptId"])
+        print("PASS: Docker template launched a native prompt on the selected host.", flush=True)
+        if args.routine:
+            # Hourly cadence satisfies the production minimum; first due is bounded to ~2 minutes.
+            minute = (datetime.now(timezone.utc) + timedelta(minutes=2)).minute
+            routine = api("routines/create", {"name": name, "scope": "personal", "templateId": template_id,
+                          "templateRevision": revision, "prompt": "Reply exactly DOCKER_ROUTINE_OK. Do not run tools or modify files.",
+                          "cron": str(minute) + " * * * *", "timezone": "UTC", "ttlSeconds": 600,
+                          "maxRunsPerDay": 1}, normal=True)["item"]
+            routine_id = routine["id"]
+            print("PLACEMENT_ROUTINE_ID=" + routine_id, flush=True)
+            api("routines/enable", {"id": routine_id, "expectedVersion": routine["version"]}, normal=True)
+            deadline = time.monotonic() + args.timeout
+            run = None
+            while time.monotonic() < deadline:
+                runs = api("routines/history", {"id": routine_id}, normal=True).get("items", [])
+                for candidate in runs:
+                    if candidate.get("sandboxId"):
+                        sandboxes.add(candidate["sandboxId"])
+                    if candidate.get("state") == "succeeded" and candidate.get("sandboxId"):
+                        run = candidate
+                        break
+                    if candidate.get("state") in ("failed", "skipped"):
+                        raise RuntimeError("Scheduled routine did not launch; inspect its retained history")
+                if run:
+                    break
+                time.sleep(2)
+            if not run:
+                raise RuntimeError("Scheduled routine launch unknown; retain routine ID and inspect history")
+            print("PLACEMENT_ROUTINE_RUN_ID=" + run["id"], flush=True)
+            print("PLACEMENT_ROUTINE_SANDBOX_ID=" + run["sandboxId"], flush=True)
+            native_answer(run["sandboxId"], "DOCKER_ROUTINE_OK")
+            while time.monotonic() < deadline:
+                history = api("routines/history", {"id": routine_id}, normal=True).get("items", [])
+                observed = next((r for r in history if r["id"] == run["id"]), {})
+                if observed.get("taskState") == "finished":
+                    print("PASS: owner-scoped scheduled Docker routine native prompt and retained finished observation confirmed.", flush=True)
+                    break
+                time.sleep(2)
+            else:
+                raise RuntimeError("Routine original-prompt observation not confirmed")
+    finally:
+        # Stop future occurrences first. Keep unresolved occurrences paused and identifiable;
+        # never mistake missing history for proof that no child can still be admitted.
+        cleanup_errors = []
+        can_delete_template = unresolved_template_key is None
+        if unresolved_template_key is not None:
+            # A lost response is not proof of no child. Preserve the revision and
+            # original replay identity instead of deleting unresolved launch context.
+            print("PLACEMENT_UNRESOLVED_TEMPLATE_ID=" + template_id, flush=True)
+            print("PLACEMENT_UNRESOLVED_TEMPLATE_REQUEST_KEY=" + unresolved_template_key, flush=True)
+        if routine_id:
+            try:
+                routine = api("routines/get", {"id": routine_id}, normal=True)["item"]
+                if routine["status"] == "enabled":
+                    routine = api("routines/pause", {"id": routine_id, "expectedVersion": routine["version"]}, normal=True)["item"]
+                cleanup_deadline = time.monotonic() + args.timeout
+                while True:
+                    history = api("routines/history", {"id": routine_id}, normal=True).get("items", [])
+                    pending = []
+                    for run in history:
+                        if run.get("sandboxId"):
+                            sandboxes.add(run["sandboxId"])
+                        elif run.get("state") in ("admitted", "reconciling"):
+                            pending.append(run)
+                    if not pending:
+                        break
+                    if time.monotonic() >= cleanup_deadline:
+                        for run in pending:
+                            print("PLACEMENT_UNRESOLVED_ROUTINE_RUN_ID=" + run["id"], flush=True)
+                        raise RuntimeError("Routine remains paused: reconcile unresolved runs before deleting its template")
+                    time.sleep(2)
+                api("routines/delete", {"id": routine_id, "expectedVersion": routine["version"]}, normal=True)
+            except RuntimeError as error:
+                can_delete_template = False
+                cleanup_errors.append(error)
+        for sandbox in sorted(sandboxes):
+            try:
+                for operation in ("stop", "delete"):
+                    request_id = str(uuid.uuid4())
+                    print("PLACEMENT_" + operation.upper() + "_REQUEST_ID=" + request_id, flush=True)
+                    receipt = api("sandbox/" + operation, {"id": sandbox, "request_id": request_id}, normal=True)
+                    if receipt.get("status") not in (("stopped", "failed", "deleted") if operation == "stop" else ("deleted",)):
+                        raise RuntimeError("Placement cleanup unconfirmed; reconcile printed sandbox IDs")
+            except RuntimeError as error:
+                cleanup_errors.append(error)
+        if template_id and can_delete_template:
+            try:
+                api("templates/delete", {"id": template_id, "expectedRevision": 1}, normal=True)
+            except RuntimeError as error:
+                cleanup_errors.append(error)
+        if cleanup_errors:
+            raise RuntimeError("Placement cleanup incomplete; retain printed template/routine/sandbox/request IDs") from None
+
+
 def main():
     getcontext().prec = 80  # Exact addition of fixed-scale server USD amounts.
     parser = argparse.ArgumentParser(description=__doc__)
@@ -42,7 +195,7 @@ def main():
     parser.add_argument("--credential", required=True)
     parser.add_argument("--credential-version", type=int)
     parser.add_argument("--ssh", required=True, help="Existing SSH config name or user@host")
-    parser.add_argument("--image", required=True, help="Pulled Linux x64 glibc image@sha256 digest")
+    parser.add_argument("--image", required=True, help="Linux x64 glibc registry digest or host-approved full local image ID")
     parser.add_argument("--mcp", help="MCP connection UUID to deliver through the scoped runtime gateway")
     parser.add_argument("--mcp-tool", help="Safe read-only tool name on --mcp; its successful native tool result is required")
     parser.add_argument("--skills", action="append", default=[], help="Exact Skillpack pin to install and verify (repeatable)")
@@ -54,6 +207,8 @@ def main():
     parser.add_argument("--normal-controls", action="store_true", help="Read status/logs and stop/delete through normal sandbox API")
     parser.add_argument("--normal-launch", action="store_true", help="Launch and run the first prompt through the normal API; implies --normal-controls")
     parser.add_argument("--normal-lifecycle", action="store_true", help="Prove normal follow-up and same-host stop/resume with retained history; implies --normal-launch")
+    parser.add_argument("--template", action="store_true", help="Create a temporary Docker template and prove its native first prompt")
+    parser.add_argument("--routine", action="store_true", help="Also prove a scheduled owner routine and original-prompt observation; implies --template")
     parser.add_argument("--service-install", action="store_true", help="Restart an installed user service, normal launch and uninstall after cleanup")
     parser.add_argument("--cost", action="store_true", help="Prove exact per-turn and total USD before/after resume; implies --normal-lifecycle")
     parser.add_argument("--exec", action="store_true", help="Prove normal runtime exec and stable request replay")
@@ -64,7 +219,11 @@ def main():
     harnesses.add_argument("--opencode", action="store_true", help="Prove OpenCode with the supplied custom OpenAI-compatible connection via normal routes")
     parser.add_argument("--timeout", type=int, default=600, help="Seconds per bounded stage")
     args = parser.parse_args()
-    if args.mcp or args.skills or args.skill_defaults:
+    if args.routine:
+        args.template = True
+    if args.template and args.credential_version is None:
+        parser.error("--template/--routine require --credential-version to pin their model account")
+    if args.template or args.mcp or args.skills or args.skill_defaults:
         args.normal_launch = True
     if bool(args.mcp) != bool(args.mcp_tool):
         parser.error("--mcp and --mcp-tool must be supplied together")
@@ -110,7 +269,7 @@ def main():
             data=json.dumps({"org": args.org, **body}).encode(), method="POST",
             headers={"authorization": "Bearer " + token, "content-type": "application/json"})
         try:
-            with opener.open(request, timeout=600 if normal and path == "sandbox/launch" else 120 if normal and path in ("sandbox/stop", "sandbox/delete", "sandbox/resume") else 30) as response:
+            with opener.open(request, timeout=600 if normal and path in ("sandbox/launch", "templates/launch") else 120 if normal and path in ("sandbox/stop", "sandbox/delete", "sandbox/resume") else 30) as response:
                 return json.load(response)
         except urllib.error.HTTPError as error:
             # Do not print response bodies, request headers or private capabilities.
@@ -186,6 +345,7 @@ def main():
             launched = api("sandbox/launch", launch, normal=True)
             if (launched.get("sandbox", {}).get("id") != sandbox_id
                     or launched.get("sandbox", {}).get("provider") != "docker"
+                    or launched.get("sandbox", {}).get("image") != args.image
                     or not launched.get("promptId") or not launched.get("conversationId")):
                 raise RuntimeError("Normal launch outcome unknown; retain sandbox/request ID")
             launch_receipt = {"promptId": launched["promptId"], "conversationId": launched["conversationId"]}
@@ -382,6 +542,8 @@ def main():
         print("PASS: exact per-turn/session USD and immutable prior quotes survived follow-up and resume.")
     if args.claude or args.opencode:
         print("PASS: " + harness + " normal launch/follow-up/stop/resume confirmed.")
+    if args.template:
+        placement_smoke(api, args, host_id, harness)
     if args.service_install:
         ssh('"$HOME/.local/bin/armada-docker-host" uninstall', timeout=660)
         print("PASS: managed service restarted, normal launch and cleanup confirmed, installation uninstalled; compare Docker inventory with baseline.")

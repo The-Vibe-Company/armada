@@ -120,3 +120,10 @@ export function modelForAccount(
   }
   return decodeModelValue(current).accountId ? defaultModel : current;
 }
+
+/** "Models: a, b and 3 more", the declared models an account row names. */
+export function connectionModelsNote(models: readonly string[], shown = 3): string {
+  const listed = models.slice(0, shown).join(", ");
+  const rest = models.length - shown;
+  return `Models: ${listed}${rest > 0 ? ` and ${rest} more` : ""}`;
+}

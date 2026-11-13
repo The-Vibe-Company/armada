@@ -13,6 +13,28 @@ armada template list
 armada template get my-preset
 ```
 
+Docker placement uses the same definition file and template/routine launch path:
+
+```json
+{
+  "provider": "docker",
+  "hostId": "HOST_UUID",
+  "image": "worker@sha256:REPLACE_WITH_64_LOWERCASE_HEX_DIGEST",
+  "harness": "codex",
+  "connections": [],
+  "skills": []
+}
+```
+
+Docker has no golden (`goldenId` and `goldenBinding` return null). The host must be
+registered, active and in the selected organization, with its issuer still a member.
+Admission freezes the host installation/issuer, model account, connection grants and
+resolved skills; access is checked again before reservation and start. Docker children
+are private to the launcher. This placement does not accept variable/secret bindings,
+repository or size overrides. The dashboard can display and launch Docker templates;
+create/publish/delete them with the CLI. Routines use their persisted owner's authority
+and the same template path, with original-prompt observation through Docker status.
+
 When supplying `--org UUID` on create, explicitly choose `--scope personal|org`.
 Organization templates require an administrator to create, publish or delete.
 

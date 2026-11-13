@@ -3,6 +3,7 @@ import { HARNESS_CATALOG } from "@armada/core";
 import { connectionModelsFrom } from "../src/lib/model-accounts";
 import { chosenConnection, launchArgs } from "../src/lib/model-choice";
 import {
+  connectionModelsNote,
   connectionValue,
   decodeModelValue,
   filterPicker,
@@ -113,4 +114,9 @@ test("changing the account never leaves another connection's model selected", ()
   expect(modelForAccount("gpt-6-luna", ACCOUNT, connections, "gpt-6-sol")).toBe(foundry);
   expect(modelForAccount(foundry, ACCOUNT, connections, "gpt-6-sol")).toBe(foundry);
   expect(modelForAccount("gpt-6-luna", other, connections, "gpt-6-sol")).toBe("gpt-6-luna");
+});
+
+test("an account row names its first declared models and counts the rest", () => {
+  expect(connectionModelsNote(["a"])).toBe("Models: a");
+  expect(connectionModelsNote(["a", "b", "c", "d", "e"])).toBe("Models: a, b, c and 2 more");
 });

@@ -86,11 +86,13 @@ import {
   type LaunchDefault,
   MAX_ACCOUNT_NAME,
   type ModelAccount,
+  PASTE_SIGN_IN,
   relativeTime,
   terminalLogin,
   type UsageView,
   usageView,
 } from "@/lib/model-accounts";
+import { connectionModelsNote } from "@/lib/model-picker";
 import { cn } from "@/lib/utils";
 
 type Action = (previous: ActionResult | null, data: FormData) => Promise<ActionResult>;
@@ -167,8 +169,18 @@ function ConnectionTestForm({ account, orgId }: { account: ModelAccount; orgId: 
           maxLength={200}
           autoComplete="off"
           spellCheck={false}
+          // The connection's declared models are offered; any other deployment can still be typed.
+          defaultValue={account.models?.[0]?.model ?? ""}
+          list={account.models?.length ? `${id}-models` : undefined}
           placeholder="Your endpoint's deployment/model"
         />
+        {account.models?.length ? (
+          <datalist id={`${id}-models`}>
+            {account.models.map((info) => (
+              <option key={info.model} value={info.model} />
+            ))}
+          </datalist>
+        ) : null}
       </div>
       <p className="text-xs text-muted-foreground">
         Only your sandbox in this organization, bound to this account and version. No keys or URLs are accepted. A
@@ -465,7 +477,13 @@ export function AccountRow({
               Updated <time dateTime={account.updatedAt}>{relativeTime(account.updatedAt, now)}</time>
             </span>
           </p>
-          {info.billing === "api" && account.status === "active" && (
+          {account.models?.length ? (
+            <p data-account-models className="text-xs text-muted-foreground">
+              {connectionModelsNote(account.models.map((declared) => declared.model))}
+            </p>
+          ) : null}
+          {/* The check runs Codex and Claude endpoints only; an OpenCode account would always be refused. */}
+          {info.billing === "api" && account.kind !== "opencode" && account.status === "active" && (
             <div className="pt-1.5">
               <ConnectionTestDialog account={account} orgId={orgId} />
             </div>
@@ -1168,6 +1186,7 @@ export function AddAccountDialog({
   const id = useId();
   const info = KIND_INFO[kind];
   const subscription = info.billing === "subscription";
+  const pasteSignIn = PASTE_SIGN_IN[kind];
   // Only a personal account signs in from the terminal; an org account is pasted by its admin.
   const terminal = scope === "user" ? terminalLogin(capabilities, kind, name) : null;
   const defaultBox = (
@@ -1295,7 +1314,11 @@ export function AddAccountDialog({
                 />
                 <Disclosure summary={`Paste ${info.valueLabel} instead`} defaultOpen={false}>
                   <div className="space-y-4">
-                    <p className="text-xs text-muted-foreground">{info.hint}</p>
+                    {pasteSignIn ? (
+                      <PasteSignIn key={kind} command={pasteSignIn.command} paste={pasteSignIn.paste} />
+                    ) : (
+                      <p className="text-xs text-muted-foreground">{info.hint}</p>
+                    )}
                     {kind === "openai" || kind === "anthropic" ? (
                       <CustomEndpointFields key={kind} idPrefix={id} kind={kind} />
                     ) : (
@@ -1313,15 +1336,18 @@ export function AddAccountDialog({
                   <p className="text-sm">
                     <span className="font-medium">{subscription ? "Sign in on your machine" : "Paste the key"}.</span>{" "}
                     <span className="text-muted-foreground">
-                      {preset?.models === "choose" || kind === "opencode"
-                        ? (preset?.keyHint ?? info.hint)
-                        : kind === "openai"
-                          ? "From OpenAI or your gateway. Billed per token."
-                          : kind === "anthropic"
-                            ? "From Anthropic or your gateway. Billed per token."
-                            : info.hint}
+                      {pasteSignIn
+                        ? "The vendor's own CLI signs you in; Armada stores the result encrypted."
+                        : preset?.models === "choose" || kind === "opencode"
+                          ? (preset?.keyHint ?? info.hint)
+                          : kind === "openai"
+                            ? "From OpenAI or your gateway. Billed per token."
+                            : kind === "anthropic"
+                              ? "From Anthropic or your gateway. Billed per token."
+                              : info.hint}
                     </span>
                   </p>
+                  {pasteSignIn && <PasteSignIn key={kind} command={pasteSignIn.command} paste={pasteSignIn.paste} />}
                   {preset?.models === "choose" ? (
                     <PresetConnectionFields
                       key={preset.id}
@@ -1363,25 +1389,7 @@ function TerminalSignIn({ command, onDone }: { command: string; onDone: () => vo
         <span className="font-medium">Sign in from your terminal.</span>{" "}
         <span className="text-muted-foreground">It opens the official sign-in, then saves the account here.</span>
       </p>
-      {/* The command wraps rather than scrolls: on a phone the quoted --name must stay on screen. */}
-      <div className="flex items-start gap-2 rounded-md bg-muted px-3 py-2">
-        <code className="min-w-0 flex-1 self-center font-mono text-xs break-words whitespace-pre-wrap">{command}</code>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          onClick={() => {
-            // No clipboard outside a secure context: say so rather than throw.
-            if (!navigator.clipboard) return setCopied("failed");
-            navigator.clipboard.writeText(command).then(
-              () => setCopied("copied"),
-              () => setCopied("failed"),
-            );
-          }}
-        >
-          <CopyIcon /> Copy
-        </Button>
-      </div>
+      <CommandLine command={command} onCopied={setCopied} />
       <div className="flex flex-wrap items-center gap-3">
         <Button type="button" variant="outline" size="sm" onClick={onDone}>
           I signed in
@@ -1390,6 +1398,48 @@ function TerminalSignIn({ command, onDone }: { command: string; onDone: () => vo
           {copied === "copied" ? "Copied." : copied === "failed" ? "Copy failed: select the command instead." : ""}
         </p>
       </div>
+    </div>
+  );
+}
+
+/** One step for a pasted subscription (#1483): the exact command to run locally, then what to paste. */
+function PasteSignIn({ command, paste }: { command: string; paste: string }) {
+  const [copied, setCopied] = useState<"idle" | "copied" | "failed">("idle");
+  return (
+    <div className="min-w-0 space-y-2" data-paste-sign-in>
+      <p className="text-sm text-muted-foreground">Run this on your computer:</p>
+      <CommandLine command={command} onCopied={setCopied} />
+      <p className="text-xs text-muted-foreground">
+        {paste}{" "}
+        <span role="status">
+          {copied === "copied" ? "Copied." : copied === "failed" ? "Copy failed: select the command instead." : ""}
+        </span>
+      </p>
+    </div>
+  );
+}
+
+/** A command shown whole, with a Copy button. */
+function CommandLine({ command, onCopied }: { command: string; onCopied: (state: "copied" | "failed") => void }) {
+  return (
+    /* The command wraps rather than scrolls: on a phone the quoted --name must stay on screen. */
+    <div className="flex items-start gap-2 rounded-md bg-muted px-3 py-2">
+      <code className="min-w-0 flex-1 self-center font-mono text-xs break-words whitespace-pre-wrap">{command}</code>
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        onClick={() => {
+          // No clipboard outside a secure context: say so rather than throw.
+          if (!navigator.clipboard) return onCopied("failed");
+          navigator.clipboard.writeText(command).then(
+            () => onCopied("copied"),
+            () => onCopied("failed"),
+          );
+        }}
+      >
+        <CopyIcon /> Copy
+      </Button>
     </div>
   );
 }
