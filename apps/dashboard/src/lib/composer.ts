@@ -48,9 +48,13 @@ export function dockerSend(
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /**
- * A Docker send failure as a person reads it: a server sentence that names an API field (`request_id`) becomes a plain
- * retry. The composer keeps the message's request key, so sending it again is the safe retry the server asks for.
+ * A Docker send failure as a person reads it: a server sentence that names an API field (`request_id`) becomes plain
+ * words. The composer keeps the message's request key until the text changes, so sending it again unchanged is the safe
+ * retry the server asks for; a pending admission may still run, so it is never called a failure.
  */
 export function plainSendFailure(message: string): string {
-  return /\b[a-z]+_[a-z_]+\b/.test(message) ? "The message could not be delivered. Send it again." : message;
+  if (!/\b[a-z]+_[a-z_]+\b/.test(message)) return message;
+  return /\bpending\b/.test(message)
+    ? "The host has not confirmed the message yet. Send it again unchanged to check, without editing it."
+    : "The message could not be delivered. Send it again.";
 }

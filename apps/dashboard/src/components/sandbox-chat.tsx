@@ -941,7 +941,10 @@ function Composer({
   const [, startTransition] = useTransition();
   const [showModel, setShowModel] = useState(false);
   const [override, setOverride] = useState(false);
-  /** The Docker request key of the message not yet accepted: kept across a retry of the same text. */
+  /**
+   * The Docker request key of the message not yet accepted: kept only while the same text is sent again unchanged, so
+   * an edited, retyped or later identical message is never mistaken for a retry of an old one.
+   */
   const sendKey = useRef<LaunchKey | null>(null);
   const fieldId = useId();
   const enabled = (CAN_SEND as readonly SandboxStatus[]).includes(status);
@@ -996,7 +999,7 @@ function Composer({
       setPending(null);
       setResult(outcome);
       if (!outcome.ok) return;
-      if (intent === "send") sendKey.current = null;
+      sendKey.current = null;
       if (intent !== "interrupt") {
         // An accepted action owns only the draft it submitted, not text typed during its round trip.
         const submitted = String(data.get("prompt") ?? "");
@@ -1047,7 +1050,10 @@ function Composer({
         name="prompt"
         rows={2}
         value={draft}
-        onChange={(event) => setDraft(event.target.value)}
+        onChange={(event) => {
+          sendKey.current = null;
+          setDraft(event.target.value);
+        }}
         onKeyDown={onKeyDown}
         placeholder={
           running
@@ -1077,7 +1083,8 @@ function Composer({
             // No model picker on Docker: the launch model serves every message, said plainly instead of refused.
             <p className="flex items-center gap-1.5 px-1 text-xs text-muted-foreground" title={PINNED_MODEL}>
               <SlidersHorizontalIcon className="size-3.5" aria-hidden />
-              <span className="max-sm:sr-only">Model as launched</span>
+              {/* Words at every width: a title never shows on a touch screen. */}
+              <span>Model as launched</span>
               <span className="sr-only">: {PINNED_MODEL}</span>
             </p>
           ) : (

@@ -27,6 +27,9 @@ describe("composer guards", () => {
     expect(plainSendFailure("Docker send requires request_id and prompt; model and effort remain pinned.")).toBe(
       "The message could not be delivered. Send it again.",
     );
+    expect(plainSendFailure("Docker prompt admission pending. Retry identical input with the same request_id.")).toBe(
+      "The host has not confirmed the message yet. Send it again unchanged to check, without editing it.",
+    );
     expect(plainSendFailure("Docker sandbox must be running before send.")).toBe(
       "Docker sandbox must be running before send.",
     );
