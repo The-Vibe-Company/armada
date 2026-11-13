@@ -579,50 +579,60 @@ nativeTest.each(["before", "after", "partial", "foreign", "invalid", "regressed"
   },
 );
 
-nativeTest("Codex process loss cannot publish partial resumed totals or seed the next prompt baseline", async () => {
-  const driver = new CodexDriver({
-    executable: `${import.meta.dir}/fixtures/app-server.ts`,
-    cwd: import.meta.dir,
-    env: { PATH: process.env.PATH ?? "/usr/bin:/bin", ARMADA_RESUME_USAGE_BASELINE: "before" },
-  });
-  const events: DriverEvent[] = [];
-  const start = (text: string) =>
-    driver.start({
-      request: { sandboxId: "s", harness: "codex", text },
-      sessionId: "persisted-thread",
-      signal: AbortSignal.timeout(3000),
-      session() {},
-      emit(event) {
-        events.push(event);
-      },
+nativeTest(
+  "Codex process loss cannot publish partial resumed totals or seed the next prompt baseline",
+  async () => {
+    const driver = new CodexDriver({
+      executable: `${import.meta.dir}/fixtures/app-server.ts`,
+      cwd: import.meta.dir,
+      env: { PATH: process.env.PATH ?? "/usr/bin:/bin", ARMADA_RESUME_USAGE_BASELINE: "before" },
     });
-  try {
-    await expect(start("usage-process-lost").done).rejects.toMatchObject({ code: "harness_process_lost" });
-    expect(events.filter((e) => e.kind === "other" && e.type === "armada/turnUsage")).toEqual([
-      {
-        kind: "other",
-        type: "armada/turnUsage",
-        data: {
-          model: "gpt-6.1-sol",
-          inputTokens: null,
-          outputTokens: null,
-          cachedTokens: null,
-          cacheWriteTokens: null,
-          reasoningTokens: null,
+    const events: DriverEvent[] = [];
+    const start = (text: string) =>
+      driver.start({
+        request: { sandboxId: "s", harness: "codex", text },
+        sessionId: "persisted-thread",
+        signal: AbortSignal.timeout(3000),
+        session() {},
+        emit(event) {
+          events.push(event);
         },
-      },
-    ]);
-    events.length = 0;
-    // The synthetic next peer supplies only a post-dispatch total; no new pre-turn baseline.
-    driver.configureReadableVariables({ ARMADA_RESUME_USAGE_BASELINE: "late" });
-    expect(await start("redirect").done).toBe("finished");
-    expect(events.find((e) => e.kind === "other" && e.type === "armada/turnUsage")).toMatchObject({
-      data: { inputTokens: null, outputTokens: null, cachedTokens: null },
-    });
-  } finally {
-    await driver.close();
-  }
-});
+      });
+    try {
+      // Await outside Bun's synchronous promise matcher: its nested event loop can
+      // strand child-exit/reaping callbacks and even prevent the test timeout firing.
+      const failure = await start("usage-process-lost").done.then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      expect(failure).toMatchObject({ code: "harness_process_lost" });
+      expect(events.filter((e) => e.kind === "other" && e.type === "armada/turnUsage")).toEqual([
+        {
+          kind: "other",
+          type: "armada/turnUsage",
+          data: {
+            model: "gpt-6.1-sol",
+            inputTokens: null,
+            outputTokens: null,
+            cachedTokens: null,
+            cacheWriteTokens: null,
+            reasoningTokens: null,
+          },
+        },
+      ]);
+      events.length = 0;
+      // The synthetic next peer supplies only a post-dispatch total; no new pre-turn baseline.
+      driver.configureReadableVariables({ ARMADA_RESUME_USAGE_BASELINE: "late" });
+      expect(await start("redirect").done).toBe("finished");
+      expect(events.find((e) => e.kind === "other" && e.type === "armada/turnUsage")).toMatchObject({
+        data: { inputTokens: null, outputTokens: null, cachedTokens: null },
+      });
+    } finally {
+      await driver.close();
+    }
+  },
+  5000,
+);
 
 // Captured native ordering, not an inferred pre-turn baseline: the old total
 // arrives only after dispatch, followed by the new cumulative total.
