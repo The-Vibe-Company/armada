@@ -15,7 +15,6 @@ export interface DockerHostListRequest {
   org: string;
 }
 export interface DockerHostSummary {
-  version?: string | null;
   id: string;
   /** No host naming write exists yet. */
   name: string | null;
@@ -24,6 +23,8 @@ export interface DockerHostSummary {
   createdAt: string;
   lastSeenAt: string | null;
   revokedAt: string | null;
+  /** The daemon version the host last reported (#1453); absent or null until a host has reported one. */
+  version?: string | null;
   /** Retained sandboxes, including stopped/failed, excluding deleted. */
   sandboxes: number;
 }
