@@ -11,12 +11,16 @@ and Modal launches remain unchanged.
 1. Apply merged schema including `20261112235447_boat_runtime_selection.sql`
    through normal staging migrations before deploying readers. Worker never
    applied a remote migration or deployed.
-2. Build matching Linux/glibc runtime/harness artifacts on the target architecture
-   using `bun packages/agent-runtime/build-compiled.ts`. Publish only the public
-   executable/archive bytes in `ARMADA_RUNTIME_ARTIFACT_DIR`, each named by SHA256.
-3. Set `ARMADA_BOAT_RUNTIME_MANIFEST` to that build's trusted manifest.json on the
-   server (not a client value). Its architecture selects the pinned host target.
-   No setting means runtime launches are unavailable, not a native fallback.
+2. A normal Docker/Railway build now publishes both matching Linux/glibc runtime
+   architectures and selected harness bytes in `ARMADA_RUNTIME_ARTIFACT_DIR`
+   (default `/opt/armada/runtime-artifacts`), with build manifests in
+   `/opt/armada/runtime-manifests/{x64,arm64}.json` (#1325). No separate publication
+   step is needed for that image. Non-Docker installs must build/publish matching
+   SHA-named public bytes via `bun scripts/publish-runtime-artifacts.ts`.
+3. Set `ARMADA_BOAT_RUNTIME_MANIFEST=/opt/armada/runtime-manifests/x64.json` for
+   the x64 Boat target (or the matching arm64 manifest for an arm64 host). This
+   is a trusted server setting, never a client value. No setting means runtime
+   launches are unavailable, not a native fallback.
 4. Deploy this server and dependencies. `POST /api/v1/launch/options` advertises
    `boatRuntime.enabled:true` only with configured experimental launch policy.
    Existing runtime records retain read/cleanup routing even if new opt-in is
