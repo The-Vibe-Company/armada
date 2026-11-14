@@ -1,6 +1,6 @@
-# Durable golden build jobs
+# Durable snapshot build jobs
 
-Golden create/update return HTTP **202** and a durable job receipt, not an inline
+Snapshot create/update return HTTP **202** and a durable job receipt, not an inline
 snapshot. Admission checks current membership/mutation rights, locks the expected
 rebuild revision, reserves verified Boat capacity/binding and inserts an encrypted
 job in one transaction. HTTP handlers do not start builders.
@@ -15,7 +15,7 @@ with that key is a 409. A different key cannot bypass pending capacity.
 POST /api/v1/golden/build/status with {jobId}, or recover a lost admission receipt
 using {org, idempotencyKey}. Every read authenticates and checks current membership.
 Private jobs are owner-only, including against admins. Jobs targeting a now-private
-golden are not exposed to other members. Status includes only jobId, state, safe
+snapshot are not exposed to other members. Status includes only jobId, state, safe
 phase/errorCode and terminal public result, never payload or provider errors.
 
 MCP golden_create/golden_update require idempotencyKey and return the same receipt;
@@ -28,8 +28,8 @@ CLI create/update print the admission key and job ID, then poll short requests.
 Each request has a 10-second AbortSignal; timeout:false disables Bun's independent
 idle timer. Poll failures never resubmit builds. Resume with:
 
-    armada golden build-status <job-id>
-    armada golden build-status --idempotency-key <saved-key> --org <org-id>
+    armada snapshot build-status <job-id>
+    armada snapshot build-status --idempotency-key <saved-key> --org <org-id>
 
 ## Worker and atomic publication
 
@@ -40,7 +40,7 @@ ID is the buildId in existing allowlisted phase/failure logs.
 
 Execution resolves current credentials, revalidates membership/role and verifies
 the admitted provider account. Every phase checks ownership. Publication locks
-the job/current membership, checks expected golden snapshot/owner/visibility,
+the job/current membership, checks the expected saved image/owner/visibility of the snapshot,
 updates config + snapshot, finalizes binding and marks job succeeded **in one
 transaction**. The prior snapshot stays retained. The full filesystem/binary/
 git-object scan is unchanged, fail-closed at Boat's documented 600-second maximum.
@@ -97,7 +97,7 @@ machine. New ambiguous builds always retain their reservation.
 
 Migration 20261110220100_legacy_boat_payment_recovery.sql captures eligibility
 only for already-existing Boat creates in recovery_required/builder with no
-builder, snapshot, golden or recorded reason. Later jobs default ineligible,
+builder, provider image, snapshot record or recorded reason. Later jobs default ineligible,
 even with identical metadata. Nothing is automatically released.
 
 For staging incident **aa2f54f7**, after migrations/server rollout:
@@ -105,7 +105,7 @@ For staging incident **aa2f54f7**, after migrations/server rollout:
 1. Obtain the full UUID from the first create receipt (the prefix is not a UUID).
    Verify the matching original diagnostic proves golden_build_failed,
    phase=builder, code=payment_required, with no allocation. Present billing
-   status, an empty golden list or an absent builder ID is not sufficient.
+   status, an empty snapshot list or an absent builder ID is not sufficient.
 2. A trusted database operator connected to **staging** using its normal
    service-role/database-owner access runs this transaction with that full ID:
 
@@ -123,13 +123,13 @@ For staging incident **aa2f54f7**, after migrations/server rollout:
    Repeating a completed confirmation is read-only.
 3. The owner runs:
 
-       armada golden build-status <full-job-uuid> --json
-       armada golden create smoke-boat --provider boat --org <staging-org> --config <same-config> --timeout 600
+       armada snapshot build-status <full-job-uuid> --json
+       armada snapshot create smoke-boat --provider boat --org <staging-org> --config <same-config> --timeout 600
 
    Expect the old job failed with failureReason=provider_payment_required
    (build-status exits 1 for terminal failure). Retry with a fresh admission key;
    the old reservation must no longer block creation.
 
-No golden ID is needed. Do not expose this function through the control API or
+No snapshot ID is needed. Do not expose this function through the control API or
 use an attestation to release a post-migration ambiguous job.
 No staging/production database operation is performed by this PR's agent.

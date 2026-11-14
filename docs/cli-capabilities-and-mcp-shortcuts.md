@@ -2,11 +2,11 @@
 
 These CLI additions use the same canonical Armada HTTP contracts as web. Server-side authorization, capacity and connection policy remain authoritative; consolidated cross-package/deployment acceptance is coordinator-owned.
 
-## Golden capabilities
+## Snapshot capabilities
 
 ```sh
-armada golden capabilities --json
-armada golden capabilities --provider modal --org <org-uuid> --json
+armada snapshot capabilities --json
+armada snapshot capabilities --provider modal --org <org-uuid> --json
 ```
 
 This calls authenticated `POST /api/v1/golden/capabilities` with optional `provider` and `org`. It inherits `armada org use` selection; an explicit `--org` wins. The response is exactly `{provider,maxGoldens}` with `maxGoldens: number | null`. Null is unbounded/unknown, never zero or a locally assumed Boat limit. Text output labels that meaning. An unavailable backend or mismatched provider response fails; there is no Boat fallback, provider SDK or direct database access in CLI.

@@ -1,6 +1,6 @@
-# Secure, server-orchestrated goldens
+# Secure, server-orchestrated snapshots
 
-Goldens contain repositories, dependencies and non-secret configuration, **never secrets**.
+Snapshots (called golden in older versions) contain repositories, dependencies and non-secret configuration, **never secrets**.
 The CLI is an authenticated Armada API client: create, update, connect and snapshot all go
 through the server's authorization and provider routing. Callers need an Armada session
 (`armada login`) or `ARMADA_TOKEN`, and the appropriate `ARMADA_URL`, not provider keys.
@@ -9,9 +9,9 @@ Connect is for non-secret maintenance, not for installing credentials or secret-
 ## Create or rebuild with the CLI
 
 ```sh
-armada golden create web --repo https://github.com/acme/web --provider boat --org <org> \
+armada snapshot create web --repo https://github.com/acme/web --provider boat --org <org> \
   --idempotency-key <saved-key> --timeout 60
-armada golden update web --replace --config golden.json --provider boat --org <org> \
+armada snapshot update web --replace --config golden.json --provider boat --org <org> \
   --idempotency-key <new-saved-key> --timeout 60
 ```
 
@@ -22,7 +22,7 @@ armada golden update web --replace --config golden.json --provider boat --org <o
 - Create defaults to org visibility; `--private` makes it owner-only. Org mutations require an
   admin; private mutations require their owner. Update retains the existing owner/visibility.
 - Create defaults to `boat`; `--provider modal` selects a separately configured Modal target.
-  Each golden is built separately per provider. For existing names on both providers, select
+  Each snapshot is built separately per provider. For existing names on both providers, select
   `--provider` explicitly. Update uses the stored provider/account binding, not a migration
   between providers; Modal's workspace/environment/App binding is immutable. Boat compatibility
   IDs are not Modal IDs.
@@ -40,15 +40,15 @@ armada golden update web --replace --config golden.json --provider boat --org <o
 Recover without starting another build:
 
 ```sh
-armada golden build-status <job-id> --json
-armada golden build-status --idempotency-key <saved-key> --org <org> --json
+armada snapshot build-status <job-id> --json
+armada snapshot build-status --idempotency-key <saved-key> --org <org> --json
 ```
 
 If admission's response is lost, recover by the saved key first. The same requester/org/key
 and identical request identify the same job; changed input with that key conflicts. Never
 switch to a fresh key to bypass an uncertain outcome or retained capacity. For
 `recovery_required`, contact an operator to reconcile the original build before retrying.
-See [Durable golden build jobs](golden-build-jobs.md) for exact client semantics, failure
+See [Durable snapshot build jobs](golden-build-jobs.md) for exact client semantics, failure
 reasons and worker/recovery details; old synchronous create/update contracts are not supported.
 
 ## API and MCP create/update
@@ -72,8 +72,8 @@ Both surfaces admit durable jobs, not inline snapshots. Control API requests use
 
 | Surface | Current request fields |
 | --- | --- |
-| API create | Required `name`, `idempotencyKey`, and `repos` unless `config` is supplied. Optional `org`, `provider`, `private` (default false), `setup`. `config` is the golden config object, not a file path. |
-| API update (`POST /api/v1/golden/update`) | Required `name`, `config`, `idempotencyKey`; optional `org`, `provider`, `setup`. Owner/visibility come from the existing golden. |
+| API create | Required `name`, `idempotencyKey`, and `repos` unless `config` is supplied. Optional `org`, `provider`, `private` (default false), `setup`. `config` is the snapshot config object, not a file path. |
+| API update (`POST /api/v1/golden/update`) | Required `name`, `config`, `idempotencyKey`; optional `org`, `provider`, `setup`. Owner/visibility come from the existing snapshot. |
 | MCP `golden_create` | Required `name`, `repos`, `idempotencyKey`; optional `org`, `provider`, `private`, `setup`. No `config` field. |
 | MCP `golden_update` | Required `name`, `repos`, `idempotencyKey`; optional `org`, `provider`, `setup`. No `config` or `private` field. |
 
@@ -110,9 +110,9 @@ These are **not durable create/update jobs**. They perform the requested mainten
 and return its result; they do not accept a build idempotency key or return a job receipt.
 
 ```sh
-armada golden connect web --provider boat --org <org> --json
+armada snapshot connect web --provider boat --org <org> --json
 # Maintain only non-secret repositories/dependencies/configuration in the canonical master.
-armada golden snapshot web --provider boat --org <org> --json
+armada snapshot snapshot web --provider boat --org <org> --json
 ```
 
 `POST /api/v1/golden/connect` takes `name`, optional `org` and `provider`, and returns
@@ -122,7 +122,7 @@ master through Armada; it is not a direct-provider CLI connection or a credentia
 runs the fail-closed scan, then saves and returns `{name, snapshot}`. MCP `golden_snapshot`
 accepts those same fields and returns that snapshot result; there is no `golden_connect` tool.
 Both maintenance routes enforce current mutation rights and the stored backend binding.
-A timeout is not proof that a snapshot was never saved: inspect the golden's current state
+A timeout is not proof that a snapshot was never saved: inspect the snapshot's current state
 before deciding what to do, rather than treating it as a durable build job to poll or replay.
 
 ## Security model
@@ -143,7 +143,7 @@ before deciding what to do, rather than treating it as a durable build job to po
   never matched values or file paths. A match, timeout or inability to run the scan blocks publication.
   This is a defensive check, **not proof that every possible secret has been removed**.
 - Successful create/update publication follows scanning and a ready snapshot. Failed or
-  ambiguous builds do not publish a new golden pointer; update retains the last-good snapshot.
+  ambiguous builds do not publish a new snapshot pointer; update retains the last-good snapshot.
   Uncertain artifacts/capacity may be retained for reconciliation, not blindly rebuilt or deleted.
   Details belong in [the build-job reference](golden-build-jobs.md).
 
