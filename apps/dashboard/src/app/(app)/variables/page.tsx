@@ -23,6 +23,9 @@ const TITLE = "Variables";
 const DESCRIPTION = "Configuration and write-only secrets for your agents.";
 
 export default async function VariablesPage({ searchParams }: Props) {
+  // Template usage is independent of the resource list. Settle speculative failures so
+  // the resource's unavailable/no-org fallback still takes precedence.
+  const templatesRead = Promise.allSettled([listSelectedTemplates()]);
   const [selected, list, query] = await Promise.all([selectedOrganization(), listSelectedVault(), searchParams]);
   const header = <PageHeader title={TITLE} description={DESCRIPTION} />;
 
@@ -88,7 +91,9 @@ export default async function VariablesPage({ searchParams }: Props) {
     );
   }
 
-  const templates = await listSelectedTemplates();
+  const [templateResult] = await templatesRead;
+  if (templateResult.status === "rejected") throw templateResult.reason;
+  const templates = templateResult.value;
   const isAdmin = selected.role === "admin";
   const orgName = selected.org.name;
   const viewer = { userId: list.userId, admin: isAdmin };
