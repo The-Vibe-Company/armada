@@ -707,6 +707,7 @@ test("HTTP additive update keeps every stored repo and init command, supports du
         url: `https://github.com/acme/repo${index + 1}.git`,
         branch: `release/${index + 1}`,
         dir: `custom-${index + 1}`,
+        ...(index === 0 ? { history: "shallow" as const } : {}),
       })),
       init: ["bun install", "make deps"],
     };

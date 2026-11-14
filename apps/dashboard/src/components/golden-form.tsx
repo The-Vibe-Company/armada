@@ -23,6 +23,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { NativeSelect } from "@/components/ui/native-select";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Textarea } from "@/components/ui/textarea";
 import { usePreservedActionForm } from "@/components/use-preserved-action-form";
@@ -397,10 +398,29 @@ function ScopedGoldenForm({
                     spellCheck={false}
                   />
                 </div>
+                <div className="space-y-1 sm:col-span-3 sm:row-start-2">
+                  <Label htmlFor={`${id}-history-${row.key}`}>History</Label>
+                  <NativeSelect
+                    id={`${id}-history-${row.key}`}
+                    name="repo_history"
+                    value={row.history ?? ""}
+                    onChange={(event) => update(row.key, "history", event.target.value)}
+                    aria-describedby={`${id}-history-hint-${row.key}`}
+                  >
+                    <option value="">Full history (default)</option>
+                    <option value="full">Full history</option>
+                    <option value="shallow">Latest commit only</option>
+                  </NativeSelect>
+                  <p id={`${id}-history-hint-${row.key}`} className="text-xs text-muted-foreground">
+                    Latest commit only omits older log, blame and build history. Fetching deeper later brings older
+                    objects back; the secret scan still fails closed.
+                  </p>
+                </div>
                 <Button
                   type="button"
                   variant="ghost"
                   size="icon"
+                  className="sm:col-start-4 sm:row-start-1"
                   aria-label={`Remove repository ${index + 1}`}
                   disabled={rows.length === 1}
                   onClick={() => setRows((current) => current.filter((item) => item.key !== row.key))}

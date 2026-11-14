@@ -230,10 +230,14 @@ function repoRows(data: FormData): RepoRow[] {
   const urls = data.getAll("repo_url");
   const branches = data.getAll("repo_branch");
   const dirs = data.getAll("repo_dir");
+  const histories = data.getAll("repo_history");
   return urls.map((url, index) => ({
     url: typeof url === "string" ? url : "",
     branch: typeof branches[index] === "string" ? (branches[index] as string) : "",
     dir: typeof dirs[index] === "string" ? (dirs[index] as string) : "",
+    ...(histories[index] === undefined || histories[index] === ""
+      ? {}
+      : { history: typeof histories[index] === "string" ? (histories[index] as string) : "" }),
   }));
 }
 
