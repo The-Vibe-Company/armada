@@ -280,10 +280,7 @@ export async function launchSandbox(
     if (provider.id !== golden.provider)
       throw new LaunchError("invalid_request", "Runtime default must retain the golden provider; no native fallback.");
     stores = { ...stores, credentials: defaultRuntime.credentials, connections: defaultRuntime.connections };
-    options = {
-      ...options,
-      ...(golden.provider === "boat" ? { boatRuntime: defaultRuntime.policy } : { runtime: defaultRuntime.policy }),
-    };
+    options = { ...options, runtime: defaultRuntime.policy };
   }
   const harness = checkHarness(provider, request.harness);
   const runtime = options.runtime ?? options.boatRuntime;
