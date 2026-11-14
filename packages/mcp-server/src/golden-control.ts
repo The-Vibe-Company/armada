@@ -31,8 +31,7 @@ type GoldenControlOptions = ProviderControlOptions &
 export async function listGoldens(options: GoldenControlOptions, caller: Caller): Promise<{ goldens: GoldenJson[] }> {
   if (!options.data) throw new VaultError("unavailable", "Golden listing is not configured on this server.");
   const data = options.data(caller);
-  const goldens = [];
-  for (const { orgId } of caller.orgs) goldens.push(...(await data.goldens.list(orgId)));
+  const goldens = (await Promise.all(caller.orgs.map(({ orgId }) => data.goldens.list(orgId)))).flat();
   return { goldens: goldens.map(goldenJson) };
 }
 

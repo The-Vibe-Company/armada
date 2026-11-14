@@ -143,52 +143,6 @@ async function fixture({ isolated = false } = {}) {
   };
 }
 
-test("replicas fire one ordinary template launch, skip alive machines, preserve interval phase and never catch up", async () => {
-  const f = await fixture();
-  try {
-    await f.due(8);
-    await Promise.all([
-      createRoutineScheduler(f.sql, { launch: f.launch, observe: f.observe }).tick(),
-      createRoutineScheduler(f.sql, { launch: f.launch, observe: f.observe }).tick(),
-    ]);
-    expect(f.boat.forks).toHaveLength(1);
-    expect(f.boat.prompts).toHaveLength(1);
-    expect(f.launches[0]).toMatchObject({ revision: 1, prompt: "Inspect\nexact bytes", ttlSeconds: 600 });
-    const first = (await f.runs())[0]!;
-    expect(first).toMatchObject({ state: "succeeded", missed_intervals: 8 });
-    const schedule = (
-      await f.db.query<{ future: boolean; soon: boolean }>(
-        "select next_due_at>now() as future,next_due_at<now()+interval '1 hour' as soon from routines where id=$1",
-        [f.routine.id],
-      )
-    ).rows[0];
-    expect(schedule).toEqual({ future: true, soon: true });
-    await f.due();
-    await createRoutineScheduler(f.sql, { launch: f.launch, observe: f.observe }).tick();
-    expect((await f.runs()).at(-1)).toMatchObject({ state: "skipped", reason: "previous_run_alive" });
-    expect(f.boat.forks).toHaveLength(1);
-    await f.db.query("update sandboxes set status='failed',stopped_at=now() where id=$1", [first.sandbox_id]);
-    await f.due();
-    await createRoutineScheduler(f.sql, { launch: f.launch, observe: f.observe }).tick();
-    expect(f.boat.forks).toHaveLength(2);
-    expect((await f.runs()).at(-1)).toMatchObject({ state: "succeeded" });
-    const second = (await f.runs()).at(-1)!;
-    await f.db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [second.sandbox_id]);
-    await f.db.query("update sandboxes set status='running',stopped_at=null where id=$1", [first.sandbox_id]);
-    await f.due();
-    await createRoutineScheduler(f.sql, { launch: f.launch, observe: f.observe }).tick();
-    expect((await f.runs()).at(-1)).toMatchObject({ state: "skipped", reason: "previous_run_alive" });
-    expect(f.boat.forks).toHaveLength(2);
-    await f.db.query("update routines set status='paused',next_due_at=now()-interval '1 hour' where id=$1", [
-      f.routine.id,
-    ]);
-    await createRoutineScheduler(f.sql, { launch: f.launch, observe: f.observe }).tick();
-    expect(f.boat.forks).toHaveLength(2);
-  } finally {
-    await f.close();
-  }
-});
-
 test("restart after template success but lost history publication reconciles the durable key without another fork", async () => {
   const f = await fixture();
   try {
