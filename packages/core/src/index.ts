@@ -179,6 +179,7 @@ export type { GoldenBuildStatus } from "./golden-build-status.ts";
 export { goldenBuildFailureText, providerPaymentRequiredMessage } from "./golden-build-status.ts";
 export type { GoldenBuildWarning } from "./golden-build-warning.ts";
 export {
+  addGoldenRepositories,
   assignDirs,
   configFromFlags,
   type GitHubGoldenConfig,

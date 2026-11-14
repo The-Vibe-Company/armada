@@ -102,6 +102,7 @@ test("token-only golden create prints an actionable API conflict and exits nonze
   );
   expect(code).toBe(1);
   expect(errorOutput).toContain(message);
+  expect(JSON.parse(errorOutput.trim().split("\n").at(-1)!)).toEqual({ error: { code: "conflict", message } });
   expect(errorOutput).not.toContain(token);
   expect(output).toBe("");
   expect(requests).toBe(1);

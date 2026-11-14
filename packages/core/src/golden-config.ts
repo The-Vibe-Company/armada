@@ -177,6 +177,47 @@ export function configFromFlags(repos: readonly string[], init: readonly string[
   });
 }
 
+/** Add repositories without replacing stored branches, directories or initialization commands.
+ * Repeating the same addition is a no-op so a successful admission remains recoverable.
+ */
+export function addGoldenRepositories(existing: GoldenConfig, additions: readonly string[]): GoldenConfig {
+  if (!additions.length) throw new GoldenError("invalid_config", "Pass at least one --add-repo URL.");
+  const current = parseGoldenConfig(existing);
+  const requested = configFromFlags(additions, []);
+  const repos = [...current.repos];
+  const identities = new Map(
+    normalizeGitHubGoldenConfig(current).repos.map((repo, index) => [
+      `${repo.owner}/${repo.repo}`.toLowerCase(),
+      current.repos[index]!,
+    ]),
+  );
+  for (const [index, identity] of normalizeGitHubGoldenConfig(requested).repos.entries()) {
+    const key = `${identity.owner}/${identity.repo}`.toLowerCase();
+    const prior = identities.get(key);
+    const addition = requested.repos[index]!;
+    if (prior) {
+      if (prior.branch !== addition.branch)
+        throw new GoldenError(
+          "invalid_config",
+          "This repository already has a different branch in the golden. Use --config with the complete desired repository list to change it.",
+        );
+      continue;
+    }
+    repos.push(addition);
+    identities.set(key, addition);
+  }
+  try {
+    return parseGoldenConfig({ repos, init: current.init });
+  } catch (error) {
+    if (error instanceof GoldenError)
+      throw new GoldenError(
+        "invalid_config",
+        `${error.message} Use --config with the complete desired repository list and distinct directories.`,
+      );
+    throw error;
+  }
+}
+
 export function parseGoldenConfig(input: unknown): GoldenConfig {
   if (!isRecord(input)) throw new GoldenError("invalid_config", "Golden config must be a JSON object.");
   const secret = secretKeyPath(input);
