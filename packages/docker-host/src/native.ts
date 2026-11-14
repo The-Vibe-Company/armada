@@ -5,7 +5,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { DockerMachineCli } from "../../core/src/docker-machine.ts";
 import { dockerHostResources } from "../../core/src/docker-resources.ts";
 import { VERSION } from "../../core/src/version.ts";
-import { type Api, type Job, type State, type Store, serverOrigin, validId, validToken } from "./daemon.ts";
+import { type Api, type State, type Store, serverOrigin, validId, validToken } from "./daemon.ts";
 
 const MAX_STATE_BYTES = 16 * 1024 * 1024;
 
@@ -237,11 +237,12 @@ export function httpApi(request: typeof fetch = fetch): Api & {
         return (await post(state.server, "poll", state.hostToken, {
           ...body,
           resources: dockerHostResources(),
-        })) as { job: Job | null };
+          resourcePolicyVersion: 1,
+        })) as Awaited<ReturnType<Api["poll"]>>;
       } catch (error) {
         // Older servers reject the additive resource field before claiming a job.
         if (!(error instanceof HostRequestDenied) || error.status !== 400) throw error;
-        return (await post(state.server, "poll", state.hostToken, body)) as { job: Job | null };
+        return (await post(state.server, "poll", state.hostToken, body)) as Awaited<ReturnType<Api["poll"]>>;
       }
     },
     async result(state, receipt, expired) {

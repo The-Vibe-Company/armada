@@ -10,7 +10,7 @@ import {
   type Sql,
   VaultError,
 } from "@armada/core";
-import { admitDockerCapacity, DockerHostFull } from "./docker-capacity.ts";
+import { admitDockerCapacity, DockerHostFull, DockerLimitsRefused } from "./docker-capacity.ts";
 import { createDockerHostStore } from "./docker-host-store.ts";
 import { resolveDockerSnapshot } from "./docker-snapshot-data.ts";
 
@@ -145,7 +145,8 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
       return await sql.transaction(work);
     } catch (error) {
       // Only trusted transaction-local placement policy raises public VaultError refusals.
-      if (error instanceof VaultError || error instanceof DockerHostFull) throw error;
+      if (error instanceof VaultError || error instanceof DockerHostFull || error instanceof DockerLimitsRefused)
+        throw error;
       return deny();
     }
   }

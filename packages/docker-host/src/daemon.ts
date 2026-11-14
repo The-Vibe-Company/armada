@@ -7,6 +7,7 @@ import {
   parseDockerHostJob,
 } from "../../core/src/docker-host-job.ts";
 import { DockerMachineError, type DockerMachineRequest } from "../../core/src/docker-machine.ts";
+import type { DockerSandboxLimits } from "../../core/src/docker-resource-policy.ts";
 
 export type Job = DockerHostJob;
 export type Receipt = {
@@ -39,10 +40,11 @@ export interface Store {
 }
 export interface Api {
   register(server: string, token: string, installationId: string): Promise<{ hostId: string; hostToken: string }>;
-  poll(state: State, options?: { skipSnapshots?: boolean }): Promise<{ job: Job | null }>;
+  poll(state: State, options?: { skipSnapshots?: boolean }): Promise<{ job: Job | null; limits?: DockerSandboxLimits }>;
   result(state: State, receipt: Receipt, expired?: true): Promise<void>;
 }
 export interface Executor {
+  configureLimits?(limits: DockerSandboxLimits | undefined): void;
   buildSnapshot?(job: Extract<Job, { operation: "buildSnapshot" }>, recoverOnly?: boolean): Promise<string>;
   startRuntime?(request: DockerMachineRequest, bootstrap: BootstrapDescriptor): Promise<unknown>;
   resume?(request: DockerMachineRequest): Promise<unknown>;
@@ -175,6 +177,7 @@ export async function tick(store: Store, api: Api, executor: Executor, skipSnaps
     await store.save(state);
   }
   const polled = await api.poll(state, { skipSnapshots });
+  executor.configureLimits?.(polled.limits);
   state.lastPollAt = new Date().toISOString();
   if (!polled.job) {
     await store.save(state);

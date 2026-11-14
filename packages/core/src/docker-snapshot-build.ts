@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { type DockerHostJob, parseDockerHostJob } from "./docker-host-job.ts";
 import { DOCKER_LOCAL_IMAGE_LABELS } from "./docker-image.ts";
 import type { DockerMachineCli } from "./docker-machine.ts";
-import { dockerHostResources, dockerResourceLimits } from "./docker-resources.ts";
+import { type DockerSandboxLimits, dockerHostResources, dockerResourceLimits } from "./docker-resources.ts";
 import { SNAPSHOT_INIT_SUPERVISOR } from "./docker-snapshot-init.ts";
 import { normalizeGitHubGoldenConfig } from "./golden-config.ts";
 import { goldenCheckoutScript } from "./golden-create-service.ts";
@@ -13,7 +13,13 @@ import { goldenScanScript } from "./golden-scan.ts";
 
 /** BuildKit secret mount and shared golden checkout/init/scan. No credential file or model account. */
 export async function buildDockerSnapshot(
-  options: { installationId: string; hostId: string; cli: DockerMachineCli; now(): number },
+  options: {
+    installationId: string;
+    hostId: string;
+    cli: DockerMachineCli;
+    now(): number;
+    limits?: () => DockerSandboxLimits;
+  },
   input: Extract<DockerHostJob, { operation: "buildSnapshot" }>,
   recoverOnly = false,
 ): Promise<string> {
@@ -128,7 +134,7 @@ RUN --mount=type=secret,id=github,uid=0,gid=0,mode=0400,required=true test -n "$
 USER 1000:1000
 `;
     await writeFile(join(directory, "Dockerfile"), dockerfile, { mode: 0o600, flag: "wx" });
-    const limits = dockerResourceLimits(dockerHostResources());
+    const limits = dockerResourceLimits(dockerHostResources(), options.limits?.());
     await checked([
       "buildx",
       "create",

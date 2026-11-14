@@ -5,7 +5,7 @@ import {
   isDockerImageReference,
   parseDockerSnapshotBinding,
 } from "./docker-image.ts";
-import { dockerHostResources, dockerResourceArgs } from "./docker-resources.ts";
+import { type DockerSandboxLimits, dockerHostResources, dockerResourceArgs } from "./docker-resources.ts";
 import { buildDockerSnapshot } from "./docker-snapshot-build.ts";
 
 /** Direct argv execution only; adapters must never invoke a shell or log stdin/output. */
@@ -78,6 +78,7 @@ export function createDockerMachineExecutor(options: {
   hostId: string;
   cli: DockerMachineCli;
   now: () => number;
+  limits?: () => DockerSandboxLimits;
 }) {
   if (!uuid.test(options.installationId) || !uuid.test(options.hostId)) fail("invalid_request");
 
@@ -301,7 +302,7 @@ export function createDockerMachineExecutor(options: {
       const result = await run([
         "container",
         "create",
-        ...dockerResourceArgs(dockerHostResources()),
+        ...dockerResourceArgs(dockerHostResources(), options.limits?.()),
         "--name",
         state.containerName,
         "--user",
@@ -327,6 +328,12 @@ export function createDockerMachineExecutor(options: {
     const status = object(state.container.State);
     if (status.Running !== true) {
       if (status.Status !== "created") fail("ownership_mismatch");
+      await checked([
+        "container",
+        "update",
+        ...dockerResourceArgs(dockerHostResources(), options.limits?.()),
+        state.containerName,
+      ]);
       await checked(["container", "start", state.containerName]);
     }
     return { containerName: state.containerName, volumeName: state.volumeName, expiresAt: state.expiresAt };
@@ -340,6 +347,12 @@ export function createDockerMachineExecutor(options: {
     // Only the retained, ownership-verified allocation may resume; never recreate it.
     if (status.Running !== true) {
       if (status.Status !== "exited") fail("ownership_mismatch");
+      await checked([
+        "container",
+        "update",
+        ...dockerResourceArgs(dockerHostResources(), options.limits?.()),
+        state.containerName,
+      ]);
       await checked(["container", "start", state.containerName]);
     }
   }

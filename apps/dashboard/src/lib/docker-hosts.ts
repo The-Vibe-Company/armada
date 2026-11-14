@@ -2,6 +2,7 @@ import {
   type DockerHostListResponse,
   type DockerHostSummary,
   dockerHostResourceDisplay,
+  parseDockerMemory,
   validDockerHostResources,
 } from "@armada/core";
 import { relativeAge } from "./relative-time.ts";
@@ -20,6 +21,7 @@ export const DOCKER_HOST_ROUTES = {
   list: "docker/hosts/list",
   registerToken: "docker/hosts/register-token",
   revoke: "docker/hosts/revoke",
+  limits: "docker/hosts/limits",
 } as const;
 
 export const HOSTS_PATH = "/hosts";
@@ -56,6 +58,8 @@ function parseHost(value: unknown): DockerHost | null {
     typeof sandboxes !== "number" ||
     !Number.isInteger(sandboxes) ||
     sandboxes < 0 ||
+    (value.canManageLimits !== undefined && typeof value.canManageLimits !== "boolean") ||
+    (value.limitsSupported !== undefined && typeof value.limitsSupported !== "boolean") ||
     (value.running !== undefined && (!Number.isSafeInteger(value.running) || Number(value.running) < 0)) ||
     (value.resources !== undefined && value.resources !== null && !validDockerHostResources(value.resources))
   )
@@ -68,6 +72,8 @@ function parseHost(value: unknown): DockerHost | null {
     lastSeenAt,
     revokedAt,
     sandboxes,
+    ...(value.canManageLimits === undefined ? {} : { canManageLimits: value.canManageLimits as boolean }),
+    ...(value.limitsSupported === undefined ? {} : { limitsSupported: value.limitsSupported as boolean }),
     ...(value.running === undefined ? {} : { running: value.running as number }),
     ...(value.resources === undefined
       ? {}
@@ -219,4 +225,35 @@ export function sandboxHostLabel(list: DockerHostList | null, hostId: string | n
   if (!hostId) return "Unknown";
   const host = list?.hosts.find((candidate) => candidate.id === hostId);
   return host ? hostName(host) : `Host ${shortHostId(hostId)}`;
+}
+
+/** Blank fields preserve existing overrides; automatic resets all of them. */
+export function dockerHostLimitsInput(
+  data: FormData,
+):
+  | { ok: true; patch: { auto: true } | { cpus?: number; memoryBytes?: number; maxSandboxes?: number } }
+  | { ok: false; error: string } {
+  if (data.get("mode") === "auto") return { ok: true, patch: { auto: true } };
+  const patch: { cpus?: number; memoryBytes?: number; maxSandboxes?: number } = {};
+  for (const field of ["cpus", "maxSandboxes"] as const) {
+    const raw = String(data.get(field) ?? "").trim();
+    if (!raw) continue;
+    const value = Number(raw);
+    if (!Number.isFinite(value) || value <= 0 || (field === "maxSandboxes" && !Number.isSafeInteger(value)))
+      return {
+        ok: false,
+        error: field === "cpus" ? "Enter a positive CPU count." : "Enter a positive whole sandbox count.",
+      };
+    patch[field] = value;
+  }
+  const memory = String(data.get("memory") ?? "").trim();
+  if (memory) {
+    try {
+      patch.memoryBytes = parseDockerMemory(memory);
+    } catch {
+      return { ok: false, error: "Enter memory in bytes or with a unit, such as 4g or 512m." };
+    }
+  }
+  if (Object.keys(patch).length === 0) return { ok: false, error: "Enter a limit to change, or choose Use automatic." };
+  return { ok: true, patch };
 }

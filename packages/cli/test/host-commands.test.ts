@@ -179,3 +179,32 @@ test("host show resolves exact names and renders resources, automatic limits and
   );
   expect(unknown.code).not.toBe(0);
 });
+
+test("host limits sends validated partial overrides or an exclusive automatic reset", async () => {
+  for (const [flags, patch] of [
+    [
+      ["--cpus", "1", "--memory", "2g", "--max-sandboxes", "3"],
+      { cpus: 1, memoryBytes: 2 * 1024 ** 3, maxSandboxes: 3 },
+    ],
+    [["--auto"], { auto: true }],
+  ] as const) {
+    const result = await capture(["host", "limits", hostId, ...flags], async (request) => {
+      expect(new URL(request.url).pathname).toEndWith("/hosts/limits");
+      expect(await request.json()).toEqual({ org, hostId, ...patch });
+      return Response.json({ resources: {} });
+    });
+    expect(result.code).toBe(0);
+  }
+  for (const flags of [
+    [],
+    ["--cpus", "0"],
+    ["--memory", "huge"],
+    ["--max-sandboxes", "1.5"],
+    ["--auto", "--memory", "1g"],
+  ]) {
+    const result = await capture(["host", "limits", hostId, ...flags], async () => {
+      throw Error("must not request");
+    });
+    expect(result.code).not.toBe(0);
+  }
+});

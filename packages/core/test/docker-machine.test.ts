@@ -19,7 +19,7 @@ const request: DockerMachineRequest = {
 
 // Minimal independent Docker state machine: inspect returns stored Docker-shaped records,
 // not receipts or ownership decisions supplied by the executor.
-function fixture() {
+function fixture(limits?: () => { cpus: number; memoryBytes: number; pids: number }) {
   const containers = new Map<string, any>();
   const volumes = new Map<string, any>();
   const calls: {
@@ -92,7 +92,7 @@ function fixture() {
         container.State = { Status: action === "start" ? "running" : "exited", Running: action === "start" };
       } else if (action === "rm") {
         if (!retainRemoved) store.delete(last);
-      } else if (action !== "exec") throw new Error("Unexpected fake Docker operation");
+      } else if (action !== "exec" && action !== "update") throw new Error("Unexpected fake Docker operation");
       return { exitCode: 0, stdout: "" };
     },
   };
@@ -101,6 +101,7 @@ function fixture() {
     hostId: "22222222-2222-2222-2222-222222222222",
     cli,
     now: () => time,
+    ...(limits ? { limits } : {}),
   });
   return {
     executor,
@@ -426,11 +427,30 @@ describe("Docker machine executor", () => {
 });
 
 test("resume starts only the retained owned stopped machine without reallocating or extending TTL", async () => {
-  const f = fixture();
+  let limits = { cpus: 1, memoryBytes: 1024 ** 3, pids: 4096 };
+  const f = fixture(() => limits);
   const original = await f.executor.create(request);
   await f.executor.stop(request);
   f.calls.length = 0;
+  limits = { cpus: 0.5, memoryBytes: 512 * 1024 ** 2, pids: 4096 };
   await f.executor.resume(request);
+  const update = f.calls.find((call) => call.argv[1] === "update")!.argv;
+  expect(update).toEqual([
+    "container",
+    "update",
+    "--cpus",
+    "0.5",
+    "--memory",
+    String(512 * 1024 ** 2),
+    "--memory-swap",
+    String(512 * 1024 ** 2),
+    "--pids-limit",
+    "4096",
+    original.containerName,
+  ]);
+  expect(f.calls.indexOf(f.calls.find((call) => call.argv === update)!)).toBeLessThan(
+    f.calls.findIndex((call) => call.argv[1] === "start"),
+  );
   expect(f.containers.get(original.containerName).State.Running).toBe(true);
   expect(f.volumes.size).toBe(1);
   expect(f.calls.filter((call) => call.argv[1] === "create")).toHaveLength(0);

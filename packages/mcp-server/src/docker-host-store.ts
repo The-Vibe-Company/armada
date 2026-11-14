@@ -14,8 +14,14 @@ import {
   parseDockerHostJob,
 } from "../../core/src/docker-host-job.ts";
 import type { DockerHostResources } from "../../core/src/docker-resources.ts";
-import { dockerResourceLimits } from "../../core/src/docker-resources.ts";
-import { DOCKER_CAPACITY_USAGE_SQL, DockerHostFull, dockerHostCapacity } from "./docker-capacity.ts";
+import { type DockerResourceOverrides, dockerResourcePolicy } from "../../core/src/docker-resources.ts";
+import {
+  DOCKER_CAPACITY_USAGE_SQL,
+  DockerHostFull,
+  DockerLimitsRefused,
+  type DockerPolicyRow,
+  hostResourcePolicy,
+} from "./docker-capacity.ts";
 
 import { authorizeSnapshotBuild, resolveDockerSnapshot } from "./docker-snapshot-data.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
@@ -101,7 +107,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
       if (!sql.transaction) deny();
       return await sql.transaction(work);
     } catch (error) {
-      if (error instanceof DockerHostFull) throw error;
+      if (error instanceof DockerHostFull || error instanceof DockerLimitsRefused) throw error;
       return deny();
     }
   }
@@ -334,6 +340,11 @@ export function createDockerHostStore(sql: Sql, key: string) {
           last_seen_at: Date | string | null;
           revoked_at: Date | string | null;
           sandboxes: number;
+          owner_id: string;
+          resource_policy_version: number | null;
+          sandbox_cpus: number | null;
+          sandbox_memory_bytes: string | number | null;
+          max_sandboxes: number | null;
           machine_cpus: number | null;
           machine_memory_bytes: number | string | null;
           running: number;
@@ -347,7 +358,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
                 and exists(select 1 from public.members m where m.org_id=h.org_id and m.user_id=h.owner_id)
                 and h.last_seen_at>=now()-interval '60 seconds' then 'online'
               else 'offline' end as state,
-            h.created_at,h.last_seen_at,h.revoked_at,h.daemon_version,h.name,h.machine_cpus,h.machine_memory_bytes,
+            h.created_at,h.last_seen_at,h.revoked_at,h.daemon_version,h.name,h.owner_id,h.resource_policy_version,h.machine_cpus,h.machine_memory_bytes,h.sandbox_cpus,h.sandbox_memory_bytes,h.max_sandboxes,
             (${DOCKER_CAPACITY_USAGE_SQL})::integer as running,
             (select count(*)::integer from public.sandboxes s
               where s.org_id=h.org_id and s.docker_host_id=h.id
@@ -365,24 +376,125 @@ export function createDockerHostStore(sql: Sql, key: string) {
           lastSeenAt: host.last_seen_at === null ? null : new Date(host.last_seen_at).toISOString(),
           revokedAt: host.revoked_at === null ? null : new Date(host.revoked_at).toISOString(),
           running: host.running,
-          resources:
-            host.machine_cpus == null || host.machine_memory_bytes == null
-              ? null
-              : {
-                  machine: { cpus: Number(host.machine_cpus), memoryBytes: Number(host.machine_memory_bytes) },
-                  perSandbox: dockerResourceLimits({
-                    cpus: Number(host.machine_cpus),
-                    memoryBytes: Number(host.machine_memory_bytes),
-                  }),
-                  capacity: dockerHostCapacity({
-                    cpus: Number(host.machine_cpus),
-                    memoryBytes: Number(host.machine_memory_bytes),
-                  })!,
-                  mode: "automatic",
-                },
+          resources: (() => {
+            try {
+              return hostResourcePolicy(host);
+            } catch (error) {
+              if (error instanceof DockerLimitsRefused) return null;
+              throw error;
+            }
+          })(),
+          canManageLimits: host.owner_id === actor.userId,
+          limitsSupported: host.resource_policy_version === 1,
           sandboxes: host.sandboxes,
           version: host.daemon_version,
         }));
+      });
+    },
+    limitsForHost(hostToken: string, installationId: string) {
+      return transaction(async (tx) => {
+        const host = await authenticate(tx, hostToken, installationId);
+        const row = (
+          await tx.query<DockerPolicyRow>(
+            "select machine_cpus,machine_memory_bytes,sandbox_cpus,sandbox_memory_bytes,max_sandboxes from public.docker_hosts where id=$1",
+            [host.id],
+          )
+        ).rows[0]!;
+        try {
+          return hostResourcePolicy(row)?.perSandbox;
+        } catch (error) {
+          if (error instanceof DockerLimitsRefused) return undefined;
+          throw error;
+        }
+      });
+    },
+    setLimits(actor: Actor, hostId: string, patch: DockerResourceOverrides & { auto?: true }) {
+      return transaction(async (tx) => {
+        exact(actor, ["userId", "orgId"]);
+        id(actor.userId);
+        id(actor.orgId);
+        id(hostId);
+        if (
+          !patch ||
+          typeof patch !== "object" ||
+          Array.isArray(patch) ||
+          Object.keys(patch).some((k) => !["cpus", "memoryBytes", "maxSandboxes", "auto"].includes(k)) ||
+          Object.keys(patch).length === 0 ||
+          (patch.auto !== undefined && (patch.auto !== true || Object.keys(patch).length !== 1))
+        )
+          throw new DockerLimitsRefused("invalid_request", "Provide CPU, memory or max sandboxes, or auto alone.");
+        if (Object.entries(patch).some(([key, value]) => key !== "auto" && typeof value !== "number"))
+          throw new DockerLimitsRefused("invalid_request", "Resource overrides must be numbers.");
+        const member = await tx.query("select 1 from public.members where org_id=$1 and user_id=$2 for update", [
+          actor.orgId,
+          actor.userId,
+        ]);
+        if (!member.rows.length) deny();
+        const host =
+          (
+            await tx.query<DockerPolicyRow & { resource_policy_version: number | null }>(
+              "select machine_cpus,machine_memory_bytes,sandbox_cpus,sandbox_memory_bytes,max_sandboxes,resource_policy_version from public.docker_hosts where id=$1 and org_id=$2 and owner_id=$3 and revoked_at is null for update",
+              [hostId, actor.orgId, actor.userId],
+            )
+          ).rows[0] ?? deny();
+        if (host.resource_policy_version !== 1 || host.machine_cpus == null || host.machine_memory_bytes == null)
+          throw new DockerLimitsRefused(
+            "conflict",
+            "Unknown resource policy support — upgrade the host and wait for its heartbeat.",
+          );
+        const busy = (
+          await tx.query<{ running: string; pending: boolean }>(
+            `select (${DOCKER_CAPACITY_USAGE_SQL}) as running, exists(select 1 from public.docker_host_jobs j
+            where j.host_id=h.id and j.outcome is null) as pending from public.docker_hosts h where h.id=$1`,
+            [hostId],
+          )
+        ).rows[0]!;
+        const next = patch.auto
+          ? {}
+          : {
+              ...(host.sandbox_cpus == null ? {} : { cpus: Number(host.sandbox_cpus) }),
+              ...(host.sandbox_memory_bytes == null ? {} : { memoryBytes: Number(host.sandbox_memory_bytes) }),
+              ...(host.max_sandboxes == null ? {} : { maxSandboxes: host.max_sandboxes }),
+              ...patch,
+            };
+        let resources: ReturnType<typeof dockerResourcePolicy>;
+        try {
+          resources = dockerResourcePolicy(
+            { cpus: Number(host.machine_cpus), memoryBytes: Number(host.machine_memory_bytes) },
+            next,
+          );
+        } catch (error) {
+          throw new DockerLimitsRefused(
+            "invalid_request",
+            error instanceof Error ? error.message : "Invalid resource limits.",
+          );
+        }
+        const current = (() => {
+          try {
+            return hostResourcePolicy(host);
+          } catch {
+            return null;
+          }
+        })();
+        const resourceChange =
+          !current ||
+          current.perSandbox.cpus !== resources.perSandbox.cpus ||
+          current.perSandbox.memoryBytes !== resources.perSandbox.memoryBytes;
+        if (resourceChange && (Number(busy.running) > 0 || busy.pending))
+          throw new DockerLimitsRefused(
+            "conflict",
+            "Stop all host sandboxes and finish pending jobs/builds before changing CPU or memory limits.",
+          );
+        if (Number(busy.running) > resources.capacity)
+          throw new DockerLimitsRefused(
+            "conflict",
+            "Stop sandboxes before lowering capacity below current running reservations.",
+          );
+        await tx.query(
+          "update public.docker_hosts set sandbox_cpus=$2,sandbox_memory_bytes=$3,max_sandboxes=$4 where id=$1",
+          [hostId, next.cpus ?? null, next.memoryBytes ?? null, next.maxSandboxes ?? null],
+        );
+        return { resources };
       });
     },
     issueRegistration(actor: Actor, name?: string) {
@@ -686,6 +798,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
       version?: string,
       skipSnapshots = false,
       resources?: DockerHostResources,
+      resourcePolicyVersion?: 1,
     ): Promise<Job | null> {
       return transaction(async (tx) => {
         // Cleanup bypasses queued startup/snapshot work; already executing native work remains serial.
@@ -699,10 +812,10 @@ export function createDockerHostStore(sql: Sql, key: string) {
           )
         ).rows[0];
         const host = await authenticate(tx, hostToken, installationId, hint?.bound_actor_id ?? undefined);
-        await tx.query(`update public.docker_hosts set last_seen_at=now(),daemon_version=$2 where id=$1`, [
-          host.id,
-          version ?? null,
-        ]);
+        await tx.query(
+          `update public.docker_hosts set last_seen_at=now(),daemon_version=$2,resource_policy_version=$3 where id=$1`,
+          [host.id, version ?? null, resourcePolicyVersion ?? null],
+        );
         if (resources) {
           await tx.query("update public.docker_hosts set machine_cpus=$2,machine_memory_bytes=$3 where id=$1", [
             host.id,
@@ -749,6 +862,21 @@ export function createDockerHostStore(sql: Sql, key: string) {
           )
         ).rows[0];
         if (!row || row.request_id !== hint?.request_id) return null;
+        if (!["stop", "delete"].includes(row.bound_operation ?? "")) {
+          const policyRow = (
+            await tx.query<DockerPolicyRow>(
+              "select machine_cpus,machine_memory_bytes,sandbox_cpus,sandbox_memory_bytes,max_sandboxes from public.docker_hosts where id=$1",
+              [host.id],
+            )
+          ).rows[0]!;
+          try {
+            const policy = hostResourcePolicy(policyRow);
+            if (policy?.mode === "manual" && resourcePolicyVersion !== 1) return null;
+          } catch (error) {
+            if (error instanceof DockerLimitsRefused) return null;
+            throw error;
+          }
+        }
         if (row.snapshot_id) {
           try {
             const job = await readJob(row);

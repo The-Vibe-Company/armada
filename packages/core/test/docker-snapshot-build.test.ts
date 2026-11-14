@@ -40,6 +40,7 @@ test("snapshot builds mount credentials privately, publish automatic ownership l
     installationId,
     hostId,
     now: () => 1000,
+    limits: () => ({ cpus: 1, memoryBytes: 1024 ** 3, pids: 4096 }),
     cli: {
       async run(argv, stdin, timeout) {
         commands.push(argv);
@@ -121,7 +122,8 @@ test("snapshot builds mount credentials privately, publish automatic ownership l
   expect(builds).toBe(1);
   const setup = commands.find((args) => args[0] === "buildx" && args[1] === "create")!;
   expect(setup).toContain("docker-container");
-  expect(setup.some((arg) => arg.startsWith("memory="))).toBe(true);
+  expect(setup).toContain("memory=1073741824");
+  expect(setup).toContain("cpu-quota=100000");
   const memory = setup.find((arg) => arg.startsWith("memory="))!.slice(7);
   expect(setup).toContain(`memory-swap=${memory}`);
   expect(setup).toContain("cpu-period=100000");
