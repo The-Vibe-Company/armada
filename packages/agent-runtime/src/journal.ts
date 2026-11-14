@@ -150,8 +150,8 @@ export class Journal {
       .query("INSERT OR REPLACE INTO metadata VALUES('runner:identity',?)")
       .run(JSON.stringify(checkpointIdentity(identity)));
   }
-  /** A resume must not treat an empty/rolled-back disk as a fresh conversation. */
-  requireCheckpoint(identity: CheckpointIdentity, watermark: number, conversationId: string) {
+  /** A sealed empty checkpoint is distinct from fresh or rolled-back storage. */
+  requireCheckpoint(identity: CheckpointIdentity, watermark: number, conversationId: string | null) {
     const source = this.assertRestoreSource(identity);
     const seal = this.db
       .query("SELECT value FROM metadata WHERE key=?")
@@ -165,7 +165,9 @@ export class Journal {
       watermark < 0 ||
       high !== watermark ||
       this.ack !== watermark ||
-      !this.session(conversationId) ||
+      (conversationId === null
+        ? this.prompts().length !== 0 || this.db.query("SELECT conversation FROM sessions LIMIT 1").get() !== null
+        : !this.session(conversationId)) ||
       this.prompts().some((prompt) => !isFinalPromptStatus(prompt.status))
     )
       throw Error("resume_checkpoint_mismatch");

@@ -58,8 +58,8 @@ export interface ExecEnvironment {
 }
 export interface RunnerExecutionOptions {
   prepareWorkspace?: () => Promise<void>;
-  /** Set by enrolled main only after required checkpoint/native restore verification. */
-  restoredFrom?: { epoch: string; watermark: number; conversationId: string };
+  /** Set by enrolled main after checkpoint/native verification. Null conversation means a verified empty journal. */
+  restoredFrom?: { epoch: string; watermark: number; conversationId: string | null };
   /** Only runtime bootstrap supplies this callback; RPC cannot supply credentials or destinations. */
   testModelConnection?: (
     harness: "claude" | "codex",

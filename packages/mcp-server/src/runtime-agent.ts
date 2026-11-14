@@ -51,7 +51,7 @@ function runtimeRefusal(
   });
 }
 
-type RuntimeRestore = { epoch: string; watermark: number; conversationId: string };
+type RuntimeRestore = { epoch: string; watermark: number; conversationId: string | null };
 /** Shared enrolled readiness and retained-session proof; transports keep envelope authorization. */
 export function runtimeHealthMatches(value: unknown, epoch: string, expected?: RuntimeRestore) {
   const health = value as Record<string, unknown> | undefined;
