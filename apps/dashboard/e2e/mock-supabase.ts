@@ -529,6 +529,7 @@ function sandbox(
 
 let state = seed();
 let dockerHosts: Row[] | null = null;
+let snapshotListFailure: string | null = null;
 let templateListFailure: { unsupported: boolean; message: string } | null = null;
 let vaultListFailure: { unsupported: boolean; message: string } | null = null;
 let accountListFailure: string | null = null;
@@ -2734,6 +2735,8 @@ function control(url: URL, body: Row): Response {
     vaultListFailure = null;
     accountListFailure = null;
     dockerHosts = Array.isArray(body.dockerHosts) ? body.dockerHosts : null;
+    snapshotListFailure = typeof body.snapshotListFailure === "string" ? body.snapshotListFailure : null;
+    if (body.emptyGoldens) state.goldens = [];
     // Keep a visible header but make its current revision unreadable, as a partial control API read can be.
     if (body.missingTemplateRevision)
       state.templateRevisions = state.templateRevisions.filter((row) => row.templateId !== id(91));
@@ -2995,6 +2998,10 @@ function control(url: URL, body: Row): Response {
   if (url.pathname === "/__test/golden-release") {
     state.goldenGate.hold = false;
     state.goldenGate.holdQueued = false;
+    return json({ ok: true });
+  }
+  if (url.pathname === "/__test/snapshot-list-failure") {
+    snapshotListFailure = typeof body.message === "string" ? body.message : null;
     return json({ ok: true });
   }
   if (url.pathname === "/__test/goldens") {
@@ -3325,6 +3332,12 @@ const server = Bun.serve({
         if (!caller || !isMember(body.org, caller))
           return controlFail(403, "forbidden", "Only organization members can list hosts.");
         return json({ placement: true, hosts: dockerHosts });
+      }
+      if (route === "docker/snapshots/list" && dockerHosts !== null) {
+        const caller = viewer(request);
+        if (!caller || !isMember(body.org, caller))
+          return controlFail(403, "forbidden", "Only organization members can list snapshots.");
+        return snapshotListFailure ? controlFail(503, "unavailable", snapshotListFailure) : json({ snapshots: [] });
       }
       if (route === "launch/options" && dockerHosts !== null) {
         if (!viewer(request)) return controlFail(401, "unauthorized", "Sign in again.");
