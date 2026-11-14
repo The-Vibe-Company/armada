@@ -1,5 +1,6 @@
 import type { Route } from "./http.ts";
 import { type createRuntimeEnrolments, RuntimeEnrolmentDenied, type RuntimeSessionScope } from "./runtime-enrolment.ts";
+import { runtimeHttpFailure } from "./runtime-http-failure.ts";
 
 const bootstrap = new Set(["bootstrap_started", "artifact_verified", "bootstrap_failed"]);
 const runtime = new Set(["enrolled", "harness_started", "runtime_failed"]);
@@ -54,10 +55,7 @@ export function createRuntimeProgress(authority: ReturnType<typeof createRuntime
       logRuntimeStage(scope, stage);
       return Response.json({ accepted: true, epoch: scope.epoch }, { headers });
     } catch (error) {
-      return Response.json(
-        { error: "runtime_progress_refused" },
-        { status: error instanceof RuntimeEnrolmentDenied ? 401 : 400, headers },
-      );
+      return runtimeHttpFailure(error instanceof RuntimeEnrolmentDenied ? 401 : 400, "runtime_progress_refused");
     }
   };
 }
