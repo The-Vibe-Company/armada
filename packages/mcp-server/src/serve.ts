@@ -317,6 +317,7 @@ export async function startServer(
       serverUrl: config.publicUrl,
       manifest,
       architecture: manifest.architecture,
+      ...(runtimeGitHub ? { github: runtimeGitHub } : {}),
       modelAuth,
     });
   }

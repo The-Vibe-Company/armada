@@ -72,6 +72,8 @@ export interface RunnerExecutionOptions {
   exclusiveNativeAuth?: boolean;
   publishNativeAuth?: () => Promise<void>;
   execEnv?: ExecEnvironment;
+  /** Validated non-secret bootstrap configuration, never accepted from RPC commands. */
+  readableVariables?: Record<string, string>;
   credentialFreeBuilder?: boolean;
   ghConfigDir?: string;
 }

@@ -7,8 +7,8 @@ runtime archive, performs an acknowledged checkpoint, and requests compute stop
 once. The `--resume` extension activates that same logical sandbox once from its
 retained filesystem image, proves a new-epoch same-conversation recall, then
 checkpoints and stops it again. Optional `--github`, `--mcp`, `--skills`, `--variables` and `--usage` add the scoped
-checks below; they do not claim full harness/setup parity. The golden
-checkout remains as-is (no pull/init).
+checks below; they do not claim full harness/setup parity. Configured repository refresh and init scripts run through epoch-bound private
+runtime commands before skills, MCP publication and the first prompt.
 The existing Modal tunnel path remains the default.
 
 ## Prerequisites
@@ -51,7 +51,7 @@ first-answer/follow-up/checkpoint/stop subset. It sends one `sandbox/launch-moda
 `harness:"codex"` and a 900-second TTL. Without `--skills`, skills are empty
 and defaults are skipped. With `--skills`, both fields are omitted so the normal
 server policy resolves defaults. Connections are empty unless `--mcp` explicitly
-selects one existing connection. The golden checkout is used as-is. The first prompt stores a random
+selects one existing connection. The golden repositories are refreshed and configured init commands run before inference. The first prompt stores a random
 memory token and asks for a separate literal
 nonce answer, without tools or file changes. After verifying that archived first
 answer, the script sends exactly one follow-up on the same conversation asking
@@ -357,8 +357,8 @@ selected account, not a forced upstream token renewal. Offline boundary tests
 exercise access-only delivery, refresh revision, token registration, and refusal
 after epoch replacement or membership/pin/stop/ownership changes during refresh.
 Live subscription refresh acceptance remains coordinator-owned and is not
-claimed by these tests. OpenCode, workspace setup, default cutover and tunnel
-deletion remain separate #1421 work.
+claimed by these tests. Workspace setup is described below; OpenCode, default
+cutover and tunnel deletion remain separate #1421 work.
 
 ## Claude lifecycle extension
 
@@ -384,3 +384,27 @@ are unchanged. Live Claude acceptance remains unproven until the coordinator
 records the smoke receipt. Codex subscription ownership is described above;
 OpenCode remains a later slice. Default cutover and tunnel deletion are not
 authorized here.
+
+## Workspace preparation
+
+The enrolled Modal launch now shares Boat's workspace policy: require current
+epoch `workspaceVersion:1` health, prepare GitHub before private repository
+access, then execute configured repository pulls and init commands in order.
+All setup uses the durable `workspaceExec` bridge, never Modal native exec or
+the tunnel. Health, GitHub, repository or init failure aborts launch; there is
+no fallback to an unprepared checkout or inference. The existing core pull
+retry policy, redaction, progress and ten-minute private setup budget are reused.
+
+GitHub authority during `starting` is restricted to immutable dial-out Modal
+rows with a live activity lease, live runtime epoch, owner membership and
+current repository binding. Expired leases cannot acquire credentials. Frozen
+readables are delivered in the private execution environment for init scripts;
+model-account secrets remain confined to the selected harness environment.
+
+Use the same coordinator-owned one-allocation lifecycle command. No golden or
+configuration mutation, new credentials, schema migration, separate allocation
+or manual artifact publication is needed. The selected golden's existing
+configured init scripts now actually execute: launch success is not a live
+workspace acceptance receipt until the coordinator runs it. Native Modal setup
+is unchanged; retained resume does not rerun first-launch setup. OpenCode and
+default/cutover/deletion gates remain separate #1421 work.

@@ -49,6 +49,7 @@ test.skipIf(process.platform !== "linux")(
     // Runner instances share one connection here; state.test.ts owns physical WAL-byte scrubbing.
     const journal = new Journal(":memory:", (s) => s);
     const execution: RunnerExecutionOptions = {
+      readableVariables: { APP_REGION: "eu-west", EMPTY_VALUE: "" },
       execEnv: {
         ...githubEnv(gitCredential),
         PATH: `${home}:/usr/bin:/bin`,
@@ -80,6 +81,8 @@ export GIT_CONFIG_GLOBAL='${join(home, "gitconfig")}'\n${gitSetupCommand({ id: 1
  export GIT_CONFIG_NOSYSTEM=1
  test -n "\${GH_TOKEN:-}"
  test "$GH_TOKEN" = "$GITHUB_TOKEN"
+ test "$APP_REGION" = "eu-west"
+ test "\${EMPTY_VALUE+x}" = x; test -z "$EMPTY_VALUE"
  test "$HOME" = '${home}'
  test "$GIT_CONFIG_GLOBAL" = '${join(home, "gitconfig")}'
  test -z "\${OPENAI_API_KEY+x}"; test -z "\${ANTHROPIC_API_KEY+x}"; test -z "\${CLAUDE_CODE_OAUTH_TOKEN+x}"

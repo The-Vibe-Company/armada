@@ -2780,6 +2780,7 @@ test.each([false, true])(
       let starts = 0;
       let mcpPrepared = false;
       let skillsInstalled = false;
+      let workspacePrepared = false;
       const skill = "team/runtime-skill@1.2.3";
       const receipt = {
         reference: skill,
@@ -2814,11 +2815,18 @@ test.each([false, true])(
             async installSkills(references, key) {
               expect(references).toEqual([skill]);
               expect(key).toBeNull();
+              expect(workspacePrepared).toBe(true);
               expect(mcpPrepared).toBe(false);
               skillsInstalled = true;
               return [receipt];
             },
             epoch: "1",
+            async prepareWorkspace() {
+              expect(mcpPrepared).toBe(false);
+              expect(skillsInstalled).toBe(false);
+              workspacePrepared = true;
+              return { status: "not_connected" as const };
+            },
             prompt: async () => {
               expect(mcpPrepared).toBe(true);
               expect(skillsInstalled).toBe(true);
