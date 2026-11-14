@@ -52,6 +52,9 @@ export default async function OttoPage({
       <Link href="/otto/evidence" className="underline">
         Inspect PR evidence
       </Link>
+      <Button asChild variant="outline" className="mb-4">
+        <Link href="/otto/objectives">Your objectives</Link>
+      </Button>
     </>
   );
   if (data.state === "no-org")
@@ -110,6 +113,11 @@ export default async function OttoPage({
       title="Otto"
       description={DESCRIPTION}
       label="Tasks and what they own"
+      actions={
+        <Button asChild variant="outline">
+          <Link href="/otto/objectives">Your objectives</Link>
+        </Button>
+      }
       rows={rows}
       blockers={[]}
       initial={typeof query.item === "string" ? query.item : null}
