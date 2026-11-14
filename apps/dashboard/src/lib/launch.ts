@@ -2,6 +2,7 @@ import { SIZED_LAUNCH_ROUTE_V1 } from "@armada/core";
 import { isUuid } from "./action.ts";
 import { type ArmadaApiOptions, ControlError, controlPost } from "./control.ts";
 import type { LaunchArgs } from "./model-choice.ts";
+import { launchReason } from "./templates.ts";
 
 /**
  * How long the dashboard waits for a launch: the CLI's own launch deadline. The server forks the golden's snapshot,
@@ -135,4 +136,45 @@ export function decodeLaunchAttempt(value: string | undefined): LaunchAttempt | 
   const [key, since, ...rest] = (value ?? "").split(".");
   const at = Number(since);
   return rest.length === 0 && isUuid(key) && Number.isSafeInteger(at) && at > 0 ? { key, since: at } : null;
+}
+
+/** Only curated guidance reaches the launch dialog; followLaunch owns uncertain outcomes and request keys. */
+export function launchFailureMessage(error: Pick<ControlError, "status" | "code" | "message">): string {
+  if (error.code?.startsWith("skillpack_")) {
+    if (["skillpack_credential_missing", "skillpack_credential_refused"].includes(error.code))
+      return "Connect a usable Skillpack key in Skills, then try again.";
+    if (["skillpack_cli_unavailable", "skillpack_download_unavailable"].includes(error.code))
+      return "This snapshot needs private-skill tools. Ask an administrator to check network access and rebuild the snapshot before launching.";
+    return "A requested skill could not be prepared. Check the chosen skills and Skillpack access before trying again.";
+  }
+  if (
+    error.code?.startsWith("model_account_") ||
+    ["missing_credential", "credential_refused", "credential_busy"].includes(error.code ?? "")
+  )
+    return launchReason(error.code);
+  if ((error.status === 404 || error.status === 405) && error.code === undefined) {
+    for (const feature of [
+      "launching with Armada access",
+      "launching with machine sizes",
+      "launching from the dashboard",
+    ]) {
+      const known = `This Armada server does not offer ${feature} yet.`;
+      if (error.message === known)
+        return `${known} Ask an Armada administrator to finish setup, then reload Snapshots.`;
+    }
+  }
+  if (error.code === "payment_required")
+    return "Check the provider account's plan or billing limits before launching again.";
+  if (error.code === "rate_limited")
+    return "The provider reached a limit. Wait for its limits to reset before launching again.";
+  if (error.status === 401) return "Your session ended. Sign in again, then reload Snapshots.";
+  if (error.status === 403 || error.code === "forbidden")
+    return "Launch access was refused. Check provider and organization permissions.";
+  if (error.status === 404)
+    return "This snapshot or launch service is no longer available. Reload Snapshots and choose a ready snapshot.";
+  if (error.status === 400)
+    return "The launch settings were not accepted. Reload Snapshots and check the chosen agent and account.";
+  if (error.status === 409)
+    return "The launch setup changed. Reload Snapshots and check its current state before trying again.";
+  return "The launch result could not be confirmed. Check Sandboxes before retrying, then reload Snapshots.";
 }

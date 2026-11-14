@@ -33,6 +33,7 @@ import {
   type FollowedLaunch,
   followLaunch,
   launchAttemptCookie,
+  launchFailureMessage,
   launchSandbox,
 } from "@/lib/launch";
 import { LAUNCH_KEY_FIELD } from "@/lib/launch-key";
@@ -317,9 +318,9 @@ export async function launchFromGolden(_previous: ActionResult | null, data: For
     // A provider refusing an explicit size (plan, disk) is never retried with another: say what can be changed.
     if (parsed.args.size && error.code && PROVIDER_REFUSALS.has(error.code))
       return fail(
-        `${error.message} If ${PROVIDER_LABELS[parsed.args.provider]} refused ${MACHINE_SIZE_LABELS[parsed.args.size]}, choose another size or the default.`,
+        `${launchFailureMessage(error)} If ${PROVIDER_LABELS[parsed.args.provider]} refused ${MACHINE_SIZE_LABELS[parsed.args.size]}, choose another size or the default.`,
       );
-    return fail(error.message);
+    return fail(launchFailureMessage(error));
   }
   if (launched.state === "unknown") {
     const search = filtersToSearch({

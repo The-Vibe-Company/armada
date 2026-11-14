@@ -6,6 +6,7 @@ import {
   encodeLaunchAttempt,
   followLaunch,
   LAUNCH_TIMEOUT_MS,
+  launchFailureMessage,
   launchSandbox,
 } from "../src/lib/launch.ts";
 import { LAUNCH_KEY_FIELD, launchKeyFor } from "../src/lib/launch-key.ts";
@@ -283,4 +284,19 @@ test("the launch attempt cookie round-trips and refuses anything else", () => {
   expect(decodeLaunchAttempt(encodeLaunchAttempt({ key: KEY, since: 42 }))).toEqual({ key: KEY, since: 42 });
   for (const bad of [undefined, "", "x.42", `${KEY}.0`, `${KEY}.42.1`, `${KEY}.nope`])
     expect(decodeLaunchAttempt(bad)).toBeNull();
+});
+
+test("launch refusal guidance hides arbitrary diagnostics while retaining setup and account recovery", () => {
+  const diagnostic = "HTTP 503: provider_sandbox_id digest sha256:example";
+  for (const status of [undefined, 400, 401, 403, 404, 409, 503])
+    expect(launchFailureMessage(new ControlError(diagnostic, status))).not.toContain(diagnostic);
+  expect(launchFailureMessage(new ControlError(diagnostic, 503))).toContain("Check Sandboxes before retrying");
+  expect(launchFailureMessage(new ControlError(diagnostic, 404, "missing_credential"))).toContain("model account");
+  expect(launchFailureMessage(new ControlError(diagnostic, 403, "skillpack_credential_refused"))).toContain("Skills");
+  expect(launchFailureMessage(new ControlError(diagnostic, 503, "skillpack_cli_unavailable"))).toContain(
+    "rebuild the snapshot",
+  );
+  expect(
+    launchFailureMessage(new ControlError("This Armada server does not offer launching with machine sizes yet.", 404)),
+  ).toContain("finish setup");
 });

@@ -52,7 +52,7 @@ test("the launch shows the repository then golden default, keeps an override and
   await size.selectOption("small");
   await dialog.getByLabel("Project").selectOption("web");
   await expect(size).toHaveValue("small");
-  await expect(hint).toContainText("Overrides the default (Medium, the golden's default).");
+  await expect(hint).toContainText("Overrides the default (Medium, the snapshot's default).");
   await expect(summary).toHaveText("Small machine · 1 MCP");
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({
@@ -75,8 +75,8 @@ test("the launch shows the repository then golden default, keeps an override and
     "Small (chosen at launch) · 2 vCPU · 4 GiB · 51 GB disk",
   );
 
-  // Modal, no defaults: the provider decides, nothing is invented and no size is sent.
-  await page.goto("/environments");
+  // Modal, no defaults: return through the same client navigation a person uses.
+  await page.getByRole("navigation", { name: "Main" }).getByRole("link", { name: "Snapshots", exact: true }).click();
   await page.getByRole("button", { name: "Launch from shared-golden on Modal" }).click();
   const modal = page.getByRole("dialog");
   await expect(modal.locator("[data-launch-summary]")).toContainText("Default machine");
@@ -109,11 +109,11 @@ test("an admin saves defaults for one provider's golden without rebuilding it, a
   const card = await golden(page, "modal");
   await expect(card.locator("[data-size-summary]")).toHaveText("No defaults: Modal decides");
   await card.getByText("Machine size defaults").click();
-  await card.getByLabel("Golden default").selectOption("small");
+  await card.getByLabel("Snapshot default").selectOption("small");
   await card.getByLabel("When starting in docs").selectOption("large");
   await card.getByRole("button", { name: "Save size defaults" }).click();
   await expect(card.getByRole("status")).toContainText("Size defaults saved");
-  await expect(card.locator("[data-size-summary]")).toHaveText("Golden: Small · docs: Large");
+  await expect(card.locator("[data-size-summary]")).toHaveText("Snapshot: Small · docs: Large");
   await expect(card.getByLabel("When starting in docs")).toHaveValue("large");
   const state = await mockState();
   expect(state.sizePolicyCalls.at(-1)).toEqual({
@@ -125,7 +125,7 @@ test("an admin saves defaults for one provider's golden without rebuilding it, a
   expect(state.goldenCalls).toHaveLength(0);
   // The Boat golden of the same name keeps its own defaults.
   const boat = await golden(page, "boat");
-  await expect(boat.locator("[data-size-summary]")).toHaveText("Golden: Medium · api: Large");
+  await expect(boat.locator("[data-size-summary]")).toHaveText("Snapshot: Medium · api: Large");
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({
     path: "test-results/machine-size-defaults-mobile.png",
@@ -147,15 +147,13 @@ test("a member sees an org golden's defaults read-only; the owner edits their pr
   await signIn(page, "bob@example.com", "/environments");
   const shared = await goldenPanel(page, "shared-golden");
   await expect(shared.locator('[data-size-defaults="read-only"]')).toHaveText(
-    "Size defaults: Golden: Medium · api: Large. Only an org admin changes an org golden's size defaults.",
+    "Size defaults: Snapshot: Medium · api: Large. Only an org admin changes an org snapshot's size defaults.",
   );
   await expect(shared.getByRole("button", { name: "Save size defaults" })).toHaveCount(0);
   await expect((await goldenPanel(page, "bob-private")).locator('[data-size-defaults="editable"]')).toBeVisible();
 });
 
-test("a refused size says what can be changed, and an older server allocates nothing for a sized launch", async ({
-  page,
-}) => {
+test("a refused size keeps choices and explains what can be changed", async ({ page }) => {
   await reset({ sizePolicies: true, refuseSize: "xlarge" });
   await signIn(page, "alice@example.com", "/environments");
   await page.getByRole("button", { name: "Launch from shared-golden on Boat" }).click();
@@ -169,7 +167,7 @@ test("a refused size says what can be changed, and an older server allocates not
   await expect(dialog.locator("[data-size-source]")).toContainText("Extra large needs a Boat plan that includes it.");
   await dialog.getByRole("button", { name: "Launch" }).click();
   await expect(dialog.getByRole("alert")).toHaveText(
-    "Requested size cannot be allocated. If Boat refused Extra large, choose another size or the default.",
+    "Launch access was refused. Check provider and organization permissions. If Boat refused Extra large, choose another size or the default.",
   );
   expect((await mockState()).launches.at(-1)).toMatchObject({ size: "xlarge" });
   // The refusal keeps every choice as it was: no select falls back to its first option (effort Low) or the default
@@ -180,19 +178,23 @@ test("a refused size says what can be changed, and an older server allocates not
   await expect(dialog.getByLabel("Machine size")).toHaveValue("xlarge");
   await expect(dialog.locator("[data-launch-summary]")).toHaveText("Extra large machine · 1 MCP");
   await page.setViewportSize({ width: 390, height: 664 });
-  await page.screenshot({ path: "test-results/launch-refused-size-kept-mobile.png", animations: "disabled" });
+  await expect(dialog.getByRole("alert")).toBeInViewport({ ratio: 1 });
+  await expect(dialog.getByRole("button", { name: "Launch", exact: true })).toBeInViewport({ ratio: 1 });
+  await page.screenshot({ path: "test-results/launch-error-after-mobile.png", animations: "disabled" });
   await page.setViewportSize({ width: 1280, height: 720 });
+  await page.screenshot({ path: "test-results/launch-error-after-desktop.png", animations: "disabled" });
   await dialog.getByRole("button", { name: "Launch" }).click();
   await expect.poll(async () => (await mockState()).launches.length).toBe(2);
   const [first, again] = (await mockState()).launches;
   expect(again).toEqual(first);
   expect(again).toMatchObject({ reasoningEffort: "medium", size: "xlarge", prompt: "Profile the slow build" });
+});
 
+test("an older server allocates nothing for an explicit or default-sized launch", async ({ page }) => {
   // The database has the columns but this replica predates #653: the sized route is unknown there, so the launch
   // fails before allocation and is never retried on the legacy route, whether a size was chosen or a default kept.
   await reset({ sizePolicies: true, olderServer: true });
-  await page.context().clearCookies();
-  await signIn(page, "alice@example.com", "/environments");
+  await signIn(page, "alice@example.com", "/snapshots");
   for (const choice of ["large", ""]) {
     await page.getByRole("button", { name: "Launch from shared-golden on Boat" }).click();
     const launch = page.getByRole("dialog");
@@ -203,7 +205,7 @@ test("a refused size says what can be changed, and an older server allocates not
     await launch.getByLabel("Machine size").selectOption(choice);
     await launch.getByRole("button", { name: "Launch" }).click();
     await expect(launch.getByRole("alert")).toHaveText(
-      "This Armada server does not offer launching with machine sizes yet.",
+      "This Armada server does not offer launching with machine sizes yet. Ask an Armada administrator to finish setup, then reload Snapshots.",
     );
     await page.keyboard.press("Escape");
   }
@@ -212,18 +214,22 @@ test("a refused size says what can be changed, and an older server allocates not
   expect(older.sizedRefusals).toHaveLength(2);
   expect(older.sizedRefusals[0]).toMatchObject({ size: "large", sizePolicyVersion: 1 });
   expect(older.sizedRefusals[1]).not.toHaveProperty("size");
+});
 
-  await page.goto("/environments");
+test("an older server cannot save snapshot size defaults", async ({ page }) => {
+  await reset({ sizePolicies: true, olderServer: true });
+  await signIn(page, "alice@example.com", "/snapshots");
   const card = await goldenPanel(page, "shared-golden");
   await card.getByText("Machine size defaults").click();
-  await card.getByLabel("Golden default").selectOption("large");
+  await card.getByLabel("Snapshot default").selectOption("large");
   await card.getByRole("button", { name: "Save size defaults" }).click();
   await expect(card.getByRole("alert")).toHaveText("This Armada server does not offer machine size defaults yet.");
+});
 
+test("a server without size metadata offers no size controls", async ({ page }) => {
   // Before the migration: no size anywhere.
   await reset({});
-  await page.context().clearCookies();
-  await signIn(page, "alice@example.com", "/environments");
+  await signIn(page, "alice@example.com", "/snapshots");
   await expect(page.locator("[data-size-defaults]")).toHaveCount(0);
   await page.getByRole("button", { name: "Launch from shared-golden on Boat" }).click();
   await expect(page.getByRole("dialog").getByLabel("Machine size")).toHaveCount(0);
