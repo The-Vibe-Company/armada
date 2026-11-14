@@ -1,5 +1,24 @@
 # Changelog
 
+## [2.33.0](https://github.com/The-Vibe-Company/armada/compare/v2.32.0...v2.33.0) (2026-11-14)
+
+
+### Features
+
+* **cli:** expose snapshot commands with silent golden alias ([#1777](https://github.com/The-Vibe-Company/armada/issues/1777)) ([423d3a8](https://github.com/The-Vibe-Company/armada/commit/423d3a8ccdd27e015ccc31760b5abadeb3a6381a))
+* **dashboard:** use snapshot naming and route ([#1774](https://github.com/The-Vibe-Company/armada/issues/1774)) ([be4cb83](https://github.com/The-Vibe-Company/armada/commit/be4cb83b77066a61c4ee0599e05956e789aefd71))
+* **docker:** bound container resources and report host hardware ([#1775](https://github.com/The-Vibe-Company/armada/issues/1775)) ([97fb449](https://github.com/The-Vibe-Company/armada/commit/97fb449b9a52f870dc0341165746b013f5012cf1))
+* **docker:** configure owner resource limits across CLI and dashboard ([#1784](https://github.com/The-Vibe-Company/armada/issues/1784)) ([8546dfa](https://github.com/The-Vibe-Company/armada/commit/8546dfa6bf0e175cb394b28ea7f30adc224cce04))
+* **docker:** enforce automatic host capacity on launch and wake ([#1779](https://github.com/The-Vibe-Company/armada/issues/1779)) ([0ad52a8](https://github.com/The-Vibe-Company/armada/commit/0ad52a88c6ce37c495b3db54e40f51ccf546c40d))
+* **docker:** show host hardware and sandbox capacity ([#1781](https://github.com/The-Vibe-Company/armada/issues/1781)) ([0e8a1c2](https://github.com/The-Vibe-Company/armada/commit/0e8a1c217d209836a15afa7eafe677978a0f2c8b))
+
+
+### Bug Fixes
+
+* **cli:** show nested onboarding help before login ([#1770](https://github.com/The-Vibe-Company/armada/issues/1770)) ([56b73b8](https://github.com/The-Vibe-Company/armada/commit/56b73b85a200d8ed427cae8382e2f4d24bf94c6d))
+* **modal:** make admission contention proof deterministic ([#1795](https://github.com/The-Vibe-Company/armada/issues/1795)) ([4ff7ab0](https://github.com/The-Vibe-Company/armada/commit/4ff7ab0a5133d0b9fce50755ef63734826e4b692))
+* **smoke:** prevent ordered cleanup waves from starving children ([#1793](https://github.com/The-Vibe-Company/armada/issues/1793)) ([b35fe88](https://github.com/The-Vibe-Company/armada/commit/b35fe8849e8a7633d6cb9305a7b6e8148e8ae6b2))
+
 ## [2.32.0](https://github.com/The-Vibe-Company/armada/compare/v2.31.0...v2.32.0) (2026-11-14)
 
 
