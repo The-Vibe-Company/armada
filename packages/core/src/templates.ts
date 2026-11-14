@@ -8,6 +8,8 @@ type TemplatePlacement =
       goldenId: null;
       goldenBinding: null;
       hostId: string;
+      /** Immutable host-local environment; absent for the official base environment. */
+      snapshotId?: string;
     };
 export type TemplateDefinition = TemplatePlacement & {
   harness: Harness;
