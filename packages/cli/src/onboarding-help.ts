@@ -327,6 +327,25 @@ Example: armada creds import ${harness ?? "claude"} --name personal --file /priv
 `;
 }
 
+function githubAuthorizationHelp(action: "connect" | "reconnect" | "install"): string {
+  const purpose =
+    action === "install"
+      ? "Start GitHub App installation and wait for a newly observed installation."
+      : action === "reconnect"
+        ? "Start GitHub reauthorization and wait for this authorization flow to connect."
+        : "Start GitHub authorization and wait for this authorization flow to connect.";
+  return `Usage: armada github ${action} [--no-browser] [--timeout <seconds>] [--json]
+${purpose}
+Requires Armada login. Opens the authorization URL in your browser by default.
+--no-browser prints authorization instructions and the URL to stderr instead.
+--timeout is an integer from 0 to 600 seconds (default 300).
+Zero still starts authorization and checks status; it does not assume success.
+On timeout, check armada github status before retrying; no success is assumed.
+Successful output is JSON even without --json.
+Example: armada github ${action} --no-browser --timeout 300
+`;
+}
+
 export function onboardingHelp(argv: readonly string[]): string | undefined {
   if (!["--help", "-h"].includes(argv.at(-1) ?? "")) return undefined;
   const parts = argv.slice(0, -1);
@@ -352,6 +371,9 @@ export function onboardingHelp(argv: readonly string[]): string | undefined {
   )
     parts[0] = "snapshot";
   const command = parts.join(" ");
+  if (command === "github connect") return githubAuthorizationHelp("connect");
+  if (command === "github reconnect") return githubAuthorizationHelp("reconnect");
+  if (command === "github install") return githubAuthorizationHelp("install");
   if (command === "creds import") return importHelp();
   if (command === "creds import claude") return importHelp("claude");
   if (command === "creds import codex") return importHelp("codex");
