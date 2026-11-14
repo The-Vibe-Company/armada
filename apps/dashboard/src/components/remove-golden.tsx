@@ -35,7 +35,7 @@ export function RemoveGolden({
     <AlertDialog>
       <AlertDialogTrigger asChild>
         <Button variant="ghost" size="sm" className="text-muted-foreground hover:text-destructive">
-          <Trash2Icon /> Remove golden
+          <Trash2Icon /> Remove snapshot
         </Button>
       </AlertDialogTrigger>
       <AlertDialogContent>
@@ -65,7 +65,7 @@ export function RemoveGolden({
             <input type="hidden" name="org" value={orgId} />
             <Button type="submit" variant="destructive" disabled={pending} className="w-full">
               {pending && <Loader2Icon className="animate-spin" />}
-              Remove golden
+              Remove snapshot
             </Button>
           </form>
         </AlertDialogFooter>

@@ -138,7 +138,7 @@ function DockerSnapshotForm({
           </NativeSelect>
         </div>
         <div className="space-y-1.5">
-          <Label htmlFor={`${id}-file`}>Golden JSON file</Label>
+          <Label htmlFor={`${id}-file`}>Snapshot JSON file</Label>
           <Input
             id={`${id}-file`}
             type="file"
@@ -156,7 +156,7 @@ function DockerSnapshotForm({
                 if (source.files?.[0] === file) setConfig(JSON.stringify(parsed));
               } catch {
                 if (source.files?.[0] === file)
-                  setFileError("Choose a golden JSON file under 1 MiB with repositories and init commands.");
+                  setFileError("Choose a snapshot JSON file under 1 MiB with repositories and init commands.");
               }
             }}
           />

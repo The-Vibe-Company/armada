@@ -108,7 +108,9 @@ export default async function OrgPage({ params, searchParams }: Props) {
         <SectionHeader
           id="members-heading"
           title="Members"
-          description={isAdmin ? "Admins manage members, org goldens and providers." : "Only an admin changes members."}
+          description={
+            isAdmin ? "Admins manage members, org snapshots and providers." : "Only an admin changes members."
+          }
         >
           <span className="text-sm text-muted-foreground tabular-nums">
             {roster.data.length} {roster.data.length === 1 ? "member" : "members"}

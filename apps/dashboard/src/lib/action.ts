@@ -8,8 +8,18 @@ export type ActionResult =
   | { ok: false; error: string; link?: ActionLink };
 
 export const done = (message: string): ActionResult => ({ ok: true, message });
-export const fail = (error: string, link?: ActionLink): ActionResult =>
-  link ? { ok: false, error, link } : { ok: false, error };
+/** Translate legacy server terminology only at the dashboard presentation boundary. */
+export function snapshotText(text: string): string {
+  return text.replace(
+    /\b(Golden|golden)(s?)\b/g,
+    (_, word: string, plural: string) => `${word === "Golden" ? "Snapshot" : "snapshot"}${plural}`,
+  );
+}
+
+export const fail = (message: string, link?: ActionLink): ActionResult => {
+  const error = snapshotText(message);
+  return link ? { ok: false, error, link } : { ok: false, error };
+};
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -26,8 +36,8 @@ type DbError = { code?: string | undefined; message: string };
 
 const FRIENDLY: Record<string, string> = {
   members_pkey: "They are already a member of this org.",
-  goldens_org_name_key: "A golden with that name is already shared with the org.",
-  goldens_private_name_key: "You already have a private golden with that name.",
+  goldens_org_name_key: "A snapshot with that name is already shared with the org.",
+  goldens_private_name_key: "You already have a private snapshot with that name.",
 };
 
 /** A message for the person, from a Postgres or PostgREST error. Row level security denials are one sentence. */

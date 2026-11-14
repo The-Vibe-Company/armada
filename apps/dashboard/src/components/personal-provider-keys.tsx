@@ -25,7 +25,9 @@ export function PersonalProviderKeys({ owner, rows }: { owner: string; rows: Cre
           <KeyRoundIcon className="size-4" />
           Your personal provider keys
         </CardTitle>
-        <CardDescription>Only you see these. They host your private goldens, never an organization's.</CardDescription>
+        <CardDescription>
+          Only you see these. They host your private snapshots, never an organization's.
+        </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         {!encryptionKey() && (
@@ -91,7 +93,7 @@ function CredentialSection({
                         trigger="Remove"
                         triggerLabel={`Remove ${info.label}`}
                         title={`Remove ${info.label}?`}
-                        description={`This removes your saved ${info.label}. You will need to save it again to build or launch private goldens with this provider. Organization providers are not affected.`}
+                        description={`This removes your saved ${info.label}. You will need to save it again to build or launch private snapshots with this provider. Organization providers are not affected.`}
                         confirm="Remove key"
                         pendingLabel="Removing…"
                         successFocusId={info.kind === "modal" ? `modal-id-${owner}` : `value-${owner}`}

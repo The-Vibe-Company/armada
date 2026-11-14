@@ -111,7 +111,7 @@ async function HarnessSections({
             Armada before adding or managing accounts here.
           </p>
           <Button asChild variant="outline" size="sm" className="mt-2">
-            <Link href="/environments">Choose a snapshot</Link>
+            <Link href="/snapshots">Choose a snapshot</Link>
           </Button>
         </AlertDescription>
       </Alert>
