@@ -225,6 +225,8 @@ test("template CLI refuses ambiguous scope, invalid revisions, unsupported overr
     ["publish", id, "--expected-revision", "0", "--file", "definition.json"],
     ["launch", id, "--request-key", "run-1", "--model", "other"],
     ["launch", id],
+    ["get", "--help", "--unknown"],
+    ["unknown", "--help"],
     ...[
       ["--provider", "docker"],
       ["--provider", "docker", "--host", "not-a-uuid"],
@@ -273,21 +275,25 @@ test("template failures use closed actionable diagnostics without echoing untrus
 });
 
 test("template help documents definition inputs, scope and safe retry semantics without authentication", async () => {
-  const result = await invoke(["template", "--help"]);
-  expect(result.code).toBe(0);
-  expect(result.requests).toHaveLength(0);
-  for (const text of [
-    "--file",
-    "--host UUID --provider docker",
-    "--scope",
-    "--expected-revision",
-    "--request-key",
-    "--prompt",
-    "--ttl",
-    "--size",
-    "--repo",
-  ])
-    expect(result.out).toContain(text);
+  for (const action of ["", "create", "list", "get", "publish", "delete", "launch"]) {
+    for (const help of ["--help", "-h"]) {
+      const result = await invoke(["template", ...(action ? [action] : []), help]);
+      expect(result.code).toBe(0);
+      expect(result.requests).toHaveLength(0);
+      for (const text of [
+        "--file",
+        "--host UUID --provider docker",
+        "--scope",
+        "--expected-revision",
+        "--request-key",
+        "--prompt",
+        "--ttl",
+        "--size",
+        "--repo",
+      ])
+        expect(result.out).toContain(text);
+    }
+  }
 });
 
 // A name can disappear after admission, but the canonical ID must still reach durable replay.
@@ -395,5 +401,22 @@ test("template CLI sends secret references through repeatable flags and definiti
     expect(((await result.requests.at(-1)!.json()) as { definition: unknown }).definition).toMatchObject({
       secrets: [binding],
     });
+  }
+});
+
+test("template help does not swallow literal prompt values or names after the terminator", async () => {
+  for (const entry of [
+    {
+      args: ["template", "launch", id, "--request-key", "literal_prompt", "--prompt", "-h"],
+      field: "prompt",
+      value: "-h",
+    },
+    { args: ["template", "create", "--file", "definition.json", "--", "--help"], field: "name", value: "--help" },
+  ]) {
+    const result = await invoke(entry.args);
+    expect(result.code).toBe(0);
+    expect(result.requests).toHaveLength(1);
+    expect(await result.requests[0]?.json()).toMatchObject({ [entry.field]: entry.value });
+    expect(result.out).not.toContain("Launch templates (");
   }
 });

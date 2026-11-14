@@ -208,3 +208,12 @@ not erasure of backups, provider disks or events.
 
 Staging acceptance, including multi-user visibility, replay, secret canaries and
 later-turn rehydration, is in [deployed checks](post-deploy-smoke.md#targeted-staging-checks).
+
+### Help and literal arguments
+
+Use `armada template --help` or `armada template <action> -h` at the
+command boundary. A help-like token inside an operation is not a help request:
+for example, `--prompt -h` supplies the literal prompt `-h`, and
+`template create --file definition.json -- --help` supplies a literal template
+name after the terminator. Malformed operations still fail validation rather
+than silently showing help. No launch or definition handling changes otherwise.
