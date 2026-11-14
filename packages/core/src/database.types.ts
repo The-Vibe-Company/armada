@@ -3285,6 +3285,168 @@ export type Database = {
           },
         ];
       };
+      otto_intentions: {
+        Row: {
+          id: string;
+          objective_id: string;
+          org_id: string;
+          owner_id: string;
+          idempotency_key: string;
+          kind: string;
+          payload: Json;
+          state: string;
+          result: Json | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          objective_id: string;
+          org_id: string;
+          owner_id: string;
+          idempotency_key: string;
+          kind: string;
+          payload: Json;
+          state?: string;
+          result?: Json | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          objective_id?: string;
+          org_id?: string;
+          owner_id?: string;
+          idempotency_key?: string;
+          kind?: string;
+          payload?: Json;
+          state?: string;
+          result?: Json | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "otto_intentions_objective_id_org_id_owner_id_fkey";
+            columns: ["objective_id", "org_id", "owner_id"];
+            isOneToOne: false;
+            referencedRelation: "otto_objectives";
+            referencedColumns: ["id", "org_id", "owner_id"];
+          },
+          {
+            foreignKeyName: "otto_intentions_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "otto_intentions_owner_id_fkey";
+            columns: ["owner_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      otto_interview_revisions: {
+        Row: {
+          objective_id: string;
+          revision: number;
+          org_id: string;
+          owner_id: string;
+          event: string;
+          snapshot: Json;
+          created_at: string;
+        };
+        Insert: {
+          objective_id: string;
+          revision: number;
+          org_id: string;
+          owner_id: string;
+          event: string;
+          snapshot: Json;
+          created_at?: string;
+        };
+        Update: {
+          objective_id?: string;
+          revision?: number;
+          org_id?: string;
+          owner_id?: string;
+          event?: string;
+          snapshot?: Json;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "otto_interview_revisions_objective_id_org_id_owner_id_fkey";
+            columns: ["objective_id", "org_id", "owner_id"];
+            isOneToOne: false;
+            referencedRelation: "otto_interviews";
+            referencedColumns: ["objective_id", "org_id", "owner_id"];
+          },
+          {
+            foreignKeyName: "otto_interview_revisions_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "otto_interview_revisions_owner_id_fkey";
+            columns: ["owner_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      otto_interviews: {
+        Row: {
+          objective_id: string;
+          org_id: string;
+          owner_id: string;
+          revision: number;
+          snapshot: Json;
+        };
+        Insert: {
+          objective_id: string;
+          org_id: string;
+          owner_id: string;
+          revision: number;
+          snapshot: Json;
+        };
+        Update: {
+          objective_id?: string;
+          org_id?: string;
+          owner_id?: string;
+          revision?: number;
+          snapshot?: Json;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "otto_interviews_objective_id_org_id_owner_id_fkey";
+            columns: ["objective_id", "org_id", "owner_id"];
+            isOneToOne: true;
+            referencedRelation: "otto_objectives";
+            referencedColumns: ["id", "org_id", "owner_id"];
+          },
+          {
+            foreignKeyName: "otto_interviews_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "otto_interviews_owner_id_fkey";
+            columns: ["owner_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       otto_objective_messages: {
         Row: {
           id: string;
@@ -4828,6 +4990,9 @@ export type Org = Database["public"]["Tables"]["orgs"]["Row"];
 export type OttoEnginePreferenceRow = Database["public"]["Tables"]["otto_engine_preferences"]["Row"];
 export type OttoFactRow = Database["public"]["Tables"]["otto_facts"]["Row"];
 export type OttoGitHubPageRow = Database["public"]["Tables"]["otto_github_pages"]["Row"];
+export type OttoIntentionRow = Database["public"]["Tables"]["otto_intentions"]["Row"];
+export type OttoInterviewRevisionRow = Database["public"]["Tables"]["otto_interview_revisions"]["Row"];
+export type OttoInterviewRow = Database["public"]["Tables"]["otto_interviews"]["Row"];
 export type OttoObjectiveMessageRow = Database["public"]["Tables"]["otto_objective_messages"]["Row"];
 export type OttoObjectiveRow = Database["public"]["Tables"]["otto_objectives"]["Row"];
 export type OttoOrphanDayRow = Database["public"]["Tables"]["otto_orphan_days"]["Row"];

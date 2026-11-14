@@ -4,6 +4,7 @@ import type { Route } from "../http.ts";
 import { createOttoApi } from "./api.ts";
 import { createOttoEngineApi } from "./engine-api.ts";
 import { createOttoEvidenceApi } from "./evidence-api.ts";
+import { createOttoInterviewRoute, type OttoInterviewToolsOptions } from "./interview-tools.ts";
 import { createOttoObjectivesApi } from "./objectives-api.ts";
 import type { OttoScope } from "./observation.ts";
 import { createOttoTicketApi } from "./ticket-tools.ts";
@@ -16,6 +17,7 @@ export function createOttoRoutes(options: {
   scopes: readonly OttoScope[];
   authenticate: (request: Request) => Promise<CallerResult>;
   canReadRepository: (caller: Caller, repository: string) => Promise<boolean>;
+  interview?: Pick<OttoInterviewToolsOptions, "sessions" | "readFile">;
   observerToken?: string | undefined;
   encryptionKey?: string | undefined;
 }): Route[] {
@@ -28,6 +30,13 @@ export function createOttoRoutes(options: {
     return false;
   };
   return [
+    createOttoInterviewRoute({
+      sql,
+      reader: options.reader,
+      key: options.encryptionKey,
+      authenticate,
+      ...options.interview,
+    }),
     createOttoObjectivesApi(sql, authenticate),
     createOttoTicketApi(sql, authenticate),
     createOttoWaitsApi(sql, authenticate),

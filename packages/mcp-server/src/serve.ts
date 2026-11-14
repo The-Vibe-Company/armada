@@ -55,6 +55,8 @@ import { createModelAuthOwnership } from "./model-auth.ts";
 import { createModelUsageApi } from "./model-usage.ts";
 import type { NamedLaunchCredentials } from "./named-credentials.ts";
 import { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
+import { createOttoEngineSessions, isOttoInterviewProviderSandbox } from "./otto/engine-session.ts";
+import { createOttoRepositoryFileReader } from "./otto/interview-tools.ts";
 import { createOttoRoutes } from "./otto/routes.ts";
 import { createOttoRuntime } from "./otto/runtime.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
@@ -197,13 +199,15 @@ export async function startServer(
       beforeResume: async (provider, id) => {
         if (!caller) throw Error("Native resume requires trusted Armada caller scope.");
         await modelAuth.beforeResume(provider, id, caller);
+        if (await isOttoInterviewProviderSandbox(sql, provider.id, id)) return false;
         return mcp.beforeResume(provider, id, caller);
       },
       beforePrompt: async (provider, id) => {
         if (!caller) throw Error("Native prompt requires trusted Armada caller scope.");
-        await mcp.beforePrompt(provider, id, caller);
+        const interview = await isOttoInterviewProviderSandbox(sql, provider.id, id);
+        if (!interview) await mcp.beforePrompt(provider, id, caller);
         await modelAuth.beforePrompt(provider, id, caller);
-        await sandboxArmadaAccess.beforePrompt(provider, id);
+        if (!interview) await sandboxArmadaAccess.beforePrompt(provider, id);
       },
       beforeSnapshot: async (provider, id) => {
         if (caller) await modelAuth.capture(provider, id, caller);
@@ -231,8 +235,10 @@ export async function startServer(
     publicUrl: config.publicUrl,
     github: { store, app: githubApp },
     beforePrompt: async (provider, id, caller) => {
-      await mcp.beforePrompt(provider, id, caller);
-      await sandboxArmadaAccess.beforePrompt(provider, id);
+      if (!(await isOttoInterviewProviderSandbox(sql, provider.id, id))) {
+        await mcp.beforePrompt(provider, id, caller);
+        await sandboxArmadaAccess.beforePrompt(provider, id);
+      }
     },
   });
   const modalProviderFor: typeof modal.modalProviderFor = async (...args) =>
@@ -622,6 +628,32 @@ export async function startServer(
         : []),
       ...(otto ? [otto.route] : []),
       ...createOttoRoutes({
+        interview: {
+          sessions: createOttoEngineSessions({
+            sql,
+            key: config.encryptionKey,
+            origin: config.publicUrl,
+            data,
+            credentials: launchCredentials(store, config.encryptionKey, undefined, modelAuth, {
+              store,
+              app: githubApp,
+            }),
+            provider: (golden, caller) => providers.resolve(golden, caller),
+            sandboxProvider: (sandbox, caller) =>
+              sandbox.provider === "modal"
+                ? modal.storedProviderFor(sandbox, caller)
+                : providers.resolve(sandbox, caller),
+            launch,
+            commands: runtimeCommands,
+            runtimeSend,
+          }),
+          readFile: createOttoRepositoryFileReader((caller) =>
+            resolveGitHubAccess(
+              { store, app: githubApp, encryptionKey: config.encryptionKey, caller: "account_status" },
+              caller.userId,
+            ),
+          ),
+        },
         reader: store,
         sql: ottoSql ?? sql,
         scopes: otto?.scopes ?? [],
