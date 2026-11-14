@@ -76,11 +76,13 @@ r.tool('status',id=sys.argv[3]);r.tool('stop',id=sys.argv[3])`;
     expect(code, errors).toBe(0);
     expect(output).not.toContain(token);
     expect(incoming).toHaveLength(4);
-    expect(incoming.slice(2)).toEqual(incoming.slice(0, 2));
+    // CLI defaults to recorded state; the lifecycle checker retains its existing detail read.
+    expect(incoming[0]).toMatchObject({ body: { id, org, recorded: true } });
+    expect(incoming[2]).toEqual({ ...(incoming[0] as Record<string, unknown>), body: { id, org } });
+    expect(incoming[3]).toEqual(incoming[1]);
     expect(forwarded).toHaveLength(4);
-    expect(forwarded.slice(2)).toEqual(forwarded.slice(0, 2));
     expect(forwarded).toEqual([
-      { url: "https://control.test/api/v1/sandbox/status", body: { id, org } },
+      { url: "https://control.test/api/v1/sandbox/status", body: { id, org, recorded: true } },
       { url: "https://control.test/api/v1/sandbox/stop", body: { id, org } },
       { url: "https://control.test/api/v1/sandbox/status", body: { id, org } },
       { url: "https://control.test/api/v1/sandbox/stop", body: { id, org } },
