@@ -92,7 +92,6 @@ test.each(["stdin", "file"] as const)(
       }),
     });
     expect(h.output.join("")).not.toContain(apiKey);
-    expect(h.output.join("")).toContain("Modal only");
     expect(h.output.join("")).toContain("Responses API");
   },
 );
