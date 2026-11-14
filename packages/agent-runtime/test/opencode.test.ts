@@ -125,6 +125,27 @@ test("OpenCode uses Azure Responses without duplicating v1 on Azure OpenAI or lo
   }
 });
 
+test("OpenCode uses native OpenAI Responses for a sealed OpenAI connection", () => {
+  const env: Record<string, string> = {
+    OPENCODE_API_KEY: "fake-openai-key",
+    [OPENCODE_ENDPOINT_ENV]: JSON.stringify({
+      version: 1,
+      protocol: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      models: ["gpt-test"],
+    }),
+  };
+  configureOpenCodeEndpoint(env);
+  const config = JSON.parse(env.OPENCODE_CONFIG_CONTENT ?? "{}");
+  expect(config.provider.armada).toMatchObject({
+    npm: "@ai-sdk/openai",
+    options: { baseURL: "https://api.openai.com/v1", apiKey: "fake-openai-key" },
+    models: { "gpt-test": { name: "gpt-test" } },
+  });
+  expect(env.OPENCODE_API_KEY).toBeUndefined();
+  expect(env[OPENCODE_ENDPOINT_ENV]).toBeUndefined();
+});
+
 // A failed native export must not turn an older JSON export into a false continuity proof.
 test("OpenCode refuses stale history and checkpoint after an unacknowledged export", async () => {
   const { HarnessState } = await import("../src/state.ts");

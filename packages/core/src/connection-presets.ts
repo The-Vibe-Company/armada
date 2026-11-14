@@ -17,6 +17,7 @@ export type ConnectionPresetId =
   | "openai"
   | "anthropic"
   | "opencode-anthropic"
+  | "opencode-openai"
   | "opencode"
   | "deepseek"
   | "azure-foundry"
@@ -45,7 +46,7 @@ export interface ConnectionPreset {
   /** Azure's optional api-version query parameter. */
   apiVersion?: boolean;
   /** Runtime protocol, fixed by the preset rather than free-form SDK/package input. */
-  protocol?: "anthropic" | "azure";
+  protocol?: "anthropic" | "azure" | "openai";
   /** The models.dev provider whose agent-capable models are offered. */
   catalog?: CatalogProvider;
   /** Where the key is created. */
@@ -70,6 +71,16 @@ export const CONNECTION_PRESETS: readonly ConnectionPreset[] = [
     models: "harness",
     baseUrl: null,
     keyHint: "From console.anthropic.com. Billed per token.",
+  },
+  {
+    id: "opencode-openai",
+    label: "OpenAI for OpenCode",
+    kind: "opencode",
+    hint: "OpenAI Responses API with OpenCode, billed per token",
+    models: "choose",
+    baseUrl: "https://api.openai.com/v1",
+    protocol: "openai",
+    keyHint: "From platform.openai.com. For Codex, choose OpenAI API key instead. Not a ChatGPT subscription.",
   },
   {
     id: "opencode-anthropic",

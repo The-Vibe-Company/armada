@@ -213,3 +213,28 @@ list and take neither address nor model options. Add `--org` for an authorized
 shared account. This command creates accounts; the existing version-checked
 replacement/import commands remain unchanged. Preset catalog prices are captured
 by the same core serializer as dashboard creation; unknown prices remain unknown.
+
+## OpenAI Responses connections for OpenCode (#1579)
+
+Choose **OpenAI for OpenCode**, not **OpenAI API key** (the Codex account).
+The shared preset fixes the official OpenAI address and selects the pinned
+native OpenAI SDK's Responses API. The generic **Other OpenAI-compatible**
+chat-completions route remains unchanged for other providers. No ChatGPT
+subscription import or automatic conversion of an existing account is implied.
+
+```sh
+armada creds connect opencode-openai --name 'OpenAI coding' \
+  --models gpt-6.1-sol --file /private/openai-key
+```
+
+This creates a named `opencode` account with a sealed `protocol: "openai"`
+endpoint. Model IDs retain the `armada/` launch namespace. Credentials stay in
+private native configuration; the user supplies neither a URL nor connection
+JSON. Prices are unknown unless explicitly saved; an API key does not imply a
+ChatGPT plan or a known per-token price for a custom model name.
+
+After normal deployment, the coordinator can add `opencode-openai` account cases
+for Modal and the owned Docker host and run the existing
+`--parity --accounts` command above. Verify answer, follow-up, stop/resume recall,
+tokens, honest cost classification and cleanup. Deterministic tests prove sealed
+configuration/CLI routing, not a successful live OpenAI lifecycle.

@@ -4,7 +4,7 @@ export interface OpenCodeEndpoint {
   baseUrl: string;
   models: string[];
   /** Absent preserves existing OpenAI-compatible connections. */
-  protocol?: "anthropic" | "azure";
+  protocol?: "anthropic" | "azure" | "openai";
 }
 export const OPENCODE_ENDPOINT_ENV = "ARMADA_OPENCODE_ENDPOINT";
 /**
@@ -20,7 +20,10 @@ export function parseOpenCodeEndpoint(value: unknown): OpenCodeEndpoint {
   const row = value as Record<string, unknown>;
   if (
     row.version !== 1 ||
-    (row.protocol !== undefined && row.protocol !== "anthropic" && row.protocol !== "azure") ||
+    (row.protocol !== undefined &&
+      row.protocol !== "anthropic" &&
+      row.protocol !== "azure" &&
+      row.protocol !== "openai") ||
     typeof row.baseUrl !== "string" ||
     row.baseUrl.length > 4096 ||
     Object.keys(row).some((key) => !["version", "baseUrl", "models", "protocol"].includes(key))
@@ -43,7 +46,9 @@ export function parseOpenCodeEndpoint(value: unknown): OpenCodeEndpoint {
     version: 1,
     baseUrl: url.toString().replace(/\/+$/, ""),
     models: [...new Set(row.models)],
-    ...(row.protocol === "anthropic" || row.protocol === "azure" ? { protocol: row.protocol } : {}),
+    ...(row.protocol === "anthropic" || row.protocol === "azure" || row.protocol === "openai"
+      ? { protocol: row.protocol }
+      : {}),
   };
 }
 
