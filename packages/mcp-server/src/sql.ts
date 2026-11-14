@@ -56,7 +56,30 @@ export function sqlOver(driver: SqlDriver): Sql {
 
 /** `Sql` over Bun's Postgres client, for the privileged `ARMADA_DATABASE_URL` connection. */
 export function bunSql(url: string, max = 3, queryTimeoutMs?: number): Sql & { close(): Promise<void> } {
+  let address: URL;
+  try {
+    address = new URL(url);
+  } catch {
+    throw new Error("Invalid database URL.");
+  }
+  const transactionPooler = address.hostname.toLowerCase().endsWith(".pooler.supabase.com") && address.port === "6543";
+  // Supabase shared transaction pooling cannot retain named statements across backend leases.
+  // Bun 1.4.2 unnamed binds need explicit Date/JSON encoding (fixed upstream in 1.4.4).
+  const parameters = (params: never[]): never[] =>
+    transactionPooler
+      ? (params.map((value: unknown) => {
+          if (value instanceof Date) return value.toISOString();
+          if (
+            value !== null &&
+            typeof value === "object" &&
+            (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null)
+          )
+            return JSON.stringify(value);
+          return value;
+        }) as never[])
+      : params;
   const options = {
+    ...(transactionPooler ? { prepare: false } : {}),
     connectionTimeout: queryTimeoutMs ? 1 : 5,
     idleTimeout: 30,
     ...(queryTimeoutMs ? { connection: { statement_timeout: queryTimeoutMs } } : {}),
@@ -69,18 +92,24 @@ export function bunSql(url: string, max = 3, queryTimeoutMs?: number): Sql & { c
       autonomous: async (text, params) => {
         const connection = await measureDbAcquire(() => autonomous.reserve());
         try {
-          return await connection.unsafe(text, params);
+          return await connection.unsafe(text, parameters(params));
         } finally {
           connection.release();
         }
       },
-      reserve: () => client.reserve(),
-      unsafe: (text, params) => client.unsafe(text, params),
+      reserve: async () => {
+        const connection = await client.reserve();
+        return {
+          unsafe: (text, params) => connection.unsafe(text, parameters(params)),
+          release: () => connection.release(),
+        };
+      },
+      unsafe: (text, params) => client.unsafe(text, parameters(params)),
       begin: async (work) => {
         const connection = await measureDbAcquire(() => client.reserve());
         try {
           return await connection.begin((transaction) =>
-            work({ unsafe: (text, params) => transaction.unsafe(text, params) }),
+            work({ unsafe: (text, params) => transaction.unsafe(text, parameters(params)) }),
           );
         } finally {
           connection.release();
