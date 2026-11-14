@@ -438,3 +438,30 @@ test("core mutations reject an out-of-org row even if a privileged store returns
   await expect(snapshotGolden(provider, store, admin, "web")).rejects.toMatchObject({ code: "not_found" });
   expect(effects).toBe(0);
 });
+
+describe("additive golden configuration", () => {
+  test("repeated additions preserve stored metadata and canonical URL aliases are idempotent", async () => {
+    const { addGoldenRepositories } = await import("../src/server.ts");
+    const existing = parseGoldenConfig({
+      repos: [{ url: "https://github.com/acme/web.git", branch: "feature/login", dir: "frontend" }],
+      init: ["bun install", "make deps"],
+    });
+    const result = addGoldenRepositories(existing, ["https://github.com/acme/api.git@release/v2"]);
+    expect(result).toEqual({
+      repos: [...existing.repos, { url: "https://github.com/acme/api.git", branch: "release/v2", dir: "api" }],
+      init: existing.init,
+    });
+    expect(addGoldenRepositories(result, ["git@github.com:acme/api.git@release/v2"])).toEqual(result);
+    expect(addGoldenRepositories(existing, ["git@github.com:acme/web.git@feature/login"])).toEqual(existing);
+  });
+
+  test.each([
+    ["https://github.com/acme/web.git@other", "different branch"],
+    ["https://github.com/other/web.git", "used twice"],
+  ])("additive updates refuse unsafe replacement or directory collision (%s)", async (addition, cause) => {
+    const { addGoldenRepositories } = await import("../src/server.ts");
+    const existing = parseGoldenConfig({ repos: [{ url: "https://github.com/acme/web.git" }], init: ["bun install"] });
+    expect(() => addGoldenRepositories(existing, [addition])).toThrow(cause);
+    expect(() => addGoldenRepositories(existing, [addition])).toThrow("complete desired repository list");
+  });
+});

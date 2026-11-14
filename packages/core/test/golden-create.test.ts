@@ -633,6 +633,8 @@ test("rebuild retains last-good artifacts/config through scan, snapshot and SQL 
           if (integrityFailure)
             throw new GoldenError("build_failed", "closed integrity failure", {
               safeReason: "skillpack_integrity_failed",
+              safeMessage: "Build failed during skillpack (exit_98).",
+              safePhase: "skillpack",
             });
         },
       },
@@ -648,6 +650,7 @@ test("rebuild retains last-good artifacts/config through scan, snapshot and SQL 
     expect(await jobs.status(actor.userId, rejectedBuild.jobId)).toMatchObject({
       state: "failed",
       failureReason: "skillpack_integrity_failed",
+      phase: "skillpack",
       result: null,
     });
     expect((await store.findByName(actor.orgId, "web"))[0]?.providerSnapshotId).toBe(changed.providerSnapshotId);

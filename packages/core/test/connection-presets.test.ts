@@ -33,10 +33,28 @@ test("every preset names a model credential kind and offers its catalog's models
   ]);
   for (const entry of CONNECTION_PRESETS) {
     if (entry.models === "harness") expect(entry.baseUrl).toBeNull();
-    if (entry.catalog) expect(presetModels(entry).length).toBeGreaterThan(0);
+    if (entry.catalog && !entry.deploymentNames) expect(presetModels(entry).length).toBeGreaterThan(0);
   }
   expect(presetModels(preset("openai-compatible"))).toEqual([]);
 });
+
+test.each(["azure-foundry", "opencode-azure"])(
+  "%s requires actual resource deployments, never a guessed catalog or price",
+  (id) => {
+    const azure = preset(id);
+    expect(azure.deploymentNames).toBe(true);
+    expect(presetModels(azure)).toEqual([]);
+    const value = JSON.parse(
+      presetConnectionValue(azure, {
+        baseUrl: "https://resource.openai.azure.com/openai/v1",
+        apiKey: "fake-azure-key",
+        models: ["gpt-4.1"],
+      }),
+    );
+    expect(value.prices).toBeUndefined();
+    expect(azure.kind === "openai" ? value.models : value.endpoint.models).toEqual(["gpt-4.1"]);
+  },
+);
 
 test("a DeepSeek connection saves an OpenCode endpoint at the fixed address with catalog prices only", () => {
   const deepseek = preset("deepseek");
@@ -108,6 +126,8 @@ test("preset input errors never repeat the key", () => {
     ["openai-compatible", { baseUrl: "https://ok.example/v1", apiKey: `${key} x`, models: ["m"] }],
     ["openrouter", { baseUrl: "", apiKey: key, models: ["bad model"] }],
     ["deepseek", { baseUrl: "", apiKey: key, models: ["m"], apiVersion: "1" }],
+    ["azure-foundry", { baseUrl: "https://proxy.example/openai/v1", apiKey: key, models: ["m"] }],
+    ["opencode-azure", { baseUrl: "https://proxy.example/openai/v1", apiKey: key, models: ["m"] }],
     ["openai", { baseUrl: "", apiKey: key, models: ["m"] }],
   ];
   for (const [id, input] of cases) {

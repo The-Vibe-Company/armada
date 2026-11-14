@@ -4,6 +4,7 @@
  * come from the reviewed models.dev snapshot in `pricing/connection-catalog.json`; nothing is fetched at runtime.
  * Browser-safe: no Node builtins.
  */
+import { validateAzureOpenAIAddress } from "./azure-endpoint.ts";
 import { parseCredentialValue } from "./credentials.ts";
 import type { ModelPriceOverrides } from "./model-price-overrides.ts";
 import { CONNECTION_MODEL_ID, MAX_CONNECTION_MODELS, OPENCODE_CONNECTION_PROVIDER } from "./opencode-endpoint.ts";
@@ -45,6 +46,8 @@ export interface ConnectionPreset {
   addressHint?: string;
   /** Azure's optional api-version query parameter. */
   apiVersion?: boolean;
+  /** Azure uses resource deployment names, never generic model catalog IDs or their inferred prices. */
+  deploymentNames?: true;
   /** Runtime protocol, fixed by the preset rather than free-form SDK/package input. */
   protocol?: "anthropic" | "azure" | "openai";
   /** The models.dev provider whose agent-capable models are offered. */
@@ -113,6 +116,7 @@ export const CONNECTION_PRESETS: readonly ConnectionPreset[] = [
   },
   {
     id: "azure-foundry",
+    deploymentNames: true,
     label: "Azure AI Foundry",
     kind: "openai",
     hint: "Your Foundry resource, Responses API",
@@ -127,6 +131,7 @@ export const CONNECTION_PRESETS: readonly ConnectionPreset[] = [
   },
   {
     id: "opencode-azure",
+    deploymentNames: true,
     label: "Azure for OpenCode",
     kind: "opencode",
     hint: "Azure OpenAI or Foundry v1 Responses API with OpenCode",
@@ -176,7 +181,7 @@ export interface CatalogModel {
 
 /** The known agent-capable models of a preset, newest first; empty when it has no catalog. */
 export function presetModels(preset: ConnectionPreset): readonly CatalogModel[] {
-  return preset.catalog ? (catalog.providers[preset.catalog] as CatalogModel[]) : [];
+  return preset.catalog && !preset.deploymentNames ? (catalog.providers[preset.catalog] as CatalogModel[]) : [];
 }
 
 /**
@@ -243,6 +248,7 @@ export function presetConnectionValue(preset: ConnectionPreset, input: PresetCon
     ...(prices ? { prices } : {}),
   };
   try {
+    if (preset.deploymentNames) validateAzureOpenAIAddress(baseUrl);
     return parseCredentialValue(preset.kind, JSON.stringify(value));
   } catch {
     throw new VaultError(

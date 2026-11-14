@@ -11,6 +11,7 @@ import { decryptSecret, encryptSecret } from "@armada/core/server";
 import { createSqlData } from "./data.ts";
 import type { Route } from "./http.ts";
 import { type createRuntimeEnrolments, RuntimeEnrolmentDenied } from "./runtime-enrolment.ts";
+import { runtimeHttpFailure } from "./runtime-http-failure.ts";
 import type { RuntimeNativePublication } from "./runtime-native-auth.ts";
 import { logRuntimeStage } from "./runtime-progress.ts";
 import { admittedTurnContexts } from "./turn-pricing.ts";
@@ -268,18 +269,13 @@ export function createRuntimeEvents(
                 : error instanceof UnsupportedNativeAuth
                   ? 501
                   : 503;
-      return Response.json(
-        {
-          error:
-            status === 401
-              ? "runtime_enrolment_denied"
-              : status === 501
-                ? "runtime_native_auth_not_supported"
-                : status === 503
-                  ? "runtime_unavailable"
-                  : "invalid_runtime_events",
-        },
-        { status, headers },
+      return runtimeHttpFailure(
+        status,
+        status === 501
+          ? "runtime_native_auth_not_supported"
+          : status === 401 || status === 503
+            ? undefined
+            : "invalid_runtime_events",
       );
     }
   };

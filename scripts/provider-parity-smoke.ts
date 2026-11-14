@@ -38,6 +38,10 @@ const localCodes = new Set([
   "harness_not_advertised",
   "invalid_launch_receipt",
   "invalid_exec_receipt",
+  "invalid_idle_receipt",
+
+  "invalid_control_receipt",
+  "control_turn_not_active",
   "invalid_status_receipt",
   "invalid_logs_receipt",
   "delete_unconfirmed",
@@ -54,22 +58,22 @@ const steps = {
   logs: "logs",
   exec: "exec",
   github: "github",
+  "idle-pause": "status",
+  "wake-on-send": "followupPrompts",
   stop: "stop",
   resume: "resume",
+  steer: "steer",
+  interrupt: "interrupt",
   delete: "delete",
 } as const;
 // Stable feature IDs are also the --feature vocabulary. Unimplemented probes are
 // explicit not-run debt, never inferred support or a successful proof.
+const harnessFeatures = { codex: "codex", "claude-code": "claude", opencode: "opencode" } as const;
 const features = [
   ...Object.keys(steps),
   "launch-default",
   "launch-snapshot",
-  "steer",
-  "interrupt",
   "resume-recall",
-  // #1562: explicit debt rows; manual stop/resume is not idle-pause/wake proof.
-  "idle-pause",
-  "wake-on-send",
   "repository-refresh",
   "readable-variables",
   "application-secrets",
@@ -317,10 +321,49 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
               ? "feature_filtered"
               : "probe_not_implemented",
       );
+  let idleDelay: number | undefined;
+  if (!feature || ["idle-pause", "wake-on-send"].includes(feature)) {
+    try {
+      const response = await io.fetch(`${origin}/healthz`, {
+        method: "GET",
+        redirect: "error",
+        signal: AbortSignal.timeout(10_000),
+        headers: { authorization: `Bearer ${env.ARMADA_TOKEN}` },
+      });
+      const health = (await response.json()) as { idlePauseDelayMs?: number };
+      if (response.ok && Number.isSafeInteger(health.idlePauseDelayMs) && (health.idlePauseDelayMs ?? 0) > 0)
+        idleDelay = health.idlePauseDelayMs;
+    } catch {
+      /* Missing diagnostics are explicit not-run, never a guessed delay. */
+    }
+  }
   let starts = 0;
   for (const c of cases) {
+    const idleFeature = feature && ["idle-pause", "wake-on-send"].includes(feature);
+    const idleUnavailable =
+      idleDelay === undefined
+        ? "idle_delay_not_advertised"
+        : io.now() + idleDelay + 180_000 >= deadline
+          ? "idle_observation_exceeds_run_budget"
+          : undefined;
+    if (idleUnavailable) {
+      for (const name of ["idle-pause", "wake-on-send"])
+        if (!feature || feature === name) record(name, c.provider, "not-run", idleUnavailable);
+      if (idleFeature) continue;
+    }
+    const harnessFeature = c.harness === "claude" ? "claude-code" : c.harness;
+    const requestedHarness = feature && Object.hasOwn(harnessFeatures, feature);
+    for (const name of Object.keys(harnessFeatures))
+      if ((!feature || feature === name) && name !== harnessFeature)
+        record(name, c.provider, "not-run", "harness_account_not_configured");
+    if (requestedHarness && feature !== harnessFeature) continue;
     // A not-yet-implemented row must not allocate compute merely to print debt.
-    if (feature && !Object.hasOwn(steps, feature) && !["resume-recall", "usage", "exact-cost"].includes(feature))
+    if (
+      feature &&
+      !Object.hasOwn(steps, feature) &&
+      !["resume-recall", "usage", "exact-cost"].includes(feature) &&
+      !requestedHarness
+    )
       continue;
     if (feature === "github" && !c.githubRepository) {
       record("github", c.provider, "not-run", "github_repository_not_configured");
@@ -413,34 +456,61 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           const [whole, fraction = ""] = value.split(".");
           return BigInt(whole!) * 10n ** 18n + BigInt(fraction.padEnd(18, "0"));
         };
-        if (io.accountProbe && usage.cost?.unknown && usage.cost.usd === null) {
+        const classification = usage.cost?.classification;
+        if (!["priced", "included_in_subscription", "unknown"].includes(classification ?? ""))
+          throw new Error("invalid_cost_receipt");
+        if (
+          classification === "included_in_subscription" &&
+          (usage.cost?.basis !== "api_equivalent" ||
+            usage.turns.some(
+              (turn) =>
+                turn.pricing?.billing !== "subscription" ||
+                typeof turn.pricing.credentialId !== "string" ||
+                !turn.pricing.credentialId,
+            ))
+        )
+          throw new Error("invalid_cost_receipt");
+        if (usage.cost?.unknown && usage.cost.usd === null) {
           const current = new Map<string, string>();
-          let unpriced = 0;
+          const unpriced = new Set<string>();
           const seen = new Set<string>();
           for (const turn of usage.turns) {
             const key = JSON.stringify([turn.promptId, turn.model]);
             if (seen.has(key)) throw new Error("invalid_cost_receipt");
             seen.add(key);
-            if (!turn.pricing || turn.pricing.unknown !== null) {
-              if (turn.pricing && turn.pricing.usd !== null) throw new Error("invalid_cost_receipt");
-              unpriced++;
-              continue;
-            }
-            units(turn.pricing.usd);
+            if (!turn.pricing) throw new Error("invalid_cost_receipt");
+            if (turn.pricing.unknown !== null) {
+              if (turn.pricing.usd !== null || turn.pricing.unknown !== "price")
+                throw new Error("invalid_cost_receipt");
+              unpriced.add(turn.promptId);
+            } else units(turn.pricing.usd);
             current.set(key, JSON.stringify(turn.pricing));
           }
           if (
             usage.cost.currency !== "USD" ||
-            unpriced === 0 ||
-            usage.cost.unpricedTurns !== unpriced ||
+            usage.cost.unknown !== "price" ||
+            classification === "priced" ||
+            unpriced.size === 0 ||
+            usage.cost.unpricedTurns !== unpriced.size ||
             [...retainedPrices].some(([key, value]) => current.get(key) !== value)
           )
             throw new Error("invalid_cost_receipt");
           for (const [key, value] of current) retainedPrices.set(key, value);
-          observe("exact-cost", "pass", `unknown: ${usage.cost.unknown}`);
+          observe(
+            "exact-cost",
+            "pass",
+            classification === "included_in_subscription"
+              ? "included in subscription"
+              : `unknown: ${usage.cost.unknown}`,
+          );
           return;
         }
-        if (usage.cost?.currency !== "USD" || usage.cost.unknown !== null || usage.cost.unpricedTurns !== 0)
+        if (
+          classification === "unknown" ||
+          usage.cost?.currency !== "USD" ||
+          usage.cost.unknown !== null ||
+          usage.cost.unpricedTurns !== 0
+        )
           throw new Error("invalid_cost_receipt");
         const current = new Map<string, string>();
         let sum = 0n;
@@ -458,14 +528,16 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           observe(
             "exact-cost",
             "pass",
-            io.accountProbe ? `${usage.cost.basis ?? "unknown basis"}: USD ${usage.cost.usd}` : null,
+            classification === "included_in_subscription"
+              ? "included in subscription"
+              : `${usage.cost.basis ?? "unknown basis"}: USD ${usage.cost.usd}`,
           );
       } catch (error) {
         const detail = diagnostic(error);
         observe("exact-cost", "fail", detail.code, detail);
       }
     }
-    async function runTurn(recall = false) {
+    async function runTurn(recall = false, strictRecall = false) {
       const turnStarted = io.now();
       if (!id) throw new Error("launch_not_available");
       const turn = await api<{ promptId: string }>("sandbox/send", {
@@ -490,7 +562,17 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           () =>
             api<{
               cursor?: string;
-              events: { at?: number; kind: string; promptId?: string; status?: string; text?: string }[];
+              events: {
+                at?: number;
+                kind: string;
+                promptId?: string;
+                status?: string;
+                text?: string;
+                partial?: boolean;
+                parentToolUseId?: string;
+                responseKind?: string;
+                retracted?: boolean;
+              }[];
             }>("logs/read", { id, ...(cursor ? { cursor } : {}) }),
           (page) => {
             for (const event of page.events) {
@@ -515,7 +597,15 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
             );
             answered ||= page.events.some(
               (e) =>
-                e.promptId === turn.promptId && e.kind === "message" && e.text?.includes(recall ? memory : "SMOKE_OK"),
+                e.promptId === turn.promptId &&
+                e.kind === "message" &&
+                (strictRecall
+                  ? e.text === memory &&
+                    e.partial === false &&
+                    !e.parentToolUseId &&
+                    e.responseKind !== "tool_result" &&
+                    !e.retracted
+                  : e.text?.includes(recall ? memory : "SMOKE_OK")),
             );
             return finished && answered;
           },
@@ -551,6 +641,172 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         );
       }
       await checkUsage(turn.promptId);
+    }
+    type IdleState = {
+      id: string;
+      status: string;
+      idlePaused?: boolean;
+      statusReason?: string | null;
+      expiresAt: string | null;
+      conversationIds: string[];
+    };
+    let idleBaseline: IdleState | undefined;
+    const sameRetainedState = (value: IdleState) => {
+      if (
+        !idleBaseline ||
+        value.id !== id ||
+        value.expiresAt !== idleBaseline.expiresAt ||
+        !Array.isArray(value.conversationIds) ||
+        JSON.stringify([...value.conversationIds].sort()) !== JSON.stringify([...idleBaseline.conversationIds].sort())
+      )
+        throw new Error("invalid_idle_receipt");
+    };
+    async function observeIdle() {
+      idleBaseline = await api<IdleState>("sandbox/detail", { id });
+      if (
+        idleBaseline.id !== id ||
+        !["ready", "running"].includes(idleBaseline.status) ||
+        !idleBaseline.expiresAt ||
+        !Number.isFinite(Date.parse(idleBaseline.expiresAt)) ||
+        !Array.isArray(idleBaseline.conversationIds) ||
+        idleBaseline.conversationIds.length === 0
+      )
+        throw new Error("invalid_idle_receipt");
+      if (idleDelay === undefined) throw new Error("invalid_idle_receipt");
+      const until = Math.min(deadline, io.now() + idleDelay + 180_000);
+      if (Date.parse(idleBaseline.expiresAt) <= until) throw new Error("invalid_idle_receipt");
+      await poll(
+        () => api<IdleState>("sandbox/detail", { id }),
+        (value) => {
+          sameRetainedState(value);
+          if (value.status === "stopped") {
+            if ((value.idlePaused !== undefined && value.idlePaused !== true) || value.statusReason !== "idle_paused")
+              throw new Error("invalid_idle_receipt");
+            return true;
+          }
+          if (!["ready", "running", "stopping"].includes(value.status)) throw new Error("invalid_idle_receipt");
+          return false;
+        },
+        Math.ceil((until - io.now()) / 1000) + 1,
+        until,
+      );
+      stopped = true;
+    }
+
+    async function controlTurn(action: "steer" | "interrupt") {
+      if (!id) throw new Error("launch_not_available");
+      const until = Math.min(deadline, io.now() + 110_000);
+      const previous = requestDeadline;
+      requestDeadline = until;
+      try {
+        const original = await api<{ promptId: string }>("sandbox/send", {
+          id,
+          prompt:
+            "Use your terminal tool to run sleep 90. Wait for it to finish before replying CONTROL_ORIGINAL. Do not modify files.",
+          ...(c.provider === "docker" ? { request_id: crypto.randomUUID() } : {}),
+        });
+        if (!original.promptId) throw new Error("invalid_turn_receipt");
+        await poll(
+          () =>
+            api<{ prompt: { promptId: string; state: string } | null }>("sandbox/wait", {
+              id,
+              prompt_id: original.promptId,
+              timeout_seconds: 0,
+            }),
+          (value) => {
+            if (value.prompt === null) return false;
+            if (value.prompt?.promptId !== original.promptId || value.prompt.state !== "running")
+              throw new Error("control_turn_not_active");
+            return true;
+          },
+          110,
+          until,
+        );
+        const marker = `PARITY_STEER_${crypto.randomUUID().replaceAll("-", "")}`;
+        const result = await api<{ id: string; interrupted?: boolean; delivery?: string; promptId?: string }>(
+          `sandbox/${action}`,
+          {
+            id,
+            ...(action === "steer"
+              ? { text: `Cancel the waiting task. Reply with exactly ${marker} and nothing else. Do not use tools.` }
+              : {}),
+            ...(c.provider === "docker" ? { request_id: crypto.randomUUID() } : {}),
+          },
+        );
+        if (
+          result.id !== id ||
+          (action === "interrupt"
+            ? result.interrupted !== true
+            : !["native", "restart"].includes(result.delivery ?? ""))
+        )
+          throw new Error("invalid_control_receipt");
+        if (action === "interrupt") {
+          await poll(
+            () =>
+              api<{ prompt: { promptId: string; state: string } | null }>("sandbox/wait", {
+                id,
+                prompt_id: original.promptId,
+                timeout_seconds: 0,
+              }),
+            (value) => {
+              if (value.prompt === null) return false;
+              if (value.prompt?.promptId !== original.promptId) throw new Error("invalid_control_receipt");
+              if (["finished", "failed"].includes(value.prompt.state)) throw new Error("invalid_control_receipt");
+              return value.prompt.state === "interrupted";
+            },
+            110,
+            until,
+          );
+        } else {
+          // Boat can return a steer-record ID rather than the restarted run ID.
+          // Match the unique redirected answer and terminal event on the SAME run.
+          const answered = new Set<string>();
+          const finished = new Set<string>();
+          let cursor: string | undefined;
+          await poll(
+            () =>
+              api<{
+                cursor?: string;
+                events: Array<{
+                  kind: string;
+                  promptId?: string;
+                  status?: string;
+                  text?: string;
+                  partial?: boolean;
+                  parentToolUseId?: string;
+                  responseKind?: string;
+                  retracted?: boolean;
+                }>;
+              }>("logs/read", {
+                id,
+                coalesce: true,
+                ...(cursor ? { cursor } : {}),
+              }),
+            (page) => {
+              if (!Array.isArray(page.events)) throw new Error("invalid_logs_receipt");
+              cursor = page.cursor;
+              for (const event of page.events) {
+                if (!event.promptId) continue;
+                if (
+                  event.kind === "message" &&
+                  event.text === marker &&
+                  event.partial === false &&
+                  !event.parentToolUseId &&
+                  event.responseKind !== "tool_result" &&
+                  !event.retracted
+                )
+                  answered.add(event.promptId);
+                if (event.kind === "prompt" && event.status === "finished") finished.add(event.promptId);
+              }
+              return [...answered].some((prompt) => finished.has(prompt));
+            },
+            110,
+            until,
+          );
+        }
+      } finally {
+        requestDeadline = previous;
+      }
     }
     async function deleteKnown() {
       if (!id) throw new Error("launch_not_available");
@@ -679,13 +935,15 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         !feature ||
         step === feature ||
         step === "launch" ||
-        step === "stop" ||
+        (step === "stop" && !["steer", "interrupt"].includes(feature ?? "")) ||
         step === "delete" ||
-        (feature === "github" && step === "send") ||
+        ((feature === "github" || idleFeature || requestedHarness) && step === "send") ||
+        (feature === "wake-on-send" && step === "idle-pause") ||
         (["resume", "resume-recall", "usage", "exact-cost"].includes(feature ?? "") &&
           ["send", "resume"].includes(step));
       if (!needed) continue;
       const selected = !feature || step === feature;
+      if (idleUnavailable && (step === "idle-pause" || step === "wake-on-send")) continue;
       if (step === "github" && !c.githubRepository) {
         record("github", c.provider, "not-run", "github_repository_not_configured");
         continue;
@@ -705,7 +963,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         record(
           selected ? step : `prerequisite:${step}`,
           c.provider,
-          blockedDiagnostic?.quota ? "not-run" : "fail",
+          blockedDiagnostic?.quota || blockedDiagnostic?.code === "unsupported" ? "not-run" : "fail",
           blockedDiagnostic?.quota ? "quota" : blocked,
           blockedDiagnostic,
         );
@@ -750,6 +1008,29 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           if (step === "send") {
             await runTurn();
             if (io.accountProbe) await runTurn(true);
+            if (!feature || requestedHarness) record(harnessFeature, c.provider, "pass");
+          } else if (step === "idle-pause") {
+            await observeIdle();
+          } else if (step === "wake-on-send") {
+            if (!idleBaseline || !stopped) throw new Error("invalid_idle_receipt");
+            // Wake admission may activate compute even if its acknowledgement is lost.
+            // Cleanup must no longer assume the earlier stopped observation is current.
+            stopped = false;
+            stopRequested = false;
+            // Ordinary send, never an explicit resume. Preserve the original deadline and conversation.
+            await runTurn(true, true);
+            const awake = await api<IdleState>("sandbox/detail", { id });
+            sameRetainedState(awake);
+            if (
+              !["ready", "running"].includes(awake.status) ||
+              awake.idlePaused === true ||
+              awake.statusReason === "idle_paused"
+            )
+              throw new Error("invalid_idle_receipt");
+            stopped = false;
+            stopRequested = false;
+          } else if (step === "steer" || step === "interrupt") {
+            await controlTurn(step);
           } else if (step === "exec") {
             const result = await api<{ exitCode: number | null; timedOut: boolean; stdout: string }>("sandbox/exec", {
               id,
@@ -845,7 +1126,11 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         record(
           selected ? step : `prerequisite:${step}`,
           c.provider,
-          detail.quota ? "not-run" : "fail",
+          detail.quota
+            ? "not-run"
+            : (step === "steer" || step === "interrupt") && detail.code === "unsupported"
+              ? "unsupported"
+              : "fail",
           detail.quota ? "quota" : detail.code,
           detail,
         );
@@ -860,6 +1145,21 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
             detail,
           );
       }
+    }
+    if ((!feature || requestedHarness) && report[harnessFeature]?.[c.provider]?.status !== "pass") {
+      const source = ["launch", "send"]
+        .map((step) => ({
+          step,
+          cell: report[feature ? `prerequisite:${step}` : step]?.[c.provider],
+        }))
+        .find(({ cell }) => cell && cell.status !== "pass");
+      record(
+        harnessFeature,
+        c.provider,
+        source?.cell?.status === "unsupported" ? "unsupported" : "not-run",
+        source ? `${source.step}: ${source.cell?.reason ?? source.cell?.status}` : "turn_not_observed",
+        source?.cell?.diagnostic,
+      );
     }
     // These probes already share the provider's lifecycle sandbox. If a
     // prerequisite prevents observation, report that cause, not implementation debt.

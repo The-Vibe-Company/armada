@@ -102,6 +102,7 @@ test("token-only golden create prints an actionable API conflict and exits nonze
   );
   expect(code).toBe(1);
   expect(errorOutput).toContain(message);
+  expect(JSON.parse(errorOutput.trim().split("\n").at(-1)!)).toEqual({ error: { code: "conflict", message } });
   expect(errorOutput).not.toContain(token);
   expect(output).toBe("");
   expect(requests).toBe(1);
@@ -172,15 +173,15 @@ for (const outcome of ["succeeded", "failed", "billing", "recovery", "disconnect
     for (const r of requests) expect(r.init).toMatchObject({ timeout: false, signal: expect.any(AbortSignal) });
     expect(output).toContain(jobId);
     expect(code).toBe(outcome === "succeeded" ? 0 : 1);
-    if (outcome === "failed") expect(error).toContain("build_failed");
+    if (outcome === "failed") expect(error).toContain("Build failed at secret_scan");
     if (outcome === "disconnected") expect(error).toContain("do not resubmit");
     if (outcome === "billing")
       expect(error.split("\n").find((line) => line.startsWith("armada: Build"))).toBe(
-        `armada: Build ${jobId}: failed (The Boat account cannot create machines: add billing or credits on Boat, then retry.).`,
+        `armada: Build ${jobId}: failed (Build failed at complete: The Boat account cannot create machines: add billing or credits on Boat, then retry.).`,
       );
     if (outcome === "recovery") {
       expect(error.split("\n").find((line) => line.startsWith("armada: Build"))).toBe(
-        `armada: Build ${jobId}: recovery_required (Recovery required; capacity is still held. Contact an operator or administrator to reconcile the original build before retrying.).`,
+        `armada: Build ${jobId}: recovery_required (Build failed at complete: The Boat account cannot create machines: add billing or credits on Boat. Recovery required; capacity is still held. Contact an operator or administrator to reconcile the original build before retrying.).`,
       );
       expect(error).not.toContain("then retry.");
     }
@@ -231,3 +232,49 @@ for (const state of ["succeeded", "queued"] as const) {
     expect(output).not.toContain(token);
   });
 }
+
+test("golden build-cancel sends only job and org through authenticated API and prints cancellation", async () => {
+  const jobId = "11111111-1111-4111-8111-111111111111";
+  const calls: { path: string; body: unknown; auth: string | null }[] = [];
+  let output = "";
+  const code = await run(
+    ["golden", "build-cancel", jobId, "--org", "org-id"],
+    {
+      out: (text) => {
+        output += text;
+      },
+      err: () => {},
+    },
+    {
+      auth: {
+        out: () => {},
+        err: () => {},
+        env: { ARMADA_TOKEN: token },
+        session: memorySessionStore(),
+        now: () => new Date(),
+        open: () => {},
+        fetch: async (input, init) => {
+          calls.push({
+            path: new URL(String(input)).pathname,
+            body: JSON.parse(String(init?.body)),
+            auth: new Headers(init?.headers).get("authorization"),
+          });
+          return Response.json({
+            jobId,
+            state: "failed",
+            phase: "queued",
+            errorCode: "build_failed",
+            failureReason: "detail:Build cancelled by its owner before a builder started.",
+            result: null,
+          });
+        },
+      },
+    },
+  );
+  expect(code).toBe(0);
+  expect(calls).toEqual([
+    { path: "/api/v1/golden/build/cancel", body: { jobId, org: "org-id" }, auth: "Bearer " + token },
+  ]);
+  expect(output).toContain("cancelled by its owner");
+  expect(output).not.toContain(token);
+});

@@ -92,6 +92,7 @@ Rules for a test:
 - a test that takes more than one second is rewritten or deleted;
 - a test that fails intermittently is deleted the day it is seen, not retried, not quarantined; if the behaviour matters, a cheaper deterministic test replaces it;
 - CI has no retries.
+- Do not restore `packages/agent-runtime/test/github-user-tools.test.ts` or an equivalent real Git/gh installation replay in unit CI. It timed out at five seconds, was deleted in #1557, restored by #1497, then deleted again in #1671. Real Git/gh installation and privilege-boundary verification belong in staging smoke; keep deterministic renewal/redaction checks at their owning unit boundary. This is a review instruction, not a test-duration lint rule.
 
 Adding a CI job or a required check is the owner's decision, never an agent's. Where something is tested: logic in a unit test; a provider, a golden, a full lifecycle in the post-deploy smoke; a screen by opening it on staging.
 

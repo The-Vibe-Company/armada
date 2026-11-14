@@ -32,7 +32,7 @@ else if (command === "export") {
       ? [step("new-tool", 5, 2, 0, 0, 1, "tool-calls"), step("new-answer", 1, 4, 2, 2, 1, "stop")]
       : []),
   ];
-  if (process.env.EXPORT_TOOLS) {
+  if (process.env.EXPORT_TOOLS || process.env.EXPORT_MCP) {
     for (const message of measured) {
       if (message.info.id === "new-answer") continue;
       const id = message.info.id;
@@ -58,8 +58,28 @@ else if (command === "export") {
         if (process.env.EXPORT_TOOLS === "foreign-session") part.sessionID = "foreign";
         if (process.env.EXPORT_TOOLS === "oversized") part.state.output = "x".repeat(65537);
       }
+      if (process.env.EXPORT_MCP) {
+        part.tool = "armada_fixture_read_counter";
+        Object.assign(part.state, {
+          input: { label: "fixture", nested: { a: 1, b: 2 } },
+          output: "native MCP result",
+          metadata: { truncated: false },
+        });
+        if (id !== "old") {
+          if (process.env.EXPORT_MCP === "failed") part.state.status = "error";
+          if (process.env.EXPORT_MCP === "truncated") part.state.metadata.truncated = true;
+          if (process.env.EXPORT_MCP === "foreign-session") part.sessionID = "foreign";
+          if (process.env.EXPORT_MCP === "unknown-server") part.tool = "foreign_read_counter";
+          if (process.env.EXPORT_MCP === "oversized") part.state.output = "x".repeat(65537);
+        }
+      }
       Object.assign(message, {
-        parts: [part, ...(id !== "old" && process.env.EXPORT_TOOLS === "duplicate" ? [part] : [])],
+        parts: [
+          part,
+          ...(id !== "old" && (process.env.EXPORT_TOOLS === "duplicate" || process.env.EXPORT_MCP === "duplicate")
+            ? [part]
+            : []),
+        ],
       });
     }
   }

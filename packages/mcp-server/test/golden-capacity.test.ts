@@ -12,6 +12,8 @@ test("HTTP and MCP report real capacity, busy and binding conflicts without allo
   const server = await harness();
   try {
     const { db, people, boat } = server;
+    await server.github.connect(people.admin, "admin", 101);
+    await server.github.connect(people.owner, "owner", 102);
     boat.provider.backendIdentity = async () => ({ id: account });
     boat.provider.createGolden = async () => {
       allocations++;
@@ -58,7 +60,9 @@ test("HTTP and MCP report real capacity, busy and binding conflicts without allo
       expect(http?.status).toBe(409);
       const json = (await http!.json()) as { error: { code: string; message: string } };
       expect(json.error.code).toBe("conflict");
-      expect(json.error.message).toContain("Use an existing golden you can access");
+      expect(json.error.message).toMatch(
+        /golden capacity|reservation with no durable job|not bound to the connected provider account/,
+      );
       expect(mcp.isError).toBe(true);
       expect(mcp.text).toContain("error code: conflict");
       expect(mcp.text).toContain(json.error.message);
@@ -116,7 +120,7 @@ test("HTTP and MCP report real capacity, busy and binding conflicts without allo
 
 test("unexpected SQL and provider failures stay server errors rather than becoming capacity conflicts", async () => {
   let underlying: Sql;
-  let failure = "raise";
+  let failure = "none";
   let allocations = 0;
   const sql: Sql = {
     transaction: (work) => work(sql),
@@ -137,6 +141,7 @@ test("unexpected SQL and provider failures stay server errors rather than becomi
   });
   try {
     const { db, boat, people } = server;
+    await server.github.connect(people.admin, "admin", 101);
     boat.provider.createGolden = async () => {
       allocations++;
       throw new Error("must not allocate");

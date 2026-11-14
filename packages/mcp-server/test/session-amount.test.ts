@@ -1,13 +1,20 @@
 import { expect, test } from "bun:test";
 import type { StoredTurnPricing } from "@armada/core";
-import { createSqlGoldenStore, createSqlVaultStore, launchSandbox, type Provider } from "@armada/core/server";
+import {
+  createSqlGoldenStore,
+  createSqlVaultStore,
+  encryptSecret,
+  launchSandbox,
+  type Provider,
+} from "@armada/core/server";
+import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 import { run } from "../../cli/src/run.ts";
 import { memorySessionStore } from "../../cli/src/session.ts";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
 import { collectSandboxUsage, type StatusReport } from "../src/turns.ts";
-import { call, ENCRYPTION_KEY, fakeBoat, harness, PUBLIC_URL } from "./support.ts";
+import { call, ENCRYPTION_KEY, fakeBoat, harness, type People, PUBLIC_URL, SECRETS } from "./support.ts";
 
 // Primary owner boundary: real credential admission -> native collector -> SQL -> HTTP/MCP/CLI JSON.
 // The only fake is the native provider; no supplied quotes or test-only pricing contexts.
@@ -36,13 +43,39 @@ test.each([
   "$agent admission actually produces persisted amounts returned identically by status and CLI",
   async ({ agent, model, basis, usd, sum, input: nativeInput, output: nativeOutput, write: nativeWrite }) => {
     let control: ControlOptions | undefined;
-    const server = await harness({
-      routes: [async (request) => (control ? await handleControlRequest(request, control) : null)],
-    });
+    const db = await openMigratedDatabase();
+    const people: People = {
+      org: crypto.randomUUID(),
+      otherOrg: crypto.randomUUID(),
+      owner: crypto.randomUUID(),
+      member: crypto.randomUUID(),
+      admin: crypto.randomUUID(),
+    };
+    let server: Awaited<ReturnType<typeof harness>> | undefined;
     try {
-      const { db, people: p } = server;
+      // Admission needs only this harness account; the test creates its own Modal golden.
+      await db.query("insert into auth.users(id) values($1),($2)", [people.owner, people.member]);
+      await db.query("insert into orgs(id,name) values($1,'Session amount')", [people.org]);
+      await db.query("insert into members(org_id,user_id,role) values($1,$2,'member'),($1,$3,'member')", [
+        people.org,
+        people.owner,
+        people.member,
+      ]);
+      await db.query("insert into credentials(scope,owner_id,kind,value_enc) values('org',$1,$2,$3)", [
+        people.org,
+        agent === "claude" ? "claude_oauth" : "openai",
+        await encryptSecret(agent === "claude" ? SECRETS.ownerClaude : SECRETS.orgOpenai, ENCRYPTION_KEY),
+      ]);
+      const activeServer = await harness(
+        {
+          routes: [async (request) => (control ? await handleControlRequest(request, control) : null)],
+        },
+        { db, people },
+      );
+      server = activeServer;
+      const { people: p } = activeServer;
       control = {
-        authStore: server.auth,
+        authStore: activeServer.auth,
         supabase: {
           supabaseUrl: "https://unused.invalid",
           anonKey: "unused",
@@ -140,7 +173,14 @@ test.each([
           snapshot: { revision: originalQuote.snapshot.revision },
         });
       }
-      const cost = { currency: "USD", usd, basis, unknown: null, unpricedTurns: 0 } as const;
+      const cost = {
+        classification: basis === "api_equivalent" ? "included_in_subscription" : "priced",
+        currency: "USD",
+        usd,
+        basis,
+        unknown: null,
+        unpricedTurns: 0,
+      } as const;
       expect((await store.get(launched.sandbox.id))?.usage?.cost).toEqual(cost);
       expect((await store.list({ limit: 10 })).rows[0]?.usage?.cost).toEqual(cost);
       // A closed stored read may not need a native provider, fresh credentials or current prices.
@@ -149,8 +189,8 @@ test.each([
         statusReason: "closed fixture",
         stoppedAt: new Date().toISOString(),
       });
-      const token = await server.token(p.owner);
-      const response = await server.handler(
+      const token = await activeServer.token(p.owner);
+      const response = await activeServer.handler(
         new Request(`${PUBLIC_URL}/api/v1/sandbox/status`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
@@ -160,8 +200,7 @@ test.each([
       expect(response.status).toBe(200);
       const api = (await response.json()) as StatusReport;
       expect(api.usage?.cost).toEqual(cost);
-      const client = await server.client(token);
-      await client.listTools();
+      const client = await activeServer.client(token);
       expect((await call(client, "status", { id: launched.sandbox.id })).data.usage).toMatchObject({
         cost,
         tokenTotals: { inputTokens: nativeInput, outputTokens: nativeOutput },
@@ -182,9 +221,9 @@ test.each([
           ...io,
           env: { ARMADA_URL: PUBLIC_URL, ARMADA_TOKEN: token },
           session: memorySessionStore(),
-          now: () => server.clock.now,
+          now: () => activeServer.clock.now,
           open: () => {},
-          fetch: ((input, init) => server.handler(new Request(String(input), init))) as typeof fetch,
+          fetch: ((input, init) => activeServer.handler(new Request(String(input), init))) as typeof fetch,
         },
       });
       expect(errors).toBe("");
@@ -248,7 +287,11 @@ test.each([
         unpricedTurns: 2,
       });
     } finally {
-      await server.close();
+      try {
+        await server?.close();
+      } finally {
+        await db.close();
+      }
     }
   },
 );

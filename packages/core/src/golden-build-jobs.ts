@@ -6,6 +6,7 @@ import type { GoldenBuildStatus } from "./golden-build-status.ts";
 import type { GoldenBuildWarning } from "./golden-build-warning.ts";
 import { GoldenError, parseGoldenName } from "./golden-config.ts";
 import {
+  authorizeGoldenRepositories,
   createGoldenCreateService,
   type GoldenCreateOptions,
   reserveGoldenBuild,
@@ -42,12 +43,12 @@ interface Job {
   provider: SandboxProviderId;
   reservation_id: string | null;
   payload_enc: Uint8Array<ArrayBuffer>;
-  fence: string;
+  fence: string | null;
   builder_id: string | null;
   golden_id: string | null;
   snapshot: string | null;
   build_warnings: GoldenBuildWarning[];
-  failure_reason: "skillpack_integrity_failed" | "provider_payment_required" | "provider_snapshot_rejected" | null;
+  failure_reason: string | null;
 }
 export interface GoldenBuildJobsOptions {
   sql: Sql;
@@ -151,6 +152,34 @@ export class GoldenBuildJobs {
         }),
       )
       .digest("hex");
+    // Recover an existing admission before asking GitHub again. Authorization can rotate
+    // OAuth credentials, so it must run outside the reservation transaction: rollback
+    // must never restore a refresh token already consumed upstream.
+    const priorAdmission = await this.transaction(async (sql) => {
+      await this.actor(sql, {
+        owner_id: actor.userId,
+        org_id: actor.orgId,
+        visibility: input.visibility,
+        ...(input.existingGolden ? { golden_id: input.existingGolden.id } : {}),
+      });
+      return (
+        await sql.query<Job>(
+          "select * from public.golden_build_jobs where owner_id=$1 and org_id=$2 and idempotency_key=$3",
+          [actor.userId, actor.orgId, idempotencyKey],
+        )
+      ).rows[0];
+    });
+    if (priorAdmission) {
+      if (priorAdmission.request_hash !== hash || priorAdmission.provider !== providerId)
+        throw new GoldenError("conflict", "Idempotency key was used for a different build.");
+      return this.dto(priorAdmission, input.name);
+    }
+    await authorizeGoldenRepositories(
+      { ...this.options.service, sql: this.options.sql },
+      actor,
+      input.visibility,
+      input.config ? input.config.repos.map(({ owner, repo }) => `${owner}/${repo}`) : input.repos,
+    );
     const encrypted = await encryptSecret(payload, this.options.encryptionKey);
     const job = await this.transaction(async (sql) => {
       const currentActor = await this.actor(sql, {
@@ -257,6 +286,48 @@ export class GoldenBuildJobs {
     // Do not decrypt payload for status: even service-side readers need no arbitrary setup text.
     return this.dto(job);
   }
+  /** Only the requesting owner may cancel work that has provably never started.
+   * Locking the same row as runOne makes cancellation and worker admission exclusive.
+   */
+  async cancel(userId: string, id: string, allowedOrgs: readonly string[]): Promise<GoldenBuildStatus> {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))
+      throw new GoldenError("not_found", "No such build.");
+    return this.transaction(async (sql) => {
+      const job = (
+        await sql.query<Job>(
+          `select j.* from public.golden_build_jobs j
+           join public.members m on m.org_id=j.org_id and m.user_id=$1
+           where j.id=$2 and j.owner_id=$1 and j.org_id=any($3::uuid[])
+             and (j.golden_id is null or exists(
+               select 1 from public.goldens g where g.id=j.golden_id and (g.visibility='org' or g.owner_id=$1)))
+           for update of j`,
+          [userId, id, "{" + allowedOrgs.join(",") + "}"],
+        )
+      ).rows[0];
+      if (!job) throw new GoldenError("not_found", "No such build.");
+      const reason =
+        "detail:Build cancelled by its owner before a builder started. Start a new build request when ready.";
+      if (job.state === "failed" && job.failure_reason === reason) return this.dto(job);
+      if (
+        job.state !== "queued" ||
+        job.phase !== "queued" ||
+        job.fence !== null ||
+        job.builder_id !== null ||
+        job.snapshot !== null
+      )
+        throw new GoldenError(
+          "conflict",
+          "This build has already started or needs recovery; cancellation cannot safely release its reservation. Check build status and ask an administrator to reconcile it.",
+        );
+      if (job.reservation_id) await sqlGoldenBackendSlots(sql).release(job.reservation_id);
+      await sql.query(
+        "update public.golden_build_jobs set state='failed',error_code='build_failed',failure_reason=$2,updated_at=now() where id=$1",
+        [job.id, reason],
+      );
+      return this.dto({ ...job, state: "failed", error_code: "build_failed", failure_reason: reason });
+    });
+  }
+
   private dto(job: Job, name?: string): GoldenBuildStatus {
     return {
       jobId: job.id,
@@ -327,7 +398,7 @@ export class GoldenBuildJobs {
   async reconcileOne(): Promise<void> {
     const row = (
       await this.options.sql.query<Job>(
-        "select * from public.golden_build_jobs where state='recovery_required' and (builder_id is not null or (provider=any($1::public.sandbox_provider[]) and phase='builder')) order by updated_at limit 1",
+        "select * from public.golden_build_jobs where state='recovery_required' and (builder_id is not null or (provider=any($1::public.sandbox_provider[]) and phase='builder') or (phase='authorization' and fence is not null and builder_id is null and snapshot is null)) order by updated_at limit 1",
         [
           // Encode the fixed provider IDs as a PostgreSQL array, not a driver-native JS array.
           "{" +
@@ -347,6 +418,35 @@ export class GoldenBuildJobs {
       [row.id, row.fence],
     );
     if (!attempted.rows.length || !row.fence) return;
+    if (row.phase === "authorization" && row.builder_id === null && row.snapshot === null) {
+      // createGolden is called only after the durable builder phase is fenced.
+      // A late authorization callback cannot enter that phase after recovery owns
+      // the row. No provider resource exists to stop or inspect in this state.
+      await this.transaction(async (sql) => {
+        const current = (
+          await sql.query<Job>("select * from public.golden_build_jobs where id=$1 for update", [row.id])
+        ).rows[0];
+        if (
+          !current ||
+          current.state !== "recovery_required" ||
+          current.phase !== "authorization" ||
+          current.fence !== row.fence ||
+          current.reservation_id !== row.reservation_id ||
+          current.builder_id !== null ||
+          current.snapshot !== null
+        )
+          return;
+        if (current.reservation_id) await sqlGoldenBackendSlots(sql).release(current.reservation_id);
+        await sql.query(
+          "update public.golden_build_jobs set state='failed',failure_reason=coalesce(failure_reason,$2),updated_at=now() where id=$1",
+          [
+            current.id,
+            "detail:Build expired during authorization before any builder started. Its reservation was released; start a new build request when ready.",
+          ],
+        );
+      });
+      return;
+    }
     // Never dispose a source whose snapshot/publication outcome may still depend on it.
     if (reservationRecovery && (row.phase === "snapshot" || row.phase === "persist")) return;
     try {
@@ -431,18 +531,37 @@ export class GoldenBuildJobs {
       /* Unknown outcomes retain capacity, source and proof. No exception/payload/SDK logging. */
     }
   }
-  /** One bounded worker tick; callers own scheduling and graceful shutdown. Never reclaims expired work. */
+  /** One bounded worker tick. Queued admissions expire after one hour; running work stays fenced for recovery. */
   async runOne(): Promise<boolean> {
     await this.options.sql.query(
       "update public.golden_build_jobs set state='recovery_required',error_code='build_failed',updated_at=now() where state='running' and (lease_until<=clock_timestamp() or deadline<=clock_timestamp())",
     );
     const job = await this.transaction(async (sql) => {
       const row = (
-        await sql.query<Job>(
-          "select * from public.golden_build_jobs where state='queued' order by created_at for update skip locked limit 1",
+        await sql.query<Job & { expired: boolean }>(
+          "select *, created_at <= clock_timestamp()-interval '60 minutes' as expired from public.golden_build_jobs where state='queued' order by created_at for update skip locked limit 1",
         )
       ).rows[0];
       if (!row) return undefined;
+      if (row.expired) {
+        // The same row lock fences other workers' claims. Only a never-started
+        // admission can release capacity without reconciling provider resources.
+        const unstarted =
+          row.phase === "queued" && row.fence === null && row.builder_id === null && row.snapshot === null;
+        if (unstarted && row.reservation_id) await sqlGoldenBackendSlots(sql).release(row.reservation_id);
+        const state: Job["state"] = unstarted ? "failed" : "recovery_required";
+        await sql.query(
+          "update public.golden_build_jobs set state=$2,error_code='build_failed',failure_reason=$3,updated_at=now() where id=$1",
+          [
+            row.id,
+            state,
+            unstarted
+              ? "detail:Build expired after one hour waiting in the queue; no builder was started. Retry the rebuild."
+              : "detail:Expired queued build has execution evidence. Ask an administrator to reconcile it before retrying.",
+          ],
+        );
+        return { ...row, state };
+      }
       return (
         await sql.query<Job>(
           "update public.golden_build_jobs set state='running',phase='authorization',fence=$2,lease_until=clock_timestamp()+interval '60 seconds',deadline=clock_timestamp()+interval '60 minutes',updated_at=now() where id=$1 returning *",
@@ -451,6 +570,7 @@ export class GoldenBuildJobs {
       ).rows[0]!;
     });
     if (!job) return false;
+    if (job.state !== "running") return true;
     let safeToRelease = true;
     let heartbeat: ReturnType<typeof setInterval> | undefined;
     try {
@@ -515,12 +635,12 @@ export class GoldenBuildJobs {
         if (current?.state !== "running" || current.fence !== job.fence) return;
         if (safeToRelease && job.reservation_id) await sqlGoldenBackendSlots(sql).release(job.reservation_id);
         await sql.query(
-          "update public.golden_build_jobs set state=$2,error_code='build_failed',failure_reason=$3,lease_until=null,updated_at=now() where id=$1",
+          "update public.golden_build_jobs set state=$2,error_code='build_failed',failure_reason=$3,phase=$4,lease_until=null,updated_at=now() where id=$1",
           [
             job.id,
             safeToRelease ? "failed" : "recovery_required",
             error instanceof GoldenError
-              ? (error.safeReason ?? null)
+              ? (error.safeReason ?? (error.safeMessage ? `detail:${error.safeMessage.slice(0, 1017)}` : null))
               : safeToRelease && error instanceof ProviderError && error.code === "payment_required"
                 ? "provider_payment_required"
                 : safeToRelease &&
@@ -530,6 +650,7 @@ export class GoldenBuildJobs {
                     current.phase === "snapshot"
                   ? "provider_snapshot_rejected"
                   : null,
+            error instanceof GoldenError ? (error.safePhase ?? current.phase) : current.phase,
           ],
         );
       });

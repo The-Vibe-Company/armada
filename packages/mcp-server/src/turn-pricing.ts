@@ -69,6 +69,7 @@ function context(value: unknown, row: TurnTokenUsage, harness: Harness, stored: 
   const allowed = [
     "schemaVersion",
     "basis",
+    "billing",
     "credentialId",
     "credentialVersion",
     "capturedAt",
@@ -79,6 +80,7 @@ function context(value: unknown, row: TurnTokenUsage, harness: Harness, stored: 
     !v ||
     Object.keys(v).some((k) => !allowed.includes(k)) ||
     v.schemaVersion !== 1 ||
+    (v.billing !== undefined && v.billing !== "subscription" && v.billing !== "per_token") ||
     !(v.basis === "estimated" || v.basis === "api_equivalent") ||
     (v.credentialId !== null && !text(v.credentialId)) ||
     (v.credentialVersion !== null && (!count(v.credentialVersion) || v.credentialVersion < 1)) ||
@@ -93,6 +95,7 @@ function context(value: unknown, row: TurnTokenUsage, harness: Harness, stored: 
   return {
     schemaVersion: 1,
     basis: v.basis as Context["basis"],
+    ...(v.billing ? { billing: v.billing as "subscription" | "per_token" } : {}),
     credentialId: v.credentialId as string | null,
     credentialVersion: v.credentialVersion as number | null,
     capturedAt: v.capturedAt,
@@ -247,6 +250,7 @@ export function admittedTurnContexts(
       promptId: row.promptId,
       model: row.model,
       basis: v.basis,
+      ...(v.billing !== undefined ? { billing: v.billing } : {}),
       credentialId: v.credentialId,
       credentialVersion: v.credentialVersion,
       capturedAt: v.capturedAt,
@@ -303,6 +307,17 @@ export function withServerCost(usage: SandboxUsage | null, harness: Harness): Sa
   return {
     ...usage,
     cost: {
+      classification:
+        coverage &&
+        usage.turns.length > 0 &&
+        usage.turns.every((row) => {
+          const admitted = context(row.pricing, row, harness, true);
+          return admitted?.billing === "subscription" && admitted.credentialId !== null;
+        })
+          ? "included_in_subscription"
+          : coverage && unknown === null
+            ? "priced"
+            : "unknown",
       currency: "USD",
       usd: coverage && unknown === null ? usd : null,
       basis:

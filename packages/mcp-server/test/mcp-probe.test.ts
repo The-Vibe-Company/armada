@@ -47,17 +47,19 @@ function fixture(mode: string) {
         const size = mode === "aggregate" ? 6000 : 1;
         return {
           tools: Array.from({ length: size }, (_, i) => ({
-            name: `t_${i}`,
+            name: mode === "inventory" ? `tool-${calls.tools}` : `t_${i}`,
             inputSchema: { type: "object" as const },
             ...(mode === "bytes" ? { description: "x".repeat(4 * 1024 * 1024) } : {}),
           })),
-          ...(mode === "tools"
-            ? { nextCursor: "repeated" }
-            : mode === "pages"
-              ? { nextCursor: String(calls.tools) }
-              : mode === "cursor"
-                ? { nextCursor: "x".repeat(2049) }
-                : {}),
+          ...(mode === "inventory" && calls.tools === 1
+            ? { nextCursor: "next" }
+            : mode === "tools"
+              ? { nextCursor: "repeated" }
+              : mode === "pages"
+                ? { nextCursor: String(calls.tools) }
+                : mode === "cursor"
+                  ? { nextCursor: "x".repeat(2049) }
+                  : {}),
         };
       });
       server.setRequestHandler(ListResourcesRequestSchema, async () => {
@@ -171,6 +173,23 @@ test("an aborted whole inventory operation interrupts a stalled list and cleans 
   } finally {
     server.release();
     await probe.catch(() => {});
+    await server.close();
+  }
+});
+
+test("inventory probe returns complete authorized tool names across pages with its counts", async () => {
+  const server = fixture("inventory");
+  try {
+    expect(
+      await probeRemoteMcp({
+        url: "https://fixture.example/mcp",
+        transport: "http",
+        headers: new Headers(),
+        fetch: server.fetch,
+      }),
+    ).toEqual({ toolCount: 2, resourceCount: 1, promptCount: 1, toolNames: ["tool-1", "tool-2"] });
+    expect(server.deletes()).toBe(1);
+  } finally {
     await server.close();
   }
 });

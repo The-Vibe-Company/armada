@@ -617,7 +617,14 @@ export function createMcpHttpIntegration(options: {
         };
       },
       async status(input: { userId: string; orgId: string; connectionId: string }) {
-        return { status: (await connectionStatus(input.userId, input.orgId, input.connectionId)).status };
+        const result = await connectionStatus(input.userId, input.orgId, input.connectionId);
+        const toolNames =
+          "toolNames" in result &&
+          Array.isArray(result.toolNames) &&
+          result.toolNames.every((name): name is string => typeof name === "string")
+            ? result.toolNames
+            : undefined;
+        return { status: result.status, ...(toolNames ? { toolNames } : {}) };
       },
     },
     connections: {

@@ -50,7 +50,9 @@ test("refuses a repository GitHub does not let the caller read", async () => {
         ? Response.json({ installations: [installation()] })
         : new Response(null, { status: 404 })) as typeof fetch,
   });
-  await expect(adapter.authorize(actor, "private", ["acme/web"])).rejects.toThrow("cannot access");
+  await expect(adapter.authorize(actor, "private", ["acme/web"])).rejects.toThrow(
+    "GitHub cannot read acme/web with your connection",
+  );
 });
 
 test("refuses a caller-visible repository without a caller-visible installation", async () => {
@@ -62,7 +64,7 @@ test("refuses a caller-visible repository without a caller-visible installation"
         ? Response.json({ installations: [installation(9, "elsewhere")] })
         : Response.json(repo())) as typeof fetch,
   });
-  await expect(adapter.authorize(actor, "org", ["acme/web"])).rejects.toThrow("GitHub App installation");
+  await expect(adapter.authorize(actor, "org", ["acme/web"])).rejects.toThrow("grant the Armada GitHub App access");
 });
 
 test("permits caller-verified public repository without an App installation", async () => {
@@ -89,7 +91,7 @@ test("still refuses caller-visible private repository without installation", asy
         ? Response.json({ installations: [] })
         : Response.json(repo())) as typeof fetch,
   });
-  await expect(adapter.authorize(actor, "org", ["acme/web"])).rejects.toThrow("GitHub App installation");
+  await expect(adapter.authorize(actor, "org", ["acme/web"])).rejects.toThrow("grant the Armada GitHub App access");
 });
 
 test("installation pagination is honored before authorization", async () => {
@@ -144,4 +146,68 @@ test("with an App, mint issues a scoped token independent of the caller's own, a
   expect(issued?.token).not.toBe("user-token");
   await issued?.revoke();
   expect(calls).toContain("DELETE https://api.github.com/installation/token");
+});
+
+test("selected App installation must include the requested repository even when the caller can read it", async () => {
+  const adapter = goldenGitHubAdapter({
+    app,
+    accessToken: async () => "user-token",
+    fetch: (async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes("/repositories?")) return Response.json({ repositories: [{ id: 99 }] });
+      if (url.includes("/user/installations"))
+        return Response.json({ installations: [{ ...installation(), repository_selection: "selected" }] });
+      return Response.json(repo());
+    }) as typeof fetch,
+  });
+  await expect(adapter.authorize(actor, "org", ["acme/web"])).rejects.toMatchObject({
+    code: "forbidden",
+    safeMessage:
+      "GitHub cannot read acme/web with your connection — grant the Armada GitHub App access to it and ensure your account can read it, then rebuild.",
+  });
+});
+
+test.each([false, true])(
+  "public repositories retain caller-token checkout when selected App excludes them (app=%s)",
+  async (hasApp) => {
+    const adapter = goldenGitHubAdapter({
+      app: hasApp ? app : null,
+      accessToken: async () => "user-token",
+      fetch: (async (input: string | URL | Request) => {
+        const url = String(input);
+        if (url.includes("/repositories?")) return Response.json({ repositories: [] });
+        if (url.includes("/user/installations"))
+          return Response.json({ installations: [{ ...installation(), repository_selection: "selected" }] });
+        return Response.json({ ...repo(), private: false });
+      }) as typeof fetch,
+    });
+    const result = await adapter.authorize(actor, "org", ["acme/web"]);
+    expect(result.token).toBe("user-token");
+    expect(result.repos[0]?.installationId).toBe(hasApp ? 0 : 9);
+  },
+);
+
+test("two Apps on the same org select only the configured signing App for a private repository", async () => {
+  const adapter = goldenGitHubAdapter({
+    app,
+    accessToken: async () => "caller-token",
+    fetch: (async (input: string | URL | Request) =>
+      String(input).includes("/user/installations")
+        ? Response.json({ installations: [{ ...installation(8), app_id: 99, app_slug: "other-app" }, installation(9)] })
+        : Response.json(repo())) as typeof fetch,
+  });
+  const authorized = await adapter.authorize(actor, "org", ["acme/web"]);
+  expect(authorized.repos[0]?.installationId).toBe(9);
+});
+
+test("a private repository under only another App cannot be minted with the configured signing key", async () => {
+  const adapter = goldenGitHubAdapter({
+    app,
+    accessToken: async () => "caller-token",
+    fetch: (async (input: string | URL | Request) =>
+      String(input).includes("/user/installations")
+        ? Response.json({ installations: [{ ...installation(8), app_id: 99, app_slug: "other-app" }] })
+        : Response.json(repo())) as typeof fetch,
+  });
+  await expect(adapter.authorize(actor, "org", ["acme/web"])).rejects.toThrow("grant the Armada GitHub App access");
 });

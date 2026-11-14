@@ -36,6 +36,7 @@ async function fixture(provider: "boat" | "modal" = "boat") {
     key: ENCRYPTION_KEY,
     origin: "https://armada.test",
     commands: f.bridge,
+    probe: async () => ({ status: "connected", toolNames: ["read_counter"] }),
   });
   const input = { id: f.row.id, connections: [c.id] };
   await service.connections.validate({ userId: f.people.owner, orgId: f.people.org }, [c.id], "org");
@@ -109,6 +110,25 @@ describe.each(["boat", "modal"] as const)("enrolled runtime remote MCP (%s)", (p
     expect(
       (await x.api("sandbox/mcp-preflight-v1", { runtimeVersion: 1, org: f.people.org, connections: [x.c.id] })).status,
     ).toBe(200);
+    const inventory = await x.api("sandbox/mcp-preflight-v1", {
+      runtimeVersion: 1,
+      org: f.people.org,
+      connections: [x.c.id],
+      toolInventory: true,
+    });
+    expect(await inventory.json()).toMatchObject({
+      mcpToolInventory: [{ connectionId: x.c.id, tools: ["read_counter"] }],
+    });
+    const oldProbe = createRuntimeMcp({
+      sql: f.sql,
+      key: ENCRYPTION_KEY,
+      origin: "https://armada.test",
+      commands: f.bridge,
+      probe: async () => ({ status: "connected" }),
+    });
+    await expect(
+      oldProbe.preflight(f.caller, { org: f.people.org, connections: [x.c.id], toolInventory: true }),
+    ).rejects.toMatchObject({ code: "unavailable" });
     const response = await x.api("sandbox/send", f.input("use configured MCP"));
     expect(response.status).toBe(200);
     const result = (await response.json()) as Awaited<ReturnType<typeof x.send>>;

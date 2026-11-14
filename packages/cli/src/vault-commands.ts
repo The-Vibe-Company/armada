@@ -10,6 +10,7 @@ import {
   type OrgSummary,
   parseClaudeEndpoint,
   parseCodexEndpoint,
+  parseConnectionModels,
   parseCredentialKind,
   parseCredentialValue,
   parseModelPriceOverrides,
@@ -23,12 +24,13 @@ import { armadaApiUrl } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
 import { control } from "./control.ts";
 import { invitationCommand } from "./invitation-commands.ts";
+import { validateNativeCodexAuth } from "./native-login-protocol.ts";
 import { nativeCodexLogin } from "./native-model-login.ts";
 
 export interface VaultIo {
   auth: AuthIo;
   readFile: (path: string) => Promise<string>;
-  /** The secret piped in on stdin. Rejects when stdin is a terminal. */
+  /** The secret from piped stdin or a hidden terminal prompt. */
   readStdin: () => Promise<string>;
 }
 
@@ -231,6 +233,10 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
               ...(apiVersion !== undefined ? { apiVersion } : {}),
             })
           : parseCredentialValue(preset.kind, raw);
+      if (preset.deploymentNames && !flag(args, "--json"))
+        io.auth.err(
+          "Official Azure addresses are tested with a tiny billable request per deployment before saving. A failed check saves nothing.\n",
+        );
       await control(io.auth, "creds/accounts/set", { scope, org, kind: credentialName(preset.kind), name, value });
       io.auth.out(
         flag(args, "--json")
@@ -262,33 +268,29 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
       let raw: string;
       if (sub === "login") {
         const controller = new AbortController();
-        const cancel = () => controller.abort();
-        process.once("SIGINT", cancel);
-        process.once("SIGTERM", cancel);
+        const interrupt = () => controller.abort("SIGINT");
+        const terminate = () => controller.abort("SIGTERM");
+        const hangup = () => controller.abort("SIGHUP");
+        process.once("SIGINT", interrupt);
+        process.once("SIGTERM", terminate);
+        process.once("SIGHUP", hangup);
         try {
           raw = await nativeCodexLogin({
             path: io.auth.env.PATH ?? "/usr/bin:/bin",
-            signal: AbortSignal.any([controller.signal, AbortSignal.timeout(300_000)]),
-            device: (url, code) => io.auth.err(`Open ${url} and enter ${code} to authorize native Codex.\n`),
+            signal: controller.signal,
+            device: (url, code) =>
+              io.auth.err(
+                `Keep this terminal/session open until the account is published; closing the parent shell cancels login. Use tmux or screen for a persistent remote session.\nOpen ${url} and enter ${code} to authorize native Codex.\n`,
+              ),
           });
         } finally {
-          process.removeListener("SIGINT", cancel);
-          process.removeListener("SIGTERM", cancel);
+          process.removeListener("SIGINT", interrupt);
+          process.removeListener("SIGTERM", terminate);
+          process.removeListener("SIGHUP", hangup);
         }
       } else raw = await readValue(args, io);
       const value = parseCredentialValue(kind, raw);
-      if (kind === "codex_auth") {
-        const native = JSON.parse(value);
-        if (
-          !native.tokens ||
-          typeof native.tokens.access_token !== "string" ||
-          typeof native.tokens.refresh_token !== "string" ||
-          typeof native.tokens.account_id !== "string"
-        )
-          throw usage(
-            "Import the native Codex ChatGPT auth.json, with ChatGPT token fields, using only this tool's own native login.",
-          );
-      }
+      if (kind === "codex_auth") validateNativeCodexAuth(value, false);
       // Native consent occurs locally before import. Only the Armada API receives
       // this secret; never print its response, which must not become a secret sink.
       await control(io.auth, "creds/accounts/set", {
@@ -344,10 +346,19 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
       const kind = parseCredentialKind(name ?? "");
       const baseUrl = single(args, "--base-url");
       const apiVersion = single(args, "--api-version");
-      if (kind === "opencode" && baseUrl !== undefined && !single(args, "--models"))
-        throw usage("OpenCode custom endpoints require --models with upstream model IDs.");
-      if (single(args, "--models") !== undefined && (kind !== "opencode" || baseUrl === undefined))
-        throw usage("--models requires creds set opencode --base-url.");
+      const rawModels = single(args, "--models");
+      if ((kind === "openai" || kind === "opencode") && baseUrl !== undefined && !rawModels?.trim())
+        throw usage("Custom Codex/OpenCode endpoints require --models with exact deployment/model IDs.");
+      if (rawModels !== undefined && ((kind !== "openai" && kind !== "opencode") || baseUrl === undefined))
+        throw usage("--models requires creds set openai or opencode --base-url.");
+      let models: string[] | undefined;
+      if (kind === "openai" && rawModels !== undefined) {
+        try {
+          models = parseConnectionModels(rawModels.split(",").map((id) => id.trim()));
+        } catch {
+          throw usage("--models requires 1–32 exact deployment/model IDs; for Azure use resource deployment names.");
+        }
+      }
       const endpointAuth = single(args, "--endpoint-auth");
       if (apiVersion !== undefined && baseUrl === undefined) throw usage("--api-version requires --base-url.");
       if (endpointAuth !== undefined && (baseUrl === undefined || kind !== "anthropic"))
@@ -404,7 +415,14 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
         throw usage("With --base-url, supply only the API key through stdin or --file, not connection JSON.");
       const value = parseCredentialValue(
         kind,
-        endpoint ? JSON.stringify({ endpoint, apiKey: raw.trim(), ...(prices ? { prices } : {}) }) : raw,
+        endpoint
+          ? JSON.stringify({
+              endpoint,
+              apiKey: raw.trim(),
+              ...(models ? { models } : {}),
+              ...(prices ? { prices } : {}),
+            })
+          : raw,
       );
       await control(
         io.auth,
