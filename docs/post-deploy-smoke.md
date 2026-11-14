@@ -1560,17 +1560,23 @@ nested-agent observations, retractions and later-page supersession cannot pass.
 This initial slice supports Codex and Claude Code on Modal/Docker. Native Boat
 remains no-allocation not-run until its adapter retains unambiguous MCP server
 and result provenance; the probe never weakens the evidence oracle to count
-a plain tool name or assistant claim as a native MCP call. OpenCode remains explicit
-not-run without allocation until complete authorized tool-inventory correlation
-and its native proof contract are added. Missing configuration or unadvertised
+a plain tool name or assistant claim as a native MCP call. Modal OpenCode additionally
+requires advertised `opencodeMcpProofVersion: 1`, a complete authorized tool
+inventory before allocation and the same inventory after native execution. The
+selected tool must have one unambiguous normalized native name. Its successful
+`armada/opencodeMcp` event must match the prompt, server, native tool, empty input,
+expected output, and nonempty native message/call/configuration identities. ACP
+display messages alone never pass. Docker OpenCode remains explicit no-allocation
+not-run for this probe; its normal runtime support is not expanded here. Missing configuration or unadvertised
 MCP support also allocates nothing; declared unsupported delivery stays visible
 debt. Proof requests/observations share 110 seconds and reuse the existing durable
 template launch and independent cleanup. A full run adds one counted template
-allocation per configured MCP case to the same table. No connection/template is
-created, modified, disconnected or deleted.
+allocation per configured MCP case to the same table. No create/update/delete or
+connect/disconnect endpoint is called; authorized inventory/status checks follow
+the existing server-side lifecycle and refresh policy.
 
 This is initial native tool execution, not OAuth renewal, denied connection
-access, native Boat evidence, OpenCode name-collision handling or post-resume tool execution. Keep the
+access, native Boat evidence or post-resume tool execution. Keep the
 older coordinator checks for those behaviors. Boat remains coordinator-only via
 `--only boat --production-boat`, never the release gate.
 
