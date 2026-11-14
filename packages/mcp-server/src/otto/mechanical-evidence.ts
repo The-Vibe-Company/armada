@@ -1,13 +1,13 @@
-import type { OttoMechanicalProof } from "@armada/core";
+import type { OttoMechanicalEvidence } from "@armada/core";
 import type { OwnershipFact } from "./ownership.ts";
 
 /** A negative failure observation is NOT proof that all required checks passed. */
-export function mechanicalProof(
+export function mechanicalEvidence(
   repository: string,
   number: number,
   facts: OwnershipFact[],
   now: Date,
-): OttoMechanicalProof {
+): OttoMechanicalEvidence {
   const ordered = facts
     .filter((f) => f.subject === `pr:${number}`)
     .sort((a, b) => Date.parse(b.observed_at) - Date.parse(a.observed_at) || b.id.localeCompare(a.id));
@@ -57,12 +57,12 @@ export function mechanicalProof(
 }
 
 /** Read-only, bounded GitHub inspection; return selected metadata only. No bodies or credentials. */
-export async function inspectMechanicalProof(
+export async function inspectMechanicalEvidence(
   repository: string,
   number: number,
   token: string,
   fetcher: typeof fetch = fetch,
-): Promise<OttoMechanicalProof> {
+): Promise<OttoMechanicalEvidence> {
   const signal = AbortSignal.timeout(2500);
   const get = async (path: string, absentClassic = false): Promise<Record<string, any>> => {
     const response = await fetcher(`https://api.github.com/repos/${repository}${path}`, {
@@ -74,7 +74,7 @@ export async function inspectMechanicalProof(
     if (!response.ok || response.headers.get("link")?.includes('rel="next"')) throw Error("incomplete_proof");
     return (await response.json()) as Record<string, any>;
   };
-  const result = mechanicalProof(repository, number, [], new Date());
+  const result = mechanicalEvidence(repository, number, [], new Date());
   const pr = await get(`/pulls/${number}`);
   const head = pr.head?.sha;
   if (typeof head !== "string" || !/^[a-f0-9]{40}$/i.test(head) || typeof pr.base?.ref !== "string") return result;
@@ -167,7 +167,7 @@ export async function inspectMechanicalProof(
   // The PR may have changed while policy/checks were being read.
   const latest = await get(`/pulls/${number}`);
   if (latest.head?.sha !== head || latest.base?.ref !== pr.base.ref)
-    return mechanicalProof(repository, number, [], new Date());
+    return mechanicalEvidence(repository, number, [], new Date());
   const pullUrl = `https://github.com/${repository}/pull/${number}`;
   result.evidence = [
     { factId: "live:head", kind: "Observed PR head and merge state", observedAt: result.observedAt!, url: pullUrl },

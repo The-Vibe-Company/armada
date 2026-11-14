@@ -35,3 +35,29 @@ test("objective creation rejects disconnected repositories and malformed request
     expect(response?.status).toBe(400);
   }
 });
+
+test("service and MCP callers cannot read or write private objective threads", async () => {
+  const sql: Sql = {
+    query: async () => {
+      throw Error("must deny before storage");
+    },
+  };
+  for (const via of ["service", "mcp"] as const) {
+    const route = createOttoObjectivesApi(sql, async () => ({
+      ok: true,
+      caller: {
+        userId: user,
+        orgs: [{ orgId: org, role: "member" }],
+        via,
+      },
+    }));
+    for (const suffix of ["", `/${user}`]) {
+      for (const method of ["GET", "POST"]) {
+        const response = await route(
+          new Request(`https://armada.test/api/v1/otto/objectives${suffix}?org_id=${org}`, { method }),
+        );
+        expect(response?.status).toBe(403);
+      }
+    }
+  }
+});

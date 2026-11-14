@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import type { Sql } from "@armada/core/server";
 import type { CallerResult } from "../caller.ts";
-import { createOttoProofApi } from "./proof-api.ts";
+import { createOttoEvidenceApi } from "./evidence-api.ts";
 
 test("proof reads require exact organization, repository and membership before journal access", async () => {
   let reads = 0;
@@ -14,7 +14,7 @@ test("proof reads require exact organization, repository and membership before j
   const scope = { orgId: "org_one", repository: "owner/repo" };
   const url = "https://armada.test/api/v1/otto/evidence?org_id=org_one&repository=owner/repo&number=12";
   const member = { ok: true, caller: { orgs: [{ orgId: "org_one" }] } } as unknown as CallerResult;
-  const route = createOttoProofApi(
+  const route = createOttoEvidenceApi(
     sql,
     [scope, { orgId: "org_one", repository: "owner/skills" }],
     async () => member,
@@ -25,7 +25,7 @@ test("proof reads require exact organization, repository and membership before j
   expect((await route(new Request(url.replace("org_one", "org_two"))))?.status).toBe(404);
   expect(
     (
-      await createOttoProofApi(
+      await createOttoEvidenceApi(
         sql,
         scope,
         async () => ({ ok: true, caller: { orgs: [] } }) as unknown as CallerResult,
@@ -34,7 +34,7 @@ test("proof reads require exact organization, repository and membership before j
   ).toBe(404);
   expect(
     (
-      await createOttoProofApi(
+      await createOttoEvidenceApi(
         sql,
         scope,
         async () => member,

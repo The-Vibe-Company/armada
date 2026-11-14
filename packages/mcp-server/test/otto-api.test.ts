@@ -138,3 +138,27 @@ test("repository access decisions coalesce concurrent views, isolate users/repos
   expect(await check(caller, "example/web")).toBe(false);
   expect(calls).toBe(6);
 });
+
+test("repository discovery isolates a denied repository from healthy observation reads", async () => {
+  const scope = { orgId: "org_one", repository: "owner/healthy" };
+  const route = createOttoApi(
+    { query: async () => ({ rows: [] }) },
+    [scope, { ...scope, repository: "owner/unavailable" }],
+    async () => ({
+      ok: true,
+      caller: { userId: "user_one", orgs: [{ orgId: scope.orgId, role: "member" }], via: "supabase" },
+    }),
+    undefined,
+    undefined,
+    async (_caller, repository) => {
+      if (repository.endsWith("unavailable")) throw Error("access unavailable");
+      return true;
+    },
+  );
+  const listing = await route(new Request(`https://armada.test/api/v1/otto/repositories?org_id=${scope.orgId}`));
+  expect((await listing!.json()).items).toEqual([scope.repository]);
+  const facts = await route(
+    new Request(`https://armada.test/api/v1/otto/facts?org_id=${scope.orgId}&repository=${scope.repository}`),
+  );
+  expect(facts?.status).toBe(200);
+});

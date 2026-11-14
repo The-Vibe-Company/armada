@@ -71,13 +71,21 @@ export function createOttoApi(
           scope.orgId === url.searchParams.get("org_id") && auth.caller.orgs.some((org) => org.orgId === scope.orgId),
       );
       if (!authorized.length) return reply({ error: "not_found" }, 404);
-      if (view === "repositories")
+      if (view === "repositories") {
+        const visibility = await Promise.allSettled(
+          authorized.map(async (scope) =>
+            !checkRepositoryAccess || (await checkRepositoryAccess(auth.caller, scope.repository))
+              ? scope.repository
+              : null,
+          ),
+        );
         return reply({
-          items: authorized.map((scope) => scope.repository),
+          items: visibility.flatMap((result) => (result.status === "fulfilled" && result.value ? [result.value] : [])),
           observedAt: null,
           completeness: "unknown",
           nextCursor: null,
         });
+      }
       const repository = url.searchParams.get("repository");
       const scope = repository
         ? authorized.find((scope) => scope.repository === repository)

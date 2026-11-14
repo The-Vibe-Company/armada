@@ -1,5 +1,6 @@
 import { mcpUrl } from "@/lib/env";
 import { type OttoRead, readOtto } from "@/lib/otto";
+import { ottoRequest } from "../otto-request";
 import { selectedOrganization } from "./selected-org";
 import { requireViewer } from "./viewer";
 
@@ -16,15 +17,12 @@ export async function loadOtto(requested?: string): Promise<OttoPageData> {
   if (!url || !viewer.token) return { state: "not-configured" };
   let repositories: string[] = [];
   try {
-    const endpoint = new URL("/api/v1/otto/repositories", url);
-    endpoint.searchParams.set("org_id", selected.org.id);
-    const response = await fetch(endpoint, {
-      headers: { authorization: `Bearer ${viewer.token}` },
-      cache: "no-store",
-      redirect: "error",
-      signal: AbortSignal.timeout(10_000),
+    const { response, body } = await ottoRequest({
+      serverUrl: url,
+      token: viewer.token,
+      orgId: selected.org.id,
+      path: "repositories",
     });
-    const body: unknown = await response.json();
     if (response.ok && typeof body === "object" && body !== null && "items" in body && Array.isArray(body.items))
       repositories = body.items.filter((item): item is string => typeof item === "string");
   } catch {
