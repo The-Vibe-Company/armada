@@ -428,6 +428,42 @@ describe("armada org and armada creds against the control API", () => {
     });
   });
 
+  test("CLI status defaults to recorded state and --live opts into provider probes", async () => {
+    await withServer(async ({ options, cli, db }) => {
+      const org = await options.store.createOrg("Fast status", STAN);
+      options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
+      const golden = crypto.randomUUID(),
+        id = crypto.randomUUID();
+      await db.query(
+        "insert into goldens(id,org_id,name,visibility,owner_id,boat_snapshot_id,config) values($1,$2,'fast','org',$3,$4,$5::jsonb)",
+        [golden, org.id, STAN, "a".repeat(63), JSON.stringify({ repos: [], init: [] })],
+      );
+      const boat = fakeBoat();
+      const machine = await boat.provider.fork({ from: "snapshot" });
+      await db.query(
+        "insert into sandboxes(id,golden_id,org_id,owner_id,provider_sandbox_id,harness,status) values($1,$2,$3,$4,$5,'codex','ready')",
+        [id, golden, org.id, STAN, machine.id],
+      );
+      let probes = 0;
+      options.providers = {
+        resolve: async () => {
+          probes++;
+          return boat.provider;
+        },
+      };
+      const stan = cli(STAN);
+      const cached = await stan.run(["status", id, "--json"]);
+      expect(cached.code).toBe(0);
+      expect(JSON.parse(cached.out)).toMatchObject({ id, status: "ready", providerState: null, prompt: null });
+      expect(probes).toBe(0);
+      const live = await stan.run(["status", id, "--live", "--json"]);
+      expect(live.code).toBe(0);
+      expect(probes).toBe(1);
+      expect((await cli(ADA).run(["status", id])).code).not.toBe(0);
+      expect(probes).toBe(1);
+    });
+  });
+
   test("CLI sandbox list shares the MCP scoped operation and rejects unavailable registry features", async () => {
     await withServer(async ({ options, cli }) => {
       const stan = cli(STAN);

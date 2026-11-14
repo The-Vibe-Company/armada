@@ -74,6 +74,7 @@ import {
   isStatusReadFenced,
   latestPrompt,
   readStatus,
+  recordedStatus,
   type StatusReport,
   waitSettled,
 } from "./turns.ts";
@@ -1252,11 +1253,26 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         "Where a sandbox and its latest turn are. Modal uses authorized stored observations; physical state is refreshed by the lifecycle worker. Boat is read live. prompt.state is " +
         "running, finished, interrupted or failed; failed includes a usage limit or an expired login, with " +
         "the reason. settled is true when the agent is not working.",
-      input: { id, prompt_id: z.string().min(1).optional().describe("A specific turn. Default: the latest.") },
+      input: {
+        id,
+        prompt_id: z.string().min(1).optional().describe("A specific turn. Default: the latest."),
+        recorded: z
+          .boolean()
+          .optional()
+          .describe(
+            "True: database-only state. False: live provider probe. Omitted: provider-specific detail read. CLI defaults to true; --live sets false.",
+          ),
+      },
       output: status,
       readOnly: true,
     },
-    (args) => statusOf(args.id, args.prompt_id, true),
+    async (args) =>
+      args.recorded
+        ? {
+            ...recordedStatus(await visible(args.id)),
+            statusMessage: `Recorded state only; use armada status ${args.id} --live for provider and prompt details.`,
+          }
+        : statusOf(args.id, args.prompt_id, args.recorded === undefined),
   );
 
   tool(
