@@ -41,6 +41,7 @@ import { checkAccountChoice } from "@/lib/model-accounts";
 import { chosenConnection, launchArgs, type ModelFields, type SendArgs, sendOverride } from "@/lib/model-choice";
 import { goldenRepositoryDirs, repositoryChoice } from "@/lib/repository-context";
 import { filtersToSearch } from "@/lib/sandbox-filters";
+import { lifecycleFailure } from "@/lib/sandbox-lifecycle";
 import { createClient } from "@/lib/supabase/server";
 
 async function gatewayFor(id: string) {
@@ -69,7 +70,7 @@ export async function stopSandbox(_previous: ActionResult | null, data: FormData
   try {
     await target.gateway.stop(id);
   } catch (error) {
-    if (error instanceof GatewayError) return fail(error.message);
+    if (error instanceof GatewayError) return fail(lifecycleFailure("stop", error));
     throw error;
   }
   revalidatePath(`/sandboxes/${id}`);
@@ -96,7 +97,7 @@ export async function deleteSandbox(_previous: ActionResult | null, data: FormDa
   try {
     await target.gateway.delete(id);
   } catch (error) {
-    if (error instanceof GatewayError) return fail(error.message);
+    if (error instanceof GatewayError) return fail(lifecycleFailure("delete", error));
     throw error;
   }
   revalidatePath("/sandboxes");

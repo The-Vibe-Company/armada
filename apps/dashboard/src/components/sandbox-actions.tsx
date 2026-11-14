@@ -52,7 +52,7 @@ function DeleteButton({ sandboxId }: { sandboxId: string }) {
   const remove = useCallback(
     async (previous: ActionResult | null, data: FormData) => {
       const result = await deleteSandbox(previous, data);
-      toast(toastFromResult(result, "The sandbox was not deleted"));
+      toast(toastFromResult(result, "Delete request not confirmed"));
       return result;
     },
     [toast],
@@ -110,7 +110,7 @@ export function StopButton({
   const stop = useCallback(
     async (previous: ActionResult | null, data: FormData) => {
       const result = await stopSandbox(previous, data);
-      toast(toastFromResult(result, "The sandbox was not stopped"));
+      toast(toastFromResult(result, "Stop request not confirmed"));
       return result;
     },
     [toast],
