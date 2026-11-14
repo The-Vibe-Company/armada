@@ -27,7 +27,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          fetch-depth: ${{ matrix.shard == 1 && '0' || '1' }}
+          fetch-depth: 1
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
       - run: bun run lint
@@ -50,14 +50,18 @@ jobs:
         run: |
           if [ "$EVENT_NAME" = "pull_request" ]; then
             # Fetch now, not the potentially stale base SHA in the PR event.
-            git fetch --no-tags origin "refs/heads/$BASE_BRANCH"
+            git fetch --no-tags --depth=1 origin "refs/heads/$BASE_BRANCH"
             base=$(git rev-parse FETCH_HEAD)
           elif [ "$EVENT_NAME" = "merge_group" ]; then
             # Compare the entire queue candidate with its exact target-branch base.
+            git fetch --no-tags --depth=1 origin "$MERGE_GROUP_BASE_SHA"
             base="$MERGE_GROUP_BASE_SHA"
           elif [ "$EVENT_NAME" = "push" ]; then
+            git fetch --no-tags --depth=1 origin "$BEFORE"
             base="$BEFORE"
           else
+            # Manual dispatch compares with the first parent; no other history is needed.
+            git fetch --no-tags --depth=2 origin "$GITHUB_SHA"
             base=$(git rev-parse HEAD^)
           fi
           bun scripts/db/check-migrations.ts "$base"

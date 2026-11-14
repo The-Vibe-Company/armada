@@ -59,3 +59,43 @@ deployment or database rollback; no workflow changes are needed.
 
 See [GitHub's merge queue guide](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue)
 for configuration semantics.
+
+## Bounded CI checkout and branch retention (#1796)
+
+Unit shards check out one commit. Only shard 1 fetches additional objects for
+migration comparison: the current PR base tip, the exact merge-group base SHA,
+or the push's previous SHA, each at depth 1 without tags. Manual dispatch fetches
+only two commits to expose the checked-out commit's first parent. The migration
+guard uses `ls-tree`, not a merge base, so it needs trees rather than full history.
+No job or required check is added.
+
+Baseline: [CI run 43594826771](https://github.com/The-Vibe-Company/armada/actions/runs/43594826771)
+(2026-11-14, SHA `4c2a00f778b3cdf4168f9fba1442436e58b48eb3`) measured
+shards 1–6 at **72, 56, 53, 49, 52, 64 seconds**, respectively, using job
+`completed_at - started_at`; shard 1 checkout was 4 seconds. After-change timing
+must be collected from the PR's completed run using the same fields. It is not
+available before pushing; do not substitute a local benchmark or claim that
+checkout accounts for all shard imbalance.
+
+### Owner recommendation: retain automatic deletion, reconcile conservatively
+
+The repository API reports `delete_branch_on_merge: true`. This setting is not a
+retroactive branch garbage collector: it cannot remove branches recreated by a
+later coordinator push. GitHub also documents that branch protections/rulesets
+can prevent deletion, and fork PRs use the fork's setting, not this repository's
+setting. See [automatic branch deletion](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-the-automatic-deletion-of-branches).
+The coordinator observed 731 surviving exact heads of merged PRs (#1796),
+including merge-queue/coordinator branches. That establishes failed cleanup,
+not which deletion exception or subsequent push caused each retained ref;
+there is no evidence here that merge queue universally disables deletion.
+
+Cheapest durable fix (owner decision, no new CI job): keep the setting enabled,
+check that deletion restrictions target `main` rather than worker branches, and
+have the existing coordinator reconcile source refs after it observes a completed
+merge (enqueueing is not merging). Delete only a same-repository, non-default,
+non-protected ref whose current SHA still equals the merged PR's recorded head
+SHA, with no open PR using it as head or base. Skip changed/reused refs and
+report failures; never blindly delete by branch prefix or `git branch --merged`
+(squash merges do not preserve ancestry). Stop workers pushing after completion.
+If coordinator reconciliation is unavailable, an owner-approved scheduled cleanup
+is an alternative, not part of this patch. Do not weaken main's protections.
