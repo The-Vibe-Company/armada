@@ -10,6 +10,12 @@ test("nested onboarding help is focused and performs no authenticated or secret 
     "creds set",
     "golden create",
     "host add",
+    "snapshot build-find",
+    "snapshot build-status",
+    "snapshot build-cancel",
+    "golden build-find",
+    "golden build-status",
+    "golden build-cancel",
     "snapshot size-policy",
     "golden size-policy",
   ]) {
@@ -32,7 +38,9 @@ test("nested onboarding help is focused and performs no authenticated or secret 
         { env: {}, fetch: Object.assign(forbidden, { preconnect: forbidden }), readStdin: forbidden },
       );
       expect({ code, err }).toEqual({ code: 0, err: "" });
-      expect(out).toContain(`Usage: armada ${command.replace("golden size-policy", "snapshot size-policy")}`);
+      expect(out).toContain(
+        `Usage: armada ${command.replace(/^golden (size-policy|build-find|build-status|build-cancel)$/, "snapshot $1")}`,
+      );
       expect(out).toContain("Example: armada");
     }
   }
