@@ -206,8 +206,8 @@ Sign in as that same person against the same Armada server, then run
 `armada github status` to inspect connection state and installations;
 `armada github connect`, `reconnect`, `install`, and `manage INSTALLATION_ID`
 provide the corresponding repair flows. Status is not a per-repository access
-probe, and `armada doctor` currently checks neither GitHub connection nor repo
-access. Account-management commands require a personal login, not a service
+probe, and `armada doctor` reports the connection and installation scope, but does not
+probe access to a particular repository. Account-management commands require a personal login, not a service
 bearer. `armada github refresh SANDBOX_ID` configures an existing sandbox; it is
 not a read-only access check.
 
