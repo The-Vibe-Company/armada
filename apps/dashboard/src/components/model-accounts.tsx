@@ -1577,10 +1577,7 @@ export function HarnessAccounts({
             {subscriptionAvailable ? (
               <>Add one to launch {harnessLabel}. An API key works too.</>
             ) : (
-              <>
-                Add an OpenCode plan key, or connect DeepSeek, OpenRouter or another OpenAI-compatible provider. Modal
-                only.
-              </>
+              <>Add an OpenCode plan key, or connect DeepSeek, OpenRouter or another OpenAI-compatible provider.</>
             )}
           </Empty>
         </div>
