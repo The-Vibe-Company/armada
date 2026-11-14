@@ -48,7 +48,7 @@ export default async function HostsPage({ searchParams }: Props) {
               connection.
             </p>
             <Button asChild variant="outline" size="sm" className="mt-2">
-              <Link href={HOSTS_PATH}>Try again</Link>
+              <a href={HOSTS_PATH}>Reload Hosts</a>
             </Button>
           </AlertDescription>
         </Alert>
@@ -113,9 +113,19 @@ export default async function HostsPage({ searchParams }: Props) {
             </p>
           )}
           {hosts.list.skipped > 0 && (
-            <p role="status" className="text-sm text-muted-foreground">
-              {hosts.list.skipped} {hosts.list.skipped === 1 ? "host" : "hosts"} could not be shown.
-            </p>
+            <Alert>
+              <CircleAlertIcon />
+              <AlertTitle>Some machines could not be shown</AlertTitle>
+              <AlertDescription>
+                <p>
+                  Your machine list is incomplete. Reload to try again. If this continues, ask an organization admin for
+                  help.
+                </p>
+                <Button asChild variant="outline" size="sm" className="mt-2">
+                  <a href={HOSTS_PATH}>Reload Hosts</a>
+                </Button>
+              </AlertDescription>
+            </Alert>
           )}
         </div>
       }
@@ -128,12 +138,23 @@ export default async function HostsPage({ searchParams }: Props) {
         </p>
       }
       empty={
-        <Empty title={showSetup ? "No unfinished setup" : "No machines connected yet"} icon={<ServerIcon />}>
-          {showSetup
-            ? "Your machines have completed setup or their entries have been revoked. Choose Machines to see them."
-            : isAdmin
-              ? "Choose Add host to connect a Linux machine running Docker. After you run its install command, it appears here."
-              : "Ask an organization admin to add a Docker host. It appears here after its install command runs."}
+        <Empty
+          title={
+            hosts.list.skipped > 0
+              ? "Machines are not fully loaded"
+              : showSetup
+                ? "No unfinished setup"
+                : "No machines connected yet"
+          }
+          icon={<ServerIcon />}
+        >
+          {hosts.list.skipped > 0
+            ? "Some machines could not be read. Reload the list before adding a machine or checking setup."
+            : showSetup
+              ? "Your machines have completed setup or their entries have been revoked. Choose Machines to see them."
+              : isAdmin
+                ? "Choose Add host to connect a Linux machine running Docker. After you run its install command, it appears here."
+                : "Ask an organization admin to add a Docker host. It appears here after its install command runs."}
         </Empty>
       }
     />
