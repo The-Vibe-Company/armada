@@ -7,6 +7,8 @@ export interface TurnPriceContext {
   promptId: string;
   model: string | null;
   basis: CostBasis;
+  /** Captured from the admitted account, never inferred from API-equivalent prices. Absent on legacy records. */
+  billing?: "subscription" | "per_token";
   credentialId: string | null;
   credentialVersion: number | null;
   capturedAt: string;
@@ -25,6 +27,7 @@ export interface PricingInputs {
 export interface StoredTurnPricing extends PricedTurn {
   schemaVersion: 1;
   basis: CostBasis;
+  billing?: "subscription" | "per_token";
   credentialId: string | null;
   credentialVersion: number | null;
   capturedAt: string;
@@ -34,6 +37,10 @@ export interface StoredTurnPricing extends PricedTurn {
 
 /** Exact server aggregate. No partial priced subtotal is presented as a complete session amount. */
 export interface SessionCost {
+  /** Billing meaning, distinct from an optional API-equivalent/list-price quote.
+   * "priced" is a precise persisted estimate, never proof of an upstream invoice.
+   */
+  classification: "priced" | "included_in_subscription" | "unknown";
   currency: "USD";
   usd: string | null;
   basis: CostBasis | null;

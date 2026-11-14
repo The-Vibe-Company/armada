@@ -36,8 +36,22 @@ Neither capacity nor a missing binding proves a GitHub authorization problem.
 
 ## Recovery limits
 
+Queued admissions expire after one hour without starting a builder. On the next
+worker tick, the job becomes failed with a queue-expiry explanation and its own
+reservation is released atomically; a rebuild retains its existing golden binding.
+A queued row with execution evidence is held for recovery instead of being unlocked.
+This needs the worker to be running; it is not a database timer.
+
 Durable running jobs have fenced leases and deadlines. Expired jobs transition
-to recovery; reservations are released only after safe builder reconciliation.
+to recovery. If the durable phase is still authorization, the attempt has a fence,
+and both builder and snapshot references are absent, recovery can release that
+exact reservation without contacting a provider. The row is rechecked under lock,
+marked failed with a safe reason, and the original golden binding is retained.
+A late authorization callback cannot enter the builder phase after recovery owns
+the row. This runs on the worker's recovery tick, not on a database timer.
+
+A missing builder ID alone is not proof of safety: builder-phase or later attempts
+still require their existing provider reconciliation and retain uncertain capacity.
 A timeout must not simply clear a reservation while a provider operation could
 still publish a snapshot. Owners can cancel a queued, never-started build using Cancel queued build beside
 its tracked status in the dashboard, or:
