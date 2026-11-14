@@ -255,6 +255,8 @@ test("host lists admit current members and expose only scoped safe heartbeat sum
       lastSeenAt: null,
       revokedAt: null,
       sandboxes: 0,
+      running: 0,
+      resources: null,
       version: null,
     });
     expect(byId.get(online.hostId)?.state).toBe("online");
@@ -271,7 +273,9 @@ test("host lists admit current members and expose only scoped safe heartbeat sum
         "id",
         "lastSeenAt",
         "name",
+        "resources",
         "revokedAt",
+        "running",
         "sandboxes",
         "state",
         "version",

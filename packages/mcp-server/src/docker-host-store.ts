@@ -14,7 +14,8 @@ import {
   parseDockerHostJob,
 } from "../../core/src/docker-host-job.ts";
 import type { DockerHostResources } from "../../core/src/docker-resources.ts";
-import { DockerHostFull } from "./docker-capacity.ts";
+import { dockerResourceLimits } from "../../core/src/docker-resources.ts";
+import { DOCKER_CAPACITY_USAGE_SQL, DockerHostFull, dockerHostCapacity } from "./docker-capacity.ts";
 
 import { authorizeSnapshotBuild, resolveDockerSnapshot } from "./docker-snapshot-data.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
@@ -333,6 +334,9 @@ export function createDockerHostStore(sql: Sql, key: string) {
           last_seen_at: Date | string | null;
           revoked_at: Date | string | null;
           sandboxes: number;
+          machine_cpus: number | null;
+          machine_memory_bytes: number | string | null;
+          running: number;
           daemon_version: string | null;
           name: string | null;
         }>(
@@ -343,7 +347,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
                 and exists(select 1 from public.members m where m.org_id=h.org_id and m.user_id=h.owner_id)
                 and h.last_seen_at>=now()-interval '60 seconds' then 'online'
               else 'offline' end as state,
-            h.created_at,h.last_seen_at,h.revoked_at,h.daemon_version,h.name,
+            h.created_at,h.last_seen_at,h.revoked_at,h.daemon_version,h.name,h.machine_cpus,h.machine_memory_bytes,
+            (${DOCKER_CAPACITY_USAGE_SQL})::integer as running,
             (select count(*)::integer from public.sandboxes s
               where s.org_id=h.org_id and s.docker_host_id=h.id
                 and s.provider='docker' and s.status<>'deleted') as sandboxes
@@ -359,6 +364,22 @@ export function createDockerHostStore(sql: Sql, key: string) {
           createdAt: new Date(host.created_at).toISOString(),
           lastSeenAt: host.last_seen_at === null ? null : new Date(host.last_seen_at).toISOString(),
           revokedAt: host.revoked_at === null ? null : new Date(host.revoked_at).toISOString(),
+          running: host.running,
+          resources:
+            host.machine_cpus == null || host.machine_memory_bytes == null
+              ? null
+              : {
+                  machine: { cpus: Number(host.machine_cpus), memoryBytes: Number(host.machine_memory_bytes) },
+                  perSandbox: dockerResourceLimits({
+                    cpus: Number(host.machine_cpus),
+                    memoryBytes: Number(host.machine_memory_bytes),
+                  }),
+                  capacity: dockerHostCapacity({
+                    cpus: Number(host.machine_cpus),
+                    memoryBytes: Number(host.machine_memory_bytes),
+                  })!,
+                  mode: "automatic",
+                },
           sandboxes: host.sandboxes,
           version: host.daemon_version,
         }));

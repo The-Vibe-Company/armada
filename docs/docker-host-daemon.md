@@ -769,3 +769,22 @@ it must remain paused, then wake after another sandbox physically stops.
 Older-daemon unknown-capacity behavior remains supported. Overrides and dashboard
 capacity display belong to slice (c), not this deployment. No real-host checks
 were performed here.
+
+### Capacity visibility (#1773, slice c1)
+
+The host list API now adds observed hardware, effective automatic per-sandbox
+limits, admission capacity and running reservations. CLI `armada host list` and
+`armada host show HOST` (exact name or UUID, optional `--json`) show these values;
+the dashboard host row shows running/capacity and its Facts show hardware,
+limits and automatic/manual mode. Retained sandbox count is separate from
+running reservations. Pending starts reserve slots until physically stopped,
+so running/capacity includes these reservations.
+
+An old server or daemon without hardware observations shows
+“Unknown — upgrade the host” rather than zero capacity or an invented limit.
+No new migration is added in this display slice; it depends on slice b's
+resource-observation migration. Overrides and their daemon enforcement remain
+the next #1773 slice, not a capability claimed by this display.
+Coordinator-only check: compare CLI text/JSON and dashboard Facts with the
+host's observed hardware and Docker inspection, then stop a sandbox and confirm
+the running/capacity display changes after the physical stop ACK.

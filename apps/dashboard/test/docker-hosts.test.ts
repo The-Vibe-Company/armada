@@ -84,9 +84,15 @@ test("the expiry counts down as m:ss and reads expired once it passes", () => {
 });
 
 test("a row's fact names its sandboxes and daemon version, unknown when the host has not reported one", () => {
-  expect(hostFact({ sandboxes: 2, version: "1.4.0" })).toBe("2 sandboxes · v1.4.0");
-  expect(hostFact({ sandboxes: 0, version: "v2.0.0" })).toBe("No sandboxes · v2.0.0");
-  expect(hostFact({ sandboxes: 1, version: null })).toBe("1 sandbox · version unknown");
+  expect(hostFact({ sandboxes: 2, version: "1.4.0" })).toBe(
+    "?/unknown running/capacity · 2 sandboxes retained · v1.4.0",
+  );
+  expect(hostFact({ sandboxes: 0, version: "v2.0.0" })).toBe(
+    "?/unknown running/capacity · No sandboxes retained · v2.0.0",
+  );
+  expect(hostFact({ sandboxes: 1, version: null })).toBe(
+    "?/unknown running/capacity · 1 sandbox retained · version unknown",
+  );
 });
 
 test("a host's reported daemon version is parsed; a blank or missing one reads as unknown", () => {
@@ -159,4 +165,24 @@ test("a Docker sandbox page names its host in short, readable words", () => {
   expect(sandboxHostLabel(list, OTHER)).toBe("Host 11111111");
   expect(sandboxHostLabel(null, ID)).toBe("Host 70bde9cd");
   expect(sandboxHostLabel(list, null)).toBe("Unknown");
+});
+
+test("resource observations survive parsing while malformed capacity data is excluded", () => {
+  const resources = {
+    machine: { cpus: 8, memoryBytes: 26 * 1024 ** 3 },
+    perSandbox: { cpus: 2, memoryBytes: 4 * 1024 ** 3, pids: 4096 },
+    capacity: 6,
+    mode: "automatic" as const,
+  };
+  const value = host({ running: 3, resources });
+  const parsed = parseDockerHostList({ placement: true, hosts: [value] });
+  expect(parsed?.hosts[0]?.resources).toEqual(resources);
+  expect(hostFact(parsed!.hosts[0]!)).toContain("3/6 running/capacity");
+  for (const broken of [
+    { ...resources, capacity: -1 },
+    { ...resources, mode: "surprise" },
+    { ...resources, perSandbox: { ...resources.perSandbox, cpus: 99 } },
+  ]) {
+    expect(parseDockerHostList({ placement: true, hosts: [{ ...value, resources: broken }] })?.skipped).toBe(1);
+  }
 });

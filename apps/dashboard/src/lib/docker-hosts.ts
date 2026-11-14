@@ -1,4 +1,9 @@
-import type { DockerHostListResponse, DockerHostSummary } from "@armada/core";
+import {
+  type DockerHostListResponse,
+  type DockerHostSummary,
+  dockerHostResourceDisplay,
+  validDockerHostResources,
+} from "@armada/core";
 import { relativeAge } from "./relative-time.ts";
 import type { ResourceState } from "./resource-list.ts";
 
@@ -50,7 +55,9 @@ function parseHost(value: unknown): DockerHost | null {
     (state === "revoked") !== (revokedAt !== null) ||
     typeof sandboxes !== "number" ||
     !Number.isInteger(sandboxes) ||
-    sandboxes < 0
+    sandboxes < 0 ||
+    (value.running !== undefined && (!Number.isSafeInteger(value.running) || Number(value.running) < 0)) ||
+    (value.resources !== undefined && value.resources !== null && !validDockerHostResources(value.resources))
   )
     return null;
   return {
@@ -61,6 +68,10 @@ function parseHost(value: unknown): DockerHost | null {
     lastSeenAt,
     revokedAt,
     sandboxes,
+    ...(value.running === undefined ? {} : { running: value.running as number }),
+    ...(value.resources === undefined
+      ? {}
+      : { resources: value.resources as Exclude<DockerHost["resources"], undefined> }),
     version: typeof version === "string" && version.trim() !== "" ? version.trim() : null,
   };
 }
@@ -191,8 +202,8 @@ export function connectedHostName(list: DockerHostList, hostId: string): string 
 }
 
 /** A row's fact: what runs there and which daemon runs it. */
-export function hostFact(host: Pick<DockerHost, "sandboxes" | "version">): string {
-  return `${sandboxCount(host.sandboxes)} · ${host.version ? `v${host.version.replace(/^v/, "")}` : "version unknown"}`;
+export function hostFact(host: Pick<DockerHost, "sandboxes" | "version" | "resources" | "running">): string {
+  return `${dockerHostResourceDisplay(host).usage} running/capacity · ${sandboxCount(host.sandboxes)} retained · ${host.version ? `v${host.version.replace(/^v/, "")}` : "version unknown"}`;
 }
 
 /** What revoking a host does, said before it happens. */

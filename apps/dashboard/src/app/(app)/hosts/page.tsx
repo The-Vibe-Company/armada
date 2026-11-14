@@ -1,4 +1,4 @@
-import type { Harness } from "@armada/core";
+import { dockerHostResourceDisplay, type Harness } from "@armada/core";
 import { CircleAlertIcon, ServerIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
@@ -156,6 +156,7 @@ function row(
   now: number,
   launch: Launch,
 ): ResourceRow & { bucket: Bucket } {
+  const resources = dockerHostResourceDisplay(host);
   const name = host.name ?? "Unnamed machine";
   const blocker = dockerLaunchBlocker(launch.option, launch.placement, host);
   const state = hostState(host, now);
@@ -213,7 +214,13 @@ function row(
             </dd>
             <dt className="text-muted-foreground">Last check-in</dt>
             <dd>{seen ?? "Never"}</dd>
-            <dt className="text-muted-foreground">Sandboxes</dt>
+            <dt className="text-muted-foreground">Machine</dt>
+            <dd>{resources.machine}</dd>
+            <dt className="text-muted-foreground">Per sandbox</dt>
+            <dd>{resources.limits}</dd>
+            <dt className="text-muted-foreground">Running / capacity</dt>
+            <dd className="tabular-nums">{resources.usage}</dd>
+            <dt className="text-muted-foreground">Retained sandboxes</dt>
             <dd>{sandboxCount(host.sandboxes)}</dd>
             <dt className="text-muted-foreground">Daemon version</dt>
             <dd>{host.version ?? "Unknown"}</dd>

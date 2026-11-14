@@ -42,16 +42,19 @@ export async function admitDockerCapacity(tx: Sql, hostId: string): Promise<void
     memoryBytes: Number(host.machine_memory_bytes),
   })!;
   const { rows } = await tx.query<{ running: string | number }>(
-    `select count(distinct start.bound_sandbox_id) as running from public.docker_host_jobs start
-     join public.sandboxes s on s.id=start.bound_sandbox_id
-     where s.stopped_at is null and s.deleted_at is null and start.host_id=$1 and start.bound_sandbox_id is not null
-       and start.bound_operation in ('create','resume')
-       and not exists (select 1 from public.docker_host_jobs stop
-         where stop.host_id=start.host_id and stop.bound_sandbox_id=start.bound_sandbox_id
-           and stop.position>start.position and stop.bound_operation in ('stop','delete')
-           and stop.outcome='completed')`,
+    `select (${DOCKER_CAPACITY_USAGE_SQL}) as running from public.docker_hosts h where h.id=$1`,
     [hostId],
   );
   const running = Number(rows[0]?.running ?? 0);
   if (running >= capacity) throw new DockerHostFull(host.name ?? hostId, running, capacity);
 }
+
+/** Physical reservations, shared by admission and its displayed usage. Correlated with host alias h. */
+export const DOCKER_CAPACITY_USAGE_SQL = `select count(distinct start.bound_sandbox_id) as running from public.docker_host_jobs start
+     join public.sandboxes s on s.id=start.bound_sandbox_id
+     where s.stopped_at is null and s.deleted_at is null and start.host_id=h.id and start.bound_sandbox_id is not null
+       and start.bound_operation in ('create','resume')
+       and not exists (select 1 from public.docker_host_jobs stop
+         where stop.host_id=start.host_id and stop.bound_sandbox_id=start.bound_sandbox_id
+           and stop.position>start.position and stop.bound_operation in ('stop','delete')
+           and stop.outcome='completed')`;
