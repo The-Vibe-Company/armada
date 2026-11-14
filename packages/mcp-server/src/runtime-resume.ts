@@ -2,6 +2,7 @@ import { sha256Hex } from "@armada/auth";
 import { type PromptReceipt, type Sql, sandboxActivity, VaultError } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import { createSqlData, type SandboxView } from "./data.ts";
+import { lockRuntimeAccount } from "./runtime-account-admission.ts";
 import { runtimeAgentFor } from "./runtime-agent.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
@@ -98,31 +99,7 @@ export function createRuntimeResume(
     } // Historical accepted outcome, not a new activation.
     if (!sql.transaction) throw new VaultError("unavailable", "Runtime resume requires transactional admission.");
     const admitted = await sql.transaction(async (tx) => {
-      if (
-        !(
-          await tx.query("select user_id from public.members where user_id=$1 and org_id=$2 for update", [
-            caller.userId,
-            found.orgId,
-          ])
-        ).rows[0]
-      )
-        throw new VaultError("not_found", "Runtime membership was revoked.");
-      if (
-        !(
-          await tx.query(
-            `select id from public.credentials where id=$1 and version=$2 and status='active' and kind = any($5::public.credential_kind[])
-        and (expires_at is null or expires_at>now()) and ((scope='user' and owner_id=$3) or (scope='org' and owner_id=$4)) for update`,
-            [
-              found.credentialId,
-              found.credentialVersion,
-              caller.userId,
-              found.orgId,
-              found.harness === "claude" ? ["anthropic", "claude_oauth"] : ["openai", "codex_auth"],
-            ],
-          )
-        ).rows[0]
-      )
-        throw new VaultError("not_found", "Pinned runtime account is no longer authorized.");
+      await lockRuntimeAccount(tx, caller, found, "Pinned runtime account is no longer authorized.");
       const fence = (
         await tx.query<{ tainted: boolean; lease: string | null; busy: boolean; unexpired: boolean }>(
           "select expires_at>now() as unexpired,application_secret_tainted as tainted,activity_lease_id::text as lease,(reconcile_lease_until>now()) as busy from public.sandboxes where id=$1 and owner_id=$2 for update",
