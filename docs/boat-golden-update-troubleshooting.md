@@ -43,7 +43,14 @@ still publish a snapshot. There is currently no owner-facing cancellation or
 orphan-reservation repair command. An administrator must investigate these
 states; this change does not add an unsafe automatic unlock.
 
-After the actual blocker is resolved and the fix is released, retry with the
+For the full CLI refusal/version-skew inventory, see
+[Golden update CLI refusals](golden-update-cli-refusals.md).
+
+After release, append without dropping existing repositories:
+
+    armada golden update two-repos-prod-test --provider boat --org <org-id> --add-repo https://github.com/new-owner/repo.git
+
+For intentional replacement with --repo or --config, supply the
 **complete desired repository list**, not just the new repository:
 
 ```sh

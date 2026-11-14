@@ -38,6 +38,7 @@ import {
 } from "@armada/core";
 import {
   type ApplicationVault,
+  addGoldenRepositories,
   addMember,
   assertGoldenMutation,
   connectGolden,
@@ -352,7 +353,7 @@ export async function handleControlRequest(request: Request, options: ControlOpt
     if (result === undefined) return fail(404, "unknown_route", "Unknown route.");
     return Response.json(result, {
       status:
-        (route === "golden/create" || route === "golden/update") &&
+        (route === "golden/create" || route === "golden/update" || route === "golden/update-add-repos") &&
         typeof result === "object" &&
         result !== null &&
         "jobId" in result
@@ -1394,6 +1395,8 @@ async function dispatch(
       return createGoldenRoute(options, caller, body);
     case "golden/update":
       return updateGoldenRoute(options, caller, body);
+    case "golden/update-add-repos":
+      return updateGoldenRoute(options, caller, body, true);
     case "golden/snapshot":
       return snapshotGoldenRoute(options, caller, body);
     case "golden/connect":
@@ -1476,7 +1479,12 @@ async function createGoldenRoute(options: ControlOptions, caller: Caller, body: 
 }
 
 /** Rebuild an existing visible golden in place. The row, owner and visibility come from storage, never the body. */
-async function updateGoldenRoute(options: ControlOptions, caller: Caller, body: Record<string, unknown>) {
+async function updateGoldenRoute(
+  options: ControlOptions,
+  caller: Caller,
+  body: Record<string, unknown>,
+  additive = false,
+) {
   if (!options.goldenBuilds || (!options.providers && !options.providerFor) || !options.data)
     throw new VaultError("unavailable", "Secure golden creation is not configured on this server.");
   required(body, "idempotencyKey");
@@ -1487,8 +1495,22 @@ async function updateGoldenRoute(options: ControlOptions, caller: Caller, body: 
   if (!existingGolden) throw new GoldenError("not_found", `No golden named '${name}'.`);
   const actor: GoldenActor = { userId: caller.userId, orgId: org.id, role: org.role };
   assertGoldenMutation(actor, existingGolden);
-  if (body.config === undefined) throw new VaultError("invalid", "config is required.");
-  const config = normalizeGitHubGoldenConfig(parseGoldenConfig(body.config));
+  if (additive && (body.config !== undefined || body.setup !== undefined))
+    throw new VaultError(
+      "invalid",
+      "--add-repo cannot replace config or setup. Use --config with the complete desired configuration for replacement.",
+    );
+  if (!additive && body.addRepos !== undefined)
+    throw new VaultError(
+      "invalid",
+      "Additive repository updates require the golden/update-add-repos route. Upgrade the CLI; do not retry as a replacement.",
+    );
+  if (!additive && body.config === undefined) throw new VaultError("invalid", "config is required.");
+  if (additive && (!Array.isArray(body.addRepos) || !body.addRepos.every((repo) => typeof repo === "string")))
+    throw new VaultError("invalid", "addRepos must be a non-empty list of repository URLs.");
+  const config = normalizeGitHubGoldenConfig(
+    additive ? addGoldenRepositories(existingGolden.config, body.addRepos as string[]) : parseGoldenConfig(body.config),
+  );
   const provider = await providerForGolden(options, caller, existingGolden);
   return options.goldenBuilds.admit(
     provider,
