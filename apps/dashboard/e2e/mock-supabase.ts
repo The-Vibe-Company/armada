@@ -1,4 +1,5 @@
 import {
+  accountBindingAvailability,
   type Harness,
   harnessForCredential,
   type MachineSizePolicy,
@@ -1095,10 +1096,7 @@ function mcp(message: RpcMessage, userId: string | null): Response {
   }
 }
 
-/**
- * `POST /api/v1/sandbox/bind-credential`, with the checks #603's server makes: the owner, a stopped Modal sandbox
- * still unbound, and one of the caller's compatible accounts. The binding is a compare-and-set; nothing restarts.
- */
+/** Fixture transport only: supported owner account changes retain the logical workspace, without a provider probe. */
 function bindCredential(body: Row, userId: string | null): Response {
   if (!userId) return json({ error: "Unauthorized." }, 401);
   state.bindCalls.push({ ...body });
@@ -1109,22 +1107,39 @@ function bindCredential(body: Row, userId: string | null): Response {
     return refuse(failure.status, failure.code, failure.message);
   }
   const target = state.sandboxes.find((row) => row.id === body.id);
-  if (!target || target.owner_id !== userId || target.provider !== "modal")
-    return refuse(404, "not_found", "Only the sandbox owner can recover its account binding.");
-  if (target.credential_id !== null)
-    return refuse(409, "conflict", "This sandbox is already bound; its account cannot change.");
-  if (target.status !== "stopped")
-    return refuse(
-      409,
-      "credential_binding_unsafe",
-      "Stop the sandbox and finish lifecycle reconciliation before binding.",
-    );
+  if (
+    !target ||
+    target.owner_id !== userId ||
+    !isMember(target.org_id, userId) ||
+    (body.org !== undefined && body.org !== target.org_id)
+  )
+    return refuse(404, "not_found", "Only the sandbox owner can choose its account binding.");
+  const availability = accountBindingAvailability({
+    provider: String(target.provider),
+    boatRuntime: target.boat_runtime === true,
+  });
+  if (!availability.available) return refuse(409, "credential_binding_unsupported", availability.reason);
+  const latestPrompt = [...(state.events.get(String(target.id)) ?? [])]
+    .reverse()
+    .find((event) => event.kind === "prompt");
+  if (
+    !["ready", "stopped"].includes(String(target.status)) ||
+    (target.status === "ready" && latestPrompt?.status === "running")
+  )
+    return refuse(409, "credential_binding_unsafe", "Wait for the running turn or lifecycle operation to finish.");
   const account = state.credentials.find(
-    (row) => row.id === body.credentialId && String(row.kind) in MODEL_KINDS && row.status === "active",
+    (row) =>
+      row.id === body.credentialId &&
+      MODEL_KINDS[String(row.kind)] === target.harness &&
+      row.status === "active" &&
+      (!row.expires_at || Date.parse(String(row.expires_at)) > Date.now()) &&
+      ((row.scope === "user" && row.owner_id === userId) || (row.scope === "org" && row.owner_id === target.org_id)),
   );
   if (!account) return refuse(400, "invalid", "That account cannot be used for this sandbox.");
   target.credential_id = account.id;
   target.credential_version = account.version;
+  target.status = "stopped";
+  target.stopped_at ??= new Date().toISOString();
   return json({
     id: target.id,
     credentialId: account.id,

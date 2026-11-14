@@ -189,6 +189,7 @@ export function createRuntimeFollowup(
         return { current: active, epoch: scope.epoch, replay: false };
       });
     });
+    const pricingContext = await store.captureUsagePricingContext?.(found.id);
     const submit = (signal?: AbortSignal) =>
       agent.prompt(
         {
@@ -226,7 +227,7 @@ export function createRuntimeFollowup(
         if (existing.state === "missing") await prepareMcp?.(caller, found.id, signal);
         const accepted = await submit(signal);
         try {
-          await store.recordTurnModel?.(found.id, accepted.promptId, found.model);
+          await store.recordTurnModel?.(found.id, accepted.promptId, found.model, pricingContext);
         } catch {
           /* Accepted work continues. */
         }

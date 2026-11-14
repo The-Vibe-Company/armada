@@ -53,7 +53,7 @@ type Sandbox = {
 };
 type Selection = { requestId: string } & (
   | { operation: "create" | "delete" }
-  | { operation: "stop"; idleCheckpointRequest?: string }
+  | { operation: "stop"; idleCheckpointRequest?: string; onlyIfIdle?: boolean }
   | { operation: "bootstrap" | "resume"; bootstrapDescriptor: BootstrapDescriptor }
 );
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -506,6 +506,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
         exact(selection, [
           "requestId",
           "operation",
+          ...(selection.operation === "stop" && selection.onlyIfIdle !== undefined ? ["onlyIfIdle"] : []),
           ...(selection.operation === "stop" && selection.idleCheckpointRequest !== undefined
             ? ["idleCheckpointRequest"]
             : []),
@@ -543,6 +544,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
         }
         const row = await sandbox(tx, sandboxId, host, hint.docker_installation_id);
         if (row.owner_id !== hint.owner_id) deny();
+        if (selection.operation === "stop" && selection.onlyIfIdle && !["ready", "stopped"].includes(row.status))
+          deny();
         const epoch = await permission(tx, actor, row, selection.operation);
         // The host lock serializes admission: observe an existing request only
         // after waiting, so concurrent lost-response retries reconcile too.

@@ -43,6 +43,10 @@ export const HEALTH_PATH = "/healthz";
 export type Route = (request: Request) => Promise<Response | null>;
 
 export interface HandlerOptions {
+  sandboxBillingAccount?: (
+    caller: import("./caller.ts").Caller,
+    id: string,
+  ) => Promise<import("./sandbox-billing-account.ts").SandboxBillingAccount | null>;
   dockerControls?: import("./docker-sandbox-controls.ts").DockerSandboxControls;
   runtimeGitHub?: RuntimeGitHub;
   runtimeResume?: RuntimeResume;
@@ -186,6 +190,9 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
     const server = createArmadaServer(
       {
         caller,
+        ...(options.sandboxBillingAccount
+          ? { sandboxBillingAccount: (id: string) => options.sandboxBillingAccount!(caller, id) }
+          : {}),
         ...(options.dockerControls ? { dockerControls: options.dockerControls } : {}),
         ...(options.runtimeSend ? { runtimeSend: options.runtimeSend } : {}),
         ...(options.runtimeCheckpoint ? { runtimeCheckpoint: options.runtimeCheckpoint } : {}),

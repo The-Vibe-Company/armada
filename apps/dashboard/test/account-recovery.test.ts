@@ -65,8 +65,9 @@ describe("legacy account recovery", () => {
 
   test("only a stopped sandbox is offered the bind, as the server accepts no other state", () => {
     expect(bindableStatus("stopped")).toBe("ready");
+    expect(bindableStatus("ready")).toBe("ready");
     expect(bindableStatus("stopping")).toBe("wait");
-    for (const status of ["starting", "ready", "running"] as const) expect(bindableStatus(status)).toBe("stop-first");
+    for (const status of ["starting", "running"] as const) expect(bindableStatus(status)).toBe("stop-first");
     // Stop does not apply to a failed sandbox and the server refuses to bind one: never offer a doomed choice.
     expect(bindableStatus("failed")).toBe("failed");
   });

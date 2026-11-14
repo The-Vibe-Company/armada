@@ -17,6 +17,7 @@ export interface CredentialBindingRecoveryResult {
 export type CredentialBindingRecovery = (
   caller: Caller,
   input: CredentialBindingRecoveryInput,
+  quiesce?: import("./sandbox-account-change.ts").QuiesceAccountChange,
 ) => Promise<CredentialBindingRecoveryResult>;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** No provider port: recovery cannot allocate, resume or restart a physical workspace. */
