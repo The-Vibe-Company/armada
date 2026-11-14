@@ -1,4 +1,4 @@
-import type { Sql } from "@armada/core";
+import type { AgentEvent, Sql } from "@armada/core";
 import type { IngestGrantClaims, IngestPayload, Scope } from "./ports.ts";
 import { appendModalEvents } from "./store.ts";
 
@@ -6,6 +6,8 @@ import { appendModalEvents } from "./store.ts";
  * scope server-side, never from request JSON. The token is only an expiring sandbox/generation grant. */
 export function createModalIngestHandler(options: {
   sql: Sql;
+  /** Runs inside the authenticated archive transaction, before ACK; replays must be idempotent. */
+  projectEvents?(tx: Sql, scope: Scope, claims: IngestGrantClaims, events: AgentEvent[]): Promise<void>;
   publishNativeAuth?(
     scope: Scope,
     claims: IngestGrantClaims,
@@ -73,7 +75,14 @@ export function createModalIngestHandler(options: {
         )
       )
         return new Response(null, { status: 400 });
-      const ack = await appendModalEvents(options.sql, scope, claims.sandboxId, claims.generation, body.events);
+      const ack = await appendModalEvents(
+        options.sql,
+        scope,
+        claims.sandboxId,
+        claims.generation,
+        body.events,
+        (tx, events) => options.projectEvents?.(tx, scope, claims, events) ?? Promise.resolve(),
+      );
       return Response.json({ acknowledgedSequence: ack });
     } catch {
       return new Response(null, { status: 403 });

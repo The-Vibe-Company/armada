@@ -210,6 +210,7 @@ export async function appendModalEvents(
   sandboxId: string,
   generation: string,
   events: Omit<IngestPayload, "sandboxId" | "generation">[],
+  projectEvents?: (tx: Sql, events: AgentEvent[]) => Promise<void>,
 ): Promise<number> {
   if (!sql.transaction) throw refusal("provider_not_configured", "Transactional SQL is required for event ingestion.");
   const key = scopeKey(scope);
@@ -236,6 +237,7 @@ export async function appendModalEvents(
       [key, sandboxId, generation, row.record.eventBase ?? 0],
     );
     let ack = Number(previous.rows[0]?.ack ?? 0);
+    const accepted: AgentEvent[] = [];
     for (const item of [...events].sort((a, b) => a.sequence - b.sequence)) {
       if (!Number.isSafeInteger(item.sequence) || item.sequence < 1)
         throw refusal("invalid_request", "Invalid producer sequence.");
@@ -247,8 +249,10 @@ export async function appendModalEvents(
         [key, sandboxId, generation, item.sequence, JSON.stringify(item.event)],
       );
       if (!inserted.rows.length) throw refusal("conflict", "Producer replay differs from committed event.");
+      accepted.push(item.event);
       ack = Math.max(ack, item.sequence);
     }
+    if (accepted.length) await projectEvents?.(db, accepted);
     return ack;
   });
 }

@@ -16,60 +16,114 @@ import { ENCRYPTION_KEY } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
 
-test("server ingest survives restart, commits once in SQL, and fences the previous generation", async () => {
-  const { db, people } = await sharedDatabase();
+test.each(["claude", "codex"] as const)(
+  "server ingest persists %s usage before ACK, replays once and fences old generations",
+  async (harness) => {
+    const { db, people } = await sharedDatabase();
 
-  const sql = db;
-  const scope: Scope = {
-    orgId: people.org,
-    userId: people.owner,
-    visibility: "private",
-    binding: { workspace: "ws", appId: "ap-immutable", environment: "main" },
-  };
-  const machine: Machine = {
-    info: { id: "logical", name: "test", state: "ready", providerState: "active", labels: {} },
-    phase: "active",
-    generation: 1,
-    golden: false,
-    ttlSeconds: 60,
-    physicalName: "physical",
-    grantExpiresAt: Date.now() + 60_000,
-  };
-  await createSqlModalStore(sql, scope).reserve("request", machine);
-  await sql.query("insert into modal_server_scopes(scope,context) values($1,$2::jsonb)", [
-    scopeKey(scope),
-    JSON.stringify(scope),
-  ]);
-  const key = new Uint8Array(
-    hkdfSync("sha256", Buffer.from(ENCRYPTION_KEY, "base64"), "armada/modal/v1", "runner-generation-grants", 32),
-  );
-  const grant = createGenerationGrants(key, scope).issue(machine);
-  const options = {
-    sql,
-    vault: createSqlVaultStore(sql),
-    encryptionKey: ENCRYPTION_KEY,
-    publicUrl: "https://armada.test",
-  };
-  const request = () =>
-    new Request(`https://armada.test${MODAL_INGEST_PATH}`, {
-      method: "POST",
-      headers: { "x-armada-runner-grant": grant.token },
-      body: JSON.stringify({
-        sandboxId: machine.info.id,
-        generation: "1",
-        events: [{ sequence: 1, event: { id: "e1", at: 1, kind: "text", text: "hello" } }],
-      }),
-    });
-  const first = await createModalIntegration(options);
-  expect((await first.route(request()))?.status).toBe(200);
-  const restarted = await createModalIntegration(options);
-  const replay = await restarted.route(request());
-  expect(await replay?.json()).toEqual({ acknowledgedSequence: 1 });
-  expect((await sql.query("select * from modal_events")).rows).toHaveLength(1);
-  await sql.query("update modal_machines set record=jsonb_set(record,'{generation}','2') where id='logical'");
-  expect((await restarted.route(request()))?.status).toBe(403);
-  expect(await restarted.route(new Request("https://armada.test/api/internal/modal/events-extra"))).toBeNull();
-});
+    const sql = db;
+    const scope: Scope = {
+      orgId: people.org,
+      userId: people.owner,
+      visibility: "private",
+      binding: { workspace: "ws", appId: "ap-immutable", environment: "main" },
+    };
+    const machine: Machine = {
+      info: { id: "logical", name: "test", state: "ready", providerState: "active", labels: {} },
+      phase: "active",
+      generation: 1,
+      golden: false,
+      ttlSeconds: 60,
+      physicalName: "physical",
+      grantExpiresAt: Date.now() + 60_000,
+    };
+    await createSqlModalStore(sql, scope).reserve("request", machine);
+    await sql.query("insert into modal_server_scopes(scope,context) values($1,$2::jsonb)", [
+      scopeKey(scope),
+      JSON.stringify(scope),
+    ]);
+    const key = new Uint8Array(
+      hkdfSync("sha256", Buffer.from(ENCRYPTION_KEY, "base64"), "armada/modal/v1", "runner-generation-grants", 32),
+    );
+    const grant = createGenerationGrants(key, scope).issue(machine);
+    const options = {
+      sql,
+      vault: createSqlVaultStore(sql),
+      encryptionKey: ENCRYPTION_KEY,
+      publicUrl: "https://armada.test",
+    };
+    await sql.query(
+      `insert into goldens(org_id,owner_id,name,visibility,provider,provider_sandbox_id,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config)
+      values($1,$2,'usage-modal','private','modal','master','image',$3,$4,$5,'{"repos":[],"init":[]}')`,
+      [people.org, people.owner, scope.binding.workspace, scope.binding.environment, scope.binding.appId],
+    );
+    const sessionId = crypto.randomUUID();
+    const registerSession = () =>
+      sql.query(
+        `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status)
+    select $1,id,$2,$3,'modal',$4,$5,'ready' from goldens where name='usage-modal'`,
+        [sessionId, people.org, people.owner, machine.info.id, harness],
+      );
+    const model = "compatible_model";
+    const events = [
+      {
+        sequence: 1,
+        event: { id: "prompt", at: 1, kind: "prompt", promptId: "turn", text: "hello", status: "running" },
+      },
+      {
+        sequence: 2,
+        event: {
+          id: "usage",
+          at: 2,
+          kind: "other",
+          promptId: "turn",
+          type: harness === "claude" ? "result" : "armada/turnUsage",
+          data:
+            harness === "claude"
+              ? { modelUsage: { [model]: { inputTokens: 42, outputTokens: 7, cacheReadInputTokens: 3 } } }
+              : { model, inputTokens: 42, outputTokens: 7, cachedTokens: 3 },
+        },
+      },
+      {
+        sequence: 3,
+        event: { id: "finished", at: 3, kind: "prompt", promptId: "turn", text: "hello", status: "finished" },
+      },
+    ];
+    const readUsage = async () =>
+      (
+        await createSqlData(sql)({
+          userId: people.owner,
+          orgs: [{ orgId: people.org, role: "member" }],
+          via: "service",
+        }).sandboxes.get(sessionId)
+      )?.usage;
+    const request = () =>
+      new Request(`https://armada.test${MODAL_INGEST_PATH}`, {
+        method: "POST",
+        headers: { "x-armada-runner-grant": grant.token },
+        body: JSON.stringify({
+          sandboxId: machine.info.id,
+          generation: "1",
+          events,
+        }),
+      });
+    const first = await createModalIntegration(options);
+    expect((await first.route(request()))?.status).toBe(403);
+    expect((await sql.query("select * from modal_events")).rows).toHaveLength(0);
+    await registerSession();
+    expect((await first.route(request()))?.status).toBe(200);
+    expect((await readUsage())?.tokenTotals).toMatchObject({ inputTokens: 42, outputTokens: 7, cachedTokens: 3 });
+    expect((await readUsage())?.turns).toMatchObject([{ model, inputTokens: 42 }]);
+    const restarted = await createModalIntegration(options);
+    const replay = await restarted.route(request());
+    expect(await replay?.json()).toEqual({ acknowledgedSequence: 3 });
+    expect((await readUsage())?.tokenTotals?.inputTokens).toBe(42);
+    expect((await sql.query("select * from modal_events")).rows).toHaveLength(3);
+    await sql.query("update modal_machines set record=jsonb_set(record,'{generation}','2') where id='logical'");
+    expect((await restarted.route(request()))?.status).toBe(403);
+    expect(await restarted.route(new Request("https://armada.test/api/internal/modal/events-extra"))).toBeNull();
+  },
+);
 
 test("private image org-fallback provenance survives adding a personal key, rotation and removal", async () => {
   const { db, people } = await sharedDatabase();

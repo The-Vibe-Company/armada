@@ -26,6 +26,7 @@ import { loadEmbeddedRunnerArtifact } from "@armada/provider-modal/embedded";
 import { ModalClient } from "modal";
 import type { HandlerOptions } from "./http.ts";
 import type { GitHubLaunchOptions } from "./launch-credentials.ts";
+import { projectModalEventUsage } from "./modal-event-usage.ts";
 import { modalLaunchEnvironment } from "./modal-launch-environment.ts";
 import { createModelAuthOwnership } from "./model-auth.ts";
 import { measureProviderPhase } from "./request-timing.ts";
@@ -59,6 +60,7 @@ export async function createModalIntegration(options: {
     origin: options.publicUrl,
   });
   const ingest = createModalIngestHandler({
+    projectEvents: (tx, scope, claims, events) => projectModalEventUsage(tx, scope, claims.sandboxId, events),
     publishNativeAuth: (scope, claims, raw, revision) => modelAuth.publishFromModal(scope, claims, raw, revision),
     sql: options.sql,
     async verifyGrant(token) {
