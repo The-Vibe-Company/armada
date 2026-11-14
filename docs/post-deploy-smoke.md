@@ -1599,3 +1599,22 @@ window even if the proof budget expires. Full runs opt in with the same flag and
 reuse existing usage observations without extra allocations or turns. No account
 is created, reconnected or modified. Boat remains coordinator-only via
 `--only boat --production-boat`, never the release gate.
+
+### Running-turn control observation
+
+Steer/interrupt probes wait through `queued` observations until the exact
+original prompt is `running`, within the existing shared 110-second budget.
+They never send a control action to a queued-only or already-terminal turn;
+missing running evidence is a failure, not a control ACK or provider pass.
+
+Steer proof drains all available log pages and requires the **current final**
+parent-assistant answer and current `finished` status on the same run. Logical
+message snapshots/deltas update that answer; retractions, a later different
+answer or a later failed terminal state cannot leave a sticky success behind.
+The native/restart steer-record distinction remains unchanged. Interrupt still
+requires the exact original prompt to settle `interrupted`, not ordinary
+completion. Known sandbox cleanup remains independent of the proof result.
+
+The focused coordinator checks are `--parity --only modal --feature steer` and
+`--parity --only modal --feature interrupt`. These observations do not replace
+live Modal execution evidence; workers run only deterministic transport tests.
