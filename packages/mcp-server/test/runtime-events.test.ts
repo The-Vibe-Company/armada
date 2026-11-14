@@ -1,9 +1,11 @@
 import { expect, spyOn, test } from "bun:test";
 import type { AgentEvent, Sql } from "@armada/core";
-import { createUsagePricingContext, decryptSecret } from "@armada/core/server";
+import * as coreServer from "@armada/core/server";
+import { createUsagePricingContext, decryptSecret, encryptSecret } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
+import { createRuntimeIdle } from "../src/runtime-idle.ts";
 import { sqlOver } from "../src/sql.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { database, ENCRYPTION_KEY } from "./support.ts";
@@ -216,11 +218,11 @@ test("a maximum event batch uses bounded SQL and detects duplicate conflicts bef
   f.queries.length = 0;
   expect(await (await f.publish(active, batch)).json()).toEqual({ acknowledgedSequence: 1000 });
   // Includes session authorization/locks, archive high-water/read and one bulk insert.
-  expect(f.queries.length).toBeLessThanOrEqual(8);
+  expect(f.queries.length).toBeLessThanOrEqual(11);
   expect(await f.rows()).toHaveLength(1000);
   f.queries.length = 0;
   expect(await (await f.publish(active, batch)).json()).toEqual({ acknowledgedSequence: 1000 });
-  expect(f.queries.length).toBeLessThanOrEqual(8);
+  expect(f.queries.length).toBeLessThanOrEqual(11);
   const next = { sequence: 1001, event: f.other("next") };
   expect(await (await f.publish(active, [next, next])).json()).toEqual({ acknowledgedSequence: 1001 });
   const conflict = { sequence: 1002, event: f.other("new") };
@@ -621,3 +623,80 @@ test.each(["boat", "modal"] as const)(
     expect(incomplete?.cost).toMatchObject({ usd: null, unknown: "tokens", unpricedTurns: 1 });
   },
 );
+
+test("idle evidence upgrades long archives, survives enrolment renewal, and blocks unresolved turns and commands", async () => {
+  const f = await fixture();
+  let active = await f.enrol();
+  const ciphertext = await encryptSecret(JSON.stringify(f.other("archived")), ENCRYPTION_KEY);
+  await f.db.query(
+    `insert into runtime_events(sandbox_id,sequence,epoch,event_enc)
+     select $1,n,$2,$3 from generate_series(1,10001) n`,
+    [f.id, active.epoch, ciphertext],
+  );
+  const prompt = (promptId: string, status: "running" | "finished", at: number): AgentEvent => ({
+    id: promptId + status,
+    promptId,
+    status,
+    at,
+    kind: "prompt",
+    text: "",
+  });
+  await f.db.query("update sandboxes set task_prompt_id='current',expires_at=now()+interval '1 hour' where id=$1", [
+    f.id,
+  ]);
+  let admitted = 0;
+  let now = 1000;
+  const idle = createRuntimeIdle(
+    f.sql,
+    ENCRYPTION_KEY,
+    async (_actor, _input, guard) => {
+      await guard!(f.sql);
+      admitted++;
+      throw Error("test stops before provider dispatch");
+    },
+    { delayMs: 10, now: () => now },
+  );
+  const sweep = async () => {
+    now += 60000;
+    await idle.reconcileOne(new AbortController().signal);
+  };
+  // Crypto has its own boundary tests; avoid 10,001 identical decryptions here.
+  const decrypt = coreServer.decryptSecret;
+  const archiveJson = JSON.stringify(f.other("archived"));
+  const cryptoSpy = spyOn(coreServer, "decryptSecret").mockImplementation(async (bytes, key) =>
+    Buffer.from(bytes).equals(Buffer.from(ciphertext)) ? archiveJson : decrypt(bytes, key),
+  );
+  expect(
+    (
+      await f.publish(active, [
+        { sequence: 10002, event: { ...f.other("earlier"), promptId: "earlier" } },
+        { sequence: 10003, event: prompt("current", "finished", 3) },
+      ])
+    ).status,
+  ).toBe(200);
+  cryptoSpy.mockRestore();
+
+  await sweep();
+  expect(admitted).toBe(0);
+  expect((await f.publish(active, [{ sequence: 10004, event: prompt("earlier", "finished", 4) }])).status).toBe(200);
+  active = await f.enrol();
+  await sweep();
+  expect(admitted).toBe(1);
+  await f.db.query(
+    `insert into runtime_commands(sandbox_id,epoch,request_id,request_enc)
+     values($1,$2,$3,$4)`,
+    [f.id, active.epoch, crypto.randomUUID(), ciphertext],
+  );
+  await sweep();
+  expect(admitted).toBe(1);
+  await f.db.query("delete from runtime_commands where sandbox_id=$1", [f.id]);
+  expect(
+    (
+      await f.publish(active, [
+        { sequence: 10005, event: { id: "unknown", kind: "prompt", text: "", status: "finished", at: 5 } },
+      ])
+    ).status,
+  ).toBe(200);
+  await sweep();
+  expect(admitted).toBe(1);
+});

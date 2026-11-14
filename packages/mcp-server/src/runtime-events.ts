@@ -12,6 +12,7 @@ import { createSqlData } from "./data.ts";
 import type { Route } from "./http.ts";
 import { type createRuntimeEnrolments, RuntimeEnrolmentDenied } from "./runtime-enrolment.ts";
 import { runtimeHttpFailure } from "./runtime-http-failure.ts";
+import { projectRuntimeIdle } from "./runtime-idle-evidence.ts";
 import type { RuntimeNativePublication } from "./runtime-native-auth.ts";
 import { logRuntimeStage } from "./runtime-progress.ts";
 import { admittedTurnContexts } from "./turn-pricing.ts";
@@ -214,6 +215,7 @@ export function createRuntimeEvents(
            from unnest($3::bigint[],$4::text[],$5::text[]) as batch(sequence,marker,event_hex)`,
           [scope.sandboxId, scope.epoch, sequences, markers, encrypted],
         );
+      await projectRuntimeIdle(tx, scope.sandboxId, key, initialAck, fresh, ack);
       const usage = reportedTurnUsage(fresh);
       if (addedPrompt || usage.turns.length) {
         // recordUsage merges cumulative snapshots, not per-batch deltas. Prompt-only

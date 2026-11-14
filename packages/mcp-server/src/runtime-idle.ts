@@ -1,6 +1,7 @@
-import { type AgentEvent, decryptSecret, isFinalPromptStatus, type Sql } from "@armada/core/server";
+import { type AgentEvent, isFinalPromptStatus, type Sql } from "@armada/core/server";
 import { dockerHostSupportsResume } from "./docker-host-version.ts";
 import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
+import { projectRuntimeIdle } from "./runtime-idle-evidence.ts";
 
 /** Unknown/truncated history cannot prove idle. Detached processes follow the timer,
  * not process inspection: only an active turn or admitted command blocks pause. */
@@ -47,24 +48,19 @@ export function createRuntimeIdle(
       [id],
     );
     if (busy.rows.length) throw Error("Runtime command pending.");
-    const rows = (
-      await tx.query<{ event_enc: Uint8Array<ArrayBuffer> }>(
-        "select event_enc from public.runtime_events where sandbox_id=$1 order by sequence limit 10001",
-        [id],
+    const evidence = (
+      await tx.query<{ last_activity: number; eligible: boolean }>(
+        `select e.last_activity,
+         (not e.unknown_turn
+          and e.sequence=(select coalesce(max(sequence),0) from public.runtime_events where sandbox_id=$1)
+          and exists(select 1 from public.runtime_idle_turns where sandbox_id=$1 and prompt_id=$2 and settled)
+          and not exists(select 1 from public.runtime_idle_turns where sandbox_id=$1 and not settled)) as eligible
+         from public.runtime_idle_evidence e where e.sandbox_id=$1`,
+        [id, target.task_prompt_id],
       )
-    ).rows;
-    if (rows.length > 10000) throw Error("Runtime history exceeds idle observation bound.");
-    const events = await Promise.all(
-      rows.map(async (row) => JSON.parse(await decryptSecret(row.event_enc, key)) as AgentEvent),
-    );
-    if (
-      !events.some(
-        (event) =>
-          event.kind === "prompt" && event.promptId === target.task_prompt_id && isFinalPromptStatus(event.status),
-      )
-    )
-      throw Error("Current turn has not settled.");
-    if (!runtimeIdle(events, now(), delay)) throw Error("Runtime is not idle.");
+    ).rows[0];
+    if (!evidence?.eligible || evidence.last_activity <= 0 || now() - evidence.last_activity < delay)
+      throw Error("Runtime is not idle.");
   }
   return {
     async drain() {
@@ -105,6 +101,21 @@ export function createRuntimeIdle(
           try {
             // Avoid creating an intent unless idle; the authoritative check repeats
             // under checkpoint's admission lock, closing the send/exec race.
+            // Upgrade pre-projection archives once, outside checkpoint admission.
+            // Lock in the same order as ingestion so no committed events are lost.
+            await sql.transaction!(async (tx) => {
+              await tx.query("select id from public.sandboxes where id=$1 for update", [row.id]);
+              const legacy = (
+                await tx.query<{ sequence: string }>(
+                  `select coalesce(max(sequence),0)::text as sequence from public.runtime_events
+                   where sandbox_id=$1 and not exists
+                     (select 1 from public.runtime_idle_evidence where sandbox_id=$1)`,
+                  [row.id],
+                )
+              ).rows[0];
+              if (Number(legacy?.sequence) > 0)
+                await projectRuntimeIdle(tx, row.id, key, Number(legacy!.sequence), [], Number(legacy!.sequence));
+            });
             await guard(sql, row.id);
             const requestId = row.request_id ?? crypto.randomUUID();
             await checkpoint(
