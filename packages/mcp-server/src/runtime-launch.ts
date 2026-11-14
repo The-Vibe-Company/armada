@@ -4,7 +4,9 @@ import { runtimeAgentFor } from "./runtime-agent.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
 import type { runtimeConfiguration } from "./runtime-configuration.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
+import type { RuntimeGitHub } from "./runtime-github.ts";
 import { createRuntimeStartup } from "./runtime-startup.ts";
+import { runtimeWorkspace } from "./runtime-workspace.ts";
 
 type LaunchInput = Parameters<NonNullable<LaunchOptions["runtime"]>["start"]>[0];
 type Started = Awaited<ReturnType<NonNullable<LaunchOptions["runtime"]>["start"]>>;
@@ -17,6 +19,7 @@ export interface RuntimeLaunchOptions {
   serverUrl: string;
   manifest: unknown;
   architecture: "x64" | "arm64";
+  github?: Pick<RuntimeGitHub, "prepareLaunch">;
 }
 
 /** One enrolled activation/readiness/session path; placement owns configuration and bootstrap transport. */
@@ -30,7 +33,6 @@ export function createRuntimeLaunch(options: RuntimeLaunchOptions) {
     input: LaunchInput;
     configure(): Promise<LaunchPlan>;
     bootstrap(): Bootstrap;
-    extensions?(agent: ReturnType<typeof runtimeAgentFor>, epoch: string): Pick<Started, "prepareWorkspace">;
   }): Promise<Started> => {
     const { input } = request;
     const { actor, sandbox, signal, activate, restoreCheckpoint } = input;
@@ -56,7 +58,7 @@ export function createRuntimeLaunch(options: RuntimeLaunchOptions) {
       signal,
     });
     return {
-      ...request.extensions?.(agent, ready.epoch),
+      ...runtimeWorkspace(input, agent, ready.epoch, options.github),
       installSkills: (references, key) => agent.installSkills(references, key, ready.epoch, signal),
       epoch: ready.epoch,
       prompt: (request) => agent.prompt(request, `launch_${sandbox.id}`, ready.epoch),
