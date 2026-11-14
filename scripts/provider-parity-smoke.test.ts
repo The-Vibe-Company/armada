@@ -21,7 +21,7 @@ for (const mode of [
   "github_unconfigured",
   "github_unsupported",
   "accounts",
-  "accounts_exact",
+  "accounts_api_equivalent",
   "accounts_unknown",
   "accounts_invalid",
   "accounts_missing_model",
@@ -282,7 +282,7 @@ for (const mode of [
                   })),
                   cost: {
                     currency: "USD",
-                    basis: mode === "accounts_exact" ? "exact" : "estimated",
+                    basis: mode === "accounts_api_equivalent" ? "api_equivalent" : "estimated",
                     unknown:
                       mode.startsWith("accounts_unknown") ||
                       (mode === "accounts_price_lost" && (turns.get(p)?.length ?? 0) > 1)
@@ -379,7 +379,7 @@ for (const mode of [
             ? "fail: invalid_cost_receipt"
             : mode === "accounts_unknown"
               ? "pass: unknown: price"
-              : `pass: ${mode === "accounts_exact" ? "exact" : "estimated"}: USD 0.3`;
+              : `pass: ${mode === "accounts_api_equivalent" ? "api_equivalent" : "estimated"}: USD 0.3`;
           expect(summary).toContain(`| ${account} | ${provider} | exact-cost | ${cost} |`);
           if (mode === "accounts_stop_unsupported")
             expect(summary).toContain(

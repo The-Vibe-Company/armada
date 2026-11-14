@@ -1003,7 +1003,7 @@ async function accountsParity(env: NodeJS.ProcessEnv, io: Io, args: string[]): P
     "",
     "## Account feature and cost details",
     "",
-    "Cost reasons distinguish exact, estimated and unknown quotes; a passing quote check is not an exact invoice.",
+    "Cost reasons retain estimated/API-equivalent basis or explicit unknown; a passing quote check is not an invoice.",
     "",
     "| Account | Provider | Feature | Result |",
     "| --- | --- | --- | --- |",

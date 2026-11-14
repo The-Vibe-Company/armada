@@ -1162,8 +1162,10 @@ The accounts run prints two Markdown tables (also appended together to
 `GITHUB_STEP_SUMMARY`): an account/provider overview, then **Account feature and
 cost details**. The second table shows every reported feature, including explicit
 not-implemented debt and before/after resume usage and cost checks independently. The historical `exact-cost` feature
-name means quote validation: its reason explicitly retains `exact`, `estimated`
-with the reported USD amount, or `unknown` and its reason. A failed cost check
+name means fixed-point quote validation, not invoice validation: its reason
+retains the server's `estimated` or `api_equivalent` basis with the reported USD
+amount, or `unknown` and its reason. An API-equivalent subscription quote is not
+the subscription payment. A failed cost check
 never becomes a displayed verified price. Unconfigured/undeclared cells have an
 explicit `all` not-run row, without synthetic feature passes or zero costs.
 This is reporting only; it makes no extra provider calls.
