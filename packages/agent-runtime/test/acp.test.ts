@@ -19,8 +19,8 @@ for (const action of ["finish", "steer", "interrupt", "unknown"] as const) {
     const context = {
       request: {
         sandboxId: "s",
-        harness: "codex" as const,
-        text: action === "steer" || action === "interrupt" ? "hold" : action,
+        harness: "opencode" as const,
+        text: action === "steer" || action === "interrupt" ? "hold" : action === "finish" ? "DOCKER_OK" : action,
         model: "test/model",
       },
       sessionId: "session-1",
@@ -39,9 +39,29 @@ for (const action of ["finish", "steer", "interrupt", "unknown"] as const) {
       if (action === "steer") await turn.steer("next");
       if (action === "interrupt") await turn.interrupt();
       expect(await turn.done).toBe(action === "interrupt" ? "interrupted" : "finished");
-      expect(events.filter((e) => e.kind === "message").map((e) => e.text)).toEqual(
-        action === "steer" ? ["hold", "next"] : [context.request.text],
+      expect(
+        events
+          .filter((e): e is Extract<DriverEvent, { kind: "message" }> => e.kind === "message" && e.partial)
+          .map((e) => e.text),
+      ).toEqual(
+        action === "steer"
+          ? ["hold", "next"]
+          : action === "finish"
+            ? ["D", "OCK", "ER", "_OK"]
+            : [context.request.text],
       );
+      const finals = events.filter((event) => event.kind === "message" && !event.partial);
+      expect(finals.map((event) => (event.kind === "message" ? event.text : ""))).toEqual(
+        action === "interrupt" ? [] : [action === "steer" ? "next" : context.request.text],
+      );
+      if (finals[0]?.kind === "message") {
+        expect(finals[0].messageId).toEqual(expect.any(String));
+        const lastChunk = events.findLast((event) => event.kind === "message" && event.partial);
+        expect(finals[0]).toMatchObject({
+          textMode: "snapshot",
+          messageId: lastChunk?.kind === "message" ? lastChunk.messageId : undefined,
+        });
+      }
       const usage = events.filter((e) => e.kind === "other" && e.type === "armada/turnUsage");
       expect(usage).toHaveLength(1);
       expect(usage[0]?.kind === "other" ? usage[0].data : undefined).toMatchObject({

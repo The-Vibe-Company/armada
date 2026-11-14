@@ -403,3 +403,66 @@ test("CLI creates an OpenCode chat-compatible account with explicit upstream mod
   expect(h.output.join("")).not.toContain(apiKey);
   expect(h.output.join("")).toContain("armada/<upstream-model>");
 });
+
+test("CLI connects shared provider presets without connection JSON or a user-selected credential kind", async () => {
+  for (const [preset, url, models, protocol] of [
+    ["opencode-anthropic", undefined, "claude-test", "anthropic"],
+    ["opencode-azure", "https://resource.openai.azure.com/openai/v1/responses", "my-deployment", "azure"],
+    ["deepseek", undefined, "deepseek-flash", undefined],
+  ]) {
+    const h = setup();
+    const key = randomUUID();
+    const args = ["creds", "connect", preset!, "--name", "Provider", "--models", models!, "--file", "private-key"];
+    if (url) args.push("--base-url", url);
+    expect(
+      await run(
+        args,
+        { out: h.auth.out, err: h.auth.err },
+        {
+          auth: h.auth,
+          readFile: async () => key,
+        },
+      ),
+    ).toBe(0);
+    expect(h.requests).toHaveLength(1);
+    const request = h.requests[0]!;
+    expect(new URL(request.url).pathname).toBe("/api/v1/creds/accounts/set");
+    const body = (await request.json()) as { kind: string; name: string; scope: string; value: string };
+    expect(body).toMatchObject({ kind: "opencode", name: "Provider", scope: "user" });
+    const connection = JSON.parse(body.value);
+    expect(connection.endpoint.protocol).toBe(protocol);
+    expect(connection.endpoint.models).toEqual([models]);
+    expect(connection.apiKey).toBe(key);
+    expect(h.output.join("")).not.toContain(key);
+  }
+});
+
+test("CLI lists shared presets locally and refuses incompatible connect options before reading a key", async () => {
+  const h = setup();
+  let secretReads = 0;
+  expect(await run(["creds", "presets", "--json"], { out: h.auth.out, err: h.auth.err }, { auth: h.auth })).toBe(0);
+  const listed = JSON.parse(h.output.join(""));
+  expect(listed.presets.find((p: { id: string }) => p.id === "opencode-azure")).toMatchObject({ harness: "opencode" });
+  for (const args of [
+    ["opencode-anthropic", "--base-url", "https://wrong.example", "--models", "claude-test"],
+    ["opencode-azure", "--models", "deployment"],
+    ["openai", "--models", "wrong"],
+    ["deepseek", "--models", "m", "--endpoint-auth", "bearer"],
+  ]) {
+    expect(
+      await run(
+        ["creds", "connect", ...args, "--name", "Account"],
+        { out: h.auth.out, err: h.auth.err },
+        {
+          auth: h.auth,
+          readStdin: async () => {
+            secretReads++;
+            throw Error("must not read a key");
+          },
+        },
+      ),
+    ).toBe(2);
+  }
+  expect(secretReads).toBe(0);
+  expect(h.requests).toHaveLength(0);
+});

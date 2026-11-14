@@ -20,14 +20,17 @@ function fixture(responses: Record<string, unknown>) {
       const path = new URL(String(url)).pathname;
       paths.push(path);
       if (!(path in responses)) throw new Error(`Unexpected API: ${path}`);
-      return Response.json(responses[path]);
+      const response = responses[path];
+      return response instanceof Response
+        ? Response.json(await response.json(), { status: response.status })
+        : Response.json(response);
     },
   };
   return { auth, paths, output: () => out };
 }
 
 test.each([VERSION, "0.0.1", null])(
-  "doctor reports server and host version diagnostics (%s) in one table",
+  "doctor reports session, server, GitHub and host version diagnostics (%s) in one table",
   async (hostVersion) => {
     const f = fixture({
       "/api/v1/account/status": { version: "0.0.1", orgs: [{ orgId: "org", name: "Team" }] },
@@ -45,6 +48,16 @@ test.each([VERSION, "0.0.1", null])(
         ],
       },
       "/api/v1/creds/list": { user: [{ id: "model", name: "Work", kind: "openai", status: "active" }], orgs: [] },
+      "/api/v1/github/status": {
+        connection: {
+          status: "connected",
+          login: "owner",
+          installations: [
+            { account: "The-Vibe-Company", repository_selection: "selected" },
+            { account: "owner", repository_selection: "all" },
+          ],
+        },
+      },
     });
     expect(await doctor([], f.auth)).toBe(0);
     expect(f.output()).toContain("CHECK\tSTATUS\tDETAIL / NEXT STEP");
@@ -56,8 +69,46 @@ test.each([VERSION, "0.0.1", null])(
     if (hostVersion && hostVersion !== VERSION)
       expect(f.output()).toContain("Check the host installation with armada host status on the host machine.");
     expect(f.output()).toContain("Account Work\tactive");
+    expect(f.output()).toContain("GitHub\tok\tConnected as owner");
+    expect(f.output()).toContain("The-Vibe-Company (selected repositories), owner (all repositories)");
+    expect(f.output()).toContain("Per-repository access is checked at launch");
   },
 );
+
+test.each([
+  [{ status: "not_connected", login: null }, "warning", "armada github connect"],
+  [{ status: "not_connected", login: null, configured: false }, "unknown", "server operator"],
+  [{ status: "needs_reconnect", login: "owner" }, "warning", "armada github reconnect"],
+  [{ status: "connected", login: "owner", installations: [] }, "warning", "armada github install"],
+  [{ status: "unavailable", login: null, configured: false }, "unknown", "server operator"],
+  [{ status: "unavailable", login: "owner", configured: true }, "unknown", "Could not confirm GitHub access"],
+] as const)(
+  "doctor reports actionable GitHub state %j without claiming repository proof",
+  async (connection, status, detail) => {
+    const f = fixture({
+      "/api/v1/account/status": { version: VERSION, orgs: [] },
+      "/api/v1/github/status": { connection },
+    });
+    expect(await doctor(["--json"], f.auth)).toBe(0);
+    expect(JSON.parse(f.output()).checks.find((row: { check: string }) => row.check === "GitHub")).toMatchObject({
+      status,
+      detail: expect.stringContaining(detail),
+    });
+  },
+);
+
+test("doctor reports personal-login GitHub requirement when a service bearer is refused", async () => {
+  const f = fixture({
+    "/api/v1/account/status": { version: VERSION, orgs: [] },
+    "/api/v1/github/status": Response.json({ error: "forbidden" }, { status: 403 }),
+  });
+  expect(await doctor(["--json"], f.auth)).toBe(0);
+  expect(f.output()).toContain("Unset ARMADA_TOKEN");
+  expect(JSON.parse(f.output()).checks.find((row: { check: string }) => row.check === "GitHub")).toMatchObject({
+    status: "unknown",
+    detail: expect.stringContaining("sign in as a person with armada login (not a service token)"),
+  });
+});
 
 test("doctor fails honestly when health and session cannot be confirmed", async () => {
   const f = fixture({});

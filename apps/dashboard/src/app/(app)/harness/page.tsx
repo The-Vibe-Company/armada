@@ -76,28 +76,43 @@ async function HarnessSections({
 }) {
   if (list.state === "no-org" || !selected)
     return (
-      <Empty title="No organization yet">
-        <Link className="underline" href="/orgs">
-          Create an organization
-        </Link>{" "}
-        to add a subscription.
+      <Empty
+        title="No organization yet"
+        action={
+          <Button asChild>
+            <Link href="/orgs">Choose an organization</Link>
+          </Button>
+        }
+      >
+        Create or join an organization before connecting model accounts.
       </Empty>
     );
   if (list.state === "not-configured")
     return (
       <Alert role="status">
         <InfoIcon />
-        <AlertDescription>The Armada server is not configured: subscriptions cannot be managed here.</AlertDescription>
+        <AlertTitle>Account management is not ready here</AlertTitle>
+        <AlertDescription>
+          <p>Ask an Armada administrator to finish setup, then reload Models.</p>
+          <Button asChild variant="outline" size="sm" className="mt-2">
+            <a href={HARNESS_PATH}>Reload Models</a>
+          </Button>
+        </AlertDescription>
       </Alert>
     );
   if (list.state === "legacy")
     return (
       <Alert data-accounts="legacy">
         <CircleAlertIcon />
-        <AlertTitle>This Armada server predates named accounts</AlertTitle>
+        <AlertTitle>Account management needs an update</AlertTitle>
         <AlertDescription>
-          Your saved subscriptions and API keys still launch. Update the server to name them, add more and choose one
-          per launch.
+          <p>
+            Your existing subscriptions and API keys can still launch agents. Ask an Armada administrator to update
+            Armada before adding or managing accounts here.
+          </p>
+          <Button asChild variant="outline" size="sm" className="mt-2">
+            <Link href="/environments">Choose a snapshot</Link>
+          </Button>
         </AlertDescription>
       </Alert>
     );
@@ -105,11 +120,14 @@ async function HarnessSections({
     return (
       <Alert variant="destructive" data-accounts="error">
         <CircleAlertIcon />
-        <AlertTitle>Subscriptions could not be loaded</AlertTitle>
+        <AlertTitle>Model accounts could not be loaded</AlertTitle>
         <AlertDescription>
-          <p>{list.message}</p>
+          <p>
+            Check your connection and reload Models. If this continues, ask an Armada administrator to check account
+            management.
+          </p>
           <Button asChild variant="outline" size="sm" className="mt-2">
-            <Link href={HARNESS_PATH}>Try again</Link>
+            <a href={HARNESS_PATH}>Reload Models</a>
           </Button>
         </AlertDescription>
       </Alert>

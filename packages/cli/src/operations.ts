@@ -266,7 +266,7 @@ export async function operation(
     route,
     body,
     // Match the control proxy ceiling: Modal stop includes checkpoint and termination phases.
-    command === "stop"
+    command === "stop" || command === "bind-credential"
       ? AbortSignal.timeout(660_000)
       : seconds === undefined
         ? undefined

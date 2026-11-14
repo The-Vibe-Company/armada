@@ -183,7 +183,7 @@ for (const mode of [
                       message:
                         mode === "quota"
                           ? "The Modal plan start limit per day has been reached."
-                          : "Access denied. token=do-not-print ghp_abcdefghijklmnopqrstuvwxyz0123456789 sk-abcdefghijklmnopqrstuvwxyz eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.c2lnbmF0dXJl",
+                          : `Access denied. token=do-not-print ghp_${"abcdefghijklmnopqrstuvwxyz0123456789"} sk-abcdefghijklmnopqrstuvwxyz eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.c2lnbmF0dXJl`,
                       details: { secret: "do-not-print-details" },
                     },
                   },

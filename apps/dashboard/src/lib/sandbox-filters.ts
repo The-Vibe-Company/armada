@@ -1,5 +1,7 @@
 import { HARNESSES, MACHINE_SIZES, SANDBOX_PLACEMENT_PROVIDERS, type SandboxListMetadata } from "@armada/core";
 
+import { sandboxListName } from "./sandbox-list-name.ts";
+
 export const SANDBOX_STATUSES = ["starting", "ready", "running", "stopping", "stopped", "failed", "deleted"] as const;
 export const PAGE_SIZE = 25;
 export const FACETS = ["status", "provider", "harness", "model", "owner", "size"] as const;
@@ -60,7 +62,12 @@ export function filterSandboxes(
   const q = filters.q.toLocaleLowerCase();
   return rows.filter((row) => {
     if (except !== "status" && !filters.status.length && row.status === "deleted") return false;
-    if (q && ![row.id, row.displayLabel, row.providerSandboxId].some((value) => value?.toLocaleLowerCase().includes(q)))
+    if (
+      q &&
+      ![row.id, row.displayLabel, row.providerSandboxId, sandboxListName(row)].some((value) =>
+        value?.toLocaleLowerCase().includes(q),
+      )
+    )
       return false;
     return FACETS.every(
       (key) =>
@@ -74,6 +81,7 @@ export function sortSandboxes(
   rows: readonly SandboxListMetadata[],
   sort: SandboxFilters["sort"],
 ): SandboxListMetadata[] {
+  const names = sort === "name" ? new Map(rows.map((row) => [row.id, sandboxListName(row)] as const)) : null;
   const priority = { failed: 0, ready: 1, stopped: 2, running: 3, starting: 4, stopping: 5, deleted: 6 };
   return [...rows].sort((a, b) => {
     const age = b.createdAt.localeCompare(a.createdAt);
@@ -92,7 +100,7 @@ export function sortSandboxes(
         : sort === "oldest"
           ? -age
           : sort === "name"
-            ? (a.providerSandboxId ?? a.displayLabel).localeCompare(b.providerSandboxId ?? b.displayLabel)
+            ? (names?.get(a.id) ?? "").localeCompare(names?.get(b.id) ?? "")
             : age;
     return order || a.id.localeCompare(b.id);
   });

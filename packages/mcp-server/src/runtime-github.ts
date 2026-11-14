@@ -15,7 +15,7 @@ import { createSqlData } from "./data.ts";
 import { matchesDockerLaunchRequestHash } from "./docker-launch-identity.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import type { Route } from "./http.ts";
-import { createRuntimeAgent } from "./runtime-agent.ts";
+import { runtimeAgentFor } from "./runtime-agent.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 
@@ -44,7 +44,7 @@ const snapshot = `select jsonb_build_object('sandboxId',s.id,'ownerId',s.owner_i
  where s.id=$1 and (s.provider='docker' or (
    ((s.provider='boat' and s.boat_runtime) or (s.provider='modal' and s.runtime_transport='dialout'))
    and g.provider=s.provider and s.harness in ('codex','claude')))
- and (s.status in ('ready','running') or (s.provider='boat' and s.boat_runtime and s.status='starting' and s.activity_lease_id is not null and s.activity_until>now())) and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>now()
+ and (s.status in ('ready','running') or (s.provider='docker' and s.status='starting') or (s.provider='boat' and s.boat_runtime and s.status='starting' and s.activity_lease_id is not null and s.activity_until>now())) and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>now()
  and not exists(select 1 from public.runtime_checkpoints p where p.sandbox_id=s.id and p.epoch=r.epoch)`;
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 function allowed(binding: Pick<Binding, "repositories">, repo: string) {
@@ -58,6 +58,12 @@ function allowed(binding: Pick<Binding, "repositories">, repo: string) {
       return m?.[1]?.toLowerCase() === repo.toLowerCase();
     })
   );
+}
+/** Delivery/ACK failure is not evidence that the owner must reconnect GitHub. */
+export class RuntimeGitHubDeliveryError extends Error {
+  constructor() {
+    super("Runtime GitHub configuration was not acknowledged.");
+  }
 }
 export type RuntimeGitHub = ReturnType<typeof createRuntimeGitHub>;
 /** Separate from the legacy/native broker: no boot-id exec, provider lookup, SSH
@@ -277,27 +283,30 @@ export function createRuntimeGitHub(options: {
     ).rows;
     const retired = await Promise.all(history.map((row) => decryptSecret(row.token_enc, key)));
     if (!s.model || !s.reasoningEffort) return denied();
-    const agent = createRuntimeAgent(options.commands, {
-      harness: s.harness,
-      ownerId: s.ownerId,
-      sandboxId: id,
-      providerSandboxId: s.providerSandboxId,
-      cwd: s.repositoryDir ? `/home/user/${s.repositoryDir}` : "/home/user",
-      defaults: { model: s.model, reasoningEffort: s.reasoningEffort },
+    // Preserve the caller's logical request id, rather than replacing it with a normalized row id.
+    const boundSandbox = { ...s, id };
+    const agent = runtimeAgentFor(options.commands, s.ownerId, boundSandbox, {
+      model: s.model,
+      reasoningEffort: s.reasoningEffort,
     });
-    await agent.configureGitHub(
-      {
-        version: 1,
-        revision: issuedCap.revision,
-        generation: issuedCap.epoch,
-        expiresAt: issuedCap.expiresAt,
-        capability: issuedCap.capability,
-        url: new URL(path, options.origin).href,
-        retired,
-        identity: { name: identity.name, email: identity.email },
-      },
-      `github_${issuedCap.epoch}_${issuedCap.revision}`,
-    );
+    try {
+      await agent.configureGitHub(
+        {
+          version: 1,
+          revision: issuedCap.revision,
+          generation: issuedCap.epoch,
+          expiresAt: issuedCap.expiresAt,
+          capability: issuedCap.capability,
+          url: new URL(path, options.origin).href,
+          retired,
+          identity: { name: identity.name, email: identity.email },
+        },
+        `github_${issuedCap.epoch}_${issuedCap.revision}`,
+      );
+    } catch {
+      // Never attach the underlying runtime reply or any credential-bearing configuration.
+      throw new RuntimeGitHubDeliveryError();
+    }
     await authority.withOwner(id, s.ownerId, async (tx, scope) => {
       const now = await current(tx, id),
         cap = await read(tx, hash(issuedCap.capability));

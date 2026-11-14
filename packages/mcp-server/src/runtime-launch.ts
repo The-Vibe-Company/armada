@@ -1,13 +1,15 @@
-import type { LaunchOptions, ModelChoice, Sql } from "@armada/core/server";
+import type { LaunchOptions, Sql } from "@armada/core/server";
 import { requirePublishedRuntimeArchitecture } from "../../agent-runtime/src/publication.ts";
-import { createRuntimeAgent } from "./runtime-agent.ts";
+import { runtimeAgentFor } from "./runtime-agent.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
+import type { runtimeConfiguration } from "./runtime-configuration.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import { createRuntimeStartup } from "./runtime-startup.ts";
 
 type LaunchInput = Parameters<NonNullable<LaunchOptions["runtime"]>["start"]>[0];
 type Started = Awaited<ReturnType<NonNullable<LaunchOptions["runtime"]>["start"]>>;
 type Bootstrap = Parameters<typeof createRuntimeStartup>[1]["bootstrap"];
+type LaunchPlan = Awaited<ReturnType<typeof runtimeConfiguration>>;
 
 export interface RuntimeLaunchOptions {
   sql: Sql;
@@ -26,26 +28,22 @@ export function createRuntimeLaunch(options: RuntimeLaunchOptions) {
   const commands = createRuntimeCommands(authority, options.encryptionKey);
   return async (request: {
     input: LaunchInput;
-    plan: { cacheDir: string; artifact: { sha256: string; bytes: number }; configuration: { cwd: string } };
-    defaults: ModelChoice;
+    configure(): Promise<LaunchPlan>;
     bootstrap(): Bootstrap;
-    extensions?(agent: ReturnType<typeof createRuntimeAgent>, epoch: string): Pick<Started, "prepareWorkspace">;
+    extensions?(agent: ReturnType<typeof runtimeAgentFor>, epoch: string): Pick<Started, "prepareWorkspace">;
   }): Promise<Started> => {
-    const { input, plan, defaults } = request;
+    const { input } = request;
     const { actor, sandbox, signal, activate, restoreCheckpoint } = input;
+    const { model, reasoningEffort } = sandbox;
+    if (!model || !reasoningEffort) throw Error("runtime_model_required");
+    const plan = await request.configure();
+    const defaults = { model, reasoningEffort };
     if (restoreCheckpoint)
       Object.assign(plan.configuration, { restoreCheckpoint: { ...restoreCheckpoint, ...defaults } });
     signal.throwIfAborted();
     await activate?.(signal);
     signal.throwIfAborted();
-    const agent = createRuntimeAgent(commands, {
-      harness: sandbox.harness,
-      ownerId: actor.userId,
-      sandboxId: sandbox.id,
-      providerSandboxId: sandbox.providerSandboxId,
-      cwd: plan.configuration.cwd,
-      defaults,
-    });
+    const agent = runtimeAgentFor(commands, actor.userId, sandbox, defaults, plan.configuration.cwd);
     const ready = await createRuntimeStartup(authority, {
       bootstrap: request.bootstrap(),
       health: (admission) => agent.health(admission, restoreCheckpoint),

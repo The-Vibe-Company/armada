@@ -36,13 +36,14 @@ for await (const line of lines) {
           update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "unrelated" } },
         },
       });
-      send({
-        method: "session/update",
-        params: {
-          sessionId: "session-1",
-          update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } },
-        },
-      });
+      for (const fragment of text === "DOCKER_OK" ? ["D", "OCK", "ER", "_OK"] : [text])
+        send({
+          method: "session/update",
+          params: {
+            sessionId: "session-1",
+            update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: fragment } },
+          },
+        });
       if (text === "hold") {
         active = m.id;
         break;

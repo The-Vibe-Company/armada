@@ -166,6 +166,65 @@ export async function doctor(argv: readonly string[], auth: AuthIo): Promise<num
     add("Session", "failed", "Run armada login; check ARMADA_URL and your network if already signed in.");
     add("Server", "unknown", "Could not read server version. Restore the session/connection and run armada doctor.");
   }
+  try {
+    const { connection } = await control<{
+      connection: {
+        status: string;
+        login: string | null;
+        configured?: boolean;
+        installations?: { account: string; repository_selection?: string }[];
+      };
+    }>(auth, "github/status", {});
+    if (connection.configured === false) {
+      add(
+        "GitHub",
+        "unknown",
+        "GitHub is not configured on this server. Ask the server operator to configure the GitHub App.",
+      );
+    } else if (connection.status === "connected") {
+      const installations = (connection.installations ?? []).map(
+        (installation) =>
+          `${installation.account} (${
+            installation.repository_selection === "all"
+              ? "all repositories"
+              : installation.repository_selection === "selected"
+                ? "selected repositories"
+                : "repository selection unavailable"
+          })`,
+      );
+      add(
+        "GitHub",
+        installations.length ? "ok" : "warning",
+        `Connected as ${connection.login ?? "unknown user"}; ${
+          installations.length
+            ? `App installations: ${installations.join(", ")}. Per-repository access is checked at launch. Run armada github status to inspect grants.`
+            : connection.installations
+              ? "no authorized App installations. Run armada github install, then armada github status."
+              : "installation scope unavailable. Run armada github status to inspect grants."
+        }`,
+      );
+    } else if (connection.status === "not_connected") {
+      add("GitHub", "warning", "Not connected. Run armada github connect, then armada github status.");
+    } else if (connection.status === "needs_reconnect" || connection.status === "revoked") {
+      add(
+        "GitHub",
+        "warning",
+        "Connection expired or revoked. Run armada github reconnect, then armada github status.",
+      );
+    } else {
+      add(
+        "GitHub",
+        "unknown",
+        "Could not confirm GitHub access. Run armada github status; reconnect only if it reports an expired or revoked connection.",
+      );
+    }
+  } catch {
+    add(
+      "GitHub",
+      "unknown",
+      "Could not read GitHub connection. Unset ARMADA_TOKEN and sign in as a person with armada login (not a service token), then run armada github status; check the server connection if already signed in.",
+    );
+  }
   if (!org) {
     add("Hosts", "unknown", "Select an organization: armada org list, then armada org use NAME.");
     add("Model accounts", "unknown", "Select an organization, then run armada doctor.");

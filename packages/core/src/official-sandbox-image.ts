@@ -1,13 +1,19 @@
-import { DOCKER_DEFAULT_IMAGE } from "./docker-api.ts";
 import pin from "./official-sandbox-image.json" with { type: "json" };
 import { VERSION } from "./version.ts";
 
 /** Release builds replace the null source-build pin with the published GHCR digest. */
 export const OFFICIAL_SANDBOX_IMAGE = pin as { version: string; image: string } | null;
 
-/** Source deploys between releases retain the immutable, server-owned bootstrap baseline. */
+/** Published 2.29.0 toolchain baseline: git, gh and python3 are required by runtime GitHub setup.
+ * Source deployments must not fall back to the dependency-free operator preview fixture.
+ * Harness/runtime selection still uses the current server's verified artifacts, not this image's caches.
+ */
+export const SOURCE_SANDBOX_IMAGE =
+  "ghcr.io/the-vibe-company/armada-sandbox@sha256:30455768ce82cdd61a4575b2d4ad0787a6a69f0c89d622c764b83cd371500ed9";
+
+/** Source deploys retain an immutable product-owned image with the runtime's required tools. */
 export function resolveDockerLaunchImage(releasePin: unknown, version: string): string {
-  if (releasePin === null) return DOCKER_DEFAULT_IMAGE;
+  if (releasePin === null) return SOURCE_SANDBOX_IMAGE;
   if (
     !releasePin ||
     typeof releasePin !== "object" ||

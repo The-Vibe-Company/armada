@@ -61,7 +61,10 @@ What runs only when its files change: the iOS checks (`apps/ios`), the migration
 What runs after a merge, not before: the staging dashboard build in GitHub Actions
 (`vercel pull`, `vercel build`, then `vercel deploy --prebuilt`), the deploy to staging and the post-deploy smoke, which runs only the owner-enabled Modal/Docker staging probes, builds goldens and exercises the whole lifecycle. Production deploys only from a publishing release after its exact-SHA staging
 smoke succeeds; there is no opt-in bypass. The #1547 owner cutover in
-`docs/releasing.md` records which provider settings still need owner changes.
+`docs/releasing.md` records which provider settings still need owner changes. The deployment policy
+acceptance ledger in that document separates repository implementation from
+outstanding coordinator-only provider evidence; do not report cutover complete
+from merged code or CI alone.
 Vercel Git deployments are disabled for both dashboard projects via
 `apps/dashboard/vercel.json`; no PR previews. Keep the Actions staging path
 working and follow the owner cutover prerequisites in `docs/releasing.md`.
@@ -72,6 +75,9 @@ standalone migration workflow retains manual previews/history/owner repair,
 never per-commit production applies.
 Ordinary queued staging-main sources are superseded before mutation when newer
 main exists; started deployments and explicit pinned release smoke are never cancelled.
+Publishing releases first validate required staging/production configuration,
+including before Release Please announces/tags or image/npm/host publication;
+ordinary preparation/dry runs do not access production secrets.
 Binaries are built by the release workflow when a version is published.
 
 What CI does not do, and must not be added back:

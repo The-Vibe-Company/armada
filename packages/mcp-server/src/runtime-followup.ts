@@ -1,7 +1,8 @@
 import { ProviderError, type Sql, sandboxActivity, VaultError } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import { createSqlData } from "./data.ts";
-import { createRuntimeAgent } from "./runtime-agent.ts";
+import { lockRuntimeAccount } from "./runtime-account-admission.ts";
+import { runtimeAgentFor } from "./runtime-agent.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
@@ -97,13 +98,9 @@ export function createRuntimeFollowup(
     if (!found.conversationIds.includes(conversation) && !idleFirst)
       throw new VaultError("invalid", "Continue an existing runtime conversation.");
     const commandId = `follow_${requestId}`;
-    const agent = createRuntimeAgent(commands, {
-      harness: found.harness,
-      ownerId: caller.userId,
-      sandboxId: found.id,
-      providerSandboxId: found.providerSandboxId,
-      cwd: found.repositoryDir ? `/home/user/${found.repositoryDir}` : "/home/user",
-      defaults: { model: found.model, reasoningEffort: found.reasoningEffort },
+    const agent = runtimeAgentFor(commands, caller.userId, found, {
+      model: found.model,
+      reasoningEffort: found.reasoningEffort,
     });
     // Read-only probe before admission. Runner still owns the final busy check.
     const previous = await commands.result(caller.userId, found.id, commandId);
@@ -113,29 +110,7 @@ export function createRuntimeFollowup(
     }
     if (!sql.transaction) throw new VaultError("unavailable", "Runtime send requires transactional admission.");
     const admitted = await sql.transaction(async (tx) => {
-      // Same lock order as account publication: membership -> credential -> sandbox -> epoch.
-      const member = (
-        await tx.query("select user_id from public.members where user_id=$1 and org_id=$2 for update", [
-          caller.userId,
-          found.orgId,
-        ])
-      ).rows[0];
-      if (!member) throw new VaultError("not_found", "Runtime membership was revoked.");
-      const account = (
-        await tx.query(
-          `select id from public.credentials where id=$1 and version=$2
-        and status='active' and kind = any($5::public.credential_kind[]) and (expires_at is null or expires_at>now())
-        and ((scope='user' and owner_id=$3) or (scope='org' and owner_id=$4)) for update`,
-          [
-            found.credentialId,
-            found.credentialVersion,
-            caller.userId,
-            found.orgId,
-            found.harness === "claude" ? ["anthropic", "claude_oauth"] : ["openai", "codex_auth"],
-          ],
-        )
-      ).rows[0];
-      if (!account) throw new VaultError("not_found", "The pinned runtime account is no longer authorized.");
+      await lockRuntimeAccount(tx, caller, found, "The pinned runtime account is no longer authorized.");
       // Reuse this transaction; never hold its locks across a second connection or runtime I/O.
       const local = {
         ...tx,
@@ -214,6 +189,7 @@ export function createRuntimeFollowup(
         return { current: active, epoch: scope.epoch, replay: false };
       });
     });
+    const pricingContext = await store.captureUsagePricingContext?.(found.id);
     const submit = (signal?: AbortSignal) =>
       agent.prompt(
         {
@@ -251,7 +227,7 @@ export function createRuntimeFollowup(
         if (existing.state === "missing") await prepareMcp?.(caller, found.id, signal);
         const accepted = await submit(signal);
         try {
-          await store.recordTurnModel?.(found.id, accepted.promptId, found.model);
+          await store.recordTurnModel?.(found.id, accepted.promptId, found.model, pricingContext);
         } catch {
           /* Accepted work continues. */
         }

@@ -16,14 +16,18 @@ test("OpenCode exports sanitized history and imports it before no-text resume an
     env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
     redact: createRedactor(["private-key-for-test"]),
   });
+  const finalMessages: string[] = [];
   const context = {
-    request: { sandboxId: "s", harness: "codex" as const, text: "hello" },
+    request: { sandboxId: "s", harness: "opencode" as const, text: "hello" },
     signal: new AbortController().signal,
-    emit: () => {},
+    emit: (event: import("../src/protocol.ts").DriverEvent) => {
+      if (event.kind === "message" && !event.partial && event.text) finalMessages.push(event.text);
+    },
     session: (id: string) => expect(id).toBe("session-1"),
   };
   try {
     expect(await driver.start(context).done).toBe("finished");
+    expect(finalMessages).toEqual(["hello"]);
     const history = await readFile(join(root, "opencode/sessions/session-1.json"), "utf8");
     expect(history).not.toContain("private-key-for-test");
     expect(history).toContain("[REDACTED]");
@@ -36,6 +40,7 @@ test("OpenCode exports sanitized history and imports it before no-text resume an
 
     expect(await driver.resumeSession({ ...context, sessionId: "session-1" })).toEqual({ sessionId: "session-1" });
     expect(await driver.start({ ...context, sessionId: "session-1" }).done).toBe("finished");
+    expect(finalMessages).toEqual(["hello", "hello"]);
     await expect(driver.resumeSession({ ...context, sessionId: "../other" })).rejects.toThrow(
       "invalid_harness_protocol",
     );

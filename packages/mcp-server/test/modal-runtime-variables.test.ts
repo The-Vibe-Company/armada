@@ -105,6 +105,7 @@ async function fixture(isolated = false) {
           },
         });
         expect(plan.configuration.codexEnv.OPENAI_API_KEY).toBe(credentials.env.OPENAI_API_KEY);
+        expect(Reflect.get(plan.configuration, "mcp")).toEqual({ revision: "modal_runtime_empty_v1", servers: {} });
         starts.push(
           Object.fromEntries(Object.entries(plan.configuration.codexEnv).filter(([key]) => key === "APP_REGION")),
         );
