@@ -8,6 +8,8 @@ export interface UsagePricingContext {
   catalogRevision: string;
   provider: PriceSnapshot["provider"];
   basis: CostBasis;
+  /** Captured from the admitted account, never inferred from API-equivalent prices. Absent on legacy records. */
+  billing?: "subscription" | "per_token";
   credentialId: string | null;
   credentialVersion: number | null;
   customEndpoint: boolean;
