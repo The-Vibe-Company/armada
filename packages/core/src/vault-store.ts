@@ -12,7 +12,13 @@ const MODEL_KIND_SQL = MODEL_CREDENTIAL_KINDS.map((kind) => `'${kind}'`).join(",
 function accountKinds(kind: CredentialKind): readonly CredentialKind[] {
   const harness = harnessForCredential(kind);
   if (!harness) throw new VaultError("invalid", "Not a model account.");
-  return HARNESS_KINDS[harness];
+  return [
+    ...new Set(
+      Object.values(HARNESS_KINDS)
+        .filter((kinds) => kinds.includes(kind))
+        .flat(),
+    ),
+  ];
 }
 const githubRefreshQueues = new WeakMap<Sql, Map<string, Promise<void>>>();
 

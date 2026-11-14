@@ -371,7 +371,15 @@ export async function launchSandbox(
   const snapshot = golden.providerSnapshotId;
   if (!snapshot) throw new GoldenError("conflict", `Golden '${golden.name}' has no snapshot yet.`);
   const credentials = await stores.credentials.resolve(actor, harness, request.credentialId, options.credentialVersion);
-  if (credentials.env.ARMADA_MODEL_PROVIDER === "morph") {
+  if (
+    [CLAUDE_ENDPOINT_ENV, CODEX_ENDPOINT_ENV].some((name) => {
+      const raw = credentials.env[name];
+      return (
+        raw &&
+        JSON.parse(raw).baseUrl === COMPATIBLE_MODEL_PROVIDERS.morph[harness === "claude" ? "claude" : "codex"].baseUrl
+      );
+    })
+  ) {
     const models: readonly string[] = COMPATIBLE_MODEL_PROVIDERS.morph.models;
     choice.model = request.model ?? models[0]!;
     if (!models.includes(choice.model))

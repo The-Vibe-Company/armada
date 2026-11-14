@@ -556,7 +556,6 @@ function deliver(kind: CredentialKind, scope: CredentialScope, value: string, ha
     const claude = harness === "claude";
     return {
       env: {
-        ARMADA_MODEL_PROVIDER: kind,
         [claude ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY"]: parseCredentialValue(kind, value),
         [claude ? CLAUDE_ENDPOINT_ENV : CODEX_ENDPOINT_ENV]: JSON.stringify(claude ? provider.claude : provider.codex),
       },

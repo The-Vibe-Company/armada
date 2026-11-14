@@ -93,9 +93,9 @@ export function isHarness(value: unknown): value is Harness {
 
 /** Model account classification is derived from the harness catalog, not another credential mapping. */
 export type ModelCredentialKind = (typeof HARNESS_CATALOG)[Harness]["credentialKinds"][number];
-export const MODEL_CREDENTIAL_KINDS: readonly ModelCredentialKind[] = HARNESSES.flatMap((id) => [
-  ...HARNESS_CATALOG[id].credentialKinds,
-]);
+export const MODEL_CREDENTIAL_KINDS: readonly ModelCredentialKind[] = [
+  ...new Set(HARNESSES.flatMap((id) => [...HARNESS_CATALOG[id].credentialKinds])),
+];
 export function harnessForCredential(kind: CredentialKind): Harness | undefined {
   return HARNESSES.find((id) => (HARNESS_CATALOG[id].credentialKinds as readonly CredentialKind[]).includes(kind));
 }
