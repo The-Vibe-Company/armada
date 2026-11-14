@@ -65,6 +65,15 @@ for (const mode of [
   "control_unsupported",
   "control_api_unsupported",
   "control_full",
+  "control_queued_steer",
+  "control_queued_interrupt",
+  "control_never_running",
+  "control_terminal_before_active",
+  "control_retracted",
+  "control_superseded",
+  "control_later_page",
+  "control_terminal_rewrite",
+  "control_deltas",
   "subscription",
   "subscription_priced",
   "subscription_bad_billing",
@@ -139,8 +148,12 @@ for (const mode of [
     const requestedHarness =
       mode === "h_claude" ? "claude-code" : mode === "h_opencode" || mode === "h_missing" ? "opencode" : "codex";
     const configuredHarness = mode === "h_claude" ? "claude" : mode === "h_opencode" ? "opencode" : "codex";
-    const controlFeature = ["control_interrupt", "control_finished"].includes(mode) ? "interrupt" : "steer";
+    const controlFeature = ["control_interrupt", "control_finished", "control_queued_interrupt"].includes(mode)
+      ? "interrupt"
+      : "steer";
     const controlMarkers = new Map<string, string>();
+    const controlActiveReads = new Map<string, number>();
+    const controlLogReads = new Map<string, number>();
     const controlled = new Set<string>();
     const journaled: string[] = [];
     const journalClaims: string[] = [];
@@ -512,15 +525,27 @@ for (const mode of [
               states.set(p, "ready");
               result = { sandbox: { id: p, provider: p } };
               break;
-            case "sandbox/wait":
+            case "sandbox/wait": {
+              const n = (controlActiveReads.get(p) ?? 0) + 1;
+              controlActiveReads.set(p, n);
               result = {
                 prompt: {
                   promptId: turns.get(p)?.at(-1),
-                  state: controlled.has(p) ? (mode === "control_finished" ? "finished" : "interrupted") : "running",
+                  state: controlled.has(p)
+                    ? mode === "control_finished"
+                      ? "finished"
+                      : "interrupted"
+                    : mode === "control_terminal_before_active"
+                      ? "finished"
+                      : mode === "control_never_running" || (mode.startsWith("control_queued_") && n === 1)
+                        ? "queued"
+                        : "running",
                 },
               };
               break;
+            }
             case "sandbox/steer":
+              if (mode.startsWith("control_queued_")) expect(controlActiveReads.get(p)).toBeGreaterThanOrEqual(2);
               if (mode === "control_api_unsupported")
                 return Response.json(
                   { error: { code: "unsupported", message: "This harness cannot steer." } },
@@ -531,6 +556,7 @@ for (const mode of [
               result = { id: p, promptId: "steer-record", delivery: "restart" };
               break;
             case "sandbox/interrupt":
+              if (mode.startsWith("control_queued_")) expect(controlActiveReads.get(p)).toBeGreaterThanOrEqual(2);
               controlled.add(p);
               result = { id: p, interrupted: true };
               break;
@@ -597,16 +623,41 @@ for (const mode of [
                 break;
               }
               if (controlMarkers.has(p)) {
+                const n = (controlLogReads.get(p) ?? 0) + 1;
+                controlLogReads.set(p, n);
+                const marker = controlMarkers.get(p)!;
+                const answer = {
+                  id: "control-answer",
+                  kind: "message",
+                  promptId: "steered-run",
+                  text: marker,
+                  partial: false,
+                  responseKind: mode === "control_echo" ? "tool_result" : "assistant",
+                  retracted: mode === "control_retracted" && n > 1,
+                };
                 result = {
+                  cursor: `control_page_${n}`,
+                  hasMore: ["control_retracted", "control_later_page"].includes(mode) && n === 1,
                   events: [
-                    {
-                      kind: "message",
-                      promptId: "steered-run",
-                      text: controlMarkers.get(p),
-                      partial: false,
-                      responseKind: mode === "control_echo" ? "tool_result" : "assistant",
-                    },
+                    ...(mode === "control_deltas"
+                      ? [
+                          {
+                            ...answer,
+                            messageId: "control-logical-answer",
+                            textMode: "delta",
+                            text: marker.slice(0, 12),
+                            partial: true,
+                          },
+                          { ...answer, messageId: "control-logical-answer", textMode: "delta", text: marker.slice(12) },
+                        ]
+                      : [answer]),
+                    ...(mode === "control_superseded" || (mode === "control_later_page" && n > 1)
+                      ? [{ ...answer, id: "later-answer", text: "different final answer" }]
+                      : []),
                     { kind: "prompt", promptId: "steered-run", status: "finished" },
+                    ...(mode === "control_terminal_rewrite"
+                      ? [{ kind: "prompt", promptId: "steered-run", status: "failed" }]
+                      : []),
                   ],
                 };
                 break;
@@ -1136,7 +1187,16 @@ for (const mode of [
       return;
     }
     if (mode.startsWith("control_")) {
-      const fail = mode === "control_echo" || mode === "control_finished";
+      const fail = [
+        "control_echo",
+        "control_finished",
+        "control_never_running",
+        "control_terminal_before_active",
+        "control_retracted",
+        "control_superseded",
+        "control_later_page",
+        "control_terminal_rewrite",
+      ].includes(mode);
       expect(passed).toBe(!fail);
       for (const provider of ["modal", "docker"]) {
         expect(report.features[controlFeature][provider].status).toBe(
@@ -1145,6 +1205,11 @@ for (const mode of [
         expect(calls.filter((call) => call === `${provider}:sandbox/launch`)).toHaveLength(1);
         expect(report.features.cleanup[provider].status).toBe("pass");
         expect(turns.get(provider)?.length ?? 0).toBe(mode === "control_unsupported" ? 0 : 1);
+        if (["control_never_running", "control_terminal_before_active"].includes(mode)) {
+          expect(calls).not.toContain(`${provider}:sandbox/steer`);
+          expect(calls).not.toContain(`${provider}:sandbox/interrupt`);
+        }
+        if (mode.startsWith("control_queued_")) expect(controlActiveReads.get(provider)).toBeGreaterThanOrEqual(2);
       }
       return;
     }

@@ -914,8 +914,9 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
             }),
           (value) => {
             if (value.prompt === null) return false;
-            if (value.prompt?.promptId !== original.promptId || value.prompt.state !== "running")
-              throw new Error("control_turn_not_active");
+            if (value.prompt?.promptId !== original.promptId) throw new Error("control_turn_not_active");
+            if (value.prompt.state === "queued") return false;
+            if (value.prompt.state !== "running") throw new Error("control_turn_not_active");
             return true;
           },
           110,
@@ -959,14 +960,19 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         } else {
           // Boat can return a steer-record ID rather than the restarted run ID.
           // Match the unique redirected answer and terminal event on the SAME run.
-          const answered = new Set<string>();
-          const finished = new Set<string>();
+          const terminal = new Map<string, string>();
+          const lastParent = new Map<string, string>();
+          const messages = new Map<string, { text: string; eligible: boolean }>();
           let cursor: string | undefined;
           await poll(
             () =>
               api<{
                 cursor?: string;
+                hasMore?: boolean;
                 events: Array<{
+                  id?: string;
+                  messageId?: string;
+                  textMode?: string;
                   kind: string;
                   promptId?: string;
                   status?: string;
@@ -986,18 +992,34 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
               cursor = page.cursor;
               for (const event of page.events) {
                 if (!event.promptId) continue;
-                if (
-                  event.kind === "message" &&
-                  event.text === marker &&
-                  event.partial === false &&
-                  !event.parentToolUseId &&
-                  event.responseKind !== "tool_result" &&
-                  !event.retracted
-                )
-                  answered.add(event.promptId);
-                if (event.kind === "prompt" && event.status === "finished") finished.add(event.promptId);
+                if (event.kind === "prompt" && event.status) terminal.set(event.promptId, event.status);
+                if (event.kind !== "message") continue;
+                if (typeof event.id !== "string") throw new Error("invalid_control_receipt");
+                const key = `${event.promptId}:${event.messageId ?? event.id}`;
+                if (!event.parentToolUseId && event.responseKind !== "tool_result") lastParent.set(event.promptId, key);
+                const text =
+                  event.textMode === "delta"
+                    ? (messages.get(key)?.text ?? "") + (event.text ?? "")
+                    : (event.text ?? "");
+                messages.set(key, {
+                  text: text.slice(0, 4096),
+                  eligible:
+                    text.length <= 4096 &&
+                    event.partial === false &&
+                    !event.parentToolUseId &&
+                    event.responseKind !== "tool_result" &&
+                    !event.retracted,
+                });
               }
-              return [...answered].some((prompt) => finished.has(prompt));
+              return (
+                page.hasMore !== true &&
+                [...lastParent].some(([prompt, key]) => {
+                  const answer = messages.get(key);
+                  return (
+                    terminal.get(prompt) === "finished" && answer?.eligible === true && answer.text.trim() === marker
+                  );
+                })
+              );
             },
             110,
             until,
