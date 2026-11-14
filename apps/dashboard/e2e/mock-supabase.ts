@@ -2299,7 +2299,8 @@ function cancelGoldenJob(body: Row, request: Request): Response {
     state: "failed",
     phase: "queued",
     errorCode: "build_failed",
-    failureReason: "detail:Queued build cancelled by its owner; no builder was started. You can submit a new build.",
+    failureReason:
+      "detail:Build cancelled by its owner before a builder started. Start a new build request when ready.",
     result: null,
   };
   return json(jobJson(job));

@@ -1,7 +1,6 @@
 "use client";
 
 import type { GoldenBuildStatus, SandboxProviderId } from "@armada/core";
-import { goldenBuildFailureText } from "@armada/core";
 import { CheckCircle2Icon, CircleAlertIcon, Loader2Icon, LockIcon, PlusIcon, Trash2Icon } from "lucide-react";
 import {
   type FormEvent,
@@ -21,6 +20,7 @@ import {
   recoverGoldenBuild,
 } from "@/app/actions/goldens";
 import { Button } from "@/components/ui/button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
@@ -28,7 +28,6 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Textarea } from "@/components/ui/textarea";
 import { usePreservedActionForm } from "@/components/use-preserved-action-form";
 import type { ActionResult } from "@/lib/action";
-import { snapshotText } from "@/lib/action";
 import {
   type CapacityState,
   GOLDEN_PROVIDERS,
@@ -38,6 +37,7 @@ import {
 } from "@/lib/golden-form";
 import { replaceResourceUrl } from "@/lib/resource-history";
 import { ITEM_PARAM } from "@/lib/resource-list";
+import { snapshotBuildFeedback } from "@/lib/snapshot-build-feedback";
 import { cn } from "@/lib/utils";
 
 type Props = {
@@ -264,7 +264,6 @@ function ScopedGoldenForm({
   const verb = mode === "create" ? "Build snapshot" : "Rebuild snapshot";
   // An admitted job that has not finished keeps the form locked: nothing is edited or sent again meanwhile.
   const jobActive = observed !== null && ["queued", "running", "recovery_required"].includes(observed.state);
-  const builtOn = admittedProvider ? `${PROVIDER_LABELS[admittedProvider]} ` : "";
   // Two connected providers are a choice above the name; a single one is a fact beside it.
   const providerChoice = chosenProvider && (
     <ProviderChoice
@@ -491,22 +490,8 @@ function ScopedGoldenForm({
           </Button>
           <BuildStatus
             pending={pending}
-            state={
-              observed
-                ? observed.state === "failed" || observed.state === "recovery_required"
-                  ? {
-                      ok: false,
-                      error: `Build ${observed.jobId}: ${observed.state} (${snapshotText(goldenBuildFailureText(observed))}). Last-good snapshot retained.`,
-                    }
-                  : {
-                      ok: true,
-                      message:
-                        observed.state === "succeeded" && observed.result
-                          ? `${mode === "create" ? "Built" : "Rebuilt"} ${builtOn}snapshot '${observed.result.name}' and saved snapshot ${observed.result.snapshot}.`
-                          : `Build ${observed.jobId}: ${observed.state} (${observed.phase})`,
-                    }
-                : state
-            }
+            active={observed?.state === "queued" || observed?.state === "running"}
+            state={observed ? snapshotBuildFeedback(observed, mode, admittedProvider) : state}
           />
           {mode === "update" && goldenId && !observed && (
             <Button
@@ -611,11 +596,25 @@ function ScopedGoldenForm({
           )}
         </div>
         {pollError && <p role="alert">{pollError}</p>}
+        <Collapsible>
+          <CollapsibleTrigger asChild>
+            <Button type="button" variant="ghost" size="sm" className="text-xs">
+              Build details
+            </Button>
+          </CollapsibleTrigger>
+          <CollapsibleContent className="space-y-1 px-3 py-2 text-xs text-muted-foreground">
+            <p>
+              Request reference: <code className="break-all">{admissionKey}</code>
+            </p>
+            {observed && (
+              <p>
+                Build reference: <code className="break-all">{observed.jobId}</code>
+              </p>
+            )}
+          </CollapsibleContent>
+        </Collapsible>
         <p className="flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
-          <span>
-            Admission key <span className="font-mono">{admissionKey}</span>: keep it to recover an uncertain admission,
-            never resubmit blindly.
-          </span>
+          <span>Keep this page to recover an unconfirmed build. Check its status before starting another.</span>
           {!observed && (
             <Button
               type="button"
@@ -634,12 +633,12 @@ function ScopedGoldenForm({
                 } catch {
                   if (epoch !== statusReadEpoch.current) return;
                   setPollError(
-                    "No visible admission receipt yet. Keep this key and check again; do not blindly resubmit.",
+                    "No saved build could be confirmed yet. Keep this page and check again before starting another build.",
                   );
                 }
               }}
             >
-              Recover admission by key
+              Recover build status
             </Button>
           )}
         </p>
@@ -767,7 +766,15 @@ function rememberJob(param: string, jobId: string) {
   replaceResourceUrl(url);
 }
 
-function BuildStatus({ pending, state }: { pending: boolean; state: ActionResult | null }) {
+function BuildStatus({
+  pending,
+  active = false,
+  state,
+}: {
+  pending: boolean;
+  active?: boolean;
+  state: ActionResult | null;
+}) {
   if (pending)
     return (
       <p role="status" className="text-sm text-muted-foreground">
@@ -776,8 +783,15 @@ function BuildStatus({ pending, state }: { pending: boolean; state: ActionResult
     );
   if (!state) return null;
   return state.ok ? (
-    <p role="status" className="flex items-center gap-2 text-sm text-success">
-      <CheckCircle2Icon className="size-4 shrink-0" />
+    <p
+      role="status"
+      className={cn("flex items-center gap-2 text-sm", active ? "text-muted-foreground" : "text-success")}
+    >
+      {active ? (
+        <Loader2Icon aria-hidden className="size-4 shrink-0 motion-safe:animate-spin" />
+      ) : (
+        <CheckCircle2Icon aria-hidden className="size-4 shrink-0" />
+      )}
       {state.message}
     </p>
   ) : (

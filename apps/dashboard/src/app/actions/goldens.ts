@@ -97,7 +97,7 @@ export async function buildGolden(_previous: ActionResult | null, data: FormData
   // An admitted job, not a finished build: the form polls its status. No snapshot is assumed here.
   return {
     ok: true,
-    message: `${PROVIDER_LABELS[request.body.provider]} build admitted: ${result.jobId}.`,
+    message: `${PROVIDER_LABELS[request.body.provider]} snapshot build admitted. Waiting for progress.`,
     build: result,
   };
 }
