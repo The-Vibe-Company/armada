@@ -2011,7 +2011,7 @@ for (const scenario of ["missing", "revoked-personal", "unreadable-personal"] as
   });
 }
 
-test("access launch grants scoped authority before the first prompt while retaining an ordinary private sandbox", async () => {
+test("access launch resolves an omitted account and grants only its persisted binding before the first prompt", async () => {
   await withServer(async ({ db, options, cli }) => {
     const { createSandboxArmadaAccess } = await import("../src/sandbox-armada-access.ts");
     const org = await options.store.createOrg("Access", STAN);
@@ -2029,10 +2029,14 @@ test("access launch grants scoped authority before the first prompt while retain
     ).rows[0]!;
     const account = (
       await db.query<{ id: string }>(
-        `insert into credentials(scope,owner_id,kind,name,value_enc) values('user',$1,'openai','access account',$2) returning id`,
+        `insert into credentials(scope,owner_id,kind,name,value_enc,is_default) values('user',$1,'openai','access account',$2,true) returning id`,
         [STAN, await encryptSecret("synthetic-api-account", KEY)],
       )
     ).rows[0]!;
+    await db.query(
+      "insert into credentials(scope,owner_id,kind,name,value_enc) values('user',$1,'openai','unselected account',$2)",
+      [STAN, await encryptSecret("synthetic-other-account", KEY)],
+    );
     const fake = fakeBoat();
     let installedToken = "";
     let statusAtInstall: unknown;
@@ -2181,7 +2185,6 @@ test("access launch grants scoped authority before the first prompt while retain
             golden: placement === "boat" ? "access-boat" : "access",
             provider: placement,
             harness: "codex",
-            credentialId: account.id,
             model: "gpt-6.1-sol",
             ttlSeconds: 900,
             prompt: "Staging contract probe",
@@ -2207,8 +2210,6 @@ test("access launch grants scoped authority before the first prompt while retain
       "modal",
       "--agent",
       "codex",
-      "--credential-id",
-      account.id,
       "--repo",
       "web",
       "--armada-access",
@@ -2219,6 +2220,15 @@ test("access launch grants scoped authority before the first prompt while retain
     const launched = JSON.parse(result.out);
     expect(statusAtInstall).toBe("starting");
     expect(launched.harness).toBe("codex");
+    expect(launched.credentialId).toBe(account.id);
+    expect(
+      (
+        await db.query<{ credential_ids: string[] }>(
+          "select credential_ids from armada_access_parents where sandbox_id=$1",
+          [launched.id],
+        )
+      ).rows[0]?.credential_ids,
+    ).toEqual([account.id]);
     expect(launched.repositoryDir).toBe("web");
     expect((await db.query("select id from orchestrators")).rows).toHaveLength(0);
     expect(

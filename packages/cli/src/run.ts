@@ -152,7 +152,7 @@ Usage:
   armada snapshot rebuild UUID --provider docker --org UUID [--request-id UUID] [--json]
                                            Build a new snapshot from saved repos/setup on its original host; keep the old one.
   armada launch <snapshot> --agent ${HARNESSES.join("|")} ["prompt"] [--model <id>] [--reasoning-effort <level>]
-                                           [--armada-access --credential-id <id> [--max-active-children <1..100>]]
+                                           [--armada-access [--credential-id <id>] [--max-active-children <1..100>]]
                 [--provider boat|modal] [--repo <configured-dir|owner/repo>] [--size small|medium|large|xlarge | --sized] [--ttl 4h] [--json]
                 [--skill org/slug@version|slug@version ...] [--connections <id,...> | --no-connections] [--org <org>]
                 Omit connections to request server defaults; --no-connections opts out.
@@ -1197,8 +1197,6 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
       "invalid_config",
       "--max-active-children requires --armada-access and a limit from 1 to 100.",
     );
-  if (flag(args, "--armada-access") && !single(args, "--credential-id"))
-    throw new GoldenError("invalid_config", "--armada-access requires --credential-id.");
   const rawSize = single(args, "--size");
   const size = rawSize === undefined ? undefined : parseMachineSize(rawSize);
   if (flag(args, "--no-connections") && single(args, "--connections") !== undefined)

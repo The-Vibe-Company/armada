@@ -139,7 +139,7 @@ export function createSandboxArmadaAccess(input: { sql: Sql; encryptionKey: stri
         sandbox.ownerId !== actor.userId ||
         sandbox.orgId !== actor.orgId
       )
-        throw new VaultError("invalid", "Delegated access requires a private sandbox and an explicit named account.");
+        throw new VaultError("invalid", "Delegated access requires a private sandbox and a bound model account.");
       await sql.query(
         `insert into public.armada_access_parents(id,kind,org_id,owner_id,sandbox_id,state,golden_ids,credential_ids)
         values($1,'sandbox',$2,$3,$1,'ready',$4::uuid[],$5::uuid[])`,

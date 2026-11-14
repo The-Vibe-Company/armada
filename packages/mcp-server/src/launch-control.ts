@@ -77,8 +77,6 @@ export async function launchRoute(
   const armadaAccess = parseSandboxArmadaAccess(body.armadaAccess);
   if (armadaAccess && !options.sandboxArmadaAccess)
     throw new VaultError("unavailable", "Sandbox Armada access is not enabled on this server.");
-  if (armadaAccess && (typeof body.credentialId !== "string" || !UUID.test(body.credentialId)))
-    throw new VaultError("invalid", "Sandbox Armada access requires an explicit credentialId.");
   const name = required(body, "golden");
   const repo = body.repo === undefined ? undefined : required(body, "repo");
   const harness = required(body, "harness");
