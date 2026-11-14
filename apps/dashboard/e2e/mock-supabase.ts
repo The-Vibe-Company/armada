@@ -2241,6 +2241,24 @@ async function goldenJobStatus(body: Row, request: Request): Promise<Response> {
   return json(jobJson(job));
 }
 
+function findGoldenJob(body: Row, request: Request): Response {
+  const userId = viewer(request);
+  if (!userId) return json({ error: { code: "unauthorized", message: "Sign in." } }, 401);
+  const target = rebuildTarget(body, userId);
+  if (target instanceof Response) return target;
+  const job = [...goldenJobs.values()]
+    .reverse()
+    .find(
+      (item) =>
+        item.owner === userId &&
+        item.body.org === target.org_id &&
+        item.body.name === target.name &&
+        (item.body.provider ?? (item.route === "golden/update" ? target.provider : "boat")) === target.provider &&
+        ["queued", "running", "recovery_required"].includes(item.status.state),
+    );
+  return json({ build: job ? jobJson(job) : null });
+}
+
 function cancelGoldenJob(body: Row, request: Request): Response {
   const userId = viewer(request);
   if (!userId) return json({ error: { code: "unauthorized", message: "Sign in." } }, 401);
@@ -3345,6 +3363,7 @@ const server = Bun.serve({
       if (route === "skillpack/catalog" || route === "skillpack/versions")
         return skillCatalogRoute(route, body, request);
       if (route === "golden/build/status") return goldenJobStatus(body, request);
+      if (route === "golden/build/find") return findGoldenJob(body, request);
       if (route === "golden/build/cancel") return cancelGoldenJob(body, request);
       if (route === "golden/create" || route === "golden/update") return goldenBuild(route, body, request);
       if (route === "golden/capabilities") return goldenCapabilities(body, request);

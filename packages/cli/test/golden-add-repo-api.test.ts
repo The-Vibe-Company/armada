@@ -110,3 +110,50 @@ test("legacy synchronous update reply is treated as version-skew/unknown outcome
   expect(result.errors).toContain("inspect golden list before retrying");
   expect(result.errors).not.toContain("Build undefined");
 });
+
+test.each([true, false])(
+  "build-find sends a scoped read-only lookup and does not imply capacity is free (found=%s)",
+  async (found) => {
+    let output = "";
+    const calls: { path: string; body: unknown }[] = [];
+    const code = await run(
+      ["golden", "build-find", "web", "--provider", "boat", "--org", "org"],
+      {
+        out: (text) => {
+          output += text;
+        },
+        err: () => {},
+      },
+      {
+        auth: {
+          out: () => {},
+          err: () => {},
+          env: { ARMADA_TOKEN: token },
+          session: memorySessionStore(),
+          now: () => new Date(),
+          open: () => {},
+          fetch: async (input, init) => {
+            calls.push({ path: new URL(String(input)).pathname, body: JSON.parse(String(init?.body)) });
+            return Response.json({
+              build: found
+                ? {
+                    jobId: "job",
+                    state: "recovery_required",
+                    phase: "snapshot",
+                    errorCode: "build_failed",
+                    failureReason: null,
+                    result: null,
+                  }
+                : null,
+            });
+          },
+        },
+      },
+    );
+    expect(code).toBe(0);
+    expect(calls).toEqual([{ path: "/api/v1/golden/build/find", body: { name: "web", provider: "boat", org: "org" } }]);
+    expect(output).toContain(
+      found ? "Build job: recovery_required (snapshot)" : "A reservation may still need administrator investigation",
+    );
+  },
+);

@@ -34,6 +34,24 @@ Grant that caller read access to every requested repository. App installation
 coverage is also required where installation tokens are used for checkout.
 Neither capacity nor a missing binding proves a GitHub authorization problem.
 
+## Find active work when the receipt was lost
+
+A rebuild's current job can be found without the original admission key or URL:
+
+    armada golden build-find <golden-name> --provider boat --org <org-id>
+
+On the Snapshots page, open the existing snapshot's Edit and rebuild form and
+choose Find active build. The latest visible queued, running or recovery-required
+attempt enters the existing status controls; a requester-owned queued build can
+then be cancelled safely. Finding a job only reads metadata: it never submits,
+restarts, cancels, renews a lease or contacts the provider. A same-name snapshot
+on another provider needs the explicit provider selection, just like update.
+
+No visible active build is **not** evidence that capacity is free: a hidden job,
+retained reservation or orphan record may still need administrator investigation.
+Private build history remains private even if the golden is later shared. This
+lookup does not grant anyone permission to cancel another requester's work.
+
 ## Recovery limits
 
 Queued admissions expire after one hour without starting a builder. On the next

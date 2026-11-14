@@ -1382,6 +1382,19 @@ async function dispatch(
     }
     case "golden/list":
       return listGoldens(options, await selectedCaller(options, caller, optional(body, "org")));
+    case "golden/build/find": {
+      if (!options.goldenBuilds || !options.data)
+        throw new VaultError("unavailable", "Durable golden builds are not configured.");
+      const scoped = await selectedCaller(options, caller, optional(body, "org"));
+      const org = await resolveOrg(options.store, caller.userId, scopedOrg(scoped, optional(body, "org")));
+      const golden = selectGolden(await options.data(scoped).goldens.findByName(org.id, required(body, "name")), body);
+      if (!golden)
+        throw new GoldenError(
+          "not_found",
+          "No visible golden has that name and provider. Check golden list in the intended organization.",
+        );
+      return { build: await options.goldenBuilds.findActive(caller.userId, golden.id, [org.id]) };
+    }
     case "golden/build/cancel": {
       if (!options.goldenBuilds) throw new VaultError("unavailable", "Durable golden builds are not configured.");
       const scoped = await selectedCaller(options, caller, optional(body, "org"));
