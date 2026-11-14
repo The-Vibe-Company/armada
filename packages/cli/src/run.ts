@@ -47,6 +47,7 @@ import { type LocalHostIo, localHostCommand, productionLocalHostIo } from "./loc
 import { operation, parseTtl } from "./operations.ts";
 import { printOptionalResourceAdvice } from "./resource-advice.ts";
 import { routineCommand } from "./routine-commands.ts";
+import { promptSecret } from "./secret-input.ts";
 import { sizePolicyCommand } from "./size-policy-command.ts";
 import { skillCommand } from "./skill-install.ts";
 import { templateCommand } from "./template-commands.ts";
@@ -62,7 +63,7 @@ export interface Deps {
   fetch?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
   readFile?: (path: string) => Promise<string>;
-  /** Values for credential/application vault writes. By default stdin, only when piped. */
+  /** Values for credential/application vault writes. By default hidden terminal input, or stdin when piped. */
   readStdin?: () => Promise<string>;
   /** Separate native Docker host binary boundary; no Armada session required. */
   localHost?: LocalHostIo;
@@ -202,7 +203,7 @@ Usage:
   armada org list
   armada org setup [--org <name>]          Show organization provider setup status
   armada org connect boat|modal [--org <name>] [--file <path>]
-                                           Connect an org provider using stdin or a file
+                                           Connect an org provider using hidden input, stdin or a file
   armada org use <name|UUID|none>           Persist selection for this Armada server
   armada org current                        Show selected organization
   armada account status|logout              Account identity / revoke current login session
@@ -227,17 +228,17 @@ Usage:
                                            Import a locally obtained native token/auth.json; never pass secrets as arguments
   armada creds presets [--json]             List the same model connection providers as the dashboard
   armada creds connect <preset> --name NAME [--file PATH] [--org NAME]
-                                           Provider key from stdin/file; custom providers take --models and --base-url
+                                           Provider key from hidden input, stdin/file; custom providers take --models and --base-url
                                            Azure models are resource deployment names; official Azure addresses are tested
                                            with a tiny billable request per deployment. A failed check saves nothing.
   armada creds set <kind> [--org <name>] [--file <path>]
-                                           Store a credential, encrypted; the value is read from stdin or a file
+                                           Store a credential, encrypted; hidden input in a terminal, or stdin/file
                                            Model accounts: --name NAME creates; --id UUID --expected-version N replaces
                                            Codex: --base-url URL --models deployment,model [--api-version VERSION]
-                                           Key from stdin/file; Azure requires actual deployment names, not model catalog IDs
+                                           Key from hidden input, stdin/file; Azure requires actual deployment names, not model catalog IDs
                                            Codex endpoints require Modal and the Responses API, not chat completions
                                            Claude: --base-url URL [--endpoint-auth bearer|api-key] (default bearer)
-                                           Claude gateways require Modal and support Claude models only; key from stdin/file
+                                           Claude gateways require Modal and support Claude models only; key from hidden input, stdin/file
                                            Endpoint prices: --price-model ID --price-input USD --price-output USD
                                            [--price-cached-input USD]; decimal USD per million tokens, omitted = unknown
                                            Replacing a connection replaces its prices too; re-enter all rates to keep them
@@ -1469,7 +1470,7 @@ function vaultIo(io: Io, deps: Deps, strictUtf8 = false): VaultIo {
     readStdin:
       deps.readStdin ??
       (async () => {
-        if (process.stdin.isTTY) throw new Error("stdin is a terminal");
+        if (process.stdin.isTTY) return promptSecret();
         return strictUtf8
           ? new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(await Bun.stdin.arrayBuffer())
           : Bun.stdin.text();
