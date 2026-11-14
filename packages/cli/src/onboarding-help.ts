@@ -21,12 +21,33 @@ stdin or a private file, never command arguments. API keys use provider billing;
 subscription credentials require an eligible subscription, not an API key.
 Example: armada creds set openai --name personal --file /private/openai-key
 `,
-  "golden create": `Usage: armada golden create <name> (--repo <url>[@branch] ... | --config <file>)
+  "snapshot create": `Usage: armada snapshot create <name> (--repo <url>[@branch] ... | --config <file>)
   [--init <command> ...] [--setup <local-file>] [--provider boat|modal]
-  [--private] [--org <org>] [--idempotency-key <key>] [--timeout <seconds>]
+  [--private] [--org <org>] [--idempotency-key <key>] [--timeout <seconds>] [--json]
+Docker: armada snapshot create <name> --provider docker --host UUID|NAME --org UUID
+  (--config <file> | --repo <url>[@branch] ... [--init <command> ...])
+  [--private] [--request-id UUID] [--json]
+--config cannot be combined with --repo or --init; include init commands in the JSON file.
+Docker builds a host-local snapshot; --setup and durable-job flags above are Boat/Modal only.
+Boat/Modal --timeout defaults to 60 seconds (0 returns after admission, maximum 600).
+Save --idempotency-key to recover uncertain admission with snapshot build-status.
 Requires Armada login, a connected provider and GitHub repository authorization.
 Builds, scans and snapshots on the server; do not include secrets in setup.
-Example: armada golden create starter --provider modal --repo https://github.com/octocat/Hello-World --org my-team
+Example: armada snapshot create starter --provider modal --repo https://github.com/octocat/Hello-World --org my-team
+`,
+  "snapshot update": `Usage: armada snapshot update <name> (--add-repo <url>[@branch] ... | --replace --repo <url>[@branch] ... | --replace --config <file>)
+  [--init <command> ...] [--setup <local-file>] [--provider boat|modal]
+  [--org <org>] [--idempotency-key <key>] [--timeout <seconds>] [--json]
+--config cannot be combined with --repo or --init; include init commands in the JSON file.
+Rebuild a snapshot in place after Armada login; ownership and visibility stay unchanged.
+Use --add-repo to append while preserving stored repositories and init commands.
+Do not combine --add-repo with --replace, --repo, --config, --init or --setup.
+--replace replaces the ENTIRE config; include every repository and init command to keep.
+--setup reads a local script. Never include secrets in setup or snapshot contents.
+--timeout defaults to 60 seconds (0 returns after admission, maximum 600).
+Disconnecting does not cancel or resubmit; inspect snapshot build-status before retrying.
+Docker update is not supported; use snapshot rebuild for a new Docker snapshot.
+Example: armada snapshot update starter --add-repo https://github.com/octocat/Hello-World --provider modal --org my-team
 `,
   "snapshot build-find": `Usage: armada snapshot build-find <name> [--provider boat|modal] [--org <org>] [--json]
 Find the latest visible active build when you have no job ID or admission key.
@@ -100,6 +121,8 @@ export function onboardingHelp(argv: readonly string[]): string | undefined {
   if (
     parts[0] === "golden" &&
     [
+      "create",
+      "update",
       "size-policy",
       "build-find",
       "build-status",
