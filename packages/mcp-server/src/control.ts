@@ -1,11 +1,9 @@
-import { type AuthStore, BodyTooLargeError } from "@armada/auth";
+import type { AuthStore } from "@armada/auth";
 import type { Harness } from "@armada/core";
 import {
-  API_FAILURE_STATUS,
   CLAUDE_ENDPOINT_ENV,
   CODEX_ENDPOINT_ENV,
   dedupeEvents,
-  GitHubHydrationError,
   goldenCompatibilityIds,
   goldenForSettings,
   goldenResponse,
@@ -26,13 +24,10 @@ import {
   connectGolden,
   createOrg,
   createSkillCatalog,
-  ENCRYPTION_KEY_ENV,
-  EncryptionKeyError,
   type GitHubApp,
   type GoldenActor,
   type GoldenBuildJobs,
   GoldenError,
-  type GoldenErrorCode,
   type GoldenRecord,
   goldenForLaunch,
   isSandboxProvider,
@@ -49,7 +44,6 @@ import {
   mutateCredentialAccount,
   normalizeGitHubGoldenConfig,
   type Provider,
-  ProviderError,
   type ProviderRegistry,
   ProviderRoutingError,
   type ProviderTarget,
@@ -75,18 +69,17 @@ import {
   type VaultStore,
   type Visibility,
 } from "@armada/core/server";
-import { GatewayError } from "../../mcp-gateway/src/network.ts";
-import { apiFailureCode, providerFailureResponse } from "./api-failure.ts";
 import { validateAzureModelAccount } from "./azure-model-account.ts";
-import { AuthUnavailable, type Caller, type SupabaseProject } from "./caller.ts";
+import type { Caller, SupabaseProject } from "./caller.ts";
 import { readBody, readVaultBody } from "./control-body.ts";
-import { authenticatedCaller, scopedOrg, Unauthorized } from "./control-caller.ts";
+import { authenticatedCaller, scopedOrg } from "./control-caller.ts";
+import { controlFailureResponse } from "./control-errors.ts";
 import { optional, required, UUID } from "./control-input.ts";
-import { fail, VAULT_STATUS as STATUS } from "./control-response.ts";
+import { fail } from "./control-response.ts";
 import type { CredentialBindingRecovery } from "./credential-binding-recovery.ts";
 import type { DataSource, ScopedData } from "./data.ts";
 import type { GitHubAccountApi } from "./github-account.ts";
-import { InvitationError, type Invitations } from "./invitations.ts";
+import type { Invitations } from "./invitations.ts";
 import { exposedSecrets, launchCredentials } from "./launch-credentials.ts";
 import { launchOptions, launchProviderOptions } from "./launch-options.ts";
 import { dispatchMcp, type McpControlOptions } from "./mcp-control.ts";
@@ -206,16 +199,6 @@ export interface ControlOptions {
 
 export type ConfiguredControlOptions = ControlOptions & { credentialBindingRecovery: CredentialBindingRecovery };
 
-const GOLDEN_STATUS: Record<GoldenErrorCode, number> = {
-  invalid_config: 400,
-  forbidden: 403,
-  not_found: 404,
-  conflict: 409,
-  setup_failed: 502,
-  snapshot_failed: 502,
-  build_failed: 502,
-};
-
 /**
  * The CLI's way to the things that need the server: org creation and email lookup (service role)
  * and credential encryption (the encryption key). Every call is a POST with the person's Supabase
@@ -316,71 +299,7 @@ export async function handleControlRequest(request: Request, options: ControlOpt
       headers: { "cache-control": "no-store", "server-timing": timing.header() },
     });
   } catch (error) {
-    if (error instanceof BodyTooLargeError) return fail(413, "invalid", error.message);
-    if (error instanceof ProviderError) {
-      const { status, error: failure } = providerFailureResponse(error);
-      return Response.json({ error: failure }, { status, headers: { "cache-control": "no-store" } });
-    }
-    const failureCode = apiFailureCode(error);
-    if (failureCode)
-      return Response.json(
-        {
-          error: {
-            code: failureCode,
-            message: error instanceof Error ? error.message : failureCode,
-            ...(error instanceof GitHubHydrationError ? { details: error.details } : {}),
-          },
-        },
-        { status: API_FAILURE_STATUS[failureCode], headers: { "cache-control": "no-store" } },
-      );
-    if (error instanceof GatewayError) {
-      const status =
-        error.code === "denied" ? 403 : error.code === "busy" ? 409 : error.code === "upstream" ? 502 : 400;
-      return fail(status, error.code, error.action);
-    }
-    if (error instanceof ToolApiError) return fail(error.status, error.code, error.message, error.details);
-    if (error instanceof Unauthorized) return fail(401, "unauthorized", error.message);
-    if (error instanceof AuthUnavailable)
-      return fail(503, "dependency_unavailable", "Authentication is temporarily unavailable.");
-    if (error instanceof ProviderRoutingError) return fail(503, error.code, error.message);
-    if (error instanceof LaunchError)
-      return fail(
-        400,
-        error.code,
-        error.message,
-        error.reason
-          ? { reason: error.reason, action: error.action, ...(error.stage ? { stage: error.stage } : {}) }
-          : undefined,
-      );
-    if (error instanceof InvitationError)
-      return Response.json(
-        {
-          error: {
-            code: error.code,
-            message: error.message,
-            reason: error.reason,
-            ...(error.retryAfterSeconds ? { retryAfterSeconds: error.retryAfterSeconds } : {}),
-          },
-        },
-        { status: STATUS[error.code], headers: { "cache-control": "no-store" } },
-      );
-    if (error instanceof VaultError) {
-      if (error.code === "credential_busy")
-        return Response.json(
-          { error: { code: "conflict", reason: "credential_busy", message: error.message } },
-          { status: 409, headers: { "cache-control": "no-store" } },
-        );
-      return fail(STATUS[error.code], error.code, error.message);
-    }
-    if (error instanceof GoldenError) return fail(GOLDEN_STATUS[error.code], error.code, error.message);
-    if (error instanceof EncryptionKeyError) {
-      return fail(
-        503,
-        "dependency_unavailable",
-        `Credential encryption is not configured on the server (${ENCRYPTION_KEY_ENV}).`,
-      );
-    }
-    return fail(500, "internal", "The server could not complete the request.");
+    return controlFailureResponse(error);
   }
 }
 

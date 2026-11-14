@@ -134,6 +134,7 @@
   @media (prefers-reduced-motion: reduce) {
     [class*="animate-in"],
     [class*="animate-out"] {
+      /* biome-ignore lint/complexity/noImportantStyles: Reduced-motion preference must override animation utilities. */
       animation: none !important;
     }
   }

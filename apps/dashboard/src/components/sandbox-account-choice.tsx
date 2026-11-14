@@ -131,11 +131,9 @@ export function SandboxAccountChoice({ sandboxId, status, owner, choices, harnes
             ) : gate === "wait" ? (
               <p className="text-sm text-muted-foreground">Stopping. The choice opens once it has stopped.</p>
             ) : (
-              <>
-                <p className="text-sm text-muted-foreground">
-                  Wait for the current turn or startup to finish, then refresh to choose an account.
-                </p>
-              </>
+              <p className="text-sm text-muted-foreground">
+                Wait for the current turn or startup to finish, then refresh to choose an account.
+              </p>
             )}
             {result && (
               <p
