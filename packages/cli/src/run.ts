@@ -45,6 +45,7 @@ import { dockerSnapshotCommand } from "./docker-snapshots.ts";
 import { hostCommand } from "./host-commands.ts";
 import { type LocalHostIo, localHostCommand, productionLocalHostIo } from "./local-host.ts";
 import { operation, parseTtl } from "./operations.ts";
+import { profileStores, selectProfile } from "./profiles.ts";
 import { printOptionalResourceAdvice } from "./resource-advice.ts";
 import { routineCommand } from "./routine-commands.ts";
 import { promptSecret } from "./secret-input.ts";
@@ -72,6 +73,8 @@ export interface Deps {
 }
 
 const HELP = `armada ${VERSION}: launch coding agents in provider-scoped sandboxes
+
+Global: --profile NAME (or ARMADA_PROFILE) isolates login and preferences; login --url sets its server.
 
 Exit codes: 0 success; 1 authentication/server/operation failure; 2 invalid usage or missing configuration.
 
@@ -300,6 +303,40 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
     error instanceof AuthError &&
     (error.code === "unauthorized" || (error instanceof ArmadaApiError && error.status === 401));
   try {
+    const selected = selectProfile(argv, deps.env ?? deps.auth?.env ?? process.env);
+    argv = selected.args;
+    deps = { ...deps, env: selected.env };
+    if (selected.env.ARMADA_PROFILE !== undefined) {
+      const stores = profileStores(selected.env);
+      const env: NodeJS.ProcessEnv = { ...selected.env };
+      const discovery =
+        (argv.length === 1 && ["--help", "-h", "--version", "-v"].includes(argv[0] ?? "")) ||
+        (argv.length === 2 && ["--help", "-h"].includes(argv[1] ?? "")) ||
+        argv[0] === "completion";
+      const localHost = argv[0] === "host" && ["install", "status", "uninstall"].includes(argv[1] ?? "");
+      if (!env.ARMADA_TOKEN && !discovery && !localHost && argv[0] !== "logout") {
+        const login = argv[0] === "login";
+        const explicitLoginOrigin = login && argv.some((arg) => arg === "--url" || arg.startsWith("--url="));
+        const saved = explicitLoginOrigin ? null : await stores.session.read();
+        if (
+          !login &&
+          env.ARMADA_URL &&
+          saved?.armadaUrl &&
+          armadaApiUrl(env.ARMADA_URL) !== armadaApiUrl(saved.armadaUrl)
+        )
+          throw new AuthError(
+            "Profile login belongs to another server. Choose its server or log in to a different profile.",
+            "usage",
+          );
+        env.ARMADA_URL ??= saved?.armadaUrl;
+        if (!env.ARMADA_URL && !(login && argv.some((arg) => arg === "--url" || arg.startsWith("--url="))))
+          throw new AuthError(
+            `Configure this profile first: armada --profile ${env.ARMADA_PROFILE} login --url <server-origin>.`,
+            "usage",
+          );
+      }
+      deps = { ...deps, env, auth: { ...(deps.auth ?? productionAuthIo(io, env)), env, ...stores } };
+    }
     if (argv[0] === "host" && ["install", "status", "uninstall"].includes(argv[1] ?? ""))
       return await localHostCommand(
         argv.slice(1),
