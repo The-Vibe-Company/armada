@@ -10,6 +10,7 @@ import {
   type OrgSummary,
   parseClaudeEndpoint,
   parseCodexEndpoint,
+  parseConnectionModels,
   parseCredentialKind,
   parseCredentialValue,
   parseModelPriceOverrides,
@@ -231,6 +232,10 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
               ...(apiVersion !== undefined ? { apiVersion } : {}),
             })
           : parseCredentialValue(preset.kind, raw);
+      if (preset.deploymentNames && !flag(args, "--json"))
+        io.auth.err(
+          "Official Azure addresses are tested with a tiny billable request per deployment before saving. A failed check saves nothing.\n",
+        );
       await control(io.auth, "creds/accounts/set", { scope, org, kind: credentialName(preset.kind), name, value });
       io.auth.out(
         flag(args, "--json")
@@ -344,10 +349,19 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
       const kind = parseCredentialKind(name ?? "");
       const baseUrl = single(args, "--base-url");
       const apiVersion = single(args, "--api-version");
-      if (kind === "opencode" && baseUrl !== undefined && !single(args, "--models"))
-        throw usage("OpenCode custom endpoints require --models with upstream model IDs.");
-      if (single(args, "--models") !== undefined && (kind !== "opencode" || baseUrl === undefined))
-        throw usage("--models requires creds set opencode --base-url.");
+      const rawModels = single(args, "--models");
+      if ((kind === "openai" || kind === "opencode") && baseUrl !== undefined && !rawModels?.trim())
+        throw usage("Custom Codex/OpenCode endpoints require --models with exact deployment/model IDs.");
+      if (rawModels !== undefined && ((kind !== "openai" && kind !== "opencode") || baseUrl === undefined))
+        throw usage("--models requires creds set openai or opencode --base-url.");
+      let models: string[] | undefined;
+      if (kind === "openai" && rawModels !== undefined) {
+        try {
+          models = parseConnectionModels(rawModels.split(",").map((id) => id.trim()));
+        } catch {
+          throw usage("--models requires 1–32 exact deployment/model IDs; for Azure use resource deployment names.");
+        }
+      }
       const endpointAuth = single(args, "--endpoint-auth");
       if (apiVersion !== undefined && baseUrl === undefined) throw usage("--api-version requires --base-url.");
       if (endpointAuth !== undefined && (baseUrl === undefined || kind !== "anthropic"))
@@ -404,7 +418,14 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
         throw usage("With --base-url, supply only the API key through stdin or --file, not connection JSON.");
       const value = parseCredentialValue(
         kind,
-        endpoint ? JSON.stringify({ endpoint, apiKey: raw.trim(), ...(prices ? { prices } : {}) }) : raw,
+        endpoint
+          ? JSON.stringify({
+              endpoint,
+              apiKey: raw.trim(),
+              ...(models ? { models } : {}),
+              ...(prices ? { prices } : {}),
+            })
+          : raw,
       );
       await control(
         io.auth,

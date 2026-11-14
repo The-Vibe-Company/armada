@@ -109,6 +109,7 @@ import {
 import { createBoatProvider } from "@armada/provider-boat";
 import { GatewayError } from "../../mcp-gateway/src/network.ts";
 import { apiFailureCode, providerFailureResponse } from "./api-failure.ts";
+import { validateAzureModelAccount } from "./azure-model-account.ts";
 import { AuthUnavailable, authenticateCaller, type Caller, type SupabaseProject } from "./caller.ts";
 import { databasePoolMax } from "./config.ts";
 import { type CredentialBindingRecovery, createCredentialBindingRecovery } from "./credential-binding-recovery.ts";
@@ -193,6 +194,8 @@ export interface ControlOptions {
   modelUsage?: ModelUsageApi;
   invitations?: Invitations;
   providerValidator?: ProviderValidator;
+  /** Server-owned account admission; never selected or disabled by request JSON. */
+  modelAccountValidator?: NonNullable<Parameters<typeof mutateCredentialAccount>[4]>;
   githubAccount?: GitHubAccountApi;
   goldenRetirements?: import("@armada/core/server").GoldenSnapshotRetirements;
   mcp?: { registry: McpRegistry; broker?: McpBrokerPort };
@@ -1114,26 +1117,38 @@ async function dispatch(
     case "creds/accounts/default":
     case "creds/accounts/remove": {
       const action = route.split("/").at(-1) as "set" | "rename" | "default" | "remove";
-      const account = await mutateCredentialAccount(store, encryptionKey, userId, {
-        action,
-        ...(body.expectedVersion === undefined ? {} : { expectedVersion: requiredNumber(body, "expectedVersion") }),
-        ...(optional(body, "expiresAt") ? { expiresAt: required(body, "expiresAt") } : {}),
-        scope: scope(body),
-        ...(org ? { org } : {}),
-        ...(body.id !== undefined ? { id: required(body, "id") } : {}),
-        ...(body.name !== undefined ? { name: required(body, "name") } : {}),
-        ...(optional(body, "kind") ? { kind: parseCredentialKind(required(body, "kind")) } : {}),
-        ...(optional(body, "value") ? { value: required(body, "value") } : {}),
-      });
+      const account = await mutateCredentialAccount(
+        store,
+        encryptionKey,
+        userId,
+        {
+          action,
+          ...(body.expectedVersion === undefined ? {} : { expectedVersion: requiredNumber(body, "expectedVersion") }),
+          ...(optional(body, "expiresAt") ? { expiresAt: required(body, "expiresAt") } : {}),
+          scope: scope(body),
+          ...(org ? { org } : {}),
+          ...(body.id !== undefined ? { id: required(body, "id") } : {}),
+          ...(body.name !== undefined ? { name: required(body, "name") } : {}),
+          ...(optional(body, "kind") ? { kind: parseCredentialKind(required(body, "kind")) } : {}),
+          ...(optional(body, "value") ? { value: required(body, "value") } : {}),
+        },
+        options.modelAccountValidator ?? validateAzureModelAccount,
+      );
       return { account };
     }
     case "creds/set":
-      await setCredential(store, encryptionKey, userId, {
-        scope: scope(body),
-        org,
-        kind: parseCredentialKind(required(body, "kind")),
-        value: required(body, "value"),
-      });
+      await setCredential(
+        store,
+        encryptionKey,
+        userId,
+        {
+          scope: scope(body),
+          org,
+          kind: parseCredentialKind(required(body, "kind")),
+          value: required(body, "value"),
+        },
+        options.modelAccountValidator ?? validateAzureModelAccount,
+      );
       return { ok: true };
     case "creds/list":
       return listCredentials(store, userId, org);
