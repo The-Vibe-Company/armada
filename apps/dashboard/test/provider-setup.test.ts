@@ -131,6 +131,24 @@ test("only the Armada server's own unknown-route answer says provider setup is u
   expect(explainSetupError(new ControlError("The Armada server answered 404.", 404))).toBe(
     "The Armada server could not be reached just now. Check again in a moment.",
   );
-  // A coded 404 from a route the server does offer keeps the server's own words.
-  expect(explainSetupError(new ControlError("No such organization.", 404, "not_found"))).toBe("No such organization.");
+  // A coded missing organization remains distinct from an absent route without exposing its diagnostics.
+  expect(explainSetupError(new ControlError("No such organization.", 404, "not_found"))).toContain(
+    "choose an organization",
+  );
+});
+
+test("provider action guidance hides diagnostics and only confirms an unchanged key after a definite refusal", () => {
+  const diagnostic = "HTTP 503: provider_key_enc org_id digest sha256:example";
+  for (const status of [undefined, 502, 503]) {
+    const message = explainSetupError(new ControlError(diagnostic, status), "key");
+    expect(message).toContain("Reload Providers");
+    expect(message).not.toContain(diagnostic);
+    expect(message).not.toContain("unchanged");
+  }
+  expect(explainSetupError(new ControlError(diagnostic, 400), "key")).toContain("The connected key is unchanged");
+  expect(
+    explainSetupError(new ControlError(diagnostic, 400, undefined, { outcomeUnknown: true }), "key"),
+  ).not.toContain("unchanged");
+  expect(explainSetupError(new ControlError(diagnostic, 401))).toContain("Sign in again");
+  expect(explainSetupError(new ControlError(diagnostic, 403))).toContain("organization admin");
 });

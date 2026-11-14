@@ -51,8 +51,8 @@ export async function connectProvider(_previous: ActionResult | null, data: Form
   } catch (error) {
     if (!(error instanceof ControlError)) throw error;
     const typed = [value.value, ...Object.values(fields).map((item) => (typeof item === "string" ? item.trim() : ""))];
-    const message = safeConnectMessage(explainSetupError(error), typed);
-    return fail(replacing ? `${message} The connected ${info.credentialNoun} is unchanged.` : message);
+    const message = safeConnectMessage(explainSetupError(error, replacing ? info.credentialNoun : undefined), typed);
+    return fail(message);
   }
   const status = parseProviderStatus(result, org);
   if (!status?.ready || !isConfigured(status, provider))
