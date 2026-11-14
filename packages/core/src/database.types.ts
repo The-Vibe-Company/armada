@@ -3520,6 +3520,41 @@ export type Database = {
           },
         ];
       };
+      otto_ticket_graphs: {
+        Row: {
+          objective_id: string;
+          org_id: string;
+          owner_id: string;
+          brief_revision: number;
+          graph: Json;
+          created_at: string;
+        };
+        Insert: {
+          objective_id: string;
+          org_id: string;
+          owner_id: string;
+          brief_revision: number;
+          graph: Json;
+          created_at?: string;
+        };
+        Update: {
+          objective_id?: string;
+          org_id?: string;
+          owner_id?: string;
+          brief_revision?: number;
+          graph?: Json;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "otto_ticket_graphs_objective_id_org_id_owner_id_fkey";
+            columns: ["objective_id", "org_id", "owner_id"];
+            isOneToOne: false;
+            referencedRelation: "otto_objectives";
+            referencedColumns: ["id", "org_id", "owner_id"];
+          },
+        ];
+      };
       personal_skill_defaults: {
         Row: {
           user_id: string;
@@ -4692,6 +4727,7 @@ export type OttoObjectiveRow = Database["public"]["Tables"]["otto_objectives"]["
 export type OttoOrphanDayRow = Database["public"]["Tables"]["otto_orphan_days"]["Row"];
 export type OttoResourceRow = Database["public"]["Tables"]["otto_resources"]["Row"];
 export type OttoTaskRow = Database["public"]["Tables"]["otto_tasks"]["Row"];
+export type OttoTicketGraphRow = Database["public"]["Tables"]["otto_ticket_graphs"]["Row"];
 export type PersonalSkillDefaultsRow = Database["public"]["Tables"]["personal_skill_defaults"]["Row"];
 export type ReadableVariableRow = Database["public"]["Tables"]["readable_variables"]["Row"];
 export type ResourceObservation = Database["public"]["Tables"]["resource_observations"]["Row"];

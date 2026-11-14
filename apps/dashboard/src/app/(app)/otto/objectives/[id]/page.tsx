@@ -7,6 +7,9 @@ import { ObjectiveError, type ObjectiveThread, objectiveRequest } from "@/lib/da
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { ObjectiveMessageForm } from "../objective-forms";
 
+import { TicketGraphForm } from "./ticket-graph-form";
+import { TicketGraphPanel } from "./ticket-graph-panel";
+
 export const metadata: Metadata = { title: "Objective thread" };
 export const dynamic = "force-dynamic";
 
@@ -74,6 +77,8 @@ export default async function ObjectivePage({ params }: { params: Promise<{ id: 
             <p className="text-sm text-muted-foreground">No follow-up messages yet.</p>
           )}
         </section>
+        <TicketGraphPanel orgId={selected.org.id} id={id} />
+        <TicketGraphForm orgId={selected.org.id} id={id} />
         <ObjectiveMessageForm orgId={selected.org.id} id={id} />
       </div>
     </>
