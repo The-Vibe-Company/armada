@@ -30,6 +30,18 @@ export type State = {
   hostId: string;
   hostToken: string;
   receipts: Receipt[];
+  /** Permanent compact replay fences; never evict within an installation. */
+  retired?: [
+    requestId: string,
+    hash: string,
+    generation: string,
+    machineHash: string,
+    operation: Receipt["operation"],
+    outcome: "completed" | "failed",
+    reason: DockerJobFailureReason | null,
+    imageId: string | null,
+  ][];
+  cleanupLimit?: number;
   lastPollAt?: string;
   /** Fair bounded retries across retained confirmations and process restarts. */
   expiryReportAfter?: string;
@@ -203,6 +215,41 @@ export async function tick(store: Store, api: Api, executor: Executor, skipSnaps
   )
     throw new Error("Changed host job");
   if (!receipt) {
+    const retired = state.retired ?? [];
+    const old = retired.find((r) => r[0] === job.requestId);
+    if (old) {
+      if (old[1] !== digest(JSON.stringify([job.operation, fingerprint(job), inputHash ?? null])))
+        throw new Error("Changed retired host job");
+      const replay = {
+        requestId: job.requestId,
+        request: job.request,
+        operation: job.operation,
+        ...(inputHash ? { inputHash } : {}),
+        outcome: old[5],
+        ...(old[6] ? { reason: old[6] } : {}),
+        ...(old[7] ? { imageId: old[7] } : {}),
+      } as Receipt;
+      await api.result(state, replay);
+      return;
+    }
+    const oldGeneration = retired.filter((r) => r[2] === generationKey(job.request));
+    const cleanup = job.operation === "stop" || job.operation === "delete";
+    if (
+      oldGeneration.some((r) => r[3] !== digest(fingerprint(job))) ||
+      oldGeneration.some(
+        (r) =>
+          r[4] === job.operation &&
+          (job.operation === "create" || job.operation === "bootstrap" || job.operation === "buildSnapshot"),
+      )
+    )
+      throw new Error("Retired machine generation");
+    // Reserve durable space for cleanup and TTL updates, not just the next launch.
+    const count = retired.length + state.receipts.length;
+    state.cleanupLimit ??= Math.max(17408, count + 1024);
+    if (count >= (cleanup ? state.cleanupLimit : 16384))
+      throw new Error("Host replay ledger capacity reached; retire installation");
+    if (!cleanup && Buffer.byteLength(JSON.stringify(state)) > 8 * 1024 * 1024)
+      throw new Error("Host admission capacity reached; cleanup remains available");
     const generation = state.receipts.filter(
       (r) => r.request.sandboxId === job.request.sandboxId && r.request.generation === job.request.generation,
     );
@@ -229,4 +276,42 @@ export async function tick(store: Store, api: Api, executor: Executor, skipSnaps
   }
   await execute(receipt, job, admitted);
   await api.result(state, receipt);
+}
+
+function digest(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+function generationKey(request: DockerMachineRequest): string {
+  return digest(JSON.stringify([request.sandboxId, request.generation]));
+}
+/** Lossless identity fences: old requests are rejected, never re-executed.
+ * Keep live TTL obligations and all uncertain receipts in full.
+ */
+export function compactReceipts(state: State): void {
+  state.cleanupLimit ??= Math.max(17408, state.receipts.length + (state.retired?.length ?? 0) + 1024);
+  if (Buffer.byteLength(JSON.stringify(state)) < 1024 * 1024) return;
+  state.retired ??= [];
+  const retired = state.retired;
+  state.receipts = state.receipts.filter((receipt) => {
+    if (!receipt.outcome || retired.length >= state.cleanupLimit!) return true;
+    const closed =
+      receipt.operation === "stop" ||
+      receipt.operation === "delete" ||
+      receipt.operation === "buildSnapshot" ||
+      (receipt.expired && receipt.expiryReported);
+    if (!closed) return true;
+    retired.push([
+      receipt.requestId,
+      digest(
+        JSON.stringify([receipt.operation, fingerprint(receipt), "inputHash" in receipt ? receipt.inputHash : null]),
+      ),
+      generationKey(receipt.request),
+      digest(fingerprint(receipt)),
+      receipt.operation,
+      receipt.outcome,
+      receipt.reason ?? null,
+      receipt.operation === "buildSnapshot" ? (receipt.imageId ?? null) : null,
+    ]);
+    return false;
+  });
 }

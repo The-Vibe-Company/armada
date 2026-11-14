@@ -829,3 +829,30 @@ launch and paused wake are refused, raise capacity within hardware budget and
 retry. Use dashboard edits and automatic reset and compare displayed mode and
 running/capacity. Confirm another org admin cannot edit this owner's limits.
 No deployment, remote migration or real-host acceptance was performed here.
+
+### Durable receipt retention and capacity
+
+The daemon compacts terminal stop/delete/build receipts and TTL receipts whose
+expiry confirmation was acknowledged once state reaches 1 MiB. Pending receipts,
+uncertain machine outcomes without a terminal result, and active TTL obligations
+remain in full. Each retired record retains the request identity, SHA-256 of the
+exact operation/request/input fingerprint, and generation and machine fingerprint
+digests. Retired request IDs replay their saved outcome on exact redelivery (including
+snapshot image IDs); changed input is rejected. Neither path executes again. Retired create/bootstrap/build identities cannot be repeated for that generation
+under a new request ID (resume remains available);
+cleanup must still match its original machine fingerprint. Fences are never
+evicted or aged out within an installation.
+
+Admission stops at 16,384 total full receipts plus fences or 8 MiB of state for
+non-cleanup jobs. Legacy installations receive a one-time cleanup ceiling of their existing
+identity count plus 1,024 if higher; this ceiling is persisted, never renewed.
+Another 1,024 identities and the remaining half of the 16 MiB
+atomic state limit are reserved for stop/delete and local TTL confirmations.
+This is a finite installation lifetime, not indefinite history eviction: at the
+admission limit drain the host and replace its registration/installation. At
+the cleanup limit use operator-controlled Docker cleanup, then retire the host.
+Do not delete receipts, fences, or state to resume an existing registration:
+doing so removes replay protection. Preserve the private state for investigation;
+never copy it into a new installation or publish it (it contains the host token).
+Disk-full or permission failures still require operator storage repair; reserved
+logical capacity cannot repair unavailable storage.

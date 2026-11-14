@@ -29,6 +29,7 @@ import type { AuthIo } from "../../cli/src/auth-commands.ts";
 import { run } from "../../cli/src/run.ts";
 import { createCredentialBindingRecovery } from "../src/credential-binding-recovery.ts";
 import { type ControlOptions, controlOptionsFromEnv, createSqlData, handleControlRequest } from "../src/index.ts";
+import { launchCredentials } from "../src/launch-credentials.ts";
 import { createModalIntegration } from "../src/modal-integration.ts";
 import { modalLaunchEnvironment } from "../src/modal-launch-environment.ts";
 import { createModelAuthOwnership } from "../src/model-auth.ts";
@@ -39,6 +40,7 @@ import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { createRuntimeFollowup } from "../src/runtime-followup.ts";
 import { createRuntimeHistory } from "../src/runtime-history.ts";
 import { createRuntimeStartup } from "../src/runtime-startup.ts";
+import { callSharedTool } from "../src/tool-api.ts";
 import { rowOnlyConnection } from "./row-only-database.ts";
 import { fakeBoat } from "./support.ts";
 
@@ -2789,12 +2791,15 @@ test("versioned runtime launch is explicit/default-off and never selects native 
 // Public HTTP admission owns the opt-in: no allocation when disabled/malformed,
 // and no native agent/configuration fallback on the accepted model-only path.
 test.each([
-  { harness: "codex" as const, fromDefaults: false },
-  { harness: "claude" as const, fromDefaults: true },
-  { harness: "opencode" as const, fromDefaults: true },
+  { harness: "codex" as const, fromDefaults: false, entry: "explicit" },
+  { harness: "claude" as const, fromDefaults: true, entry: "explicit" },
+  { harness: "opencode" as const, fromDefaults: true, entry: "explicit" },
+  { harness: "codex" as const, fromDefaults: true, entry: "ordinary-api" },
+  { harness: "codex" as const, fromDefaults: true, entry: "ordinary-mcp" },
 ])(
-  "Modal runtime launch prepares explicit/default MCP and skills before its first prompt ($harness defaults=$fromDefaults)",
-  async ({ harness, fromDefaults }) => {
+  "Modal runtime launch prepares explicit/default MCP and skills before its first prompt ($harness defaults=$fromDefaults entry=$entry)",
+  async ({ harness, fromDefaults, entry }) => {
+    const ordinary = entry !== "explicit";
     await withServer(async ({ db, options }) => {
       const org = await options.store.createOrg("Modal runtime", STAN);
       options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
@@ -2814,7 +2819,7 @@ test.each([
       const bearer = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`;
       const request = (body: object) =>
         handleControlRequest(
-          new Request("https://armada.test/api/v1/sandbox/launch-modal-runtime-v1", {
+          new Request(`https://armada.test/api/v1/${ordinary ? "sandbox/launch" : "sandbox/launch-modal-runtime-v1"}`, {
             method: "POST",
             headers: { authorization: `Bearer ${bearer}` },
             body: JSON.stringify(body),
@@ -2828,8 +2833,7 @@ test.each([
         harness,
         ...(harness === "opencode" ? { model: "opencode/fixture", reasoningEffort: "default" } : {}),
         prompt: "reply",
-        runtimeVersion: 1,
-        runtimeTransport: "dialout",
+        ...(!ordinary ? { runtimeVersion: 1, runtimeTransport: "dialout" } : {}),
         skipSkillDefaults: true,
         connections: [],
       };
@@ -2865,9 +2869,19 @@ test.each([
       options.providerFor = () => {
         throw Error("No Boat provider for Modal");
       };
-      expect((await request(body))?.status).toBe(503);
+      if (!ordinary) expect((await request(body))?.status).toBe(503);
       expect(fake.forks).toHaveLength(0);
-      options.modalRuntimeHostFor = async () => host;
+      options.modalRuntimeHostFor = async (target) => {
+        expect(target.runtimeTransport).toBe("dialout");
+        return host;
+      };
+      const native = {
+        ...host,
+        async fork() {
+          throw Error("No native fork under runtime default");
+        },
+      };
+      if (ordinary) options.providers = { resolve: async () => native };
       options.modalRuntimeLaunch = {
         async start(input) {
           starts++;
@@ -2898,14 +2912,15 @@ test.each([
           };
         },
       };
-      for (const bad of [
-        { ...body, skipSkillDefaults: "invalid" },
-        { ...body, skills: "invalid" },
-        { ...body, connections: ["invalid"] },
-        { ...body, harness: "unknown" },
-        { ...body, runtimeTransport: undefined },
-      ])
-        expect((await request(bad))?.status).toBe(400);
+      if (!ordinary)
+        for (const bad of [
+          { ...body, skipSkillDefaults: "invalid" },
+          { ...body, skills: "invalid" },
+          { ...body, connections: ["invalid"] },
+          { ...body, harness: "unknown" },
+          { ...body, runtimeTransport: undefined },
+        ])
+          expect((await request(bad))?.status).toBe(400);
       expect(fake.forks).toHaveLength(0);
       options.runtimeMcp = {
         async preflight() {
@@ -2933,12 +2948,61 @@ test.each([
           },
         },
       };
-      const response = await request({
+      if (ordinary) {
+        if (!options.runtimeMcp.connections) throw Error("Missing runtime connection policy");
+        options.launch = {
+          ...options.launch,
+          modalRuntimeDefault: {
+            policy: options.modalRuntimeLaunch,
+            credentials: launchCredentials(options.store, KEY, undefined, options.modelAuth),
+            connections: options.runtimeMcp.connections,
+            provider: (actor, golden) =>
+              options.modalRuntimeHostFor!(
+                { ...golden, runtimeTransport: "dialout" },
+                { userId: actor.userId, orgs: [{ orgId: actor.orgId, role: actor.role }], via: "service" },
+              ),
+          },
+        };
+      }
+      const input = {
         ...body,
         connections: fromDefaults ? undefined : [connection],
         skills: fromDefaults ? undefined : [skill],
         skipSkillDefaults: fromDefaults ? undefined : true,
-      });
+      };
+      if (entry === "ordinary-mcp") {
+        const caller = { userId: STAN, orgs: [{ orgId: org.id, role: "admin" as const }], via: "service" as const };
+        if (!options.data || !options.launch || !options.skillDefaults) throw Error("Missing default scoped context");
+        const result = await callSharedTool(
+          {
+            caller,
+            data: options.data(caller),
+            provider: async () => native,
+            launchCredentials: launchCredentials(options.store, KEY, undefined, options.modelAuth),
+            exposedSecrets: async () => [],
+            launch: options.launch,
+            skillDefaults: options.skillDefaults,
+            now: () => new Date(),
+            sleep: async () => {
+              throw Error("No waits");
+            },
+          },
+          "launch",
+          input,
+        );
+        expect(result).toMatchObject({
+          runtime: { kind: "armada", epoch: "1" },
+          runtimeTransport: "dialout",
+          provider: "modal",
+          promptId: "modal-initial",
+        });
+        expect(starts).toBe(1);
+        expect(fake.forks).toHaveLength(1);
+        expect(fake.prompts).toHaveLength(0);
+        expect(fake.execs).toHaveLength(0);
+        return;
+      }
+      const response = await request(input);
       if (response?.status !== 200) throw Error(JSON.stringify(await response?.json()));
       expect(response?.status).toBe(200);
       expect(await response?.json()).toMatchObject({

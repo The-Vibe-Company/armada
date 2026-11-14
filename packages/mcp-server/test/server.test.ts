@@ -3,6 +3,7 @@ import { createSqlAuthStore } from "@armada/auth";
 import { createSqlVaultStore, mutateCredentialAccount, ProviderError, VaultError } from "@armada/core/server";
 import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
 import helperManifest from "../../core/helper/manifest.json";
+import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { createHandler } from "../src/http.ts";
 import { createProviderMetadata } from "../src/provider-metadata.ts";
@@ -10,7 +11,16 @@ import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
 import { readStatus } from "../src/turns.ts";
 import { encryptedRecoveryExec } from "./fixtures/recovery-exec.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
-import { bunLikeSql, call, ENCRYPTION_KEY, harness, PUBLIC_URL, SECRETS, type TestServer } from "./support.ts";
+import {
+  bunLikeSql,
+  call,
+  ENCRYPTION_KEY,
+  GITHUB_APP,
+  harness,
+  PUBLIC_URL,
+  SECRETS,
+  type TestServer,
+} from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
 let server: TestServer | undefined;
@@ -438,7 +448,7 @@ describe("tools", () => {
     });
     expect(boat.forks[0]).toMatchObject({ noEnv: true, env: { CLAUDE_CODE_OAUTH_TOKEN: SECRETS.orgClaude } });
     expect(boat.keys.at(-1)).toBe(SECRETS.orgBoat);
-    expect(boat.execs.map((exec) => exec.command).join("\n")).toContain("'pull' '--ff-only'");
+    expect(boat.execs.map((exec) => exec.command).join("\n")).toContain("git fetch origin");
     expectNoSecret(launched.text);
   });
 
@@ -451,6 +461,49 @@ describe("tools", () => {
     expect(launched.isError).toBe(false);
     expect(launched.data.github).toMatchObject({ status: "not_connected", login: null });
     expect(boat.forks[0]?.env).toEqual({ CLAUDE_CODE_OAUTH_TOKEN: SECRETS.orgClaude });
+  });
+
+  test("private repository authorization refuses HTTP and MCP before any compute allocation", async () => {
+    const s = await start();
+    await s.db.query("update goldens set config=$1::jsonb where name='shared'", [
+      JSON.stringify({
+        repos: [{ url: "https://github.com/acme/private.git", branch: "main", dir: "private" }],
+        init: [],
+      }),
+    ]);
+    const bearer = await s.token(s.people.member);
+    const before = (await s.db.query("select id from sandboxes order by id")).rows;
+    const response = await handleControlRequest(
+      new Request(PUBLIC_URL + "/api/v1/sandbox/launch", {
+        method: "POST",
+        headers: { authorization: "Bearer " + bearer, "content-type": "application/json" },
+        body: JSON.stringify({ golden: "shared", harness: "claude", org: s.people.org, provider: "boat" }),
+      }),
+      {
+        authStore: s.auth,
+        supabase: { supabaseUrl: "https://unused.test", anonKey: "fixture" },
+        store: createSqlVaultStore(s.db),
+        encryptionKey: ENCRYPTION_KEY,
+        data: createSqlData(s.db),
+        providerFor: s.boat.providerFor,
+        github: {
+          app: GITHUB_APP,
+          fetch: (async () => Response.json({ message: "Not found." }, { status: 404 })) as unknown as typeof fetch,
+        },
+      },
+    );
+    expect(response?.status).toBe(400);
+    expect(await response!.json()).toMatchObject({
+      error: {
+        code: "no_credentials",
+        message: expect.stringContaining("Repository private needs a GitHub connection"),
+      },
+    });
+    const mcp = await call(await s.client(bearer), "launch", { golden: "shared", harness: "claude" });
+    expect(mcp.isError).toBe(true);
+    expect(mcp.text).toContain("armada github connect");
+    expect(s.boat.forks).toHaveLength(0);
+    expect((await s.db.query("select id from sandboxes order by id")).rows).toEqual(before);
   });
 
   test("launch with a connected GitHub acts as the caller: fresh token in the env, git set up, refresh token rotated", async () => {

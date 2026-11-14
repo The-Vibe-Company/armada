@@ -5,7 +5,6 @@ import type { FleetSandbox } from "./fleet.ts";
 import type { OttoScope } from "./observation.ts";
 import type { OwnershipFact } from "./ownership.ts";
 
-export const FLEET_LIMIT = 100;
 export interface FleetRow extends FleetSandbox {
   modal_events: (AgentEvent | null)[];
   runtime_events: (string | null)[];

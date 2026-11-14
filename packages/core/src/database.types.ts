@@ -3006,6 +3006,7 @@ export type Database = {
           fingerprint: string;
           response: Json | null;
           created_at: string;
+          authority: Json | null;
         };
         Insert: {
           id: string;
@@ -3015,6 +3016,7 @@ export type Database = {
           fingerprint: string;
           response?: Json | null;
           created_at?: string;
+          authority?: Json | null;
         };
         Update: {
           id?: string;
@@ -3024,6 +3026,7 @@ export type Database = {
           fingerprint?: string;
           response?: Json | null;
           created_at?: string;
+          authority?: Json | null;
         };
         Relationships: [
           {
@@ -3931,6 +3934,7 @@ export type Database = {
           verified_at: string | null;
           receipt: Json | null;
           created_at: string;
+          empty_checkpoint: boolean;
         };
         Insert: {
           sandbox_id: string;
@@ -3946,6 +3950,7 @@ export type Database = {
           verified_at?: string | null;
           receipt?: Json | null;
           created_at?: string;
+          empty_checkpoint?: boolean;
         };
         Update: {
           sandbox_id?: string;
@@ -3961,6 +3966,7 @@ export type Database = {
           verified_at?: string | null;
           receipt?: Json | null;
           created_at?: string;
+          empty_checkpoint?: boolean;
         };
         Relationships: [
           {

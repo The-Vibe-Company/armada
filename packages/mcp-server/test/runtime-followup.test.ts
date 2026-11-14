@@ -30,8 +30,16 @@ describe.each([
   });
 
   test("shared send preserves the Runner session and epoch; replay cannot duplicate turns or overwrite a newer task", async () => {
-    const originalGeneration = (await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))!.lifecycleGeneration!;
-    const input = f.input();
+    const original = (await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))!;
+    const originalGeneration = original.lifecycleGeneration!;
+    const input = {
+      ...f.input(),
+      ...(provider === "boat" ? { model: original.model, reasoning_effort: original.reasoningEffort } : {}),
+    };
+    if (provider === "modal")
+      await expect(callSharedTool(f.context, "send", { ...input, model: original.model })).rejects.toThrow(
+        "Runtime follow-up uses the launch model and effort.",
+      );
     const receipt = (await callSharedTool(f.context, "send", input)) as Awaited<ReturnType<typeof f.send>>;
     expect(receipt).toMatchObject({
       id: f.row.id,
@@ -42,6 +50,10 @@ describe.each([
     const next = (await callSharedTool(f.context, "send", f.input("another"))) as Awaited<ReturnType<typeof f.send>>;
     expect(f.starts).toEqual([undefined, "native-thread", "native-thread"]);
     expect(await callSharedTool(f.context, "send", input)).toEqual(receipt);
+    if (provider === "boat")
+      expect(
+        await callSharedTool(f.context, "send", { ...input, model: undefined, reasoning_effort: undefined }),
+      ).toEqual(receipt);
     const row = (await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))!;
     expect(row.taskPromptId).toBe(next.promptId as string);
     expect(row.lifecycleGeneration).toBe(originalGeneration + 4);
@@ -61,7 +73,12 @@ test("uncertain send reconciles the same durable identity/lease; changed input a
     expect(recovered.conversationId).toBe(f.first.conversationId);
     expect(f.starts).toHaveLength(2);
     await expect(f.send(f.caller, { ...input, prompt: "different" })).rejects.toThrow();
-    for (const extra of [{ request_id: undefined }, { conversation_id: "foreign" }, { model: "gpt-5.4" }])
+    for (const extra of [
+      { request_id: undefined },
+      { conversation_id: "foreign" },
+      { model: "changed_model" },
+      { reasoning_effort: "changed_effort" },
+    ])
       await expect(f.send(f.caller, { ...f.input(), ...extra })).rejects.toThrow();
     expect(await createSqlData(f.sql)({ ...f.caller, userId: f.people.admin }).sandboxes.get(f.row.id)).not.toBeNull();
     await expect(f.send({ ...f.caller, userId: f.people.admin }, f.input())).rejects.toMatchObject({

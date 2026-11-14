@@ -49,7 +49,14 @@ export function createRuntimeFollowup(
         !(found.provider === "modal" && found.harness === "opencode"))
     )
       throw new VaultError("not_found", "No owned runtime sandbox.");
-    if (input.model !== undefined || input.reasoning_effort !== undefined)
+    // Boat callers may repeat the admitted settings, but cannot switch them.
+    // Normalize these redundant fields away before durable command/resume identity.
+    // Keep the existing Modal admission contract unchanged.
+    if (
+      (input.model !== undefined && (found.provider !== "boat" || input.model !== found.model)) ||
+      (input.reasoning_effort !== undefined &&
+        (found.provider !== "boat" || input.reasoning_effort !== found.reasoningEffort))
+    )
       throw new VaultError("invalid", "Runtime follow-up uses the launch model and effort.");
     // Route replays by durable operation identity, not today's machine state.
     // A completed wake may already be running (or paused again) on retry.
