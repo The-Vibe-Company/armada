@@ -1,7 +1,5 @@
 import type { AuthStore } from "@armada/auth";
 import {
-  CLAUDE_ENDPOINT_ENV,
-  CODEX_ENDPOINT_ENV,
   goldenForSettings,
   isModelConnectionTestResult,
   MAX_SANDBOX_EXTENSION_TTL_SECONDS,
@@ -432,8 +430,9 @@ async function dispatch(
     const credentials = launchCredentials(options.store, options.encryptionKey, undefined, options.modelAuth);
     const actor: GoldenActor = { userId: found.ownerId, orgId: found.orgId, role: "member" };
     const bound = await credentials.resolve(actor, found.harness, found.credentialId, found.credentialVersion);
-    if (!bound.env[found.harness === "codex" ? CODEX_ENDPOINT_ENV : CLAUDE_ENDPOINT_ENV])
-      throw new VaultError("invalid", "This check supports custom endpoint connections only.");
+    const apiKey =
+      harness === "codex" ? bound.env.OPENAI_API_KEY : (bound.env.ANTHROPIC_AUTH_TOKEN ?? bound.env.ANTHROPIC_API_KEY);
+    if (!apiKey) throw new VaultError("invalid", "This check requires an API-key account, not a subscription.");
     await credentials.assertTurn?.(actor, found.id, false);
     const provider = await options.providers.resolve(found, scoped);
     if (!provider.testModelConnection)
