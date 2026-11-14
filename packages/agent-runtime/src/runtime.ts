@@ -1,4 +1,4 @@
-import { createHash, timingSafeEqual } from "node:crypto";
+import { timingSafeEqual } from "node:crypto";
 import type { ExecRequest, ExecResult, Harness } from "@armada/core";
 import { HARNESSES, validateReadableVariables } from "@armada/core";
 import { PRIVATE_SKILL_FAILURES } from "../../core/src/private-skill-error.ts";
@@ -12,6 +12,7 @@ import type { Journal } from "./journal.ts";
 import { mcpSecretValues, validateMcpConfiguration } from "./mcp.ts";
 import { recordMcpRevision } from "./mcp-revisions.ts";
 import { NativeEpoch } from "./native-epoch.ts";
+import { observeRuntime } from "./observation.ts";
 import { groupState, type ProcessIdentity, processIdentity } from "./processes.ts";
 import {
   AUTH_HEADER,
@@ -339,47 +340,14 @@ export class Runner {
         (typeof r.conversationId !== "string" || !r.conversationId || r.conversationId.length > 256)
       )
         throw Error("invalid_request");
-      const watermark = Number(
-        (this.journal.db.query("SELECT coalesce(max(seq),0) AS watermark FROM events").get() as { watermark: number })
-          .watermark,
-      );
-      let state: "active" | "quiescent" | "unknown" =
-        this.barrier || this.journal.checkpointPending(this.grant) ? "unknown" : "quiescent";
-      const processes: Array<{ pid: number; state: string }> = [];
-      for (const row of this.journal.db.query("SELECT pid,body FROM processes").all() as {
-        pid: number;
-        body: string;
-      }[]) {
-        const saved = JSON.parse(row.body) as { status: string; identity?: ProcessIdentity };
-        if (!["running", "running_after_restart", "unknown_after_restart"].includes(saved.status)) continue;
-        const status = groupState(row.pid, saved.identity);
-        processes.push({ pid: row.pid, state: status });
-        if (status === "unverifiable") state = "unknown";
-        else if (status === "live" && state !== "unknown") state = "active";
-      }
-      if ((this.active.size > 0 || this.commands.size > 0) && state !== "unknown") state = "active";
-      const acknowledgedSequence = this.journal.ack;
-      if (state === "quiescent" && acknowledgedSequence < watermark) state = "unknown";
-      const evidence = createHash("sha256")
-        .update(
-          JSON.stringify({
-            generation: this.grant.generation,
-            watermark,
-            acknowledgedSequence,
-            active: [...this.active.keys()].sort(),
-            commands: this.commands.size,
-            processes,
-          }),
-        )
-        .digest("hex");
-      return {
-        physicalGeneration: this.grant.generation,
-        state,
-        evidence,
-        eventWatermark: watermark,
-        acknowledgedSequence,
-        nativeSessionId: r.conversationId ? (this.journal.session(r.conversationId) ?? null) : null,
-      };
+      return observeRuntime({
+        journal: this.journal,
+        grant: this.grant,
+        barrier: this.barrier,
+        active: this.active,
+        commands: this.commands,
+        conversationId: r.conversationId,
+      });
     }
     if (r.op === "resumeNativeSession") {
       if (this.credentialFreeBuilder || this.barrier || this.active.size || this.commands.size || this.resumingNative)
