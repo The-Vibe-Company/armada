@@ -1085,7 +1085,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         record("github", c.provider, "not-run", "github_repository_not_configured");
         continue;
       }
-      if (option?.capabilities[capability] === false) {
+      if (option?.capabilities[capability] === false && !(feature === "skills" && step === "send")) {
         const reason = option.unsupportedReasons[capability];
         record(
           selected ? step : `prerequisite:${step}`,

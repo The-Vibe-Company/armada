@@ -2,8 +2,20 @@ import { expect, test } from "bun:test";
 import { providerParitySmoke } from "./provider-parity-smoke.ts";
 
 // Owns the real parity HTTP boundary: exact pins, installed bytes, reporting and cleanup.
-for (const mode of ["valid", "missing", "source", "manifest", "status", "content", "no_exec"] as const) {
+for (const mode of [
+  "valid",
+  "claude",
+  "opencode",
+  "missing",
+  "source",
+  "manifest",
+  "status",
+  "content",
+  "no_exec",
+  "no_followup",
+] as const) {
   test(`skills delivery parity: ${mode}`, async () => {
+    const harness = mode === "claude" ? "claude" : mode === "opencode" ? "opencode" : "codex";
     const reference = "parity-fixture@1.0.0";
     const digest = "a".repeat(64);
     const receipt = {
@@ -26,7 +38,7 @@ for (const mode of ["valid", "missing", "source", "manifest", "status", "content
           ["modal", "docker"].map((provider) => ({
             provider,
             org: provider,
-            harness: "codex",
+            harness,
             model: "fixture",
             modelAccountId: "account",
             golden: "golden",
@@ -55,13 +67,13 @@ for (const mode of ["valid", "missing", "source", "manifest", "status", "content
               result = {
                 providers: ["modal", "docker"].map((id) => ({
                   id,
-                  harnesses: ["codex"],
+                  harnesses: [harness],
                   capabilities: {
                     launch: true,
                     exec: mode !== "no_exec",
                     stop: true,
                     delete: true,
-                    followupPrompts: true,
+                    followupPrompts: mode !== "no_followup",
                   },
                   unsupportedReasons: {},
                 })),
@@ -87,7 +99,7 @@ for (const mode of ["valid", "missing", "source", "manifest", "status", "content
                   golden: { id: "golden", name: "golden", provider: id },
                   definition: {
                     provider: id,
-                    harness: "codex",
+                    harness,
                     model: "fixture",
                     goldenId: "golden",
                     hostId: "host",
@@ -105,7 +117,9 @@ for (const mode of ["valid", "missing", "source", "manifest", "status", "content
               };
               break;
             case "sandbox/exec":
-              expect(body.command).toContain("/home/user/project/.agents/skills/parity-fixture/SKILL.md");
+              expect(body.command).toContain(
+                `/home/user/project/${harness === "claude" ? ".claude" : ".agents"}/skills/parity-fixture/SKILL.md`,
+              );
               expect(Boolean(body.request_id)).toBe(id === "docker");
               result = { exitCode: 0, timedOut: false, stdout: mode === "content" ? "wrong" : digest };
               break;
@@ -125,7 +139,7 @@ for (const mode of ["valid", "missing", "source", "manifest", "status", "content
       },
       ["--feature", "skills"],
     );
-    expect(passed).toBe(["valid", "missing", "no_exec"].includes(mode));
+    expect(passed).toBe(["valid", "claude", "opencode", "no_followup", "missing", "no_exec"].includes(mode));
     const report = lines
       .map((line) => {
         try {
@@ -136,8 +150,10 @@ for (const mode of ["valid", "missing", "source", "manifest", "status", "content
       })
       .find((value) => value?.step === "provider_parity");
     for (const provider of ["modal", "docker"]) {
-      expect(report.features.skills[provider].status).toBe(mode === "valid" ? "pass" : "not-run");
-      if (["valid", "manifest", "status", "content"].includes(mode)) {
+      expect(report.features.skills[provider].status).toBe(
+        ["valid", "claude", "opencode", "no_followup"].includes(mode) ? "pass" : "not-run",
+      );
+      if (["valid", "claude", "opencode", "no_followup", "manifest", "status", "content"].includes(mode)) {
         expect(calls).toContain(`${provider}:sandbox/delete`);
         expect(report.features.cleanup[provider].status).toBe("pass");
       }
