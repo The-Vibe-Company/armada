@@ -222,6 +222,19 @@ This is not a full provider lifecycle test or proof that a model request will wo
 Exits 1 if any check is failed, otherwise 0; warnings and unknowns are not passes.
 Example: armada doctor --org ORG_UUID --json
 `,
+  recovery: `Usage: armada recovery <sandbox-id> [--org UUID] [--json]
+Read sandbox work-recovery information after Armada login and server authorization.
+Output is JSON even without --json. This is not credential-account rebinding.
+Use a sandbox ID from armada list --json.
+Example: armada recovery SANDBOX_UUID --org ORG_UUID --json
+`,
+  "bind-credential": `Usage: armada bind-credential <sandbox-id> --credential-id UUID [--org UUID] [--json]
+Owner-only legacy Modal credential-binding recovery after Armada login.
+Stop the sandbox safely before rebinding; this command does not restart it.
+Use a sandbox ID from armada list and a credential-account UUID from creds list.
+Do not pass secret credential values. Output is JSON even without --json.
+Example: armada bind-credential SANDBOX_UUID --credential-id ACCOUNT_UUID --org ORG_UUID
+`,
   "org setup": `Usage: armada org setup [--org <name>] [--json]
 Show organization provider setup status. Sign in before running the operation.
 Use --org to override a saved selection. This reports configuration, not a live lifecycle test.
