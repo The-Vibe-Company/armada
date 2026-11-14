@@ -235,7 +235,7 @@ export async function launchFromTemplate(
     };
   if (size && outcome.reason === "launch_unavailable")
     return fail(
-      `${launchReason(outcome.reason)} If ${provider === "docker" ? "Docker" : PROVIDER_LABELS[provider]} refused ${MACHINE_SIZE_LABELS[size as MachineSize]}, choose another size or the default.`,
+      `${launchReason(outcome.reason)} If ${PROVIDER_LABELS[provider]} refused ${MACHINE_SIZE_LABELS[size as MachineSize]}, choose another size or the default.`,
     );
   return {
     ...fail(outcome.message ?? launchReason(outcome.reason)),
