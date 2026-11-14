@@ -1323,6 +1323,17 @@ the deliberately interrupted task does not contaminate their cost evidence;
 there are no extra sandbox allocations. These are coordinator/provider probes,
 not unit-test sleeps or CI provider calls.
 
+### Saved-snapshot launch row
+
+`--parity --feature launch-snapshot` uses the configured golden on Modal/Boat.
+It first reads the authorized provider-scoped golden list and requires exactly
+one matching golden with a published `providerSnapshotId`, then launches that
+golden and requires a finished, answered turn. Full runs reuse their ordinary
+golden launch rather than allocating another sandbox. This proves launch from
+an existing saved golden snapshot, not creation of a new checkpoint or mutation
+of an operator's golden. A missing snapshot or wrong-provider source cannot pass.
+Docker's image launch is not a golden snapshot: its row remains explicit
+unsupported debt (#1532), with no allocation for this filtered feature.
 ### Configured template-revision parity
 
 Add `template: {"id":"<template UUID>","revision":2}` to a provider case and run
