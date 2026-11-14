@@ -114,51 +114,53 @@ async function SandboxesContent({ searchParams }: Props) {
         {launchAction}
       </PageHeader>
 
-      <SandboxToolbar
-        filters={filters}
-        options={
-          Object.fromEntries(
-            FACETS.map((key) => {
-              const known =
-                key === "status"
-                  ? SANDBOX_STATUSES
-                  : key === "provider"
-                    ? SANDBOX_PLACEMENT_PROVIDERS
+      {selected && (
+        <SandboxToolbar
+          filters={filters}
+          options={
+            Object.fromEntries(
+              FACETS.map((key) => {
+                const known =
+                  key === "status"
+                    ? SANDBOX_STATUSES
+                    : key === "provider"
+                      ? SANDBOX_PLACEMENT_PROVIDERS
+                      : key === "harness"
+                        ? HARNESSES
+                        : key === "size"
+                          ? [...MACHINE_SIZES, "unknown"]
+                          : [];
+                const values = [...new Set([...known, ...facets[key].keys(), ...filters[key]])];
+                const label = (value: string) =>
+                  key === "owner"
+                    ? displayUser(directory, value === "me" ? viewer.id : value, viewer.id)
                     : key === "harness"
-                      ? HARNESSES
+                      ? HARNESS_LABELS[value as keyof typeof HARNESS_LABELS]
                       : key === "size"
-                        ? [...MACHINE_SIZES, "unknown"]
-                        : [];
-              const values = [...new Set([...known, ...facets[key].keys(), ...filters[key]])];
-              const label = (value: string) =>
-                key === "owner"
-                  ? displayUser(directory, value === "me" ? viewer.id : value, viewer.id)
-                  : key === "harness"
-                    ? HARNESS_LABELS[value as keyof typeof HARNESS_LABELS]
-                    : key === "size"
-                      ? value === "unknown"
-                        ? "Not recorded"
-                        : machineSizeLabel(value as (typeof MACHINE_SIZES)[number])
-                      : key === "provider"
-                        ? (SANDBOX_PLACEMENT_LABELS[value as SandboxPlacementProviderId] ?? capitalize(value))
-                        : key === "model"
-                          ? value === "unknown"
-                            ? "Not recorded"
-                            : value
-                          : capitalize(value);
-              const options = values
-                .filter(
-                  (value) =>
-                    key !== "owner" || (value !== "me" && (value !== viewer.id || filters.owner.includes(viewer.id))),
-                )
-                .map((value) => ({ value, label: label(value), count: facets[key].get(value) ?? 0 }));
-              if (key === "owner")
-                options.unshift({ value: "me", label: "Mine", count: facets.owner.get(viewer.id) ?? 0 });
-              return [key, options];
-            }),
-          ) as Record<Facet, FacetOption[]>
-        }
-      />
+                        ? value === "unknown"
+                          ? "Not recorded"
+                          : machineSizeLabel(value as (typeof MACHINE_SIZES)[number])
+                        : key === "provider"
+                          ? (SANDBOX_PLACEMENT_LABELS[value as SandboxPlacementProviderId] ?? capitalize(value))
+                          : key === "model"
+                            ? value === "unknown"
+                              ? "Not recorded"
+                              : value
+                            : capitalize(value);
+                const options = values
+                  .filter(
+                    (value) =>
+                      key !== "owner" || (value !== "me" && (value !== viewer.id || filters.owner.includes(viewer.id))),
+                  )
+                  .map((value) => ({ value, label: label(value), count: facets[key].get(value) ?? 0 }));
+                if (key === "owner")
+                  options.unshift({ value: "me", label: "Mine", count: facets.owner.get(viewer.id) ?? 0 });
+                return [key, options];
+              }),
+            ) as Record<Facet, FacetOption[]>
+          }
+        />
+      )}
 
       {skipped > 0 && (
         <p role="status" className="text-sm text-muted-foreground">
@@ -167,11 +169,42 @@ async function SandboxesContent({ searchParams }: Props) {
       )}
 
       {rows.length === 0 ? (
-        total > 0 ? (
-          <Empty title="This page is past the last one" icon={<SearchXIcon />}>
-            <Link href={`/sandboxes${filtersToSearch({ ...filters, page: 1 })}`} className="underline">
-              Go to the first page
-            </Link>
+        !selected ? (
+          <Empty
+            title="No organization yet"
+            icon={<BoxesIcon />}
+            action={
+              <Button asChild>
+                <Link href="/orgs">Choose an organization</Link>
+              </Button>
+            }
+          >
+            Create or join an organization before launching sandboxes.
+          </Empty>
+        ) : total > 0 ? (
+          <Empty
+            title="This page is past the last one"
+            icon={<SearchXIcon />}
+            action={
+              <Button asChild variant="outline">
+                <Link href={`/sandboxes${filtersToSearch({ ...filters, page: 1 })}`}>Go to the first page</Link>
+              </Button>
+            }
+          >
+            Return to the first page to see your sandboxes with these filters.
+          </Empty>
+        ) : skipped > 0 ? (
+          <Empty
+            title="Sandboxes could not be shown"
+            icon={<SearchXIcon />}
+            action={
+              <Button asChild variant="outline">
+                <a href={`/sandboxes${filtersToSearch(filters)}`}>Reload Sandboxes</a>
+              </Button>
+            }
+          >
+            Some sandbox information could not be read. Reload Sandboxes to try again. If this continues, ask an Armada
+            administrator to check compatibility and access.
           </Empty>
         ) : filtered ? (
           <Empty
@@ -187,8 +220,7 @@ async function SandboxesContent({ searchParams }: Props) {
           </Empty>
         ) : (
           <Empty title="No sandboxes yet" action={launchAction} icon={<BoxesIcon />}>
-            A sandbox starts from a snapshot. Pick one on the Snapshots page, or run{" "}
-            <code className="font-mono text-xs">armada launch &lt;golden&gt;</code> or launch through MCP.
+            Choose a snapshot to launch your first sandbox. Its repositories and setup are ready for your task.
           </Empty>
         )
       ) : (

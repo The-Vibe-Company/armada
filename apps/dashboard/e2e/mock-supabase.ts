@@ -2730,6 +2730,7 @@ function control(url: URL, body: Row): Response {
   if (url.pathname === "/__test/reset") {
     for (const release of state.routineCreateWaiters) release();
     state = seed();
+    if (body.emptySandboxes) state.sandboxes = [];
     templateListFailure = null;
     vaultListFailure = null;
     accountListFailure = null;

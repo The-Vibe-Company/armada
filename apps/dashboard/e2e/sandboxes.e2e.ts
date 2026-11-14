@@ -135,12 +135,13 @@ test("a sandbox the selected organization does not list is not found, even one o
   expect(response?.status()).toBe(404);
 });
 
-test("a page past the last one is empty, with a way back", async ({ page }) => {
+test("a page past the last one is empty, with a way back that preserves filters", async ({ page }) => {
   await signIn(page, "alice@example.com");
-  await page.goto("/sandboxes?page=99");
+  await page.goto("/sandboxes?page=99&provider=boat");
   await expect(page.getByText("This page is past the last one")).toBeVisible();
   await expect(page.getByRole("navigation", { name: "Pages" })).toHaveCount(0);
   await page.getByRole("link", { name: "Go to the first page" }).click();
+  expect(new URL(page.url()).searchParams.get("provider")).toBe("boat");
   await expect(page.getByRole("link", { name: LABELS.running })).toBeVisible();
 });
 
