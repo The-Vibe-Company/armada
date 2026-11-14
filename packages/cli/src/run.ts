@@ -107,60 +107,60 @@ Usage:
   armada --help                            Show this help
   armada skill install (--project <directory> | --global) --yes [--revision <commit>]
                                            Public GitHub Armada tool-knowledge skill; no login. See skill --help.
-  armada golden create <name> (--repo <url>[@branch] ... | --config <file>) [--init <cmd> ...]
+  armada snapshot create <name> (--repo <url>[@branch] ... | --config <file>) [--init <cmd> ...]
                                [--setup <local-file>] [--provider boat|modal] [--private] [--org <org>] [--idempotency-key <key>] [--timeout <seconds>]
-                                           Server-orchestrated: builds, scans and snapshots the golden on the
+                                           Server-orchestrated: builds, scans and saves the snapshot on the
                                            server over your own GitHub connection. No BOAT_API_KEY needed.
                                            --setup reads a local script and sends its content to run after
                                            cloning, before the scan.
-  armada golden update <name> (--add-repo <url>[@branch] ... | --replace --repo <url>[@branch] ... | --replace --config <file>) [--init <cmd> ...]
+  armada snapshot update <name> (--add-repo <url>[@branch] ... | --replace --repo <url>[@branch] ... | --replace --config <file>) [--init <cmd> ...]
                                [--setup <local-file>] [--provider boat|modal] [--org <org>] [--idempotency-key <key>] [--timeout <seconds>]
-                                           Rebuild the existing golden in place. One golden may contain
+                                           Rebuild the existing snapshot in place. One snapshot may contain
                                            many repositories; visibility and ownership stay unchanged.
                                            Use --add-repo to append safely, preserving stored repositories and init commands.
                                            --repo/--config require --replace: they replace the ENTIRE config, even if no repos are dropped.
                                            Create/update admit a durable job, then poll for up to --timeout
                                            seconds (default 60, max 600; 0 returns after admission).
                                            Disconnecting never resubmits or cancels the job.
-  armada golden build-cancel <job-id> [--org <org>] [--json]  Cancel your queued, never-started build
-  armada golden build-find <name> [--provider boat|modal] [--org <org>] [--json]
+  armada snapshot build-cancel <job-id> [--org <org>] [--json]  Cancel your queued, never-started build
+  armada snapshot build-find <name> [--provider boat|modal] [--org <org>] [--json]
                                            Find the latest visible active build without a job ID or admission key.
-  armada golden build-status <job-id>      Read the authenticated durable build status
-  armada golden build-status --idempotency-key <key> --org <org>
+  armada snapshot build-status <job-id>      Read the authenticated durable build status
+  armada snapshot build-status --idempotency-key <key> --org <org>
                                            Recover an uncertain admission using the saved key.
-  armada golden connect <name> [--provider boat|modal]
+  armada snapshot connect <name> [--provider boat|modal]
                                            Open the canonical master for maintenance
-  armada golden snapshot <name> [--provider boat|modal]
+  armada snapshot snapshot <name> [--provider boat|modal]
                                            Scan and freeze the master sandbox
-  armada golden capabilities [--provider boat|modal] [--org UUID] [--json]
-                                           Server-authoritative golden capacity; null means unbounded/unknown
-  armada golden size-policy <name> [--provider boat|modal] [--org <org>] [--file <JSON|->] [--json]
+  armada snapshot capabilities [--provider boat|modal] [--org UUID] [--json]
+                                           Server-authoritative snapshot capacity; null means unbounded/unknown
+  armada snapshot size-policy <name> [--provider boat|modal] [--org <org>] [--file <JSON|->] [--json]
                                            Inspect defaults, or replace the entire policy from a file/stdin.
                                            Version 1: {"version":1,"golden":null,"repositories":{}}
-                                           Repository keys are configured directories. null golden and an empty map
-                                           clear defaults. Scoped to this provider golden, future launches only.
-  armada golden create <name> --provider docker --host UUID|NAME --org UUID
+                                           Repository keys are configured directories. A null default and an empty map
+                                           clear defaults. Scoped to this provider snapshot, future launches only.
+  armada snapshot create <name> --provider docker --host UUID|NAME --org UUID
                                (--config <file> | --repo <url>[@branch] ... [--init <cmd> ...]) [--private] [--request-id UUID] [--json]
                                            Build a host-local snapshot from the official Armada image and your repos/setup.
                                            No image input. Reuse --request-id with identical input after an unknown outcome.
-  armada golden list [--provider boat|modal|docker] [--org UUID] [--json]
-                                           Goldens you can see; Docker requires --org.
-  armada golden get UUID --provider docker --org UUID [--json]
+  armada snapshot list [--provider boat|modal|docker] [--org UUID] [--json]
+                                           Snapshots you can see; Docker requires --org.
+  armada snapshot get UUID --provider docker --org UUID [--json]
                                            Read snapshot build state; launch ready snapshots with launch --provider docker --golden UUID.
-  armada golden rebuild UUID --provider docker --org UUID [--request-id UUID] [--json]
+  armada snapshot rebuild UUID --provider docker --org UUID [--request-id UUID] [--json]
                                            Build a new snapshot from saved repos/setup on its original host; keep the old one.
-  armada launch <golden> --agent ${HARNESSES.join("|")} ["prompt"] [--model <id>] [--reasoning-effort <level>]
+  armada launch <snapshot> --agent ${HARNESSES.join("|")} ["prompt"] [--model <id>] [--reasoning-effort <level>]
                                            [--armada-access --credential-id <id> [--max-active-children <1..100>]]
                 [--provider boat|modal] [--repo <configured-dir|owner/repo>] [--size small|medium|large|xlarge | --sized] [--ttl 4h] [--json]
                 [--skill org/slug@version|slug@version ...] [--connections <id,...> | --no-connections] [--org <org>]
                 Omit connections to request server defaults; --no-connections opts out.
-                                           Fork a golden into a sandbox. With a prompt the agent starts at once;
+                                           Fork a snapshot into a sandbox. With a prompt the agent starts at once;
                                            without one the sandbox waits, ready, for the first prompt. The model
                                            and effort apply to every later turn too. --credential-id UUID selects a model account;
                                            otherwise use your personal or organization default. --repo owner/repo selects a recorded
-                                           golden repository as the native agent's real initial cwd (also when idle);
+                                           snapshot repository as the native agent's real initial cwd (also when idle);
                                            omit it to keep legacy launch behavior. Size resolves on the server:
-                                           --size > selected repository default > golden default > legacy.
+                                           --size > selected repository default > snapshot default > legacy.
                                            --size or --repo requires the versioned sizing server; --sized requires
                                            default-policy resolution without overriding size. No downgrade/retry
                                            to legacy launch on unsupported servers. Bare legacy launches keep their route.
@@ -189,11 +189,11 @@ Usage:
   armada report <sandbox-id> ready|blocked --prompt-id ID [--reason TEXT] [--pr-number N] [--pr-url URL] [--head-sha SHA]
   armada send|steer|exec <sandbox-id> <text-or-command> [--model ID] [--reasoning-effort LEVEL]
                                            send accepts --request-id UUID to reuse an uncertain runtime instruction.
-  armada golden retirement dry-run|reconcile <golden-id> [--limit 1-50] [--org UUID]
-  armada golden remove <name|golden-id> [--provider boat|modal] [--org UUID] [--json]
-                                           Names must match one visible golden; use provider/org or golden list --json to disambiguate.
+  armada snapshot retirement dry-run|reconcile <snapshot-id> [--limit 1-50] [--org UUID]
+  armada snapshot remove <name|snapshot-id> [--provider boat|modal] [--org UUID] [--json]
+                                           Names must match one visible snapshot; use provider/org or snapshot list --json to disambiguate.
                                            Remove from launch selection; retain children and provider artifacts
-  armada golden visibility <golden-id> --visibility private|org [--org UUID]
+  armada snapshot visibility <snapshot-id> --visibility private|org [--org UUID]
   armada mcp catalog|rename ID NAME|default ID on|off [--org UUID]
   armada mcp add NAME --service notion|linear [--scope personal|org] [--org UUID]
   armada mcp add NAME URL [--scope personal|org] [--org UUID]
@@ -264,7 +264,7 @@ Usage:
   armada creds rm <kind> [--org <name>]
                                            kinds: claude-oauth, anthropic, openai, codex-auth, boat, modal, skillpack
 
-Every command after 'armada login' acts as the user who signed in. golden commands take --org <name>
+Every command after 'armada login' acts as the user who signed in. snapshot commands take --org <name>
 when you belong to more than one org.
 
 Environment:
@@ -300,6 +300,14 @@ Examples:
 
 For other commands and authentication settings: armada --help.
 `;
+
+/** Legacy API identifiers stay untouched; only diagnostic prose is renamed. */
+function snapshotText(text: string): string {
+  return text.replace(
+    /(?<![-/\w])(Golden|golden)(s?)\b/g,
+    (_, word: string, plural: string) => `${word === "Golden" ? "Snapshot" : "snapshot"}${plural}`,
+  );
+}
 
 /** Runs one command line and returns the process exit code. */
 export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Promise<number> {
@@ -408,13 +416,13 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
         error instanceof AuthError)
     ) {
       io.err(
-        `${JSON.stringify({ error: { code: error instanceof ArmadaApiError ? error.serverCode : error.code, message: error.message, ...(error instanceof ArmadaApiError && error.legacyCode ? { legacyCode: error.legacyCode } : {}) } })}\n`,
+        `${JSON.stringify({ error: { code: error instanceof ArmadaApiError ? error.serverCode : error.code, message: snapshotText(error.message), ...(error instanceof ArmadaApiError && error.legacyCode ? { legacyCode: error.legacyCode } : {}) } })}\n`,
       );
       return ["invalid_config", "invalid_request", "invalid", "usage", "no_credentials"].includes(error.code) ? 2 : 1;
     }
     const printFailure = (message: string) =>
       io.err(
-        `armada: ${message}\nNext step: run armada doctor to check setup or armada --help for usage. For uncertain launch outcomes, inspect armada list before retrying.\n`,
+        `armada: ${snapshotText(message)}\nNext step: run armada doctor to check setup or armada --help for usage. For uncertain launch outcomes, inspect armada list before retrying.\n`,
       );
     if (error instanceof GoldenError) {
       printFailure(error.message);
@@ -446,7 +454,8 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
 }
 
 async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<number> {
-  const [command, ...original] = argv;
+  const [requestedCommand, ...original] = argv;
+  const command = requestedCommand === "snapshot" ? "golden" : requestedCommand;
   if (command === "skill") return skillCommand(original, io);
   // Command discovery must work before login or organization selection.
   if (
@@ -622,7 +631,7 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
     subcommand === "update" ? ["--replace"] : [],
   );
   if (args.options.has("--add-repo") && subcommand !== "update")
-    throw new GoldenError("invalid_config", "--add-repo is only supported by golden update.");
+    throw new GoldenError("invalid_config", "--add-repo is only supported by snapshot update.");
   if (single(args, "--provider") === "docker") {
     const auth = authOf(io, deps);
     return dockerSnapshotCommand(
@@ -660,7 +669,7 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
         (data.maxGoldens !== null &&
           (typeof data.maxGoldens !== "number" || !Number.isSafeInteger(data.maxGoldens) || data.maxGoldens < 0))
       ) {
-        throw new VaultError("unavailable", "Armada returned invalid or mismatched golden capabilities.");
+        throw new VaultError("unavailable", "Armada returned invalid or mismatched snapshot capabilities.");
       }
       const capabilities: { provider: SandboxProviderId; maxGoldens: number | null } = {
         provider: data.provider,
@@ -669,14 +678,14 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
       io.out(
         flag(args, "--json")
           ? `${JSON.stringify(capabilities)}\n`
-          : `${capabilities.provider}: max goldens ${capabilities.maxGoldens === null ? "unbounded/unknown" : capabilities.maxGoldens}\n`,
+          : `${capabilities.provider}: max snapshots ${capabilities.maxGoldens === null ? "unbounded/unknown" : capabilities.maxGoldens}\n`,
       );
       return 0;
     }
     case "retirement": {
       const [action, id, ...extra] = args.positionals;
       if (!["dry-run", "reconcile"].includes(action ?? "") || !id || extra.length)
-        throw new GoldenError("invalid_config", "Use golden retirement dry-run|reconcile GOLDEN_UUID.");
+        throw new GoldenError("invalid_config", "Use snapshot retirement dry-run|reconcile SNAPSHOT_UUID.");
       const client = await createArmadaApiClient({
         env: authOf(io, deps).env,
         fetch: deps.fetch ?? authOf(io, deps).fetch,
@@ -737,8 +746,8 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
           throw new GoldenError(
             matches.length ? "conflict" : "not_found",
             matches.length
-              ? "More than one visible golden has this name. Select --provider and --org, or use the exact id from armada golden list --json. Nothing was removed."
-              : "No visible golden matches this name and provider. Run armada golden list --json to check its name, id and organization. Nothing was removed.",
+              ? "More than one visible snapshot has this name. Select --provider and --org, or use the exact id from armada snapshot list --json. Nothing was removed."
+              : "No visible snapshot matches this name and provider. Run armada snapshot list --json to check its name, id and organization. Nothing was removed.",
           );
         }
         id = match.id;
@@ -785,7 +794,7 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
         signal: AbortSignal.timeout(10_000),
       });
       if (flag(args, "--json")) io.out(JSON.stringify(job) + "\n");
-      else io.out(`Build ${job.jobId}: ${goldenBuildFailureText(job)}\n`);
+      else io.out(`Build ${job.jobId}: ${snapshotText(goldenBuildFailureText(job))}\n`);
       return 0;
     }
     case "build-find": {
@@ -804,7 +813,7 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
       if (flag(args, "--json")) io.out(JSON.stringify(result) + "\n");
       else if (result.build) {
         io.out(
-          `Build ${result.build.jobId}: ${result.build.state} (${result.build.phase}).\nRead details with armada golden build-status ${result.build.jobId}. Only its owner can cancel a queued, never-started build with golden build-cancel.\n`,
+          `Build ${result.build.jobId}: ${result.build.state} (${result.build.phase}).\nRead details with armada snapshot build-status ${result.build.jobId}. Only its owner can cancel a queued, never-started build with snapshot build-cancel.\n`,
         );
       } else io.out("No visible active build was found. A reservation may still need administrator investigation.\n");
       return 0;
@@ -827,7 +836,7 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
         signal: AbortSignal.timeout(10_000),
       });
       if (!flag(args, "--json") && (job.state === "failed" || job.state === "recovery_required"))
-        io.err(`Build ${job.jobId}: ${goldenBuildFailureText(job)}\n`);
+        io.err(`Build ${job.jobId}: ${snapshotText(goldenBuildFailureText(job))}\n`);
       io.out(JSON.stringify(job) + "\n");
       return job.state === "failed" || job.state === "recovery_required" ? 1 : 0;
     }
@@ -842,7 +851,7 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
     case "list":
       return list(args, io, deps);
     default:
-      io.err(`armada: unknown command 'golden ${subcommand}'. Run 'armada --help'.\n`);
+      io.err(`armada: unknown command 'snapshot ${subcommand}'. Run 'armada --help'.\n`);
       return 2;
   }
 }
@@ -859,7 +868,7 @@ async function admitGoldenBuild(
   const seconds = Number(single(args, "--timeout") ?? "60");
   if (!Number.isInteger(seconds) || seconds < 0 || seconds > 600)
     throw new GoldenError("invalid_config", "Build --timeout must be 0–600 seconds (local polling only).");
-  io.err(`Build admission key: ${key}. Recover with golden build-status --idempotency-key ${key} --org <org>.\n`);
+  io.err(`Build admission key: ${key}. Recover with snapshot build-status --idempotency-key ${key} --org <org>.\n`);
   const job = await client.request<GoldenBuildStatus>(path, {
     ...init,
     body: JSON.stringify({ ...JSON.parse(String(init.body)), idempotencyKey: key }),
@@ -873,7 +882,7 @@ async function admitGoldenBuild(
   )
     throw new GoldenError(
       "build_failed",
-      "The server did not return a durable build receipt; the CLI/server may be out of date and the operation may already have completed. Upgrade them together and inspect golden list before retrying; do not resubmit blindly.",
+      "The server did not return a durable build receipt; the CLI/server may be out of date and the operation may already have completed. Upgrade them together and inspect snapshot list before retrying; do not resubmit blindly.",
     );
   if (!flag(args, "--json")) io.out(`Build job: ${job.jobId}\n`);
   const deadline = AbortSignal.timeout(Math.max(1, seconds * 1000));
@@ -905,7 +914,7 @@ async function admitGoldenBuild(
     if (error instanceof GoldenError) throw error;
     throw new GoldenError(
       "build_failed",
-      `Polling stopped; build ${job.jobId} may still be running. Use golden build-status ${job.jobId}; do not resubmit.`,
+      `Polling stopped; build ${job.jobId} may still be running. Use snapshot build-status ${job.jobId}; do not resubmit.`,
     );
   }
   if (current.state === "succeeded") {
@@ -915,7 +924,7 @@ async function admitGoldenBuild(
   if (current.state === "failed" || current.state === "recovery_required")
     throw new GoldenError("build_failed", `Build ${job.jobId}: ${current.state} (${goldenBuildFailureText(current)}).`);
   if (flag(args, "--json")) io.out(`${JSON.stringify(current)}\n`);
-  else io.out(`Build is ${current.state}. Resume with armada golden build-status ${job.jobId}.\n`);
+  else io.out(`Build is ${current.state}. Resume with armada snapshot build-status ${job.jobId}.\n`);
   return undefined;
 }
 
@@ -995,17 +1004,17 @@ async function update(positionals: string[], args: ReturnType<typeof parseArgs>,
         additions.length && error.status === 404 && !/No golden named/i.test(error.message)
           ? "This server does not support --add-repo. Upgrade the Armada server and CLI together, then retry. No replacement fallback was attempted."
           : error.status === 404
-            ? "Run armada golden list --org <org> --json and select the exact name, organization and --provider."
+            ? "Run armada snapshot list --org <org> --json and select the exact name, organization and --provider."
             : /idempotency/i.test(error.message)
-              ? "Recover the existing job with golden build-status --idempotency-key <key> --org <org>. Reuse a key only for the identical request."
+              ? "Recover the existing job with snapshot build-status --idempotency-key <key> --org <org>. Reuse a key only for the identical request."
               : /exists on boat and modal/i.test(error.message)
                 ? "Repeat the update with --provider boat or --provider modal; no build was admitted."
                 : error.status === 400
                   ? "Check the repository URL/branch and config. --repo replaces the full list; --add-repo preserves it. If required fields are rejected, upgrade the CLI and server together."
                   : /capacity or binding/i.test(error.message)
-                    ? "For a rebuild, an administrator must distinguish a missing backend binding from an active/stale reservation. Check the existing build ID with golden build-status; do not create a second Boat golden."
+                    ? "For a rebuild, an administrator must distinguish a missing backend binding from an active/stale reservation. Check the existing build ID with snapshot build-status; do not create a second Boat snapshot."
                     : error.status === 403
-                      ? "Use the golden owner (private) or org admin (shared). For GitHub access, grant the caller and Armada GitHub App access to every requested repository."
+                      ? "Use the snapshot owner (private) or org admin (shared). For GitHub access, grant the caller and Armada GitHub App access to every requested repository."
                       : error.status >= 500
                         ? "Check provider connection/billing and server configuration with an administrator. If the outcome is uncertain, recover the printed admission key before resubmitting."
                         : "Check the reported binding/build status before retrying; do not clear a live reservation.";
@@ -1019,7 +1028,7 @@ async function update(positionals: string[], args: ReturnType<typeof parseArgs>,
     return 0;
   }
   io.out(
-    `Updated golden ${result.name} (${result.visibility}).\nSaved snapshot: ${result.snapshot}\n${config ? `Repos: ${config.repos.map((repo) => repo.dir).join(", ")}.` : "Existing repositories and init commands retained."}\n`,
+    `Updated snapshot ${result.name} (${result.visibility}).\nSaved snapshot: ${result.snapshot}\n${config ? `Repos: ${config.repos.map((repo) => repo.dir).join(", ")}.` : "Existing repositories and init commands retained."}\n`,
   );
   return 0;
 }
@@ -1061,7 +1070,7 @@ async function create(positionals: string[], args: ReturnType<typeof parseArgs>,
     return 0;
   }
   io.out(
-    `Created golden ${result.name} (${result.visibility}).\nSaved snapshot: ${result.snapshot}\nRepos: ${config.repos.map((repo) => repo.dir).join(", ")}.\n`,
+    `Created snapshot ${result.name} (${result.visibility}).\nSaved snapshot: ${result.snapshot}\nRepos: ${config.repos.map((repo) => repo.dir).join(", ")}.\n`,
   );
   return 0;
 }
@@ -1085,7 +1094,7 @@ async function connect(args: ReturnType<typeof parseArgs>, io: Io, deps: Deps): 
   if (flag(args, "--json")) io.out(`${JSON.stringify(result, null, 2)}\n`);
   else
     io.out(
-      `Golden ${result.golden} is ready for setup.\nSandbox: ${result.sandboxId}${result.webUrl ? `\nURL: ${result.webUrl}` : ""}\n`,
+      `Snapshot ${result.golden} is ready for setup.\nSandbox: ${result.sandboxId}${result.webUrl ? `\nURL: ${result.webUrl}` : ""}\n`,
     );
   return 0;
 }
@@ -1107,7 +1116,7 @@ async function snapshot(args: ReturnType<typeof parseArgs>, io: Io, deps: Deps):
     io.out(`${JSON.stringify(saved)}\n`);
     return 0;
   }
-  io.out(`Snapshotted golden ${saved.name}.\nSaved snapshot: ${saved.snapshot}\n`);
+  io.out(`Saved snapshot ${saved.name}.\nSaved snapshot: ${saved.snapshot}\n`);
   return 0;
 }
 
@@ -1131,7 +1140,7 @@ async function list(args: ReturnType<typeof parseArgs>, io: Io, deps: Deps): Pro
     return 0;
   }
   if (rows.length === 0) {
-    io.out("No goldens.\n");
+    io.out("No snapshots.\n");
     return 0;
   }
   io.out(`${rows.map(line).join("\n")}\n`);
@@ -1208,7 +1217,7 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
     );
   const [name, prompt, ...extra] = args.positionals;
   if (name === undefined || extra.length > 0) {
-    throw new GoldenError("invalid_config", "Give a golden name and at most one prompt.");
+    throw new GoldenError("invalid_config", "Give a snapshot name and at most one prompt.");
   }
   const harness = harnessOf(single(args, "--agent"));
   const repo = single(args, "--repo");
@@ -1375,7 +1384,7 @@ function harnessOf(value: string | undefined): Harness {
 function launchText(result: LaunchResult, now: Date): string {
   const { sandbox, golden } = result;
   const lines = [
-    `Launched ${sandbox.harness} sandbox from golden ${golden.name}.`,
+    `Launched ${sandbox.harness} sandbox from snapshot ${golden.name}.`,
     "Access: enforced by the server; metadata hints do not grant interior access.",
     `Sandbox: ${sandbox.id}`,
     `${sandbox.provider === "boat" ? "Boat" : "Modal"} sandbox: ${sandbox.providerSandboxId}`,
@@ -1463,7 +1472,7 @@ async function readConfig(args: ReturnType<typeof parseArgs>, deps: Deps): Promi
 function oneName(positionals: string[]): string {
   const name = positionals[0];
   if (name === undefined || positionals.length !== 1) {
-    throw new GoldenError("invalid_config", "Give exactly one golden name.");
+    throw new GoldenError("invalid_config", "Give exactly one snapshot name.");
   }
   return name;
 }

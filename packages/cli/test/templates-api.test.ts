@@ -190,7 +190,7 @@ test("template failures use closed actionable diagnostics without echoing untrus
   for (const [message, expected] of [
     ["Template revision changed.", "revision"],
     ["Template launch refused: reference_unavailable.", "reference"],
-    ["Template launch refused: environment_unavailable.", "golden"],
+    ["Template launch refused: environment_unavailable.", "snapshot"],
     ["Template launch refused: connection_unavailable.", "connection"],
     ["Template launch refused: environment_binding_changed.", "provider binding changed"],
     ["Template launch refused: environment_snapshot_unavailable.", "snapshot"],

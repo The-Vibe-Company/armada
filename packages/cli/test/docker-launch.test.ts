@@ -314,7 +314,7 @@ test("Docker snapshots build through the normal golden command and launch throug
       snapshots: [{ ...snapshot, status: "ready", image: `sha256:${"a".repeat(64)}` }],
     }),
   );
-  expect(offered.out).toContain(`armada golden rebuild ${id} --provider docker --org ${org}`);
+  expect(offered.out).toContain(`armada snapshot rebuild ${id} --provider docker --org ${org}`);
   const rebuilt = await capture(
     ["golden", "rebuild", id, "--provider", "docker", "--org", org, "--request-id", requestId],
     async (request) => {

@@ -41,7 +41,7 @@ export async function dockerSnapshotCommand(
         : rows
             .map(
               (r) =>
-                `${r.id}\t${r.name}\t${r.status}\t${r.visibility}\t${r.hostName ?? r.hostId}${r.failureReason ? `\t${r.failureReason}` : ""}\tBuilt on Armada ${r.builtOnVersion ?? "unknown version"}${snapshotUpdateAvailable(r.builtOnVersion, currentVersion) ? ` · Update to ${currentVersion}: armada golden rebuild ${r.id} --provider docker --org ${org}` : ""}`,
+                `${r.id}\t${r.name}\t${r.status}\t${r.visibility}\t${r.hostName ?? r.hostId}${r.failureReason ? `\t${r.failureReason}` : ""}\tBuilt on Armada ${r.builtOnVersion ?? "unknown version"}${snapshotUpdateAvailable(r.builtOnVersion, currentVersion) ? ` · Update to ${currentVersion}: armada snapshot rebuild ${r.id} --provider docker --org ${org}` : ""}`,
             )
             .join("\n") + "\n",
     );
@@ -54,7 +54,7 @@ export async function dockerSnapshotCommand(
     if (args.positionals.length !== 1 || !id || !uuid.test(id) || !uuid.test(requestId) || id === requestId)
       throw new GoldenError(
         "invalid_config",
-        "Use golden rebuild SNAPSHOT_UUID --provider docker [--request-id UUID].",
+        "Use snapshot rebuild SNAPSHOT_UUID --provider docker [--request-id UUID].",
       );
     io.err(
       `Rebuild request ${requestId}. The old snapshot stays usable. Retry with the same --request-id after an unknown outcome.\n`,
@@ -81,7 +81,7 @@ export async function dockerSnapshotCommand(
   if (operation !== "create" || args.positionals.length !== 1 || !config)
     throw new GoldenError(
       "invalid_config",
-      "Use golden create NAME --provider docker --host UUID|NAME --config FILE [--private].",
+      "Use snapshot create NAME --provider docker --host UUID|NAME --config FILE [--private].",
     );
   const selector = single(args, "--host");
   if (!selector) throw new GoldenError("invalid_config", "Docker snapshot creation requires --host UUID|NAME.");
@@ -104,7 +104,7 @@ export async function dockerSnapshotCommand(
   io.out(
     flag(args, "--json")
       ? JSON.stringify(row, null, 2) + "\n"
-      : `Docker snapshot: ${row.id}\nName: ${row.name}\nBuild: ${row.status}\nBuilt on Armada: ${row.builtOnVersion ?? "unknown version"}\nRead: armada golden get ${row.id} --provider docker --org ${org}\n`,
+      : `Docker snapshot: ${row.id}\nName: ${row.name}\nBuild: ${row.status}\nBuilt on Armada: ${row.builtOnVersion ?? "unknown version"}\nRead: armada snapshot get ${row.id} --provider docker --org ${org}\n`,
   );
   return 0;
 }
