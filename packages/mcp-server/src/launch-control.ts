@@ -128,15 +128,16 @@ export async function launchRoute(
       credentials: launchCredentials(
         options.store,
         options.encryptionKey,
-        runtime
+        runtime || !options.github
           ? undefined
           : {
               store: options.store,
-              app: options.github?.app ?? null,
+              app: options.github.app,
               ...(options.github?.fetch ? { fetch: options.github.fetch } : {}),
               ...(options.github?.now ? { now: options.github.now } : {}),
             },
         options.modelAuth,
+        runtime && options.github ? { ...options.github, store: options.store } : undefined,
       ),
     },
     actor,

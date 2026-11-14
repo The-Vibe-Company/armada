@@ -15,8 +15,12 @@ import { ENCRYPTION_KEY } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
 
-async function stopped(harness: "codex" | "claude" | "opencode" = "codex", provider: "boat" | "modal" = "boat") {
-  const f = await runtimeFixture(await sharedDatabase(), provider, harness);
+async function stopped(
+  harness: "codex" | "claude" | "opencode" = "codex",
+  provider: "boat" | "modal" = "boat",
+  idle = false,
+) {
+  const f = await runtimeFixture(await sharedDatabase(), provider, harness, idle);
   const cp = await createRuntimeCheckpoint(
     f.sql,
     ENCRYPTION_KEY,
@@ -26,7 +30,7 @@ async function stopped(harness: "codex" | "claude" | "opencode" = "codex", provi
   await f.db.query("update sandboxes set stop_requested_at=null,status='stopped',stopped_at=now() where id=$1", [
     f.row.id,
   ]);
-  return { ...f, cp };
+  return Object.assign(f, { cp });
 }
 const input = (id: string) => ({
   id,
@@ -100,7 +104,7 @@ describe.each([
     await expect(f.authority.withSession(old.runtimeToken, old.epoch, async () => true)).rejects.toThrow();
     expect(await send(f.caller, request)).toEqual(result);
     expect(activations).toBe(1);
-    expect(githubPreparations).toBe(provider === "boat" ? 1 : 0);
+    expect(githubPreparations).toBe(1);
     if (provider === "modal") expect(preparations).toBe(1);
     expect(f.starts).toEqual([undefined, "native-thread"]);
     const row = (await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))!;
@@ -348,3 +352,107 @@ test.each([false, true])(
     }
   },
 );
+
+describe.each([
+  ["boat", "codex"],
+  ["boat", "claude"],
+  ["modal", "codex"],
+  ["modal", "claude"],
+  ["modal", "opencode"],
+] as const)("empty retained runtime wake (%s/%s)", (provider, harness) => {
+  let f: Awaited<ReturnType<typeof stopped>>;
+  beforeAll(async () => {
+    f = await stopped(harness, provider, true);
+  });
+  afterAll(async () => {
+    await f?.close();
+  });
+  test("one fresh-epoch first conversation survives replay without inventing native history", async () => {
+    expect(f.starts).toEqual([]);
+    const old = f.active;
+    let activations = 0,
+      github = 0,
+      mcp = 0;
+    const resume = createRuntimeResume(
+      f.sql,
+      ENCRYPTION_KEY,
+      f.bridge,
+      async () => ({
+        async start(_signal, restore) {
+          expect(restore.conversationId).toBeNull();
+          activations++;
+          return f.reboot(restore);
+        },
+        async stop() {
+          throw Error("No healthy activation cleanup");
+        },
+      }),
+      async () => {
+        mcp++;
+        return undefined;
+      },
+      async () => {
+        github++;
+        return { status: "not_connected", message: "offline" };
+      },
+    );
+    const send = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, undefined, resume);
+    const request = f.input("first instruction after empty stop");
+    const accepted = await send(f.caller, request);
+    expect(accepted).toMatchObject({
+      resumed: true,
+      runtime: { kind: "armada", epoch: "2" },
+      sourceCheckpoint: { epoch: "1", watermark: f.cp.checkpoint.watermark, empty: true },
+    });
+    expect(f.starts).toEqual([undefined]);
+    expect(activations).toBe(1);
+    expect(mcp).toBe(1);
+    expect(github).toBe(1);
+    await expect(f.authority.withSession(old.runtimeToken, old.epoch, async () => true)).rejects.toThrow();
+    expect(await send(f.caller, request)).toEqual(accepted);
+    expect(activations).toBe(1);
+    expect(f.starts).toHaveLength(1);
+    await expect(send(f.caller, { ...request, prompt: "changed" })).rejects.toThrow();
+    const next = await send(f.caller, f.input("follow up"));
+    expect(next.conversationId).toBe(accepted.conversationId);
+    expect(f.starts).toEqual([undefined, "native-thread"]);
+    expect((await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))?.conversationIds).toEqual([
+      accepted.conversationId,
+    ]);
+  });
+});
+
+describe("uncertain empty Modal wake", () => {
+  let f: Awaited<ReturnType<typeof stopped>>;
+  beforeAll(async () => {
+    f = await stopped("codex", "modal", true);
+  });
+  afterAll(async () => {
+    await f?.close();
+  });
+  test("fresh server reconciles the first conversation without reactivation or another model turn", async () => {
+    let activations = 0;
+    const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, async () => ({
+      async start(_signal, restore) {
+        activations++;
+        return f.reboot(restore);
+      },
+      async stop() {
+        throw Error("No activation retry");
+      },
+    }));
+    const request = { ...f.input("first instruction"), runtimeVersion: 1 as const };
+    f.lose();
+    await expect(resume(f.caller, request)).rejects.toMatchObject({ code: "conflict" });
+    expect(f.starts).toEqual([undefined]);
+    expect(activations).toBe(1);
+    const recovered = await createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge)(f.caller, request);
+    expect(recovered.sourceCheckpoint.empty).toBe(true);
+    expect(recovered.runtime.epoch).toBe("2");
+    expect(f.starts).toEqual([undefined]);
+    expect(activations).toBe(1);
+    expect((await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))?.conversationIds).toEqual([
+      recovered.conversationId,
+    ]);
+  });
+});
