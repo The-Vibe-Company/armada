@@ -58,7 +58,7 @@ Once you are a member, check:
 ```sh
 armada org list                          # your orgs: name, your role, id
 armada org members list --org <org>
-armada golden list --org <org>           # the goldens you can launch
+armada snapshot list --org <org>           # the snapshots you can launch
 ```
 
 Admins also manage roles (`armada org members role <email> admin|member --org <org>`) and removal (`armada org members remove <email> --org <org>`). Anyone can create an org with `armada org create <name>` and becomes its first admin.
@@ -73,21 +73,21 @@ armada creds set codex-auth --file ~/.codex/auth.json              # yours, for 
 armada creds list --org <org>                                       # kinds and dates, never values
 ```
 
-Agent kinds: `claude-oauth` or `anthropic` for Claude Code, `openai` or `codex-auth` for Codex. Sandboxes are paid for by the org's Boat or Modal connection: an admin sets it up with `armada org connect boat|modal` (see [Organization provider setup and recovery](#organization-provider-setup-and-recovery)). A member may also store a personal `boat` or `modal` credential for private goldens.
+Agent kinds: `claude-oauth` or `anthropic` for Claude Code, `openai` or `codex-auth` for Codex. Sandboxes are paid for by the org's Boat or Modal connection: an admin sets it up with `armada org connect boat|modal` (see [Organization provider setup and recovery](#organization-provider-setup-and-recovery)). A member may also store a personal `boat` or `modal` credential for private snapshots.
 
 ## 6. Launch from the CLI
 
 ```sh
-armada launch <golden> --agent claude "Fix the flaky test in packages/core" --org <org>
-armada launch <golden> --agent codex --repo owner/repo --ttl 2h --json       # no prompt: the sandbox waits, ready
+armada launch <snapshot> --agent claude "Fix the flaky test in packages/core" --org <org>
+armada launch <snapshot> --agent codex --repo owner/repo --ttl 2h --json       # no prompt: the sandbox waits, ready
 ```
 
-`armada launch` asks the server to resolve credentials and fork the golden. It prints the sandbox id
+`armada launch` asks the server to resolve credentials and fork the snapshot. It prints the sandbox id
 (`--json` prints the full record). Optional `--repo` selects one repository already recorded in the
-golden, by `owner/repo` or by its configured directory, and starts the native agent there: the
+snapshot, by `owner/repo` or by its configured directory, and starts the native agent there: the
 agent's real initial working directory, set after the pulls and init and before its first prompt,
 also for an idle launch. It is a starting directory, not confinement: the agent can still reach the
-other repositories. It is not a URL, and unlike `golden create --repo <url>[@branch]` it is given
+other repositories. It is not a URL, and unlike `snapshot create --repo <url>[@branch]` it is given
 only once. Unknown or ambiguous selectors are rejected before a machine is allocated. Without it,
 launch keeps its previous behavior. MCP `launch` and `POST /api/v1/sandbox/launch` accept the same
 optional `repo` string.
@@ -144,16 +144,16 @@ bearer_token_env_var = "ARMADA_TOKEN"
 
 ## 8. Drive an agent through MCP
 
-The sandbox tools are `launch`, `list`, `status`, `wait`, `logs`, `send`, `steer`, `interrupt`, `exec` and `stop`. Golden tools (`golden_list`, `golden_capabilities`, `golden_create`, `golden_update`, `golden_build_status`, `golden_snapshot`, `golden_adopt`) list, build and maintain goldens. You see your org's goldens and sandboxes and your own private ones, never another member's private ones. Example arguments:
+The sandbox tools are `launch`, `list`, `status`, `wait`, `logs`, `send`, `steer`, `interrupt`, `exec` and `stop`. Snapshot tools (`golden_list`, `golden_capabilities`, `golden_create`, `golden_update`, `golden_build_status`, `golden_snapshot`, `golden_adopt`) list, build and maintain snapshots. You see your org's snapshots and sandboxes and your own private ones, never another member's private ones. Example arguments:
 
 ```jsonc
-// golden_list: the goldens you can launch, with their orgId
+// golden_list: the snapshots you can launch, with their orgId
 {}
 
-// launch: fork a golden and start the agent (leave out prompt for an idle, ready sandbox)
-{ "golden": "<golden>", "harness": "claude", "prompt": "Fix the flaky test in packages/core", "ttl_seconds": 14400 }
+// launch: fork a snapshot and start the agent (leave out prompt for an idle, ready sandbox)
+{ "golden": "<snapshot>", "harness": "claude", "prompt": "Fix the flaky test in packages/core", "ttl_seconds": 14400 }
 // → { "id": "<sandbox id>", "status": "running", "promptId": "…", "expiresAt": "…", … }
-// add "org": "<orgId>" when the golden name exists in several of your orgs
+// add "org": "<orgId>" when the snapshot name exists in several of your orgs
 
 // list: your sandboxes, newest first
 { "status": ["running", "ready"], "limit": 20 }
@@ -204,7 +204,7 @@ Connections perform a bounded, read-only authentication check before encrypted s
 credential or unavailable provider leaves the stored credential unchanged. No sandbox or App is created.
 
 In the dashboard, an admin connects, replaces and disconnects the active organization's providers in
-Settings. New goldens, rebuilds and launches use only a provider the organization has connected; goldens
+Settings. New snapshots, rebuilds and launches use only a provider the organization has connected; snapshots
 and sandboxes already on a disconnected provider stay listed and manageable.
 
 The shared authenticated control API exposes `POST org/provider/status` (`{org}`),

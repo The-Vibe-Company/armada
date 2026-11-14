@@ -9,7 +9,7 @@ lists and in the product-written build receipt. Existing pre-version snapshots
 show an unknown version, never an invented release, and remain launchable.
 
 Snapshots are built on their registered host from the same versionable
-`{repos, init}` golden JSON used for Boat/Modal. They are immutable image artifacts,
+`{repos, init}` snapshot JSON used for Boat/Modal. They are immutable image artifacts,
 not aliases for foreign provider snapshots. Snapshot builds require GitHub access,
 not a model account. The product applies host/installation, owner, visibility,
 source-definition and generation labels automatically.
@@ -34,16 +34,16 @@ access; setup runs as the unprivileged sandbox user):
 ```
 
 Use setup commands appropriate to your repository and the official image. Never
-put credentials in this file. The same definition can build Boat/Modal goldens,
+put credentials in this file. The same definition can build Boat/Modal snapshots,
 but each provider needs its own build; their snapshots cannot be launched on a
 Docker host.
 
 ```sh
-armada golden create office --provider docker \
+armada snapshot create office --provider docker \
   --host 1bd0db41-6429-430b-99e2-06d60ddf1aa3 --org "$ARMADA_ORG" \
   --config armada.golden.json --private
-armada golden list --provider docker --org "$ARMADA_ORG"
-armada golden get SNAPSHOT_UUID --provider docker --org "$ARMADA_ORG"
+armada snapshot list --provider docker --org "$ARMADA_ORG"
+armada snapshot get SNAPSHOT_UUID --provider docker --org "$ARMADA_ORG"
 armada launch "Work on this project" --provider docker --golden SNAPSHOT_UUID \
   --org "$ARMADA_ORG" --credential-id "$ARMADA_CREDENTIAL_ID"
 ```
@@ -54,7 +54,7 @@ second build. Launch selects the snapshot, not an image or host: server-side
 resolution pins both and checks current authorization again at reservation.
 Ready snapshots launch the baked workspace without another checkout/init.
 In the dashboard, choose **Snapshots → New → Your host · Docker**, select the
-registered host and upload the same golden JSON. Private is the default; admins
+registered host and upload the same snapshot JSON. Private is the default; admins
 may publish to the organization. Building and offline artifacts remain visible.
 A ready snapshot opens the normal launch dialog with your model account, skills
 and MCP connections. Sandboxes → Launch a sandbox leads to this same list,
@@ -69,7 +69,7 @@ Source visibility is immutable; build a new artifact to publish a different scop
 Host re-registration needs a new build for that installation; old host identities
 are not silently rebound.
 
-The host uses BuildKit's private secret pipe/mount, the shared golden checkout
+The host uses BuildKit's private secret pipe/mount, the shared snapshot checkout
 frame and the shared fail-closed filesystem/Git-object scanner. The GitHub token
 is available only to trusted root checkout. Each project init step runs separately
 as UID1000 with no-new-privileges; it cannot read the root-only mount, replace the
@@ -82,8 +82,8 @@ after successful build/scan and exact immutable provenance verification. Known
 pattern scanning is not a proof against arbitrary encoded/user-supplied secrets:
 never put credentials in repository/config/init content.
 
-Failed builds expose a safe `failureReason` in `armada golden get`,
-`armada golden list` and the dashboard snapshot details. The host daemon logs
+Failed builds expose a safe `failureReason` in `armada snapshot get`,
+`armada snapshot list` and the dashboard snapshot details. The host daemon logs
 the snapshot ID and a fixed failure message. Raw Docker/build/init output is
 not returned or logged because it can contain credentials. A failed build, an
 expired build and invalidated build authorization have distinct messages;
@@ -144,7 +144,7 @@ reports its current server version. For a known older stable version, dashboard
 snapshot details offer **Rebuild** and CLI lists show the exact command:
 
 ```sh
-armada golden rebuild SNAPSHOT_UUID --provider docker --org ORG_UUID
+armada snapshot rebuild SNAPSHOT_UUID --provider docker --org ORG_UUID
 # After an uncertain response, repeat with the same printed --request-id UUID.
 ```
 

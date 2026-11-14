@@ -2,7 +2,7 @@
 
 Use `armada template` for API-only template management. `template launch` keeps
 revision selection and durable request keys together without changing ordinary
-golden launches. Templates contain readable configuration and value-free secret ID/version bindings.
+snapshot launches. Templates contain readable configuration and value-free secret ID/version bindings.
 
 Create a personal preset in your selected organization from a definition file
 using the definition below:
@@ -25,7 +25,7 @@ Docker placement uses the same definition file and template/routine launch path:
 }
 ```
 
-Docker has no golden (`goldenId` and `goldenBinding` return null). The host must be
+Docker template definitions do not bind a snapshot (`goldenId` and `goldenBinding` return null). The host must be
 registered, active and in the selected organization, with its issuer still a member.
 Admission freezes the host installation/issuer, model account, connection grants and
 resolved skills; access is checked again before reservation and start. Docker children
@@ -102,7 +102,7 @@ can inspect values delivered into its machine even from personal configuration.
 
 ## Frozen admission, pins and recovery
 
-The first durable claim freezes revision/hash, eligible golden snapshot/config/
+The first durable claim freezes revision/hash, eligible saved snapshot/config/
 provider (including Modal binding), current tool generations, account ID/version,
 variable versions/copied readable values, secret references, exact skills and
 actor epoch. Its golden-operation fence pins that snapshot while allocation
@@ -134,7 +134,7 @@ holder links must be visible only while the caller has access to that sandbox.
 ## Readable configuration
 
 Values resolve after pull/init, skills and MCP preparation at final-start admission,
-not golden build. Maximum 64 combined bindings, 8 KiB UTF-8/value and 64 KiB total;
+not snapshot build. Maximum 64 combined bindings, 8 KiB UTF-8/value and 64 KiB total;
 empty/multiline/literal shell text is supported. Reserved infrastructure names,
 duplicate keys, NUL and invalid Unicode refuse without echoing values.
 
