@@ -1,29 +1,15 @@
 import type { OttoObjective, OttoObjectiveMessage } from "@armada/core";
-import type { Sql } from "@armada/core/server";
+import { type OttoRepositoryScope, resolveOttoRepositories, type Sql } from "@armada/core/server";
 import type { Caller } from "../caller.ts";
 
 const columns = "id,org_id,owner_id,repository,request,revision,created_at,updated_at";
 const messageColumns = "id,objective_id,org_id,owner_id,body,revision,created_at";
 /** SQL bypasses RLS: every operation independently names both organization and owner. */
-export function objectiveStore(sql: Sql, caller: Caller, org: string) {
+export function objectiveStore(sql: Sql, caller: Caller, org: string, allowlist?: readonly OttoRepositoryScope[]) {
   const scope = [org, caller.userId];
   return {
-    async repositories() {
-      const rows = (
-        await sql.query<{ config: { repos?: { url?: string }[] } }>(
-          `select config from public.goldens where org_id=$1 and (visibility='org' or owner_id=$2)`,
-          scope,
-        )
-      ).rows;
-      const names = new Set<string>();
-      for (const row of rows)
-        for (const repo of row.config?.repos ?? []) {
-          const match = repo.url?.match(
-            /^(?:https:\/\/github\.com\/|git@github\.com:)([\w.-]+\/[\w.-]+?)(?:\.git)?\/?$/i,
-          );
-          if (match) names.add(match[1]!);
-        }
-      return [...names].sort();
+    repositories() {
+      return resolveOttoRepositories(sql, caller, org, allowlist);
     },
     async list() {
       return (

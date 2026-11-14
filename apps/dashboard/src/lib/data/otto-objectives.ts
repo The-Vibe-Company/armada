@@ -1,5 +1,6 @@
 import type { OttoObjective, OttoObjectiveMessage } from "@armada/core";
 import { mcpUrl } from "@/lib/env";
+import { ottoRequest } from "../otto-request";
 import { selectedOrganization } from "./selected-org";
 import { requireViewer } from "./viewer";
 
@@ -14,17 +15,15 @@ export async function objectiveRequest<T>(orgId: string, path = "", body?: unkno
   const [viewer, selected] = await Promise.all([requireViewer(), selectedOrganization()]);
   const server = mcpUrl();
   if (selected?.org.id !== orgId || !server || !viewer.token) throw new ObjectiveError(403);
-  const url = new URL(`/api/v1/otto/objectives${path}`, server);
-  url.searchParams.set("org_id", orgId);
-  const response = await fetch(url, {
-    method: body === undefined ? "GET" : "POST",
-    headers: { authorization: `Bearer ${viewer.token}`, "content-type": "application/json" },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    cache: "no-store",
-    signal: AbortSignal.timeout(10_000),
+  const { response, body: result } = await ottoRequest({
+    serverUrl: server,
+    token: viewer.token,
+    orgId,
+    path: `objectives${path}`,
+    ...(body === undefined ? {} : { body }),
   });
   if (!response.ok) throw new ObjectiveError(response.status);
-  return response.json();
+  return result as T;
 }
 
 export type ObjectiveList = { items: OttoObjective[]; repositories: string[] };

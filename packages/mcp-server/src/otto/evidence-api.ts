@@ -1,11 +1,11 @@
 import type { Sql } from "@armada/core/server";
 import type { Caller, CallerResult } from "../caller.ts";
 import type { Route } from "../http.ts";
-import { inspectMechanicalProof, mechanicalProof } from "./mechanical-proof.ts";
+import { inspectMechanicalEvidence, mechanicalEvidence } from "./mechanical-evidence.ts";
 import type { OttoScope } from "./observation.ts";
 import type { OwnershipFact } from "./ownership.ts";
 
-export function createOttoProofApi(
+export function createOttoEvidenceApi(
   sql: Sql,
   binding: OttoScope | readonly OttoScope[],
   authenticate: (r: Request) => Promise<CallerResult>,
@@ -37,7 +37,7 @@ export function createOttoProofApi(
     if (!Number.isSafeInteger(number) || number < 1) return reply({ error: "invalid_number" }, 400);
     try {
       if (observerToken) {
-        const proof = await inspectMechanicalProof(scope.repository, number, observerToken);
+        const proof = await inspectMechanicalEvidence(scope.repository, number, observerToken);
         // Live reads are ephemeral: viewing evidence must not grow the append-only journal.
         return reply(proof);
       }
@@ -45,9 +45,9 @@ export function createOttoProofApi(
         `select distinct on (kind) id,subject,kind,value,completeness,evidence,observed_at from public.otto_facts where org_id=$1 and repository=$2 and subject=$3 order by kind,observed_at desc,id desc`,
         [scope.orgId, scope.repository, `pr:${number}`],
       );
-      return reply(mechanicalProof(scope.repository, number, rows, new Date()));
+      return reply(mechanicalEvidence(scope.repository, number, rows, new Date()));
     } catch {
-      return reply(mechanicalProof(scope.repository, number, [], new Date()));
+      return reply(mechanicalEvidence(scope.repository, number, [], new Date()));
     }
   };
 }

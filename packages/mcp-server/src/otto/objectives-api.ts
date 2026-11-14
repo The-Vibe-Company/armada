@@ -1,10 +1,14 @@
-import type { Sql } from "@armada/core/server";
+import { isOttoUuid, type Sql } from "@armada/core/server";
 import type { CallerResult } from "../caller.ts";
 import type { Route } from "../http.ts";
 import { objectiveStore } from "./objectives.ts";
+import type { OttoScope } from "./observation.ts";
 
-const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-export function createOttoObjectivesApi(sql: Sql, authenticate: (request: Request) => Promise<CallerResult>): Route {
+export function createOttoObjectivesApi(
+  sql: Sql,
+  authenticate: (request: Request) => Promise<CallerResult>,
+  scopes?: readonly OttoScope[],
+): Route {
   return async (request) => {
     const url = new URL(request.url);
     const path = url.pathname.match(/^\/api\/v1\/otto\/objectives(?:\/([^/]+))?$/);
@@ -14,12 +18,13 @@ export function createOttoObjectivesApi(sql: Sql, authenticate: (request: Reques
     try {
       const auth = await authenticate(request);
       if (!auth.ok) return reply({ error: "unauthorized" }, 401);
+      if (auth.caller.via !== "supabase") return reply({ error: "forbidden" }, 403);
       const org = url.searchParams.get("org_id");
-      if (!org || !uuid.test(org) || !auth.caller.orgs.some((o) => o.orgId === org))
+      if (!org || !isOttoUuid(org) || !auth.caller.orgs.some((o) => o.orgId === org))
         return reply({ error: "not_found" }, 404);
       const id = path[1];
-      if (id && !uuid.test(id)) return reply({ error: "not_found" }, 404);
-      const store = objectiveStore(sql, auth.caller, org);
+      if (id && !isOttoUuid(id)) return reply({ error: "not_found" }, 404);
+      const store = objectiveStore(sql, auth.caller, org, scopes);
       if (request.method === "GET") {
         if (id) {
           const thread = await store.thread(id);

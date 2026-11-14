@@ -1,5 +1,6 @@
 import type { OttoCompleteness, OttoOrphan, OttoResource, OttoTask } from "@armada/core";
 import { isRecord } from "@armada/core";
+import { ottoDeadline, ottoRequest } from "./otto-request.ts";
 import { relativeAge } from "./relative-time.ts";
 
 /**
@@ -35,8 +36,6 @@ export type OttoRead =
 const PAGE_LIMIT = 100;
 /** Bounded reading: at most this many pages per list, then the page says the list was cut. */
 export const MAX_PAGES = 5;
-/** One deadline for the whole read: every view and page together, so a slow server cannot hold a render long. */
-const TIMEOUT_MS = 10_000;
 
 type Page = {
   items: unknown[];
@@ -70,23 +69,19 @@ export async function readOtto(options: {
   } catch {
     return { state: "unreachable" };
   }
-  const signal = AbortSignal.timeout(TIMEOUT_MS);
+  const signal = ottoDeadline();
   const get: Get = async (view, params) => {
-    const url = new URL(`/api/v1/otto/${view}`, origin);
-    url.searchParams.set("org_id", options.orgId);
-    if (options.repository) url.searchParams.set("repository", options.repository);
-    for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
     let response: Response, body: unknown;
     try {
-      response = await (options.fetch ?? fetch)(url, {
-        method: "GET",
-        headers: { authorization: `Bearer ${options.token}` },
-        redirect: "error",
-        cache: "no-store",
+      ({ response, body } = await ottoRequest({
+        serverUrl: origin,
+        token: options.token,
+        orgId: options.orgId,
+        path: view,
+        params: { ...(options.repository ? { repository: options.repository } : {}), ...params },
         signal,
-      });
-      body = await response.json().catch(() => null);
-      signal.throwIfAborted();
+        ...(options.fetch ? { fetch: options.fetch } : {}),
+      }));
     } catch {
       throw new ReadFailure(signal.aborted ? "unavailable" : "unreachable");
     }

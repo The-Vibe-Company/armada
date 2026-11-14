@@ -1,6 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { readBoundedText } from "@armada/auth";
-import type { Sql } from "@armada/core/server";
+import { canonicalOttoRepository, type Sql } from "@armada/core/server";
 import type { Route } from "../http.ts";
 import { observeQueue, observeWork } from "./work-evidence.ts";
 
@@ -93,7 +93,12 @@ export function createOttoObserver(sql: Sql, scope: OttoScope) {
       } catch {
         return new Response(null, { status: 400 });
       }
-      if (object(body.repository).full_name !== scope.repository) return new Response(null, { status: 403 });
+      const fullName = object(body.repository).full_name;
+      if (
+        typeof fullName !== "string" ||
+        canonicalOttoRepository(fullName) !== canonicalOttoRepository(scope.repository)
+      )
+        return new Response(null, { status: 403 });
       try {
         if (event === "pull_request" || event === "issues") {
           const observed = item(body[event === "issues" ? "issue" : "pull_request"], event === "pull_request");

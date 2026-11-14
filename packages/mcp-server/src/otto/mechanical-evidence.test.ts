@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mechanicalProof } from "./mechanical-proof.ts";
+import { mechanicalEvidence } from "./mechanical-evidence.ts";
 import type { OwnershipFact } from "./ownership.ts";
 
 test("mechanical evidence is exact-head, fresh, policy-bound and never upgrades absence of failure to success", () => {
@@ -17,7 +17,7 @@ test("mechanical evidence is exact-head, fresh, policy-bound and never upgrades 
     }) as OwnershipFact;
   const pr = fact("pr.open", "true", { head: { sha: head } });
   const failure = fact("pr.work.required_check", "true", { headSha: head, policyObserved: true });
-  expect(mechanicalProof("owner/repo", 12, [pr, failure], now).requiredChecks).toBe("failure");
+  expect(mechanicalEvidence("owner/repo", 12, [pr, failure], now).requiredChecks).toBe("failure");
   for (const invalid of [
     { ...failure, evidence: { headSha: "b".repeat(40), policyObserved: true } },
     { ...failure, evidence: { headSha: head, policyObserved: false } },
@@ -25,8 +25,8 @@ test("mechanical evidence is exact-head, fresh, policy-bound and never upgrades 
     { ...failure, value: "false" as const },
     { ...failure, observed_at: "2026-11-14T11:00:00Z" },
   ])
-    expect(mechanicalProof("owner/repo", 12, [pr, invalid], now).requiredChecks).toBe("unknown");
-  const empty = mechanicalProof("owner/repo", 12, [], now);
+    expect(mechanicalEvidence("owner/repo", 12, [pr, invalid], now).requiredChecks).toBe("unknown");
+  const empty = mechanicalEvidence("owner/repo", 12, [], now);
   expect([empty.headSha, empty.requiredChecks, empty.mergeState, empty.deployment]).toEqual([
     null,
     "unknown",
@@ -34,12 +34,12 @@ test("mechanical evidence is exact-head, fresh, policy-bound and never upgrades 
     "unknown",
   ]);
   expect(
-    mechanicalProof("owner/repo", 12, [pr, fact("pr.work.conflict", "false", { headSha: head })], now).mergeState,
+    mechanicalEvidence("owner/repo", 12, [pr, fact("pr.work.conflict", "false", { headSha: head })], now).mergeState,
   ).toBe("mergeable");
 });
 
 test("live inspection proves required checks on a stable head and fails closed on denied policy or head movement", async () => {
-  const { inspectMechanicalProof } = await import("./mechanical-proof.ts");
+  const { inspectMechanicalEvidence } = await import("./mechanical-evidence.ts");
   const head = "a".repeat(40);
   for (const mode of ["success", "denied", "changed", "duplicate", "no-requirements"]) {
     let pulls = 0;
@@ -94,7 +94,7 @@ test("live inspection proves required checks on a stable head and fails closed o
         });
       return Response.json({ sha: head, total_count: 0, statuses: [] });
     }) as typeof fetch;
-    const proof = await inspectMechanicalProof("owner/repo", 12, "observer_placeholder", fetcher);
+    const proof = await inspectMechanicalEvidence("owner/repo", 12, "observer_placeholder", fetcher);
     expect(proof.requiredChecks).toBe(mode === "success" ? "success" : mode === "duplicate" ? "failure" : "unknown");
     if (mode === "duplicate") expect(proof.checks).toEqual([{ name: "unit", state: "failure" }]);
     if (mode === "success") {

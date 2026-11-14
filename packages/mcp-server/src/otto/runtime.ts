@@ -1,6 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { readBoundedText } from "@armada/auth";
-import type { Sql } from "@armada/core/server";
+import { canonicalOttoRepository, isOttoUuid, ottoRepositoryScopes, type Sql } from "@armada/core/server";
 import type { Route } from "../http.ts";
 import { createOttoObserver, type OttoScope } from "./observation.ts";
 import { recordOrphanDays } from "./orphan-days.ts";
@@ -11,7 +11,7 @@ function createRepositoryRuntime(sql: Sql, env: Record<string, string | undefine
   const orgId = env.ARMADA_OTTO_ORG_ID,
     repository = env.ARMADA_OTTO_REPOSITORY;
   if (!orgId && !repository) return undefined;
-  if (!orgId || !/^[0-9a-f-]{36}$/i.test(orgId) || !repository || !/^[\w.-]+\/[\w.-]+$/.test(repository))
+  if (!orgId || !isOttoUuid(orgId) || !repository || !/^[\w.-]+\/[\w.-]+$/.test(repository))
     throw Error("Invalid Otto repository binding");
   const scope: OttoScope = { orgId, repository };
   const observer = createOttoObserver(sql, scope);
@@ -92,17 +92,10 @@ function createRepositoryRuntime(sql: Sql, env: Record<string, string | undefine
 
 /** Explicit repository allowlist; each repository retains its own lock, cache and failure boundary. */
 export function createOttoRuntime(sql: Sql, env: Record<string, string | undefined>) {
-  const repositories =
-    env.ARMADA_OTTO_REPOSITORIES?.split(",").map((value) => value.trim()) ??
-    (env.ARMADA_OTTO_REPOSITORY ? [env.ARMADA_OTTO_REPOSITORY] : []);
-  if (!repositories.length) {
-    if (env.ARMADA_OTTO_ORG_ID) throw Error("Invalid Otto repository binding");
-    return undefined;
-  }
-  if (repositories.length > 20 || new Set(repositories.map((v) => v.toLowerCase())).size !== repositories.length)
-    throw Error("Invalid Otto repository bindings");
-  const runtimes = repositories.map(
-    (repository) => createRepositoryRuntime(sql, { ...env, ARMADA_OTTO_REPOSITORY: repository })!,
+  const scopes = ottoRepositoryScopes(env);
+  if (!scopes.length) return undefined;
+  const runtimes = scopes.map(
+    (scope) => createRepositoryRuntime(sql, { ...env, ARMADA_OTTO_REPOSITORY: scope.repository })!,
   );
   return {
     scope: runtimes[0]!.scope,
@@ -128,7 +121,8 @@ export function createOttoRuntime(sql: Sql, env: Record<string, string | undefin
       } catch {
         return new Response(null, { status: 400 });
       }
-      const runtime = runtimes.find((runtime) => runtime.scope.repository === repository);
+      const name = typeof repository === "string" ? canonicalOttoRepository(repository) : null;
+      const runtime = runtimes.find((runtime) => canonicalOttoRepository(runtime.scope.repository) === name);
       if (!runtime) return new Response(null, { status: 403 });
       return runtime.route(new Request(request.url, { method: "POST", headers: request.headers, body: raw }));
     }) as Route,

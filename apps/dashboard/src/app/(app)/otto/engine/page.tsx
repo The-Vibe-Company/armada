@@ -4,6 +4,7 @@ import { PageHeader } from "@/components/page-header";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { requireViewer } from "@/lib/data/viewer";
 import { mcpUrl } from "@/lib/env";
+import { ottoRequest } from "@/lib/otto-request";
 import { EnginePicker } from "./engine-picker";
 
 type EngineResponse = {
@@ -12,21 +13,19 @@ type EngineResponse = {
   preflight: OttoEnginePreflight | null;
 };
 
-async function engineRequest(method: string, body?: unknown): Promise<EngineResponse> {
+async function engineRequest(method: "GET" | "PUT", body?: unknown): Promise<EngineResponse> {
   const [viewer, selected] = await Promise.all([requireViewer(), selectedOrganization()]);
   const server = mcpUrl();
   if (!server || !viewer.token || !selected) throw new Error("Select an organization and configure the Armada server.");
-  const url = new URL("/api/v1/otto/engine", server);
-  url.searchParams.set("org_id", selected.org.id);
-  const response = await fetch(url, {
+  const { response, body: resultBody } = await ottoRequest({
+    serverUrl: server,
+    token: viewer.token,
+    orgId: selected.org.id,
+    path: "engine",
     method,
-    headers: { authorization: `Bearer ${viewer.token}`, "content-type": "application/json" },
-    ...(body ? { body: JSON.stringify(body) } : {}),
-    cache: "no-store",
-    redirect: "error",
-    signal: AbortSignal.timeout(10000),
+    ...(body === undefined ? {} : { body }),
   });
-  const result = await response.json();
+  const result = resultBody as EngineResponse;
   if (!response.ok && !result.preflight) throw new Error("Engine settings are unavailable. Try again.");
   return result;
 }

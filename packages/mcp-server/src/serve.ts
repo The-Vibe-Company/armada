@@ -55,10 +55,7 @@ import { createModelAuthOwnership } from "./model-auth.ts";
 import { createModelUsageApi } from "./model-usage.ts";
 import type { NamedLaunchCredentials } from "./named-credentials.ts";
 import { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
-import { createOttoApi } from "./otto/api.ts";
-import { createOttoEngineApi } from "./otto/engine-api.ts";
-import { createOttoObjectivesApi } from "./otto/objectives-api.ts";
-import { createOttoProofApi } from "./otto/proof-api.ts";
+import { createOttoRoutes } from "./otto/routes.ts";
 import { createOttoRuntime } from "./otto/runtime.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
 import { pruneServerRetention } from "./retention-maintenance.ts";
@@ -623,74 +620,33 @@ export async function startServer(
             ),
           ]
         : []),
-      createOttoObjectivesApi(sql, (request) =>
-        authenticateCaller(request.headers.get("authorization"), {
-          store: authStore,
-          supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
-          now: new Date(),
-        }),
-      ),
-      ...(otto
-        ? [
-            otto.route,
-            createOttoProofApi(
-              ottoSql ?? sql,
-              otto.scopes,
-              (request) =>
-                authenticateCaller(request.headers.get("authorization"), {
-                  store: authStore,
-                  supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
-                  now: new Date(),
-                }),
-              env.ARMADA_OTTO_GITHUB_TOKEN,
-              async (caller, repository) => {
-                const access = await resolveGitHubAccess(
-                  { store, app: githubApp, encryptionKey: config.encryptionKey, caller: "account_status" },
-                  caller.userId,
-                );
-                if (access.status !== "connected") return false;
-                const response = await globalThis.fetch(`https://api.github.com/repos/${repository}`, {
-                  redirect: "error",
-                  signal: AbortSignal.timeout(2000),
-                  headers: { authorization: `Bearer ${access.token}`, accept: "application/vnd.github+json" },
-                });
-                return response.ok;
-              },
-            ),
-            createOttoApi(
-              ottoSql ?? sql,
-              otto.scopes,
-              (request) =>
-                authenticateCaller(request.headers.get("authorization"), {
-                  store: authStore,
-                  supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
-                  now: new Date(),
-                }),
-              undefined,
-              config.encryptionKey,
-              async (caller, repository) => {
-                const access = await resolveGitHubAccess(
-                  { store, app: githubApp, encryptionKey: config.encryptionKey, caller: "account_status" },
-                  caller.userId,
-                );
-                if (access.status !== "connected") return false;
-                const response = await globalThis.fetch(`https://api.github.com/repos/${repository}`, {
-                  redirect: "error",
-                  signal: AbortSignal.timeout(2000),
-                  headers: { authorization: `Bearer ${access.token}`, accept: "application/vnd.github+json" },
-                });
-                return response.ok;
-              },
-            ),
-          ]
-        : []),
-      createOttoEngineApi(sql, store, config.encryptionKey, (request) =>
-        authenticateCaller(request.headers.get("authorization"), {
-          store: authStore,
-          supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
-          now: new Date(),
-        }),
-      ),
+      ...(otto ? [otto.route] : []),
+      ...createOttoRoutes({
+        reader: store,
+        sql: ottoSql ?? sql,
+        scopes: otto?.scopes ?? [],
+        authenticate: (request) =>
+          authenticateCaller(request.headers.get("authorization"), {
+            store: authStore,
+            supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
+            now: new Date(),
+          }),
+        observerToken: env.ARMADA_OTTO_GITHUB_TOKEN,
+        encryptionKey: config.encryptionKey,
+        canReadRepository: async (caller, repository) => {
+          const access = await resolveGitHubAccess(
+            { store, app: githubApp, encryptionKey: config.encryptionKey, caller: "account_status" },
+            caller.userId,
+          );
+          if (access.status !== "connected") return false;
+          const response = await globalThis.fetch(`https://api.github.com/repos/${repository}`, {
+            redirect: "error",
+            signal: AbortSignal.timeout(2000),
+            headers: { authorization: `Bearer ${access.token}`, accept: "application/vnd.github+json" },
+          });
+          return response.ok;
+        },
+      }),
       createDockerHostInstallRoute(env.ARMADA_RUNTIME_ARTIFACT_DIR, config.publicUrl),
       createRuntimeArtifactRoute(env.ARMADA_RUNTIME_ARTIFACT_DIR),
       runtimeEnrolments.route,

@@ -1,5 +1,5 @@
 /** Mechanical observations are not objective completion or human approval. */
-export interface OttoMechanicalProof {
+export interface OttoMechanicalEvidence {
   repository: string;
   number: number;
   headSha: string | null;

@@ -1,10 +1,8 @@
 import { isHarness, isRecord, type OttoEngine } from "@armada/core";
-import { type CredentialReader, listConnectionModels, type Sql } from "@armada/core/server";
+import { type CredentialReader, isOttoUuid, listConnectionModels, type Sql } from "@armada/core/server";
 import type { CallerResult } from "../caller.ts";
 import type { Route } from "../http.ts";
 import { preflightOttoEngine } from "./engine-preflight.ts";
-
-const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Preferences do not create attempts or launch anything; auth and account visibility are checked anew. */
 export function createOttoEngineApi(
@@ -56,7 +54,7 @@ export function createOttoEngineApi(
         typeof body.model !== "string" ||
         body.model.length > 200 ||
         typeof body.credentialId !== "string" ||
-        !uuid.test(body.credentialId)
+        !isOttoUuid(body.credentialId)
       )
         return reply({ error: "invalid_engine" }, 400);
       const engine: OttoEngine = { harness: body.harness, model: body.model, credentialId: body.credentialId };

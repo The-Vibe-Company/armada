@@ -280,6 +280,7 @@ export {
   parseOpenCodeEndpoint,
 } from "./opencode-endpoint.ts";
 export type { OttoEngine, OttoEnginePreflight } from "./otto/engine.ts";
+export type { OttoMechanicalEvidence } from "./otto/evidence.ts";
 export type {
   OttoCompleteness,
   OttoFact,
@@ -290,7 +291,6 @@ export type {
   OttoTruth,
 } from "./otto/index.ts";
 export type { OttoObjective, OttoObjectiveMessage } from "./otto/objectives.ts";
-export type { OttoMechanicalProof } from "./otto/proof.ts";
 export {
   dedupeEvents,
   type PromptOutcome,
