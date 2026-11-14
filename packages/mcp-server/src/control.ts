@@ -1,11 +1,4 @@
-import {
-  AuthError,
-  type AuthStore,
-  BodyTooLargeError,
-  createServiceToken,
-  listServiceTokens,
-  revokeServiceToken,
-} from "@armada/auth";
+import { type AuthStore, BodyTooLargeError } from "@armada/auth";
 import type { Harness } from "@armada/core";
 import {
   API_FAILURE_STATUS,
@@ -79,17 +72,17 @@ import {
   snapshotGolden,
   type TemplateService,
   VaultError,
-  type VaultErrorCode,
   type VaultStore,
   type Visibility,
 } from "@armada/core/server";
 import { GatewayError } from "../../mcp-gateway/src/network.ts";
 import { apiFailureCode, providerFailureResponse } from "./api-failure.ts";
 import { validateAzureModelAccount } from "./azure-model-account.ts";
-import { AuthUnavailable, authenticateCaller, type Caller, type SupabaseProject } from "./caller.ts";
+import { AuthUnavailable, type Caller, type SupabaseProject } from "./caller.ts";
 import { readBody, readVaultBody } from "./control-body.ts";
+import { authenticatedCaller, scopedOrg, Unauthorized } from "./control-caller.ts";
 import { optional, required, UUID } from "./control-input.ts";
-import { fail } from "./control-response.ts";
+import { fail, VAULT_STATUS as STATUS } from "./control-response.ts";
 import type { CredentialBindingRecovery } from "./credential-binding-recovery.ts";
 import type { DataSource, ScopedData } from "./data.ts";
 import type { GitHubAccountApi } from "./github-account.ts";
@@ -122,6 +115,7 @@ import type { RuntimeGitHub } from "./runtime-github.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
 import type { RuntimeResume } from "./runtime-resume.ts";
 import { type createSandboxArmadaAccess, parseSandboxArmadaAccess } from "./sandbox-armada-access.ts";
+import { tokenCreateRoute, tokenListRoute, tokenRevokeRoute } from "./token-control.ts";
 import { callSharedTool, ToolApiError } from "./tool-api.ts";
 
 export const CONTROL_PREFIX = "/api/v1/";
@@ -211,20 +205,6 @@ export interface ControlOptions {
 }
 
 export type ConfiguredControlOptions = ControlOptions & { credentialBindingRecovery: CredentialBindingRecovery };
-
-const STATUS: Record<VaultErrorCode, number> = {
-  credential_busy: 409,
-  credential_binding_required: 409,
-  credential_binding_unsafe: 409,
-  credential_binding_unsupported: 409,
-  invalid: 400,
-  forbidden: 403,
-  not_found: 404,
-  missing_credential: 404,
-  conflict: 409,
-  unavailable: 503,
-  credential_refused: 422,
-};
 
 const GOLDEN_STATUS: Record<GoldenErrorCode, number> = {
   invalid_config: 400,
@@ -401,126 +381,6 @@ export async function handleControlRequest(request: Request, options: ControlOpt
       );
     }
     return fail(500, "internal", "The server could not complete the request.");
-  }
-}
-
-/** Only store I/O is a dependency failure; policy/validation errors stay outside this boundary. */
-function tokenRouteStore(store: AuthStore): AuthStore {
-  const dependency = async <T>(operation: () => Promise<T>): Promise<T> => {
-    try {
-      return await operation();
-    } catch {
-      throw new AuthUnavailable("Token store unavailable.");
-    }
-  };
-  return {
-    ...store,
-    memberships: (...args) => dependency(() => store.memberships(...args)),
-    listServiceTokens: (...args) => dependency(() => store.listServiceTokens(...args)),
-    insertToken: (...args) => dependency(() => store.insertToken(...args)),
-    revokeToken: (...args) => dependency(() => store.revokeToken(...args)),
-  };
-}
-
-function tokenRouteFailure(error: unknown, revoking = false): Response {
-  if (error instanceof AuthUnavailable)
-    return fail(503, "dependency_unavailable", "Token service is temporarily unavailable.");
-  if (error instanceof Unauthorized) return fail(401, "unauthorized", "Run armada login.");
-  if (error instanceof VaultError) return fail(STATUS[error.code], error.code, error.message);
-  if (error instanceof AuthError)
-    return revoking
-      ? fail(403, "forbidden", "Token revocation was refused.")
-      : fail(400, "invalid", "Invalid token request.");
-  return fail(500, "internal", "The server could not complete the request.");
-}
-
-async function tokenRevokeRoute(request: Request, options: ControlOptions): Promise<Response> {
-  if (request.method !== "POST") return fail(405, "invalid", "Use POST.");
-  try {
-    const caller = await authenticatedCaller(request, options);
-    const store = tokenRouteStore(options.authStore);
-    const body = await readBody(request);
-    const id = required(body, "id");
-    if (!UUID.test(id)) throw new VaultError("invalid", "id must be a token UUID.");
-    if (caller.via !== "supabase") {
-      const visible = await listServiceTokens(store, caller.userId);
-      const target = visible.find((token) => token.id === id);
-      const members = await store.memberships(caller.userId);
-      const org = caller.orgs[0];
-      if (!target || !org || !members.some((member) => member.orgId === org.orgId && member.name === target.orgName))
-        return fail(403, "forbidden", "This token is scoped to another org.");
-    }
-    await revokeServiceToken(store, {
-      userId: caller.userId,
-      id,
-      now: (options.now ?? (() => new Date()))(),
-    });
-    return Response.json({ ok: true }, { headers: { "cache-control": "no-store" } });
-  } catch (error) {
-    if (error instanceof BodyTooLargeError) return fail(413, "invalid", error.message);
-    return tokenRouteFailure(error, true);
-  }
-}
-
-async function tokenCreateRoute(request: Request, options: ControlOptions): Promise<Response> {
-  if (request.method !== "POST") return fail(405, "invalid", "Use POST.");
-  try {
-    const caller = await authenticatedCaller(request, options);
-    const store = tokenRouteStore(options.authStore);
-    const body = await readBody(request);
-    const ref = optional(body, "org") ?? optional(body, "orgName");
-    if (body.org !== undefined && body.orgName !== undefined && body.org !== body.orgName)
-      return fail(400, "invalid", "Conflicting org selectors.");
-    const memberships = await store.memberships(caller.userId);
-    const selected =
-      ref === undefined
-        ? undefined
-        : memberships.find(
-            (item) =>
-              (item.orgId === ref || item.name.toLowerCase() === ref.toLowerCase()) &&
-              caller.orgs.some((scope) => scope.orgId === item.orgId),
-          );
-    if (ref !== undefined && !selected) return fail(403, "forbidden", "This organization is not in your scope.");
-    if (caller.via !== "supabase" && !selected)
-      return fail(403, "forbidden", "A scoped token cannot create an unscoped token.");
-    const org = selected?.name;
-    const created = await createServiceToken(store, {
-      userId: caller.userId,
-      ...(org ? { orgName: org } : {}),
-      ...(optional(body, "label") ? { label: optional(body, "label")! } : {}),
-      now: (options.now ?? (() => new Date()))(),
-    });
-    return Response.json(
-      { id: created.id, label: created.label, orgName: created.orgName, token: created.token },
-      { headers: { "cache-control": "no-store" } },
-    );
-  } catch (error) {
-    if (error instanceof BodyTooLargeError) return fail(413, "invalid", error.message);
-    return tokenRouteFailure(error);
-  }
-}
-
-async function tokenListRoute(request: Request, options: ControlOptions): Promise<Response> {
-  if (request.method !== "POST") return fail(405, "invalid", "Use POST.");
-  try {
-    const caller = await authenticatedCaller(request, options);
-    const store = tokenRouteStore(options.authStore);
-    const tokens = await listServiceTokens(store, caller.userId);
-    const allowed = caller.via !== "supabase" ? new Set(caller.orgs.map((org) => org.orgId)) : null;
-    const memberships = allowed ? await store.memberships(caller.userId) : [];
-    const names = new Set(
-      memberships.filter((membership) => allowed?.has(membership.orgId)).map((membership) => membership.name),
-    );
-    return Response.json(
-      {
-        tokens: tokens
-          .filter((token) => !allowed || names.has(token.orgName))
-          .map(({ id, label, orgName, createdAt, revokedAt }) => ({ id, label, orgName, createdAt, revokedAt })),
-      },
-      { headers: { "cache-control": "no-store" } },
-    );
-  } catch (error) {
-    return tokenRouteFailure(error);
   }
 }
 
@@ -1697,35 +1557,6 @@ function modelChoice(harness: Harness, model: string | undefined, reasoningEffor
   }
 }
 
-class Unauthorized extends Error {}
-
-/** Shared MCP/control bearer boundary. Callers receive only the orgs embedded in the verified principal. */
-export async function authenticatedControlCaller(request: Request, options: ControlOptions): Promise<Caller | null> {
-  const result = await authenticateCaller(request.headers.get("authorization"), {
-    store: options.authStore,
-    supabase: options.supabase,
-    now: (options.now ?? (() => new Date()))(),
-  });
-  return result.ok ? result.caller : null;
-}
-
-async function authenticatedCaller(request: Request, options: ControlOptions): Promise<Caller> {
-  const caller = await authenticatedControlCaller(request, options);
-  if (!caller) throw new Unauthorized("Run armada login.");
-  return caller;
-}
-
-/** A service/OAuth token has exactly one org; never widen that scope from database memberships. */
-function scopedOrg(caller: Caller, requested: string | undefined): string | undefined {
-  if (caller.via === "supabase") return requested;
-  const orgId = caller.orgs[0]?.orgId;
-  if (!orgId) throw new Unauthorized("Run armada login.");
-  if (requested !== undefined && requested.trim() !== "" && requested.trim().toLowerCase() !== orgId) {
-    throw new VaultError("forbidden", "This token is scoped to another org.");
-  }
-  return orgId;
-}
-
 function requiredRepos(body: Record<string, unknown>): string[] {
   const value = body.repos;
   if (!Array.isArray(value) || value.length === 0 || !value.every((item) => typeof item === "string" && item !== "")) {
@@ -1770,4 +1601,5 @@ async function selectedCaller(options: ControlOptions, caller: Caller, ref: stri
   return { ...caller, orgs: caller.orgs.filter((item) => item.orgId === org.id) };
 }
 
+export { authenticatedControlCaller } from "./control-caller.ts";
 export { controlOptionsFromEnv } from "./control-config.ts";
