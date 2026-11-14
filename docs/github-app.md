@@ -157,3 +157,9 @@ Missing-connection diagnostics say “This caller has no GitHub connection.”
 Configuration-delivery failures remain distinct: that path is reached only after
 the caller's connection and runtime binding have passed validation. Do not
 relabel an unacknowledged configuration as a missing connection without evidence.
+
+The Docker smoke now checks the completed launch's declared GitHub connection
+before demanding GitHub tool proof (including snapshot proof), so a genuinely
+unconnected caller gets the connection reason rather than a generic missing
+`gh` result. A connected declaration is still not a substitute for the successful
+archived command proof.
