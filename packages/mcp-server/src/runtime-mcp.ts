@@ -9,6 +9,7 @@ import {
 } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import { createSqlData } from "./data.ts";
+import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 
@@ -81,13 +82,7 @@ export function createRuntimeMcp(options: {
     ).rows[0];
     if (docker) return docker;
     const s = await createSqlData(sql)(caller).sandboxes.get(id);
-    if (
-      !s ||
-      s.ownerId !== caller.userId ||
-      !((s.provider === "boat" && s.boatRuntime) || (s.provider === "modal" && s.runtimeTransport === "dialout")) ||
-      (s.harness !== "codex" && s.harness !== "claude" && !(s.provider === "modal" && s.harness === "opencode"))
-    )
-      return deny();
+    if (!s || s.ownerId !== caller.userId || !runtimeBridgeTarget(s)) return deny();
     return s;
   }
   async function scope(db: Sql, id: string, epoch: string) {

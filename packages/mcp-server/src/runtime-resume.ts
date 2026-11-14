@@ -2,6 +2,7 @@ import { sha256Hex } from "@armada/auth";
 import { type PromptReceipt, type Sql, sandboxActivity, VaultError } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import { createSqlData, type SandboxView } from "./data.ts";
+import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 import { lockRuntimeAccount } from "./runtime-account-admission.ts";
 import { runtimeAgentFor } from "./runtime-agent.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
@@ -76,18 +77,7 @@ export function createRuntimeResume(
       throw new VaultError("invalid", "Runtime resume v1 requires UUIDs and a nonempty instruction.");
     const store = createSqlData(sql)(caller).sandboxes;
     const found = await store.get(input.id);
-    if (
-      !found ||
-      found.ownerId !== caller.userId ||
-      !(
-        (found.provider === "boat" && found.boatRuntime) ||
-        (found.provider === "modal" && found.runtimeTransport === "dialout")
-      ) ||
-      (found.harness !== "codex" &&
-        found.harness !== "claude" &&
-        !(found.provider === "modal" && found.harness === "opencode")) ||
-      found.deletedAt
-    )
+    if (!found || found.ownerId !== caller.userId || !runtimeBridgeTarget(found) || found.deletedAt)
       throw new VaultError("not_found", "No owned runtime resume target.");
     const prior = await read(sql, found.id, requestId);
     const empty =
