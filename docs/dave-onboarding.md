@@ -78,7 +78,7 @@ armada snapshot list --org <org>           # the snapshots you can launch
 
 Admins also manage roles (`armada org members role <email> admin|member --org <org>`) and removal (`armada org members remove <email> --org <org>`). Anyone can create an org with `armada org create <name>` and becomes its first admin.
 
-## 5. Prepare a first Modal golden
+## 5. Prepare a first Modal snapshot
 
 Complete these steps in order. A provider connection pays for machines; model credentials
 pay for the agent. GitHub sign-in to Armada alone does not authorize repository checkout.
@@ -95,9 +95,6 @@ Using a local text editor, save them outside any repository in `~/.config/armada
 {"token_id":"your_token_id","token_secret":"your_token_secret"}
 ```
 
-<<<<<<< HEAD
-Agent kinds: `claude-oauth` or `anthropic` for Claude Code, `openai` or `codex-auth` for Codex. Sandboxes are paid for by the org's Boat or Modal connection: an admin sets it up with `armada org connect boat|modal` (see [Organization provider setup and recovery](#organization-provider-setup-and-recovery)). A member may also store a personal `boat` or `modal` credential for private snapshots.
-=======
 Keep the file private and never commit it or put credential values in command arguments
 or shell history. Disable shell tracing (`set +x`) before handling credentials.
 
@@ -141,7 +138,7 @@ armada creds list --org my-team   # kinds and dates, never values
 
 A launch injects only the credentials of the chosen agent: yours first, else the org's.
 Values are read from stdin or a file, stored encrypted and never shown again. They do not
-belong in a golden or setup script.
+belong in a snapshot or setup script.
 
 ### Authorize GitHub
 
@@ -161,11 +158,11 @@ See [GitHub App details](github-app.md).
 
 Choose two GitHub repositories you can read. In this example replace `your-owner` with
 their owner and `frontend` and `backend` with their actual repository names. Replace `main`
-with an existing branch in each repository if different. `first-modal` is the new golden
+with an existing branch in each repository if different. `first-modal` is the new snapshot
 name you choose, not an existing snapshot you must obtain.
 
 ```sh
-armada golden create first-modal --org my-team --provider modal \
+armada snapshot create first-modal --org my-team --provider modal \
   --repo https://github.com/your-owner/frontend.git@main \
   --repo https://github.com/your-owner/backend.git@main
 ```
@@ -173,41 +170,31 @@ armada golden create first-modal --org my-team --provider modal \
 Repeat `--repo` once per repository; do not use a comma-separated list. This minimal build
 needs no project-specific commands. The server checks out both repos in a disposable
 builder, scans for secrets, saves the snapshot and cleans up the builder. Only admins
-create org goldens; an ordinary member adds `--private` for a personal golden.
+create org snapshots; an ordinary member adds `--private` for a personal snapshot.
 
 For dependencies needed in the snapshot, optionally add `--setup ./golden-setup.sh` to
 that create command: this reads a **local** script and executes its contents once in the
 builder after checkout, before scanning and snapshotting. By contrast, `--init` commands
 are saved configuration executed at **every launch**, after repository pulls; they are not
-build-time setup. Neither should contain credentials. See [golden configuration](golden-create.md)
+build-time setup. Neither should contain credentials. See [snapshot configuration](golden-create.md)
 for directory layout and project-specific initialization.
 
 Creation prints `Build job: <job-id>`. It normally waits up to 60 seconds. A completed
-build yields a golden; a queued/running build may instead print `Build is ...` with the
+build yields a snapshot; a queued/running build may instead print `Build is ...` with the
 next command. Keep that job ID and read its status:
 
 ```sh
-armada golden build-status <job-id>   # replace with the ID printed by create
-armada golden list --org my-team --provider modal
+armada snapshot build-status <job-id>   # replace with the ID printed by create
+armada snapshot list --org my-team --provider modal
 ```
 
 If still queued/running, check the same job later; do not submit another create. If failed
 or `recovery_required`, read its reported error and resolve it before launching. Proceed
 to step 6 only when the job is `succeeded` and `first-modal` is listed for Modal.
->>>>>>> origin/main
 
 ## 6. Launch from the CLI
 
 ```sh
-<<<<<<< HEAD
-armada launch <snapshot> --agent claude "Fix the flaky test in packages/core" --org <org>
-armada launch <snapshot> --agent codex --repo owner/repo --ttl 2h --json       # no prompt: the sandbox waits, ready
-```
-
-`armada launch` asks the server to resolve credentials and fork the snapshot. It prints the sandbox id
-(`--json` prints the full record). Optional `--repo` selects one repository already recorded in the
-snapshot, by `owner/repo` or by its configured directory, and starts the native agent there: the
-=======
 armada launch first-modal --org my-team --provider modal --agent claude \
   "Summarize the two repositories without changing files"
 # OR, if you stored Codex credentials in step 5:
@@ -215,12 +202,11 @@ armada launch first-modal --org my-team --provider modal --agent codex \
   "Summarize the two repositories without changing files"
 ```
 
-`armada launch` asks the server to resolve credentials and fork the golden. It prints the sandbox id
+`armada launch` asks the server to resolve credentials and fork the snapshot. It prints the sandbox id
 (`--json` prints the full record). Use that ID for `armada status <sandbox-id>`,
 `armada logs <sandbox-id>` and, when finished, `armada stop <sandbox-id>` to stop charges.
 Omit the prompt to leave the sandbox waiting for your first `armada send` instead. Optional `--repo` selects one repository already recorded in the
-golden, by `owner/repo` or by its configured directory, and starts the native agent there: the
->>>>>>> origin/main
+snapshot, by `owner/repo` or by its configured directory, and starts the native agent there: the
 agent's real initial working directory, set after the pulls and init and before its first prompt,
 also for an idle launch. It is a starting directory, not confinement: the agent can still reach the
 other repositories. It is not a URL, and unlike `snapshot create --repo <url>[@branch]` it is given
