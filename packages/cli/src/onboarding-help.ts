@@ -56,6 +56,27 @@ A null maximum means unbounded or unknown, not zero available snapshots.
 Docker is not supported by this command.
 Example: armada snapshot capabilities --provider modal --org my-team --json
 `,
+  "snapshot connect": `Usage: armada snapshot connect <name> [--provider boat|modal] [--org <org>] [--json]
+Prepare the canonical master sandbox for maintenance after Armada login.
+Prints the sandbox ID and a web URL when available; does not open your browser.
+Example: armada snapshot connect starter --provider modal --org my-team
+`,
+  "snapshot snapshot": `Usage: armada snapshot snapshot <name> [--provider boat|modal] [--org <org>] [--json]
+Scan and freeze the canonical master after maintenance. Requires Armada login.
+Do not leave secrets in the master; the server scans before saving.
+Example: armada snapshot snapshot starter --provider modal --org my-team
+`,
+  "snapshot remove": `Usage: armada snapshot remove <name-or-id> [--provider boat|modal] [--org <org>] [--json]
+Remove a snapshot after Armada login and server authorization.
+Names must identify one visible snapshot. Disambiguate with --provider and --org,
+or use the exact ID from armada snapshot list --json.
+Example: armada snapshot remove starter --provider modal --org my-team
+`,
+  "snapshot visibility": `Usage: armada snapshot visibility <id> --visibility private|org [--org <org>] [--json]
+Change snapshot visibility after Armada login and server authorization.
+Use the snapshot ID from armada snapshot list --json, not its display name.
+Example: armada snapshot visibility SNAPSHOT_UUID --visibility private --org my-team
+`,
   "snapshot size-policy": `Usage: armada snapshot size-policy <name> [--provider boat|modal] [--org <org>] [--file <JSON|->] [--json]
 Inspect snapshot machine-size defaults, or replace them with a versioned JSON object.
 Requires Armada login; changes affect future launches only, not existing machines.
@@ -78,7 +99,18 @@ export function onboardingHelp(argv: readonly string[]): string | undefined {
   // Keep the legacy spelling usable without changing literal arguments.
   if (
     parts[0] === "golden" &&
-    ["size-policy", "build-find", "build-status", "build-cancel", "list", "capabilities"].includes(parts[1] ?? "")
+    [
+      "size-policy",
+      "build-find",
+      "build-status",
+      "build-cancel",
+      "list",
+      "capabilities",
+      "connect",
+      "snapshot",
+      "remove",
+      "visibility",
+    ].includes(parts[1] ?? "")
   )
     parts[0] = "snapshot";
   const command = parts.join(" ");
