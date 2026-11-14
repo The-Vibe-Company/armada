@@ -16,6 +16,11 @@ for (const mode of [
   "idle_conversation",
   "idle_recall",
   "idle_budget",
+  "h_codex",
+  "h_claude",
+  "h_opencode",
+  "h_missing",
+  "h_failed",
 
   "control_steer",
   "control_interrupt",
@@ -77,6 +82,9 @@ for (const mode of [
     const woken = new Set<string>();
     const idleReads = new Map<string, number>();
 
+    const requestedHarness =
+      mode === "h_claude" ? "claude-code" : mode === "h_opencode" || mode === "h_missing" ? "opencode" : "codex";
+    const configuredHarness = mode === "h_claude" ? "claude" : mode === "h_opencode" ? "opencode" : "codex";
     const controlFeature = ["control_interrupt", "control_finished"].includes(mode) ? "interrupt" : "steer";
     const controlMarkers = new Map<string, string>();
     const controlled = new Set<string>();
@@ -102,7 +110,7 @@ for (const mode of [
               ...(account ? { account: mode === "accounts_invalid" ? "unknown-account" : account } : {}),
               provider,
               org: provider,
-              harness: "codex",
+              harness: configuredHarness,
               ...(mode === "accounts_missing_model" && account === "codex-azure"
                 ? { model: "", notRunReason: "account has no declared model" }
                 : { model: "fake-model" }),
@@ -119,23 +127,25 @@ for (const mode of [
       },
       mode.startsWith("idle_")
         ? ["--parity", "--feature", mode === "idle_pause" ? "idle-pause" : "wake-on-send"]
-        : ["control_api_unsupported", "control_full"].includes(mode)
-          ? ["--parity"]
-          : mode.startsWith("control_")
-            ? ["--parity", "--feature", controlFeature]
-            : mode.startsWith("github")
-              ? ["--parity", "--feature", "github"]
-              : mode.startsWith("accounts")
-                ? ["--parity", "--accounts"]
-                : mode === "usage_filter"
-                  ? ["--parity", "--only", "docker", "--feature", "exact-cost"]
-                  : mode === "filtered"
-                    ? ["--parity", "--only", "docker", "--feature", "exec"]
-                    : debtFeature
-                      ? ["--parity", "--feature", debtFeature]
-                      : mode === "invalid_filter"
-                        ? ["--parity", "--feature", "typo"]
-                        : ["--parity"],
+        : mode.startsWith("h_")
+          ? ["--parity", "--feature", requestedHarness]
+          : ["control_api_unsupported", "control_full"].includes(mode)
+            ? ["--parity"]
+            : mode.startsWith("control_")
+              ? ["--parity", "--feature", controlFeature]
+              : mode.startsWith("github")
+                ? ["--parity", "--feature", "github"]
+                : mode.startsWith("accounts")
+                  ? ["--parity", "--accounts"]
+                  : mode === "usage_filter"
+                    ? ["--parity", "--only", "docker", "--feature", "exact-cost"]
+                    : mode === "filtered"
+                      ? ["--parity", "--only", "docker", "--feature", "exec"]
+                      : debtFeature
+                        ? ["--parity", "--feature", debtFeature]
+                        : mode === "invalid_filter"
+                          ? ["--parity", "--feature", "typo"]
+                          : ["--parity"],
       {
         now: () => clock,
         sleep: async (ms) => {
@@ -163,7 +173,7 @@ for (const mode of [
               result = {
                 providers: providers.map((id) => ({
                   id,
-                  harnesses: ["codex"],
+                  harnesses: [configuredHarness],
                   capabilities: {
                     steer: mode.startsWith("control_") && mode !== "control_unsupported",
                     interrupt: mode.startsWith("control_") && mode !== "control_unsupported",
@@ -209,6 +219,10 @@ for (const mode of [
               result = { hosts: [{ id: "owned-host", state: mode === "offline" ? "offline" : "online" }] };
               break;
             case "sandbox/launch":
+              if (mode.startsWith("h_")) {
+                expect(body.harness).toBe(configuredHarness);
+                expect(body.credentialId).toBe("fake-account");
+              }
               if (mode.startsWith("accounts")) turns.set(p, []);
               if (p === "docker") {
                 expect(body).not.toHaveProperty("image");
@@ -298,7 +312,11 @@ for (const mode of [
               }
               result = {
                 events: [
-                  { kind: "prompt", promptId: turns.get(p)?.at(-1), status: "finished" },
+                  {
+                    kind: "prompt",
+                    promptId: turns.get(p)?.at(-1),
+                    status: mode === "h_failed" ? "failed" : "finished",
+                  },
                   {
                     kind: "message",
                     promptId: turns.get(p)?.at(-1),
@@ -601,6 +619,24 @@ for (const mode of [
       expect(report.features["exact-cost"].docker.status).toBe("not-run");
       return;
     }
+    if (mode.startsWith("h_")) {
+      expect(passed).toBe(mode !== "h_failed");
+      for (const provider of ["modal", "docker"]) {
+        const cell = report.features[requestedHarness][provider];
+        expect(cell.status).toBe(mode === "h_missing" || mode === "h_failed" ? "not-run" : "pass");
+        if (mode === "h_missing") {
+          expect(cell.reason).toBe("harness_account_not_configured");
+          expect(calls).not.toContain(`${provider}:sandbox/launch`);
+        } else {
+          expect(calls.filter((call) => call === `${provider}:sandbox/launch`)).toHaveLength(1);
+          expect(turns.get(provider)).toHaveLength(1);
+          expect(report.features.cleanup[provider].status).toBe("pass");
+          if (mode === "h_failed") expect(cell.reason).toBe("send: turn_failed");
+        }
+      }
+      return;
+    }
+
     if (mode === "subscription_bad_billing") {
       expect(passed).toBe(false);
       expect(report.features["exact-cost"].modal).toMatchObject({ status: "fail", reason: "invalid_cost_receipt" });
