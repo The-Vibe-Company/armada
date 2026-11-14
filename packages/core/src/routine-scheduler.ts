@@ -191,7 +191,7 @@ export function createRoutineScheduler(sql: Sql, runtime: RoutineSchedulerRuntim
          and exists (select 1 from public.routine_run_inputs i
           join public.launch_template_revisions v on v.template_id=i.template_id and v.revision=i.template_revision
           where i.run_id=routine_runs.id and coalesce(v.definition->>'provider','unknown')=$1)
-         order by created_at,id for update skip locked limit 1`,
+         order by lease_until nulls first,created_at,id for update skip locked limit 1`,
           [provider, [...dispatches]],
         )
       ).rows[0];

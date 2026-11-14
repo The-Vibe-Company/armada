@@ -3,7 +3,7 @@
 Each scheduler instance reserves independent admission, recovery and observation
 slots for Boat, Modal, Docker and an unknown-definition lane: at most twelve
 tracked raw effects (one per operation/provider pair). Admission selects oldest
-due occurrences within each provider; recovery selects oldest expired leases;
+due occurrences within each provider; recovery selects least recently leased expired work;
 observation selects least recently checked tasks. Recovery cannot consume fresh
 admission capacity and observation cannot consume either dispatch capacity.
 A stalled provider cannot consume another provider's reserved capacity.
