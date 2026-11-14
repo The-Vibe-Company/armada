@@ -131,22 +131,36 @@ test("closing the dialog leaves the build running: New follows it and the list s
   expect((await mockState()).goldenCalls).toHaveLength(1);
 });
 
-test("a refused build shows the server's reason, keeps the form and is not retried", async ({ page }) => {
+test("a refused build gives curated recovery, keeps the form and is not retried", async ({ page }) => {
   await post("/__test/reset", { novaOrg: true });
   await post("/__test/golden-gate", {
-    fail: { status: 409, code: "conflict", message: "This backend has reached its golden capacity." },
+    fail: {
+      status: 409,
+      code: "conflict",
+      message: "HTTP 409: provider_snapshot_id golden capacity digest sha256:example",
+    },
   });
   await signIn(page, "carol@example.com", "/environments");
   const form = await openCreate(page);
   await form.getByLabel("Name").fill("second");
   await form.getByRole("textbox", { name: "Repository 1", exact: true }).fill("acme/web");
-  await form.getByRole("button", { name: "Build golden" }).click();
+  await form.getByRole("button", { name: "Build snapshot" }).click();
 
-  await expect(form.getByRole("alert")).toContainText("reached its golden capacity");
-  await expect(form.getByRole("alert")).toContainText("rebuild the existing golden");
+  await expect(form.getByRole("alert")).toContainText("Snapshot capacity has been reached");
+  await expect(form.getByRole("alert")).toContainText("Rebuild an existing snapshot");
+  await expect(form.getByRole("alert")).not.toContainText("provider_snapshot_id");
+  await expect(form.getByRole("alert")).not.toContainText("sha256:");
+  for (const [name, width] of [
+    ["desktop", 1280],
+    ["mobile", 390],
+  ] as const) {
+    await page.setViewportSize({ width, height: 900 });
+    await form.getByRole("alert").scrollIntoViewIfNeeded();
+    await page.screenshot({ path: `test-results/snapshot-action-after-${name}.png`, fullPage: true });
+  }
   await expect(form.getByLabel("Name")).toHaveValue("second");
   await expect(form.getByRole("textbox", { name: "Repository 1", exact: true })).toHaveValue("acme/web");
-  await expect(form.getByRole("button", { name: "Build golden" })).toBeEnabled();
+  await expect(form.getByRole("button", { name: "Build snapshot" })).toBeEnabled();
   expect((await mockState()).goldenCalls).toHaveLength(1);
 });
 
@@ -157,9 +171,9 @@ test("a build whose gateway gives up says it may still finish, and is not retrie
   const form = await openCreate(page);
   await form.getByLabel("Name").fill("slow");
   await form.getByRole("textbox", { name: "Repository 1", exact: true }).fill("acme/web");
-  await form.getByRole("button", { name: "Build golden" }).click();
+  await form.getByRole("button", { name: "Build snapshot" }).click();
 
-  await expect(form.getByRole("alert")).toContainText("may still finish: refresh before trying again");
+  await expect(form.getByRole("alert")).toContainText("may still finish. Reload Snapshots");
   await expect(form.getByLabel("Name")).toHaveValue("slow");
   expect((await mockState()).goldenCalls).toHaveLength(1);
 });

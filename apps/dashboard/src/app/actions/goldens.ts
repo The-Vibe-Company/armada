@@ -1,6 +1,6 @@
 "use server";
 
-import { type Golden, isSandboxProvider, type SandboxProviderId } from "@armada/core";
+import { type Golden, isSandboxProvider } from "@armada/core";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { type ActionResult, done, explainDbError, fail, formString, isUuid } from "@/lib/action";
@@ -13,6 +13,7 @@ import { mcpUrl } from "@/lib/env";
 import { goldenRemoveBlocker, goldenRequest, goldenRowState, PROVIDER_LABELS, type RepoRow } from "@/lib/golden-form";
 import { isSizePolicyResult, policyFromForm, sizePolicyBlocker } from "@/lib/machine-size";
 import { goldenRepositoryDirs } from "@/lib/repository-context";
+import { SNAPSHOT_ACTION_UNCONFIRMED, snapshotActionFailure } from "@/lib/snapshot-action-errors";
 import { createClient } from "@/lib/supabase/server";
 
 export async function setGoldenVisibility(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
@@ -86,10 +87,10 @@ export async function buildGolden(_previous: ActionResult | null, data: FormData
       idempotencyKey,
     });
   } catch (error) {
-    if (error instanceof ControlError) return fail(explainBuildError(error, request.body.provider));
+    if (error instanceof ControlError) return fail(snapshotActionFailure(error, "build", request.body.provider));
     throw error;
   }
-  if (!isGoldenBuildStatus(result)) return fail("The Armada server sent an unexpected answer.");
+  if (!isGoldenBuildStatus(result)) return fail(SNAPSHOT_ACTION_UNCONFIRMED);
   if (result.state === "succeeded") {
     revalidatePath("/snapshots");
     revalidatePath("/sandboxes");
@@ -133,14 +134,13 @@ export async function findActiveGoldenBuild(goldenId: string, org: string): Prom
       provider: target.provider,
       org,
     });
-    if (!result || typeof result !== "object" || !("build" in result))
-      return fail("The Armada server sent an unexpected answer.");
+    if (!result || typeof result !== "object" || !("build" in result)) return fail(SNAPSHOT_ACTION_UNCONFIRMED);
     if (result.build === null)
       return fail("No visible active build was found. A reservation may still need administrator investigation.");
-    if (!isGoldenBuildStatus(result.build)) return fail("The Armada server sent an unexpected answer.");
+    if (!isGoldenBuildStatus(result.build)) return fail(SNAPSHOT_ACTION_UNCONFIRMED);
     return { ok: true, message: "Active build found.", build: result.build };
   } catch (error) {
-    if (error instanceof ControlError) return fail(error.message);
+    if (error instanceof ControlError) return fail(snapshotActionFailure(error, "find"));
     throw error;
   }
 }
@@ -157,10 +157,10 @@ export async function cancelGoldenBuild(jobId: string, org: string): Promise<Act
       jobId,
       org,
     });
-    if (!isGoldenBuildStatus(result)) return fail("The Armada server sent an unexpected answer.");
+    if (!isGoldenBuildStatus(result)) return fail(SNAPSHOT_ACTION_UNCONFIRMED);
     return { ok: true, message: "Queued build cancelled.", build: result };
   } catch (error) {
-    if (error instanceof ControlError) return fail(error.message);
+    if (error instanceof ControlError) return fail(snapshotActionFailure(error, "cancel"));
     throw error;
   }
 }
@@ -213,11 +213,9 @@ export async function removeGolden(_previous: ActionResult | null, data: FormDat
     });
   } catch (error) {
     if (!(error instanceof ControlError)) throw error;
-    if (error.status === 404 && error.code === undefined)
-      return fail("This Armada server does not offer removing snapshots yet.");
-    return fail(error.message);
+    return fail(snapshotActionFailure(error, "remove"));
   }
-  if (!isGoldenRemoval(result) || result.id !== target.id) return fail("The Armada server sent an unexpected answer.");
+  if (!isGoldenRemoval(result) || result.id !== target.id) return fail(SNAPSHOT_ACTION_UNCONFIRMED);
   revalidatePath("/snapshots");
   revalidatePath("/sandboxes");
   redirect(`/snapshots?removed=${target.id}`);
@@ -239,17 +237,6 @@ function repoRows(data: FormData): RepoRow[] {
       ? {}
       : { history: typeof histories[index] === "string" ? (histories[index] as string) : "" }),
   }));
-}
-
-function explainBuildError(error: ControlError, provider: SandboxProviderId): string {
-  if (provider === "boat" && error.code === "conflict" && /golden capacity/i.test(error.message))
-    return `${error.message} A Boat account holds one snapshot: rebuild the existing snapshot instead of creating another.`;
-  if (error.status === 404 && error.code === undefined)
-    return "This Armada server does not offer secure snapshot builds yet.";
-  // A gateway in front of the server gave up, not the server: the build may still be running.
-  if ((error.status === 502 || error.status === 504) && error.code === undefined)
-    return "The Armada server did not answer in time. The build may still finish: refresh before trying again.";
-  return error.message;
 }
 
 /**
@@ -287,13 +274,9 @@ export async function saveSizePolicy(_previous: ActionResult | null, data: FormD
     });
   } catch (error) {
     if (!(error instanceof ControlError)) throw error;
-    // An older server answers an unknown route 404 `not_found` "Unknown route.".
-    if (error.status === 404 && (error.code === undefined || error.message === "Unknown route."))
-      return fail("This Armada server does not offer machine size defaults yet.");
-    return fail(error.message);
+    return fail(snapshotActionFailure(error, "size"));
   }
-  if (!isSizePolicyResult(result) || result.goldenId !== target.id)
-    return fail("The Armada server sent an unexpected answer.");
+  if (!isSizePolicyResult(result) || result.goldenId !== target.id) return fail(SNAPSHOT_ACTION_UNCONFIRMED);
   revalidatePath("/snapshots");
   return done("Size defaults saved. They apply to the next launch; running sandboxes keep their size.");
 }

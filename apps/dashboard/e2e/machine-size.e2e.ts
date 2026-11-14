@@ -223,7 +223,9 @@ test("an older server cannot save snapshot size defaults", async ({ page }) => {
   await card.getByText("Machine size defaults").click();
   await card.getByLabel("Snapshot default").selectOption("large");
   await card.getByRole("button", { name: "Save size defaults" }).click();
-  await expect(card.getByRole("alert")).toHaveText("This Armada server does not offer machine size defaults yet.");
+  await expect(card.getByRole("alert")).toHaveText(
+    "This Armada server does not offer machine size defaults yet. Ask an Armada administrator to finish setup, then reload Snapshots.",
+  );
 });
 
 test("a server without size metadata offers no size controls", async ({ page }) => {
