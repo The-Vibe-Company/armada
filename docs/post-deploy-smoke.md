@@ -1251,3 +1251,20 @@ Boat-specific exemption. Missing `gh`/Git tooling, revoked access, failed clone,
 or refused dry-run fails the cell; only a coordinator execution is proof that
 the selected account/provider passes. Older scripts remain until their other
 checks (including real write/refresh lifecycle checks) are migrated.
+
+### Harness feature rows
+
+The `codex`, `claude-code` and `opencode` rows require a real launch followed by
+an answered, finished turn, not an advertised capability. They reuse each
+case's lifecycle sandbox and configured model account. `claude-code` maps to the
+wire harness `claude`; the other feature IDs match their harness IDs.
+
+Use `--parity --only docker --feature opencode` (or the other provider/harness)
+with an `ARMADA_SMOKE_CASES` case explicitly selecting that harness, compatible
+`modelAccountId` and model. A case configured for a different harness reports
+`not-run: harness_account_not_configured` without allocating compute; the probe
+never guesses an account or model. In a full parity run, only the configured
+harness is proved. To exercise multiple available accounts/harnesses, use the
+existing `--parity --accounts` matrix: each configured account case runs these
+same harness rows and cleanup. Missing account cells remain not-run. Boat stays
+outside staging acceptance; its coordinator-only production opt-in is unchanged.

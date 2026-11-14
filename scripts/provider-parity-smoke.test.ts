@@ -9,6 +9,11 @@ const boatNotRun = { status: "not-run", reason: "not_part_of_release_gate" };
 // route/receipt regressions without provider compute, credentials, or sleeps.
 for (const mode of [
   "online",
+  "h_codex",
+  "h_claude",
+  "h_opencode",
+  "h_missing",
+  "h_failed",
   "docker_send_pending",
   "github",
   "github_scp",
@@ -54,6 +59,9 @@ for (const mode of [
   "baseline_quota",
 ] as const) {
   test(`parity normal lifecycle and honest reporting: ${mode}`, async () => {
+    const requestedHarness =
+      mode === "h_claude" ? "claude-code" : mode === "h_opencode" || mode === "h_missing" ? "opencode" : "codex";
+    const configuredHarness = mode === "h_claude" ? "claude" : mode === "h_opencode" ? "opencode" : "codex";
     const debtFeature =
       mode === "unimplemented" ? "mcp" : mode === "idle-pause" || mode === "wake-on-send" ? mode : undefined;
     const lines: string[] = [];
@@ -76,7 +84,7 @@ for (const mode of [
               ...(account ? { account: mode === "accounts_invalid" ? "unknown-account" : account } : {}),
               provider,
               org: provider,
-              harness: "codex",
+              harness: configuredHarness,
               ...(mode === "accounts_missing_model" && account === "codex-azure"
                 ? { model: "", notRunReason: "account has no declared model" }
                 : { model: "fake-model" }),
@@ -91,19 +99,21 @@ for (const mode of [
           { provider: "boat", harness: "invalid" },
         ]),
       },
-      mode.startsWith("github")
-        ? ["--parity", "--feature", "github"]
-        : mode.startsWith("accounts")
-          ? ["--parity", "--accounts"]
-          : mode === "usage_filter"
-            ? ["--parity", "--only", "docker", "--feature", "exact-cost"]
-            : mode === "filtered"
-              ? ["--parity", "--only", "docker", "--feature", "exec"]
-              : debtFeature
-                ? ["--parity", "--feature", debtFeature]
-                : mode === "invalid_filter"
-                  ? ["--parity", "--feature", "typo"]
-                  : ["--parity"],
+      mode.startsWith("h_")
+        ? ["--parity", "--feature", requestedHarness]
+        : mode.startsWith("github")
+          ? ["--parity", "--feature", "github"]
+          : mode.startsWith("accounts")
+            ? ["--parity", "--accounts"]
+            : mode === "usage_filter"
+              ? ["--parity", "--only", "docker", "--feature", "exact-cost"]
+              : mode === "filtered"
+                ? ["--parity", "--only", "docker", "--feature", "exec"]
+                : debtFeature
+                  ? ["--parity", "--feature", debtFeature]
+                  : mode === "invalid_filter"
+                    ? ["--parity", "--feature", "typo"]
+                    : ["--parity"],
       {
         now: () => 0,
         sleep: async () => {},
@@ -125,7 +135,7 @@ for (const mode of [
               result = {
                 providers: providers.map((id) => ({
                   id,
-                  harnesses: ["codex"],
+                  harnesses: [configuredHarness],
                   capabilities: {
                     launch: true,
                     exec: true,
@@ -167,6 +177,10 @@ for (const mode of [
               result = { hosts: [{ id: "owned-host", state: mode === "offline" ? "offline" : "online" }] };
               break;
             case "sandbox/launch":
+              if (mode.startsWith("h_")) {
+                expect(body.harness).toBe(configuredHarness);
+                expect(body.credentialId).toBe("fake-account");
+              }
               if (mode.startsWith("accounts")) turns.set(p, []);
               if (p === "docker") {
                 expect(body).not.toHaveProperty("image");
@@ -214,7 +228,11 @@ for (const mode of [
             case "logs/read":
               result = {
                 events: [
-                  { kind: "prompt", promptId: turns.get(p)?.at(-1), status: "finished" },
+                  {
+                    kind: "prompt",
+                    promptId: turns.get(p)?.at(-1),
+                    status: mode === "h_failed" ? "failed" : "finished",
+                  },
                   { kind: "message", promptId: turns.get(p)?.at(-1), text: `SMOKE_OK ${prompts.get(p)}` },
                 ],
               };
@@ -473,6 +491,23 @@ for (const mode of [
       expect(report.features["exact-cost-before-resume"].docker.status).toBe("not-run");
       expect(report.features["exact-cost-after-resume"].docker.status).toBe("pass");
       expect(report.features["exact-cost"].docker.status).toBe("not-run");
+      return;
+    }
+    if (mode.startsWith("h_")) {
+      expect(passed).toBe(mode !== "h_failed");
+      for (const provider of ["modal", "docker"]) {
+        const cell = report.features[requestedHarness][provider];
+        expect(cell.status).toBe(mode === "h_missing" || mode === "h_failed" ? "not-run" : "pass");
+        if (mode === "h_missing") {
+          expect(cell.reason).toBe("harness_account_not_configured");
+          expect(calls).not.toContain(`${provider}:sandbox/launch`);
+        } else {
+          expect(calls.filter((call) => call === `${provider}:sandbox/launch`)).toHaveLength(1);
+          expect(turns.get(provider)).toHaveLength(1);
+          expect(report.features.cleanup[provider].status).toBe("pass");
+          if (mode === "h_failed") expect(cell.reason).toBe("send: turn_failed");
+        }
+      }
       return;
     }
     if (mode === "docker_send_pending") {
