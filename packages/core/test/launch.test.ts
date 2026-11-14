@@ -352,7 +352,7 @@ describe("launch", () => {
       ),
     ).rejects.toMatchObject({
       ...(failure === "harness"
-        ? { message: "The experimental runtime supports ordinary Boat Codex/Claude or Modal Codex workers only." }
+        ? { message: "The experimental runtime supports ordinary Boat or Modal Codex/Claude workers only." }
         : {}),
       code: ["harness", "mcp", "skills", "parent"].includes(failure)
         ? "invalid_request"

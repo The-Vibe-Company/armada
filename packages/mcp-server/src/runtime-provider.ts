@@ -47,7 +47,7 @@ export function createRuntimeProvider(
   };
   return {
     id: host.id,
-    harnesses: host.id === "boat" ? ["codex", "claude"] : ["codex"],
+    harnesses: ["codex", "claude"],
     capabilities,
     ...(host.managementIdentity ? { managementIdentity: host.managementIdentity.bind(host) } : {}),
     ...(host.backendIdentity ? { backendIdentity: host.backendIdentity.bind(host) } : {}),
