@@ -263,3 +263,26 @@ test("retained owner/admin diagnostics and delegated cleanup are independent of 
   await db.query(`delete from public.members where org_id=$1 and user_id=$2`, [f.actor.orgId, f.actor.userId]);
   await denied(retained.get(f.actor, saved.id));
 });
+
+test("host capacity reserves pending starts, preserves retries, and releases only confirmed physical stops", async () => {
+  const f = await fixture();
+  // Heartbeat observations, not user-supplied launch choices, establish capacity.
+  await hosts.poll(f.hostToken, f.installationId, "2.31.0", false, { cpus: 2, memoryBytes: 6 * 1024 ** 3 });
+  await db.query("update public.docker_hosts set name='capacity-host' where id=$1", [f.hostId]);
+  const first = await service.reserve(f.actor, f.input);
+  expect(await service.reserve(f.actor, f.input)).toEqual(first);
+  const next = { ...f.input, requestId: randomUUID() };
+  await expect(service.reserve(f.actor, next)).rejects.toThrow(
+    "Host capacity-host is full: 1/1 sandboxes running; stop one or raise the limit.",
+  );
+  await hosts.complete(f.hostToken, f.installationId, { requestId: first.id, outcome: "completed" });
+  const stop = randomUUID();
+  await service.stop(f.actor, first.id, stop);
+  await expect(service.reserve(f.actor, next)).rejects.toThrow("is full");
+  await hosts.complete(f.hostToken, f.installationId, { requestId: stop, outcome: "completed" });
+  const second = await service.reserve(f.actor, next);
+  expect(second.id).toBe(next.requestId);
+  // A daemon TTL observation is physical stop proof too, including failed startup rows.
+  await hosts.expired(f.hostToken, f.installationId, { requestId: second.id });
+  expect((await service.reserve(f.actor, { ...f.input, requestId: randomUUID() })).status).toBe("starting");
+});

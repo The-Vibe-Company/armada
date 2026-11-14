@@ -388,6 +388,8 @@ export type Database = {
           daemon_version: string | null;
           draining_at: string | null;
           name: string | null;
+          machine_cpus: number | null;
+          machine_memory_bytes: number | null;
         };
         Insert: {
           id: string;
@@ -403,6 +405,8 @@ export type Database = {
           daemon_version?: string | null;
           draining_at?: string | null;
           name?: string | null;
+          machine_cpus?: number | null;
+          machine_memory_bytes?: number | null;
         };
         Update: {
           id?: string;
@@ -418,6 +422,8 @@ export type Database = {
           daemon_version?: string | null;
           draining_at?: string | null;
           name?: string | null;
+          machine_cpus?: number | null;
+          machine_memory_bytes?: number | null;
         };
         Relationships: [
           {

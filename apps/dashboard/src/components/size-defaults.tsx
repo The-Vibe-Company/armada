@@ -33,7 +33,7 @@ export function SizeDefaults({
   if (sizing.kind === "unreadable") {
     return (
       <p role="alert" className="text-xs text-destructive" data-size-defaults="unreadable">
-        Stored size defaults could not be read: {sizing.reason} Launches from this golden fail until they are fixed.
+        Stored size defaults could not be read: {sizing.reason} Launches from this snapshot fail until they are fixed.
       </p>
     );
   }
@@ -60,7 +60,7 @@ export function SizeDefaults({
             key={`golden-${policy?.golden ?? ""}`}
             id={`${id}-golden`}
             name="golden_size"
-            label="Golden default"
+            label="Snapshot default"
             provider={provider}
             value={policy?.golden ?? ""}
           />
@@ -76,9 +76,9 @@ export function SizeDefaults({
           ))}
         </div>
         <p className="text-xs text-muted-foreground">
-          A repository's default wins over the golden's; a launch can still choose another size. Saving applies to the
-          next launch: it does not rebuild the golden or restart a sandbox. The {PROVIDER_LABELS[provider]} golden keeps
-          its own defaults, apart from a same-name golden on another provider.
+          A repository's default wins over the snapshot's; a launch can still choose another size. Saving applies to the
+          next launch: it does not rebuild the snapshot or restart a sandbox. The {PROVIDER_LABELS[provider]} snapshot
+          keeps its own defaults, apart from a same-name snapshot on another provider.
         </p>
         <SubmitButton variant="outline" size="sm">
           Save size defaults

@@ -75,7 +75,7 @@ for (const mobile of [false, true]) {
       path: `test-results/templates-create-1-${mobile ? "phone" : "desktop"}.png`,
     });
     await dialog.getByLabel("Name").fill("Laptop fit");
-    await dialog.getByLabel("Environment").selectOption({ label: "shared-golden on Boat" });
+    await dialog.getByLabel("Snapshot").selectOption({ label: "shared-golden on Boat" });
     await dialog.getByRole("button", { name: "Next: tools and variables" }).click();
     await expect(
       dialog.getByText(
@@ -121,7 +121,7 @@ test("a missing agent account warns before publication and choosing a usable age
   await expect(warning).toBeVisible();
   // A warning is not a publication ban: another launcher may already have an account.
   await dialog.getByLabel("Name").fill("Needs Claude account");
-  await dialog.getByLabel("Environment").selectOption({ label: "shared-golden on Boat" });
+  await dialog.getByLabel("Snapshot").selectOption({ label: "shared-golden on Boat" });
   await dialog.getByRole("button", { name: "Next: tools and variables" }).click();
   await dialog.getByRole("button", { name: "Publish template" }).click();
   await expect(dialog).toBeHidden();
@@ -154,8 +154,8 @@ test("an admin creates an org template from org resources only; it is published 
   await dialog.getByLabel("Name").fill("Sentry triage");
   await dialog.getByRole("radio", { name: /Org \(Acme\)/ }).check();
   // A private environment is not offered to an org template; one without a snapshot cannot be chosen.
-  await expect(dialog.getByLabel("Environment").locator("option", { hasText: "alice-private" })).toHaveCount(0);
-  await dialog.getByLabel("Environment").selectOption({ label: "modal-golden on Modal" });
+  await expect(dialog.getByLabel("Snapshot").locator("option", { hasText: "alice-private" })).toHaveCount(0);
+  await dialog.getByLabel("Snapshot").selectOption({ label: "modal-golden on Modal" });
   await dialog.getByRole("radio", { name: "Codex" }).check();
   await dialog.getByLabel("Model account", { exact: true }).selectOption({ label: "Foundry (Acme)" });
   await page.screenshot({ path: "test-results/template-model-account-desktop.png", fullPage: true });
@@ -240,7 +240,7 @@ test("a new revision starts from the current one; the old revision stays and the
   await expect(row(page, "Modal quick fix").getByRole("button", { name: /Launch/ })).toHaveCount(0);
   await shown.getByRole("button", { name: "New revision" }).click();
   const dialog = page.getByRole("dialog", { name: "New revision of Modal quick fix" });
-  await expect(dialog.getByLabel("Environment")).toHaveValue("00000000-0000-4000-8000-000000000026");
+  await expect(dialog.getByLabel("Snapshot")).toHaveValue("00000000-0000-4000-8000-000000000026");
   await expect(dialog.getByRole("radio", { name: "Codex" })).toBeChecked();
   await expect(dialog.getByLabel("Reasoning effort")).toHaveValue("high");
   const accountWarning = dialog.getByRole("status");
@@ -383,7 +383,7 @@ test("Enter on the first step goes to the next one; a taken name is refused in w
   await page.getByRole("button", { name: "New", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "New template" });
   await dialog.getByLabel("Name").fill("Modal quick fix");
-  await dialog.getByLabel("Environment").selectOption({ label: "modal-golden on Modal" });
+  await dialog.getByLabel("Snapshot").selectOption({ label: "modal-golden on Modal" });
   await dialog.getByLabel("Model", { exact: true }).selectOption("claude-sonnet-5-5");
   await dialog.getByLabel("Name").press("Enter");
   await expect(dialog.getByRole("heading", { name: /Step 2 of 2/ })).toBeFocused();
@@ -432,7 +432,7 @@ test("a new revision cannot be published while its tools cannot be read: nothing
   await expect(dialog.getByRole("button", { name: "Publish revision 3" })).toBeDisabled();
   // Enter cannot publish either, and the server action refuses on its own.
   await dialog.getByRole("button", { name: "Back" }).click();
-  await dialog.getByLabel("Environment").press("Enter");
+  await dialog.getByLabel("Snapshot").press("Enter");
   expect((await mockState()).templateCalls.filter((call) => call.route === "templates/publish")).toHaveLength(0);
 });
 

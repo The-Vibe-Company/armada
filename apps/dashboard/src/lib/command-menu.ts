@@ -16,7 +16,7 @@ export const COMMANDS: readonly Command[] = [
   {
     id: "launch",
     label: "Launch a sandbox",
-    href: "/environments",
+    href: "/snapshots",
     group: "Actions",
     keywords: ["new", "start", "run"],
   },
@@ -45,7 +45,7 @@ export const COMMANDS: readonly Command[] = [
   {
     id: "environments",
     label: "Snapshots",
-    href: "/environments",
+    href: "/snapshots",
     group: "Go to",
     keywords: ["environments", "goldens", "repositories"],
   },

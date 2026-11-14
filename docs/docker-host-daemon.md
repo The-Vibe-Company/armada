@@ -721,3 +721,51 @@ owned Docker host without `--credential-id`, and inspect the returned pin. Repea
 the same request ID after changing the default: it must return the same sandbox
 without allocation/rebilling. An explicit API-key account must remain explicit.
 This procedure is not evidence that live subscription auth has passed.
+
+### Default machine limits (#1773, slice a)
+
+Updated daemons report CPU count and physical memory in each poll. Every new
+sandbox receives at most 2 CPUs, 4 GiB RAM (shrunk to the machine size) and
+4096 processes. Memory swap equals memory, preventing an additional swap budget.
+Snapshot builds use a request-scoped Buildx docker-container builder with the
+same CPU/memory/swap budget; its process cap is applied before build work.
+The builder is removed after each attempt; shared builders/images are untouched.
+Buildx with the docker-container driver is required for snapshot builds.
+
+This first slice does not persist resource reports, enforce host admission or
+provide overrides/UI. Those are subsequent #1773 slices; do not treat this as
+capacity protection. Existing retained containers keep their creation limits.
+Older daemons still poll without reports; updated daemons retry without the
+additive report when an older server refuses it. Host ACKs remain machine facts,
+not runtime readiness.
+
+Coordinator-only proof after normal deployment and daemon upgrade: launch a
+sandbox and inspect HostConfig NanoCpus, Memory, MemorySwap and PidsLimit. Build
+a snapshot and inspect its request-scoped BuildKit container during the build,
+then confirm its removal. Verify small-machine limits fit the host. No real-host
+verification was performed by this change.
+
+### Automatic capacity admission (#1773, slice b)
+
+Apply `20261114130000_docker_host_resources.sql` through the normal authorized
+deployment path before deploying the server. Authenticated daemon polls persist
+CPU/memory observations; old daemons without observations retain unknown capacity
+and no admission limit. No new JWT access is granted.
+
+New allocations and wakes from stopped/idle-paused state check capacity while
+holding the host lock. The automatic limit is the smaller of the 2x CPU budget
+and memory budget after a 2 GiB reserve, minimum one. Pending starts reserve a
+slot to prevent concurrent launches exceeding capacity. A stop request alone
+does not release it: confirmed physical stop/delete or daemon TTL-stop proof
+does. A failed logical startup is conservatively retained until physical stop is
+proven. Full hosts return an immediate actionable conflict, not a readiness wait.
+Historical request retries retain their original allocation without another slot.
+
+Coordinator-only acceptance: on an upgraded host, launch to the computed limit,
+then verify one more launch returns HTTP 409 with the host name and running/limit.
+Stop one sandbox, confirm its physical ACK, and retry the rejected request.
+Repeat by attempting to wake an idle-paused sandbox while the host is full;
+it must remain paused, then wake after another sandbox physically stops.
+Older-daemon unknown-capacity behavior remains supported. Overrides and dashboard
+capacity display belong to slice (c), not this deployment. No real-host checks
+were performed here.

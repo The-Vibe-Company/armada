@@ -3,6 +3,7 @@ import { HARNESS_KINDS } from "@armada/core";
 import { decryptSecret } from "@armada/core/server";
 import { requirePublishedRuntimeArchitecture } from "../../agent-runtime/src/publication.ts";
 import { type BootstrapDescriptor, parseDockerHostJob } from "../../core/src/docker-host-job.ts";
+import { admitDockerCapacity, DockerHostFull } from "./docker-capacity.ts";
 import { createDockerHostStore } from "./docker-host-store.ts";
 import { dockerRuntimeConfiguration } from "./docker-runtime-configuration.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
@@ -218,6 +219,7 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
           const occupied = await tx.query(`select 1 from public.runtime_enrolments where sandbox_id=$1`, [sandboxId]);
           if (occupied.rows.length && !resume) deny();
           if (resume) {
+            await admitDockerCapacity(tx, current.hostId);
             if (JSON.stringify(await restoreCheckpoint(tx, sandboxId)) !== JSON.stringify(restore)) deny();
             const restarted = await tx.query(
               `update public.sandboxes set status='starting',status_reason=null,stop_requested_at=null,stopped_at=null,
@@ -245,7 +247,8 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
           state: existing?.outcome ?? "pending",
         };
       });
-    } catch {
+    } catch (error) {
+      if (error instanceof DockerHostFull) throw error;
       return deny();
     }
   }

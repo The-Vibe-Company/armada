@@ -18,7 +18,7 @@ export const CREDENTIAL_KINDS: readonly CredentialKindInfo[] = [
   {
     kind: "boat",
     label: "boat.dev API key",
-    description: "Hosts sandboxes on Boat. An org key covers everyone; a personal key covers your private goldens.",
+    description: "Hosts sandboxes on Boat. An org key covers everyone; a personal key covers your private snapshots.",
   },
   {
     kind: "modal",
