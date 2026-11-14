@@ -794,6 +794,7 @@ async function dispatch(
         usageVersion: options.modalRuntimeLaunch ? 1 : 0,
         claudeVersion: options.modalRuntimeLaunch ? 1 : 0,
         opencodeVersion: options.modalRuntimeLaunch ? 1 : 0,
+        opencodeShellProofVersion: options.modalRuntimeLaunch ? 1 : 0,
         variablesVersion: options.templates && options.modalRuntimeLaunch && options.modalRuntimeHostFor ? 1 : 0,
       },
       boatRuntime: {
