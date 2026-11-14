@@ -318,6 +318,7 @@ export async function startServer(
       manifest,
       architecture: manifest.architecture,
       ...(runtimeGitHub ? { github: runtimeGitHub } : {}),
+      modelAuth,
     });
   }
   // Docker placement is a separate, explicit API preview. Host polling remains
@@ -366,6 +367,7 @@ export async function startServer(
         vault: store,
         key: config.encryptionKey,
         policy: modalRuntimePolicy,
+        modelAuth,
         hostFor: modalRuntimeHostFor,
       })
     : undefined;

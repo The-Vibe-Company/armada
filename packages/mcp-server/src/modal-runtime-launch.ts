@@ -6,7 +6,10 @@ import { runtimeWorkspace } from "./runtime-workspace.ts";
 
 /** First-answer slice: same enrolled startup and journal, Modal supplies only compute. */
 export function modalRuntimeLaunch(
-  options: RuntimeLaunchOptions & { github?: Pick<import("./runtime-github.ts").RuntimeGitHub, "prepareLaunch"> },
+  options: RuntimeLaunchOptions & {
+    github?: Pick<import("./runtime-github.ts").RuntimeGitHub, "prepareLaunch">;
+    modelAuth?: NonNullable<Parameters<typeof modalRuntimeConfiguration>[1]["modelAuth"]>;
+  },
 ): NonNullable<LaunchOptions["runtime"]> {
   const startRuntime = createRuntimeLaunch(options);
   return {

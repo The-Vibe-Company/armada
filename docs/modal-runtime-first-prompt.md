@@ -25,8 +25,8 @@ Coordinator staging configuration:
   the manifest from that deployed build for the Modal Linux x64 target.
 - Existing authorized Modal management credentials and immutable workspace,
   environment and App binding, with an existing snapshotted Modal golden.
-- An authorized Codex API-key/custom-endpoint account. Subscription login is
-  not admitted by this first slice (no broker/native-auth publication is wired).
+- An authorized Codex API-key/custom-endpoint account, or an existing server-owned
+  Codex subscription account enrolled in the shared model-auth broker.
 
 In the coordinator's secure environment, supply:
 
@@ -335,6 +335,31 @@ workspace preparation, default cutover or tunnel deletion. Those remain #1421
 acceptance work for the coordinator-owned staging lifecycle check.
 
 
+## Codex subscription accounts
+
+Modal enrolled launch and retained resume use the same model-auth ownership
+service as Boat and Docker. For an existing server-owned Codex subscription
+account, private enrolment carries only the `runtimeSubscription` selection;
+access-only material comes from `/api/runtime/model-access`, bound to the live
+runtime token, epoch, owner membership and pinned account version. The shared
+broker owns refresh. Guest configuration does not receive the refresh token or
+server-owned auth.json. Native-auth publication remains the existing sealed,
+CAS-controlled path for runtime-owned accounts; no Modal auth adapter is added.
+
+Use the same one-allocation command above with the existing authorized Codex
+subscription UUID in `ARMADA_RUNTIME_CREDENTIAL_ID` (and a supported model).
+No new credential, account migration, default configuration or manual artifact
+publication is performed by the check. Deploy the matching server revision;
+there is no new schema migration. Existing native Modal behavior is unchanged.
+
+The lifecycle smoke proves inference and retained-session behavior for the
+selected account, not a forced upstream token renewal. Offline boundary tests
+exercise access-only delivery, refresh revision, token registration, and refusal
+after epoch replacement or membership/pin/stop/ownership changes during refresh.
+Live subscription refresh acceptance remains coordinator-owned and is not
+claimed by these tests. OpenCode, workspace setup, default cutover and tunnel
+deletion remain separate #1421 work.
+
 ## Claude lifecycle extension
 
 Add `--claude` to the same coordinator command to select the enrolled Claude
@@ -356,9 +381,9 @@ configuration mutation, provider runtime, pricing formula or manual artifact
 publication is required. The matching schema must include
 `20261114013200_modal_runtime_claude.sql` before opting in. Native Modal launches
 are unchanged. Live Claude acceptance remains unproven until the coordinator
-records the smoke receipt; OpenCode and Codex subscription parity remain later
-slices. Default cutover and tunnel deletion are not authorized here.
-
+records the smoke receipt. Codex subscription ownership is described above;
+OpenCode remains a later slice. Default cutover and tunnel deletion are not
+authorized here.
 
 ## Workspace preparation
 
@@ -383,3 +408,4 @@ configured init scripts now actually execute: launch success is not a live
 workspace acceptance receipt until the coordinator runs it. Native Modal setup
 is unchanged; retained resume does not rerun first-launch setup. OpenCode and
 default/cutover/deletion gates remain separate #1421 work.
+
