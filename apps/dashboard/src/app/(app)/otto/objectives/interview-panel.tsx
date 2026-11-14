@@ -144,6 +144,12 @@ export async function InterviewPanel({ orgId, id }: { orgId: string; id: string 
                         <p className="text-muted-foreground">
                           Source: {d.source} · {d.reversible ? "Reversible" : "Hard to undo"}
                         </p>
+                        <ActionForm action={updateInterview} footer={<SubmitButton>Reopen this decision</SubmitButton>}>
+                          {hidden}
+                          <input type="hidden" name="action" value="reopen" />
+                          <input type="hidden" name="revision" value={interview.revision} />
+                          <input type="hidden" name="decisionId" value={d.id} />
+                        </ActionForm>
                       </li>
                     ))}
                   {interview.round.assumptions.map((a) => (
@@ -190,6 +196,15 @@ export async function InterviewPanel({ orgId, id }: { orgId: string; id: string 
               name="action"
               value={effects.some((e) => e.kind === "engine_start" && e.state === "succeeded") ? "resume" : "start"}
             />
+          </ActionForm>
+          <ActionForm action={updateInterview} footer={<SubmitButton>Restart stopped engine</SubmitButton>}>
+            {hidden}
+            <input type="hidden" name="action" value="restart" />
+            <input type="hidden" name="revision" value={interview.revision} />
+            <p className="text-xs text-muted-foreground">
+              Preserves decisions and answers. A replacement starts only after the server observes the previous
+              allocation stopped or gone; unknown allocations remain parked.
+            </p>
           </ActionForm>
         </>
       )}

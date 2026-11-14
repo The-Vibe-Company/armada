@@ -204,11 +204,10 @@ export async function startServer(
       },
       beforePrompt: async (provider, id) => {
         if (!caller) throw Error("Native prompt requires trusted Armada caller scope.");
+        const interview = await isOttoInterviewProviderSandbox(sql, provider.id, id);
+        if (!interview) await mcp.beforePrompt(provider, id, caller);
         await modelAuth.beforePrompt(provider, id, caller);
-        if (!(await isOttoInterviewProviderSandbox(sql, provider.id, id))) {
-          await mcp.beforePrompt(provider, id, caller);
-          await sandboxArmadaAccess.beforePrompt(provider, id);
-        }
+        if (!interview) await sandboxArmadaAccess.beforePrompt(provider, id);
       },
       beforeSnapshot: async (provider, id) => {
         if (caller) await modelAuth.capture(provider, id, caller);

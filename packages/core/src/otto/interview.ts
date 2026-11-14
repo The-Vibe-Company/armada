@@ -6,6 +6,8 @@ export interface OttoInterviewDecision {
   recommendation: string;
   answer: string | null;
   source: string | null;
+  /** Server-verified verbatim owner answer to this decision at a durable answer revision. */
+  ownerAnswer?: { revision: number; questionId: string; answer: string } | null | undefined;
   reversible: boolean;
   dependsOn: string[];
 }
@@ -21,6 +23,7 @@ export interface OttoInterview {
   engine: OttoEngine;
   goldenId: string;
   sandboxId: string | null;
+  sessionGeneration: number;
   round: OttoInterviewRound | null;
   answers: { revision: number; body: string; enough: boolean }[];
   enough: boolean;

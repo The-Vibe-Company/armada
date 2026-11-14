@@ -45,6 +45,7 @@ export async function updateInterview(_previous: ActionResult | null, form: Form
       action,
       goldenId: formString(form, "goldenId"),
       revision: Number(formString(form, "revision")),
+      decisionId: formString(form, "decisionId"),
       body,
       enough: formString(form, "enough") === "yes",
     });

@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
+import { createHmac } from "node:crypto";
 import type { PromptRequest, Provider, Sql } from "@armada/core/server";
 import type { PGlite } from "@electric-sql/pglite";
 import { openMigratedDatabase } from "../../../../scripts/test-support/migrated-database.ts";
@@ -6,7 +7,7 @@ import type { Caller } from "../caller.ts";
 import { createSqlData } from "../data.ts";
 import { createRuntimeCommands } from "../runtime-commands.ts";
 import { createRuntimeEnrolments } from "../runtime-enrolment.ts";
-import { createOttoEngineSessions, isOttoInterviewProviderSandbox } from "./engine-session.ts";
+import { createOttoEngineSessions, interviewCapability, isOttoInterviewProviderSandbox } from "./engine-session.ts";
 import { interviewStore } from "./interview.ts";
 
 let db: PGlite;
@@ -146,4 +147,136 @@ test("native lifecycle isolation matches only the exact provider and durably bou
   expect(await isOttoInterviewProviderSandbox(sql, "modal", "provider_interview")).toBe(false);
   expect(await isOttoInterviewProviderSandbox(sql, "boat", "provider_ordinary")).toBe(false);
   expect(await isOttoInterviewProviderSandbox(sql, "boat", sandboxId)).toBe(false);
+});
+
+test("ordinary lifecycle remains available before the interview migration but other storage errors still deny turns", async () => {
+  const missing: Sql = {
+    query: async () => {
+      throw Object.assign(Error("Missing additive table"), { code: "42P01" });
+    },
+  };
+  expect(await isOttoInterviewProviderSandbox(missing, "boat", "ordinary")).toBe(false);
+  const unavailable: Sql = {
+    query: async () => {
+      throw Object.assign(Error("Connection lost"), { code: "08006" });
+    },
+  };
+  await expect(isOttoInterviewProviderSandbox(unavailable, "boat", "ordinary")).rejects.toThrow("Connection lost");
+});
+
+function sessionsFor(provider: () => Promise<Provider>) {
+  return createOttoEngineSessions({
+    sql,
+    key,
+    origin: "https://armada.example.com",
+    data,
+    credentials: {
+      resolve: async () => ({
+        env: { OPENAI_API_KEY: "fixture_model_value" },
+        secrets: ["fixture_model_value"],
+        codexAuthJson: false,
+      }),
+      skillpackKey: async () => "fixture_skillpack_value",
+    },
+    provider: async () => provider(),
+    sandboxProvider: async () => provider(),
+    launch: {},
+    commands: createRuntimeCommands(createRuntimeEnrolments(sql, key), key),
+    runtimeSend: async () => {
+      throw Error("Unexpected runtime send");
+    },
+  });
+}
+
+test("snapshot, host and tool admission failures keep the same launch pending and core pre-allocation refusal is retryable", async () => {
+  const id = "77777777-7777-4777-8777-777777777777",
+    launchScope = { ...scope, objectiveId: id };
+  await db.query(
+    "insert into public.otto_objectives(id,org_id,owner_id,repository,request) values($1,$2,$3,'owner/repository','Retry admission')",
+    [id, orgId, ownerId],
+  );
+  const interview = await interviewStore(sql, launchScope).start(
+    { harness: "codex", model: "unsupported_fixture_model", credentialId: "account_reference" },
+    goldenId,
+  );
+  await db.query("update public.goldens set config=$2::jsonb where id=$1", [
+    goldenId,
+    JSON.stringify({
+      repos: [{ url: "https://github.com/owner/repository", dir: "repository", branch: "main" }],
+      init: [],
+    }),
+  ]);
+  let phase = "host";
+  let forks = 0;
+  const sessions = sessionsFor(async () => {
+    if (phase === "host") throw Error("Host configuration unavailable");
+    return {
+      id: "boat",
+      harnesses: ["codex"],
+      ...(phase === "tools" ? {} : { configureMcp: async () => {} }),
+      fork: async () => {
+        forks++;
+        throw Error("Must not allocate");
+      },
+    } as unknown as Provider;
+  });
+  await expect(sessions.start(caller, launchScope, interview)).rejects.toThrow("snapshot unavailable");
+  await db.query(
+    "update public.goldens set provider_snapshot_id='fixture_snapshot',boat_snapshot_id='fixture_snapshot' where id=$1",
+    [goldenId],
+  );
+  await expect(sessions.start(caller, launchScope, interview)).rejects.toThrow("Host configuration unavailable");
+  phase = "tools";
+  await expect(sessions.start(caller, launchScope, interview)).rejects.toThrow("tools unsupported");
+  phase = "core";
+  expect(await sessions.start(caller, launchScope, interview)).toEqual({ status: "pending", result: null });
+  expect(forks).toBe(0);
+  expect((await interviewStore(sql, launchScope).read())?.sandboxId).toBeNull();
+  expect(
+    (await db.query<{ state: string }>("select state from public.otto_intentions where objective_id=$1", [id])).rows,
+  ).toEqual([{ state: "pending" }]);
+});
+
+test("restart requires observed stopped allocation, rotates one generation with CAS and preserves durable state", async () => {
+  let state = "running";
+  const provider = { id: "boat", get: async () => ({ id: "provider_interview", state }) } as unknown as Provider;
+  const sessions = sessionsFor(async () => provider),
+    store = interviewStore(sql, scope),
+    before = (await store.read())!;
+  await db.query(
+    "insert into public.otto_intentions(org_id,owner_id,objective_id,idempotency_key,kind,payload,state) values($1,$2,$3,'engine_start:0','engine_start',$4::jsonb,'unknown')",
+    [orgId, ownerId, objectiveId, JSON.stringify({ generation: 0, sandboxId })],
+  );
+  await expect(sessions.restart(caller, scope, before)).rejects.toThrow("not observably");
+  state = "stopped";
+  const after = await sessions.restart(caller, scope, before);
+  expect(after).toMatchObject({
+    sessionGeneration: 1,
+    sandboxId: null,
+    revision: before.revision + 1,
+    answers: before.answers,
+    round: before.round,
+    engine: before.engine,
+  });
+  await expect(sessions.restart(caller, scope, before)).rejects.toThrow("revision conflict");
+  expect(
+    (
+      await db.query<{ state: string }>(
+        "select state from public.otto_intentions where kind='engine_start' and objective_id=$1",
+        [objectiveId],
+      )
+    ).rows,
+  ).toEqual([{ state: "retired" }]);
+  // Retired engines never regain automatic generic MCP/GitHub authority.
+  expect(await isOttoInterviewProviderSandbox(sql, "boat", "provider_interview")).toBe(true);
+});
+
+test("interview capabilities are domain-derived rather than signatures under the encryption root", () => {
+  const capability = interviewCapability(key, scope, sandboxId);
+  const directRoot = createHmac("sha256", key)
+    .update(JSON.stringify(["otto/interview/v1", orgId, ownerId, objectiveId, sandboxId]))
+    .digest("hex");
+  expect(capability).not.toBe(directRoot);
+  expect(capability).not.toBe(interviewCapability(key, scope, otherSandboxId));
+  expect(capability).not.toBe(interviewCapability(key, { ...scope, ownerId: goldenId }, sandboxId));
 });

@@ -27,6 +27,11 @@ const roundSchema = z
           recommendation: z.string().min(1),
           answer: z.string().nullable(),
           source: z.string().nullable(),
+          ownerAnswer: z
+            .object({ revision: z.number().int().positive(), questionId: z.string().min(1), answer: z.string().min(1) })
+            .strict()
+            .nullable()
+            .optional(),
           reversible: z.boolean(),
           dependsOn: z.array(z.string()),
         })
@@ -150,6 +155,11 @@ export function createOttoInterviewRoute(options: OttoInterviewToolsOptions): Ro
         return reply({ interview: current, effect: await options.sessions.message(caller, scope, current) }, 202);
       }
       if (!interview) return reply({ error: "start_interview_first" }, 409);
+      if (body.action === "reopen") {
+        if (body.revision !== interview.revision || typeof body.decisionId !== "string")
+          return reply({ error: "invalid_reopen" }, 409);
+        return reply({ interview: await store.reopenDecision(interview.revision, body.decisionId) }, 202);
+      }
       const preflight = await preflightOttoEngine(
         options.reader,
         options.key,
@@ -157,6 +167,15 @@ export function createOttoInterviewRoute(options: OttoInterviewToolsOptions): Ro
         interview.engine,
       );
       if (!preflight.ready) return reply({ preflight }, 422);
+      if (body.action === "restart") {
+        if (body.revision !== interview.revision) return reply({ error: "interview_revision_conflict" }, 409);
+        interview = await options.sessions.restart(caller, scope, interview);
+        const effect = await options.sessions.start(caller, scope, interview);
+        const current = await store.read();
+        if (!current || (effect as { status?: string }).status !== "succeeded")
+          return reply({ interview: current, effect }, 202);
+        return reply({ interview: current, effect: await options.sessions.message(caller, scope, current) }, 202);
+      }
       if (body.action === "answer") {
         if (
           !Number.isSafeInteger(body.revision) ||

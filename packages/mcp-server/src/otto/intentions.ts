@@ -1,6 +1,9 @@
 import type { Sql } from "@armada/core/server";
 import { interviewAuthorization, type OttoInterviewScope } from "./interview.ts";
 
+/** Trusted dispatcher adapter proof: thrown only before its first external mutation fence. */
+export class IntentionNotDispatched extends Error {}
+
 type DispatchResult = { status: "succeeded" | "unknown" | "pending"; result: unknown };
 /** Persist and atomically claim before invoking an effect. A lost acknowledgement is never retried. */
 export async function dispatchIntention(
@@ -52,7 +55,14 @@ export async function dispatchIntention(
       `update public.otto_intentions set state='succeeded',result=$2::jsonb,updated_at=now() where id=$1 and state='dispatching'`,
       [claimed.id, encoded],
     );
-  } catch {
+  } catch (error) {
+    if (error instanceof IntentionNotDispatched) {
+      await sql.query(
+        "update public.otto_intentions set state='pending',updated_at=now() where id=$1 and state='dispatching'",
+        [claimed.id],
+      );
+      return { status: "pending", result: null };
+    }
     // The external service may have accepted the effect. Even a database error after
     // success leaves dispatching/unknown, not a retryable pending operation.
     await sql.query(

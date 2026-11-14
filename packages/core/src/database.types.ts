@@ -3327,11 +3327,11 @@ export type Database = {
         };
         Relationships: [
           {
-            foreignKeyName: "otto_intentions_objective_id_fkey";
-            columns: ["objective_id"];
+            foreignKeyName: "otto_intentions_objective_id_org_id_owner_id_fkey";
+            columns: ["objective_id", "org_id", "owner_id"];
             isOneToOne: false;
             referencedRelation: "otto_objectives";
-            referencedColumns: ["id"];
+            referencedColumns: ["id", "org_id", "owner_id"];
           },
           {
             foreignKeyName: "otto_intentions_org_id_fkey";
@@ -3379,11 +3379,11 @@ export type Database = {
         };
         Relationships: [
           {
-            foreignKeyName: "otto_interview_revisions_objective_id_fkey";
-            columns: ["objective_id"];
+            foreignKeyName: "otto_interview_revisions_objective_id_org_id_owner_id_fkey";
+            columns: ["objective_id", "org_id", "owner_id"];
             isOneToOne: false;
             referencedRelation: "otto_interviews";
-            referencedColumns: ["objective_id"];
+            referencedColumns: ["objective_id", "org_id", "owner_id"];
           },
           {
             foreignKeyName: "otto_interview_revisions_org_id_fkey";
@@ -3425,11 +3425,11 @@ export type Database = {
         };
         Relationships: [
           {
-            foreignKeyName: "otto_interviews_objective_id_fkey";
-            columns: ["objective_id"];
+            foreignKeyName: "otto_interviews_objective_id_org_id_owner_id_fkey";
+            columns: ["objective_id", "org_id", "owner_id"];
             isOneToOne: true;
             referencedRelation: "otto_objectives";
-            referencedColumns: ["id"];
+            referencedColumns: ["id", "org_id", "owner_id"];
           },
           {
             foreignKeyName: "otto_interviews_org_id_fkey";
