@@ -1483,3 +1483,45 @@ installation and installed content, not model invocation of the skill, default
 pin precedence, or skill persistence after resume. Keep the older coordinator
 checks until all their additional behaviors have replacement rows. Boat remains
 coordinator-only via `--only boat --production-boat`, never the release gate.
+
+### Application-secret canary delivery parity
+
+Use a dedicated **non-secret** canary stored as an application secret, with
+value `parity_secret_<fresh random UUID>`, no expiry, and a dedicated template
+revision binding exactly that one secret to `PARITY_SECRET_CANARY`. Never use
+real application credentials for this probe. Add value-free metadata and its
+independently known SHA-256 to the provider case:
+
+```json
+"applicationSecret": {
+  "id": "<secret UUID>",
+  "version": 1,
+  "key": "PARITY_SECRET_CANARY",
+  "canarySha256": "<64 lowercase hexadecimal characters>"
+}
+```
+
+Run `--parity --feature application-secrets`, optionally `--only modal|docker`.
+The probe reads authorized template and secret **metadata only**; no secret-read
+API exists or is requested. It requires active/current metadata, no expiry and
+exact frozen secret references. A guest command refuses values outside the
+dedicated canary shape, computes SHA-256 of the value, then hashes that digest
+with a fresh nonce. Only this nonce-specific proof leaves the guest; the raw
+value and its configured expected hash never enter argv, prompts or probe logs.
+An exec digest and the exact final parent-assistant digest on an answered,
+finished turn must both match. The same drained final-answer oracle as the
+readable-variable probe rejects tool echoes and later-page supersession.
+
+Missing configuration, unadvertised delivery or unavailable exec is explicit
+not-run without allocation; advertised lack of secret delivery is unsupported,
+not a pass. Expiring fixtures are not-run without allocation. Requests and
+observation share 110 seconds; durable template admission and every attributable
+sandbox retain independent cleanup even after a failed proof. A full run adds
+one counted template allocation per configured secret case in the same table.
+Existing secrets/templates are never created, rotated, revoked or deleted.
+
+This proves initial canary delivery through the actual secret-binding path,
+not rotation/revocation, denied cross-owner access, or delivery after resume.
+Those checks and MCP parity remain separate debt; keep the older coordinator
+scripts until every check is represented. Boat remains coordinator-only via
+`--only boat --production-boat`, never the release gate.
