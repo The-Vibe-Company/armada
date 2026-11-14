@@ -1,9 +1,10 @@
 import type { Sql } from "@armada/core";
-import { measureSqlQuery } from "./request-timing.ts";
+import { measureDbAcquire, measureSqlQuery } from "./request-timing.ts";
 
 /** The one method of Bun's Postgres client the server uses. */
 export interface SqlDriver {
   unsafe(text: string, params: never[]): PromiseLike<unknown>;
+  reserve?(): Promise<SqlDriver & { release(): void }>;
   autonomous?(text: string, params: never[]): PromiseLike<unknown>;
   begin?<T>(work: (driver: SqlDriver) => Promise<T>): Promise<T>;
 }
@@ -32,7 +33,15 @@ export function sqlOver(driver: SqlDriver): Sql {
     const encoded = text.replace(/\$(\d+)::(jsonb|json)\b/g, (cast, index: string, kind: string) =>
       typeof params[Number(index) - 1] === "string" ? `$${index}::text::${kind}` : cast,
     );
-    const rows = (await measureSqlQuery(async () => driver.unsafe(encoded, sent as never[]))) as unknown as T[];
+    const rows = (await measureSqlQuery(async () => {
+      if (!driver.reserve) return driver.unsafe(encoded, sent as never[]);
+      const connection = await measureDbAcquire(() => driver.reserve!());
+      try {
+        return await connection.unsafe(encoded, sent as never[]);
+      } finally {
+        connection.release();
+      }
+    })) as unknown as T[];
     return { rows: Array.from(rows) };
   };
   const transaction = driver.begin;
@@ -57,10 +66,26 @@ export function bunSql(url: string, max = 3, queryTimeoutMs?: number): Sql & { c
   const autonomous = new Bun.SQL(url, { ...options, max: 1 });
   return {
     ...sqlOver({
-      autonomous: (text, params) => autonomous.unsafe(text, params),
+      autonomous: async (text, params) => {
+        const connection = await measureDbAcquire(() => autonomous.reserve());
+        try {
+          return await connection.unsafe(text, params);
+        } finally {
+          connection.release();
+        }
+      },
+      reserve: () => client.reserve(),
       unsafe: (text, params) => client.unsafe(text, params),
-      begin: (work) =>
-        client.begin((transaction) => work({ unsafe: (text, params) => transaction.unsafe(text, params) })),
+      begin: async (work) => {
+        const connection = await measureDbAcquire(() => client.reserve());
+        try {
+          return await connection.begin((transaction) =>
+            work({ unsafe: (text, params) => transaction.unsafe(text, params) }),
+          );
+        } finally {
+          connection.release();
+        }
+      },
     }),
     close: async () => {
       await Promise.all([client.close(), autonomous.close()]);

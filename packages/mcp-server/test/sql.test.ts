@@ -100,3 +100,36 @@ describe("array parameters", () => {
     expect(result.rows).toEqual([{ ok: true }]);
   });
 });
+
+test("standalone queries count attempts, measure acquisition and release the same client on success or failure", async () => {
+  const { RequestTiming, withRequestTiming } = await import("../src/request-timing.ts");
+  for (const failure of ["none", "acquire", "query"] as const) {
+    const timing = new RequestTiming();
+    const calls: string[] = [];
+    const error = new Error("private_database_failure");
+    const sql = sqlOver({
+      unsafe: async () => {
+        throw new Error("must use reserved client");
+      },
+      reserve: async () => {
+        calls.push("acquire");
+        if (failure === "acquire") throw error;
+        return {
+          unsafe: async () => {
+            calls.push("query");
+            if (failure === "query") throw error;
+            return [{ ok: true }];
+          },
+          release: () => {
+            calls.push("release");
+          },
+        };
+      },
+    });
+    const result = withRequestTiming(timing, () => sql.query("select private_column", ["private_value"]));
+    if (failure === "none") expect(await result).toEqual({ rows: [{ ok: true }] });
+    else await expect(result).rejects.toBe(error);
+    expect(calls).toEqual(failure === "acquire" ? ["acquire"] : ["acquire", "query", "release"]);
+    expect(timing.header()).toMatch(/^db_acquire;dur=\d+\.\d{2}, sql;dur=\d+\.\d{2};desc="1"$/);
+  }
+});
