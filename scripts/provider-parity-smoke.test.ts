@@ -20,6 +20,10 @@ for (const mode of [
   "snapshot_missing",
   "snapshot_wrong_provider",
   "snapshot_answer_missing",
+  "routine_valid",
+  "routine_missing",
+  "routine_window",
+  "routine_full",
   "template_valid",
   "template_missing",
   "template_revision",
@@ -98,7 +102,7 @@ for (const mode of [
   test(`parity normal lifecycle and honest reporting: ${mode}`, async () => {
     const subscription = mode.startsWith("subscription") || mode === "accounts_subscription";
     const unpricedSubscription = mode === "subscription" || mode === "accounts_subscription";
-    let clock = 0;
+    let clock = mode.startsWith("routine_") ? Date.parse("2026-11-14T08:59:20Z") : 0;
     const woken = new Set<string>();
     const idleReads = new Map<string, number>();
 
@@ -110,6 +114,9 @@ for (const mode of [
     const controlled = new Set<string>();
     const journaled: string[] = [];
     const journalClaims: string[] = [];
+    const routines = new Map<string, Record<string, unknown>>();
+    const dueDates = new Map<string, number>();
+    const routineSandbox = (p: string) => `30000000-0000-4000-8000-00000000000${p === "modal" ? "1" : "2"}`;
     const templateCalls = new Map<string, number>();
     const templateRequests = new Map<string, object>();
     const debtFeature =
@@ -133,7 +140,9 @@ for (const mode of [
             (mode.startsWith("accounts") ? ["codex-openai", "codex-azure"] : [undefined]).map((account) => ({
               ...(account ? { account: mode === "accounts_invalid" ? "unknown-account" : account } : {}),
               provider,
-              ...(mode.startsWith("template_") && mode !== "template_missing"
+              ...(mode === "routine_full" ? { routine: true } : {}),
+              ...((mode.startsWith("template_") && mode !== "template_missing") ||
+              (mode.startsWith("routine_") && mode !== "routine_missing")
                 ? { template: { id: "10000000-0000-4000-8000-000000000001", revision: 2 } }
                 : {}),
               org: provider,
@@ -156,29 +165,33 @@ for (const mode of [
         ? ["--parity", "--feature", mode === "idle_pause" ? "idle-pause" : "wake-on-send"]
         : mode.startsWith("snapshot_")
           ? ["--parity", "--feature", "launch-snapshot"]
-          : mode === "template_full"
+          : mode === "routine_full"
             ? ["--parity"]
-            : mode.startsWith("template_")
-              ? ["--parity", "--feature", "templates"]
-              : mode.startsWith("h_")
-                ? ["--parity", "--feature", requestedHarness]
-                : ["control_api_unsupported", "control_full"].includes(mode)
-                  ? ["--parity"]
-                  : mode.startsWith("control_")
-                    ? ["--parity", "--feature", controlFeature]
-                    : mode.startsWith("github")
-                      ? ["--parity", "--feature", "github"]
-                      : mode.startsWith("accounts")
-                        ? ["--parity", "--accounts"]
-                        : mode === "usage_filter"
-                          ? ["--parity", "--only", "docker", "--feature", "exact-cost"]
-                          : mode === "filtered"
-                            ? ["--parity", "--only", "docker", "--feature", "exec"]
-                            : debtFeature
-                              ? ["--parity", "--feature", debtFeature]
-                              : mode === "invalid_filter"
-                                ? ["--parity", "--feature", "typo"]
-                                : ["--parity"],
+            : mode.startsWith("routine_")
+              ? ["--parity", "--feature", "routines"]
+              : mode === "template_full"
+                ? ["--parity"]
+                : mode.startsWith("template_")
+                  ? ["--parity", "--feature", "templates"]
+                  : mode.startsWith("h_")
+                    ? ["--parity", "--feature", requestedHarness]
+                    : ["control_api_unsupported", "control_full"].includes(mode)
+                      ? ["--parity"]
+                      : mode.startsWith("control_")
+                        ? ["--parity", "--feature", controlFeature]
+                        : mode.startsWith("github")
+                          ? ["--parity", "--feature", "github"]
+                          : mode.startsWith("accounts")
+                            ? ["--parity", "--accounts"]
+                            : mode === "usage_filter"
+                              ? ["--parity", "--only", "docker", "--feature", "exact-cost"]
+                              : mode === "filtered"
+                                ? ["--parity", "--only", "docker", "--feature", "exec"]
+                                : debtFeature
+                                  ? ["--parity", "--feature", debtFeature]
+                                  : mode === "invalid_filter"
+                                    ? ["--parity", "--feature", "typo"]
+                                    : ["--parity"],
       {
         now: () => clock,
         sleep: async (ms) => {
@@ -264,6 +277,67 @@ for (const mode of [
               break;
             case "docker/hosts/list":
               result = { hosts: [{ id: "owned-host", state: mode === "offline" ? "offline" : "online" }] };
+              break;
+            case "templates/get":
+              result = {
+                revision: {
+                  revision: 2,
+                  definition: {
+                    provider: p,
+                    harness: "codex",
+                    model: "fake-model",
+                    hostId: "owned-host",
+                    goldenId: "golden-id",
+                    modelAccount: { id: "fake-account" },
+                  },
+                },
+              };
+              break;
+            case "routines/create":
+              routines.set(p, {
+                ...body,
+                id: `40000000-0000-4000-8000-00000000000${p === "modal" ? "1" : "2"}`,
+                version: 1,
+                status: "paused",
+                nextDueAt: null,
+              });
+              result = { item: routines.get(p) };
+              break;
+            case "routines/enable": {
+              const due = new Date(clock);
+              due.setUTCMinutes(Number(String(routines.get(p)?.cron).split(" ")[0]), 0, 0);
+              if (due.getTime() <= clock) due.setUTCHours(due.getUTCHours() + 1);
+              if (mode === "routine_window") due.setUTCHours(due.getUTCHours() + 1);
+              dueDates.set(p, due.getTime());
+              routines.set(p, { ...routines.get(p), version: 2, status: "enabled", nextDueAt: due.toISOString() });
+              result = { item: routines.get(p) };
+              break;
+            }
+            case "routines/get":
+              result = { item: routines.get(p) };
+              break;
+            case "routines/delete":
+              routines.set(p, { ...routines.get(p), version: 3, status: "deleted", nextDueAt: null });
+              result = { item: routines.get(p) };
+              break;
+            case "routines/history":
+              if (clock < (dueDates.get(p) ?? Number.POSITIVE_INFINITY)) result = { items: [] };
+              else {
+                if (states.get(p) === "deleted") states.set(p, "ready");
+                result = {
+                  items: [
+                    {
+                      id: "50000000-0000-4000-8000-000000000001",
+                      state: "succeeded",
+                      sandboxId: routineSandbox(p),
+                      configurationVersion: 2,
+                      scheduledDueAt: new Date(dueDates.get(p) ?? 0).toISOString(),
+                      templateRequestId: "60000000-0000-4000-8000-000000000001",
+                      reason: null,
+                    },
+                  ],
+                };
+              }
               break;
             case "templates/launch": {
               const n = (templateCalls.get(p) ?? 0) + 1;
@@ -391,6 +465,21 @@ for (const mode of [
               break;
             }
             case "logs/read":
+              if (mode.startsWith("routine_") && body.id === routineSandbox(p)) {
+                const prompt = String(routines.get(p)?.prompt);
+                result = {
+                  events: [
+                    { kind: "prompt", promptId: "scheduled", text: prompt, status: "finished" },
+                    {
+                      kind: "message",
+                      promptId: "scheduled",
+                      partial: false,
+                      text: prompt.match(/ROUTINE_[a-z0-9]+/)?.[0],
+                    },
+                  ],
+                };
+                break;
+              }
               if (controlMarkers.has(p)) {
                 result = {
                   events: [
@@ -466,6 +555,19 @@ for (const mode of [
                 };
                 break;
               }
+              if (mode.startsWith("routine_") && body.id === routineSandbox(p)) {
+                result = {
+                  id: body.id,
+                  provider: p,
+                  status: states.get(p),
+                  hostId: "owned-host",
+                  golden: "fake-golden",
+                  harness: "codex",
+                  model: "fake-model",
+                  billingAccount: { id: "fake-account" },
+                };
+                break;
+              }
               detailReads.set(p, (detailReads.get(p) ?? 0) + 1);
               if (mode === "baseline_quota" && path === "sandbox/detail" && detailReads.get(p) === 1)
                 return Response.json(
@@ -473,7 +575,7 @@ for (const mode of [
                   { status: 429 },
                 );
               result = {
-                id: mode === "template_identity" ? body.id : p,
+                id: mode === "template_identity" || mode.startsWith("routine_") ? body.id : p,
                 status: states.get(p),
                 usage: {
                   turnCount: turns.get(p)?.length ?? 0,
@@ -576,7 +678,12 @@ for (const mode of [
                 );
               expect(["stopped", "failed"]).toContain(states.get(p) ?? "missing");
               result = {
-                id: mode === "wrong_delete_id" ? "another-sandbox" : mode === "template_identity" ? body.id : p,
+                id:
+                  mode === "wrong_delete_id"
+                    ? "another-sandbox"
+                    : mode === "template_identity" || mode.startsWith("routine_")
+                      ? body.id
+                      : p,
                 status: mode === "delete_failure" && p === "docker" ? "pending" : "deleted",
               };
               break;
@@ -848,6 +955,32 @@ for (const mode of [
       } else {
         expect(report.starts).toBe(0);
         expect(report.features["launch-snapshot"].modal.diagnostic.code).toBe("invalid_snapshot_source");
+      }
+      return;
+    }
+    if (mode.startsWith("routine_")) {
+      expect(passed).toBe(true);
+      expect(report.starts).toBe(
+        mode === "routine_missing" || mode === "routine_window" ? 0 : mode === "routine_full" ? 6 : 2,
+      );
+      for (const provider of ["modal", "docker"]) {
+        if (mode === "routine_missing")
+          expect(report.features.routines[provider].reason).toBe("routine_template_revision_not_configured");
+        if (mode === "routine_window")
+          expect(report.features.routines[provider].diagnostic).toMatchObject({
+            code: "routine_due_outside_budget",
+            notRun: true,
+          });
+        expect(report.features.routines[provider].status).toBe(
+          mode === "routine_missing" || mode === "routine_window" ? "not-run" : "pass",
+        );
+        if (mode !== "routine_missing") {
+          expect(routines.get(provider)?.status).toBe("deleted");
+          if (mode !== "routine_window")
+            expect(report.features[mode === "routine_full" ? "routines-cleanup" : "cleanup"][provider].status).toBe(
+              "pass",
+            );
+        }
       }
       return;
     }

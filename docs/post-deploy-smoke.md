@@ -1366,3 +1366,29 @@ waiting for completion and cleaned up even if acknowledgement remains unknown.
 Child probes share the outer run deadline; cleanup keeps its independent budget.
 Boat retains the coordinator-only production opt-in. Template CRUD/publication
 and routine execution are not established by this launch probe.
+
+### Scheduled routine-execution parity
+
+The `routines` feature builds on the configured `template` revision above.
+`--parity --feature routines` creates a uniquely named **personal, disposable**
+routine, hourly UTC, with one run per day and a 900-second sandbox TTL. Its first
+minute is selected 15–75 seconds ahead; no manual template launch/send or scheduler
+override substitutes for the scheduled occurrence. The probe requires that new
+occurrence's exact configuration version/due time, admitted template request,
+matching sandbox/model/account placement, exact initial instruction, final
+assistant answer and terminal event. History or an ACK alone is not a pass.
+
+Set `routine: true` on a configured provider case to include this additional
+scheduled launch in a full run. Otherwise the full-run row is explicitly
+`not-run: routine_probe_not_enabled`; a filtered feature without a template is
+`not-run: routine_template_revision_not_configured`. A due time beyond the
+110-second observation budget is not-run after cleaning the disposable routine.
+Use a dedicated smoke template; its references and billing account are real.
+
+Cleanup tombstones only the newly created routine, then drains its authorized
+history (which remains readable after deletion) to journal late allocations.
+All claimed sandboxes use the existing parity stop/delete reconciliation. Lost
+create/enable acknowledgements and uncertain admissions cannot become a pass;
+unconfirmed cleanup remains a failure with the routine ID and nonce reported.
+This proves one scheduled initial execution, not pause across a later hourly
+boundary, daily-limit exhaustion or the older routine script's entire campaign.
