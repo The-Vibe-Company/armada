@@ -92,11 +92,7 @@ export function createRuntimeFollowup(
     // payloads identical even after publication adds that conversation to SQL.
     const firstConversation = `first_${requestId}`;
     const conversation = input.conversation_id ?? found.conversationIds.at(-1) ?? firstConversation;
-    const idleFirst =
-      found.provider === "boat" &&
-      found.conversationIds.length === 0 &&
-      !found.taskPromptId &&
-      input.conversation_id === undefined;
+    const idleFirst = found.conversationIds.length === 0 && !found.taskPromptId && input.conversation_id === undefined;
     if (!found.conversationIds.includes(conversation) && !idleFirst)
       throw new VaultError("invalid", "Continue an existing runtime conversation.");
     const commandId = `follow_${requestId}`;

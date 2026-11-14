@@ -248,8 +248,8 @@ export async function beginGoldenOperation(
       ]);
     };
     return release;
-  } catch {
-    throw new GoldenError("conflict", "Golden operation could not be admitted.");
+  } catch (error) {
+    throw new GoldenError("conflict", "Golden operation could not be admitted.", { cause: error });
   }
 }
 

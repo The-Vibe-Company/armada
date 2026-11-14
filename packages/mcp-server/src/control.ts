@@ -565,6 +565,7 @@ async function dispatch(
         version: 1,
         enabled: Boolean(options.modalRuntimeLaunch),
         followupVersion: options.runtimeSend ? 1 : 0,
+        idleLaunchVersion: options.modalRuntimeLaunch && options.runtimeSend ? 1 : 0,
         resumeVersion: options.runtimeResume && options.modalRuntimeLaunch ? 1 : 0,
         mcpVersion: options.runtimeMcp ? 2 : 0,
         skillsVersion: options.modalRuntimeLaunch ? 1 : 0,
@@ -1031,7 +1032,9 @@ async function dispatch(
         );
       if (!options.modalRuntimeLaunch || !options.modalRuntimeHostFor)
         throw new VaultError("unavailable", "Modal runtime staging opt-in is disabled.");
-      required(body, "prompt");
+      if (body.prompt !== undefined || body.id !== undefined) required(body, "prompt");
+      if (body.id === undefined && body.prompt === undefined && !options.runtimeSend)
+        throw new VaultError("unavailable", "Modal runtime idle first send is unavailable.");
       if (body.id !== undefined) {
         const standard = [
           "org",
@@ -1155,6 +1158,19 @@ async function dispatch(
     }
     case "golden/list":
       return listGoldens(options, await selectedCaller(options, caller, optional(body, "org")));
+    case "golden/build/find": {
+      if (!options.goldenBuilds || !options.data)
+        throw new VaultError("unavailable", "Durable golden builds are not configured.");
+      const scoped = await selectedCaller(options, caller, optional(body, "org"));
+      const org = await resolveOrg(options.store, caller.userId, scopedOrg(scoped, optional(body, "org")));
+      const golden = selectGolden(await options.data(scoped).goldens.findByName(org.id, required(body, "name")), body);
+      if (!golden)
+        throw new GoldenError(
+          "not_found",
+          "No visible golden has that name and provider. Check golden list in the intended organization.",
+        );
+      return { build: await options.goldenBuilds.findActive(caller.userId, golden.id, [org.id]) };
+    }
     case "golden/build/cancel": {
       if (!options.goldenBuilds) throw new VaultError("unavailable", "Durable golden builds are not configured.");
       const scoped = await selectedCaller(options, caller, optional(body, "org"));
@@ -1721,7 +1737,10 @@ function scopedOrg(caller: Caller, requested: string | undefined): string | unde
   const orgId = caller.orgs[0]?.orgId;
   if (!orgId) throw new Unauthorized("Run armada login.");
   if (requested !== undefined && requested.trim() !== "" && requested.trim().toLowerCase() !== orgId) {
-    throw new VaultError("forbidden", "This token is scoped to another org.");
+    throw new VaultError(
+      "forbidden",
+      `This token is scoped to org ${orgId}. Retry with --org ${orgId} (the UUID, not its name).`,
+    );
   }
   return orgId;
 }

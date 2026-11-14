@@ -1,5 +1,6 @@
 import { createHash, createHmac } from "node:crypto";
 import { readBoundedText } from "@armada/auth";
+import { GITHUB_CALLER_NOT_CONNECTED } from "@armada/core";
 import {
   decryptSecret,
   encryptSecret,
@@ -58,6 +59,12 @@ function allowed(binding: Pick<Binding, "repositories">, repo: string) {
       return m?.[1]?.toLowerCase() === repo.toLowerCase();
     })
   );
+}
+/** A service bearer may use its owner's connection; absence is not a runtime delivery failure. */
+export class RuntimeGitHubConnectionError extends VaultError {
+  constructor() {
+    super("forbidden", GITHUB_CALLER_NOT_CONNECTED);
+  }
 }
 /** Delivery/ACK failure is not evidence that the owner must reconnect GitHub. */
 export class RuntimeGitHubDeliveryError extends Error {
@@ -158,6 +165,7 @@ export function createRuntimeGitHub(options: {
   async function preflightRepositories(caller: Caller, org: string, repositories: { url: string }[]) {
     if (!caller.orgs.some((m) => m.orgId === org) || !options.github.app) return denied();
     const access = await resolveGitHubAccess({ ...options.github, caller: "managed_runtime" }, caller.userId);
+    if (access.status === "not_connected") throw new RuntimeGitHubConnectionError();
     if (access.status !== "connected") return denied();
     for (const { url } of repositories) {
       const match = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?$/.exec(url);
@@ -188,6 +196,7 @@ export function createRuntimeGitHub(options: {
     ).rows;
     if (golden.length !== 1 || !golden[0]?.snapshot_id || !allowed(golden[0], input.repository)) return denied();
     const access = await resolveGitHubAccess({ ...options.github, caller: "managed_runtime" }, caller.userId);
+    if (access.status === "not_connected") throw new RuntimeGitHubConnectionError();
     if (access.status !== "connected") return denied();
     const response = await (options.github.fetch ?? fetch)(`https://api.github.com/repos/${input.repository}`, {
       method: "GET",
@@ -254,8 +263,10 @@ export function createRuntimeGitHub(options: {
   async function prepare(caller: Caller, id: string, resolved?: Awaited<ReturnType<typeof resolveGitHubAccess>>) {
     const s = await owner(caller, id);
     if (!options.github.app) return denied();
+    if (!(await options.github.store.getGitHubConnection(s.ownerId))) throw new RuntimeGitHubConnectionError();
     const before = await authority.withOwner(id, s.ownerId, (tx) => current(tx, id));
     const access = resolved ?? (await resolveGitHubAccess({ ...options.github, caller: "managed_runtime" }, s.ownerId));
+    if (access.status === "not_connected") throw new RuntimeGitHubConnectionError();
     if (access.status !== "connected" || access.identity.id !== before.binding.githubId) return denied();
     const identity = gitIdentity(access.identity);
     const issuedCap = await authority.withOwner(id, s.ownerId, async (tx, scope) => {
@@ -387,7 +398,11 @@ export function createRuntimeGitHub(options: {
   async function prepareLaunch(caller: Caller, id: string) {
     const s = await owner(caller, id);
     const access = await resolveGitHubAccess({ ...options.github, caller: "managed_runtime" }, s.ownerId);
-    if (access.status !== "connected") return { status: access.status, message: access.message };
+    if (access.status !== "connected")
+      return {
+        status: access.status,
+        message: access.status === "not_connected" ? GITHUB_CALLER_NOT_CONNECTED : access.message,
+      };
     const result = await prepare(caller, id, access);
     return {
       status: result.status,
