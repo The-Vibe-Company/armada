@@ -45,7 +45,23 @@ export default async function OttoPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  const [data, query] = await Promise.all([loadOtto(), searchParams]);
+  const query = await searchParams;
+  const data = await loadOtto(typeof query.repository === "string" ? query.repository : undefined);
+  const repositories =
+    data.state === "read" ? (
+      <nav aria-label="Observed repository" className="flex flex-wrap gap-2">
+        {data.repositories.map((repository) => (
+          <Button key={repository} asChild variant={repository === data.repository ? "secondary" : "outline"} size="sm">
+            <Link
+              href={`/otto?repository=${encodeURIComponent(repository)}`}
+              aria-current={repository === data.repository ? "page" : undefined}
+            >
+              {repository}
+            </Link>
+          </Button>
+        ))}
+      </nav>
+    ) : null;
   const header = (
     <>
       <PageHeader title="Otto" description={DESCRIPTION} />
@@ -76,6 +92,7 @@ export default async function OttoPage({
     return (
       <>
         {header}
+        {repositories}
         <Alert
           variant={data.state === "read" && data.read.state !== "not-observed" ? "destructive" : "default"}
           data-otto-unavailable
@@ -84,7 +101,15 @@ export default async function OttoPage({
           <AlertDescription>
             {failure}
             <Button asChild variant="outline" size="sm" className="mt-2">
-              <Link href="/otto">Try again</Link>
+              <Link
+                href={
+                  data.state === "read" && data.repository
+                    ? `/otto?repository=${encodeURIComponent(data.repository)}`
+                    : "/otto"
+                }
+              >
+                Try again
+              </Link>
             </Button>
           </AlertDescription>
         </Alert>
@@ -107,13 +132,19 @@ export default async function OttoPage({
   for (const resource of unlinked) push(resourceRow(resource, snapshot, data.viewerId, now, false));
   return (
     <ResourceBrowser
+      selectionQuery={data.repository ? `repository=${encodeURIComponent(data.repository)}` : ""}
       title="Otto"
       description={DESCRIPTION}
       label="Tasks and what they own"
       rows={rows}
       blockers={[]}
       initial={typeof query.item === "string" ? query.item : null}
-      notices={<Summary snapshot={snapshot} now={now} />}
+      notices={
+        <>
+          {repositories}
+          <Summary snapshot={snapshot} now={now} />
+        </>
+      }
       empty={
         <Empty title="Nothing observed yet" icon={<RadarIcon />}>
           {snapshot.githubCompleteness === "complete"

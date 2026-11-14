@@ -154,6 +154,9 @@ export function createOttoObserver(sql: Sql, scope: OttoScope) {
       let complete = false;
       try {
         while (path && seen.size < 100) {
+          const target = new URL(path, "https://api.github.com");
+          if (target.origin !== "https://api.github.com" || target.pathname !== `/repos/${scope.repository}/${type}`)
+            throw Error("unsafe_pagination");
           if (seen.has(path)) throw Error("pagination_cycle");
           seen.add(path);
           const cached: { etag: string | null; items: Item[]; next_path: string | null } | undefined = (

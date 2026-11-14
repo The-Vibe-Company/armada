@@ -58,6 +58,7 @@ export async function readOtto(options: {
   serverUrl: string;
   token: string;
   orgId: string;
+  repository?: string;
   fetch?: typeof fetch;
 }): Promise<OttoRead> {
   let origin: string;
@@ -73,6 +74,7 @@ export async function readOtto(options: {
   const get: Get = async (view, params) => {
     const url = new URL(`/api/v1/otto/${view}`, origin);
     url.searchParams.set("org_id", options.orgId);
+    if (options.repository) url.searchParams.set("repository", options.repository);
     for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
     let response: Response, body: unknown;
     try {
@@ -119,7 +121,8 @@ export async function readOtto(options: {
     return {
       state: "ready",
       snapshot: {
-        repository: isRecord(fact) && typeof fact.repository === "string" ? fact.repository : null,
+        repository:
+          options.repository ?? (isRecord(fact) && typeof fact.repository === "string" ? fact.repository : null),
         observedAt: summary.observedAt,
         githubCompleteness: completeness(summary.githubCompleteness ?? summary.completeness),
         summary: parsedSummary,
