@@ -73,6 +73,24 @@ Never put the token in command arguments. --org is not accepted by this command.
 The server validates the invitation and signed-in identity; the token is not printed.
 Example: armada org invitations accept --file /private/invitation-token
 `,
+  "token create": `Usage: armada token create [--org <name>] [--label <label>] [--json]
+Create a service token with authenticated access and server authorization.
+An explicit --org overrides a saved organization selection.
+Warning: stdout contains the new secret, including with --json. Store it securely now;
+Armada stores only its hash. Never commit it or send output to public logs.
+Supply the token to scripts using ARMADA_TOKEN through a secure environment, not arguments.
+Example: armada token create --org my-team --label automation
+`,
+  "token list": `Usage: armada token list [--json]
+List service-token metadata with authenticated access and server authorization.
+Output includes IDs and revocation state, not token values. Use an ID with token revoke.
+Example: armada token list --json
+`,
+  "token revoke": `Usage: armada token revoke <id> [--json]
+Revoke a service token with authenticated access and server authorization.
+Use its ID from armada token list --json, never the secret token value.
+Example: armada token revoke TOKEN_UUID
+`,
   "org setup": `Usage: armada org setup [--org <name>] [--json]
 Show organization provider setup status. Sign in before running the operation.
 Use --org to override a saved selection. This reports configuration, not a live lifecycle test.
