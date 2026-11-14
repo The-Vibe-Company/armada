@@ -25,6 +25,26 @@ Next, configure its provider with armada org connect boat|modal --org <id>.
 Supply provider credentials through stdin/hidden input or a private file, never arguments.
 Example: armada org create my-team --json
 `,
+  "org members list": `Usage: armada org members list [--org <name>] [--json]
+List organization members and roles after Armada login and server authorization.
+Use --org to override a saved organization selection.
+Example: armada org members list --org my-team --json
+`,
+  "org members add": `Usage: armada org members add <email> [--role admin|member] [--org <name>] [--json]
+Add a member as an organization admin after Armada login; the default role is member.
+Use --org to override a saved organization selection.
+Example: armada org members add teammate@example.com --role member --org my-team
+`,
+  "org members role": `Usage: armada org members role <email> <admin|member> [--org <name>] [--json]
+Change a member's role as an organization admin after Armada login.
+The new role is positional, not a --role flag. Use --org to override a saved selection.
+Example: armada org members role teammate@example.com admin --org my-team
+`,
+  "org members remove": `Usage: armada org members remove <email> [--org <name>] [--json]
+Remove a member as an organization admin after Armada login.
+Use --org to override a saved organization selection.
+Example: armada org members remove teammate@example.com --org my-team
+`,
   "org setup": `Usage: armada org setup [--org <name>]
 Show organization provider setup status. Sign in before running the operation.
 Example: armada org setup --org my-team
