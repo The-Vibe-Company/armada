@@ -183,6 +183,7 @@ export default async function SandboxPage({ params }: Props) {
             </h1>
             <StatusBadge
               status={sandbox.status}
+              readyLabel="Waiting for you"
               idlePaused={sandbox.status_reason === "idle_paused"}
               expiresAt={sandbox.expires_at}
             />
@@ -193,9 +194,7 @@ export default async function SandboxPage({ params }: Props) {
           </div>
           {configured && <SandboxActions sandboxId={sandbox.id} status={sandbox.status} />}
         </div>
-        <p className="text-xs text-muted-foreground" data-sandbox-billing-account>
-          Model account: <span className="font-medium text-foreground">{account.name}</span> · {account.billing}
-        </p>
+        <BillingAccountSummary account={account} />
         {outcome && <OutcomeDetail outcome={outcome} />}
         {preservation && <PreservationNotice preservation={preservation} className="max-w-2xl" />}
       </div>
@@ -341,6 +340,7 @@ function DockerSandbox({
             </h1>
             <StatusBadge
               status={sandbox.status}
+              readyLabel="Waiting for you"
               idlePaused={sandbox.status_reason === "idle_paused"}
               expiresAt={sandbox.expires_at}
             />
@@ -360,9 +360,7 @@ function DockerSandbox({
         </div>
       </div>
 
-      <p className="text-xs text-muted-foreground" data-sandbox-billing-account>
-        Model account: <span className="font-medium text-foreground">{billing.name}</span> · {billing.billing}
-      </p>
+      <BillingAccountSummary account={billing} />
 
       {life.notice && (
         <Alert data-lifecycle-notice={life.notice.kind} className="border-warning/40">
@@ -485,7 +483,13 @@ function RestrictedSandbox({ sandbox, owner }: { sandbox: SandboxListMetadata; o
         </Button>
         <div className="flex min-w-0 flex-wrap items-center gap-3">
           <h1 className="min-w-0 font-mono text-xl font-semibold tracking-tight break-all">{sandboxName(sandbox)}</h1>
-          <StatusBadge status={sandbox.status} idlePaused={sandbox.idlePaused === true} expiresAt={sandbox.expiresAt} />
+          <StatusBadge
+            status={sandbox.status}
+            idlePaused={sandbox.idlePaused === true}
+            canMessage={false}
+            readyLabel="Waiting"
+            expiresAt={sandbox.expiresAt}
+          />
         </div>
       </div>
       <Alert data-restricted role="status">
@@ -561,4 +565,13 @@ function AppliedConnections({ applied }: { applied: SandboxConnections }) {
 
 function formatDate(iso: string): string {
   return `${new Date(iso).toLocaleString("en", { dateStyle: "medium", timeStyle: "medium", timeZone: "UTC" })} UTC`;
+}
+
+function BillingAccountSummary({ account }: { account: BillingAccount }) {
+  return (
+    <p className="text-xs break-words text-muted-foreground [overflow-wrap:anywhere]" data-sandbox-billing-account>
+      Account: <span className="font-medium text-foreground">{account.name}</span>
+      {account.kindLabel ? ` (${account.kindLabel})` : ""}
+    </p>
+  );
 }

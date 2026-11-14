@@ -9,6 +9,7 @@ export function StatusBadge({
   status,
   idlePaused = false,
   canMessage = true,
+  readyLabel,
   expiresAt,
   className,
 }: {
@@ -16,6 +17,8 @@ export function StatusBadge({
   idlePaused?: boolean;
   /** A metadata-only viewer can see the pause, but cannot send the wake-up message. */
   canMessage?: boolean;
+  /** Context-specific plain wording without changing the stored status or other screens. */
+  readyLabel?: string;
   expiresAt?: string | null;
   className?: string;
 }) {
@@ -31,7 +34,7 @@ export function StatusBadge({
       aria-label={pauseHint}
     >
       <StatusDot tone={look.tone} pulse={look.pulse} />
-      {paused ? "Paused" : look.label}
+      {paused ? "Paused" : status === "ready" ? (readyLabel ?? look.label) : look.label}
     </Badge>
   );
 }
