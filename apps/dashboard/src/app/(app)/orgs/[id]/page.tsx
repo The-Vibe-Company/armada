@@ -1,3 +1,4 @@
+import { CircleAlertIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
@@ -5,6 +6,7 @@ import { inviteMember, resendInvitation, revokeInvitation } from "@/app/actions/
 import { InvitationList, InviteForm } from "@/components/invitations";
 import { MemberRoleForm, RemoveMember } from "@/components/member-controls";
 import { PageHeader, SectionHeader } from "@/components/page-header";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -27,19 +29,18 @@ type Props = {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 };
 
-type Invitations = { ok: true; rows: InvitationView[] } | { ok: false; message: string };
+type Invitations = { ok: true; rows: InvitationView[] } | { ok: false; reason: "not-configured" | "unavailable" };
 
 /** The org's pending invitations, read by the Armada server for an admin. A failed read leaves the page usable. */
 async function readInvitations(viewer: Viewer, org: string, now: Date): Promise<Invitations> {
   const serverUrl = mcpUrl();
-  if (!serverUrl || !viewer.token)
-    return { ok: false, message: "The Armada server is not configured for this dashboard." };
+  if (!serverUrl || !viewer.token) return { ok: false, reason: "not-configured" };
   try {
     const list = await createInvitationControl({ serverUrl, token: viewer.token }).list(org);
     const rows = pendingInvitations(list, org, now);
-    return rows ? { ok: true, rows } : { ok: false, message: "The Armada server sent an unexpected invitation list." };
+    return rows ? { ok: true, rows } : { ok: false, reason: "unavailable" };
   } catch (error) {
-    if (error instanceof ControlError) return { ok: false, message: error.message };
+    if (error instanceof ControlError) return { ok: false, reason: "unavailable" };
     throw error;
   }
 }
@@ -97,9 +98,21 @@ export default async function OrgPage({ params, searchParams }: Props) {
               revoke={revokeInvitation}
             />
           ) : (
-            <p role="alert" className="text-sm text-destructive">
-              Pending invitations could not be loaded: {invitations.message}
-            </p>
+            <Alert variant="destructive">
+              <CircleAlertIcon />
+              <AlertTitle>Pending invitations could not be loaded</AlertTitle>
+              <AlertDescription>
+                <p>
+                  {invitations.reason === "not-configured"
+                    ? "Ask an Armada administrator to finish server setup, then reload this organization."
+                    : "Reload this organization to try again. If this continues, ask an Armada administrator for help."}
+                </p>
+                <p>Existing invitations may still be pending. Your members are shown below.</p>
+                <Button asChild variant="outline" size="sm" className="mt-2">
+                  <a href={`/orgs/${id}`}>Reload organization</a>
+                </Button>
+              </AlertDescription>
+            </Alert>
           )}
         </section>
       )}

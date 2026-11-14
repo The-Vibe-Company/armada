@@ -529,6 +529,7 @@ function sandbox(
 
 let state = seed();
 let dockerHosts: Row[] | null = null;
+let invitationListFailure: string | null = null;
 let snapshotListFailure: string | null = null;
 let templateListFailure: { unsupported: boolean; message: string } | null = null;
 let vaultListFailure: { unsupported: boolean; message: string } | null = null;
@@ -1840,8 +1841,10 @@ function invitations(route: string, body: Row, request: Request): Response {
   }
   const org = state.orgs.find((item) => item.id === body.org);
   if (!org || !isAdmin(org.id, userId)) return controlFail(403, "forbidden", "Only an org admin manages invitations.");
-  if (route === "list")
+  if (route === "list") {
+    if (invitationListFailure) return controlFail(503, "unavailable", invitationListFailure);
     return json({ invitations: state.invitations.filter((row) => row.orgId === org.id).map(invitationDto) });
+  }
   if (route === "create") {
     const email = String(body.email ?? "").toLowerCase();
     if (!/^[^\s@]+@[^\s@]+\.[a-z]{2,}$/.test(email) || (body.role !== "member" && body.role !== "admin"))
@@ -2753,6 +2756,7 @@ function control(url: URL, body: Row): Response {
     vaultListFailure = null;
     accountListFailure = null;
     dockerHosts = Array.isArray(body.dockerHosts) ? body.dockerHosts : null;
+    invitationListFailure = typeof body.invitationListFailure === "string" ? body.invitationListFailure : null;
     snapshotListFailure = typeof body.snapshotListFailure === "string" ? body.snapshotListFailure : null;
     if (body.emptyGoldens) state.goldens = [];
     // Keep a visible header but make its current revision unreadable, as a partial control API read can be.
@@ -3192,6 +3196,10 @@ function control(url: URL, body: Row): Response {
   }
   if (url.pathname === "/__test/unverified-email") {
     state.unverifiedEmails.push(String(body.email));
+    return json({ ok: true });
+  }
+  if (url.pathname === "/__test/invitation-list-failure") {
+    invitationListFailure = typeof body.message === "string" ? body.message : null;
     return json({ ok: true });
   }
   /** Marks an invitation as the server would after a revoke or an acceptance elsewhere. */
