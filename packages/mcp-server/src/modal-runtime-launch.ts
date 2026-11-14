@@ -4,7 +4,11 @@ import { modalRuntimeConfiguration } from "./modal-runtime-variables.ts";
 import { createRuntimeLaunch, type RuntimeLaunchOptions } from "./runtime-launch.ts";
 
 /** First-answer slice: same enrolled startup and journal, Modal supplies only compute. */
-export function modalRuntimeLaunch(options: RuntimeLaunchOptions): NonNullable<LaunchOptions["runtime"]> {
+export function modalRuntimeLaunch(
+  options: RuntimeLaunchOptions & {
+    modelAuth?: NonNullable<Parameters<typeof modalRuntimeConfiguration>[1]["modelAuth"]>;
+  },
+): NonNullable<LaunchOptions["runtime"]> {
   const startRuntime = createRuntimeLaunch(options);
   return {
     async start(input) {

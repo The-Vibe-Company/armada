@@ -7,6 +7,7 @@ import {
   type SandboxRecord,
 } from "@armada/core";
 import { boatRuntimeConfiguration } from "../src/boat-runtime-configuration.ts";
+import { runtimeConfiguration } from "../src/runtime-configuration.ts";
 
 function fixture() {
   const actor: GoldenActor = { userId: crypto.randomUUID(), orgId: crypto.randomUUID(), role: "member" as const };
@@ -52,102 +53,108 @@ function fixture() {
   return { actor, sandbox, manifest, credentials, key, architecture: "x64" as const };
 }
 
-test.each(["key", "endpoint", "native", "native-fresh", "shared"] as const)(
-  "private Codex configuration projects %s without host/unselected harness authority",
-  async (mode) => {
-    const f = fixture();
-    const originalAuth = JSON.stringify({
-      tokens: { account_id: "account", access_token: crypto.randomUUID(), refresh_token: crypto.randomUUID() },
-    });
-    const latestAuth = JSON.stringify({
-      tokens: { account_id: "account", access_token: crypto.randomUUID(), refresh_token: crypto.randomUUID() },
-    });
-    if (mode === "endpoint")
-      f.credentials.env[CODEX_ENDPOINT_ENV] = JSON.stringify({
-        version: 1,
-        baseUrl: "https://model.example/responses",
-        apiVersion: "2026-01-01",
+for (const provider of ["boat", "modal"] as const)
+  test.each(["key", "endpoint", "native", "native-fresh", "shared"] as const)(
+    `${provider} private Codex configuration projects %s without host/unselected harness authority`,
+    async (mode) => {
+      const f = fixture();
+      f.sandbox.provider = provider;
+      const originalAuth = JSON.stringify({
+        tokens: { account_id: "account", access_token: crypto.randomUUID(), refresh_token: crypto.randomUUID() },
       });
-    if (mode.startsWith("native") || mode === "shared") {
-      f.credentials.codexAuthJson = true;
-      f.credentials.env = mode === "shared" ? { ARMADA_SERVER_CODEX: "1" } : { [CODEX_AUTH_ENV]: originalAuth };
-    }
-    if (mode === "key") {
-      f.sandbox.repositoryDir = null;
-      f.manifest.architecture = "arm64";
-    }
-    const architecture = mode === "key" ? ("arm64" as const) : ("x64" as const);
-    const modelAuth = {
-      state: {
-        async read(actor: typeof f.actor, id: string, version: number, sandboxId: string) {
-          if (
-            actor.userId !== f.actor.userId ||
-            id !== f.sandbox.credentialId ||
-            version !== 3 ||
-            sandboxId !== f.sandbox.id
-          )
-            throw Error("wrong auth projection scope");
-          if (mode === "native-fresh") return undefined;
-          return {
-            authJson: latestAuth,
-            revision: 7,
-            secrets: [originalAuth],
-            sourceGeneration: mode === "shared" ? "server:ready" : "runtime:previous",
-          };
-        },
-      },
-    };
-    const broker = {
-      async access() {
-        throw Error("projection must not fetch model access");
-      },
-    };
-    const plan = await boatRuntimeConfiguration({
-      ...f,
-      architecture,
-      modelAuth: { ...modelAuth, ...(mode === "shared" ? { broker } : {}) },
-    });
-    expect(plan.artifact).toEqual({ sha256: "a".repeat(64), bytes: 10 });
-    expect(plan.configuration).toMatchObject({
-      selectedHarness: "codex",
-      root: `/home/user/.armada-runtime/${f.sandbox.id}`,
-      cwd: mode === "key" ? "/home/user" : "/home/user/project",
-      grant: { expiresAt: Date.parse(f.sandbox.expiresAt ?? "") },
-      claudeEnv: {},
-      claudeExecutable: "",
-      codexExecutable: "",
-    });
-    expect(plan.configuration.mcp).toEqual({ revision: "boat_runtime_empty_v1", servers: {} });
-    expect(Object.keys(plan).sort()).toEqual(["artifact", "cacheDir", "configuration"]);
-    expect(plan.configuration.codexEnv[CODEX_AUTH_ENV]).toBeUndefined();
-    expect(plan.configuration.codexEnv.ARMADA_SERVER_CODEX).toBeUndefined();
-    if (mode.startsWith("native")) {
-      expect(plan.configuration.codexAuthJson).toBe(mode === "native-fresh" ? originalAuth : latestAuth);
-      expect(plan.configuration.nativeAuthRevision).toBe(mode === "native-fresh" ? 0 : 7);
-      expect(plan.configuration.nativeAuthSecrets).toEqual(mode === "native-fresh" ? [] : [originalAuth]);
-    } else if (mode === "shared") {
-      expect(plan.configuration.runtimeSubscription).toBe(true);
-      expect(plan.configuration.codexAuthJson).toBeUndefined();
-      expect(plan.configuration.nativeAuthRevision).toBeUndefined();
-      expect(plan.configuration.nativeAuthSecrets).toBeUndefined();
-      expect(plan.configuration.codexEnv.OPENAI_API_KEY).toBeUndefined();
-      expect("subscription" in plan.configuration).toBe(false);
-      expect(JSON.stringify(plan)).not.toContain(JSON.parse(latestAuth).tokens.refresh_token);
-    } else {
-      expect(plan.configuration.codexEnv.OPENAI_API_KEY).toBe(f.key);
-      expect(plan.configuration.codexAuthJson).toBeUndefined();
+      const latestAuth = JSON.stringify({
+        tokens: { account_id: "account", access_token: crypto.randomUUID(), refresh_token: crypto.randomUUID() },
+      });
       if (mode === "endpoint")
-        expect(JSON.parse(plan.configuration.codexEnv[CODEX_ENDPOINT_ENV] ?? "")).toEqual({
+        f.credentials.env[CODEX_ENDPOINT_ENV] = JSON.stringify({
           version: 1,
-          baseUrl: "https://model.example",
+          baseUrl: "https://model.example/responses",
           apiVersion: "2026-01-01",
         });
-    }
-    // Returned manifest is a frozen launch copy, not the caller's mutable metadata.
-    f.manifest.runtime.sha256 = "b".repeat(64);
-    expect(plan.configuration.artifactManifest.runtime).toMatchObject({ sha256: "a".repeat(64) });
-  },
-);
+      if (mode.startsWith("native") || mode === "shared") {
+        f.credentials.codexAuthJson = true;
+        f.credentials.env = mode === "shared" ? { ARMADA_SERVER_CODEX: "1" } : { [CODEX_AUTH_ENV]: originalAuth };
+      }
+      if (mode === "key") {
+        f.sandbox.repositoryDir = null;
+        f.manifest.architecture = "arm64";
+      }
+      const architecture = mode === "key" ? ("arm64" as const) : ("x64" as const);
+      const modelAuth = {
+        state: {
+          async read(actor: typeof f.actor, id: string, version: number, sandboxId: string) {
+            if (
+              actor.userId !== f.actor.userId ||
+              id !== f.sandbox.credentialId ||
+              version !== 3 ||
+              sandboxId !== f.sandbox.id
+            )
+              throw Error("wrong auth projection scope");
+            if (mode === "native-fresh") return undefined;
+            return {
+              authJson: latestAuth,
+              revision: 7,
+              secrets: [originalAuth],
+              sourceGeneration: mode === "shared" ? "server:ready" : "runtime:previous",
+            };
+          },
+        },
+      };
+      const broker = {
+        async access() {
+          throw Error("projection must not fetch model access");
+        },
+      };
+      const plan = await runtimeConfiguration(
+        {
+          ...f,
+          architecture,
+          modelAuth: { ...modelAuth, ...(mode === "shared" ? { broker } : {}) },
+        },
+        provider,
+        `${provider}_runtime_empty_v1`,
+      );
+      expect(plan.artifact).toEqual({ sha256: "a".repeat(64), bytes: 10 });
+      expect(plan.configuration).toMatchObject({
+        selectedHarness: "codex",
+        root: `/home/user/.armada-runtime/${f.sandbox.id}`,
+        cwd: mode === "key" ? "/home/user" : "/home/user/project",
+        grant: { expiresAt: Date.parse(f.sandbox.expiresAt ?? "") },
+        claudeEnv: {},
+        claudeExecutable: "",
+        codexExecutable: "",
+      });
+      expect(plan.configuration.mcp).toEqual({ revision: `${provider}_runtime_empty_v1`, servers: {} });
+      expect(Object.keys(plan).sort()).toEqual(["artifact", "cacheDir", "configuration"]);
+      expect(plan.configuration.codexEnv[CODEX_AUTH_ENV]).toBeUndefined();
+      expect(plan.configuration.codexEnv.ARMADA_SERVER_CODEX).toBeUndefined();
+      if (mode.startsWith("native")) {
+        expect(plan.configuration.codexAuthJson).toBe(mode === "native-fresh" ? originalAuth : latestAuth);
+        expect(plan.configuration.nativeAuthRevision).toBe(mode === "native-fresh" ? 0 : 7);
+        expect(plan.configuration.nativeAuthSecrets).toEqual(mode === "native-fresh" ? [] : [originalAuth]);
+      } else if (mode === "shared") {
+        expect(plan.configuration.runtimeSubscription).toBe(true);
+        expect(plan.configuration.codexAuthJson).toBeUndefined();
+        expect(plan.configuration.nativeAuthRevision).toBeUndefined();
+        expect(plan.configuration.nativeAuthSecrets).toBeUndefined();
+        expect(plan.configuration.codexEnv.OPENAI_API_KEY).toBeUndefined();
+        expect("subscription" in plan.configuration).toBe(false);
+        expect(JSON.stringify(plan)).not.toContain(JSON.parse(latestAuth).tokens.refresh_token);
+      } else {
+        expect(plan.configuration.codexEnv.OPENAI_API_KEY).toBe(f.key);
+        expect(plan.configuration.codexAuthJson).toBeUndefined();
+        if (mode === "endpoint")
+          expect(JSON.parse(plan.configuration.codexEnv[CODEX_ENDPOINT_ENV] ?? "")).toEqual({
+            version: 1,
+            baseUrl: "https://model.example",
+            apiVersion: "2026-01-01",
+          });
+      }
+      // Returned manifest is a frozen launch copy, not the caller's mutable metadata.
+      f.manifest.runtime.sha256 = "b".repeat(64);
+      expect(plan.configuration.artifactManifest.runtime).toMatchObject({ sha256: "a".repeat(64) });
+    },
+  );
 
 test.each([
   "owner",
