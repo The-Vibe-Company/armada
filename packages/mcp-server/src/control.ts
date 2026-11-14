@@ -1008,8 +1008,13 @@ function scope(body: Record<string, unknown>): "user" | "org" {
 
 async function selectedCaller(options: ControlOptions, caller: Caller, ref: string | undefined): Promise<Caller> {
   if (ref === undefined) return caller;
-  const org = await resolveOrg(options.store, caller.userId, scopedOrg(caller, ref));
-  return { ...caller, orgs: caller.orgs.filter((item) => item.orgId === org.id) };
+  const scoped = scopedOrg(caller, ref);
+  const wanted = scoped?.trim().toLowerCase();
+  // Authentication already read these memberships on this request, without a cache.
+  // Names still need the store; resource SQL independently enforces current visibility.
+  const verified = caller.orgs.find((item) => item.orgId === wanted);
+  const orgId = verified?.orgId ?? (await resolveOrg(options.store, caller.userId, scoped)).id;
+  return { ...caller, orgs: caller.orgs.filter((item) => item.orgId === orgId) };
 }
 
 export { authenticatedControlCaller } from "./control-caller.ts";
