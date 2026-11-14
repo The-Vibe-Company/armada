@@ -279,6 +279,7 @@ export {
   parseConnectionModels,
   parseOpenCodeEndpoint,
 } from "./opencode-endpoint.ts";
+export type { OttoEngine, OttoEnginePreflight } from "./otto/engine.ts";
 export type {
   OttoCompleteness,
   OttoFact,
