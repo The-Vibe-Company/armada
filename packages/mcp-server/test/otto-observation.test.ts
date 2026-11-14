@@ -79,3 +79,29 @@ test("failed pagination is unknown and cached 304 pages still follow next links"
   );
   expect(complete[0]?.evidence.numbers).toEqual([17, 18]);
 });
+
+// Persisted conditional-request links must not escape their repository, even on a 304 response.
+test("cached pagination cannot fetch evidence from another repository", async () => {
+  const requests: string[] = [];
+  const facts: unknown[][] = [];
+  const observer = createOttoObserver(
+    {
+      async query(text, params) {
+        if (text.startsWith("select etag,items,next_path"))
+          return { rows: [{ etag: "cached", items: [], next_path: "/repos/example/other/pulls?page=2" }] } as never;
+        if (text.includes("insert into public.otto_facts")) facts.push(params ?? []);
+        return { rows: [] } as never;
+      },
+    },
+    { orgId: "org", repository: "example/web" },
+  );
+  await observer.reconcile("fixture", new AbortController().signal, (async (url) => {
+    requests.push(String(url));
+    return new Response(null, { status: 304 });
+  }) as typeof fetch);
+  expect(requests).toEqual([
+    "https://api.github.com/repos/example/web/pulls?state=open&per_page=100",
+    "https://api.github.com/repos/example/web/issues?state=open&per_page=100",
+  ]);
+  expect(facts.filter((params) => params[3] === "repository.open_prs")[0]?.[7]).toBe("partial");
+});

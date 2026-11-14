@@ -36,6 +36,11 @@ export async function loadOtto(requested?: string): Promise<OttoPageData> {
     viewerId: viewer.id,
     repositories,
     repository,
-    read: await readOtto({ serverUrl: url, token: viewer.token, orgId: selected.org.id, repository }),
+    read: await readOtto({
+      serverUrl: url,
+      token: viewer.token,
+      orgId: selected.org.id,
+      ...(repository ? { repository } : {}),
+    }),
   };
 }

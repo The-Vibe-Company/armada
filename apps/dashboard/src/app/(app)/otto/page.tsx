@@ -101,7 +101,15 @@ export default async function OttoPage({
           <AlertDescription>
             {failure}
             <Button asChild variant="outline" size="sm" className="mt-2">
-              <Link href="/otto">Try again</Link>
+              <Link
+                href={
+                  data.state === "read" && data.repository
+                    ? `/otto?repository=${encodeURIComponent(data.repository)}`
+                    : "/otto"
+                }
+              >
+                Try again
+              </Link>
             </Button>
           </AlertDescription>
         </Alert>
@@ -124,6 +132,7 @@ export default async function OttoPage({
   for (const resource of unlinked) push(resourceRow(resource, snapshot, data.viewerId, now, false));
   return (
     <ResourceBrowser
+      selectionQuery={data.repository ? `repository=${encodeURIComponent(data.repository)}` : ""}
       title="Otto"
       description={DESCRIPTION}
       label="Tasks and what they own"
