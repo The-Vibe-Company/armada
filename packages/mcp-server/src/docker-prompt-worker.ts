@@ -44,14 +44,13 @@ export function createDockerPromptWorker(sql: Sql, key: string, options: Paramet
           .catch(() => {});
       }, 10000);
       try {
-        const existing =
-          (
-            await sql.query("select request_id from public.runtime_commands where sandbox_id=$1 and request_id=$2", [
-              q.sandbox_id,
-              `docker_prompt_${q.request_id}`,
-            ])
-          ).rows.length > 0;
-        if (!existing && !(await controls.canDispatchQueued(caller, q.sandbox_id))) return;
+        const previous = (
+          await sql.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
+            "select request_enc from public.runtime_commands where sandbox_id=$1 and request_id=$2",
+            [q.sandbox_id, `docker_prompt_${q.request_id}`],
+          )
+        ).rows[0];
+        if (!previous && !(await controls.canDispatchQueued(caller, q.sandbox_id))) return;
         const plaintext = await decryptSecret(q.input_enc, key);
         if (createHash("sha256").update(plaintext).digest("hex") !== q.input_hash)
           throw Error("queued prompt identity mismatch");
@@ -72,18 +71,21 @@ export function createDockerPromptWorker(sql: Sql, key: string, options: Paramet
           ])
         ).rows[0];
         if (!row) return;
+        const conversationId = previous
+          ? (JSON.parse(await decryptSecret(previous.request_enc, key)).input.conversationId as string | undefined)
+          : (q.conversation_id ?? payload.conversationId ?? undefined);
         const result = await sender.send(
           caller,
           {
             request_id: q.request_id,
             prompt: payload.prompt,
-            ...(payload.conversationId === null ? {} : { conversation_id: payload.conversationId }),
+            ...(conversationId === undefined ? {} : { conversation_id: conversationId }),
           },
           row,
         );
         if (!result.conversationId) throw Error("queued prompt dispatch unavailable");
         await sql.query(
-          "update public.docker_queued_prompts set status='admitted',native_prompt_id=$4,native_conversation_id=$5 where sandbox_id=$1 and request_id=$2 and worker_id=$3 and worker_expires_at>now() and status='dispatching'",
+          "update public.docker_queued_prompts set status='admitted',native_prompt_id=$4,native_conversation_id=$5,conversation_id=coalesce(conversation_id,$5) where sandbox_id=$1 and request_id=$2 and worker_id=$3 and worker_expires_at>now() and status='dispatching'",
           [q.sandbox_id, q.request_id, worker, result.promptId, result.conversationId],
         );
       } catch {

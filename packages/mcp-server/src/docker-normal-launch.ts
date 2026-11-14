@@ -84,6 +84,7 @@ type Manifest = {
   bootstrapId: string;
   healthId: string;
   promptId: string;
+  conversationId?: string;
   preparation?: { skills: string[]; connections: string[] };
 };
 type Receipt = {
@@ -370,6 +371,8 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       (!claim.result_enc &&
         (row.credential_version !== manifest.credentialVersion ||
           row.credential_id !== (manifest.credentialId ?? manifest.request.credentialId))) ||
+      (manifest.conversationId !== undefined &&
+        (typeof manifest.conversationId !== "string" || !uuid.test(manifest.conversationId))) ||
       !Number.isSafeInteger(manifest.credentialVersion) ||
       manifest.credentialVersion < 1 ||
       ![manifest.bootstrapId, manifest.healthId, manifest.promptId].every(
@@ -542,6 +545,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
           bootstrapId: randomUUID(),
           healthId: randomUUID(),
           promptId: randomUUID(),
+          conversationId: randomUUID(),
           preparation: { skills, connections },
         };
 
@@ -745,12 +749,22 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
         });
         phase = DOCKER_LAUNCH_FAILURE_MESSAGES.prompt;
         if (manifest.request.prompt !== null) {
+          const prior = (
+            await sql.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
+              "select request_enc from public.runtime_commands where sandbox_id=$1 and request_id=$2",
+              [request.requestId, `docker_prompt_${manifest.promptId}`],
+            )
+          ).rows[0];
+          const conversationId = prior
+            ? (JSON.parse(await decryptSecret(prior.request_enc, key)).input.conversationId as string | undefined)
+            : (manifest.conversationId ?? manifest.promptId);
           for (;;) {
             await live();
             await admission?.beforeStart();
             const result = await runtime.prompt(actor, request.requestId, {
               requestId: manifest.promptId,
               text: manifest.request.prompt,
+              ...(conversationId === undefined ? {} : { conversationId }),
             });
             if (result.state === "admitted") {
               if (result.epoch !== receipt.epoch) throw failure("sandbox_not_ready");
