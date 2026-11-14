@@ -291,6 +291,7 @@ export type {
   OttoTruth,
 } from "./otto/index.ts";
 export type { OttoObjective, OttoObjectiveMessage } from "./otto/objectives.ts";
+export * from "./otto/tickets.ts";
 export {
   dedupeEvents,
   type PromptOutcome,

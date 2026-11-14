@@ -6,6 +6,7 @@ import { createOttoEngineApi } from "./engine-api.ts";
 import { createOttoEvidenceApi } from "./evidence-api.ts";
 import { createOttoObjectivesApi } from "./objectives-api.ts";
 import type { OttoScope } from "./observation.ts";
+import { createOttoTicketApi } from "./ticket-tools.ts";
 
 /** All web endpoints mount together; absent observation configuration is an empty scope, not a missing route. */
 export function createOttoRoutes(options: {
@@ -27,6 +28,7 @@ export function createOttoRoutes(options: {
   };
   return [
     createOttoObjectivesApi(sql, authenticate),
+    createOttoTicketApi(sql, authenticate),
     createOttoEngineApi(sql, options.reader, options.encryptionKey, authenticate),
     createOttoEvidenceApi(sql, scopes, authenticate, options.observerToken, canReadRepository),
     createOttoApi(sql, scopes, authenticate, undefined, options.encryptionKey, canReadRepository),
