@@ -20,6 +20,7 @@ function preset(id: string) {
 
 test("every preset names a model credential kind and offers its catalog's models", () => {
   expect(CONNECTION_PRESETS.map((entry) => entry.id)).toEqual([
+    "morph",
     "openai",
     "anthropic",
     "opencode-openai",
@@ -258,4 +259,28 @@ test("OpenAI for OpenCode fixes the Responses connection separately from Codex a
     models: ["gpt-test"],
   });
   expect(value.apiKey).toBe("fake-openai-key");
+});
+
+test("Morph advertises its plan models without inferred token prices", async () => {
+  const key = Buffer.alloc(32, 7).toString("base64");
+  const valueEnc = await encryptSecret(parseCredentialValue(preset("morph").kind, "morph_test_key"), key);
+  const result = await listConnectionModels(
+    {
+      credentials: async (scope) => (scope === "user" ? [{ id: "morph_account", kind: "morph", valueEnc }] : []),
+      orgBoatKey: async () => null,
+    },
+    key,
+    { userId: "user", orgId: "org" },
+  );
+  expect(result).toEqual([
+    {
+      id: "morph_account",
+      scope: "user",
+      models: [
+        { model: "morph-kimik31", input: null, output: null },
+        { model: "morph-dsv41flash", input: null, output: null },
+        { model: "morph-dsv41flash-1017", input: null, output: null },
+      ],
+    },
+  ]);
 });

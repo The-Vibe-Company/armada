@@ -15,6 +15,7 @@ import { validRate } from "./pricing/rates.ts";
 import { VaultError } from "./vault-error.ts";
 
 export type ConnectionPresetId =
+  | "morph"
   | "openai"
   | "anthropic"
   | "opencode-anthropic"
@@ -32,7 +33,7 @@ export interface ConnectionPreset {
   id: ConnectionPresetId;
   label: string;
   /** The credential kind this preset saves; it decides which agent can use the connection. */
-  kind: "openai" | "anthropic" | "opencode";
+  kind: "openai" | "anthropic" | "opencode" | "morph";
   /** One line under the label. */
   hint: string;
   /**
@@ -57,6 +58,15 @@ export interface ConnectionPreset {
 }
 
 export const CONNECTION_PRESETS: readonly ConnectionPreset[] = [
+  {
+    id: "morph",
+    label: "Morph",
+    kind: "morph",
+    hint: "One account for Claude Code and Codex; choose a Morph plan model at launch",
+    models: "harness",
+    baseUrl: null,
+    keyHint: "Your Morph API key. Shared by Claude Code and Codex; OpenCode is not supported by this account.",
+  },
   {
     id: "openai",
     label: "OpenAI API key",

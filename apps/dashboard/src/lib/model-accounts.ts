@@ -7,6 +7,7 @@ import type { ConnectionModelInfo, Harness } from "@armada/core";
 import {
   HARNESS_CATALOG,
   HARNESSES,
+  harnessesForCredential,
   harnessForCredential,
   isRecord as isRow,
   MODEL_CREDENTIAL_KINDS,
@@ -86,7 +87,16 @@ export const KIND_INFO = Object.fromEntries(
   ACCOUNT_KINDS.map((kind) => {
     const harness = harnessForCredential(kind);
     if (!harness) throw Error("Unknown model credential");
-    return [kind, { ...KIND_PRESENTATION[kind], harness, harnessLabel: HARNESS_CATALOG[harness].label }];
+    return [
+      kind,
+      {
+        ...KIND_PRESENTATION[kind],
+        harness,
+        harnessLabel: harnessesForCredential(kind)
+          .map((id) => HARNESS_CATALOG[id].label)
+          .join(" and "),
+      },
+    ];
   }),
 ) as Record<AccountKind, KindInfo>;
 
@@ -251,7 +261,10 @@ export type Billing = KindInfo["billing"];
 /** The account kind that signs `harness` in with `billing`: a subscription (the default) or an API key. */
 export function kindFor(harness: Harness, billing?: Billing): AccountKind {
   const kind = ACCOUNT_KINDS.find(
-    (value) => KIND_INFO[value].harness === harness && KIND_INFO[value].billing === (billing ?? "subscription"),
+    (value) =>
+      KIND_INFO[value].harness === harness &&
+      harnessesForCredential(value).length === 1 &&
+      KIND_INFO[value].billing === (billing ?? "subscription"),
   );
   const selected =
     kind ?? (billing === undefined ? ACCOUNT_KINDS.find((value) => KIND_INFO[value].harness === harness) : undefined);
@@ -260,7 +273,7 @@ export function kindFor(harness: Harness, billing?: Billing): AccountKind {
 }
 
 export function accountsFor(accounts: readonly ModelAccount[], harness: Harness): ModelAccount[] {
-  return accounts.filter((account) => KIND_INFO[account.kind].harness === harness);
+  return accounts.filter((account) => harnessesForCredential(account.kind).includes(harness));
 }
 
 /** Why a launch cannot use an account now, in a word or two ("expired", "removed"), or null when it can. */

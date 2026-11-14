@@ -209,6 +209,7 @@ export { createSqlGoldenStore, GOLDEN_SELECT, type GoldenRow, mapGoldenRow, type
 export {
   HARNESS_CAPABILITIES,
   HARNESS_CATALOG,
+  harnessesForCredential,
   harnessForCredential,
   isHarness,
   MODEL_CREDENTIAL_KINDS,

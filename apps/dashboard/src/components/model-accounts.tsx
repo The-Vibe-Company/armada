@@ -1366,11 +1366,13 @@ export function AddAccountDialog({
               className="rounded-md border bg-muted/30 p-3 text-sm"
               data-connection-availability
             >
-              {kind === "opencode"
-                ? "OpenCode runs on Modal only. Boat and Docker hosts are not supported. Custom connections can be tested in a running Modal sandbox; OpenCode plan-key checks are not available."
-                : preset?.models === "choose"
-                  ? "This custom connection requires Modal. It is not available on Boat or Docker hosts."
-                  : "With a standard vendor account, Codex and Claude Code run on Modal, Boat and Docker hosts. Custom endpoints require Modal."}
+              {kind === "morph"
+                ? "Claude Code and Codex share this account and its Morph plan models on Modal, Docker hosts and runtime-backed Boat sandboxes. Boat native gateways and OpenCode are not supported by this account."
+                : kind === "opencode"
+                  ? "OpenCode runs on Modal only. Boat and Docker hosts are not supported. Custom connections can be tested in a running Modal sandbox; OpenCode plan-key checks are not available."
+                  : preset?.models === "choose"
+                    ? "This custom connection requires Modal. It is not available on Boat or Docker hosts."
+                    : "With a standard vendor account, Codex and Claude Code run on Modal, Boat and Docker hosts. Custom endpoints require Modal."}
             </p>
 
             {isAdmin && (
