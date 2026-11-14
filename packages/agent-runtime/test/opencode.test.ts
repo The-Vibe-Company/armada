@@ -206,3 +206,71 @@ test("OpenCode meters every new native assistant step once, excludes loaded hist
     await rm(root, { recursive: true, force: true });
   }
 });
+
+// Completed native export, not model-controlled ACP titles, owns shell proof.
+test.each([
+  "success",
+  "exit",
+  "missing-exit",
+  "truncated",
+  "timeout",
+  "duplicate",
+  "foreign-session",
+  "oversized",
+] as const)("OpenCode shell proof excludes restored history and refuses unsafe native results (%s)", async (mode) => {
+  const root = await mkdtemp(join(tmpdir(), "opencode-shell-proof-"));
+  const env = { EXPORT_STAGE: "1", EXPORT_TOOLS: mode, PATH: process.env.PATH ?? "/usr/bin:/bin" };
+  const driver = new OpenCodeDriver({
+    executable: `${import.meta.dir}/fixtures/opencode.ts`,
+    root,
+    cwd: root,
+    env,
+    redact: createRedactor([]),
+  });
+  const proofs: unknown[] = [];
+  const context = {
+    request: { sandboxId: "s", harness: "opencode" as const, text: "hello" },
+    signal: new AbortController().signal,
+    emit: (event: import("../src/protocol.ts").DriverEvent) => {
+      if (event.kind === "other" && event.type === "armada/opencodeShell") proofs.push(event.data);
+    },
+    session: () => {},
+  };
+  try {
+    expect(await driver.start(context).done).toBe("finished");
+    expect(proofs).toEqual([
+      {
+        version: 1,
+        nativeMessageId: "old",
+        callId: "call-old",
+        tool: "bash",
+        command: "printf OLD",
+        output: "OLD",
+        exitCode: 0,
+        truncated: false,
+      },
+    ]);
+    proofs.length = 0;
+    env.EXPORT_STAGE = "2";
+    expect(await driver.start({ ...context, sessionId: "session-1" }).done).toBe("finished");
+    expect(proofs).toEqual(
+      mode === "success"
+        ? [
+            {
+              version: 1,
+              nativeMessageId: "new-tool",
+              callId: "call-new-tool",
+              tool: "bash",
+              command: "printf EXPECTED",
+              output: "EXPECTED",
+              exitCode: 0,
+              truncated: false,
+            },
+          ]
+        : [],
+    );
+  } finally {
+    await driver.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});

@@ -433,13 +433,44 @@ sessions, not its credential cache/database.
 
 This slice admits normal frozen configuration, GitHub/MCP delivery and runtime
 controls for OpenCode through existing shared services. It does **not** claim
-live tool-bearing parity: `--opencode` with `--github`, `--mcp` or `--variables`
-is rejected before allocation until the smoke has an ACP-specific tool-proof
-oracle. ACP titles/results must not be mistaken for Codex or Claude provenance.
-That verification extension is a subsequent #1421 slice, not a synthetic pass.
+live tool-bearing parity. The native shell-proof extension below supports
+`--github` and `--variables`; `--mcp` remains rejected before allocation pending
+an MCP-specific provenance oracle. ACP titles/results must not be mistaken for
+Codex or Claude provenance.
 
 Normal matching schema/server/runtime deployment must include
 `20261114020500_modal_runtime_opencode.sql`. Boat does not gain OpenCode admission;
 native Modal behavior and the default-off flag are unchanged. No provider
 allocation, forced account migration, new secrets, default cutover or tunnel
 deletion is authorized. Real OpenCode acceptance awaits coordinator receipts.
+
+
+## OpenCode native shell proof
+
+`--opencode --github` and `--opencode --variables` now preflight
+`opencodeShellProofVersion:1` before allocating. The same check can combine all
+existing non-MCP proofs:
+
+```sh
+ARMADA_RUNTIME_SMOKE=one_real_modal_launch bun scripts/check-modal-runtime.ts --opencode --usage --variables --skills --github --resume
+```
+
+Use an existing eligible published OpenCode template when variables are enabled,
+with the same authorized account/model and existing readable bindings. No inputs,
+configuration mutations, migrations or extra allocations are introduced.
+
+ACP display titles are not tool identity. The existing native export, already
+used for session continuity and usage, emits shell evidence only from new,
+completed assistant messages in the selected native session. Loaded history,
+foreign message/session bindings, duplicate call IDs, missing/nonzero exit,
+timeout and truncated output cannot supply proof. The archived prompt must
+contain the exact command and independent output plus its answer/finished event;
+a bare display event or model echo is not sufficient.
+
+The metadata contract follows the pinned OpenCode1.19.5
+[native shell output](https://github.com/anomalyco/opencode/blob/v1.19.5/packages/opencode/src/tool/shell.ts)
+and [native completed tool records](https://github.com/anomalyco/opencode/blob/v1.19.5/packages/opencode/src/session/processor.ts).
+This uses the existing archive, not a new ingestion or runtime path. Matching
+normal server/runtime artifacts are required; older servers refuse before
+allocation. Live acceptance remains coordinator-owned. OpenCode MCP tool proof,
+cutover and authorized tunnel deletion remain outstanding #1421 work.

@@ -52,6 +52,7 @@ interface Reply {
     usageVersion?: number;
     claudeVersion?: number;
     opencodeVersion?: number;
+    opencodeShellProofVersion?: number;
   };
   usage?: SandboxUsage;
   skills?: unknown;
@@ -106,8 +107,13 @@ const harness = process.argv.includes("--opencode")
 if (harness === "opencode") {
   if (options.modalRuntime.opencodeVersion !== 1)
     throw Error("Modal enrolled OpenCode v1 is unavailable; no launch attempted.");
-  if (["--variables", "--mcp", "--github"].some((flag) => process.argv.includes(flag)))
-    throw Error("OpenCode tool-proof smoke is not yet admitted; no launch attempted.");
+  if (process.argv.includes("--mcp"))
+    throw Error("OpenCode MCP tool-proof smoke is not yet admitted; no launch attempted.");
+  if (
+    ["--variables", "--github"].some((flag) => process.argv.includes(flag)) &&
+    options.modalRuntime.opencodeShellProofVersion !== 1
+  )
+    throw Error("OpenCode native shell proof v1 is unavailable; no launch attempted.");
 }
 if (harness === "claude" && options.modalRuntime.claudeVersion !== 1)
   throw Error("Modal enrolled Claude v1 is unavailable; no launch attempted.");
@@ -357,7 +363,42 @@ const verifyPrompt = async (expectedPromptId: string, expectedAnswer: string) =>
     for (const event of page.events ?? []) {
       if (usageMode) usageCheck.observe(event);
       if (event.promptId !== expectedPromptId) continue;
-      if (event.kind === "message" && !event.parentToolUseId && !event.retracted && !event.partial) {
+      if (harness === "opencode" && event.kind === "other" && event.type === "armada/opencodeShell") {
+        const proof = event.data as Record<string, unknown> | undefined;
+        if (
+          proof &&
+          proof.version === 1 &&
+          typeof proof.nativeMessageId === "string" &&
+          proof.nativeMessageId &&
+          typeof proof.callId === "string" &&
+          proof.callId &&
+          ["bash", "shell"].includes(String(proof.tool)) &&
+          proof.exitCode === 0 &&
+          proof.truncated === false &&
+          typeof proof.output === "string"
+        ) {
+          if (
+            variablesMode &&
+            expectedVariableDigest &&
+            exactCommand(proof.command, variableCommand) &&
+            proof.output.trim() === expectedVariableDigest
+          )
+            foundVariables = true;
+          if (
+            githubMode &&
+            exactCommand(proof.command, `gh api repos/${repository} --jq .full_name`) &&
+            proof.output.trim().toLowerCase() === repository.toLowerCase()
+          )
+            githubToolPrompts.add(expectedPromptId);
+        }
+      }
+      if (
+        harness !== "opencode" &&
+        event.kind === "message" &&
+        !event.parentToolUseId &&
+        !event.retracted &&
+        !event.partial
+      ) {
         let tools = event.tools;
         if (harness === "claude") {
           for (const tool of tools) {
