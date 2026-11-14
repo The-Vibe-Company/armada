@@ -33,8 +33,10 @@ import { createModalIntegration } from "../src/modal-integration.ts";
 import { modalLaunchEnvironment } from "../src/modal-launch-environment.ts";
 import { createModelAuthOwnership } from "../src/model-auth.ts";
 import { createProviderMetadata } from "../src/provider-metadata.ts";
+import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
+import { createRuntimeFollowup } from "../src/runtime-followup.ts";
 import { createRuntimeHistory } from "../src/runtime-history.ts";
 import { createRuntimeStartup } from "../src/runtime-startup.ts";
 import { rowOnlyConnection } from "./row-only-database.ts";
@@ -2909,3 +2911,101 @@ test.each([
     });
   },
 );
+
+// Publication owns the idle epoch handoff; the real Runner first-send/replay
+// contract is covered by runtime-followup.test.ts at the durable bridge boundary.
+test("Modal promptless HTTP launch publishes ready without inference and retains enrolled authority", async () => {
+  await withServer(async ({ db, options }) => {
+    const org = await options.store.createOrg("Idle Modal", STAN);
+    options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
+    await db.query("insert into credentials(scope,owner_id,kind,value_enc) values('user',$1,'openai',$2)", [
+      STAN,
+      await encryptSecret("offline-idle-model-key", KEY),
+    ]);
+    await db.query(
+      `insert into goldens(org_id,owner_id,name,visibility,provider,provider_sandbox_id,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config)
+    values($1,$2,'idle-modal','org','modal','master','image','workspace','main','app','{"repos":[{"url":"https://github.com/example/web.git","branch":"main","dir":"web"}],"init":[]}')`,
+      [org.id, STAN],
+    );
+    const sql: Sql = {
+      query: (q, v) => db.query(q, v),
+      transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
+    };
+    const authority = createRuntimeEnrolments(sql, KEY);
+    let active: Awaited<ReturnType<typeof authority.enrol>> | undefined;
+    options.providerFor = () => {
+      throw Error("No native provider for enrolled Modal launch");
+    };
+    const fake = fakeBoat();
+    options.modalRuntimeHostFor = async () => ({ ...fake.provider, id: "modal" as const });
+    options.modalRuntimeLaunch = {
+      async start(input) {
+        active = await authority.enrol(
+          (await authority.issue({ sandboxId: input.sandbox.id, ownerId: STAN, configuration: {} })).enrolmentToken,
+        );
+        return {
+          epoch: active.epoch,
+          async prepareWorkspace() {
+            return { status: "not_connected" as const };
+          },
+          async prompt() {
+            throw Error("Idle launch must not dispatch inference");
+          },
+        };
+      },
+    };
+    const body = {
+      org: org.id,
+      golden: "idle-modal",
+      provider: "modal",
+      harness: "codex",
+      runtimeVersion: 1,
+      runtimeTransport: "dialout",
+      connections: [],
+      skills: [],
+      skipSkillDefaults: true,
+    };
+    const request = (input: object) =>
+      handleControlRequest(
+        new Request("https://armada.test/api/v1/sandbox/launch-modal-runtime-v1", {
+          method: "POST",
+          headers: {
+            authorization: `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`,
+          },
+          body: JSON.stringify(input),
+        }),
+        options,
+      );
+    expect((await request(body))?.status).toBe(503);
+    expect(fake.forks).toHaveLength(0);
+    options.runtimeSend = createRuntimeFollowup(sql, KEY, createRuntimeCommands(authority, KEY));
+    for (const prompt of ["", null, 7]) expect((await request({ ...body, prompt }))?.status).toBe(400);
+    expect(fake.forks).toHaveLength(0);
+    const response = await request(body);
+    if (response?.status !== 200) throw Error(JSON.stringify(await response?.json()));
+    const launched = (await response.json()) as {
+      sandbox: { id: string; status: string; conversationIds: string[] };
+      runtime: { kind: string; epoch: string };
+      promptId?: string;
+      conversationId?: string;
+    };
+    expect(launched).toMatchObject({
+      sandbox: { status: "ready", conversationIds: [] },
+      runtime: { kind: "armada", epoch: active?.epoch },
+    });
+    expect(launched.promptId).toBeNull();
+    expect(launched.conversationId).toBeNull();
+    expect(fake.prompts).toHaveLength(0);
+    if (!active) throw Error("Missing private runtime enrolment");
+    await expect(authority.withSession(active.runtimeToken, active.epoch, async () => true)).resolves.toBe(true);
+    expect(
+      (
+        await createSqlData(sql)({
+          userId: STAN,
+          orgs: [{ orgId: org.id, role: "admin" }],
+          via: "service",
+        }).sandboxes.get(launched.sandbox.id)
+      )?.status,
+    ).toBe("ready");
+  });
+});
