@@ -99,3 +99,8 @@ export const MODEL_CREDENTIAL_KINDS: readonly ModelCredentialKind[] = [
 export function harnessForCredential(kind: CredentialKind): Harness | undefined {
   return HARNESSES.find((id) => (HARNESS_CATALOG[id].credentialKinds as readonly CredentialKind[]).includes(kind));
 }
+
+/** Every harness that can use an account; shared provider accounts are not single-harness subscriptions. */
+export function harnessesForCredential(kind: CredentialKind): Harness[] {
+  return HARNESSES.filter((id) => (HARNESS_CATALOG[id].credentialKinds as readonly CredentialKind[]).includes(kind));
+}

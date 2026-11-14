@@ -486,6 +486,10 @@ export interface ConnectionModelInfo {
  * any other field. A plain key, a subscription or an unreadable value declares none.
  */
 export function connectionModels(kind: CredentialKind, plaintext: string): ConnectionModelInfo[] {
+  if (kind === "morph") {
+    parseCredentialValue(kind, plaintext);
+    return COMPATIBLE_MODEL_PROVIDERS.morph.models.map((model) => ({ model, input: null, output: null }));
+  }
   if ((kind !== "opencode" && kind !== "openai") || !plaintext.trimStart().startsWith("{")) return [];
   let parsed: { endpoint?: { models?: string[] }; models?: string[]; prices?: ModelPriceOverrides };
   try {
@@ -526,7 +530,7 @@ export async function listConnectionModels(
     ["org", input.orgId],
   ] as const) {
     for (const row of await reader.credentials(scope, ownerId)) {
-      if (!row.id || (row.kind !== "opencode" && row.kind !== "openai")) continue;
+      if (!row.id || (row.kind !== "opencode" && row.kind !== "openai" && row.kind !== "morph")) continue;
       if (row.status !== undefined && row.status !== "active") continue;
       if (row.expiresAt && new Date(row.expiresAt).getTime() <= Date.now()) continue;
       let plaintext: string;

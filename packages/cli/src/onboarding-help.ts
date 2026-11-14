@@ -330,6 +330,9 @@ Chosen-model presets require --models and, unless fixed by the preset, --base-ur
 Fixed-address presets reject --base-url; --api-version is only accepted by supporting presets.
 Official Azure addresses are tested with a tiny billable request per deployment before saving;
 a failed check saves nothing. Omit --org for personal scope.
+Morph: armada creds connect morph --name shared --file /private/morph-key
+One account supports Claude Code and Codex. At launch choose --credential-id ACCOUNT_UUID
+and --model morph-kimik31, morph-dsv41flash or morph-dsv41flash-1017.
 Example: armada creds connect openai --name personal --file /private/api-key
 `,
   "creds test": `Usage: armada creds test <sandbox-id> --model <deployment-model> [--org <name>] [--json]

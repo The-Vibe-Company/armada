@@ -3,6 +3,7 @@ import {
   type CredentialInfo,
   connectionPreset,
   credentialName,
+  harnessesForCredential,
   harnessForCredential,
   isModelConnectionTestResult,
   type MemberInfo,
@@ -195,11 +196,15 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
     case "presets": {
       expect(args.positionals, 0, "armada creds presets [--json]");
       if ([...args.options.keys()].some((key) => key !== "--json")) throw usage("Presets accepts only --json.");
-      const presets = CONNECTION_PRESETS.map((preset) => ({ ...preset, harness: harnessForCredential(preset.kind) }));
+      const presets = CONNECTION_PRESETS.map((preset) => ({
+        ...preset,
+        harness: harnessForCredential(preset.kind),
+        harnesses: harnessesForCredential(preset.kind),
+      }));
       io.auth.out(
         flag(args, "--json")
           ? `${JSON.stringify({ presets })}\n`
-          : `${presets.map((p) => `${p.id}: ${p.label} (${p.harness})`).join("\n")}\n`,
+          : `${presets.map((p) => `${p.id}: ${p.label} (${p.harnesses.join(" and ")})`).join("\n")}\n`,
       );
       return 0;
     }
@@ -241,7 +246,7 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
       io.auth.out(
         flag(args, "--json")
           ? `${JSON.stringify({ ok: true })}\n`
-          : `Stored ${preset.label} for ${harnessForCredential(preset.kind)}, encrypted. It is never shown again.\n`,
+          : `Stored ${preset.label} for ${harnessesForCredential(preset.kind).join(" and ")}, encrypted. It is never shown again.\n`,
       );
       return 0;
     }

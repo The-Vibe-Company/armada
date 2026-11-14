@@ -526,3 +526,26 @@ test("CLI lists shared presets locally and refuses incompatible connect options 
   expect(secretReads).toBe(0);
   expect(h.requests).toHaveLength(0);
 });
+
+test.each(["stdin", "file"] as const)("Morph connect saves one account with a private %s key", async (source) => {
+  const h = setup();
+  const key = "morph_test_key";
+  const args = ["creds", "connect", "morph", "--name", "Shared Morph"];
+  if (source === "file") args.push("--file", "private-input");
+  expect(
+    await run(
+      args,
+      { out: h.auth.out, err: h.auth.err },
+      {
+        auth: h.auth,
+        readStdin: async () => key,
+        readFile: async () => key,
+      },
+    ),
+  ).toBe(0);
+  expect(h.requests).toHaveLength(1);
+  expect(new URL(h.requests[0]!.url).pathname).toBe("/api/v1/creds/accounts/set");
+  expect(await h.requests[0]!.json()).toEqual({ scope: "user", kind: "morph", name: "Shared Morph", value: key });
+  expect(h.output.join("")).not.toContain(key);
+  expect(h.output.join("")).toContain("claude and codex");
+});
