@@ -138,7 +138,11 @@ for (const mode of [
     const templateCalls = new Map<string, number>();
     const templateRequests = new Map<string, object>();
     const debtFeature =
-      mode === "unimplemented" ? "mcp" : mode === "idle-pause" || mode === "wake-on-send" ? mode : undefined;
+      mode === "unimplemented"
+        ? "repository-refresh"
+        : mode === "idle-pause" || mode === "wake-on-send"
+          ? mode
+          : undefined;
     const lines: string[] = [];
     const calls: string[] = [];
     const deletes = new Map<string, number>();
@@ -832,7 +836,7 @@ for (const mode of [
             continue;
           }
           expect(summary).toContain(`| ${account} | ${provider} | launch | pass |`);
-          expect(summary).toContain(`| ${account} | ${provider} | mcp | not-run: probe_not_implemented |`);
+          expect(summary).toContain(`| ${account} | ${provider} | mcp | not-run: mcp_probe_not_configured |`);
           expect(summary).toContain(`| ${account} | ${provider} | resume-recall | pass |`);
           expect(summary).toContain(`| ${account} | ${provider} | usage-after-resume | pass |`);
           const cost = subscription
@@ -919,7 +923,7 @@ for (const mode of [
         for (const provider of providers)
           expect(report.features[debtFeature][provider]).toEqual({
             status: "not-run",
-            reason: debtFeature === "mcp" ? "probe_not_implemented" : "idle_delay_not_advertised",
+            reason: debtFeature === "repository-refresh" ? "probe_not_implemented" : "idle_delay_not_advertised",
           });
       } else {
         expect(report.features.exec.docker.status).toBe("pass");
@@ -1596,7 +1600,7 @@ for (const fault of [undefined, "foreign_provider", "ambiguous_launch", "delete_
         "exact-cost",
       ])
         expect(report.features[step].boat.status).toBe("pass");
-      expect(report.features.mcp.boat).toEqual({ status: "not-run", reason: "probe_not_implemented" });
+      expect(report.features.mcp.boat).toEqual({ status: "not-run", reason: "mcp_probe_not_configured" });
       expect(report.features.launch.modal.reason).toBe("provider_filtered");
       expect(report.features.launch.docker.reason).toBe("provider_filtered");
     }
