@@ -126,7 +126,7 @@ export const DOCKER_LAUNCH_FAILURE_MESSAGES = {
   github:
     "Repository authorization failed. Connect GitHub and grant access to the requested repositories, then launch again.",
   githubDelivery:
-    "GitHub setup was not acknowledged by the sandbox runtime. Check the runtime connection and host, then retry the launch.",
+    "GitHub configureGitHub setup step failed or was not acknowledged by the sandbox runtime. Check that the image includes git, gh and python3, and that the runtime is connected.",
   environment: "Sandbox environment preparation failed. Check variable and secret bindings, then launch again.",
   checkout:
     "Repository checkout failed or timed out. Check the repository branch and GitHub access, then launch again.",
