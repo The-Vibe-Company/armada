@@ -83,9 +83,7 @@ export async function readModalRuntimeVariables(
 
 /** Credentials and frozen readables meet only in the private enrolment payload. */
 export async function modalRuntimeConfiguration(sql: Sql, input: RuntimeConfigurationInput) {
-  const plan = await runtimeConfiguration(input, "modal");
+  const plan = await runtimeConfiguration(input, "modal", "modal_runtime_empty_v1");
   Object.assign(plan.configuration.codexEnv, await readModalRuntimeVariables(sql, input.actor, input.sandbox.id));
-  // Restored native sessions cannot resurrect old upstream defaults before current-epoch delivery.
-  Object.assign(plan.configuration, { mcp: { revision: "modal_runtime_empty_v1", servers: {} } });
   return plan;
 }
