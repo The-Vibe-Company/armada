@@ -29,43 +29,51 @@ function fixture(responses: Record<string, unknown>) {
   return { auth, paths, output: () => out };
 }
 
-test("doctor reports session, server, GitHub repository scope, host daemon and model metadata in one table", async () => {
-  const f = fixture({
-    "/api/v1/account/status": { version: "0.0.1", orgs: [{ orgId: "org", name: "Team" }] },
-    "/api/v1/docker/hosts/list": {
-      placement: true,
-      hosts: [
-        {
-          id: "11111111-1111-4111-8111-111111111111",
-          name: "desk",
-          state: "online",
-          lastSeenAt: null,
-          version: VERSION,
-          sandboxes: 0,
-        },
-      ],
-    },
-    "/api/v1/creds/list": { user: [{ id: "model", name: "Work", kind: "openai", status: "active" }], orgs: [] },
-    "/api/v1/github/status": {
-      connection: {
-        status: "connected",
-        login: "owner",
-        installations: [
-          { account: "The-Vibe-Company", repository_selection: "selected" },
-          { account: "owner", repository_selection: "all" },
+test.each([VERSION, "0.0.1", null])(
+  "doctor reports session, server, GitHub and host version diagnostics (%s) in one table",
+  async (hostVersion) => {
+    const f = fixture({
+      "/api/v1/account/status": { version: "0.0.1", orgs: [{ orgId: "org", name: "Team" }] },
+      "/api/v1/docker/hosts/list": {
+        placement: true,
+        hosts: [
+          {
+            id: "11111111-1111-4111-8111-111111111111",
+            name: "desk",
+            state: "online",
+            lastSeenAt: null,
+            version: hostVersion,
+            sandboxes: 0,
+          },
         ],
       },
-    },
-  });
-  expect(await doctor([], f.auth)).toBe(0);
-  expect(f.output()).toContain("CHECK\tSTATUS\tDETAIL / NEXT STEP");
-  expect(f.output()).toContain("npm i -g @the-vibe-company/armada");
-  expect(f.output()).toContain(`online; daemon ${VERSION}`);
-  expect(f.output()).toContain("Account Work\tactive");
-  expect(f.output()).toContain("GitHub\tok\tConnected as owner");
-  expect(f.output()).toContain("The-Vibe-Company (selected repositories), owner (all repositories)");
-  expect(f.output()).toContain("Per-repository access is checked at launch");
-});
+      "/api/v1/creds/list": { user: [{ id: "model", name: "Work", kind: "openai", status: "active" }], orgs: [] },
+      "/api/v1/github/status": {
+        connection: {
+          status: "connected",
+          login: "owner",
+          installations: [
+            { account: "The-Vibe-Company", repository_selection: "selected" },
+            { account: "owner", repository_selection: "all" },
+          ],
+        },
+      },
+    });
+    expect(await doctor([], f.auth)).toBe(0);
+    expect(f.output()).toContain("CHECK\tSTATUS\tDETAIL / NEXT STEP");
+    expect(f.output()).toContain("npm i -g @the-vibe-company/armada");
+    expect(f.output()).toContain(`online; daemon ${hostVersion ?? "unknown"}`);
+    expect(f.output()).toContain(
+      `Host desk\t${hostVersion === VERSION ? "ok" : hostVersion ? "warning" : "unknown"}\t`,
+    );
+    if (hostVersion && hostVersion !== VERSION)
+      expect(f.output()).toContain("Check the host installation with armada host status on the host machine.");
+    expect(f.output()).toContain("Account Work\tactive");
+    expect(f.output()).toContain("GitHub\tok\tConnected as owner");
+    expect(f.output()).toContain("The-Vibe-Company (selected repositories), owner (all repositories)");
+    expect(f.output()).toContain("Per-repository access is checked at launch");
+  },
+);
 
 test.each([
   [{ status: "not_connected", login: null }, "warning", "armada github connect"],
