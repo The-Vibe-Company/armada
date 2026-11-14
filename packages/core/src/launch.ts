@@ -182,13 +182,14 @@ export interface LaunchOptions extends GoldenLimits {
     credentials: LaunchCredentialResolver;
     connections: NonNullable<LaunchStores["connections"]>;
   };
+  /** Coordinator-owned Modal cutover default; never selected by request JSON. */
+  modalRuntimeDefault?: NonNullable<LaunchOptions["boatRuntimeDefault"]>;
   /** Frozen template account version, not a public launch override. */
   credentialVersion?: number;
   /** Templates requiring native-only application-secret delivery. */
   nativeSecretBindings?: boolean;
 
-  /** Trusted per-launch opt-in, never public request configuration. Codex
-   * snapshot launch: no native setup/refresh or runner fallback. */
+  /** Trusted per-launch opt-in for common-runtime routes; private bootstrap, never a native-agent fallback. */
   runtime?: LaunchOptions["boatRuntime"];
   boatRuntime?: {
     start(input: {
@@ -199,7 +200,7 @@ export interface LaunchOptions extends GoldenLimits {
       signal: AbortSignal;
       /** Private resume policy: validate configuration before activating compute. */
       activate?: (signal: AbortSignal) => Promise<void>;
-      restoreCheckpoint?: { epoch: string; watermark: number; conversationId: string };
+      restoreCheckpoint?: { epoch: string; watermark: number; conversationId: string | null };
     }): Promise<{
       prompt: Provider["prompt"];
       epoch: string;
@@ -262,19 +263,26 @@ export async function launchSandbox(
   const golden = await goldenForLaunch(stores.goldens, actor, request.golden, request.provider);
   if (golden.visibility === "private" && golden.ownerId !== actor.userId)
     throw new GoldenError("not_found", `No golden named '${golden.name}'.`);
-  const defaultRuntime =
-    golden.provider === "boat" && !options.runtime && !options.boatRuntime ? options.boatRuntimeDefault : undefined;
+  const runtimeDefaults = { boat: options.boatRuntimeDefault, modal: options.modalRuntimeDefault };
+  const defaultRuntime = !options.runtime && !options.boatRuntime ? runtimeDefaults[golden.provider] : undefined;
   if (defaultRuntime) {
+    const providerName = golden.provider === "boat" ? "Boat" : "Modal";
+    const rollback = golden.provider === "boat" ? "ARMADA_BOAT_AGENT_PATH" : "ARMADA_MODAL_AGENT_PATH";
     const refuse = (feature: string): never => {
       throw new LaunchError(
         "invalid_request",
-        `Boat runtime default cannot launch ${feature}; no native fallback. Set ARMADA_BOAT_AGENT_PATH=native for rollback.`,
+        `${providerName} runtime default cannot launch ${feature}; no native fallback. Set ${rollback}=native for rollback.`,
       );
     };
     if (options.nativeSecretBindings) refuse("template application-secret bindings");
     provider = await defaultRuntime.provider(actor, golden);
+    if (provider.id !== golden.provider)
+      throw new LaunchError("invalid_request", "Runtime default must retain the golden provider; no native fallback.");
     stores = { ...stores, credentials: defaultRuntime.credentials, connections: defaultRuntime.connections };
-    options = { ...options, boatRuntime: defaultRuntime.policy };
+    options = {
+      ...options,
+      ...(golden.provider === "boat" ? { boatRuntime: defaultRuntime.policy } : { runtime: defaultRuntime.policy }),
+    };
   }
   const harness = checkHarness(provider, request.harness);
   const runtime = options.runtime ?? options.boatRuntime;
@@ -365,7 +373,7 @@ export async function launchSandbox(
   if (defaultRuntime && !credentials.binding)
     throw new LaunchError(
       "invalid_request",
-      "Boat runtime default requires a bound model account; no native fallback.",
+      `${golden.provider === "boat" ? "Boat" : "Modal"} runtime default requires a bound model account; no native fallback.`,
     );
   if (credentials.env[CLAUDE_ENDPOINT_ENV] && provider.id !== "modal")
     throw new LaunchError("invalid_request", "Custom Claude gateways currently require Modal.");

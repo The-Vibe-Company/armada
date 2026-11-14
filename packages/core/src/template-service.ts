@@ -780,6 +780,11 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
         state: "succeeded",
         id: result.sandbox.id,
         provider: result.sandbox.provider,
+        ...(result.sandbox.provider === "modal" &&
+        "runtimeTransport" in result.sandbox &&
+        result.sandbox.runtimeTransport === "dialout"
+          ? { runtimeTransport: "dialout" as const }
+          : {}),
         providerSandboxId: result.sandbox.providerSandboxId,
         promptId: result.promptId ?? null,
         conversationId: result.conversationId ?? null,
