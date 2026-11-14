@@ -36,7 +36,6 @@
     "apps/dashboard/test/model-connection-input.test.ts": 0.018,
     "apps/dashboard/test/model-picker.test.ts": 0.019,
     "apps/dashboard/test/navigation.test.ts": 0.005,
-    "apps/dashboard/test/otto.test.ts": 0.01,
     "apps/dashboard/test/outcome.test.ts": 0.008,
     "apps/dashboard/test/provider-setup.test.ts": 0.014,
     "apps/dashboard/test/proxy.test.ts": 0.088,
@@ -292,13 +291,6 @@
     "packages/mcp-server/test/orchestrator-authority.test.ts": 2.967,
     "packages/mcp-server/test/orchestrator-bootstrap.test.ts": 0.054,
     "packages/mcp-server/test/orchestrator-children.test.ts": 5.81,
-    "packages/mcp-server/test/otto-api.test.ts": 2.63,
-    "packages/mcp-server/test/otto-journal.test.ts": 2.274,
-    "packages/mcp-server/test/otto-large-fleet-postgres.test.ts": 0.139,
-    "packages/mcp-server/test/otto-observation.test.ts": 2.411,
-    "packages/mcp-server/test/otto-ownership.test.ts": 2.009,
-    "packages/mcp-server/test/otto-read-postgres.test.ts": 0.037,
-    "packages/mcp-server/test/otto-work-evidence.test.ts": 1.962,
     "packages/mcp-server/test/provider-metadata.test.ts": 3.165,
     "packages/mcp-server/test/provider-routing.test.ts": 2.965,
     "packages/mcp-server/test/public-auth-api.test.ts": 0.308,
@@ -436,8 +428,6 @@
         "packages/mcp-server/test/docker-normal-launch.test.ts",
         "packages/mcp-server/test/modal-runtime-variables.test.ts",
         "packages/mcp-server/test/modal-runtime.test.ts",
-        "packages/mcp-server/test/otto-observation.test.ts",
-        "packages/mcp-server/test/otto-work-evidence.test.ts",
         "packages/mcp-server/test/provider-routing.test.ts"
       ],
       "seconds": 16.398
@@ -464,8 +454,7 @@
         "packages/mcp-server/test/mcp-http-integration.test.ts",
         "packages/mcp-server/test/mcp-integration.test.ts",
         "packages/mcp-server/test/mcp-live-sql.test.ts",
-        "packages/mcp-server/test/mcp-oauth-publication.test.ts",
-        "packages/mcp-server/test/otto-ownership.test.ts"
+        "packages/mcp-server/test/mcp-oauth-publication.test.ts"
       ],
       "seconds": 13.942
     },
@@ -484,7 +473,6 @@
         "packages/mcp-server/test/invitations.test.ts",
         "packages/mcp-server/test/machine-size.test.ts",
         "packages/mcp-server/test/model-auth-state.test.ts",
-        "packages/mcp-server/test/otto-journal.test.ts",
         "packages/mcp-server/test/runtime-docker-authority.test.ts",
         "packages/mcp-server/test/runtime-enrolment.test.ts",
         "packages/mcp-server/test/runtime-followup.test.ts",

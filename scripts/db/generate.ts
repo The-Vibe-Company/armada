@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { applyMigrations, openDatabase } from "./apply.ts";
 
 type Column = {
@@ -27,15 +28,6 @@ type Schema = {
 };
 
 const ROW_ALIASES: Record<string, string> = {
-  otto_waits: "OttoWaitRow",
-  otto_interviews: "OttoInterviewRow",
-  otto_interview_revisions: "OttoInterviewRevisionRow",
-  otto_intentions: "OttoIntentionRow",
-  otto_engine_preferences: "OttoEnginePreferenceRow",
-  otto_objectives: "OttoObjectiveRow",
-  otto_ticket_graphs: "OttoTicketGraphRow",
-  otto_ticket_publications: "OttoTicketPublicationRow",
-  otto_objective_messages: "OttoObjectiveMessageRow",
   ordinary_launch_receipts: "OrdinaryLaunchReceiptRow",
   sandbox_account_usage_pricing: "SandboxAccountUsagePricingRow",
   runtime_github_capabilities: "RuntimeGitHubCapabilityRow",
@@ -46,11 +38,6 @@ const ROW_ALIASES: Record<string, string> = {
   docker_hosts: "DockerHostRow",
   docker_host_jobs: "DockerHostJobRow",
   docker_launch_requests: "DockerLaunchRequestRow",
-  otto_orphan_days: "OttoOrphanDayRow",
-  otto_tasks: "OttoTaskRow",
-  otto_resources: "OttoResourceRow",
-  otto_facts: "OttoFactRow",
-  otto_github_pages: "OttoGitHubPageRow",
   personal_skill_defaults: "PersonalSkillDefaultsRow",
   org_skill_defaults: "OrgSkillDefaultsRow",
   golden_skill_defaults: "GoldenSkillDefaultsRow",
@@ -236,8 +223,14 @@ async function introspect(db: Awaited<ReturnType<typeof openDatabase>>): Promise
     enumLabels.set(row.name, labels);
   }
 
+  const retired = new Set(
+    [...readFileSync(new URL("../../docs/retained-tables.md", import.meta.url), "utf8").matchAll(/^- (\w+)$/gm)].map(
+      (match) => match[1],
+    ),
+  );
   const tables = new Map<string, Table>();
   for (const row of columns.rows) {
+    if (retired.has(row.table_name)) continue;
     let table = tables.get(row.table_name);
     if (!table) {
       table = { name: row.table_name, columns: [], foreignKeys: [] };
@@ -252,6 +245,7 @@ async function introspect(db: Awaited<ReturnType<typeof openDatabase>>): Promise
   }
 
   for (const row of foreignKeys.rows) {
+    if (retired.has(row.table_name)) continue;
     const table = tables.get(row.table_name);
     if (!table) throw new Error(`foreign key ${row.name} is on an unknown table`);
     const keys = numbers(row.keys);

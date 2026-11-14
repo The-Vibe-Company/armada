@@ -12,7 +12,6 @@ import {
   githubInstallationAppFromEnv,
   type LaunchOptions,
   resolveBoatKey,
-  resolveGitHubAccess,
   VaultError,
 } from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
@@ -55,10 +54,6 @@ import { createModelAuthOwnership } from "./model-auth.ts";
 import { createModelUsageApi } from "./model-usage.ts";
 import type { NamedLaunchCredentials } from "./named-credentials.ts";
 import { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
-import { createOttoEngineSessions, isOttoInterviewProviderSandbox } from "./otto/engine-session.ts";
-import { createOttoRepositoryFileReader } from "./otto/interview-tools.ts";
-import { createOttoRoutes } from "./otto/routes.ts";
-import { createOttoRuntime } from "./otto/runtime.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
 import { pruneServerRetention } from "./retention-maintenance.ts";
 import { startRoutineWorker } from "./routine-worker.ts";
@@ -130,9 +125,6 @@ export async function startServer(
   });
   const store = createSqlVaultStore(sql);
   const authStore = createSqlAuthStore(sql);
-  // Isolate and cancel Otto queries: timed-out reads must not exhaust the control API pool.
-  const ottoSql = env.ARMADA_OTTO_ORG_ID ? bunSql(config.databaseUrl, 2, 1_500) : undefined;
-  const otto = createOttoRuntime(ottoSql ?? sql, env);
   const githubApp = githubAppFromEnv(env);
   const runtimeGitHub = githubApp
     ? createRuntimeGitHub({
@@ -180,7 +172,7 @@ export async function startServer(
     }, options.logError ?? console.error);
   } catch (error) {
     await mcp.close();
-    await Promise.all([sql.close(), ottoSql?.close()]);
+    await sql.close();
     throw error;
   }
   const providerFor = (apiKey: string, caller?: { userId: string; orgId: string }) => {
@@ -199,15 +191,13 @@ export async function startServer(
       beforeResume: async (provider, id) => {
         if (!caller) throw Error("Native resume requires trusted Armada caller scope.");
         await modelAuth.beforeResume(provider, id, caller);
-        if (await isOttoInterviewProviderSandbox(sql, provider.id, id)) return false;
         return mcp.beforeResume(provider, id, caller);
       },
       beforePrompt: async (provider, id) => {
         if (!caller) throw Error("Native prompt requires trusted Armada caller scope.");
-        const interview = await isOttoInterviewProviderSandbox(sql, provider.id, id);
-        if (!interview) await mcp.beforePrompt(provider, id, caller);
+        await mcp.beforePrompt(provider, id, caller);
         await modelAuth.beforePrompt(provider, id, caller);
-        if (!interview) await sandboxArmadaAccess.beforePrompt(provider, id);
+        await sandboxArmadaAccess.beforePrompt(provider, id);
       },
       beforeSnapshot: async (provider, id) => {
         if (caller) await modelAuth.capture(provider, id, caller);
@@ -235,10 +225,8 @@ export async function startServer(
     publicUrl: config.publicUrl,
     github: { store, app: githubApp },
     beforePrompt: async (provider, id, caller) => {
-      if (!(await isOttoInterviewProviderSandbox(sql, provider.id, id))) {
-        await mcp.beforePrompt(provider, id, caller);
-        await sandboxArmadaAccess.beforePrompt(provider, id);
-      }
+      await mcp.beforePrompt(provider, id, caller);
+      await sandboxArmadaAccess.beforePrompt(provider, id);
     },
   });
   const modalProviderFor: typeof modal.modalProviderFor = async (...args) =>
@@ -626,59 +614,6 @@ export async function startServer(
             ),
           ]
         : []),
-      ...(otto ? [otto.route] : []),
-      ...createOttoRoutes({
-        interview: {
-          sessions: createOttoEngineSessions({
-            sql,
-            key: config.encryptionKey,
-            origin: config.publicUrl,
-            data,
-            credentials: launchCredentials(store, config.encryptionKey, undefined, modelAuth, {
-              store,
-              app: githubApp,
-            }),
-            provider: (golden, caller) => providers.resolve(golden, caller),
-            sandboxProvider: (sandbox, caller) =>
-              sandbox.provider === "modal"
-                ? modal.storedProviderFor(sandbox, caller)
-                : providers.resolve(sandbox, caller),
-            launch,
-            commands: runtimeCommands,
-            runtimeSend,
-          }),
-          readFile: createOttoRepositoryFileReader((caller) =>
-            resolveGitHubAccess(
-              { store, app: githubApp, encryptionKey: config.encryptionKey, caller: "account_status" },
-              caller.userId,
-            ),
-          ),
-        },
-        reader: store,
-        sql: ottoSql ?? sql,
-        scopes: otto?.scopes ?? [],
-        authenticate: (request) =>
-          authenticateCaller(request.headers.get("authorization"), {
-            store: authStore,
-            supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
-            now: new Date(),
-          }),
-        observerToken: env.ARMADA_OTTO_GITHUB_TOKEN,
-        encryptionKey: config.encryptionKey,
-        canReadRepository: async (caller, repository) => {
-          const access = await resolveGitHubAccess(
-            { store, app: githubApp, encryptionKey: config.encryptionKey, caller: "account_status" },
-            caller.userId,
-          );
-          if (access.status !== "connected") return false;
-          const response = await globalThis.fetch(`https://api.github.com/repos/${repository}`, {
-            redirect: "error",
-            signal: AbortSignal.timeout(2000),
-            headers: { authorization: `Bearer ${access.token}`, accept: "application/vnd.github+json" },
-          });
-          return response.ok;
-        },
-      }),
       createDockerHostInstallRoute(env.ARMADA_RUNTIME_ARTIFACT_DIR, config.publicUrl),
       createRuntimeArtifactRoute(env.ARMADA_RUNTIME_ARTIFACT_DIR),
       runtimeEnrolments.route,
@@ -753,24 +688,20 @@ export async function startServer(
       : undefined;
   const routineScheduler = createServerRoutineScheduler({ sql, control, templates, providers, data });
   const routineWorker = startRoutineWorker(routineScheduler, options.logError);
-  const ottoWorker = otto?.start();
-  const allWorkersDone = Promise.all([workers.done, invitationWorker?.done, routineWorker.done, ottoWorker?.done]).then(
-    () => {},
-  );
+  const allWorkersDone = Promise.all([workers.done, invitationWorker?.done, routineWorker.done]).then(() => {});
   installServerShutdown(server, {
     beginDrain: () => {
       requestDrain.beginDrain();
       workers.stop();
       invitationWorker?.stop();
       routineWorker.stop();
-      ottoWorker?.stop();
     },
     workersDone: allWorkersDone,
     stopSockets: () => runtimeSockets.stop(),
     closeDocker: () => dockerLaunch?.close(),
     requests,
     closeMcp: () => mcp.close(),
-    closePools: () => Promise.all([sql.close(), ottoSql?.close()]),
+    closePools: () => sql.close(),
   });
   // Expose the tracked task for hosts that gracefully drain before process termination.
   Object.assign(server, { goldenWorker: workers.goldenWorker, lifecycleWorker: workers.lifecycleWorker });

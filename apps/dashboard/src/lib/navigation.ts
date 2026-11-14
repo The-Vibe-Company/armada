@@ -4,7 +4,6 @@
  */
 export type NavIcon =
   | "sandboxes"
-  | "otto"
   | "routines"
   | "templates"
   | "environments"
@@ -27,7 +26,6 @@ export const NAV_GROUPS: readonly NavGroup[] = [
     label: "Run",
     links: [
       { href: "/sandboxes", label: "Sandboxes", icon: "sandboxes" },
-      { href: "/otto", label: "Otto", icon: "otto" },
       { href: "/routines", label: "Routines", icon: "routines" },
       { href: "/templates", label: "Templates", icon: "templates" },
     ],

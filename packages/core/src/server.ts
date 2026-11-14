@@ -49,13 +49,6 @@ export { prepareLaunchWorkspace } from "./launch.ts";
 export { assertLaunchSecretBindings, resolveLaunchSecrets } from "./launch-secrets.ts";
 export { resolveLaunchVariables } from "./launch-variables.ts";
 export {
-  canonicalOttoRepository,
-  isOttoUuid,
-  type OttoRepositoryScope,
-  ottoRepositoryScopes,
-  resolveOttoRepositories,
-} from "./otto/repositories.ts";
-export {
   installPrivateSkill,
   PRIVATE_SKILL_FAILURES,
   PRIVATE_SKILL_PATTERN,
