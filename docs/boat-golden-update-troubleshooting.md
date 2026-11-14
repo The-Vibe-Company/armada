@@ -77,7 +77,7 @@ For intentional replacement with --repo or --config, supply the
 **complete desired repository list**, not just the new repository:
 
 ```sh
-armada golden update two-repos-prod-test --provider boat --org <org-id> --repo <existing-owner/repo-1> --repo <existing-owner/repo-2> --repo <other-existing-repo> --repo <new-owner/repo>
+armada golden update two-repos-prod-test --provider boat --org <org-id> --replace --repo <existing-owner/repo-1> --repo <existing-owner/repo-2> --repo <other-existing-repo> --repo <new-owner/repo>
 ```
 
 Repeat `--repo` for every existing repository; preserve required initialization
