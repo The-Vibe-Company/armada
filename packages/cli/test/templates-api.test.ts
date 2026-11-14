@@ -140,6 +140,49 @@ test("template JSON forwards Docker host placement without a golden", async () =
   expect(JSON.parse(result.out).revision.definition).toMatchObject({ ...docker, goldenId: null });
 });
 
+test.each(["create", "publish"])(
+  "Docker template %s flags forward host placement and shared bindings",
+  async (action) => {
+    const result = await invoke([
+      "template",
+      action,
+      action === "create" ? "docker" : id,
+      ...(action === "publish" ? ["--expected-revision", "2"] : []),
+      "--host",
+      golden,
+      "--provider",
+      "docker",
+      "--agent",
+      "codex",
+      "--connection",
+      id,
+      "--skill",
+      "catalog/notes@1.0.0",
+      "--variable",
+      `PUBLIC_LABEL:${id}:1`,
+      "--secret",
+      `APP_TOKEN:${id}:2`,
+      "--json",
+    ]);
+    expect(result.code).toBe(0);
+    expect(result.requests).toHaveLength(1);
+    expect(await result.requests[0]!.json()).toEqual({
+      org,
+      ...(action === "create" ? { name: "docker", scope: "personal" } : { id, expectedRevision: 2 }),
+      definition: {
+        provider: "docker",
+        goldenId: null,
+        hostId: golden,
+        harness: "codex",
+        connections: [id],
+        skills: ["catalog/notes@1.0.0"],
+        variables: [{ key: "PUBLIC_LABEL", variableId: id, version: 1 }],
+        secrets: [{ key: "APP_TOKEN", secretId: id, version: 2 }],
+      },
+    });
+  },
+);
+
 test("template names resolve within the selected organization and flags create a definition", async () => {
   const named = await invoke(["template", "get", "preset"]);
   expect(named.code).toBe(0);
@@ -174,6 +217,15 @@ test("template CLI refuses ambiguous scope, invalid revisions, unsupported overr
     ["publish", id, "--expected-revision", "0", "--file", "definition.json"],
     ["launch", id, "--request-key", "run-1", "--model", "other"],
     ["launch", id],
+    ...[
+      ["--provider", "docker"],
+      ["--provider", "docker", "--host", "not-a-uuid"],
+      ["--provider", "docker", "--golden", golden],
+      ["--provider", "docker", "--host", golden, "--golden", golden],
+      ["--provider", "boat", "--host", golden],
+      ["--provider", "modal", "--golden", golden, "--host", golden],
+      ["--file", "definition.json", "--host", golden],
+    ].map((placement) => ["create", "preset", "--agent", "codex", ...placement]),
   ]) {
     const result = await invoke(["template", ...args]);
     expect(result.code).not.toBe(0);
@@ -218,6 +270,7 @@ test("template help documents definition inputs, scope and safe retry semantics 
   expect(result.requests).toHaveLength(0);
   for (const text of [
     "--file",
+    "--host UUID --provider docker",
     "--scope",
     "--expected-revision",
     "--request-key",
