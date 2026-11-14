@@ -526,3 +526,23 @@ still requires the operator-controlled runtime default and all its resources;
 do not flip production just to test this slice. No real check or default flip was
 performed by the worker. Launch timing before/after and >20% regression decisions
 remain coordinator evidence, not inferred from offline tests.
+
+### Launch timing evidence (#1161)
+
+The coordinator checker emits `operation:runtime_launch_timing` with `harness`,
+`mode` (`idle` or `prompt`), and monotonic `launchRequestMs`. Its boundary is
+`launch_request_to_response`: it includes server admission, host allocation,
+bootstrap and setup, but **not** first-answer latency. A timing record alone is
+not a lifecycle pass; retain the complete successful checker output as evidence.
+
+Compare with a coordinator-recorded native launch using the same request/response
+boundary, harness, golden recipe, region and idle/prompt mode. Record both server
+revisions and cold/warm cache conditions; unlike conditions are not comparable.
+Report `(runtimeMs / nativeMs - 1) * 100` in the parity PR. A regression above
+20% needs an owner decision, not an automatic baseline update or a retry until
+fast. No baseline is supplied by this script and no improvement is inferred.
+
+Boat measurement is coordinator-only, on demand in production under the current
+repository policy; it is not part of staging or the release gate. Do not allocate
+another sandbox just to obtain timing. Capture the record during the already
+authorized one-allocation lifecycle check. No worker measurement has been run.

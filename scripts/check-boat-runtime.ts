@@ -305,6 +305,7 @@ try {
   const initialPrompt = mcpMode
     ? `Remember token ${memory}. ${mcpInstruction} After it succeeds, reply exactly ${marker}. Do not change files.`
     : `${followup ? `Remember token ${memory}. ` : ""}Reply exactly ${marker}. Do not use tools or change files.`;
+  const launchStarted = performance.now();
   const launched = await api("sandbox/launch-runtime-v1", {
     runtimeVersion: 1,
     boatRuntime: true,
@@ -319,6 +320,16 @@ try {
     ...(!skillsMode ? { skipSkillDefaults: true } : {}),
     ttlSeconds: 900,
   });
+  const launchRequestMs = performance.now() - launchStarted;
+  console.log(
+    JSON.stringify({
+      operation: "runtime_launch_timing",
+      harness,
+      mode: idleMode ? "idle" : "prompt",
+      launchRequestMs,
+      boundary: "launch_request_to_response",
+    }),
+  );
   id = launched.sandbox?.id;
   goldenId = launched.sandbox?.goldenId;
   if (idleMode) {
