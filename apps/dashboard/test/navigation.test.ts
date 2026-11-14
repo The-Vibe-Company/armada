@@ -4,7 +4,7 @@ import { isActiveLink, NAV_GROUPS, showsOrganizations } from "../src/lib/navigat
 describe("sidebar navigation", () => {
   test("lists the owner's groups and destinations in order, without Organizations", () => {
     expect(NAV_GROUPS.map((group) => [group.label, group.links.map((link) => link.label)])).toEqual([
-      ["Run", ["Sandboxes", "Otto", "Routines", "Templates"]],
+      ["Run", ["Sandboxes", "Routines", "Templates"]],
       ["Library", ["Snapshots", "Skills", "Tools", "Variables"]],
       ["Providers", ["Overview", "Self-hosted"]],
       ["Account", ["Models", "Settings"]],

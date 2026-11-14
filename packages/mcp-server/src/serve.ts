@@ -12,7 +12,6 @@ import {
   githubInstallationAppFromEnv,
   type LaunchOptions,
   resolveBoatKey,
-  resolveGitHubAccess,
   VaultError,
 } from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
@@ -55,8 +54,6 @@ import { createModelAuthOwnership } from "./model-auth.ts";
 import { createModelUsageApi } from "./model-usage.ts";
 import type { NamedLaunchCredentials } from "./named-credentials.ts";
 import { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
-import { createOttoRoutes } from "./otto/routes.ts";
-import { createOttoRuntime } from "./otto/runtime.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
 import { pruneServerRetention } from "./retention-maintenance.ts";
 import { startRoutineWorker } from "./routine-worker.ts";
@@ -128,9 +125,6 @@ export async function startServer(
   });
   const store = createSqlVaultStore(sql);
   const authStore = createSqlAuthStore(sql);
-  // Isolate and cancel Otto queries: timed-out reads must not exhaust the control API pool.
-  const ottoSql = env.ARMADA_OTTO_ORG_ID ? bunSql(config.databaseUrl, 2, 1_500) : undefined;
-  const otto = createOttoRuntime(ottoSql ?? sql, env);
   const githubApp = githubAppFromEnv(env);
   const runtimeGitHub = githubApp
     ? createRuntimeGitHub({
@@ -178,7 +172,7 @@ export async function startServer(
     }, options.logError ?? console.error);
   } catch (error) {
     await mcp.close();
-    await Promise.all([sql.close(), ottoSql?.close()]);
+    await sql.close();
     throw error;
   }
   const providerFor = (apiKey: string, caller?: { userId: string; orgId: string }) => {
@@ -620,33 +614,6 @@ export async function startServer(
             ),
           ]
         : []),
-      ...(otto ? [otto.route] : []),
-      ...createOttoRoutes({
-        reader: store,
-        sql: ottoSql ?? sql,
-        scopes: otto?.scopes ?? [],
-        authenticate: (request) =>
-          authenticateCaller(request.headers.get("authorization"), {
-            store: authStore,
-            supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
-            now: new Date(),
-          }),
-        observerToken: env.ARMADA_OTTO_GITHUB_TOKEN,
-        encryptionKey: config.encryptionKey,
-        canReadRepository: async (caller, repository) => {
-          const access = await resolveGitHubAccess(
-            { store, app: githubApp, encryptionKey: config.encryptionKey, caller: "account_status" },
-            caller.userId,
-          );
-          if (access.status !== "connected") return false;
-          const response = await globalThis.fetch(`https://api.github.com/repos/${repository}`, {
-            redirect: "error",
-            signal: AbortSignal.timeout(2000),
-            headers: { authorization: `Bearer ${access.token}`, accept: "application/vnd.github+json" },
-          });
-          return response.ok;
-        },
-      }),
       createDockerHostInstallRoute(env.ARMADA_RUNTIME_ARTIFACT_DIR, config.publicUrl),
       createRuntimeArtifactRoute(env.ARMADA_RUNTIME_ARTIFACT_DIR),
       runtimeEnrolments.route,
@@ -721,24 +688,20 @@ export async function startServer(
       : undefined;
   const routineScheduler = createServerRoutineScheduler({ sql, control, templates, providers, data });
   const routineWorker = startRoutineWorker(routineScheduler, options.logError);
-  const ottoWorker = otto?.start();
-  const allWorkersDone = Promise.all([workers.done, invitationWorker?.done, routineWorker.done, ottoWorker?.done]).then(
-    () => {},
-  );
+  const allWorkersDone = Promise.all([workers.done, invitationWorker?.done, routineWorker.done]).then(() => {});
   installServerShutdown(server, {
     beginDrain: () => {
       requestDrain.beginDrain();
       workers.stop();
       invitationWorker?.stop();
       routineWorker.stop();
-      ottoWorker?.stop();
     },
     workersDone: allWorkersDone,
     stopSockets: () => runtimeSockets.stop(),
     closeDocker: () => dockerLaunch?.close(),
     requests,
     closeMcp: () => mcp.close(),
-    closePools: () => Promise.all([sql.close(), ottoSql?.close()]),
+    closePools: () => sql.close(),
   });
   // Expose the tracked task for hosts that gracefully drain before process termination.
   Object.assign(server, { goldenWorker: workers.goldenWorker, lifecycleWorker: workers.lifecycleWorker });

@@ -609,17 +609,16 @@ admin key, or session secret.
 
 Only the existing `ARMADA_URL`, `ARMADA_TOKEN` and `ARMADA_SMOKE_CASES` are needed.
 Every distinct case org is checked. Named steps are `dashboard_configuration`,
-`dashboard_sandboxes`, `dashboard_otto`, `dashboard_hosts`, and
+`dashboard_sandboxes`, `dashboard_hosts`, and
 `dashboard_launch_options`. Each read step has a 15-second bound and reports only
 pass, elapsed time and a closed failure code; response bodies and credentials
-are never logged. Non-2xx, error states, malformed/skipped rows, incomplete Otto
+are never logged. Non-2xx, error states, malformed/skipped rows, incomplete
 pagination and slow answers fail, rather than silently disabling a probe.
-Otto and Docker host list routes must be enabled on staging.
+Docker host list routes must be enabled on staging.
 
 Sandboxes calls `sandbox/list` and imports the dashboard's own
 `parseSandboxListMetadata`, rejecting skipped rows even though the UI tolerates
-them. Otto uses the dashboard's `readOtto` (summary, tasks, resources, orphans,
-facts and pagination). Hosts and launch options use the same dashboard parsers.
+them. Hosts and launch options use the same dashboard parsers.
 These are read-only API calls; no compute or account is created.
 
 **Uncovered:** actual HTML rendering, hydration, session cookies, selected-org
@@ -750,8 +749,7 @@ a promise that it continuously restarts running deployments.
 
 Use [runtime validation](runtime-startup.md#validation),
 [Boat runtime](boat-runtime-first-prompt.md#staging-acceptance),
-[Docker hosts](docker-host-daemon.md), [OpenCode](runtime/opencode-modal.md) and
-[Otto](otto-staging.md) for their implemented feature gates and real-provider checks.
+[Docker hosts](docker-host-daemon.md) and [OpenCode](runtime/opencode-modal.md) for their implemented feature gates and real-provider checks.
 Synthetic protocol/build proofs are not inference or production acceptance.
 
 ## Sandbox deletion receipts
@@ -1397,14 +1395,15 @@ boundary, daily-limit exhaustion or the older routine script's entire campaign.
 
 Use a dedicated **non-secret** canary variable with value
 `parity_readable_<fresh random UUID>`. Publish a smoke template revision binding
-it to an environment key such as `ARMADA_PARITY_READABLE`, then add this metadata
+it to an environment key such as `PARITY_READABLE_CANARY` (the
+`PARITY_READABLE_` namespace, **not** the reserved `ARMADA_` namespace), then add this metadata
 to that provider case (never put the value in the case JSON):
 
 ```json
 "readableVariable": {
   "id": "<variable UUID>",
   "version": 1,
-  "key": "ARMADA_PARITY_READABLE"
+  "key": "PARITY_READABLE_CANARY"
 }
 ```
 
@@ -1482,3 +1481,121 @@ installation and installed content, not model invocation of the skill, default
 pin precedence, or skill persistence after resume. Keep the older coordinator
 checks until all their additional behaviors have replacement rows. Boat remains
 coordinator-only via `--only boat --production-boat`, never the release gate.
+
+### Application-secret canary delivery parity
+
+Use a dedicated **non-secret** canary stored as an application secret, with
+value `parity_secret_<fresh random UUID>`, no expiry, and a dedicated template
+revision binding exactly that one secret to `PARITY_SECRET_CANARY`. Never use
+real application credentials for this probe. Add value-free metadata and its
+independently known SHA-256 to the provider case:
+
+```json
+"applicationSecret": {
+  "id": "<secret UUID>",
+  "version": 1,
+  "key": "PARITY_SECRET_CANARY",
+  "canarySha256": "<64 lowercase hexadecimal characters>"
+}
+```
+
+Run `--parity --feature application-secrets`, optionally `--only modal|docker`.
+The probe reads authorized template and secret **metadata only**; no secret-read
+API exists or is requested. It requires active/current metadata, no expiry and
+exact frozen secret references. A guest command refuses values outside the
+dedicated canary shape, computes SHA-256 of the value, then hashes that digest
+with a fresh nonce. Only this nonce-specific proof leaves the guest; the raw
+value and its configured expected hash never enter argv, prompts or probe logs.
+An exec digest and the exact final parent-assistant digest on an answered,
+finished turn must both match. The same drained final-answer oracle as the
+readable-variable probe rejects tool echoes and later-page supersession.
+
+Missing configuration, unadvertised delivery or unavailable exec is explicit
+not-run without allocation; advertised lack of secret delivery is unsupported,
+not a pass. Expiring fixtures are not-run without allocation. Requests and
+observation share 110 seconds; durable template admission and every attributable
+sandbox retain independent cleanup even after a failed proof. A full run adds
+one counted template allocation per configured secret case in the same table.
+Existing secrets/templates are never created, rotated, revoked or deleted.
+
+This proves initial canary delivery through the actual secret-binding path,
+not rotation/revocation, denied cross-owner access, or delivery after resume.
+Those checks and MCP parity remain separate debt; keep the older coordinator
+scripts until every check is represented. Boat remains coordinator-only via
+`--only boat --production-boat`, never the release gate.
+
+### Native MCP canary-tool parity
+
+Use a dedicated, already-connected smoke MCP connection exposing a zero-argument
+read-only tool named `parity_<name>`. Its independently known, non-secret output
+must be exactly `parity_mcp_<fresh UUID>` (plain text or MCP text content). Publish
+a dedicated template revision selecting exactly that connection, then configure:
+
+```json
+"mcp": {
+  "connectionId": "<connection UUID>",
+  "tool": "parity_probe",
+  "expectedText": "parity_mcp_<fresh UUID>",
+  "readOnly": true
+}
+```
+
+`readOnly: true` is the operator's explicit attestation about this dedicated
+fixture, not a claim that the runner can infer tool safety from its name. Do not
+point this probe at a general-purpose or mutating tool, a real credential,
+or a resource containing private application data. No upstream tool arguments
+are accepted: the probe requests exactly `{}`. It never connects/reconfigures
+an account or reads upstream credentials; existing connection metadata must
+already say connected.
+
+Run `--parity --feature mcp`, optionally `--only modal|docker`. The probe verifies
+authorized template selection, frozen connection/grant identity and current
+sandbox binding, then requires **native** tool-call/result evidence for that
+server/tool, empty arguments, successful exact canary output, and an answered,
+finished parent-assistant turn with a fresh acknowledgement. Expected tool
+output is never included in the prompt. Claude's separate call/result messages
+must join by exact tool-use ID even across pages; tool echoes, wrong calls,
+nested-agent observations, retractions and later-page supersession cannot pass.
+
+This initial slice supports Codex and Claude Code on Modal/Docker. Native Boat
+remains no-allocation not-run until its adapter retains unambiguous MCP server
+and result provenance; the probe never weakens the evidence oracle to count
+a plain tool name or assistant claim as a native MCP call. OpenCode remains explicit
+not-run without allocation until complete authorized tool-inventory correlation
+and its native proof contract are added. Missing configuration or unadvertised
+MCP support also allocates nothing; declared unsupported delivery stays visible
+debt. Proof requests/observations share 110 seconds and reuse the existing durable
+template launch and independent cleanup. A full run adds one counted template
+allocation per configured MCP case to the same table. No connection/template is
+created, modified, disconnected or deleted.
+
+This is initial native tool execution, not OAuth renewal, denied connection
+access, native Boat evidence, OpenCode name-collision handling or post-resume tool execution. Keep the
+older coordinator checks for those behaviors. Boat remains coordinator-only via
+`--only boat --production-boat`, never the release gate.
+
+### Subscription-account inference parity
+
+Set `subscriptionAccount: true` on a provider case whose `modelAccountId` is a
+dedicated connected subscription account. Run `--parity --feature
+subscription-account`, optionally `--only modal|docker`. Missing opt-in is
+not-run without allocation; an account label alone never establishes billing.
+
+The probe reuses one lifecycle sandbox and its ordinary answered turn, stop,
+resume and answered recall turn. Both turns must finish with the exact final
+parent-assistant response, not a tool echo or superseded message. Server-owned
+usage must cover every measured prompt, carry `included_in_subscription` /
+`api_equivalent` session classification, and have captured subscription billing,
+API-equivalent basis, the exact selected credential ID and a positive captured
+credential version for each measured turn. The existing persisted-quote checks
+must also pass. Unknown API-equivalent prices remain unknown; this proves the
+admitted subscription account was used, not an upstream bill or free inference.
+
+Before- and after-resume receipts are shown separately; baseline-only evidence
+never passes the main row. Wrong-account/version provenance, missing usage or a
+failed quote check fails the proof; an unobserved/refused resume stays not-run.
+Filtered proof requests and observation share 110 seconds; cleanup has its own
+window even if the proof budget expires. Full runs opt in with the same flag and
+reuse existing usage observations without extra allocations or turns. No account
+is created, reconnected or modified. Boat remains coordinator-only via
+`--only boat --production-boat`, never the release gate.

@@ -128,10 +128,10 @@ export interface Provider {
   get(sandboxId: string, options?: { signal?: AbortSignal }): Promise<SandboxInfo>;
   list(request?: ListRequest): Promise<Page<SandboxInfo>>;
 
-  /** One runtime-owned custom connection probe; never starts/resumes a machine or a conversation. */
+  /** One runtime-owned API-key connection probe; never starts/resumes a machine or a conversation. */
   testModelConnection?(request: {
     sandboxId: string;
-    harness: "claude" | "codex";
+    harness: "claude" | "codex" | "opencode";
     model: string;
   }): Promise<ModelConnectionTestResult>;
   /** Trusted final-harness-only bootstrap. Never applied to exec, golden build or init. */

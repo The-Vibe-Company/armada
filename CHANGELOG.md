@@ -1,5 +1,73 @@
 # Changelog
 
+## [2.35.1](https://github.com/The-Vibe-Company/armada/compare/v2.35.0...v2.35.1) (2026-11-14)
+
+
+### Bug Fixes
+
+* **cli:** clarify MCP authorization command help ([#1907](https://github.com/The-Vibe-Company/armada/issues/1907)) ([75b3f45](https://github.com/The-Vibe-Company/armada/commit/75b3f4511474ff56f55b6fb91a9450caa024d604))
+
+## [2.35.0](https://github.com/The-Vibe-Company/armada/compare/v2.34.0...v2.35.0) (2026-11-14)
+
+
+### Features
+
+* **cli:** define Docker host templates with flags ([#1867](https://github.com/The-Vibe-Company/armada/issues/1867)) ([07452dd](https://github.com/The-Vibe-Company/armada/commit/07452dd58c5ee491e8f56f22aeaa710fc779ba65))
+* **docker:** adapt automatic capacity to available host resources ([#1839](https://github.com/The-Vibe-Company/armada/issues/1839)) ([14ed028](https://github.com/The-Vibe-Company/armada/commit/14ed028987a522855b109f82ecb280be88eaa098))
+* **models:** test custom OpenCode connections on Modal ([#1891](https://github.com/The-Vibe-Company/armada/issues/1891)) ([f62d341](https://github.com/The-Vibe-Company/armada/commit/f62d341a50eeded0a011ee74ea329e642034caac))
+* **otto:** answer typed waits in a web Your turn inbox ([#1872](https://github.com/The-Vibe-Company/armada/issues/1872)) ([6ec732f](https://github.com/The-Vibe-Company/armada/commit/6ec732fdadd458ec9fa59d59bdad9417f3c4d077))
+* **otto:** choose and preflight an engine without launching ([#1842](https://github.com/The-Vibe-Company/armada/issues/1842)) ([ab7328c](https://github.com/The-Vibe-Company/armada/commit/ab7328c49fc34329044b59431f3825ec04176d75))
+* **otto:** create and reopen private objective threads ([#1840](https://github.com/The-Vibe-Company/armada/issues/1840)) ([afa36a5](https://github.com/The-Vibe-Company/armada/commit/afa36a516c7f5e447e8eb9bec0b950f5846af82f))
+* **otto:** inspect exact-head mechanical PR evidence ([#1843](https://github.com/The-Vibe-Company/armada/issues/1843)) ([4568e67](https://github.com/The-Vibe-Company/armada/commit/4568e671f1de44c4ce6d1fb68dc36ea4b30f010a))
+* **otto:** observe connected repositories independently ([#1841](https://github.com/The-Vibe-Company/armada/issues/1841)) ([d8db3a7](https://github.com/The-Vibe-Company/armada/commit/d8db3a7edddcafca82367e0ad689b942f78d4af5))
+* **otto:** publish internal ticket dependency graphs ([#1871](https://github.com/The-Vibe-Company/armada/issues/1871)) ([201a816](https://github.com/The-Vibe-Company/armada/commit/201a8161127664430e4551a5cd9dcede834aee8c))
+* **otto:** run durable adaptive interviews with the selected engine ([#1873](https://github.com/The-Vibe-Company/armada/issues/1873)) ([a3c00d0](https://github.com/The-Vibe-Company/armada/commit/a3c00d011d9a7f70e78994d6ed14f73f62ede120))
+* **smoke:** prove native MCP canary tool execution ([#1896](https://github.com/The-Vibe-Company/armada/issues/1896)) ([641adde](https://github.com/The-Vibe-Company/armada/commit/641adde9402285e6386d01c9e56d16840759fc58))
+* **smoke:** prove readable variable delivery without exposing values ([#1783](https://github.com/The-Vibe-Company/armada/issues/1783)) ([ea6a760](https://github.com/The-Vibe-Company/armada/commit/ea6a7606c576f0185ed82636faf3ed379c455c3a))
+* **smoke:** prove subscription inference across resume ([#1901](https://github.com/The-Vibe-Company/armada/issues/1901)) ([337357f](https://github.com/The-Vibe-Company/armada/commit/337357f944649d9f852c71fcc01b2409e31e0d17))
+* **smoke:** prove template-pinned skill content delivery ([#1875](https://github.com/The-Vibe-Company/armada/issues/1875)) ([4c2a81f](https://github.com/The-Vibe-Company/armada/commit/4c2a81f7326444a9dbf59867bee8330031d8c458))
+* **templates:** bind Docker templates to host-local snapshots ([#1876](https://github.com/The-Vibe-Company/armada/issues/1876)) ([3070471](https://github.com/The-Vibe-Company/armada/commit/3070471775af6acb03e4094c1fc45dfe0feee727))
+
+
+### Bug Fixes
+
+* **accounts:** resolve defaults for Armada-access parent launches ([#1862](https://github.com/The-Vibe-Company/armada/issues/1862)) ([d7169a3](https://github.com/The-Vibe-Company/armada/commit/d7169a3984ceec8844b7144f314dcba52885e5bd))
+* **cli:** add focused Docker snapshot help ([#1865](https://github.com/The-Vibe-Company/armada/issues/1865)) ([edeb6ea](https://github.com/The-Vibe-Company/armada/commit/edeb6eac5279f5793c48e5126b530655a4493006))
+* **cli:** add focused snapshot build help ([#1846](https://github.com/The-Vibe-Company/armada/issues/1846)) ([85f183c](https://github.com/The-Vibe-Company/armada/commit/85f183cd6f53b9dadb24249ae029820796dc8814))
+* **cli:** add focused snapshot catalog help ([#1854](https://github.com/The-Vibe-Company/armada/issues/1854)) ([bcba49f](https://github.com/The-Vibe-Company/armada/commit/bcba49f5d8b92ae5de46cefa602ef1d165f0dcd6))
+* **cli:** add focused snapshot maintenance help ([#1857](https://github.com/The-Vibe-Company/armada/issues/1857)) ([4dfe6f3](https://github.com/The-Vibe-Company/armada/commit/4dfe6f382b1d6eaf06fc9133baa51e91e06024cf))
+* **cli:** clarify account and session logout help ([#1902](https://github.com/The-Vibe-Company/armada/issues/1902)) ([171ac87](https://github.com/The-Vibe-Company/armada/commit/171ac8726e73e45fd4b361dcd323696e9f31e363))
+* **cli:** clarify connection discovery and test help ([#1879](https://github.com/The-Vibe-Company/armada/issues/1879)) ([d2e3696](https://github.com/The-Vibe-Company/armada/commit/d2e36960ac08a2ad2455c62426d354be3b4a1f61))
+* **cli:** clarify credential account management help ([#1866](https://github.com/The-Vibe-Company/armada/issues/1866)) ([f23d451](https://github.com/The-Vibe-Company/armada/commit/f23d451dae0b608d52f9f005aab1e3c2e16ce493))
+* **cli:** clarify Docker host management help ([#1903](https://github.com/The-Vibe-Company/armada/issues/1903)) ([2fd1d71](https://github.com/The-Vibe-Company/armada/commit/2fd1d7152f8ec8296791208a1f5c93b387d003f9))
+* **cli:** clarify GitHub authorization command help ([#1898](https://github.com/The-Vibe-Company/armada/issues/1898)) ([232157f](https://github.com/The-Vibe-Company/armada/commit/232157f9292fb349d2a90fd418016d8d477ba541))
+* **cli:** clarify GitHub maintenance command help ([#1897](https://github.com/The-Vibe-Company/armada/issues/1897)) ([d239dde](https://github.com/The-Vibe-Company/armada/commit/d239dde228ba8db84e14e2dec7afa098c5718b1e))
+* **cli:** clarify MCP read command help ([#1904](https://github.com/The-Vibe-Company/armada/issues/1904)) ([798d8ab](https://github.com/The-Vibe-Company/armada/commit/798d8ab7b37dcdb44828067d8f24fdbe25e01648))
+* **cli:** clarify native credential login and import help ([#1877](https://github.com/The-Vibe-Company/armada/issues/1877)) ([86d85ca](https://github.com/The-Vibe-Company/armada/commit/86d85ca5585ba3ccbee19303950069a5202ca2e5))
+* **cli:** clarify organization invitation help ([#1893](https://github.com/The-Vibe-Company/armada/issues/1893)) ([5e9beec](https://github.com/The-Vibe-Company/armada/commit/5e9beecfd2bb92527a1ad21beffca23a855389c2))
+* **cli:** clarify organization member command help ([#1889](https://github.com/The-Vibe-Company/armada/issues/1889)) ([119c8d7](https://github.com/The-Vibe-Company/armada/commit/119c8d7ff6007c147e7044d10754971850dd0c0d))
+* **cli:** clarify organization selection help ([#1887](https://github.com/The-Vibe-Company/armada/issues/1887)) ([39e421e](https://github.com/The-Vibe-Company/armada/commit/39e421e2a6cb35ec7deb8e3d6c87744e401e2408))
+* **cli:** clarify provider onboarding help ([#1894](https://github.com/The-Vibe-Company/armada/issues/1894)) ([8a9c7e9](https://github.com/The-Vibe-Company/armada/commit/8a9c7e9bb7651ba13ebdb66bd1bbddb70bb9b5be))
+* **cli:** clarify service token command help ([#1895](https://github.com/The-Vibe-Company/armada/issues/1895)) ([bf541db](https://github.com/The-Vibe-Company/armada/commit/bf541db135eb034b814606fe72c1e66cb0f28a76))
+* **cli:** clarify snapshot create and update help ([#1861](https://github.com/The-Vibe-Company/armada/issues/1861)) ([949ce26](https://github.com/The-Vibe-Company/armada/commit/949ce26073f631994abb928ad492753fa445a9c7))
+* **dashboard:** clarify model connection availability ([#1868](https://github.com/The-Vibe-Company/armada/issues/1868)) ([83c87cb](https://github.com/The-Vibe-Company/armada/commit/83c87cb8d3a97fbe3879b7995e5750e67b1c0e35))
+* **dashboard:** explain provider limits at snapshot launch ([#1874](https://github.com/The-Vibe-Company/armada/issues/1874)) ([70ffe16](https://github.com/The-Vibe-Company/armada/commit/70ffe161da736fd394affd644f11bd919eb7a916))
+* **docker-host:** bound TTL sweeps to active generations ([#1810](https://github.com/The-Vibe-Company/armada/issues/1810)) ([3ca7675](https://github.com/The-Vibe-Company/armada/commit/3ca7675e49141d15e296ed7eba0fc37c56af983c))
+* **docker:** clarify repository-scoped GitHub launch diagnostics ([#1864](https://github.com/The-Vibe-Company/armada/issues/1864)) ([c0bc6e8](https://github.com/The-Vibe-Company/armada/commit/c0bc6e8eaefc081b611a3c04a253540d5f362023))
+* **docker:** preserve provider identity on skill runtime refusals ([#1869](https://github.com/The-Vibe-Company/armada/issues/1869)) ([623e8fa](https://github.com/The-Vibe-Company/armada/commit/623e8fa287d71d0d58f004fb31e62b23a6a2b959))
+* **models:** test standard API-key connections in the runtime ([#1883](https://github.com/The-Vibe-Company/armada/issues/1883)) ([b436bca](https://github.com/The-Vibe-Company/armada/commit/b436bca87bd52b9d40a83b5eba7a2873b9eb7a1d))
+* **otto:** bind evidence reads to every configured repository ([#1853](https://github.com/The-Vibe-Company/armada/issues/1853)) ([c522151](https://github.com/The-Vibe-Company/armada/commit/c52215153a71c6958b9b7c4dddd6fe345047df0a))
+* **otto:** derive ticket readiness from proof and record graph publication ([#1878](https://github.com/The-Vibe-Company/armada/issues/1878)) ([be31d0b](https://github.com/The-Vibe-Company/armada/commit/be31d0bac2d8897deb1b789d48b484d092694315))
+* **smoke:** use publishable readable canary keys ([#1884](https://github.com/The-Vibe-Company/armada/issues/1884)) ([950a21e](https://github.com/The-Vibe-Company/armada/commit/950a21ef9e2a031a22d0fdad6985fdd14c342c54))
+
+
+### Performance Improvements
+
+* **auth:** reduce bearer verification to one SQL round trip ([#1886](https://github.com/The-Vibe-Company/armada/issues/1886)) ([64825c7](https://github.com/The-Vibe-Company/armada/commit/64825c77f62bea083c0eb13c290969eb27f3fb21))
+* **dashboard:** stream navigation feedback across app sections ([#1885](https://github.com/The-Vibe-Company/armada/issues/1885)) ([f37e319](https://github.com/The-Vibe-Company/armada/commit/f37e31987fe7042eebcc7febf1698a8327a33d23))
+* **db:** collapse sandbox metadata membership lookups ([#1888](https://github.com/The-Vibe-Company/armada/issues/1888)) ([0d3650c](https://github.com/The-Vibe-Company/armada/commit/0d3650c54c3878b31d52e34591dea5b587ebb676))
+* **db:** evaluate golden read memberships per statement ([#1892](https://github.com/The-Vibe-Company/armada/issues/1892)) ([9d26e81](https://github.com/The-Vibe-Company/armada/commit/9d26e8126912704d41b31750035dcbfe9db9a267))
+
 ## [2.34.0](https://github.com/The-Vibe-Company/armada/compare/v2.33.0...v2.34.0) (2026-11-14)
 
 

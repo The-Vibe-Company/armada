@@ -140,14 +140,14 @@ function ConnectionTestDialog({
         </Button>
       </DialogTrigger>
       <p id={descriptionId} className="mt-1 text-xs text-muted-foreground">
-        Custom endpoints only, using a running Modal sandbox. Standard vendor keys cannot be tested here.
+        API-key accounts only, using a running Modal sandbox. Subscription sign-ins cannot be tested here.
       </p>
       <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Test {account.name}</DialogTitle>
           <DialogDescription>
-            Custom endpoints only. Launch an idle Modal sandbox with this account first. This sends one tiny billable
-            request through its runtime, without starting or resuming a machine.
+            Launch an idle Modal sandbox with this API-key account first. This sends one tiny billable request through
+            its runtime, without starting or resuming a machine.
           </DialogDescription>
         </DialogHeader>
         <ConnectionTestForm
@@ -546,12 +546,14 @@ export function AccountRow({
               {connectionModelsNote(account.models.map((declared) => declared.model))}
             </p>
           ) : null}
-          {/* The check runs Codex and Claude endpoints only; an OpenCode account would always be refused. */}
-          {info.billing === "api" && account.kind !== "opencode" && account.status === "active" && (
-            <div className="pt-1.5">
-              <ConnectionTestDialog account={account} orgId={orgId} choices={testChoices} />
-            </div>
-          )}
+          {/* OpenCode plan keys keep vendor-owned routing; only declared custom connections can be checked. */}
+          {info.billing === "api" &&
+            (account.kind !== "opencode" || !!account.models?.length) &&
+            account.status === "active" && (
+              <div className="pt-1.5">
+                <ConnectionTestDialog account={account} orgId={orgId} choices={testChoices} />
+              </div>
+            )}
           {/* A revoked or removed account has no usage to read: its state already says what to do. */}
           {info.billing === "subscription" && account.status === "active" && (
             <div className="pt-1.5">
@@ -1365,7 +1367,7 @@ export function AddAccountDialog({
               data-connection-availability
             >
               {kind === "opencode"
-                ? "OpenCode runs on Modal only. Boat and Docker hosts are not supported. Connection testing is not available for OpenCode."
+                ? "OpenCode runs on Modal only. Boat and Docker hosts are not supported. Custom connections can be tested in a running Modal sandbox; OpenCode plan-key checks are not available."
                 : preset?.models === "choose"
                   ? "This custom connection requires Modal. It is not available on Boat or Docker hosts."
                   : "With a standard vendor account, Codex and Claude Code run on Modal, Boat and Docker hosts. Custom endpoints require Modal."}
@@ -1587,7 +1589,7 @@ export function HarnessAccounts({
         </h2>
         <p className="text-xs text-muted-foreground" data-harness-availability>
           {harness === "opencode"
-            ? "Modal only. OpenCode is not available on Boat or Docker hosts. Connection testing is not available for OpenCode."
+            ? "Modal only. OpenCode is not available on Boat or Docker hosts. Custom connections can be tested in a running Modal sandbox; OpenCode plan-key checks are not available."
             : "Standard vendor accounts work on Modal, Boat and Docker hosts. Custom endpoints require Modal; testing also requires a running Modal sandbox."}
         </p>
         {accounts.length > 0 && <LaunchUses resolved={resolved} harnessLabel={harnessLabel} now={now} />}
