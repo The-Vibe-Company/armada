@@ -854,6 +854,25 @@ test.each([false, true])(
   },
 );
 
+test("send refreshes the first conversation when its ready row predates launch receipt publication", async () => {
+  const f = await fixture();
+  await f.service().launch(f.caller, f.body);
+  const sender = createDockerNormalSend(sql, key, { enabled: true, clock: f.clock });
+  const stale = {
+    id: f.body.requestId,
+    org_id: f.actor.orgId,
+    owner_id: f.actor.userId,
+    status: "ready",
+    conversation_ids: [],
+  };
+  const requestId = randomUUID();
+  await sender.send(f.caller, { request_id: requestId, prompt: "Continue the just-published conversation" }, stale);
+  expect(f.native.at(-1)).toMatchObject({
+    op: "prompt",
+    input: { conversationId: f.receipt.conversationId, text: "Continue the just-published conversation" },
+  });
+});
+
 test("a still-starting owner send returns a pending outcome within its budget, not a conflict or a wake", async () => {
   const f = await fixture();
   const server = f.service(sql, true, 10000, officialImage, true);
