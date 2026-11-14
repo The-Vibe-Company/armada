@@ -162,6 +162,66 @@ Select an organization with org use or --org UUID; use an ID from mcp list.
 Output is JSON even without --json. This is not mcp delete.
 Example: armada mcp revoke CONNECTION_UUID --org ORG_UUID
 `,
+  "mcp rename": `Usage: armada mcp rename <connection-id> <name> [--org UUID] [--json]
+Rename an MCP registry connection after Armada login and server authorization.
+Use an ID from mcp list; select an organization with org use or --org UUID.
+Output is JSON even without --json.
+Example: armada mcp rename CONNECTION_UUID work-tools --org ORG_UUID
+`,
+  "mcp default": `Usage: armada mcp default <connection-id> on|off [--org UUID] [--json]
+Set whether an MCP connection is a launch default after Armada login and server authorization.
+Use an ID from mcp list; select an organization with org use or --org UUID.
+The on/off choice is positional. This is not connection authorization.
+Output is JSON even without --json.
+Example: armada mcp default CONNECTION_UUID on --org ORG_UUID
+`,
+  "mcp enable": `Usage: armada mcp enable <connection-id> [--org UUID] [--json]
+Enable an MCP registry connection after Armada login and server authorization.
+Use an ID from mcp list; select an organization with org use or --org UUID.
+Output is JSON even without --json. Check mcp status for authorization state.
+Example: armada mcp enable CONNECTION_UUID --org ORG_UUID
+`,
+  "mcp disable": `Usage: armada mcp disable <connection-id> [--org UUID] [--json]
+Disable an MCP registry connection after Armada login and server authorization.
+Use an ID from mcp list; select an organization with org use or --org UUID.
+Output is JSON even without --json. This is not registry deletion.
+Example: armada mcp disable CONNECTION_UUID --org ORG_UUID
+`,
+  "mcp delete": `Usage: armada mcp delete <connection-id> [--org UUID] [--json]
+Delete an MCP registry connection after Armada login and server authorization.
+Use an ID from mcp list; select an organization with org use or --org UUID.
+Output is JSON even without --json. For authorization revocation, see mcp revoke.
+Example: armada mcp delete CONNECTION_UUID --org ORG_UUID
+`,
+  "mcp add": `Usage: armada mcp add <name> <URL> [--scope personal|org] [--org UUID] [--json]
+   or: armada mcp add <name> --service <service-id> [--scope personal|org] [--org UUID] [--json]
+   or: armada mcp add [--file <path>] [--org UUID] [--json]
+Create a registry connection after Armada login and server authorization.
+Select an organization with org use or --org UUID.
+URL shortcuts require a public/OAuth HTTP URL without credentials; keep stdin empty.
+Do not combine NAME URL with --file or stdin JSON. Shortcut scope defaults to personal.
+Use mcp catalog for service IDs. Full definitions are JSON objects from stdin or --file;
+put scope in the definition, not --scope. Secrets belong in private files/stdin, never arguments.
+Output is always JSON. This does not run mcp connect.
+Example: armada mcp add work-tools --service notion --org ORG_UUID
+Example: armada mcp add --file /private/connection.json --org ORG_UUID
+`,
+  "mcp update": `Usage: armada mcp update <connection-id> [--file <path>] [--org UUID] [--json]
+Update a registry connection from a JSON object after Armada login and server authorization.
+Select an organization with org use or --org UUID; use an ID from mcp list.
+Read the object from stdin or --file. Keep authentication values out of command arguments.
+Updates cannot change scope; --scope is not accepted. Output is always JSON.
+Example: armada mcp update CONNECTION_UUID --file /private/connection.json --org ORG_UUID
+`,
+  doctor: `Usage: armada doctor [--org UUID] [--json]
+Inspect setup metadata and report check statuses with next-step guidance.
+Checks include session/server, GitHub, organization selection, Docker-host and model-account metadata.
+Use --org to override a saved selection; a sole organization can be selected automatically.
+This is not a full provider lifecycle test or proof that a model request will work.
+--json returns a checks array; otherwise output is a table.
+Exits 1 if any check is failed, otherwise 0; warnings and unknowns are not passes.
+Example: armada doctor --org ORG_UUID --json
+`,
   "org setup": `Usage: armada org setup [--org <name>] [--json]
 Show organization provider setup status. Sign in before running the operation.
 Use --org to override a saved selection. This reports configuration, not a live lifecycle test.
@@ -434,6 +494,15 @@ Example: armada mcp ${action} CONNECTION_UUID --org ORG_UUID --no-browser --time
 `;
 }
 
+function completionHelp(shell?: "bash" | "zsh" | "fish"): string {
+  return `Usage: armada completion ${shell ?? "bash|zsh|fish"}
+Print a shell-completion script to stdout. No login or network request is needed.
+Choose the shell you actually use; inspect the generated script before sourcing it.
+This command does not install completion or modify your shell configuration.
+Example: armada completion ${shell ?? "bash"} > armada-completion.${shell ?? "bash"}
+`;
+}
+
 export function onboardingHelp(argv: readonly string[]): string | undefined {
   if (!["--help", "-h"].includes(argv.at(-1) ?? "")) return undefined;
   const parts = argv.slice(0, -1);
@@ -459,6 +528,10 @@ export function onboardingHelp(argv: readonly string[]): string | undefined {
   )
     parts[0] = "snapshot";
   const command = parts.join(" ");
+  if (command === "completion") return completionHelp();
+  if (command === "completion bash") return completionHelp("bash");
+  if (command === "completion zsh") return completionHelp("zsh");
+  if (command === "completion fish") return completionHelp("fish");
   if (command === "mcp connect") return mcpAuthorizationHelp("connect");
   if (command === "mcp reconnect") return mcpAuthorizationHelp("reconnect");
   if (command === "github connect") return githubAuthorizationHelp("connect");
