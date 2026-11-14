@@ -18,17 +18,29 @@ export type DockerPolicyRow = {
   sandbox_cpus: number | null;
   sandbox_memory_bytes: number | string | null;
   max_sandboxes: number | null;
+  available_cpus?: number | null;
+  available_memory_bytes?: number | string | null;
 };
-export function hostResourcePolicy(host: DockerPolicyRow) {
+export function hostResourcePolicy(host: DockerPolicyRow, running = 0) {
   if (host.machine_cpus == null || host.machine_memory_bytes == null) return null;
   try {
     return dockerResourcePolicy(
-      { cpus: Number(host.machine_cpus), memoryBytes: Number(host.machine_memory_bytes) },
+      {
+        cpus: Number(host.machine_cpus),
+        memoryBytes: Number(host.machine_memory_bytes),
+        ...(host.available_cpus == null || host.available_memory_bytes == null
+          ? {}
+          : {
+              availableCpus: Number(host.available_cpus),
+              availableMemoryBytes: Number(host.available_memory_bytes),
+            }),
+      },
       {
         ...(host.sandbox_cpus == null ? {} : { cpus: Number(host.sandbox_cpus) }),
         ...(host.sandbox_memory_bytes == null ? {} : { memoryBytes: Number(host.sandbox_memory_bytes) }),
         ...(host.max_sandboxes == null ? {} : { maxSandboxes: host.max_sandboxes }),
       },
+      running,
     );
   } catch {
     throw new DockerLimitsRefused(
@@ -47,7 +59,7 @@ export class DockerHostFull extends ProviderError {
   constructor(name: string, running: number, capacity: number) {
     super({
       provider: "docker",
-      code: "conflict",
+      code: "host_full",
       retryable: false,
       message: `Host ${name} is full: ${running}/${capacity} sandboxes running; stop one or raise the limit.`,
     });
@@ -61,17 +73,17 @@ export class DockerHostFull extends ProviderError {
 export async function admitDockerCapacity(tx: Sql, hostId: string): Promise<void> {
   const host = (
     await tx.query<DockerPolicyRow & { name: string | null }>(
-      "select name,machine_cpus,machine_memory_bytes,sandbox_cpus,sandbox_memory_bytes,max_sandboxes from public.docker_hosts where id=$1",
+      "select name,machine_cpus,machine_memory_bytes,sandbox_cpus,sandbox_memory_bytes,max_sandboxes,available_cpus,available_memory_bytes from public.docker_hosts where id=$1",
       [hostId],
     )
   ).rows[0];
   if (!host || host.machine_cpus == null || host.machine_memory_bytes == null) return;
-  const capacity = hostResourcePolicy(host)!.capacity;
   const { rows } = await tx.query<{ running: string | number }>(
     `select (${DOCKER_CAPACITY_USAGE_SQL}) as running from public.docker_hosts h where h.id=$1`,
     [hostId],
   );
   const running = Number(rows[0]?.running ?? 0);
+  const capacity = hostResourcePolicy(host, running)!.capacity;
   if (running >= capacity) throw new DockerHostFull(host.name ?? hostId, running, capacity);
 }
 

@@ -394,6 +394,8 @@ export type Database = {
           sandbox_memory_bytes: number | null;
           max_sandboxes: number | null;
           resource_policy_version: number | null;
+          available_cpus: number | null;
+          available_memory_bytes: number | null;
         };
         Insert: {
           id: string;
@@ -415,6 +417,8 @@ export type Database = {
           sandbox_memory_bytes?: number | null;
           max_sandboxes?: number | null;
           resource_policy_version?: number | null;
+          available_cpus?: number | null;
+          available_memory_bytes?: number | null;
         };
         Update: {
           id?: string;
@@ -436,6 +440,8 @@ export type Database = {
           sandbox_memory_bytes?: number | null;
           max_sandboxes?: number | null;
           resource_policy_version?: number | null;
+          available_cpus?: number | null;
+          available_memory_bytes?: number | null;
         };
         Relationships: [
           {

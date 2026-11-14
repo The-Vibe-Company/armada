@@ -152,6 +152,12 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
         payload && typeof payload === "object" && "error" in payload
           ? (payload as { error?: { code?: string } }).error?.code
           : undefined;
+      if (response.status === 409 && failureCode === "host_full")
+        throw new ArmadaApiError(
+          "host_full",
+          409,
+          "The selected Docker host is full. Stop a sandbox on that host or raise its limit before retrying.",
+        );
       // Older control servers used not_found for both resource misses and route misses.
       // Compare only the fixed legacy sentinel; never echo untrusted response text.
       const legacyUnknownRoute =

@@ -1,5 +1,6 @@
 import { readBoundedText } from "@armada/auth";
 import { DOCKER_JOB_FAILURE_REASONS, type DockerJobFailureReason } from "@armada/core";
+import { type DockerHostResources, validDockerAvailability } from "../../core/src/docker-resource-policy.ts";
 import { dockerResourceLimits } from "../../core/src/docker-resources.ts";
 import type { CallerResult } from "./caller.ts";
 import { DockerLimitsRefused } from "./docker-capacity.ts";
@@ -138,7 +139,12 @@ export function createDockerHostRoutes(
       if (path.endsWith("/poll")) {
         if (body.resources !== undefined) {
           if (!object(body.resources)) throw new InvalidInput();
-          fields(body.resources, ["cpus", "memoryBytes"]);
+          fields(body.resources, [
+            "cpus",
+            "memoryBytes",
+            ...("availableCpus" in body.resources ? ["availableCpus", "availableMemoryBytes"] : []),
+          ]);
+          if (!validDockerAvailability(body.resources as DockerHostResources)) throw new InvalidInput();
           try {
             dockerResourceLimits(body.resources as { cpus: number; memoryBytes: number });
           } catch {
@@ -156,7 +162,7 @@ export function createDockerHostRoutes(
               installationId,
               version,
               body.skipSnapshots === true,
-              body.resources as { cpus: number; memoryBytes: number } | undefined,
+              body.resources as DockerHostResources | undefined,
               body.resourcePolicyVersion as 1 | undefined,
             ),
             ...(body.resourcePolicyVersion === 1 ? { limits: await store.limitsForHost(token, installationId) } : {}),

@@ -116,3 +116,15 @@ test.each(["", canary])("binding refusal preserves only an exact fixed reason (s
     expect(failure.message).toContain("armada list --json");
   }
 });
+
+test.each([{ args: ["launch", "web", "--agent", "codex", "hello"] }, { args: ["send", id, "hello"] }])(
+  "host_full remains actionable without relaying provider diagnostics: $args",
+  async ({ args }) => {
+    const result = await capture([...args, "--json"], 409, "host_full");
+    expect(result.exit).toBe(1);
+    const failure = JSON.parse(result.err).error;
+    expect(failure.code).toBe("host_full");
+    expect(failure.message).toContain("Stop a sandbox on that host or raise its limit");
+    expect(failure.message).not.toContain("outcome unknown");
+  },
+);

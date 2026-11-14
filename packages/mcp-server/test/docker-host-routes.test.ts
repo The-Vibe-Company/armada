@@ -405,3 +405,31 @@ test("only the owner changes a drained capable host; policy reaches admission an
     await db.close();
   }
 });
+
+test("heartbeat availability is validated and drives the public busy-capacity summary", async () => {
+  const { db, userId, orgId, store, post } = await fixture();
+  try {
+    const ticket = await store.issueRegistration({ userId, orgId });
+    const installationId = randomUUID();
+    const host = await store.exchangeRegistration(ticket.registrationToken, installationId);
+    const resources = { cpus: 16, memoryBytes: 38 * 1024 ** 3, availableCpus: 8, availableMemoryBytes: 30 * 1024 ** 3 };
+    const poll = (value: unknown) =>
+      post("/api/docker-host/poll", host.hostToken, {
+        installationId,
+        version: "2.33.0",
+        resourcePolicyVersion: 1,
+        resources: value,
+      });
+    expect((await poll(resources)).status).toBe(200);
+    const listed = await post("/api/v1/docker/hosts/list", "fixture-user-token", { org: orgId });
+    expect((await listed.json()).hosts[0]).toMatchObject({ resources: { capacity: 7, heldBack: 2 } });
+    for (const invalid of [
+      { ...resources, availableCpus: 17 },
+      { ...resources, availableMemoryBytes: -1 },
+      { cpus: 16, memoryBytes: 38 * 1024 ** 3, availableCpus: 8 },
+    ])
+      expect((await poll(invalid)).status).toBe(400);
+  } finally {
+    await db.close();
+  }
+});

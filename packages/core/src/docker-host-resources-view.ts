@@ -1,4 +1,5 @@
 import type { DockerHostResourceSummary, DockerHostSummary } from "./docker-api.ts";
+import { validDockerAvailability } from "./docker-resource-policy.ts";
 
 const positive = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value > 0;
 const object = (value: unknown): value is Record<string, unknown> =>
@@ -10,6 +11,7 @@ export function validDockerHostResources(value: unknown): value is DockerHostRes
   const { machine, perSandbox, capacity, mode } = value;
   return (
     positive(machine.cpus) &&
+    validDockerAvailability(machine as { cpus: number; memoryBytes: number }) &&
     Number.isSafeInteger(machine.memoryBytes) &&
     positive(machine.memoryBytes) &&
     positive(perSandbox.cpus) &&
@@ -20,7 +22,10 @@ export function validDockerHostResources(value: unknown): value is DockerHostRes
     Number.isSafeInteger(perSandbox.pids) &&
     positive(perSandbox.pids) &&
     Number.isSafeInteger(capacity) &&
-    positive(capacity) &&
+    typeof capacity === "number" &&
+    capacity >= 0 &&
+    (value.heldBack === undefined ||
+      (Number.isSafeInteger(value.heldBack) && typeof value.heldBack === "number" && value.heldBack >= 0)) &&
     (mode === "automatic" || mode === "manual")
   );
 }
@@ -36,6 +41,6 @@ export function dockerHostResourceDisplay(host: Pick<DockerHostSummary, "resourc
   return {
     machine: `${resources.machine.cpus} CPUs · ${memory(resources.machine.memoryBytes)} RAM`,
     limits: `${resources.perSandbox.cpus} CPUs · ${memory(resources.perSandbox.memoryBytes)} RAM · ${resources.perSandbox.pids} processes (${resources.mode})`,
-    usage: `${host.running ?? "?"}/${resources.capacity}`,
+    usage: `${host.running ?? "?"}/${resources.capacity}${resources.heldBack ? ` (${resources.heldBack} held back: machine busy)` : ""}`,
   };
 }
