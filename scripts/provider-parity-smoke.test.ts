@@ -337,7 +337,10 @@ for (const mode of [
       if (mode === "accounts_invalid") {
         expect(passed).toBe(false);
         expect(calls).toHaveLength(0);
-        expect(lines.find((line) => line.startsWith("{"))).toContain("invalid_accounts_configuration");
+        expect(JSON.parse(lines.find((line) => line.startsWith("{"))!)).toMatchObject({
+          code: "invalid_accounts_configuration",
+          field: "ARMADA_SMOKE_CASES[1].account",
+        });
         return;
       }
       const badCost = mode === "accounts_unknown_bad" || mode === "accounts_price_lost";
@@ -351,6 +354,8 @@ for (const mode of [
           if (mode === "accounts_unknown") expect(cell.features["exact-cost"][provider].reason).toBe("unknown: price");
         }
       }
+      expect(lines.join("\n")).toContain("| claude-anthropic | modal | not-run: no account on staging |");
+      expect(lines.join("\n")).toContain("| codex-subscription | docker | not-run: no account on staging |");
       expect(report.accounts["codex-subscription"].modal).toEqual({
         status: "not-run",
         reason: "no account on staging",
@@ -871,3 +876,63 @@ test("GitHub parity uses the same probe for coordinator production Boat", async 
   expect(fake.calls.filter((call) => call.path === "sandbox/launch")).toHaveLength(1);
   expect(fake.calls.find((call) => call.path === "sandbox/exec")?.body.command).toContain("push --dry-run");
 });
+
+// Configuration failures must be actionable before allocating any real compute.
+for (const [name, override, field] of [
+  ["missing URL", { ARMADA_URL: undefined }, "ARMADA_URL"],
+  ["missing token", { ARMADA_TOKEN: " " }, "ARMADA_TOKEN"],
+  ["missing consent", { ARMADA_SMOKE: undefined }, "ARMADA_SMOKE"],
+  ["malformed JSON", { ARMADA_SMOKE_CASES: '{"secret":"never-echo-this"' }, "ARMADA_SMOKE_CASES"],
+  ["non-array", { ARMADA_SMOKE_CASES: "{}" }, "ARMADA_SMOKE_CASES"],
+  ["non-object", { ARMADA_SMOKE_CASES: "[null]" }, "ARMADA_SMOKE_CASES[0]"],
+  [
+    "normal case without label",
+    { ARMADA_SMOKE_CASES: '[{"provider":"boat"},{"provider":"modal"}]' },
+    "ARMADA_SMOKE_CASES[1].account",
+  ],
+  [
+    "wrong harness",
+    { ARMADA_SMOKE_CASES: '[{"provider":"modal","account":"codex-openai","harness":"opencode"}]' },
+    "ARMADA_SMOKE_CASES[0].harness",
+  ],
+  [
+    "missing Docker host",
+    {
+      ARMADA_SMOKE_CASES:
+        '[{"provider":"docker","account":"codex-openai","harness":"codex","org":"org","model":"model","modelAccountId":"account"}]',
+    },
+    "ARMADA_SMOKE_CASES[0].hostId",
+  ],
+] as const) {
+  test(`accounts configuration identifies ${name}`, async () => {
+    const lines: string[] = [];
+    expect(
+      await postDeploySmoke(
+        Object.assign(
+          {
+            ARMADA_URL: "https://armada-mcp-staging.up.railway.app",
+            ARMADA_TOKEN: "never-echo-this",
+            ARMADA_SMOKE: "create_real_compute",
+            ARMADA_SMOKE_CASES: "[]",
+          },
+          override,
+        ),
+        ["--parity", "--accounts"],
+        {
+          now: () => 0,
+          sleep: async () => {},
+          out: (line) => lines.push(line),
+          fetch: async () => {
+            throw new Error("must not allocate or call the network on invalid configuration");
+          },
+        },
+      ),
+    ).toBe(false);
+    expect(JSON.parse(lines.find((line) => line.startsWith("{"))!)).toMatchObject({
+      code: "invalid_accounts_configuration",
+      field,
+      message: expect.any(String),
+    });
+    expect(lines.join("\n")).not.toContain("never-echo-this");
+  });
+}

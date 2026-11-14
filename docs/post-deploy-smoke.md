@@ -1012,6 +1012,73 @@ pairs and mismatched harnesses fail configuration before any allocation.
 The label describes an operator-selected credential; it does not convert a
 credential or assert upstream protocol support.
 
+A normal two-provider configuration has no `account` labels and cannot identify
+which matrix cells to run. Configuration errors include a `field` path and a
+safe explanation (for example `ARMADA_SMOKE_CASES[0].account`); they never echo
+credentials or the submitted JSON. Indexes refer to the original input, including
+skipped Boat entries.
+
+To expand the existing normal Modal/Docker cases into Codex OpenAI, Codex Azure
+and OpenCode DeepSeek cells, run the following in **Bash** from the checkout.
+Keep `ARMADA_TOKEN` and the original `ARMADA_SMOKE_CASES` exported from your
+staging secret source. Set the three **account IDs, not keys** below to the IDs
+shown in staging Accounts. The code preserves each provider's existing `org`,
+`golden` and `hostId`; it uses the normal Codex model for OpenAI and the first
+declared model/deployment for each custom connection (no guessed Azure alias).
+The metadata request is read-only and returns no upstream key or endpoint.
+
+```bash
+set -euo pipefail
+export ARMADA_URL=https://armada-mcp-staging.up.railway.app
+export ARMADA_SMOKE=create_real_compute
+export SMOKE_OPENAI_ACCOUNT='your-openai-account-uuid'
+export SMOKE_AZURE_ACCOUNT='your-azure-account-uuid'
+export SMOKE_DEEPSEEK_ACCOUNT='your-opencode-deepseek-account-uuid'
+: "${ARMADA_TOKEN:?Export the staging Armada token from your secret source}"
+: "${ARMADA_SMOKE_CASES:?Keep the original normal Modal and Docker cases exported}"
+
+accounts_cases="$(bun --eval '
+const env = process.env;
+const bases = JSON.parse(env.ARMADA_SMOKE_CASES).filter(c => c.provider !== "boat");
+if (bases.length !== 2 || !["modal", "docker"].every(p => bases.some(c => c.provider === p)))
+  throw new Error("ARMADA_SMOKE_CASES must contain one normal Modal and one normal Docker case");
+const result = [];
+for (const base of bases) {
+  if (base.harness !== "codex" || !base.model || !base.org)
+    throw new Error("Each normal case must declare org, harness: codex, and model");
+  const response = await fetch(`${env.ARMADA_URL}/api/v1/creds/accounts/models`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${env.ARMADA_TOKEN}`, "content-type": "application/json" },
+    body: JSON.stringify({ org: base.org }),
+  });
+  if (!response.ok) throw new Error(`Account model discovery failed: HTTP ${response.status}`);
+  const { connections } = await response.json();
+  const declared = (id, field) => {
+    const model = connections.find(c => c.id === id)?.models[0]?.model;
+    if (!model) throw new Error(`${field}: no declared model visible in this org; check the account configuration`);
+    return model;
+  };
+  result.push(
+    { ...base, account: "codex-openai", harness: "codex", modelAccountId: env.SMOKE_OPENAI_ACCOUNT },
+    { ...base, account: "codex-azure", harness: "codex", modelAccountId: env.SMOKE_AZURE_ACCOUNT,
+      model: declared(env.SMOKE_AZURE_ACCOUNT, "SMOKE_AZURE_ACCOUNT") },
+    { ...base, account: "opencode-deepseek", harness: "opencode", modelAccountId: env.SMOKE_DEEPSEEK_ACCOUNT,
+      model: declared(env.SMOKE_DEEPSEEK_ACCOUNT, "SMOKE_DEEPSEEK_ACCOUNT") },
+  );
+}
+console.log(JSON.stringify(result));
+')"
+export ARMADA_SMOKE_CASES="$accounts_cases"
+bun scripts/post-deploy-smoke.ts --parity --accounts
+```
+
+This deliberately launches **six cells** (three account selections on two
+providers), with follow-up and resumed turns, then cleanup. Do not rerun the
+expansion on already-expanded cases. No Anthropic or subscription credentials
+are required. Their unconfigured cells remain explicitly not-run, not failures
+or claimed passes. To choose a different declared custom model, replace
+`models[0]` in the recipe with the intended declared model selection.
+
 An absent pair prints `not-run: no account on staging`, including subscriptions.
 Only provision supported connections: OpenCode custom connections currently speak
 OpenAI-compatible chat completions, not native Anthropic Messages; its endpoint
