@@ -659,6 +659,8 @@ test("expiry accepts only this installation's bound frozen startup machine, neve
   const stop = { requestId: randomUUID(), operation: "stop" as const };
   await store.enqueueSandbox(a.actor, a.sandboxId, stop);
   await denied(store.expired(a.hostToken, a.installationId, { requestId: stop.requestId }));
+  // Keep this identity/expiry test independent of cleanup priority; a failed stop is not a physical ACK.
+  await store.complete(a.hostToken, a.installationId, { requestId: stop.requestId, outcome: "failed" });
   // A stale generation and a corrupted frozen frame must not transition the target.
   const original = (
     await db.query<{ input_enc: Uint8Array<ArrayBuffer> }>(
