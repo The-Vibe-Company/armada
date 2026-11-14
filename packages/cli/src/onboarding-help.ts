@@ -312,6 +312,20 @@ Inspect exitCode and timedOut; a successful CLI request is not proof the shell c
 Put options before -- so command flags are passed literally, not parsed as Armada options.
 Example: armada exec SANDBOX_UUID --org ORG_UUID -- "git status --short"
 `,
+  list: `Usage: armada list [--status <status>] [--agent <harness> | --harness <harness>]
+  [--golden UUID] [--owner UUID|me] [--page <N>] [--limit <N>] [--org UUID] [--json] [--page-info]
+List visible sandboxes after Armada login and server authorization.
+Status: starting, ready, running, stopping, stopped, failed or deleted.
+Deleted sandboxes are excluded by default; request --status deleted to include them.
+--agent and --harness are aliases; use only one (claude, codex or opencode).
+--golden filters by snapshot UUID. --owner accepts a user UUID or me.
+Page is 1–1000000; limit is 1–200 (default page size 25). This is one page, not all results.
+Human output is a table. --json returns {sandboxes:[...]}; --page-info returns full
+page metadata and exact totals as JSON even without --json.
+Use --org to override a saved selection. Reuse returned IDs with status/logs/send.
+Example: armada list --owner me --page 1 --limit 25 --json
+Example: armada list --org ORG_UUID --page 2 --page-info
+`,
   "org setup": `Usage: armada org setup [--org <name>] [--json]
 Show organization provider setup status. Sign in before running the operation.
 Use --org to override a saved selection. This reports configuration, not a live lifecycle test.
