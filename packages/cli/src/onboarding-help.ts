@@ -15,6 +15,36 @@ Requires a ChatGPT subscription with Codex access and an Armada login.
 Approve the native device login in your browser; keep this terminal open.
 Example: armada creds login codex --name personal
 `,
+  "creds list": `Usage: armada creds list [--org <name>] [--json]
+List credential metadata after Armada login; secret values are never returned.
+Use --json to obtain account IDs for rename, default and remove.
+Example: armada creds list --json
+`,
+  "creds rename": `Usage: armada creds rename <id> <name> [--org <name>] [--json]
+Rename a credential account after Armada login and server authorization.
+Use an account ID from armada creds list --json. Output is JSON even without --json.
+Omit --org for your personal account; pass it for an organization account.
+Example: armada creds rename ACCOUNT_UUID personal-api
+`,
+  "creds default": `Usage: armada creds default <id> [--org <name>] [--json]
+Select a default credential account after Armada login and server authorization.
+Use an account ID from armada creds list --json. Output is JSON even without --json.
+Omit --org for your personal account; pass it for an organization account.
+Example: armada creds default ACCOUNT_UUID
+`,
+  "creds remove": `Usage: armada creds remove <id> [--org <name>] [--json]
+Remove a credential account by ID after Armada login and server authorization.
+Use an account ID from armada creds list --json. Output is JSON even without --json.
+Omit --org for your personal account; pass it for an organization account.
+This is not creds rm, which takes a credential kind rather than an account ID.
+Example: armada creds remove ACCOUNT_UUID
+`,
+  "creds rm": `Usage: armada creds rm <kind> [--org <name>] [--json]
+Remove a legacy kind-scoped credential after Armada login and server authorization.
+Omit --org for personal scope; pass it for organization scope.
+This is not an alias for creds remove <id>; use remove for a named account ID.
+Example: armada creds rm openai
+`,
   "creds set": `Usage: armada creds set <kind> [--name <name>] [--org <name>] [--file <path>]
 Store an encrypted credential after armada login. Read the secret from hidden input,
 stdin or a private file, never command arguments. API keys use provider billing;
