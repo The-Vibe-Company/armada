@@ -380,3 +380,57 @@ test.each(["warning", "integrity", "init", "clone"])("SSH checkout carries close
     expect(warnings).toEqual(["skillpack_download_unavailable"]);
   }
 });
+
+test.each([
+  ["ARMADA_GIT_FAILURE 2 auth_denied", "Could not clone acme/private: GitHub credentials were rejected."],
+  ["ARMADA_GIT_FAILURE 2 repository_not_found", "GitHub could not find or authorize the repository."],
+  ["ARMADA_GIT_FAILURE 2 branch_missing", "The requested branch was not found."],
+  ["ARMADA_GIT_FAILURE 2 transport_failed", "The Git transfer failed."],
+  ["ARMADA_GIT_FAILURE 2 lfs_failed", "Git LFS checkout failed."],
+  ["ARMADA_GIT_FAILURE 2 destination_exists", "The checkout destination already exists."],
+  ["ARMADA_GIT_FAILURE 2 storage_failed", "The builder could not write the checkout."],
+  ["ARMADA_GIT_FAILURE 2 unknown", "without a recognized safe reason"],
+  ["ARMADA_GIT_FAILURE 17 auth_denied", "Clone failed (exit 128)."],
+  ["ARMADA_GIT_FAILURE 0 auth_denied", "Clone failed (exit 128)."],
+  ["ARMADA_GIT_FAILURE 2 opaque-secret", "Clone failed (exit 128)."],
+  ["ARMADA_GIT_FAILURE acme/opaque-secret auth_denied", "Clone failed (exit 128)."],
+])("SSH checkout publishes only a closed safe Git reason (%s)", async (record, expected) => {
+  const spawn: any = (file: string) => {
+    const child: any = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = {
+      end: () =>
+        queueMicrotask(() => {
+          if (file === "ssh") {
+            child.stderr.emit("data", "opaque-secret raw Git stderr\n" + record.slice(0, 12));
+            child.stderr.emit("data", record.slice(12) + "\nARMADA_BUILD_FAILURE checkout 128 0\n");
+          }
+          child.emit("close", file === "ssh" ? 128 : 0);
+        }),
+    };
+    return child;
+  };
+  let failure: any;
+  try {
+    await sshStdinCheckout(
+      provider,
+      {
+        sandboxId: "bx",
+        token: "opaque-secret",
+        script: "unused",
+        repositories: ["acme/public", "acme/private"],
+      },
+      {
+        spawn,
+        chmod: async () => {},
+        writeFile: async () => {},
+        readPublicKey: async () => "ssh-ed25519 AAAA ephemeral",
+      },
+    );
+  } catch (error) {
+    failure = error;
+  }
+  expect(failure).toMatchObject({ code: "build_failed", safePhase: "checkout" });
+  expect(failure.safeMessage).toContain(expected);
+  expect(JSON.stringify(failure)).not.toContain("opaque-secret");
+});

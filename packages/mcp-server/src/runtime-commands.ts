@@ -2,6 +2,7 @@ import type { RunnerRequest } from "@armada/agent-runtime";
 import { decryptSecret, encryptSecret } from "@armada/core/server";
 import type { Route } from "./http.ts";
 import { type createRuntimeEnrolments, RuntimeEnrolmentDenied } from "./runtime-enrolment.ts";
+import { runtimeHttpFailure } from "./runtime-http-failure.ts";
 
 const MAX_COMMAND = 1048576;
 const MAX_REPLY = MAX_COMMAND * 2;
@@ -238,17 +239,7 @@ export function createRuntimeCommands(
     } catch (error) {
       const status =
         error instanceof RuntimeEnrolmentDenied ? 401 : error instanceof RuntimeCommandConflict ? 409 : 503;
-      return Response.json(
-        {
-          error:
-            status === 401
-              ? "runtime_enrolment_denied"
-              : status === 409
-                ? "runtime_command_conflict"
-                : "runtime_unavailable",
-        },
-        { status, headers },
-      );
+      return runtimeHttpFailure(status, status === 409 ? "runtime_command_conflict" : undefined);
     }
   };
   return { enqueue, next, withNext, complete, result, call, route };

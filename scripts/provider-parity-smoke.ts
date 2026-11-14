@@ -413,34 +413,61 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           const [whole, fraction = ""] = value.split(".");
           return BigInt(whole!) * 10n ** 18n + BigInt(fraction.padEnd(18, "0"));
         };
-        if (io.accountProbe && usage.cost?.unknown && usage.cost.usd === null) {
+        const classification = usage.cost?.classification;
+        if (!["priced", "included_in_subscription", "unknown"].includes(classification ?? ""))
+          throw new Error("invalid_cost_receipt");
+        if (
+          classification === "included_in_subscription" &&
+          (usage.cost?.basis !== "api_equivalent" ||
+            usage.turns.some(
+              (turn) =>
+                turn.pricing?.billing !== "subscription" ||
+                typeof turn.pricing.credentialId !== "string" ||
+                !turn.pricing.credentialId,
+            ))
+        )
+          throw new Error("invalid_cost_receipt");
+        if (usage.cost?.unknown && usage.cost.usd === null) {
           const current = new Map<string, string>();
-          let unpriced = 0;
+          const unpriced = new Set<string>();
           const seen = new Set<string>();
           for (const turn of usage.turns) {
             const key = JSON.stringify([turn.promptId, turn.model]);
             if (seen.has(key)) throw new Error("invalid_cost_receipt");
             seen.add(key);
-            if (!turn.pricing || turn.pricing.unknown !== null) {
-              if (turn.pricing && turn.pricing.usd !== null) throw new Error("invalid_cost_receipt");
-              unpriced++;
-              continue;
-            }
-            units(turn.pricing.usd);
+            if (!turn.pricing) throw new Error("invalid_cost_receipt");
+            if (turn.pricing.unknown !== null) {
+              if (turn.pricing.usd !== null || turn.pricing.unknown !== "price")
+                throw new Error("invalid_cost_receipt");
+              unpriced.add(turn.promptId);
+            } else units(turn.pricing.usd);
             current.set(key, JSON.stringify(turn.pricing));
           }
           if (
             usage.cost.currency !== "USD" ||
-            unpriced === 0 ||
-            usage.cost.unpricedTurns !== unpriced ||
+            usage.cost.unknown !== "price" ||
+            classification === "priced" ||
+            unpriced.size === 0 ||
+            usage.cost.unpricedTurns !== unpriced.size ||
             [...retainedPrices].some(([key, value]) => current.get(key) !== value)
           )
             throw new Error("invalid_cost_receipt");
           for (const [key, value] of current) retainedPrices.set(key, value);
-          observe("exact-cost", "pass", `unknown: ${usage.cost.unknown}`);
+          observe(
+            "exact-cost",
+            "pass",
+            classification === "included_in_subscription"
+              ? "included in subscription"
+              : `unknown: ${usage.cost.unknown}`,
+          );
           return;
         }
-        if (usage.cost?.currency !== "USD" || usage.cost.unknown !== null || usage.cost.unpricedTurns !== 0)
+        if (
+          classification === "unknown" ||
+          usage.cost?.currency !== "USD" ||
+          usage.cost.unknown !== null ||
+          usage.cost.unpricedTurns !== 0
+        )
           throw new Error("invalid_cost_receipt");
         const current = new Map<string, string>();
         let sum = 0n;
@@ -458,7 +485,9 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           observe(
             "exact-cost",
             "pass",
-            io.accountProbe ? `${usage.cost.basis ?? "unknown basis"}: USD ${usage.cost.usd}` : null,
+            classification === "included_in_subscription"
+              ? "included in subscription"
+              : `${usage.cost.basis ?? "unknown basis"}: USD ${usage.cost.usd}`,
           );
       } catch (error) {
         const detail = diagnostic(error);

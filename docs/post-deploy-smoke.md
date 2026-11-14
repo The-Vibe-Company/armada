@@ -1251,3 +1251,18 @@ Boat-specific exemption. Missing `gh`/Git tooling, revoked access, failed clone,
 or refused dry-run fails the cell; only a coordinator execution is proof that
 the selected account/provider passes. Older scripts remain until their other
 checks (including real write/refresh lifecycle checks) are migrated.
+
+### Cost classification in parity receipts
+
+`usage.cost.classification` separates the billing meaning from an optional USD
+quote: `priced` is a precise persisted list/connection-price estimate (not an
+invoice); `included_in_subscription` means admitted subscription turns have no
+per-token bill; `unknown` means a complete USD estimate cannot be established.
+A subscription may still carry a frozen `api_equivalent` USD reference, or null
+USD with `unknown: price`. Missing admission or turn coverage is never inferred
+to be a subscription. Custom endpoints without declared prices remain unknown.
+
+The historical `exact-cost` parity row now proves this classification before and
+after resume. It validates precise USD sums when quotes exist, explicit null USD
+and price reasons otherwise, and preserves the earlier per-turn quotes across
+resume. A subscription pass is labeled `included in subscription`, not zero USD.

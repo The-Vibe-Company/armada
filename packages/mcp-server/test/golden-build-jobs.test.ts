@@ -573,6 +573,59 @@ test("an accepted renamed save with missing provenance retains capacity for reco
   }
 });
 
+test.each(["create", "rebuild", "builder-evidence", "builder-phase", "live-lease"])(
+  "authorization lease recovery releases only provably unstarted work (%s)",
+  async (mode) => {
+    const s = await fixture();
+    try {
+      const token = await s.token(s.people.admin);
+      const target = (await s.db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0]!;
+      if (mode === "rebuild")
+        await s.db.query(
+          "insert into golden_backend_slots(provider,backend_id,max_goldens,org_id,owner_id,golden_id) values('boat','test-boat-account',1,$1,$2,$3)",
+          [s.people.org, s.people.admin, target.id],
+        );
+      const before = (await s.db.query("select * from goldens order by id")).rows;
+      const response = await s.http(token, mode === "rebuild" ? "golden/update" : "golden/create", {
+        name: mode === "rebuild" ? "shared" : "authorization-expiry",
+        org: s.people.org,
+        repos: ["acme/web"],
+        config: { repos: [{ url: "https://github.com/acme/web.git" }], init: [] },
+        idempotencyKey: crypto.randomUUID(),
+      });
+      expect(response.status).toBe(202);
+      const job = (await response.json()) as GoldenBuildStatus;
+      await s.db.query(
+        "update golden_build_jobs set state='running',phase=$2,fence=$3,lease_until=now()+$4::interval,deadline=now()+interval '1 hour',builder_id=$5 where id=$1",
+        [
+          job.jobId,
+          mode === "builder-phase" ? "builder" : "authorization",
+          crypto.randomUUID(),
+          mode === "live-lease" ? "1 minute" : "-1 minute",
+          mode === "builder-evidence" ? "retained" : null,
+        ],
+      );
+      const slotsBefore = (await s.db.query("select * from golden_backend_slots")).rows;
+      expect(await s.builds.runOne()).toBe(false);
+      await s.builds.reconcileOne();
+      const status = await s.builds.status(s.people.admin, job.jobId);
+      const releasable = mode === "create" || mode === "rebuild";
+      expect(status.state).toBe(releasable ? "failed" : mode === "live-lease" ? "running" : "recovery_required");
+      if (releasable) {
+        expect(status.phase).toBe("authorization");
+        expect(status.failureReason).toContain("before any builder started");
+        const slots = (await s.db.query("select golden_id,build_id from golden_backend_slots")).rows;
+        expect(slots).toEqual(mode === "rebuild" ? [{ golden_id: target.id, build_id: null }] : []);
+      } else expect((await s.db.query("select * from golden_backend_slots")).rows).toEqual(slotsBefore);
+      expect(s.allocations()).toBe(0);
+      expect(s.deleted).toEqual([]);
+      expect((await s.db.query("select * from goldens order by id")).rows).toEqual(before);
+    } finally {
+      await s.close();
+    }
+  },
+);
+
 // Token resolution in these fixtures must not leak audit records to stdout.
 captureGitHubAuditLogs();
 
@@ -696,6 +749,147 @@ test.each(["ambiguous-provider", "mixed-config", "legacy-route"])(
       });
       expect((await s.db.query("select id from golden_build_jobs")).rows).toEqual([]);
       expect(s.allocations()).toBe(0);
+    } finally {
+      await s.close();
+    }
+  },
+);
+
+test.each(["create", "rebuild"])(
+  "owner cancellation clears an unstarted %s reservation without provider work",
+  async (mode) => {
+    const s = await fixture();
+    try {
+      const token = await s.token(s.people.admin);
+      const target = (await s.db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0]!;
+      if (mode === "rebuild")
+        await s.db.query(
+          "insert into golden_backend_slots(provider,backend_id,max_goldens,org_id,owner_id,golden_id) values('boat','test-boat-account',1,$1,$2,$3)",
+          [s.people.org, s.people.admin, target.id],
+        );
+      const before = (await s.db.query("select * from goldens order by id")).rows;
+      const response = await s.http(token, mode === "rebuild" ? "golden/update" : "golden/create", {
+        name: mode === "rebuild" ? "shared" : "cancelled",
+        org: s.people.org,
+        repos: ["acme/web"],
+        config: { repos: [{ url: "https://github.com/acme/web.git" }], init: [] },
+        idempotencyKey: crypto.randomUUID(),
+      });
+      expect(response.status).toBe(202);
+      const job = (await response.json()) as GoldenBuildStatus;
+      const foreign = await s.token(s.people.owner);
+      expect((await s.http(foreign, "golden/build/cancel", { jobId: job.jobId })).status).toBe(404);
+      expect((await s.http(token, "golden/build/cancel", { jobId: job.jobId, org: s.people.otherOrg })).status).toBe(
+        403,
+      );
+      await s.db.query("insert into members(org_id,user_id,role) values($1,$2,'member')", [
+        s.people.otherOrg,
+        s.people.admin,
+      ]);
+      const otherScope = await s.token(s.people.admin, s.people.otherOrg);
+      expect((await s.http(otherScope, "golden/build/cancel", { jobId: job.jobId })).status).toBe(404);
+      expect((await s.builds.status(s.people.admin, job.jobId)).state).toBe("queued");
+      const cancelled = await s.http(token, "golden/build/cancel", { jobId: job.jobId, org: s.people.org });
+      expect(cancelled.status).toBe(200);
+      expect(await cancelled.json()).toMatchObject({
+        state: "failed",
+        phase: "queued",
+        failureReason: expect.stringContaining("cancelled by its owner"),
+      });
+      expect((await s.http(token, "golden/build/cancel", { jobId: job.jobId })).status).toBe(200);
+      expect(await s.builds.runOne()).toBe(false);
+      expect(s.allocations()).toBe(0);
+      expect(s.deleted).toEqual([]);
+      expect((await s.db.query("select * from goldens order by id")).rows).toEqual(before);
+      const slots = (await s.db.query("select golden_id,build_id from golden_backend_slots")).rows;
+      expect(slots).toEqual(mode === "rebuild" ? [{ golden_id: target.id, build_id: null }] : []);
+    } finally {
+      await s.close();
+    }
+  },
+);
+
+test.each(["running", "queued-builder"])(
+  "cancellation refuses %s evidence without releasing capacity",
+  async (state) => {
+    const s = await fixture();
+    try {
+      const token = await s.token(s.people.admin);
+      const response = await s.http(token, "golden/create", {
+        name: "retain",
+        org: s.people.org,
+        repos: ["acme/web"],
+        idempotencyKey: crypto.randomUUID(),
+      });
+      const job = (await response.json()) as GoldenBuildStatus;
+      if (state === "running")
+        await s.db.query(
+          "update golden_build_jobs set state='running',phase='authorization',fence=$2,lease_until=now()+interval '1 minute',deadline=now()+interval '1 hour' where id=$1",
+          [job.jobId, crypto.randomUUID()],
+        );
+      else await s.db.query("update golden_build_jobs set builder_id='retained' where id=$1", [job.jobId]);
+      const before = (await s.db.query("select * from golden_backend_slots")).rows;
+      const result = await s.http(token, "golden/build/cancel", { jobId: job.jobId });
+      expect(result.status).toBe(409);
+      expect(await result.json()).toMatchObject({
+        error: { code: "conflict", message: expect.stringContaining("cannot safely release") },
+      });
+      expect((await s.db.query("select * from golden_backend_slots")).rows).toEqual(before);
+      expect(s.allocations()).toBe(0);
+      expect(s.deleted).toEqual([]);
+    } finally {
+      await s.close();
+    }
+  },
+);
+
+test.each(["create", "rebuild", "execution-evidence"])(
+  "expired queued %s admission releases only provably unstarted reservations",
+  async (mode) => {
+    const s = await fixture();
+    try {
+      const token = await s.token(s.people.admin);
+      const target = (await s.db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0]!;
+      if (mode === "rebuild")
+        await s.db.query(
+          "insert into golden_backend_slots(provider,backend_id,max_goldens,org_id,owner_id,golden_id) values('boat','test-boat-account',1,$1,$2,$3)",
+          [s.people.org, s.people.admin, target.id],
+        );
+      const response = await s.http(token, mode === "rebuild" ? "golden/update" : "golden/create", {
+        name: mode === "rebuild" ? "shared" : "expired",
+        org: s.people.org,
+        repos: ["acme/web"],
+        config: { repos: [{ url: "https://github.com/acme/web.git" }], init: [] },
+        idempotencyKey: crypto.randomUUID(),
+      });
+      expect(response.status).toBe(202);
+      const job = (await response.json()) as GoldenBuildStatus;
+      const originalSlots = (
+        await s.db.query<{ golden_id: string | null; build_id: string | null }>(
+          "select golden_id,build_id from golden_backend_slots",
+        )
+      ).rows;
+      await s.db.query("update golden_build_jobs set created_at=now()-interval '61 minutes' where id=$1", [job.jobId]);
+      if (mode === "execution-evidence")
+        await s.db.query("update golden_build_jobs set builder_id='retained-builder' where id=$1", [job.jobId]);
+      expect(await s.builds.runOne()).toBe(true);
+      const status = await s.builds.status(s.people.admin, job.jobId);
+      expect(status).toMatchObject({
+        state: mode === "execution-evidence" ? "recovery_required" : "failed",
+        phase: "queued",
+      });
+      expect(status.failureReason).toContain(
+        mode === "execution-evidence" ? "execution evidence" : "no builder was started",
+      );
+      expect(s.allocations()).toBe(0);
+      const slots = (
+        await s.db.query<{ golden_id: string | null; build_id: string | null }>(
+          "select golden_id,build_id from golden_backend_slots",
+        )
+      ).rows;
+      if (mode === "rebuild") expect(slots).toEqual([{ golden_id: target.id, build_id: null }]);
+      else if (mode === "execution-evidence") expect(slots).toEqual(originalSlots);
+      else expect(slots).toEqual([]);
     } finally {
       await s.close();
     }

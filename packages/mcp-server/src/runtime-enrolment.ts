@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { sha256Hex } from "@armada/auth";
 import { createSqlSandboxStore, decryptSecret, encryptSecret, type Sql } from "@armada/core/server";
 import type { Route } from "./http.ts";
+import { runtimeHttpFailure } from "./runtime-http-failure.ts";
 
 const ENROL_PATH = "/api/runtime/enrol";
 const SESSION_PATH = "/api/runtime/session";
@@ -262,10 +263,7 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
           : await withSession(bearer, request.headers.get("x-armada-runtime-epoch") ?? "", async (_tx, scope) => scope);
       return Response.json(result, { headers });
     } catch (error) {
-      return Response.json(
-        { error: error instanceof RuntimeEnrolmentDenied ? "runtime_enrolment_denied" : "runtime_unavailable" },
-        { status: error instanceof RuntimeEnrolmentDenied ? 401 : 503, headers },
-      );
+      return runtimeHttpFailure(error instanceof RuntimeEnrolmentDenied ? 401 : 503);
     }
   };
   return { issue, enrol, withBootstrap, withSession, withOwner, lockSourceMembers, route };

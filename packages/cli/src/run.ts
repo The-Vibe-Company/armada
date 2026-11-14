@@ -117,6 +117,7 @@ Usage:
                                            Create/update admit a durable job, then poll for up to --timeout
                                            seconds (default 60, max 600; 0 returns after admission).
                                            Disconnecting never resubmits or cancels the job.
+  armada golden build-cancel <job-id> [--org <org>] [--json]  Cancel your queued, never-started build
   armada golden build-status <job-id>      Read the authenticated durable build status
   armada golden build-status --idempotency-key <key> --org <org>
                                            Recover an uncertain admission using the saved key.
@@ -219,7 +220,10 @@ Usage:
   armada org members list|add|remove|role  [--org <name>] add <email> [--role admin|member]
                                            Direct membership administration; add requires an existing account,
                                            grants membership immediately and does not send an invitation.
-  armada creds login codex --name <name> [--org <name>]\n                                           Native local device login; five-minute expiry, Ctrl-C cancels\n  armada creds import claude|codex --name <name> [--file <path>] [--org <name>]
+  armada creds login codex --name <name> [--org <name>]
+                                           Native local device login; up to 16 minutes after the device code.
+                                           Keep this terminal open; Ctrl-C/shell exit cancels.
+  armada creds import claude|codex --name <name> [--file <path>] [--org <name>]
                                            Import a locally obtained native token/auth.json; never pass secrets as arguments
   armada creds presets [--json]             List the same model connection providers as the dashboard
   armada creds connect <preset> --name NAME [--file PATH] [--org NAME]
@@ -687,6 +691,23 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
         body: JSON.stringify({ id: oneName(args.positionals), visibility, org: single(args, "--org") }),
       });
       io.out(`${JSON.stringify(result)}\n`);
+      return 0;
+    }
+    case "build-cancel": {
+      const auth = authOf(io, deps);
+      const client = await createArmadaApiClient({
+        env: auth.env,
+        fetch: deps.fetch ?? auth.fetch,
+        session: auth.session,
+      });
+      const job = await client.request<GoldenBuildStatus>("/api/v1/golden/build/cancel", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jobId: oneName(args.positionals), org: single(args, "--org") }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (flag(args, "--json")) io.out(JSON.stringify(job) + "\n");
+      else io.out(`Build ${job.jobId}: ${goldenBuildFailureText(job)}\n`);
       return 0;
     }
     case "build-status": {
