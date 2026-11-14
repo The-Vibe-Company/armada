@@ -9,6 +9,13 @@ const boatNotRun = { status: "not-run", reason: "not_part_of_release_gate" };
 // route/receipt regressions without provider compute, credentials, or sleeps.
 for (const mode of [
   "online",
+  "control_steer",
+  "control_interrupt",
+  "control_echo",
+  "control_finished",
+  "control_unsupported",
+  "control_api_unsupported",
+  "control_full",
   "subscription",
   "subscription_priced",
   "subscription_bad_billing",
@@ -58,6 +65,9 @@ for (const mode of [
   "baseline_quota",
 ] as const) {
   test(`parity normal lifecycle and honest reporting: ${mode}`, async () => {
+    const controlFeature = ["control_interrupt", "control_finished"].includes(mode) ? "interrupt" : "steer";
+    const controlMarkers = new Map<string, string>();
+    const controlled = new Set<string>();
     const debtFeature =
       mode === "unimplemented" ? "mcp" : mode === "idle-pause" || mode === "wake-on-send" ? mode : undefined;
     const lines: string[] = [];
@@ -95,19 +105,23 @@ for (const mode of [
           { provider: "boat", harness: "invalid" },
         ]),
       },
-      mode.startsWith("github")
-        ? ["--parity", "--feature", "github"]
-        : mode.startsWith("accounts")
-          ? ["--parity", "--accounts"]
-          : mode === "usage_filter"
-            ? ["--parity", "--only", "docker", "--feature", "exact-cost"]
-            : mode === "filtered"
-              ? ["--parity", "--only", "docker", "--feature", "exec"]
-              : debtFeature
-                ? ["--parity", "--feature", debtFeature]
-                : mode === "invalid_filter"
-                  ? ["--parity", "--feature", "typo"]
-                  : ["--parity"],
+      ["control_api_unsupported", "control_full"].includes(mode)
+        ? ["--parity"]
+        : mode.startsWith("control_")
+          ? ["--parity", "--feature", controlFeature]
+          : mode.startsWith("github")
+            ? ["--parity", "--feature", "github"]
+            : mode.startsWith("accounts")
+              ? ["--parity", "--accounts"]
+              : mode === "usage_filter"
+                ? ["--parity", "--only", "docker", "--feature", "exact-cost"]
+                : mode === "filtered"
+                  ? ["--parity", "--only", "docker", "--feature", "exec"]
+                  : debtFeature
+                    ? ["--parity", "--feature", debtFeature]
+                    : mode === "invalid_filter"
+                      ? ["--parity", "--feature", "typo"]
+                      : ["--parity"],
       {
         now: () => 0,
         sleep: async () => {},
@@ -131,6 +145,8 @@ for (const mode of [
                   id,
                   harnesses: ["codex"],
                   capabilities: {
+                    steer: mode.startsWith("control_") && mode !== "control_unsupported",
+                    interrupt: mode.startsWith("control_") && mode !== "control_unsupported",
                     launch: true,
                     exec: true,
                     github: mode !== "github_unsupported",
@@ -142,6 +158,8 @@ for (const mode of [
                     delete: true,
                   },
                   unsupportedReasons: {
+                    steer: "Steer unavailable for this harness.",
+                    interrupt: "Interrupt unavailable for this harness.",
                     github: "GitHub disabled by server.",
                     stop: "Stop unavailable (#1579)",
                     resume: "Server resume disabled.",
@@ -200,6 +218,28 @@ for (const mode of [
               states.set(p, "ready");
               result = { sandbox: { id: p, provider: p } };
               break;
+            case "sandbox/wait":
+              result = {
+                prompt: {
+                  promptId: turns.get(p)?.at(-1),
+                  state: controlled.has(p) ? (mode === "control_finished" ? "finished" : "interrupted") : "running",
+                },
+              };
+              break;
+            case "sandbox/steer":
+              if (mode === "control_api_unsupported")
+                return Response.json(
+                  { error: { code: "unsupported", message: "This harness cannot steer." } },
+                  { status: 400 },
+                );
+              expect(body.text).toContain("Cancel the waiting task");
+              controlMarkers.set(p, body.text.match(/PARITY_STEER_[a-z0-9]+/)[0]);
+              result = { id: p, promptId: "steer-record", delivery: "restart" };
+              break;
+            case "sandbox/interrupt":
+              controlled.add(p);
+              result = { id: p, interrupted: true };
+              break;
             case "sandbox/send": {
               if (mode === "docker_send_pending" && p === "docker")
                 return Response.json(
@@ -216,6 +256,21 @@ for (const mode of [
               break;
             }
             case "logs/read":
+              if (controlMarkers.has(p)) {
+                result = {
+                  events: [
+                    {
+                      kind: "message",
+                      promptId: "steered-run",
+                      text: controlMarkers.get(p),
+                      partial: false,
+                      responseKind: mode === "control_echo" ? "tool_result" : "assistant",
+                    },
+                    { kind: "prompt", promptId: "steered-run", status: "finished" },
+                  ],
+                };
+                break;
+              }
               result = {
                 events: [
                   { kind: "prompt", promptId: turns.get(p)?.at(-1), status: "finished" },
@@ -516,6 +571,44 @@ for (const mode of [
       }
       return;
     }
+    if (mode === "control_full") {
+      expect(passed).toBe(true);
+      for (const provider of ["modal", "docker"]) {
+        expect(report.features.steer[provider].status).toBe("pass");
+        expect(report.features.interrupt[provider].status).toBe("pass");
+        expect(calls.filter((call) => call === `${provider}:sandbox/launch`)).toHaveLength(1);
+        expect(turns.get(provider)).toHaveLength(4);
+        expect(report.features.cleanup[provider].status).toBe("pass");
+      }
+      return;
+    }
+    if (mode === "control_api_unsupported") {
+      expect(passed).toBe(true);
+      for (const provider of ["modal", "docker"]) {
+        expect(report.features.steer[provider].status).toBe("unsupported");
+        expect(report.features.interrupt[provider]).toMatchObject({
+          status: "not-run",
+          reason: "steer_failed",
+          diagnostic: { code: "unsupported" },
+        });
+        expect(calls).not.toContain(`${provider}:sandbox/interrupt`);
+        expect(report.features.cleanup[provider].status).toBe("pass");
+      }
+      return;
+    }
+    if (mode.startsWith("control_")) {
+      const fail = mode === "control_echo" || mode === "control_finished";
+      expect(passed).toBe(!fail);
+      for (const provider of ["modal", "docker"]) {
+        expect(report.features[controlFeature][provider].status).toBe(
+          mode === "control_unsupported" ? "unsupported" : fail ? "fail" : "pass",
+        );
+        expect(calls.filter((call) => call === `${provider}:sandbox/launch`)).toHaveLength(1);
+        expect(report.features.cleanup[provider].status).toBe("pass");
+        expect(turns.get(provider)?.length ?? 0).toBe(mode === "control_unsupported" ? 0 : 1);
+      }
+      return;
+    }
     if (mode === "docker_send_pending") {
       expect(passed).toBe(false);
       for (const name of ["resume-recall", "usage", "exact-cost"]) {
@@ -698,6 +791,8 @@ function productionBoatFixture(
                 id: "boat",
                 harnesses: ["codex"],
                 capabilities: {
+                  steer: false,
+                  interrupt: false,
                   launch: true,
                   followupPrompts: true,
                   status: true,
@@ -707,7 +802,7 @@ function productionBoatFixture(
                   resume: true,
                   delete: true,
                 },
-                unsupportedReasons: {},
+                unsupportedReasons: { steer: "Unavailable", interrupt: "Unavailable" },
               },
             ],
           });
