@@ -66,7 +66,12 @@ export type ResourceRow = {
   panelAttrs?: Record<string, string>;
 };
 
-type BrowserContext = { select: (key: string | null) => void; selected: string | null; panelId: string };
+type BrowserContext = {
+  select: (key: string | null) => void;
+  selected: string | null;
+  panelId: string;
+  selectionQuery: string;
+};
 const Context = createContext<BrowserContext | null>(null);
 
 function useBrowser(): BrowserContext {
@@ -92,6 +97,7 @@ export function ResourceBrowser({
   footer,
   empty,
   initial,
+  selectionQuery = "",
 }: {
   title: string;
   description: string;
@@ -109,6 +115,8 @@ export function ResourceBrowser({
   empty: ReactNode;
   /** The panel open on the first render: the `?item=` of the URL, or what the page follows. */
   initial: string | null;
+  /** Scope retained by native open-in-new-tab selection links. */
+  selectionQuery?: string;
 }) {
   const keys = useMemo(() => new Set(rows.map((row) => row.key)), [rows]);
   const valid = useCallback((key: string | null) => key !== null && keys.has(key), [keys]);
@@ -243,7 +251,10 @@ export function ResourceBrowser({
     if (next) select(next.key);
   };
   const filterId = useId();
-  const context = useMemo(() => ({ select, selected, panelId }), [select, selected, panelId]);
+  const context = useMemo(
+    () => ({ select, selected, panelId, selectionQuery }),
+    [select, selected, panelId, selectionQuery],
+  );
 
   return (
     <Context.Provider value={context}>
@@ -422,6 +433,7 @@ function Row({
   onSelect: () => void;
   panelId: string;
 }) {
+  const { selectionQuery } = useBrowser();
   return (
     <li
       {...row.attrs}
@@ -452,7 +464,7 @@ function Row({
               data-select-item={row.key}
               className="h-auto min-w-0 shrink justify-start rounded-none p-0 text-left font-medium hover:bg-transparent dark:hover:bg-transparent motion-safe:active:not-disabled:scale-none focus-visible:ring-0 after:absolute after:inset-0 after:content-['']"
             >
-              <a href={`?item=${encodeURIComponent(row.key)}`}>
+              <a href={`?${selectionQuery ? `${selectionQuery}&` : ""}item=${encodeURIComponent(row.key)}`}>
                 <span className="truncate">{row.name}</span>
               </a>
             </Button>
@@ -472,11 +484,11 @@ function Row({
 
 /** A link elsewhere on the page (a summary, a footer) that opens an item's panel, like selecting its row. */
 export function ResourceSelectLink({ item, ...props }: { item: string } & Omit<ComponentProps<"a">, "href">) {
-  const { select, panelId } = useBrowser();
+  const { select, panelId, selectionQuery } = useBrowser();
   return (
     <a
       {...props}
-      href={`?${ITEM_PARAM}=${encodeURIComponent(item)}`}
+      href={`?${selectionQuery ? `${selectionQuery}&` : ""}${ITEM_PARAM}=${encodeURIComponent(item)}`}
       aria-controls={panelId}
       onClick={(event) => {
         if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;

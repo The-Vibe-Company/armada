@@ -1,23 +1,52 @@
 import type { OttoFact } from "@armada/core";
 import type { Sql } from "@armada/core/server";
-import type { CallerResult } from "../caller.ts";
+import type { Caller, CallerResult } from "../caller.ts";
 import type { Route } from "../http.ts";
 import type { OttoScope } from "./observation.ts";
 import { orphanDays } from "./orphan-days.ts";
 import { readOttoModel } from "./read-model.ts";
 import { readOttoSnapshot } from "./snapshot.ts";
 
+/** Coalesce the parallel observation views; retain decisions, never GitHub credentials. */
+export function cacheOttoRepositoryAccess(
+  check: (caller: Caller, repository: string) => Promise<boolean>,
+  now = Date.now,
+) {
+  const decisions = new Map<string, { expiresAt: number; result: Promise<boolean> }>();
+  return (caller: Caller, repository: string): Promise<boolean> => {
+    const key = JSON.stringify([caller.userId, repository]);
+    const cached = decisions.get(key);
+    if (cached && cached.expiresAt > now()) return cached.result;
+    // Bound memory even when many users visit during one TTL.
+    for (const [key, entry] of decisions) if (entry.expiresAt <= now()) decisions.delete(key);
+    if (decisions.size >= 1000) decisions.delete(decisions.keys().next().value!);
+    const entry = { expiresAt: now() + 60_000, result: Promise.resolve(false) };
+    entry.result = Promise.resolve()
+      .then(() => check(caller, repository))
+      .catch((error) => {
+        if (decisions.get(key) === entry) decisions.delete(key);
+        throw error;
+      });
+    decisions.set(key, entry);
+    return entry.result;
+  };
+}
+
 /** Auth is deliberately per request; service role reads never bypass caller membership. */
 export function createOttoApi(
   sql: Sql,
-  scope: OttoScope,
+  binding: OttoScope | readonly OttoScope[],
   authenticate: (request: Request) => Promise<CallerResult>,
   now = () => new Date(),
   encryptionKey?: string,
+  canReadRepository?: (caller: Caller, repository: string) => Promise<boolean>,
 ): Route {
+  const checkRepositoryAccess = canReadRepository
+    ? cacheOttoRepositoryAccess(canReadRepository, () => now().getTime())
+    : undefined;
   return async (request) => {
     const url = new URL(request.url);
-    const view = url.pathname.match(/^\/api\/v1\/otto\/(summary|tasks|resources|orphans|facts)$/)?.[1];
+    const view = url.pathname.match(/^\/api\/v1\/otto\/(repositories|summary|tasks|resources|orphans|facts)$/)?.[1];
     if (!view) return null;
     const reply = (value: unknown, status = 200) =>
       Response.json(value, { status, headers: { "cache-control": "no-store" } });
@@ -36,16 +65,52 @@ export function createOttoApi(
     const read = async () => {
       const auth = await authenticate(request);
       if (!auth.ok) return reply({ error: "unauthorized" }, 401);
-      if (
-        url.searchParams.get("org_id") !== scope.orgId ||
-        (url.searchParams.has("repository") && url.searchParams.get("repository") !== scope.repository) ||
-        !auth.caller.orgs.some((o) => o.orgId === scope.orgId)
-      )
-        return reply({ error: "not_found" }, 404);
+      const scopes = Array.isArray(binding) ? (binding as readonly OttoScope[]) : [binding as OttoScope];
+      const authorized = scopes.filter(
+        (scope) =>
+          scope.orgId === url.searchParams.get("org_id") && auth.caller.orgs.some((org) => org.orgId === scope.orgId),
+      );
+      if (!authorized.length) return reply({ error: "not_found" }, 404);
+      if (view === "repositories")
+        return reply({
+          items: authorized.map((scope) => scope.repository),
+          observedAt: null,
+          completeness: "unknown",
+          nextCursor: null,
+        });
+      const repository = url.searchParams.get("repository");
+      const scope = repository
+        ? authorized.find((scope) => scope.repository === repository)
+        : authorized.length === 1
+          ? authorized[0]
+          : undefined;
+      if (!scope) return reply({ error: "not_found" }, 404);
+      if (checkRepositoryAccess && !(await checkRepositoryAccess(auth.caller, scope.repository)))
+        return reply({ error: "repository_unavailable" }, 503);
       const limit = Number(url.searchParams.get("limit") ?? 50);
       if (!Number.isInteger(limit) || limit < 1 || limit > 100) return reply({ error: "invalid_limit" }, 400);
-      const cursor = url.searchParams.get("cursor");
-      if (cursor && cursor.length > 512) return reply({ error: "invalid_cursor" }, 400);
+      const encodedCursor = url.searchParams.get("cursor");
+      let cursor: string | null = null;
+      const encodeCursor = (value: string) =>
+        Buffer.from(JSON.stringify([scope.orgId, scope.repository, view, value])).toString("base64url");
+      if (encodedCursor) {
+        try {
+          if (encodedCursor.length > 2048) throw Error();
+          const value = JSON.parse(Buffer.from(encodedCursor, "base64url").toString());
+          if (
+            !Array.isArray(value) ||
+            value.length !== 4 ||
+            value[0] !== scope.orgId ||
+            value[1] !== scope.repository ||
+            value[2] !== view ||
+            typeof value[3] !== "string"
+          )
+            throw Error();
+          cursor = value[3];
+        } catch {
+          return reply({ error: "invalid_cursor" }, 400);
+        }
+      }
       admitted = true;
       if (view === "facts") {
         let at: string | null = null,
@@ -80,7 +145,7 @@ export function createOttoApi(
           completeness: "unknown",
           nextCursor:
             rows.length > limit && last
-              ? Buffer.from(JSON.stringify([last.observed_at, last.id])).toString("base64url")
+              ? encodeCursor(Buffer.from(JSON.stringify([last.observed_at, last.id])).toString("base64url"))
               : null,
         });
       }
@@ -153,7 +218,7 @@ export function createOttoApi(
         orphanCompleteness: model.orphanCompleteness,
         fleetCompleteness: model.fleetCompleteness,
         githubCompleteness: model.completeness,
-        nextCursor: sorted.length > limit ? sorted[limit - 1]?.key : null,
+        nextCursor: sorted.length > limit ? encodeCursor(sorted[limit - 1]!.key) : null,
       });
     };
     try {

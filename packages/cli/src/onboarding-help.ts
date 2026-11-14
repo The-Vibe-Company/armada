@@ -28,6 +28,22 @@ Requires Armada login, a connected provider and GitHub repository authorization.
 Builds, scans and snapshots on the server; do not include secrets in setup.
 Example: armada golden create starter --provider modal --repo https://github.com/octocat/Hello-World --org my-team
 `,
+  "snapshot build-find": `Usage: armada snapshot build-find <name> [--provider boat|modal] [--org <org>] [--json]
+Find the latest visible active build when you have no job ID or admission key.
+Requires Armada login. No match does not rule out a reservation needing administrator investigation.
+Example: armada snapshot build-find starter --provider modal --json
+`,
+  "snapshot build-status": `Usage: armada snapshot build-status <job-id> [--org <org>] [--json]
+   or: armada snapshot build-status --idempotency-key <key> --org <org> [--json]
+Read durable build status, or recover uncertain admission using its saved key.
+Requires Armada login. Output is JSON; failed or recovery-required builds exit 1.
+Example: armada snapshot build-status --idempotency-key saved-build-key --org my-team
+`,
+  "snapshot build-cancel": `Usage: armada snapshot build-cancel <job-id> [--org <org>] [--json]
+Cancel your queued, never-started build. Requires Armada login.
+Started builds cannot be cancelled with this command. Inspect status before retrying an uncertain operation.
+Example: armada snapshot build-cancel build-id --org my-team
+`,
   "snapshot size-policy": `Usage: armada snapshot size-policy <name> [--provider boat|modal] [--org <org>] [--file <JSON|->] [--json]
 Inspect snapshot machine-size defaults, or replace them with a versioned JSON object.
 Requires Armada login; changes affect future launches only, not existing machines.
@@ -48,7 +64,8 @@ export function onboardingHelp(argv: readonly string[]): string | undefined {
   if (!["--help", "-h"].includes(argv.at(-1) ?? "")) return undefined;
   const parts = argv.slice(0, -1);
   // Keep the legacy spelling usable without changing literal arguments.
-  if (parts[0] === "golden" && parts[1] === "size-policy") parts[0] = "snapshot";
+  if (parts[0] === "golden" && ["size-policy", "build-find", "build-status", "build-cancel"].includes(parts[1] ?? ""))
+    parts[0] = "snapshot";
   const command = parts.join(" ");
   return Object.hasOwn(HELP, command) ? HELP[command] : undefined;
 }

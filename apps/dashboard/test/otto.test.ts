@@ -137,3 +137,22 @@ test("a server without Otto for this organization, a refused session or a malfor
   expect((await read({ body: { items: "no" } })).state).toBe("malformed");
   expect((await readOtto({ serverUrl: "not a url", token: "token", orgId: ORG })).state).toBe("unreachable");
 });
+
+test("selected repository follows every view and pagination request", async () => {
+  const { fetcher, calls } = server((view, params) => {
+    expect(params.get("repository")).toBe("example/skillpack");
+    if (view === "summary") return { body: page([{ openPrCount: null, orphanCount: null }]) };
+    if (view === "resources" && !params.has("cursor")) return { body: page([], "next") };
+    return { body: page([]) };
+  });
+  const result = await readOtto({
+    serverUrl: "https://armada.example",
+    token: "token",
+    orgId: ORG,
+    repository: "example/skillpack",
+    fetch: fetcher,
+  });
+  expect(result.state).toBe("ready");
+  if (result.state === "ready") expect(result.snapshot.repository).toBe("example/skillpack");
+  expect(calls.some((call) => call.includes("cursor=next"))).toBe(true);
+});
