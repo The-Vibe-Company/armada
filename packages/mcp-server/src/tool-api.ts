@@ -76,7 +76,9 @@ import { createArmadaServer, type ToolContext } from "./tools.ts";
 /** HTTP and MCP run precisely the same validated operations and authorization context. */
 export async function callSharedTool(context: ToolContext, name: string, args: Record<string, unknown>) {
   const measure: NonNullable<ToolContext["measure"]> = context.measure ?? ((_phase, work) => work());
-  const server = await measure("tool_register", async () => createArmadaServer(context, "2.0.2"));
+  const server = await measure("tool_register", async () =>
+    createArmadaServer(context, "2.0.2", name === "list" ? { onlyTool: "list" } : undefined),
+  );
   const { client, a, b } = await measure("tool_connect", async () => {
     const client = new Client({ name: "armada-http", version: "1" });
     const [a, b] = InMemoryTransport.createLinkedPair();

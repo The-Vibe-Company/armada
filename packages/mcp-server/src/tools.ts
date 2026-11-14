@@ -349,7 +349,7 @@ const event = z.looseObject({
 });
 
 /** One MCP server per request: the principal is fixed for its whole life, and nothing outlives the request. */
-export function createArmadaServer(context: ToolContext, version: string): McpServer {
+export function createArmadaServer(context: ToolContext, version: string, options?: { onlyTool: "list" }): McpServer {
   const server = new McpServer(
     { ...serverInfo, version },
     {
@@ -403,6 +403,12 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       }) as never,
     );
   };
+
+  // HTTP list calls keep the same handler and SDK validation without building unrelated tools.
+  if (options?.onlyTool === "list") {
+    registerList();
+    return server;
+  }
 
   const vaultOrg = z.string().uuid().describe("Organization UUID; the caller must be a current member.");
   const vaultId = z.string().uuid().describe("Application variable or secret UUID returned by its metadata list.");
@@ -1173,54 +1179,58 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     },
   );
 
-  tool(
-    "list",
-    {
-      title: "List sandboxes",
-      description:
-        "Allowlisted metadata of sandboxes in your current organizations, newest first. Interior is owner/admin only. " +
-        "Deleted ones are left out unless asked for. Statuses are as recorded; call status for a fresh read.",
-      input: {
-        harness: z.enum(HARNESSES).optional(),
-        golden: z.string().uuid().optional().describe("Golden UUID, not a name."),
-        owner: z.union([z.string().uuid(), z.literal("me")]).optional(),
-        page: z.number().int().min(1).max(1_000_000).optional().describe("1-based page, default 1."),
-        status: z.array(z.enum(SANDBOX_STATUSES)).min(1).optional().describe("Only these statuses."),
-        limit: z.number().int().min(1).max(200).optional().describe("At most this many. Default 25."),
+  registerList();
+
+  function registerList() {
+    tool(
+      "list",
+      {
+        title: "List sandboxes",
+        description:
+          "Allowlisted metadata of sandboxes in your current organizations, newest first. Interior is owner/admin only. " +
+          "Deleted ones are left out unless asked for. Statuses are as recorded; call status for a fresh read.",
+        input: {
+          harness: z.enum(HARNESSES).optional(),
+          golden: z.string().uuid().optional().describe("Golden UUID, not a name."),
+          owner: z.union([z.string().uuid(), z.literal("me")]).optional(),
+          page: z.number().int().min(1).max(1_000_000).optional().describe("1-based page, default 1."),
+          status: z.array(z.enum(SANDBOX_STATUSES)).min(1).optional().describe("Only these statuses."),
+          limit: z.number().int().min(1).max(200).optional().describe("At most this many. Default 25."),
+        },
+        output: {
+          sandboxes: z.array(sandboxListMetadata),
+          total: z.number().int(),
+          page: z.number().int(),
+          limit: z.number().int(),
+          hasMore: z.boolean(),
+          nextPage: z.number().int().nullable(),
+        },
+        readOnly: true,
       },
-      output: {
-        sandboxes: z.array(sandboxListMetadata),
-        total: z.number().int(),
-        page: z.number().int(),
-        limit: z.number().int(),
-        hasMore: z.boolean(),
-        nextPage: z.number().int().nullable(),
+      async (args) => {
+        const statuses: readonly SandboxStatus[] = args.status ?? SANDBOX_STATUSES.filter((name) => name !== "deleted");
+        const limit = args.limit ?? 25;
+        const page = args.page ?? 1;
+        const { rows, total } = await data.sandboxes.list({
+          statuses,
+          limit,
+          page,
+          ...(args.harness === undefined ? {} : { harness: args.harness }),
+          ...(args.golden === undefined ? {} : { goldenId: args.golden }),
+          ...(args.owner === undefined ? {} : { ownerId: args.owner === "me" ? caller.userId : args.owner }),
+        });
+        const hasMore = page * limit < total;
+        return {
+          total,
+          page,
+          limit,
+          hasMore,
+          nextPage: hasMore && page < 1_000_000 ? page + 1 : null,
+          sandboxes: rows.map((row) => ({ ...row, statusMessage: idlePauseMessage(row, context.now()) })),
+        };
       },
-      readOnly: true,
-    },
-    async (args) => {
-      const statuses: readonly SandboxStatus[] = args.status ?? SANDBOX_STATUSES.filter((name) => name !== "deleted");
-      const limit = args.limit ?? 25;
-      const page = args.page ?? 1;
-      const { rows, total } = await data.sandboxes.list({
-        statuses,
-        limit,
-        page,
-        ...(args.harness === undefined ? {} : { harness: args.harness }),
-        ...(args.golden === undefined ? {} : { goldenId: args.golden }),
-        ...(args.owner === undefined ? {} : { ownerId: args.owner === "me" ? caller.userId : args.owner }),
-      });
-      const hasMore = page * limit < total;
-      return {
-        total,
-        page,
-        limit,
-        hasMore,
-        nextPage: hasMore && page < 1_000_000 ? page + 1 : null,
-        sandboxes: rows.map((row) => ({ ...row, statusMessage: idlePauseMessage(row, context.now()) })),
-      };
-    },
-  );
+    );
+  }
 
   tool(
     "resource_advice",
