@@ -910,7 +910,14 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
                       templateId?: string;
                       revision?: number;
                       account?: { id?: string; version?: number };
-                      definition?: { provider?: string; harness?: string; model?: string };
+                      golden?: { id?: string; name?: string; provider?: string } | null;
+                      definition?: {
+                        provider?: string;
+                        harness?: string;
+                        model?: string;
+                        hostId?: string;
+                        goldenId?: string | null;
+                      };
                     };
                   };
                   const receipt = await poll(
@@ -961,7 +968,12 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
                     (manifest.account.version ?? 0) < 1 ||
                     manifest.definition?.provider !== c.provider ||
                     manifest.definition.harness !== c.harness ||
-                    manifest.definition.model !== c.model
+                    manifest.definition.model !== c.model ||
+                    (c.provider === "docker"
+                      ? manifest.definition.hostId !== c.hostId
+                      : manifest.golden?.provider !== c.provider ||
+                        (manifest.golden.name !== c.golden && manifest.golden.id !== c.golden) ||
+                        manifest.definition.goldenId !== manifest.golden.id)
                   )
                     throw new Error("invalid_template_receipt");
                   return { sandbox: { id, provider: receipt.provider } };

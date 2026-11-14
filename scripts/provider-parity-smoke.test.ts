@@ -13,6 +13,7 @@ for (const mode of [
   "template_missing",
   "template_revision",
   "template_account",
+  "template_placement",
   "template_pending",
   "template_identity",
   "template_final_missing",
@@ -255,7 +256,18 @@ for (const mode of [
                   templateId: body.id,
                   revision: mode === "template_revision" ? 3 : 2,
                   account: { id: mode === "template_account" ? "wrong-account" : "fake-account", version: 1 },
-                  definition: { provider: p, harness: "codex", model: "fake-model" },
+                  golden: {
+                    id: "golden-id",
+                    name: mode === "template_placement" ? "wrong-golden" : "fake-golden",
+                    provider: p,
+                  },
+                  definition: {
+                    provider: p,
+                    harness: "codex",
+                    model: "fake-model",
+                    goldenId: "golden-id",
+                    hostId: mode === "template_placement" ? "wrong-host" : "owned-host",
+                  },
                 },
               };
               break;
@@ -715,6 +727,7 @@ for (const mode of [
       const failure = [
         "template_revision",
         "template_account",
+        "template_placement",
         "template_refused",
         "template_no_answer",
         "template_unknown",
