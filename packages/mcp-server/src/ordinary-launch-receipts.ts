@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Sql } from "@armada/core";
-import { GoldenError, LaunchError, type Provider } from "@armada/core/server";
+import { GoldenError, isNonMutatingProviderRefusal, LaunchError, type Provider, VaultError } from "@armada/core/server";
 
 interface Scope {
   orgId: string;
@@ -47,7 +47,15 @@ export function createOrdinaryLaunchReceipts(sql: Sql) {
           JSON.stringify(response),
         ]);
         return response;
-      } catch {
+      } catch (error) {
+        // Keep actionable native validation/initialization refusals, without releasing admission.
+        if (
+          isNonMutatingProviderRefusal(error) ||
+          error instanceof GoldenError ||
+          error instanceof VaultError ||
+          (error instanceof LaunchError && error.code !== "outcome_unknown")
+        )
+          throw error;
         // Includes lost database acknowledgements and provider replies. Never release the key.
         throw new LaunchError(
           "outcome_unknown",

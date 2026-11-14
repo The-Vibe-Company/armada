@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import type { Sql } from "@armada/core";
-import type { Provider } from "@armada/core/server";
+import { LaunchError, type Provider } from "@armada/core/server";
 import { PGlite } from "@electric-sql/pglite";
 import { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
 
@@ -46,4 +46,9 @@ test("ordinary receipts fence uncertain dispatch, recover labels and replay a lo
   const first = await receipts.run(actor, "successful-launch-key", { golden: "g" }, complete);
   expect(await receipts.run(actor, "successful-launch-key", { golden: "g" }, complete)).toEqual(first);
   expect(allocations).toBe(2);
+  await expect(
+    receipts.run(actor, "known-refusal-key", {}, async () => {
+      throw new LaunchError("unsupported", "Rebuild the golden.");
+    }),
+  ).rejects.toMatchObject({ code: "unsupported", message: "Rebuild the golden." });
 });
