@@ -64,7 +64,7 @@ export default async function EvidencePage({
             <dt>Merged</dt>
             <dd>{proof.merged === null ? "unknown" : proof.merged ? "observed merged" : "observed not merged"}</dd>
             <dt>Deployment</dt>
-            <dd>{proof.deployment}</dd>
+            <dd>Not observed — no target-environment deployment proof is collected.</dd>
           </dl>
           <ul>
             {[...new Map(proof.checks.map((check) => [check.name, check])).values()].map((check) => (
@@ -80,7 +80,10 @@ export default async function EvidencePage({
                 <a href={e.url} target="_blank" rel="noreferrer" className="underline">
                   {e.kind}
                 </a>{" "}
-                — {e.observedAt} <span className="text-muted-foreground">({e.factId})</span>
+                — {e.observedAt}{" "}
+                <span className="text-muted-foreground">
+                  ({e.factId.startsWith("live:") ? "live observation" : e.factId})
+                </span>
               </li>
             ))}
           </ul>

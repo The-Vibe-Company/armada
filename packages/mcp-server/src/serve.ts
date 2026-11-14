@@ -12,6 +12,7 @@ import {
   githubInstallationAppFromEnv,
   type LaunchOptions,
   resolveBoatKey,
+  resolveGitHubAccess,
   VaultError,
 } from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
@@ -633,6 +634,19 @@ export async function startServer(
                   now: new Date(),
                 }),
               env.ARMADA_OTTO_GITHUB_TOKEN,
+              async (caller, repository) => {
+                const access = await resolveGitHubAccess(
+                  { store, app: githubApp, encryptionKey: config.encryptionKey, caller: "account_status" },
+                  caller.userId,
+                );
+                if (access.status !== "connected") return false;
+                const response = await globalThis.fetch(`https://api.github.com/repos/${repository}`, {
+                  redirect: "error",
+                  signal: AbortSignal.timeout(2000),
+                  headers: { authorization: `Bearer ${access.token}`, accept: "application/vnd.github+json" },
+                });
+                return response.ok;
+              },
             ),
             createOttoApi(
               ottoSql ?? sql,

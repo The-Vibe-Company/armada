@@ -41,7 +41,7 @@ test("mechanical evidence is exact-head, fresh, policy-bound and never upgrades 
 test("live inspection proves required checks on a stable head and fails closed on denied policy or head movement", async () => {
   const { inspectMechanicalProof } = await import("./mechanical-proof.ts");
   const head = "a".repeat(40);
-  for (const mode of ["success", "denied", "changed", "duplicate"]) {
+  for (const mode of ["success", "denied", "changed", "duplicate", "no-requirements"]) {
     let pulls = 0;
     const fetcher = (async (input: string | URL | Request) => {
       const url = String(input);
@@ -55,7 +55,9 @@ test("live inspection proves required checks on a stable head and fails closed o
       if (url.includes("/protection/"))
         return mode === "denied"
           ? new Response(null, { status: 403 })
-          : Response.json({ checks: [{ context: "unit", app_id: 1 }] });
+          : mode === "duplicate"
+            ? Response.json({ checks: [{ context: "unit", app_id: 1 }] })
+            : new Response(null, { status: 404 });
       if (url.includes("/rules/"))
         return Response.json(
           mode === "duplicate"
@@ -65,7 +67,14 @@ test("live inspection proves required checks on a stable head and fails closed o
                   parameters: { required_status_checks: [{ context: "unit", integration_id: 2 }] },
                 },
               ]
-            : [],
+            : mode === "no-requirements"
+              ? []
+              : [
+                  {
+                    type: "required_status_checks",
+                    parameters: { required_status_checks: [{ context: "unit", integration_id: 1 }] },
+                  },
+                ],
         );
       if (url.includes("/check-runs"))
         return Response.json({

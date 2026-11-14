@@ -64,12 +64,13 @@ export async function inspectMechanicalProof(
   fetcher: typeof fetch = fetch,
 ): Promise<OttoMechanicalProof> {
   const signal = AbortSignal.timeout(2500);
-  const get = async (path: string): Promise<Record<string, any>> => {
+  const get = async (path: string, absentClassic = false): Promise<Record<string, any>> => {
     const response = await fetcher(`https://api.github.com/repos/${repository}${path}`, {
       headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json" },
       redirect: "error",
       signal,
     });
+    if (absentClassic && response.status === 404) return { checks: [] };
     if (!response.ok || response.headers.get("link")?.includes('rel="next"')) throw Error("incomplete_proof");
     return (await response.json()) as Record<string, any>;
   };
@@ -82,9 +83,9 @@ export async function inspectMechanicalProof(
   result.merged = typeof pr.merged === "boolean" ? pr.merged : null;
   result.mergeState = pr.mergeable === true ? "mergeable" : pr.mergeable === false ? "conflicting" : "unknown";
   try {
-    // Both policy surfaces must be readable: denied policy never authorizes green.
+    // Classic 404 means no classic policy; denied reads still fail closed.
     const [classic, rules, checks, statuses] = await Promise.all([
-      get(`/branches/${encodeURIComponent(pr.base.ref)}/protection/required_status_checks`),
+      get(`/branches/${encodeURIComponent(pr.base.ref)}/protection/required_status_checks`, true),
       get(`/rules/branches/${encodeURIComponent(pr.base.ref)}`),
       get(`/commits/${head}/check-runs?filter=latest&per_page=100`),
       get(`/commits/${head}/status?per_page=100`),
@@ -113,6 +114,7 @@ export async function inspectMechanicalProof(
         }),
     ];
     if (!Array.isArray(classic.checks) && !Array.isArray(classic.contexts)) throw Error("incomplete_policy");
+    if (!requirements.length) throw Error("no_observed_requirements");
     result.checks = requirements.map((r: any) => {
       if (
         typeof r.context !== "string" ||
@@ -166,6 +168,22 @@ export async function inspectMechanicalProof(
   const latest = await get(`/pulls/${number}`);
   if (latest.head?.sha !== head || latest.base?.ref !== pr.base.ref)
     return mechanicalProof(repository, number, [], new Date());
+  const pullUrl = `https://github.com/${repository}/pull/${number}`;
+  result.evidence = [
+    { factId: "live:head", kind: "Observed PR head and merge state", observedAt: result.observedAt!, url: pullUrl },
+    {
+      factId: "live:checks",
+      kind: "Exact-head checks",
+      observedAt: result.observedAt!,
+      url: `https://github.com/${repository}/commit/${head}/checks`,
+    },
+    {
+      factId: "live:policy",
+      kind: "Repository rules",
+      observedAt: result.observedAt!,
+      url: `https://github.com/${repository}/rules`,
+    },
+  ];
   result.limits = [
     "Observed mechanical facts do not establish objective completion or human approval.",
     "Deployment is unknown: no target-environment proof was observed.",
