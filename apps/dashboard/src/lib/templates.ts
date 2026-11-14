@@ -428,6 +428,7 @@ const LAUNCH_REASONS: Record<string, string> = {
   variable_delivery_unavailable: "This provider cannot deliver variables yet.",
   connection_unavailable: "A tool it uses is not connected. Reconnect it in Tools, or publish a revision without it.",
   connection_version_changed: "A tool it uses was reconnected while launching. Try again.",
+  credential_busy: "The model account is busy. Wait before trying again, or choose another account.",
   model_account_unavailable:
     "No usable model account is available for this agent in this organization. Add one in Account > Models or choose another agent.",
   model_account_ambiguous:
@@ -442,17 +443,26 @@ const LAUNCH_REASONS: Record<string, string> = {
 
 export function launchReason(reason: string | null | undefined): string {
   if (reason?.startsWith("skillpack_")) return skillRefusalMessage(reason);
-  return (reason && LAUNCH_REASONS[reason]) ?? "The sandbox could not be started.";
+  const canonical =
+    reason === "credential_refused"
+      ? "model_account_refused"
+      : reason === "missing_credential"
+        ? "model_account_unavailable"
+        : reason;
+  return (canonical && LAUNCH_REASONS[canonical]) ?? "The sandbox could not be started.";
 }
 
 /**
  * A control API refusal in words. The template service's messages are deliberately generic, so the page says what
  * each one means here; a `Template launch refused: <reason>.` names its reason.
  */
-export function templateFailure(status: number | undefined, message: string): string {
+export function templateFailure(status: number | undefined, message: string, code?: string): string {
+  if (["missing_credential", "credential_refused", "credential_busy"].includes(code ?? "")) return launchReason(code);
   const refused = /^Template launch refused: ([a-z_]+)\.$/.exec(message);
   if (refused) return launchReason(refused[1]);
   switch (status) {
+    case 401:
+      return "This session cannot access templates. Sign in again, then reload Templates.";
     case 400:
       return "The server refused this template. Check the snapshot, tools and variables, then try again.";
     case 403:
@@ -470,7 +480,7 @@ export function templateFailure(status: number | undefined, message: string): st
     case 503:
       return "Templates are not available on this Armada server right now.";
     default:
-      return message;
+      return "The template request could not be confirmed. Reload Templates or check Sandboxes before trying again.";
   }
 }
 

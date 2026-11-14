@@ -60,8 +60,7 @@ async function guarded(run: (context: Context) => Promise<ActionResult>, data: F
     return result;
   } catch (error) {
     if (!(error instanceof ControlError)) throw error;
-    // A refusal without a code is the transport's (signed out, unreachable, an older server): its words are right.
-    return fail(error.code ? templateFailure(error.status, error.message) : error.message);
+    return fail(templateFailure(error.status, error.message, error.code));
   }
 }
 
@@ -218,18 +217,20 @@ export async function launchFromTemplate(
       error.status >= 500 ||
       error.message.startsWith("Request key")
     )
-      return { ...fail(error.code ? templateFailure(error.status, error.message) : error.message), pending: true };
-    // A missing model credential is not a missing template (both can use HTTP 404).
-    if (["missing_credential", "credential_refused", "credential_busy"].includes(error.code ?? ""))
-      return fail(error.message);
-    return fail(error.code ? templateFailure(error.status, error.message) : error.message);
+      return {
+        ...fail(
+          `${templateFailure(error.status, error.message, error.code)} Armada could not confirm whether the sandbox started. Check Sandboxes before launching again: retrying here repeats the same request.`,
+        ),
+        pending: true,
+      };
+    return fail(templateFailure(error.status, error.message, error.code));
   }
   revalidatePath("/sandboxes");
   if (outcome.state === "succeeded") redirect(`/sandboxes/${outcome.id}`);
   if (outcome.state === "reconciling")
     return {
       ...fail(
-        `${outcome.message ?? (outcome.reason?.startsWith("skillpack_") ? launchReason(outcome.reason) : "")} Armada could not confirm whether the sandbox started. Check Sandboxes before launching again: launching again from this dialog repeats the same request and starts nothing new.`,
+        `${outcome.reason?.startsWith("skillpack_") ? launchReason(outcome.reason) : ""} Armada could not confirm whether the sandbox started. Check Sandboxes before launching again: launching again from this dialog repeats the same request and starts nothing new.`,
       ),
       pending: true,
     };
@@ -238,6 +239,6 @@ export async function launchFromTemplate(
       `${launchReason(outcome.reason)} If ${PROVIDER_LABELS[provider]} refused ${MACHINE_SIZE_LABELS[size as MachineSize]}, choose another size or the default.`,
     );
   return {
-    ...fail(outcome.message ?? launchReason(outcome.reason)),
+    ...fail(launchReason(outcome.reason)),
   };
 }
