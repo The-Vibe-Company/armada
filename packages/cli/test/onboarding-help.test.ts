@@ -8,6 +8,12 @@ test("nested onboarding help is focused and performs no authenticated or secret 
     "org connect modal",
     "creds login codex",
     "creds set",
+    "creds list",
+    "creds rename",
+    "creds default",
+    "creds remove",
+    "creds rm",
+
     "golden create",
     "snapshot create",
     "snapshot update",
@@ -84,6 +90,8 @@ test("help detection leaves malformed operations and literal payloads to their p
     ["snapshot", "update", "--config", "-h"],
     ["snapshot", "get", "snapshot-id", "--help"],
     ["snapshot", "rebuild", "--request-id", "-h"],
+    ["creds", "rename", "account-id", "--help"],
+    ["creds", "remove", "--org", "-h"],
     ["constructor", "--help"],
     ["toString", "-h"],
   ])
