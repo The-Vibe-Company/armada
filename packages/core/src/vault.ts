@@ -167,6 +167,19 @@ export async function removeMember(
   }
 }
 
+/** Stricter write admission; legacy sealed connections remain readable by parseCredentialValue. */
+function credentialWriteValue(kind: CredentialKind, raw: string): string {
+  const value = parseCredentialValue(kind, raw);
+  if (kind === "openai" && value.startsWith("{")) {
+    const connection = JSON.parse(value);
+    if (!Array.isArray(connection.models) || !connection.models.length)
+      throw new VaultError("invalid", "Enter at least one deployment or model name for this custom Codex endpoint.");
+  }
+  return value;
+}
+
+type CredentialValidator = (kind: CredentialKind, value: string) => Promise<void>;
+
 /**
  * Stores a credential encrypted. A user credential is the caller's own. An org credential needs an
  * org admin. The org boat.dev key is the org's own column; every other org credential is a row.
@@ -177,13 +190,16 @@ export async function setCredential(
   encryptionKey: string | undefined,
   userId: string,
   input: { scope: CredentialScope; org: string | undefined; kind: CredentialKind; value: string },
+  validate?: CredentialValidator,
 ): Promise<void> {
-  const value = parseCredentialValue(input.kind, input.value);
+  const value = credentialWriteValue(input.kind, input.value);
   if (input.scope === "user") {
+    await validate?.(input.kind, value);
     await store.upsertCredential("user", userId, input.kind, await encryptSecret(value, encryptionKey));
     return;
   }
   const org = await resolveAdminOrg(store, userId, input.org);
+  await validate?.(input.kind, value);
   const sealed = await encryptSecret(value, encryptionKey);
   await resolveAdminOrg(store, userId, org.id);
   if (input.kind === "boat") await store.setOrgBoatKey(org.id, sealed);
@@ -248,6 +264,7 @@ export async function mutateCredentialAccount(
   key: string | undefined,
   userId: string,
   input: AccountMutation,
+  validate?: CredentialValidator,
 ): Promise<CredentialInfo> {
   if (input.id !== undefined && !UUID.test(input.id)) throw new VaultError("invalid", "Account id must be a UUID.");
   if (!store.mutateAccount) throw new VaultError("unavailable", "Named accounts are unavailable.");
@@ -256,10 +273,6 @@ export async function mutateCredentialAccount(
   if (input.name !== undefined && (input.name.trim().length < 1 || input.name.trim().length > 120))
     throw new VaultError("invalid", "An account name is 1 to 120 characters.");
   const org = input.scope === "org" ? await resolveAdminOrg(store, userId, input.org) : undefined;
-  const valueEnc =
-    input.action === "set" && input.kind && input.value !== undefined
-      ? await encryptSecret(parseCredentialValue(input.kind, input.value), key)
-      : undefined;
   if (
     input.id &&
     input.action === "set" &&
@@ -268,6 +281,21 @@ export async function mutateCredentialAccount(
     throw new VaultError("invalid", "expectedVersion is required to rotate an account.");
   if (input.expiresAt != null && !Number.isFinite(Date.parse(input.expiresAt)))
     throw new VaultError("invalid", "expiresAt must be a timestamp.");
-  if (input.action === "set" && !valueEnc) throw new VaultError("invalid", "Kind and value are required.");
+  let valueEnc: Uint8Array | undefined;
+  if (input.action === "set") {
+    if (!input.kind || input.value === undefined) throw new VaultError("invalid", "Kind and value are required.");
+    // Do not send a billable request for an inaccessible, stale or wrong-kind rotation.
+    // The SQL mutation still rechecks authorization/version atomically after the probe.
+    if (input.id) {
+      const existing = (await store.listCredentials(input.scope, org?.id ?? userId)).find((row) => row.id === input.id);
+      if (!existing) throw new VaultError("not_found", "Account not found.");
+      if (existing.kind !== input.kind) throw new VaultError("invalid", "An account replacement must keep its kind.");
+      if (existing.version !== input.expectedVersion)
+        throw new VaultError("conflict", "The account revision changed. No secret was overwritten.");
+    }
+    const value = credentialWriteValue(input.kind, input.value);
+    await validate?.(input.kind, value);
+    valueEnc = await encryptSecret(value, key);
+  }
   return store.mutateAccount(userId, { ...input, ...(org ? { org: org.id } : {}) }, valueEnc);
 }

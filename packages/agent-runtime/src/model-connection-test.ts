@@ -3,18 +3,21 @@ import {
   type CodexEndpoint,
   type ModelConnectionTestResult,
   modelConnectionErrorCode,
+  type OpenCodeEndpoint,
   parseClaudeEndpoint,
   parseCodexEndpoint,
+  parseOpenCodeEndpoint,
   resolveModelChoice,
 } from "@armada/core";
 import { bounded } from "./deadline.ts";
 
 export type BoundModelConnection =
   | { harness: "codex"; endpoint: CodexEndpoint; apiKey: string }
-  | { harness: "claude"; endpoint: ClaudeEndpoint; apiKey: string };
+  | { harness: "claude"; endpoint: ClaudeEndpoint; apiKey: string }
+  | { harness: "opencode"; endpoint: OpenCodeEndpoint & { protocol: "azure" }; apiKey: string };
 export type { ModelConnectionTestResult } from "@armada/core";
 
-/** One bounded native-wire request using the runtime's bound connection, never RPC-supplied credentials. */
+/** One bounded native-wire check. Callers own authorization and network destination admission. */
 export async function testModelConnection(
   connection: BoundModelConnection,
   model: string,
@@ -24,14 +27,21 @@ export async function testModelConnection(
   resolveModelChoice(connection.harness, { model });
   if (!connection.apiKey) throw Error("model_connection_test_denied");
   const endpoint =
-    connection.harness === "codex" ? parseCodexEndpoint(connection.endpoint) : parseClaudeEndpoint(connection.endpoint);
-  const url = new URL(endpoint.baseUrl + (connection.harness === "codex" ? "/responses" : "/v1/messages"));
+    connection.harness === "codex"
+      ? parseCodexEndpoint(connection.endpoint)
+      : connection.harness === "opencode"
+        ? parseOpenCodeEndpoint(connection.endpoint)
+        : parseClaudeEndpoint(connection.endpoint);
+  if (connection.harness === "opencode" && (!("protocol" in endpoint) || endpoint.protocol !== "azure"))
+    throw Error("model_connection_test_denied");
+  const responses = connection.harness !== "claude";
+  const url = new URL(endpoint.baseUrl + (responses ? "/responses" : "/v1/messages"));
   if (connection.harness === "codex" && "apiVersion" in endpoint && endpoint.apiVersion)
     url.searchParams.set("api-version", endpoint.apiVersion);
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (connection.harness === "codex" || ("auth" in endpoint && endpoint.auth === "bearer"))
     headers.authorization = `Bearer ${connection.apiKey}`;
-  else headers["x-api-key"] = connection.apiKey;
+  else headers[connection.harness === "opencode" ? "api-key" : "x-api-key"] = connection.apiKey;
   if (connection.harness === "claude") headers["anthropic-version"] = "2023-06-01";
   const controller = new AbortController();
   const abort = AbortSignal.any([signal, controller.signal]);
@@ -46,7 +56,7 @@ export async function testModelConnection(
           redirect: "error",
           signal: abort,
           body: JSON.stringify(
-            connection.harness === "codex"
+            responses
               ? { model, input: ".", max_output_tokens: 16, store: false }
               : { model, max_tokens: 1, messages: [{ role: "user", content: "." }] },
           ),
@@ -76,7 +86,7 @@ export async function testModelConnection(
           return { ok: false, status: response.status, error: "provider_rejected", code };
         const valid =
           typeof body.id === "string" &&
-          (connection.harness === "codex"
+          (responses
             ? body.object === "response" && ["completed", "incomplete"].includes(String(body.status))
             : body.type === "message" && body.role === "assistant" && Array.isArray(body.content));
         return { ok: valid, status: response.status, error: valid ? null : "invalid_response", code: null };

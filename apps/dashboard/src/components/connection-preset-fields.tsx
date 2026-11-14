@@ -67,7 +67,7 @@ export function PresetConnectionFields({ preset, secretField }: { preset: Connec
       )}
       {secretField}
       <fieldset className="min-w-0 space-y-2">
-        <legend className="text-sm font-medium">Models</legend>
+        <legend className="text-sm font-medium">{preset.deploymentNames ? "Azure deployment names" : "Models"}</legend>
         {ticked.map((model) => (
           <input key={model} type="hidden" name="model" value={model} />
         ))}
@@ -118,24 +118,45 @@ export function PresetConnectionFields({ preset, secretField }: { preset: Connec
         )}
         <div className="space-y-2">
           <Label htmlFor={`${id}-custom-models`} className="text-sm font-normal">
-            {catalog.length > 0 ? "Other model IDs (optional)" : "Model IDs"}
+            {preset.deploymentNames
+              ? "Azure deployment names"
+              : catalog.length > 0
+                ? "Other model IDs (optional)"
+                : "Model IDs"}
           </Label>
           <Textarea
             id={`${id}-custom-models`}
             name="customModels"
             rows={2}
-            required={catalog.length === 0}
+            required={preset.deploymentNames || catalog.length === 0}
             spellCheck={false}
             autoComplete="off"
             className="font-mono text-xs"
-            placeholder={preset.id === "azure-foundry" ? "your-deployment-name" : "model-id, another-model-id"}
+            placeholder={
+              preset.deploymentNames ? "your-deployment-name, another-deployment" : "model-id, another-model-id"
+            }
           />
         </div>
         <p className="text-xs text-muted-foreground">
-          {ticked.length} ticked, up to {MAX_CONNECTION_MODELS} in all. Prices are models.dev public prices; a model
-          typed by hand has no known price.
+          {preset.deploymentNames ? (
+            <>
+              Use the actual deployment names from your Azure resource, not underlying model names. Up to{" "}
+              {MAX_CONNECTION_MODELS} deployments; prices are unknown.
+            </>
+          ) : (
+            <>
+              {ticked.length} ticked, up to {MAX_CONNECTION_MODELS} in all. Prices are models.dev public prices; a model
+              typed by hand has no known price.
+            </>
+          )}
         </p>
       </fieldset>
+      {preset.deploymentNames && (
+        <p className="text-xs text-muted-foreground">
+          For official Azure addresses, testing and saving sends a tiny billable request per deployment. Nothing is
+          saved if any check fails.
+        </p>
+      )}
     </div>
   );
 }

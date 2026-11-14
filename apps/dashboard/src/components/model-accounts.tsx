@@ -1131,6 +1131,26 @@ function CustomEndpointFields({
               </NativeSelect>
             </div>
           )}
+          {codex && (
+            <div className="space-y-2">
+              <Label htmlFor={`${idPrefix}-custom-models`}>Deployment/model IDs</Label>
+              <Textarea
+                id={`${idPrefix}-custom-models`}
+                name="customModels"
+                required
+                rows={2}
+                spellCheck={false}
+                autoComplete="off"
+                className="font-mono text-xs"
+                placeholder="your-deployment-name, another-model-id"
+              />
+              <p className="text-xs text-muted-foreground">
+                List the exact models this endpoint serves. For Azure, use actual resource deployment names, not
+                underlying model names. Official Azure addresses receive a tiny billable test request per deployment
+                before saving; nothing is saved if a check fails. Other custom endpoints are not tested on save.
+              </p>
+            </div>
+          )}
           <ModelPriceFields idPrefix={idPrefix} />
         </fieldset>
       )}
@@ -1288,11 +1308,13 @@ export function AddAccountDialog({
           <DialogHeader>
             <DialogTitle>Add a model account</DialogTitle>
             <DialogDescription>
-              {preset?.models === "choose"
-                ? "Paste the key and tick the models you want. Billed per token by the provider."
-                : subscription
-                  ? "Sign in with the plan you already pay for. Add as many as you have; each launch names the one it bills."
-                  : "Billed per token by the provider. Add as many as you have; each launch names the one it bills."}
+              {preset?.deploymentNames
+                ? "Paste the key and enter your Azure deployment names. Testing sends a tiny billable request per deployment; nothing is saved if a check fails."
+                : preset?.models === "choose"
+                  ? "Paste the key and tick the models you want. Billed per token by the provider."
+                  : subscription
+                    ? "Sign in with the plan you already pay for. Add as many as you have; each launch names the one it bills."
+                    : "Billed per token by the provider. Add as many as you have; each launch names the one it bills."}
             </DialogDescription>
           </DialogHeader>
           <form ref={formRef} key={generation} action={formAction} className="min-w-0 space-y-5">
@@ -1418,7 +1440,13 @@ export function AddAccountDialog({
                 {defaultBox}
                 {state && !state.ok && <ResultLine result={state} />}
                 <SubmitButton>
-                  {subscription ? "Add subscription" : preset?.models === "choose" ? "Add connection" : "Add API key"}
+                  {subscription
+                    ? "Add subscription"
+                    : preset?.deploymentNames
+                      ? "Test and add connection"
+                      : preset?.models === "choose"
+                        ? "Add connection"
+                        : "Add API key"}
                 </SubmitButton>
               </>
             )}
