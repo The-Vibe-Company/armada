@@ -193,6 +193,26 @@ Use an ID from mcp list; select an organization with org use or --org UUID.
 Output is JSON even without --json. For authorization revocation, see mcp revoke.
 Example: armada mcp delete CONNECTION_UUID --org ORG_UUID
 `,
+  "mcp add": `Usage: armada mcp add <name> <URL> [--scope personal|org] [--org UUID] [--json]
+   or: armada mcp add <name> --service <service-id> [--scope personal|org] [--org UUID] [--json]
+   or: armada mcp add [--file <path>] [--org UUID] [--json]
+Create a registry connection after Armada login and server authorization.
+Select an organization with org use or --org UUID.
+URL shortcuts require a public/OAuth HTTP URL without credentials; keep stdin empty.
+Do not combine NAME URL with --file or stdin JSON. Shortcut scope defaults to personal.
+Use mcp catalog for service IDs. Full definitions are JSON objects from stdin or --file;
+put scope in the definition, not --scope. Secrets belong in private files/stdin, never arguments.
+Output is always JSON. This does not run mcp connect.
+Example: armada mcp add work-tools --service notion --org ORG_UUID
+Example: armada mcp add --file /private/connection.json --org ORG_UUID
+`,
+  "mcp update": `Usage: armada mcp update <connection-id> [--file <path>] [--org UUID] [--json]
+Update a registry connection from a JSON object after Armada login and server authorization.
+Select an organization with org use or --org UUID; use an ID from mcp list.
+Read the object from stdin or --file. Keep authentication values out of command arguments.
+Updates cannot change scope; --scope is not accepted. Output is always JSON.
+Example: armada mcp update CONNECTION_UUID --file /private/connection.json --org ORG_UUID
+`,
   "org setup": `Usage: armada org setup [--org <name>] [--json]
 Show organization provider setup status. Sign in before running the operation.
 Use --org to override a saved selection. This reports configuration, not a live lifecycle test.
