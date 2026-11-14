@@ -140,14 +140,14 @@ function ConnectionTestDialog({
         </Button>
       </DialogTrigger>
       <p id={descriptionId} className="mt-1 text-xs text-muted-foreground">
-        Custom endpoints only, using a running Modal sandbox. Standard vendor keys cannot be tested here.
+        API-key accounts only, using a running Modal sandbox. Subscription sign-ins cannot be tested here.
       </p>
       <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Test {account.name}</DialogTitle>
           <DialogDescription>
-            Custom endpoints only. Launch an idle Modal sandbox with this account first. This sends one tiny billable
-            request through its runtime, without starting or resuming a machine.
+            Launch an idle Modal sandbox with this API-key account first. This sends one tiny billable request through
+            its runtime, without starting or resuming a machine.
           </DialogDescription>
         </DialogHeader>
         <ConnectionTestForm

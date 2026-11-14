@@ -11,9 +11,9 @@ An already bootstrapped Modal runtime accepts this authenticated protocol-1 RPC:
 {"version":1,"requestId":"unique-id","sandboxId":"modal_<logical-uuid>","op":"testModelConnection","harness":"codex","model":"deployment-name"}
 ```
 
-Only the selected custom connection from the current private bootstrap is used.
-The RPC accepts no URL, key, arbitrary headers or prompt. Subscription and plain
-vendor-default credentials are not checked by this first primitive. Builders,
+Only the selected API-key connection from the current private bootstrap is used.
+The RPC accepts no URL, key, arbitrary headers or prompt. Standard OpenAI and Anthropic API keys use the vendor default address when no
+custom endpoint is bound. Subscription credentials are not checked. Builders,
 checkpointed/busy runners and unsupported/unconfigured harnesses refuse it.
 The operation joins the runtime's in-flight command set so checkpoint waits
 for it. It creates no prompt, journal event or replay receipt; each invocation
@@ -60,7 +60,7 @@ existing gateway-compatible anthropic-version 2023-06-01 documented in the
 4. Check that session prompts/events are unchanged and runtime checkpoint still
    completes. Delete private access files afterwards.
 
-Prerequisites: current custom connection bootstrap and updated runtime artifact.
+Prerequisites: current API-key connection bootstrap and updated runtime artifact.
 No migration/new settings. Workers hold no owner credentials or staging access.
 
 ## Public server and CLI surface
@@ -69,7 +69,7 @@ The server exposes authenticated `POST /api/v1/sandbox/test-model-connection`
 with `{id,model,org?}`; `id` is the public Armada sandbox UUID, not a provider
 or host ID. The API derives harness and bound credentials from that sandbox.
 Only its owner can run a check. It revalidates the account's current status
-and version, refuses non-custom accounts and stopped/starting/unbound or
+and version, refuses subscription accounts, unsupported harnesses and stopped/starting/unbound or
 non-Modal sandboxes, and never starts/resumes a machine. Extra request fields
 (including keys and URLs) are refused. A short activity lease protects the
 check from idle-stop races without creating a conversation or clearing task
@@ -100,10 +100,10 @@ must fail closed. No model key leaves the existing private bootstrap. The Models
 
 ## Models page
 
-Each active API-key account on Models offers **Test connection**. This is for
-custom endpoints only; subscription and vendor-default checks are not supported.
-Open the dialog, enter the public UUID of your already-running Modal sandbox
-and the endpoint's deployment/model, then **Send tiny check**. Launch an idle
+Each active Claude Code or Codex API-key account on Models offers **Test connection**,
+for both standard vendor keys and custom endpoints. Subscription and OpenCode
+checks are not supported. Open the dialog, choose an already-running Modal sandbox
+bound to this account and enter the deployment/model, then **Send tiny check**. Launch an idle
 sandbox with this account first if needed; the action never creates/resumes one.
 The dashboard checks user-JWT sandbox metadata for the exact selected account,
 version, owner and organization before the API call. The API independently
@@ -116,10 +116,11 @@ and never silently retries or claims full harness compatibility. Each invocation
 may incur one tiny provider charge. Unknown server diagnostics fail closed.
 
 Coordinator staging addition: on Models open Test connection for the owner
-Foundry/gateway account, enter its idle Modal sandbox UUID and deployment, and
+Foundry/gateway account, choose its idle Modal sandbox and deployment, and
 expect connectivity accepted. A newly launched invalid-key sandbox must show
 HTTP401/safe provider code, not credential text. Wrong owner/account/version/org
 or stopped/non-Modal sandbox must refuse without runtime I/O. Inspect that no
 prompt/conversation is created. Check mobile layout and keyboard focus in the
-centered dialog. Requires the deployed public server/runtime probe slice; no
+centered dialog. Repeat with standard OpenAI and Anthropic API-key accounts and
+supported vendor model names. Requires the deployed public server and updated runtime; no
 migration or new setting, and workers have no owner credentials.
