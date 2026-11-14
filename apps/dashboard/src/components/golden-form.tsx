@@ -13,10 +13,17 @@ import {
   useRef,
   useState,
 } from "react";
-import { buildGolden, cancelGoldenBuild, goldenBuildStatus, recoverGoldenBuild } from "@/app/actions/goldens";
+import {
+  buildGolden,
+  cancelGoldenBuild,
+  findActiveGoldenBuild,
+  goldenBuildStatus,
+  recoverGoldenBuild,
+} from "@/app/actions/goldens";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { NativeSelect } from "@/components/ui/native-select";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Textarea } from "@/components/ui/textarea";
 import { usePreservedActionForm } from "@/components/use-preserved-action-form";
@@ -29,6 +36,7 @@ import {
   type RepoRow,
 } from "@/lib/golden-form";
 import { replaceResourceUrl } from "@/lib/resource-history";
+import { ITEM_PARAM } from "@/lib/resource-list";
 import { cn } from "@/lib/utils";
 
 type Props = {
@@ -107,6 +115,8 @@ function ScopedGoldenForm({
   const [observed, setObserved] = useState<GoldenBuildStatus | null>(null);
   const [pollError, setPollError] = useState("");
   const [cancelling, setCancelling] = useState(false);
+  const [finding, setFinding] = useState(false);
+  const findInFlight = useRef(false);
   const cancelInFlight = useRef(false);
   const statusReadEpoch = useRef(0);
   // The provider of the admitted job: a rebuild's is the stored golden's; a create's is what was submitted.
@@ -130,6 +140,7 @@ function ScopedGoldenForm({
   useEffect(() => {
     // A read started for this scope is ignored once the scope is gone: a late answer never lands in another form.
     let active = true;
+    const epoch = statusReadEpoch.current;
     const params = new URLSearchParams(window.location.search);
     const savedKey = params.get(keyParam);
     setAdmissionKey(savedKey ?? crypto.randomUUID());
@@ -140,27 +151,28 @@ function ScopedGoldenForm({
     if (savedJob)
       void goldenBuildStatus(savedJob)
         .then((status) => {
-          if (!active) return;
+          if (!active || epoch !== statusReadEpoch.current) return;
           setObserved(status);
           setPollError("");
         })
         .catch(() => {
-          if (active)
+          if (active && epoch === statusReadEpoch.current)
             setPollError("Status unavailable. The build may still run; check this job again, do not resubmit.");
         });
     else if (savedKey)
       void recoverGoldenBuild(savedKey, orgId)
         .then((recovered) => {
-          if (!active) return;
+          if (!active || epoch !== statusReadEpoch.current) return;
           setObserved(recovered);
           rememberJob(jobParam, recovered.jobId);
         })
         .catch(() => {
-          if (active)
+          if (active && epoch === statusReadEpoch.current)
             setPollError("No visible admission receipt yet. Recover using the saved key; do not blindly resubmit.");
         });
     return () => {
       active = false;
+      statusReadEpoch.current++;
     };
   }, [orgId, jobParam, keyParam, providerParam, mode]);
   useEffect(() => {
@@ -245,7 +257,7 @@ function ScopedGoldenForm({
 
   function guard(event: FormEvent<HTMLFormElement>) {
     // The fieldset is disabled while pending; this also stops an Enter press racing the re-render.
-    if (pending || !canStart) event.preventDefault();
+    if (pending || finding || findInFlight.current || !canStart) event.preventDefault();
   }
 
   const verb = mode === "create" ? "Build golden" : "Rebuild golden";
@@ -386,10 +398,29 @@ function ScopedGoldenForm({
                     spellCheck={false}
                   />
                 </div>
+                <div className="space-y-1 sm:col-span-3 sm:row-start-2">
+                  <Label htmlFor={`${id}-history-${row.key}`}>History</Label>
+                  <NativeSelect
+                    id={`${id}-history-${row.key}`}
+                    name="repo_history"
+                    value={row.history ?? ""}
+                    onChange={(event) => update(row.key, "history", event.target.value)}
+                    aria-describedby={`${id}-history-hint-${row.key}`}
+                  >
+                    <option value="">Full history (default)</option>
+                    <option value="full">Full history</option>
+                    <option value="shallow">Latest commit only</option>
+                  </NativeSelect>
+                  <p id={`${id}-history-hint-${row.key}`} className="text-xs text-muted-foreground">
+                    Latest commit only omits older log, blame and build history. Fetching deeper later brings older
+                    objects back; the secret scan still fails closed.
+                  </p>
+                </div>
                 <Button
                   type="button"
                   variant="ghost"
                   size="icon"
+                  className="sm:col-start-4 sm:row-start-1"
                   aria-label={`Remove repository ${index + 1}`}
                   disabled={rows.length === 1}
                   onClick={() => setRows((current) => current.filter((item) => item.key !== row.key))}
@@ -453,7 +484,7 @@ function ScopedGoldenForm({
 
       <div className="space-y-2">
         <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
-          <Button type="submit" disabled={!admissionKey || pending || jobActive || !canStart}>
+          <Button type="submit" disabled={!admissionKey || pending || finding || jobActive || !canStart}>
             {pending && <Loader2Icon className="animate-spin" />}
             {pending ? (mode === "create" ? "Building…" : "Rebuilding…") : verb}
           </Button>
@@ -476,6 +507,48 @@ function ScopedGoldenForm({
                 : state
             }
           />
+          {mode === "update" && goldenId && !observed && (
+            <Button
+              type="button"
+              variant="outline"
+              disabled={finding || pending}
+              onClick={() => {
+                if (findInFlight.current || pending) return;
+                findInFlight.current = true;
+                const epoch = ++statusReadEpoch.current;
+                const lookupUrl = new URL(window.location.href);
+                const sameScope = () => {
+                  const currentUrl = new URL(window.location.href);
+                  return (
+                    epoch === statusReadEpoch.current &&
+                    currentUrl.pathname === lookupUrl.pathname &&
+                    currentUrl.searchParams.get(ITEM_PARAM) === lookupUrl.searchParams.get(ITEM_PARAM)
+                  );
+                };
+                setFinding(true);
+                startTransition(async () => {
+                  try {
+                    const result = await findActiveGoldenBuild(goldenId, orgId);
+                    if (!sameScope()) return;
+                    if (result.ok && result.build) {
+                      setObserved(result.build);
+                      rememberJob(jobParam, result.build.jobId);
+                      setPollError("");
+                    } else if (!result.ok) setPollError(result.error);
+                  } catch {
+                    if (sameScope())
+                      setPollError("Active build lookup is unavailable. Check again before submitting another build.");
+                  } finally {
+                    findInFlight.current = false;
+                    if (epoch === statusReadEpoch.current) setFinding(false);
+                  }
+                });
+              }}
+            >
+              {finding && <Loader2Icon className="animate-spin" aria-hidden />}
+              {finding ? "Finding…" : "Find active build"}
+            </Button>
+          )}
           {observed && (
             <Button
               type="button"
@@ -548,13 +621,17 @@ function ScopedGoldenForm({
               variant="link"
               size="sm"
               className="h-auto p-0 text-xs"
+              disabled={finding || pending}
               onClick={async () => {
+                const epoch = statusReadEpoch.current;
                 try {
                   const recovered = await recoverGoldenBuild(admissionKey, orgId);
+                  if (epoch !== statusReadEpoch.current) return;
                   setObserved(recovered);
                   rememberJob(jobParam, recovered.jobId);
                   setPollError("");
                 } catch {
+                  if (epoch !== statusReadEpoch.current) return;
                   setPollError(
                     "No visible admission receipt yet. Keep this key and check again; do not blindly resubmit.",
                   );

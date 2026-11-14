@@ -434,6 +434,7 @@ if os.environ.get("ARMADA_ORPHAN_PROOF"):
         second.stdout
           .getReader()
           .read()
+          // biome-ignore lint/complexity/noCommaOperator: Await process exit before reporting refused admission.
           .then(async (read) => (read.done ? (await second.exited, "refused") : "admitted")),
       ]);
       expect(admission).toBe("refused");
@@ -471,6 +472,7 @@ if os.environ.get("ARMADA_ORPHAN_PROOF"):
         competing.stdout
           .getReader()
           .read()
+          // biome-ignore lint/complexity/noCommaOperator: Await process exit before reporting refused admission.
           .then(async (read) => (read.done ? (await competing.exited, "refused") : "admitted")),
       ]);
       expect(competed).toBe("refused");

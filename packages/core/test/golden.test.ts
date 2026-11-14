@@ -465,3 +465,17 @@ describe("additive golden configuration", () => {
     expect(() => addGoldenRepositories(existing, [addition])).toThrow("complete desired repository list");
   });
 });
+
+test("repository history survives config normalization and additive updates; unknown modes refuse", async () => {
+  const { normalizeGitHubGoldenConfig, addGoldenRepositories } = await import("../src/server.ts");
+  const config = parseGoldenConfig({
+    repos: [{ url: "https://github.com/acme/web.git", history: "shallow" }],
+    init: ["bun install"],
+  });
+  expect(config.repos[0]?.history).toBe("shallow");
+  expect(normalizeGitHubGoldenConfig(config).repos[0]?.history).toBe("shallow");
+  expect(addGoldenRepositories(config, ["https://github.com/acme/api.git"]).repos[0]?.history).toBe("shallow");
+  expect(() =>
+    parseGoldenConfig({ repos: [{ url: "https://github.com/acme/web.git", history: "skip-scan" }] }),
+  ).toThrow("Repository history must be");
+});

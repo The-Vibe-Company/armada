@@ -1,7 +1,7 @@
 /** Trusted root controller asset. Project code is a no-new-privileges UID1000 child;
  * Linux subreaping + pidfds quiesce even setsid/double-fork descendants before scan.
  */
-export const SNAPSHOT_INIT_SUPERVISOR = String.raw`import ctypes,os,signal,subprocess,sys
+export const SNAPSHOT_INIT_SUPERVISOR = `import ctypes,os,signal,subprocess,sys
 libc=ctypes.CDLL(None,use_errno=True)
 if os.geteuid()!=0 or libc.prctl(36,1,0,0,0)!=0:
     raise RuntimeError('snapshot supervision unavailable')

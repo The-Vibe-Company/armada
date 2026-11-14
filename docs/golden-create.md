@@ -11,7 +11,7 @@ Connect is for non-secret maintenance, not for installing credentials or secret-
 ```sh
 armada golden create web --repo https://github.com/acme/web --provider boat --org <org> \
   --idempotency-key <saved-key> --timeout 60
-armada golden update web --config golden.json --provider boat --org <org> \
+armada golden update web --replace --config golden.json --provider boat --org <org> \
   --idempotency-key <new-saved-key> --timeout 60
 ```
 

@@ -34,7 +34,7 @@ def successful_mcp_tool(tools, matching_calls, harness, connection, name):
     return success
 
 
-def normal_launch_receipt(api, launch, timeout):
+def normal_launch_receipt(api, launch, timeout, require_github=False):
     """Replay one admitted request until preparation yields its original first-prompt receipt."""
     deadline = time.monotonic() + timeout
     while True:
@@ -46,6 +46,10 @@ def normal_launch_receipt(api, launch, timeout):
             raise RuntimeError(sandbox.get("statusReason") or
                                "Normal Docker launch preparation failed; retain printed sandbox ID")
         if result.get("promptId") and result.get("conversationId"):
+            github = result.get("github") or {}
+            if require_github and github.get("status") != "connected":
+                reason = github.get("message") or "Launch did not confirm a current caller GitHub connection."
+                raise RuntimeError("GitHub proof blocked: " + reason)
             return result
         if sandbox.get("status") not in ("starting", "ready", "running") or result.get("runtime") is not None:
             raise RuntimeError("Normal launch outcome unknown; retain sandbox/request ID")
@@ -493,7 +497,7 @@ def main():
                 raise RuntimeError("Requested Docker harness is not advertised by launch/options")
             launch.update({"provider": "docker", "harness": harness, "visibility": "private",
                            "prompt": initial_task})
-            launched = normal_launch_receipt(api, launch, args.timeout)
+            launched = normal_launch_receipt(api, launch, args.timeout, require_github=args.snapshot or args.github)
             if (launched.get("sandbox", {}).get("id") != sandbox_id
                     or launched.get("sandbox", {}).get("provider") != "docker"
                     or launched.get("sandbox", {}).get("image") != expected_image
