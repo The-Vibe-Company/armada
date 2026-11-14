@@ -30,7 +30,7 @@ import { nativeCodexLogin } from "./native-model-login.ts";
 export interface VaultIo {
   auth: AuthIo;
   readFile: (path: string) => Promise<string>;
-  /** The secret piped in on stdin. Rejects when stdin is a terminal. */
+  /** The secret from piped stdin or a hidden terminal prompt. */
   readStdin: () => Promise<string>;
 }
 

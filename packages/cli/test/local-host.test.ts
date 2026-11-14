@@ -240,12 +240,17 @@ test("unreadable status preserves registration instead of consuming another toke
   expect(result.out + result.err).not.toContain(token);
 });
 
-test.each(["status", "uninstall"])(
-  "host %s delegates locally without login or leaking subprocess output",
-  async (operation) => {
+test.each([
+  ["status", []],
+  ["uninstall", []],
+  ["status", ["--profile", "staging"]],
+  ["uninstall", ["--profile=staging"]],
+] as const)(
+  "host %s delegates locally without login or leaking subprocess output (global flags %j)",
+  async (operation, prefix) => {
     const m = machine();
     m.existing(registered);
-    const result = await m.capture(["host", operation]);
+    const result = await m.capture([...prefix, "host", operation]);
     expect(result.code).toBe(0);
     expect(result.inputReads).toBe(0);
     expect(m.requests).toEqual([]);

@@ -12,7 +12,8 @@ Choose a starting point below; these are selected guides, not an inventory of ev
 
 ## Develop
 
-- [Self-hosting and local development](self-hosting.md): configure and run the server and dashboard.
+- [Contribution quickstart](self-hosting.md#contribute-quickstart): clone, install pinned Bun, develop the UI without credentials and validate only affected workspaces.
+- [Self-hosting](self-hosting.md#operator-setup): configure and run the real server and dashboard.
 - [CLI/web parity](cli-web-parity.md) and [paging/JSON contract](cli-web-parity-556.md): complementary interface contracts.
 - [API error codes](api-error-codes.md) and [event history](events-history.md): failure and event-stream contracts.
 - [Templates](templates-cli.md): CLI/API definitions, frozen manifests, recovery and raw-delivery limits; [deployed checks](post-deploy-smoke.md#targeted-staging-checks) cover staging acceptance, distinct from [proposed hardening](design/templates-variables-secrets.md).

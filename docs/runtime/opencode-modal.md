@@ -15,7 +15,7 @@ custom connection contains `{endpoint:{version:1,baseUrl,models},apiKey,prices?}
 upstream IDs. Native IDs use the fixed `armada/` provider prefix. There is no
 Armada-hosted proxy. The suggested `deepseek-flash` model ID follows the
 [current DeepSeek API catalog](https://api-docs.deepseek.com/quick_start/pricing/);
-the retired `deepseek-chat` alias is not a launch default. API keys are stdin/file input only, never CLI arguments.
+the retired `deepseek-chat` alias is not a launch default. API keys use hidden terminal input or stdin/file, never CLI arguments.
 
 ```sh
 armada creds set opencode --name deepseek --base-url https://api.deepseek.com \

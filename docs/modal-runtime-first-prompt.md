@@ -514,3 +514,42 @@ and all prior lifecycle proofs. Matching normal server/runtime artifacts are
 required; no new migration or manual artifact publication. Coordinator receipts
 are still required for live acceptance, ordinary default-path rollout and the
 production-day gate before tunnel deletion.
+
+
+## Promptless direct launch and first send
+
+Add `--idle` to launch the selected Modal golden without an initial prompt, then
+send the first instruction through the ordinary durable send route:
+
+```sh
+ARMADA_RUNTIME_SMOKE=one_real_modal_launch bun scripts/check-modal-runtime.ts --idle --resume
+```
+
+This requires `idleLaunchVersion:1` before allocating. Combine with `--claude` or
+`--opencode` and the existing matching account/model inputs to check those
+harnesses; no new configuration or credentials. It still uses one allocation and
+one retained activation. The initial model turn moves from launch to first send;
+it is not an additional billable prompt.
+
+Before first send, the receipt must identify a ready sandbox with no conversation
+or prompt, and common archive reads must contain no inference events. The smoke
+records a first-send request UUID before dispatch, omits `conversation_id`, then
+requires the same enrolled epoch and a new conversation/prompt acknowledgement.
+It never retries an uncertain first send. Existing answer, follow-up/session
+recall, checkpoint/stop and optional retained resume checks remain required.
+
+The server-generated `first_<request UUID>` conversation identity is stable
+across uncertain delivery and replay. Only an owned live opted-in runtime with
+no conversation/task can take this path; normal account, membership, epoch,
+lease and payload-replay fences remain authoritative. Publishing that empty
+ready launch preserves authority only under its live launch lease with all
+identity/account/model/lifetime fields unchanged. Expired leases or changed pins
+still revoke it.
+
+Matching schema/server/runtime deployment must include
+`20261114090000_runtime_idle_publication.sql`. Native Modal behavior is unchanged.
+This is direct-golden promptless launch/first-send support, not promptless template
+claims or stop/wake of a sandbox that has never had any conversation. `--idle`
+with `--variables` (template mode) refuses before allocation. Those remaining
+admission/lifecycle cases, default rollout and authorized tunnel deletion remain
+separate work. Live acceptance requires a coordinator receipt, not these tests.

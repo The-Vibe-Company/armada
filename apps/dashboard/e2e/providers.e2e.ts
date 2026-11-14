@@ -223,7 +223,7 @@ test("an unavailable status is a retryable error: never unconfigured, never retr
   expect(await writes()).toHaveLength(0);
 });
 
-test("an edge 404 while no deployment serves is a temporary outage, and Check again restores the controls", async ({
+test("an edge 404 while no deployment serves is a temporary outage, and reload restores the controls", async ({
   page,
 }) => {
   await post("/__test/provider-status-fail", {
@@ -231,7 +231,7 @@ test("an edge 404 while no deployment serves is a temporary outage, and Check ag
   });
   await signIn(page, "alice@example.com", "/environments");
   const alert = page.locator('[data-setup-state="unavailable"]');
-  await expect(alert).toContainText("The Armada server could not be reached just now. Check again in a moment.");
+  await expect(alert).toContainText("Provider connections could not be checked.");
   await expect(alert).not.toContainText("does not offer");
   await expect(alert).not.toContainText("Application not found");
   const card = goldenRow(page, "shared-golden");
@@ -242,7 +242,7 @@ test("an edge 404 while no deployment serves is a temporary outage, and Check ag
   await post("/__test/provider-status-fail", {});
   await page.keyboard.press("Escape");
   await expect(detail).toBeHidden();
-  await alert.getByRole("link", { name: "Check again" }).click();
+  await alert.getByRole("link", { name: "Reload Snapshots" }).click();
   await expect(alert).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Launch from shared-golden" })).toBeVisible();
   await expect(card.locator("[data-launch-paused]")).toHaveCount(0);

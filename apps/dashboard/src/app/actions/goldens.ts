@@ -117,6 +117,34 @@ export async function goldenBuildStatus(jobId: string) {
   return result;
 }
 
+/** Finds visible active work for a stored golden, without submitting or cancelling a build. */
+export async function findActiveGoldenBuild(goldenId: string, org: string): Promise<ActionResult> {
+  const viewer = await requireViewer();
+  if (!isUuid(goldenId) || !isUuid(org)) return fail("That request is not valid.");
+  if (!(await isSelectedOrganization(org))) return fail("Switch to that organization first.");
+  const serverUrl = mcpUrl();
+  if (!serverUrl || !viewer.token) return fail("The Armada server is not configured for this dashboard.");
+  const supabase = await createClient();
+  const target = (await listGoldens(supabase)).find((row) => row.id === goldenId && row.org_id === org);
+  if (!target || !isSandboxProvider(target.provider)) return fail("That golden is not available in this scope.");
+  try {
+    const result: unknown = await createControlClient({ serverUrl, token: viewer.token }).post("golden/build/find", {
+      name: target.name,
+      provider: target.provider,
+      org,
+    });
+    if (!result || typeof result !== "object" || !("build" in result))
+      return fail("The Armada server sent an unexpected answer.");
+    if (result.build === null)
+      return fail("No visible active build was found. A reservation may still need administrator investigation.");
+    if (!isGoldenBuildStatus(result.build)) return fail("The Armada server sent an unexpected answer.");
+    return { ok: true, message: "Active build found.", build: result.build };
+  } catch (error) {
+    if (error instanceof ControlError) return fail(error.message);
+    throw error;
+  }
+}
+
 /** Cancels only the caller's queued, never-started build; the server rechecks ownership and state. */
 export async function cancelGoldenBuild(jobId: string, org: string): Promise<ActionResult> {
   const viewer = await requireViewer();
