@@ -93,6 +93,7 @@ async function fixture(
     withholdWorkspace?: "timeout" | "stop";
     distinctPromptIds?: boolean;
     githubConfigurationAcknowledged?: boolean;
+    refuseSkillInstall?: boolean;
     daemonVersion?: string;
   } = {},
 ) {
@@ -177,6 +178,15 @@ async function fixture(
       if (next.command) {
         const command = next.command;
         native.push(command);
+        if (command.op === "installSkills" && options.refuseSkillInstall) {
+          await commands.complete(session.runtimeToken, session.epoch, {
+            epoch: session.epoch,
+            requestId: command.requestId,
+            status: 409,
+            body: { version: 1, requestId: command.requestId, error: "invalid_request" },
+          });
+          return;
+        }
         if (command.op === "workspaceExec" && options.withholdWorkspace) {
           if (options.withholdWorkspace === "stop")
             await db.query("update sandboxes set stop_requested_at=now() where id=$1", [body.requestId]);
@@ -1881,19 +1891,22 @@ test("Docker freezes org/personal skill defaults and MCP defaults, verifies rece
   await expect(f.service().launch(f.caller, { ...body, connections: [] })).rejects.toMatchObject({ code: "conflict" });
 });
 
-test("Docker never admits the first prompt after an invalid skill receipt", async () => {
-  const f = await fixture();
-  f.setMalformedSkills();
-  await rejected(
-    f.service().launch(f.caller, { ...f.body, skills: ["catalog/notes@1.0.0"], connections: [] }),
-    "unavailable",
-  );
-  expect(f.native.some((request) => (request as { op: string }).op === "prompt")).toBe(false);
-  const row = (
-    await db.query<{ skills: unknown[] }>("select skills from public.sandboxes where id=$1", [f.body.requestId])
-  ).rows[0];
-  expect(row?.skills).toEqual([]);
-});
+test.each(["receipt", "runtime refusal"])(
+  "Docker skill failure remains Docker-scoped and blocks the first prompt: %s",
+  async (failure) => {
+    const f = await fixture({ refuseSkillInstall: failure === "runtime refusal" });
+    if (failure === "receipt") f.setMalformedSkills();
+    await rejected(
+      f.service().launch(f.caller, { ...f.body, skills: ["catalog/notes@1.0.0"], connections: [] }),
+      failure === "receipt" ? "unavailable" : "invalid_request",
+    );
+    expect(f.native.some((request) => (request as { op: string }).op === "prompt")).toBe(false);
+    const row = (
+      await db.query<{ skills: unknown[] }>("select skills from public.sandboxes where id=$1", [f.body.requestId])
+    ).rows[0];
+    expect(row?.skills).toEqual([]);
+  },
+);
 
 test("Docker re-prepares bound MCP grants before follow-up and after same-host resume, revoking the old epoch lease", async () => {
   const f = await fixture(),

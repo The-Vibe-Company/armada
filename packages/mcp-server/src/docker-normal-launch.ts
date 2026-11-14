@@ -810,6 +810,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
               wait: (ms) => clock.wait(ms),
             }),
             {
+              provider: "docker",
               harness: request.harness,
               ownerId: actor.userId,
               sandboxId: request.requestId,
