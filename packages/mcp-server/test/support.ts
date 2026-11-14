@@ -353,6 +353,16 @@ function fakeGitHub(db: PGlite) {
         : Response.json({ message: "Bad credentials" }, { status: 401 });
     }
     if (url.startsWith("https://api.github.com/user/installations")) return Response.json({ installations: [] });
+    if (url === "https://api.github.com/repos/acme/private")
+      return Response.json({ message: "Not found." }, { status: 404 });
+    if (url === "https://api.github.com/repos/example/web")
+      return Response.json({
+        id: 78,
+        name: "web",
+        owner: { login: "example" },
+        private: false,
+        default_branch: "main",
+      });
     if (url === "https://api.github.com/repos/acme/web")
       return Response.json({ id: 77, name: "web", owner: { login: "acme" }, private: false, default_branch: "main" });
     throw new Error(`unexpected request to ${url}`);

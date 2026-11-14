@@ -19,6 +19,27 @@ describe("config", () => {
     for (const mode of ["", "TRUE", " runtime ", "auto", "fallback"])
       expect(() => configFromEnv({ ...ENV, ARMADA_BOAT_AGENT_PATH: mode })).toThrow("ARMADA_BOAT_AGENT_PATH");
   });
+  test("Modal default is strict, native unless explicitly selected, and requires enrolled prerequisites", () => {
+    expect(configFromEnv(ENV).modalAgentPath).toBe("native");
+    expect(
+      configFromEnv({ ...ENV, ARMADA_MODAL_DIALOUT: "1", ARMADA_MODAL_RUNTIME_MANIFEST: "/opt/runtime.json" })
+        .modalAgentPath,
+    ).toBe("native");
+    expect(
+      configFromEnv({
+        ...ENV,
+        ARMADA_MODAL_AGENT_PATH: "runtime",
+        ARMADA_MODAL_DIALOUT: "1",
+        ARMADA_MODAL_RUNTIME_MANIFEST: "/opt/runtime.json",
+      }).modalAgentPath,
+    ).toBe("runtime");
+    for (const mode of ["", "TRUE", " runtime ", "auto", "fallback"])
+      expect(() => configFromEnv({ ...ENV, ARMADA_MODAL_AGENT_PATH: mode })).toThrow("ARMADA_MODAL_AGENT_PATH");
+    for (const setup of [{}, { ARMADA_MODAL_DIALOUT: "1" }, { ARMADA_MODAL_RUNTIME_MANIFEST: "/opt/runtime.json" }])
+      expect(() => configFromEnv({ ...ENV, ARMADA_MODAL_AGENT_PATH: "runtime", ...setup })).toThrow(
+        "requires ARMADA_MODAL_DIALOUT",
+      );
+  });
   test("database pool budget defaults to three main sessions and accepts only safe integers >= 2", () => {
     expect(configFromEnv(ENV).databasePoolMax).toBe(3);
     for (const max of [2, 3, 6, 12])

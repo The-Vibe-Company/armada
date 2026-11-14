@@ -24,7 +24,7 @@ export interface RuntimeResumeReceipt {
   status: PromptReceipt["status"];
   resumed: true;
   runtime: { kind: "armada"; epoch: string };
-  sourceCheckpoint: { epoch: string; watermark: number };
+  sourceCheckpoint: { epoch: string; watermark: number; empty?: true };
 }
 interface Operation {
   source_epoch: string;
@@ -32,6 +32,7 @@ interface Operation {
   watermark: string;
   request_hash: string;
   conversation_id: string;
+  empty_checkpoint: boolean;
   model: string;
   reasoning_effort: string;
   phase: string;
@@ -41,7 +42,7 @@ interface Operation {
 export interface RuntimeResumePlacement {
   start(
     signal: AbortSignal,
-    restore: { epoch: string; watermark: number; conversationId: string },
+    restore: { epoch: string; watermark: number; conversationId: string | null },
   ): Promise<{ epoch: string }>;
   /** Exact previously authorized compute identity; no activation/reissue on failure. */
   stop(): Promise<void>;
@@ -50,7 +51,7 @@ export type RuntimeResume = ReturnType<typeof createRuntimeResume>;
 export type RuntimeResumePrepare = (caller: Caller, sandbox: SandboxView) => Promise<RuntimeResumePlacement>;
 const uuid = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/;
 
-/** Explicit stopped -> fresh epoch + same-conversation instruction. One dispatch,
+/** Explicit stopped -> fresh epoch, with retained conversation or verified empty journal. One dispatch,
  * durable request identity, no blind activation/bootstrap retry after uncertainty. */
 export function createRuntimeResume(
   sql: Sql,
@@ -64,7 +65,7 @@ export function createRuntimeResume(
   const read = async (tx: Sql, id: string, request: string) =>
     (
       await tx.query<Operation>(
-        `select source_epoch::text,target_epoch::text,watermark::text,request_hash,conversation_id,model,reasoning_effort,phase,verified_at::text,receipt
+        `select source_epoch::text,target_epoch::text,watermark::text,request_hash,conversation_id,empty_checkpoint,model,reasoning_effort,phase,verified_at::text,receipt
     from public.runtime_resumes where sandbox_id=$1 and request_id=$2`,
         [id, request],
       )
@@ -88,11 +89,18 @@ export function createRuntimeResume(
       found.deletedAt
     )
       throw new VaultError("not_found", "No owned runtime resume target.");
-    const conversation = input.conversation_id ?? found.conversationIds.at(-1);
-    if (!conversation || !found.conversationIds.includes(conversation))
-      throw new VaultError("invalid", "Resume the existing conversation, never a new one.");
-    const hash = await sha256Hex(JSON.stringify({ id: found.id, requestId, conversation, prompt: input.prompt }));
     const prior = await read(sql, found.id, requestId);
+    const empty =
+      prior?.empty_checkpoint ??
+      (found.conversationIds.length === 0 && !found.taskPromptId && input.conversation_id === undefined);
+    const conversation =
+      input.conversation_id ??
+      prior?.conversation_id ??
+      found.conversationIds.at(-1) ??
+      (empty ? `first_${requestId}` : undefined);
+    if (!conversation || (!empty && !found.conversationIds.includes(conversation)))
+      throw new VaultError("invalid", "Resume an existing conversation or a verified empty checkpoint.");
+    const hash = await sha256Hex(JSON.stringify({ id: found.id, requestId, conversation, prompt: input.prompt }));
     if (prior?.request_hash !== undefined && prior.request_hash !== hash)
       throw new VaultError("conflict", "Reuse the original resume request_id with identical input.");
     if (prior?.receipt) {
@@ -121,7 +129,9 @@ export function createRuntimeResume(
         current.deletedAt ||
         current.credentialId !== found.credentialId ||
         current.credentialVersion !== found.credentialVersion ||
-        !current.conversationIds.includes(conversation)
+        (empty
+          ? current.conversationIds.length !== 0 || Boolean(current.taskPromptId)
+          : !current.conversationIds.includes(conversation))
       )
         throw new VaultError("conflict", "Runtime resume target changed or cannot retain secrets safely.");
       const epoch = (
@@ -177,6 +187,7 @@ export function createRuntimeResume(
         watermark: proof.watermark,
         request_hash: hash,
         conversation_id: conversation,
+        empty_checkpoint: empty,
         model: current.model,
         reasoning_effort: current.reasoningEffort,
         phase: "dispatched",
@@ -184,7 +195,7 @@ export function createRuntimeResume(
         receipt: null,
       };
       await tx.query(
-        `insert into public.runtime_resumes(sandbox_id,request_id,source_epoch,target_epoch,watermark,request_hash,conversation_id,model,reasoning_effort) values($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        `insert into public.runtime_resumes(sandbox_id,request_id,source_epoch,target_epoch,watermark,request_hash,conversation_id,model,reasoning_effort,empty_checkpoint) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
         [
           found.id,
           requestId,
@@ -195,6 +206,7 @@ export function createRuntimeResume(
           conversation,
           op.model,
           op.reasoning_effort,
+          op.empty_checkpoint,
         ],
       );
       await createSqlData(tx)(caller).sandboxes.update(found.id, {
@@ -214,7 +226,7 @@ export function createRuntimeResume(
     const restore = {
       epoch: admitted.op.source_epoch,
       watermark: Number(admitted.op.watermark),
-      conversationId: conversation,
+      conversationId: admitted.op.empty_checkpoint ? null : conversation,
     };
     const agent = runtimeAgentFor(commands, caller.userId, found, {
       model: admitted.op.model,
@@ -265,7 +277,7 @@ export function createRuntimeResume(
           if (existing.state === "missing") {
             // Restored disk state carries revoked epoch authority. Reauthorize before
             // inference, never on a replay of an already dispatched prompt.
-            if (found.provider === "boat") await prepareGitHub?.(caller, found.id);
+            await prepareGitHub?.(caller, found.id);
             await prepareMcp?.(caller, found.id, signal);
           }
           const accepted = await agent.prompt(
@@ -280,7 +292,7 @@ export function createRuntimeResume(
             admitted.op.target_epoch,
           );
           if (accepted.conversationId !== conversation || !accepted.promptId)
-            throw new VaultError("conflict", "Runtime did not continue the restored conversation.");
+            throw new VaultError("conflict", "Runtime did not acknowledge the admitted conversation.");
           receipt = {
             id: found.id,
             requestId,
@@ -289,7 +301,11 @@ export function createRuntimeResume(
             status: accepted.status,
             resumed: true,
             runtime: { kind: "armada", epoch: admitted.op.target_epoch },
-            sourceCheckpoint: { epoch: restore.epoch, watermark: restore.watermark },
+            sourceCheckpoint: {
+              epoch: restore.epoch,
+              watermark: restore.watermark,
+              ...(admitted.op.empty_checkpoint ? { empty: true as const } : {}),
+            },
           };
           try {
             await store.recordTurnModel?.(found.id, accepted.promptId, admitted.op.model, pricingContext);
@@ -302,7 +318,7 @@ export function createRuntimeResume(
               status: "running",
               statusReason: null,
               taskPromptId: accepted.promptId,
-              conversationIds: admitted.current.conversationIds,
+              conversationIds: admitted.op.empty_checkpoint ? [conversation] : admitted.current.conversationIds,
             },
           };
         },
