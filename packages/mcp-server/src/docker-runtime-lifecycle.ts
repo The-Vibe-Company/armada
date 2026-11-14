@@ -1,14 +1,14 @@
 import type { AgentEvent, Sql } from "@armada/core";
-import { HARNESS_KINDS, PROMPT_STATUSES } from "@armada/core";
+import { HARNESS_KINDS, isRecord as object, PROMPT_STATUSES } from "@armada/core";
 import { decryptSecret } from "@armada/core/server";
 import { createSqlData } from "./data.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
+import { runtimeHealthMatches } from "./runtime-agent.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 
 type Actor = { userId: string; orgId: string };
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 const scopedSql = (tx: Sql): Sql => ({ query: tx.query.bind(tx), transaction: (work) => work(tx) });
 export class DockerRuntimeDenied extends Error {
   constructor() {
@@ -141,8 +141,7 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
           if (response.state === "pending") return { state: "pending" as const };
           if (response.state !== "finished") deny();
           const health = result(response.reply, queued.epoch, id);
-          if (health.generation !== queued.epoch || typeof health.ready !== "boolean") deny();
-          if (!health.ready) deny();
+          if (!runtimeHealthMatches(health, queued.epoch)) deny();
           const checkpoint = (
             await tx.query<{ epoch: string; watermark: string }>(
               "select epoch::text,watermark::text from public.runtime_checkpoints where sandbox_id=$1 and epoch=$2::bigint-1 and watermark is not null",
@@ -150,7 +149,6 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
             )
           ).rows[0];
           if (checkpoint) {
-            const restore = health.restoredFrom;
             const saved = (
               await tx.query<{ conversation_ids: string[] }>(
                 "select conversation_ids from public.sandboxes where id=$1",
@@ -158,11 +156,13 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
               )
             ).rows[0];
             if (
-              !object(restore) ||
-              restore.epoch !== checkpoint.epoch ||
-              restore.watermark !== Number(checkpoint.watermark) ||
+              !object(health.restoredFrom) ||
               saved?.conversation_ids.length !== 1 ||
-              restore.conversationId !== saved.conversation_ids[0]
+              !runtimeHealthMatches(health, queued.epoch, {
+                epoch: checkpoint.epoch,
+                watermark: Number(checkpoint.watermark),
+                conversationId: saved.conversation_ids[0] as string,
+              })
             )
               deny();
           }
