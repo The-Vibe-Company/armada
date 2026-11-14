@@ -183,7 +183,7 @@ export class GoldenCreateService {
       // repos use the caller's cached user token, which is never revoked or rotated here.
       await enter("checkout_credentials");
       issued =
-        this.deps.mint && installations.size === 1
+        this.deps.mint && installations.size === 1 && (repos[0]?.installationId ?? 0) > 0
           ? await this.deps.mint(
               repos[0]?.installationId ?? 0,
               repos.map((r) => r.id),
@@ -464,7 +464,7 @@ const CLEANUP_TRAP = [
   "  unset ARMADA_GIT_TOKEN",
   "  if declare -F normalize_armada_build_ownership >/dev/null; then normalize_armada_build_ownership; fi",
   "}",
-  "trap 'cleanup_armada_key' EXIT",
+  `trap 'armada_status=$?; if [ "$armada_status" -ne 0 ]; then printf "ARMADA_BUILD_FAILURE %s %s %s\\n" "\${armada_phase:-ssh}" "$armada_status" "\${armada_command:-0}" >&2; fi; cleanup_armada_key' EXIT`,
 ].join("\n");
 
 /**
@@ -581,13 +581,15 @@ export function goldenScript(
     CLEANUP_TRAP,
     ownershipSetup(repos),
     "armada_phase=checkout",
-    `trap 'armada_status=$?; printf "ARMADA_BUILD_FAILURE %s %s\\n" "$armada_phase" "$armada_status" >&2' ERR`,
+    "armada_command=0",
+    `trap 'armada_status=$?; printf "ARMADA_BUILD_FAILURE %s %s %s\\n" "$armada_phase" "$armada_status" "$armada_command" >&2' ERR`,
     // Keep credentials process-local.  The helper accepts only Git's HTTPS credential
     // protocol for github.com, and no global/system configuration can leak into a clone.
     goldenCheckoutScript(repos),
     baselineSetup(repos),
     "armada_phase=init",
-    ...setup,
+    ...setup.flatMap((command, index) => [`armada_command=${index + 1}`, command]),
+    "armada_command=0",
     "armada_phase=ownership",
     "normalize_armada_build_ownership",
     "armada_phase=credential_cleanup",

@@ -1,3 +1,4 @@
+import type { Visibility } from "./contract.ts";
 import type { GitHubInstallationApp, GitHubResolveDeps } from "./github.ts";
 import { resolveGitHubAccess } from "./github.ts";
 import type { GoldenActor, GoldenRecord } from "./golden.ts";
@@ -69,16 +70,33 @@ export interface GoldenCreateOptions {
  * App is configured; the pinned SSH stdin transport clones over it; a fail-closed secret scan runs
  * before the snapshot; and only a ready snapshot is persisted, with org/private row level security.
  */
-export function createGoldenCreateService(options: GoldenCreateOptions): GoldenCreateService {
-  const adapter = goldenGitHubAdapter({
+function githubAdapter(options: GoldenCreateOptions) {
+  return goldenGitHubAdapter({
     app: options.installationApp,
     ...(options.fetch ? { fetch: options.fetch } : {}),
     async accessToken(actor: GoldenActor) {
       const access = await resolveGitHubAccess({ ...options.github, caller: "golden_create" }, actor.userId);
-      if (access.status !== "connected") throw new GoldenError("forbidden", access.message);
+      if (access.status !== "connected") {
+        const message = "Your GitHub connection is unavailable. Connect GitHub in Settings, then rebuild.";
+        throw new GoldenError("forbidden", message, { safeMessage: message });
+      }
       return access.token;
     },
   });
+}
+
+/** Read-only authorization: no builder, reservation, or credential material is persisted. */
+export async function authorizeGoldenRepositories(
+  options: GoldenCreateOptions,
+  actor: GoldenActor,
+  visibility: Visibility,
+  requested: string[],
+): Promise<void> {
+  await githubAdapter(options).authorize(actor, visibility, requested);
+}
+
+export function createGoldenCreateService(options: GoldenCreateOptions): GoldenCreateService {
+  const adapter = githubAdapter(options);
   const slots: GoldenBackendSlot = options.backendSlot ?? sqlGoldenBackendSlots(options.sql);
   // Identity proof of a callback failure whose managed transaction has completed rollback.
   // A commit/transport error after a successful callback is deliberately never marked here.
@@ -490,7 +508,7 @@ export async function reserveGoldenBuild(
 }
 
 const BACKEND_CONFLICT_MESSAGE =
-  "Golden capacity or binding is unavailable or busy. Use an existing golden you can access, retry after any active build finishes, or ask an administrator to check the binding.";
+  "The backend did not confirm the golden reservation. Ask an administrator to check reservation recovery before retrying.";
 
 /** Match only errors owned by the slot protocol. Bun puts SQLSTATE in errno; pg/PGlite use code.
  * Do not classify arbitrary P0001 raises, unique violations, provider errors, or SQL outages. */

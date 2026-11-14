@@ -5,7 +5,8 @@ export interface GoldenBuildStatus {
   provider?: "boat" | "modal";
   state: "queued" | "running" | "recovery_required" | "succeeded" | "failed";
   phase: string;
-  failureReason?: "skillpack_integrity_failed" | "provider_payment_required" | "provider_snapshot_rejected" | null;
+  /** A closed reason code or a bounded diagnostic emitted by trusted build code, never upstream stderr. */
+  failureReason?: string | null;
   errorCode: "build_failed" | null;
   result: { name: string; visibility: "org" | "private"; snapshot: string; warnings?: GoldenBuildWarning[] } | null;
 }
@@ -18,11 +19,17 @@ export function providerPaymentRequiredMessage(provider?: "boat" | "modal"): str
 
 /** Recovery retains capacity, so never advise a retry until the build is failed. */
 export function goldenBuildFailureText(status: GoldenBuildStatus): string {
-  if (status.state === "recovery_required")
-    return "Recovery required; capacity is still held. Contact an operator or administrator to reconcile the original build before retrying.";
-  if (status.state === "failed" && status.failureReason === "provider_snapshot_rejected")
-    return "The provider rejected the saved snapshot request. Check saved-snapshot availability, billing and limits on the provider account, then retry. Contact an administrator if it persists.";
-  return status.state === "failed" && status.failureReason === "provider_payment_required"
-    ? providerPaymentRequiredMessage(status.provider)
-    : (status.failureReason ?? "build_failed");
+  const phase = `Build failed at ${status.phase}`;
+  let reason: string;
+  if (status.failureReason?.startsWith("detail:")) reason = status.failureReason.slice(7);
+  else if (status.failureReason === "provider_snapshot_rejected")
+    reason =
+      "The provider rejected the saved snapshot request. Check saved-snapshot availability, billing and limits on the provider account.";
+  else if (status.failureReason === "provider_payment_required") {
+    reason = providerPaymentRequiredMessage(status.provider);
+    if (status.state === "recovery_required") reason = reason.replace(", then retry.", ".");
+  } else if (status.failureReason === "skillpack_integrity_failed")
+    reason = "Skillpack integrity verification failed; rebuild only after the verified package is available.";
+  else reason = "The operation did not complete. Ask an administrator to inspect this build's status before retrying.";
+  return `${phase}: ${reason}${status.state === "recovery_required" ? " Recovery required; capacity is still held. Contact an operator or administrator to reconcile the original build before retrying." : ""}`;
 }

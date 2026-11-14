@@ -22,7 +22,13 @@ job is reported separately. A missing binding means the golden does not match
 the connected backend account; restore the original connection rather than
 creating or adopting a slot implicitly.
 
-After admission, status reports the build phase. Repository authorization uses
+Requested repository access is checked before admission, so a missing GitHub grant
+refuses the form immediately without reserving capacity. Execution rechecks access
+in case it was revoked while queued. After admission, status retains the build
+phase and a curated reason (for example, clone failure, init command index/exit
+code, or secret scan rejection), never raw command output.
+
+Repository authorization uses
 the caller's GitHub connection, not permission elevation through the GitHub App.
 Grant that caller read access to every requested repository. App installation
 coverage is also required where installation tokens are used for checkout.

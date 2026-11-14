@@ -699,6 +699,8 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
         }),
         signal: AbortSignal.timeout(10_000),
       });
+      if (!flag(args, "--json") && (job.state === "failed" || job.state === "recovery_required"))
+        io.err(`Build ${job.jobId}: ${goldenBuildFailureText(job)}\n`);
       io.out(JSON.stringify(job) + "\n");
       return job.state === "failed" || job.state === "recovery_required" ? 1 : 0;
     }

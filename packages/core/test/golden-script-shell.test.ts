@@ -179,7 +179,7 @@ printf 'installed\n' >> "${base}/receipt"
 function cleanupScript(): string {
   const prepared = withGoldenDirs([{ owner: "acme", repo: "web", id: 1, installationId: 2, branch: "main" }]);
   const script = goldenScript(prepared);
-  const trap = extract(script, "cleanup_armada_key()", "trap 'cleanup_armada_key' EXIT");
+  const trap = extract(script, "cleanup_armada_key()", "cleanup_armada_key' EXIT");
   return `set -euo pipefail\n${trap}\n`;
 }
 
