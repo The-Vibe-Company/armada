@@ -35,7 +35,7 @@ export function goldenGitHubAdapter(options: GoldenGitHubAdapterOptions): Pick<G
       for (const value of requested) {
         const { owner, repo } = requestedRepo(value);
         const repository = await userRepository(token, owner, repo, fetchImpl);
-        let installation = installationFor(repository, installations);
+        let installation = installationFor(repository, installations, options.app?.appId);
         if (!installation && repository.private) {
           throw repositoryAccessError(owner, repo);
         }
@@ -150,11 +150,14 @@ async function userRepository(
 function installationFor(
   repo: UserRepository,
   installations: readonly GitHubInstallation[],
+  signingAppId?: string,
 ): GitHubInstallation | undefined {
   // /repos/{owner}/{repo}/installation is intentionally not called: with a user token GitHub can
   // reveal an installation the caller cannot administer. Match only installations already listed to them.
   return installations.find(
-    (installation) => installation.accountLogin.toLowerCase() === repo.owner.login.toLowerCase(),
+    (installation) =>
+      installation.accountLogin.toLowerCase() === repo.owner.login.toLowerCase() &&
+      (signingAppId === undefined || String(installation.appId) === signingAppId),
   );
 }
 

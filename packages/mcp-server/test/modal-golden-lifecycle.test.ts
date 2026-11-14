@@ -214,8 +214,10 @@ test("secure Modal golden publishes a NULL master, restores from its own image, 
         return Response.json({
           access_token: "ghu-synthetic",
           refresh_token: "ghr-next",
-          expires_in: 3600,
-          refresh_token_expires_in: 7200,
+          // Golden checkout requires at least one hour remaining; use GitHub's
+          // normal eight-hour user-token lifetime, not the exact safety boundary.
+          expires_in: 28800,
+          refresh_token_expires_in: 31536000,
         });
       if (url === "https://api.github.com/user") return Response.json({ id: 7, login: "builder", name: null });
       if (url.includes("/user/installations"))

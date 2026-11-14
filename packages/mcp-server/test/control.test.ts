@@ -1264,6 +1264,12 @@ describe("control API", () => {
           }),
           options,
         );
+      // Names cannot be compared with the UUID-only token scope; give an actionable retry.
+      const named = await call({ org: "A" });
+      expect(named?.status).toBe(403);
+      expect(await named?.json()).toMatchObject({
+        error: { message: expect.stringContaining(`--org ${actualA}`) },
+      });
       expect((await call({ org: actualA }))?.status).toBe(200);
       expect((await call({ org: actualB }))?.status).toBe(403);
       expect((await call({ org: actualB }, "mcp/list"))?.status).toBe(403);

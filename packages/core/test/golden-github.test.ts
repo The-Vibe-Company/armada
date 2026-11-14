@@ -186,3 +186,28 @@ test.each([false, true])(
     expect(result.repos[0]?.installationId).toBe(hasApp ? 0 : 9);
   },
 );
+
+test("two Apps on the same org select only the configured signing App for a private repository", async () => {
+  const adapter = goldenGitHubAdapter({
+    app,
+    accessToken: async () => "caller-token",
+    fetch: (async (input: string | URL | Request) =>
+      String(input).includes("/user/installations")
+        ? Response.json({ installations: [{ ...installation(8), app_id: 99, app_slug: "other-app" }, installation(9)] })
+        : Response.json(repo())) as typeof fetch,
+  });
+  const authorized = await adapter.authorize(actor, "org", ["acme/web"]);
+  expect(authorized.repos[0]?.installationId).toBe(9);
+});
+
+test("a private repository under only another App cannot be minted with the configured signing key", async () => {
+  const adapter = goldenGitHubAdapter({
+    app,
+    accessToken: async () => "caller-token",
+    fetch: (async (input: string | URL | Request) =>
+      String(input).includes("/user/installations")
+        ? Response.json({ installations: [{ ...installation(8), app_id: 99, app_slug: "other-app" }] })
+        : Response.json(repo())) as typeof fetch,
+  });
+  await expect(adapter.authorize(actor, "org", ["acme/web"])).rejects.toThrow("grant the Armada GitHub App access");
+});

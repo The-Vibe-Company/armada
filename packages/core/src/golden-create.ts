@@ -75,7 +75,10 @@ function githubAdapter(options: GoldenCreateOptions) {
     app: options.installationApp,
     ...(options.fetch ? { fetch: options.fetch } : {}),
     async accessToken(actor: GoldenActor) {
-      const access = await resolveGitHubAccess({ ...options.github, caller: "golden_create" }, actor.userId);
+      const access = await resolveGitHubAccess(
+        { ...options.github, caller: "golden_create", minimumLifetimeMs: 3_600_000 },
+        actor.userId,
+      );
       if (access.status !== "connected") {
         const message = "Your GitHub connection is unavailable. Connect GitHub in Settings, then rebuild.";
         throw new GoldenError("forbidden", message, { safeMessage: message });

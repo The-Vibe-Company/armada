@@ -1252,6 +1252,23 @@ or refused dry-run fails the cell; only a coordinator execution is proof that
 the selected account/provider passes. Older scripts remain until their other
 checks (including real write/refresh lifecycle checks) are migrated.
 
+### Harness feature rows
+
+The `codex`, `claude-code` and `opencode` rows require a real launch followed by
+an answered, finished turn, not an advertised capability. They reuse each
+case's lifecycle sandbox and configured model account. `claude-code` maps to the
+wire harness `claude`; the other feature IDs match their harness IDs.
+
+Use `--parity --only docker --feature opencode` (or the other provider/harness)
+with an `ARMADA_SMOKE_CASES` case explicitly selecting that harness, compatible
+`modelAccountId` and model. A case configured for a different harness reports
+`not-run: harness_account_not_configured` without allocating compute; the probe
+never guesses an account or model. In a full parity run, only the configured
+harness is proved. To exercise multiple available accounts/harnesses, use the
+existing `--parity --accounts` matrix: each configured account case runs these
+same harness rows and cleanup. Missing account cells remain not-run. Boat stays
+outside staging acceptance; its coordinator-only production opt-in is unchanged.
+
 ### Cost classification in parity receipts
 
 `usage.cost.classification` separates the billing meaning from an optional USD
@@ -1266,3 +1283,42 @@ The historical `exact-cost` parity row now proves this classification before and
 after resume. It validates precise USD sums when quotes exist, explicit null USD
 and price reasons otherwise, and preserves the earlier per-turn quotes across
 resume. A subscription pass is labeled `included in subscription`, not zero USD.
+
+### Natural idle pause and ordinary-send wake
+
+`--parity --feature idle-pause` observes automatic `stopped` / `idle_paused`
+after a finished token-memory turn. `--feature wake-on-send` additionally sends
+an ordinary recall message (never a resume request), requires its exact final
+assistant answer, and checks the original conversation IDs and absolute expiry
+remain unchanged. Full runs reuse their existing provider sandbox and memory
+turn for both rows. Status reasons are canonical; the optional list-style
+`idlePaused` flag, when supplied, must agree.
+
+The runner reads `/healthz.idlePauseDelayMs`; it never guesses or changes the
+server delay. It allows that delay plus three minutes for the lifecycle sweep
+and checkpoint, within the run deadline and original sandbox expiry. Missing
+diagnostics or a delay longer than the remaining run budget is not-run, never
+a pass. These feature checks necessarily take the configured idle interval
+(ten minutes by default), unlike quick lifecycle cells. Reads do not replace
+natural idle with stop/resume. Cleanup still runs on every known allocation.
+
+This encodes the coordinator's #1562 pause/recall observation. It relies on the
+server's confirmed shutdown projection, not a host ACK; independent provider
+console/host observations remain the coordinator's physical-compute evidence.
+
+### Steer and interrupt parity
+
+`--parity --feature steer` and `--parity --feature interrupt` reuse the selected
+provider case's sandbox. The probe sends a controlled terminal-wait task and
+observes that exact prompt running before issuing the control once. Steer must
+produce its unique redirected final assistant answer and a finished event on
+the same run (the Boat steer-record ID is not assumed to be a run ID). Interrupt
+must produce an interrupted outcome for the original prompt; an acknowledgement
+alone, or ordinary completion, is not a pass. Tool-result echoes are not answers.
+
+Each control shares a 110-second observation/request budget, with no mutation
+retries. Cleanup remains independent. Advertised unsupported controls remain
+visible debt. Full runs place these controls after resume/usage observations so
+the deliberately interrupted task does not contaminate their cost evidence;
+there are no extra sandbox allocations. These are coordinator/provider probes,
+not unit-test sleeps or CI provider calls.

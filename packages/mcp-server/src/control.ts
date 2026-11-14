@@ -9,7 +9,6 @@ import {
   createSqlAuthStore,
   exchangeSupabaseCode,
   listServiceTokens,
-  readBoundedText,
   refreshSupabaseSession,
   revokeServiceToken,
   type Session,
@@ -38,6 +37,7 @@ import {
 } from "@armada/core";
 import {
   type ApplicationVault,
+  addGoldenRepositories,
   addMember,
   assertGoldenMutation,
   connectGolden,
@@ -112,6 +112,7 @@ import { apiFailureCode, providerFailureResponse } from "./api-failure.ts";
 import { validateAzureModelAccount } from "./azure-model-account.ts";
 import { AuthUnavailable, authenticateCaller, type Caller, type SupabaseProject } from "./caller.ts";
 import { databasePoolMax } from "./config.ts";
+import { readBody, readVaultBody } from "./control-body.ts";
 import { type CredentialBindingRecovery, createCredentialBindingRecovery } from "./credential-binding-recovery.ts";
 import { createSqlData, type DataSource, type ScopedData } from "./data.ts";
 import type { GitHubAccountApi } from "./github-account.ts";
@@ -148,7 +149,6 @@ import { createSubscriptionMigration } from "./subscription-migration.ts";
 import { callSharedTool, ToolApiError } from "./tool-api.ts";
 
 export const CONTROL_PREFIX = "/api/v1/";
-const MAX_BODY_BYTES = 128 * 1024;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface ControlOptions {
@@ -352,7 +352,7 @@ export async function handleControlRequest(request: Request, options: ControlOpt
     if (result === undefined) return fail(404, "unknown_route", "Unknown route.");
     return Response.json(result, {
       status:
-        (route === "golden/create" || route === "golden/update") &&
+        (route === "golden/create" || route === "golden/update" || route === "golden/update-add-repos") &&
         typeof result === "object" &&
         result !== null &&
         "jobId" in result
@@ -1403,6 +1403,8 @@ async function dispatch(
       return createGoldenRoute(options, caller, body);
     case "golden/update":
       return updateGoldenRoute(options, caller, body);
+    case "golden/update-add-repos":
+      return updateGoldenRoute(options, caller, body, true);
     case "golden/snapshot":
       return snapshotGoldenRoute(options, caller, body);
     case "golden/connect":
@@ -1485,7 +1487,12 @@ async function createGoldenRoute(options: ControlOptions, caller: Caller, body: 
 }
 
 /** Rebuild an existing visible golden in place. The row, owner and visibility come from storage, never the body. */
-async function updateGoldenRoute(options: ControlOptions, caller: Caller, body: Record<string, unknown>) {
+async function updateGoldenRoute(
+  options: ControlOptions,
+  caller: Caller,
+  body: Record<string, unknown>,
+  additive = false,
+) {
   if (!options.goldenBuilds || (!options.providers && !options.providerFor) || !options.data)
     throw new VaultError("unavailable", "Secure golden creation is not configured on this server.");
   required(body, "idempotencyKey");
@@ -1496,8 +1503,22 @@ async function updateGoldenRoute(options: ControlOptions, caller: Caller, body: 
   if (!existingGolden) throw new GoldenError("not_found", `No golden named '${name}'.`);
   const actor: GoldenActor = { userId: caller.userId, orgId: org.id, role: org.role };
   assertGoldenMutation(actor, existingGolden);
-  if (body.config === undefined) throw new VaultError("invalid", "config is required.");
-  const config = normalizeGitHubGoldenConfig(parseGoldenConfig(body.config));
+  if (additive && (body.config !== undefined || body.setup !== undefined))
+    throw new VaultError(
+      "invalid",
+      "--add-repo cannot replace config or setup. Use --config with the complete desired configuration for replacement.",
+    );
+  if (!additive && body.addRepos !== undefined)
+    throw new VaultError(
+      "invalid",
+      "Additive repository updates require the golden/update-add-repos route. Upgrade the CLI; do not retry as a replacement.",
+    );
+  if (!additive && body.config === undefined) throw new VaultError("invalid", "config is required.");
+  if (additive && (!Array.isArray(body.addRepos) || !body.addRepos.every((repo) => typeof repo === "string")))
+    throw new VaultError("invalid", "addRepos must be a non-empty list of repository URLs.");
+  const config = normalizeGitHubGoldenConfig(
+    additive ? addGoldenRepositories(existingGolden.config, body.addRepos as string[]) : parseGoldenConfig(body.config),
+  );
   const provider = await providerForGolden(options, caller, existingGolden);
   return options.goldenBuilds.admit(
     provider,
@@ -1926,13 +1947,12 @@ function scopedOrg(caller: Caller, requested: string | undefined): string | unde
   const orgId = caller.orgs[0]?.orgId;
   if (!orgId) throw new Unauthorized("Run armada login.");
   if (requested !== undefined && requested.trim() !== "" && requested.trim().toLowerCase() !== orgId) {
-    throw new VaultError("forbidden", "This token is scoped to another org.");
+    throw new VaultError(
+      "forbidden",
+      `This token is scoped to org ${orgId}. Retry with --org ${orgId} (the UUID, not its name).`,
+    );
   }
   return orgId;
-}
-
-async function readBody(request: Request): Promise<Record<string, unknown>> {
-  return readJsonBody(request, false);
 }
 
 function optional(body: Record<string, unknown>, key: string): string | undefined {
@@ -2216,49 +2236,4 @@ async function selectedCaller(options: ControlOptions, caller: Caller, ref: stri
   if (ref === undefined) return caller;
   const org = await resolveOrg(options.store, caller.userId, scopedOrg(caller, ref));
   return { ...caller, orgs: caller.orgs.filter((item) => item.orgId === org.id) };
-}
-
-/** Both policies count bytes before decoding; vault bodies additionally require valid UTF-8. */
-async function readVaultBody(request: Request): Promise<Record<string, unknown>> {
-  return readJsonBody(request, true);
-}
-
-async function readJsonBody(request: Request, vault: boolean): Promise<Record<string, unknown>> {
-  const invalid = (message: string) =>
-    new VaultError("invalid", vault ? "Invalid application vault request." : message);
-  const reader = vault ? request.body?.getReader() : undefined;
-  const decoder = new TextDecoder("utf-8", { fatal: vault });
-  let text = vault ? "" : await readBoundedText(request, MAX_BODY_BYTES),
-    bytes = 0;
-  try {
-    if (reader) {
-      while (true) {
-        const chunk = await reader.read();
-        if (chunk.done) break;
-        bytes += chunk.value.byteLength;
-        if (bytes > (vault ? 64 * 1024 : MAX_BODY_BYTES)) {
-          // Do not drain an untrusted stream, or wait for its producer to finish cancellation.
-          void reader.cancel().catch(() => {});
-          throw invalid("The request is too large.");
-        }
-        text += decoder.decode(chunk.value, { stream: true });
-      }
-      text += decoder.decode();
-    }
-    if (!vault && text.trim() === "") return {};
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      throw invalid("The request is not JSON.");
-    }
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-      throw invalid("The request is not a JSON object.");
-    return parsed as Record<string, unknown>;
-  } catch (error) {
-    if (vault) throw invalid("");
-    throw error;
-  } finally {
-    reader?.releaseLock();
-  }
 }

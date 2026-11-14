@@ -42,7 +42,7 @@ export async function mintInstallationToken(
     response = await (options.fetch ?? fetch)(`${API}/app/installations/${installationId}/access_tokens`, {
       method: "POST",
       headers: { accept: "application/vnd.github+json", authorization: `Bearer ${jwt}`, "user-agent": "armada" },
-      body: JSON.stringify({ repository_ids: repositoryIds }),
+      body: JSON.stringify({ repository_ids: repositoryIds, permissions: { contents: "read" } }),
       signal: AbortSignal.timeout(TIMEOUT),
     });
   } catch (cause) {
