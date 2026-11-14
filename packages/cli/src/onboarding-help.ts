@@ -1,5 +1,30 @@
 // Exact command boundaries only: never interpret payload or remote arguments as help.
 const HELP: Record<string, string> = {
+  "org list": `Usage: armada org list [--json]
+List your organizations after Armada login, including their IDs and your roles.
+Use an exact organization name or UUID with armada org use.
+Example: armada org list --json
+`,
+  "org use": `Usage: armada org use <name|UUID|none>
+Save a default organization for this Armada server in local preferences.
+Selecting a name or UUID requires login and an exact, unambiguous organization match.
+Use none to clear the saved selection locally; this does not delete an organization.
+For commands that use the saved default, an explicit --org overrides it.
+Example: armada org use my-team
+Example: armada org use none
+`,
+  "org current": `Usage: armada org current
+Read the saved local organization selection for this Armada server, without a server request.
+Output is JSON: org is the saved UUID, or null when no selection is saved.
+This does not check current membership or access.
+Example: armada org current
+`,
+  "org create": `Usage: armada org create <name> [--json]
+Create an organization after Armada login; you become its admin.
+Next, configure its provider with armada org connect boat|modal --org <id>.
+Supply provider credentials through stdin/hidden input or a private file, never arguments.
+Example: armada org create my-team --json
+`,
   "org setup": `Usage: armada org setup [--org <name>]
 Show organization provider setup status. Sign in before running the operation.
 Example: armada org setup --org my-team
