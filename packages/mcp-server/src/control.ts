@@ -52,6 +52,7 @@ import { optional, required, requiredNumber, UUID } from "./control-input.ts";
 import { readLogs } from "./control-logs.ts";
 import { fail } from "./control-response.ts";
 import type { CredentialBindingRecovery } from "./credential-binding-recovery.ts";
+import { listControlCredentials } from "./credential-list.ts";
 import type { DataSource } from "./data.ts";
 import type { GitHubAccountApi } from "./github-account.ts";
 import {
@@ -716,7 +717,7 @@ async function dispatch(
       );
       return { ok: true };
     case "creds/list":
-      return listCredentials(store, userId, org);
+      return listControlCredentials(store, userId, org);
     case "creds/accounts/models": {
       // The declared models of visible custom connections (#1483): decrypted here, never the key or the address.
       const member = await resolveOrg(store, userId, org);
