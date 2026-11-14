@@ -139,7 +139,9 @@ import type { RuntimeFollowup } from "./runtime-followup.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
 import type { RuntimeResume } from "./runtime-resume.ts";
+import { createSandboxAccountChange } from "./sandbox-account-change.ts";
 import { type createSandboxArmadaAccess, parseSandboxArmadaAccess } from "./sandbox-armada-access.ts";
+import { createSandboxBillingAccount } from "./sandbox-billing-account.ts";
 import { bunSql } from "./sql.ts";
 import { createSubscriptionMigration } from "./subscription-migration.ts";
 import { callSharedTool, ToolApiError } from "./tool-api.ts";
@@ -149,6 +151,10 @@ const MAX_BODY_BYTES = 128 * 1024;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface ControlOptions {
+  sandboxBillingAccount?: (
+    caller: Caller,
+    id: string,
+  ) => Promise<import("./sandbox-billing-account.ts").SandboxBillingAccount | null>;
   dockerLaunch?: import("./docker-normal-launch.ts").DockerNormalLaunch;
   /** Listener-local keepalive for the bounded synchronous Docker launch pipeline. */
   configureDockerLaunchRequest?: (request: Request) => void;
@@ -232,6 +238,7 @@ const STATUS: Record<VaultErrorCode, number> = {
   credential_busy: 409,
   credential_binding_required: 409,
   credential_binding_unsafe: 409,
+  credential_binding_unsupported: 409,
   invalid: 400,
   forbidden: 403,
   not_found: 404,
@@ -958,10 +965,13 @@ async function dispatch(
     )
       throw new VaultError("forbidden", "You are not a member of this org.");
     const scopedCaller = await selectedCaller(options, caller, optional(body, "org"));
-    return callSharedTool(
+    const result = await callSharedTool(
       {
         ...(options.goldenAdoption ? { goldenAdoption: options.goldenAdoption } : {}),
         caller: scopedCaller,
+        ...(options.sandboxBillingAccount
+          ? { sandboxBillingAccount: (id: string) => options.sandboxBillingAccount!(scopedCaller, id) }
+          : {}),
         ...(options.dockerControls ? { dockerControls: options.dockerControls } : {}),
         ...(options.runtimeSend ? { runtimeSend: options.runtimeSend } : {}),
         ...(options.runtimeCheckpoint ? { runtimeCheckpoint: options.runtimeCheckpoint } : {}),
@@ -1005,6 +1015,7 @@ async function dispatch(
       toolName,
       body,
     );
+    return result;
   }
   const { store, encryptionKey } = options;
   const userId = caller.userId;
@@ -1137,12 +1148,33 @@ async function dispatch(
     case "sandbox/bind-credential":
       if (!options.credentialBindingRecovery)
         throw new VaultError("unavailable", "Binding recovery is not configured.");
-      return options.credentialBindingRecovery(caller, {
-        id: required(body, "id"),
-        credentialId: required(body, "credentialId"),
-        // An org name or ID, resolved against fresh memberships like every other sandbox route.
-        ...(org ? { org: (await resolveOrg(store, userId, org)).id } : {}),
-      });
+      return options.credentialBindingRecovery(
+        caller,
+        {
+          id: required(body, "id"),
+          credentialId: required(body, "credentialId"),
+          // An org name or ID, resolved against fresh memberships like every other sandbox route.
+          ...(org ? { org: (await resolveOrg(store, userId, org)).id } : {}),
+        },
+        async (id, sandboxOrg) => {
+          const stopped = await dispatch(
+            "sandbox/stop",
+            caller,
+            { id, org: sandboxOrg, only_if_idle: true, request_id: crypto.randomUUID() },
+            options,
+          );
+          if (!stopped || typeof stopped !== "object" || !("status" in stopped) || stopped.status !== "stopped")
+            throw new VaultError(
+              "credential_binding_unsafe",
+              "Stop is still pending; wait for stopped and retry. The account is unchanged.",
+            );
+          if ("preservationNote" in stopped && stopped.preservationNote === "checkpoint_failed_disk_not_retained")
+            throw new VaultError(
+              "credential_binding_unsafe",
+              "Checkpointing failed and retained compute cannot resume. The account is unchanged; inspect preserved work.",
+            );
+        },
+      );
     case "golden/size-policy": {
       if (!options.data) throw new VaultError("unavailable", "Golden policies are not configured.");
       const data = options.data(caller);
@@ -2008,7 +2040,12 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
     );
   return {
     ...(env.ARMADA_PUBLIC_URL ? { publicUrl: env.ARMADA_PUBLIC_URL } : {}),
-    credentialBindingRecovery: createCredentialBindingRecovery(sql, encryptionKey),
+    sandboxBillingAccount: createSandboxBillingAccount(sql),
+    credentialBindingRecovery: createSandboxAccountChange(
+      sql,
+      launchCredentials(store, encryptionKey, undefined, modelAuth),
+      createCredentialBindingRecovery(sql, encryptionKey),
+    ),
     invitations: invitationsFromEnv(sql, env),
     templates,
     skillDefaults: createSkillDefaultsService(sql),

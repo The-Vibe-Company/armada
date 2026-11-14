@@ -15,7 +15,7 @@ import { createSqlData } from "./data.ts";
 import { matchesDockerLaunchRequestHash } from "./docker-launch-identity.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import type { Route } from "./http.ts";
-import { createRuntimeAgent } from "./runtime-agent.ts";
+import { runtimeAgentFor } from "./runtime-agent.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 
@@ -283,13 +283,11 @@ export function createRuntimeGitHub(options: {
     ).rows;
     const retired = await Promise.all(history.map((row) => decryptSecret(row.token_enc, key)));
     if (!s.model || !s.reasoningEffort) return denied();
-    const agent = createRuntimeAgent(options.commands, {
-      harness: s.harness,
-      ownerId: s.ownerId,
-      sandboxId: id,
-      providerSandboxId: s.providerSandboxId,
-      cwd: s.repositoryDir ? `/home/user/${s.repositoryDir}` : "/home/user",
-      defaults: { model: s.model, reasoningEffort: s.reasoningEffort },
+    // Preserve the caller's logical request id, rather than replacing it with a normalized row id.
+    const boundSandbox = { ...s, id };
+    const agent = runtimeAgentFor(options.commands, s.ownerId, boundSandbox, {
+      model: s.model,
+      reasoningEffort: s.reasoningEffort,
     });
     try {
       await agent.configureGitHub(

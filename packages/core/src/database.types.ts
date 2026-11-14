@@ -3665,6 +3665,7 @@ export type Database = {
           configuration_enc: string | null;
           runtime_hash: string | null;
           docker_issuer_fence: string | null;
+          pricing_context: Json | null;
         };
         Insert: {
           sandbox_id: string;
@@ -3675,6 +3676,7 @@ export type Database = {
           configuration_enc?: string | null;
           runtime_hash?: string | null;
           docker_issuer_fence?: string | null;
+          pricing_context?: Json | null;
         };
         Update: {
           sandbox_id?: string;
@@ -3685,6 +3687,7 @@ export type Database = {
           configuration_enc?: string | null;
           runtime_hash?: string | null;
           docker_issuer_fence?: string | null;
+          pricing_context?: Json | null;
         };
         Relationships: [
           {
@@ -3828,24 +3831,59 @@ export type Database = {
           },
         ];
       };
+      sandbox_account_usage_pricing: {
+        Row: {
+          sandbox_id: string;
+          credential_id: string;
+          credential_version: number;
+          context: Json;
+          created_at: string;
+        };
+        Insert: {
+          sandbox_id: string;
+          credential_id: string;
+          credential_version: number;
+          context: Json;
+          created_at?: string;
+        };
+        Update: {
+          sandbox_id?: string;
+          credential_id?: string;
+          credential_version?: number;
+          context?: Json;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "sandbox_account_usage_pricing_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: false;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       sandbox_turn_models: {
         Row: {
           sandbox_id: string;
           prompt_id: string;
           requested_model: string | null;
           evidence: Json | null;
+          pricing_context: Json | null;
         };
         Insert: {
           sandbox_id: string;
           prompt_id: string;
           requested_model?: string | null;
           evidence?: Json | null;
+          pricing_context?: Json | null;
         };
         Update: {
           sandbox_id?: string;
           prompt_id?: string;
           requested_model?: string | null;
           evidence?: Json | null;
+          pricing_context?: Json | null;
         };
         Relationships: [
           {
@@ -4376,6 +4414,7 @@ export type RuntimeEnrolmentRow = Database["public"]["Tables"]["runtime_enrolmen
 export type RuntimeEventRow = Database["public"]["Tables"]["runtime_events"]["Row"];
 export type RuntimeGitHubCapabilityRow = Database["public"]["Tables"]["runtime_github_capabilities"]["Row"];
 export type RuntimeResumeRow = Database["public"]["Tables"]["runtime_resumes"]["Row"];
+export type SandboxAccountUsagePricingRow = Database["public"]["Tables"]["sandbox_account_usage_pricing"]["Row"];
 export type SandboxTurnModelRow = Database["public"]["Tables"]["sandbox_turn_models"]["Row"];
 export type SandboxUsagePricingRow = Database["public"]["Tables"]["sandbox_usage_pricing"]["Row"];
 export type SandboxWorkRecovery = Database["public"]["Tables"]["sandbox_work_recovery"]["Row"];

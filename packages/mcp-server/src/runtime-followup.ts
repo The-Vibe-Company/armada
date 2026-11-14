@@ -2,7 +2,7 @@ import { ProviderError, type Sql, sandboxActivity, VaultError } from "@armada/co
 import type { Caller } from "./caller.ts";
 import { createSqlData } from "./data.ts";
 import { lockRuntimeAccount } from "./runtime-account-admission.ts";
-import { createRuntimeAgent } from "./runtime-agent.ts";
+import { runtimeAgentFor } from "./runtime-agent.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
@@ -98,13 +98,9 @@ export function createRuntimeFollowup(
     if (!found.conversationIds.includes(conversation) && !idleFirst)
       throw new VaultError("invalid", "Continue an existing runtime conversation.");
     const commandId = `follow_${requestId}`;
-    const agent = createRuntimeAgent(commands, {
-      harness: found.harness,
-      ownerId: caller.userId,
-      sandboxId: found.id,
-      providerSandboxId: found.providerSandboxId,
-      cwd: found.repositoryDir ? `/home/user/${found.repositoryDir}` : "/home/user",
-      defaults: { model: found.model, reasoningEffort: found.reasoningEffort },
+    const agent = runtimeAgentFor(commands, caller.userId, found, {
+      model: found.model,
+      reasoningEffort: found.reasoningEffort,
     });
     // Read-only probe before admission. Runner still owns the final busy check.
     const previous = await commands.result(caller.userId, found.id, commandId);
@@ -193,6 +189,7 @@ export function createRuntimeFollowup(
         return { current: active, epoch: scope.epoch, replay: false };
       });
     });
+    const pricingContext = await store.captureUsagePricingContext?.(found.id);
     const submit = (signal?: AbortSignal) =>
       agent.prompt(
         {
@@ -230,7 +227,7 @@ export function createRuntimeFollowup(
         if (existing.state === "missing") await prepareMcp?.(caller, found.id, signal);
         const accepted = await submit(signal);
         try {
-          await store.recordTurnModel?.(found.id, accepted.promptId, found.model);
+          await store.recordTurnModel?.(found.id, accepted.promptId, found.model, pricingContext);
         } catch {
           /* Accepted work continues. */
         }

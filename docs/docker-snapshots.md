@@ -1,7 +1,8 @@
 # Host-local snapshots
 
 Docker snapshots are built FROM core’s release-aware official Armada image
-(`officialSandboxImage()`; the pinned core default for source deployments today).
+(`officialSandboxImage()`; source deployments use the immutable published
+Armada toolchain baseline, not the dependency-free operator preview fixture).
 The caller cannot select or change this base. Its exact image reference and
 Armada version are frozen at admission; the version appears in dashboard and CLI
 lists and in the product-written build receipt. Existing pre-version snapshots
@@ -206,8 +207,8 @@ Sign in as that same person against the same Armada server, then run
 `armada github status` to inspect connection state and installations;
 `armada github connect`, `reconnect`, `install`, and `manage INSTALLATION_ID`
 provide the corresponding repair flows. Status is not a per-repository access
-probe, and `armada doctor` currently checks neither GitHub connection nor repo
-access. Account-management commands require a personal login, not a service
+probe, and `armada doctor` reports the connection and installation scope, but does not
+probe access to a particular repository. Account-management commands require a personal login, not a service
 bearer. `armada github refresh SANDBOX_ID` configures an existing sandbox; it is
 not a read-only access check.
 
@@ -215,3 +216,11 @@ A repository-authorization failure and an unacknowledged runtime GitHub setup ar
 distinct. The latter reports a runtime/host delivery problem rather than telling
 the user to reconnect GitHub; a duration or generic error alone cannot establish
 that the stored GitHub grant is missing.
+
+Source deployments require the same GitHub toolchain as published releases:
+`git`, `gh` and `python3`. A missing release pin selects the immutable published
+2.29.0 sandbox image as a toolchain baseline. Runtime and harness selection still
+uses verified artifacts from the current server; the baseline is not a version
+alias. The legacy `DOCKER_DEFAULT_IMAGE` remains available for explicit operator
+preview APIs only. A normal launch's GitHub delivery diagnostic names the
+`configureGitHub` step; it is not evidence of a missing user grant.

@@ -3,7 +3,6 @@ import { createHash, randomUUID } from "node:crypto";
 import { createSqlAuthStore } from "@armada/auth";
 import {
   type AgentEvent,
-  DOCKER_DEFAULT_IMAGE,
   DOCKER_IMAGE_UNAVAILABLE_MESSAGE,
   DOCKER_LAUNCH_FAILURE_MESSAGES,
   type DockerLaunchResult,
@@ -587,7 +586,7 @@ test("prompt-free, image-free launch normalizes UUIDs, uses the default image, h
     conversationIds: [],
     credentialVersion: 2,
     requestedTtlSeconds: 3600,
-    image: DOCKER_DEFAULT_IMAGE,
+    image: officialSandboxImage(),
   });
   expect(result.ttlSeconds).toBe(3600);
   expect(result.promptId).toBeUndefined();

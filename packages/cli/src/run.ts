@@ -96,7 +96,7 @@ Usage:
   armada host revoke UUID [--org UUID]
   armada launch [prompt] --provider docker [--host UUID|NAME | --golden snapshot-UUID] --agent claude|codex|opencode [--credential-id UUID] --org UUID [--repo owner/repo[@branch] ...] [--variable KEY:UUID:VERSION ...] [--secret KEY:UUID:VERSION ...] [--request-id UUID] [--json]
                                            Docker launch through the normal Armada API using the official Armada environment.
-  armada doctor [--org UUID] [--json]      Check session, server, hosts and model accounts
+  armada doctor [--org UUID] [--json]      Check session, server, GitHub, hosts and model accounts
   armada completion bash|zsh|fish           Print a shell completion script
   armada --version                         Print the version
   armada --help                            Show this help

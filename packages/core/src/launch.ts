@@ -677,7 +677,12 @@ export async function launchSandbox(
         },
       );
       try {
-        await stores.sandboxes.recordTurnModel?.(record.id, receipt.promptId, choice.model);
+        await stores.sandboxes.recordTurnModel?.(
+          record.id,
+          receipt.promptId,
+          choice.model,
+          credentials.usagePricing ?? null,
+        );
       } catch {
         try {
           console.error("armada: turn model request record unavailable; accepted prompt continues.");

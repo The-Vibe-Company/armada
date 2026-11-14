@@ -39,7 +39,7 @@ export function needsAccountChoice(sandbox: RecoverySandbox): boolean {
  * one cannot be stopped and is never bound, so it is not offered a choice at all.
  */
 export function bindableStatus(status: SandboxStatus): "ready" | "stop-first" | "wait" | "failed" {
-  if (status === "stopped") return "ready";
+  if (status === "stopped" || status === "ready") return "ready";
   if (status === "stopping") return "wait";
   if (status === "failed") return "failed";
   return "stop-first";
@@ -66,10 +66,12 @@ export function compatibleAccounts(list: unknown, harness: Harness, orgId: strin
 /** A refused bind, in plain words, by the typed failure the server answers with. */
 export function bindFailure(code: string | undefined, message: string): string {
   switch (code) {
+    case "credential_binding_unsupported":
+      return "This native Boat sandbox cannot refresh accounts safely yet. Launch a new sandbox with the chosen account; existing work is unchanged (tracked by #1579).";
     case "credential_binding_unsafe":
-      return "The sandbox is not safely stopped yet. Stop it, wait until it shows stopped, then try again.";
+      return "Wait for the turn or lifecycle operation to finish and check retained-work warnings before retrying. The account was not changed.";
     case "conflict":
-      return "This sandbox already has an account, or that account just changed. Reload to see it.";
+      return "The sandbox or account changed while you were choosing. Reload and try again.";
     case "forbidden":
     case "not_found":
       return "Only the sandbox's owner, still a member of its org, can choose its account.";

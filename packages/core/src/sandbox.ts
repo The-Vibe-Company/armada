@@ -97,7 +97,13 @@ export interface SandboxPatch {
 export interface SandboxStore {
   /** Service-only, first-write-wins session pricing admission. Legacy stores omit it and remain unpriced. */
   recordUsagePricingContext?(id: string, context: UsagePricingContext): Promise<void>;
-  recordTurnModel?(id: string, promptId: string, requestedModel: string | null): Promise<void>;
+  captureUsagePricingContext?(id: string): Promise<unknown>;
+  recordTurnModel?(
+    id: string,
+    promptId: string,
+    requestedModel: string | null,
+    pricingContext?: unknown,
+  ): Promise<void>;
   readTurnModel?(id: string, promptId: string): Promise<{ requestedModel: string | null; evidence: unknown } | null>;
   recordTurnModelEvidence?(id: string, promptId: string, evidence: unknown): Promise<void>;
   recordSkills?(id: string, skills: SkillReceipt[]): Promise<void>;
@@ -347,7 +353,26 @@ function decodeLifecycleGeneration(value: SandboxRow["lifecycle_generation"]): n
 
 function sqlTurnModelStore(
   sql: Sql,
-): Pick<SandboxStore, "recordTurnModel" | "readTurnModel" | "recordTurnModelEvidence" | "recordUsagePricingContext"> {
+): Pick<
+  SandboxStore,
+  | "recordTurnModel"
+  | "readTurnModel"
+  | "recordTurnModelEvidence"
+  | "recordUsagePricingContext"
+  | "captureUsagePricingContext"
+> {
+  async function captureUsagePricingContext(id: string) {
+    const result = await sql.query<{ context: unknown }>(
+      `select coalesce(
+          (select context from public.sandbox_account_usage_pricing a where a.sandbox_id=s.id
+            and a.credential_id=s.credential_id and a.credential_version=s.credential_version),
+          case when not exists(select 1 from public.sandbox_account_usage_pricing a where a.sandbox_id=s.id)
+            then (select context from public.sandbox_usage_pricing p where p.sandbox_id=s.id) end,
+          'null'::jsonb) as context from public.sandboxes s where s.id=$1::uuid`,
+      [id],
+    );
+    return result.rows[0]?.context ?? null;
+  }
   return {
     async recordUsagePricingContext(id, context) {
       await sql.query(
@@ -356,11 +381,13 @@ function sqlTurnModelStore(
         [id, JSON.stringify(context)],
       );
     },
-    async recordTurnModel(id, promptId, requestedModel) {
+    captureUsagePricingContext,
+    async recordTurnModel(id, promptId, requestedModel, pricingContext) {
+      const captured = pricingContext === undefined ? await captureUsagePricingContext(id) : pricingContext;
       await sql.query(
-        `insert into public.sandbox_turn_models(sandbox_id,prompt_id,requested_model)
-        values($1::uuid,$2,$3) on conflict do nothing`,
-        [id, promptId, requestedModel],
+        `insert into public.sandbox_turn_models(sandbox_id,prompt_id,requested_model,pricing_context)
+         values($1::uuid,$2,$3,$4::jsonb) on conflict do nothing`,
+        [id, promptId, requestedModel, JSON.stringify(captured)],
       );
     },
     async readTurnModel(id, promptId) {
