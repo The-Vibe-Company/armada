@@ -1436,6 +1436,8 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
             ),
           )
         ).usagePricing ?? null;
+    if (data.sandboxes.captureUsagePricingContext)
+      pricingContext = await data.sandboxes.captureUsagePricingContext(found.id);
     const stored =
       found.model !== null && found.reasoningEffort !== null
         ? { model: found.model, reasoningEffort: found.reasoningEffort }

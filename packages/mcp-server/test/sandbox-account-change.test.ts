@@ -147,3 +147,16 @@ test("an incompatible OpenCode plan key is refused before stopping a custom-conn
   expect(f.stopped()).toBe(0);
   expect(f.writes).toHaveLength(0);
 });
+
+test("a missing provider receipt is a state refusal, not a hidden sandbox error after ownership is established", async () => {
+  const f = fixture("ready");
+  await expect(
+    f.bind(f.caller, { id: f.row.id, credentialId: f.selected }, async () => {
+      throw Object.assign(new Error("synthetic private provider detail"), { code: "not_found" });
+    }),
+  ).rejects.toMatchObject({
+    code: "credential_binding_unsafe",
+    message: expect.stringContaining("account is unchanged"),
+  });
+  expect(f.writes).toHaveLength(0);
+});

@@ -68,11 +68,25 @@ export function createSandboxAccountChange(
       throw new VaultError("invalid", "Sandbox and account IDs must be UUIDs.");
     if (!transaction) throw new VaultError("unavailable", "Account changes require a transaction.");
     const before = await target(sql, caller, input.id);
+    const stopOwnedIdle = async () => {
+      if (!quiesce)
+        throw new VaultError("credential_binding_unsafe", "Stop the sandbox safely before changing its account.");
+      try {
+        await quiesce(before.id, before.org_id);
+      } catch (error) {
+        if (error && typeof error === "object" && "code" in error && error.code === "not_found")
+          throw new VaultError(
+            "credential_binding_unsafe",
+            "This owned sandbox's provider state could not be confirmed. Inspect its status before retrying; the account is unchanged.",
+          );
+        throw error;
+      }
+    };
     if (input.org && input.org !== before.org_id)
       throw new VaultError("forbidden", "Choose the organization that owns this sandbox.");
     // Preserve the stricter physical-evidence recovery policy for pre-account native Modal machines.
     if (before.provider === "modal" && before.credential_id === null && before.runtime_transport !== "dialout") {
-      if (before.status === "ready" && quiesce) await quiesce(before.id, before.org_id);
+      if (before.status === "ready" && quiesce) await stopOwnedIdle();
       return legacy(caller, input);
     }
     const actor = { userId: caller.userId, orgId: before.org_id, role: "member" as const };
@@ -100,11 +114,7 @@ export function createSandboxAccountChange(
         resolved.usagePricing.credentialVersion !== pin.credentialVersion)
     )
       throw new VaultError("unavailable", "The selected account's pricing identity is inconsistent.");
-    if (before.status === "ready") {
-      if (!quiesce)
-        throw new VaultError("credential_binding_unsafe", "Stop the sandbox safely before changing its account.");
-      await quiesce(before.id, before.org_id);
-    }
+    if (before.status === "ready") await stopOwnedIdle();
     await credentials.admit?.(actor, resolved, before.id);
     return transaction(async (tx) => {
       // Follow the member -> account -> sandbox lock order used by turn admission.
