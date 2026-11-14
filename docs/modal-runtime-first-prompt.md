@@ -434,8 +434,8 @@ sessions, not its credential cache/database.
 This slice admits normal frozen configuration, GitHub/MCP delivery and runtime
 controls for OpenCode through existing shared services. It does **not** claim
 live tool-bearing parity. The native shell-proof extension below supports
-`--github` and `--variables`; `--mcp` remains rejected before allocation pending
-an MCP-specific provenance oracle. ACP titles/results must not be mistaken for
+`--github` and `--variables`; the native MCP extension below adds inventory-checked
+`--mcp` proof. ACP titles/results must not be mistaken for
 Codex or Claude provenance.
 
 Normal matching schema/server/runtime deployment must include
@@ -472,5 +472,45 @@ The metadata contract follows the pinned OpenCode1.19.5
 and [native completed tool records](https://github.com/anomalyco/opencode/blob/v1.19.5/packages/opencode/src/session/processor.ts).
 This uses the existing archive, not a new ingestion or runtime path. Matching
 normal server/runtime artifacts are required; older servers refuse before
-allocation. Live acceptance remains coordinator-owned. OpenCode MCP tool proof,
-cutover and authorized tunnel deletion remain outstanding #1421 work.
+allocation. Live acceptance remains coordinator-owned. The native MCP extension below completes
+the code-side tool-proof row; cutover and authorized tunnel deletion remain outstanding.
+
+
+## OpenCode native MCP proof
+
+The combined existing check now supports OpenCode remote MCP:
+
+```sh
+ARMADA_RUNTIME_SMOKE=one_real_modal_launch bun scripts/check-modal-runtime.ts --opencode --usage --variables --skills --mcp --github --resume
+```
+
+Before allocating, it requires `opencodeMcpProofVersion:1`, the usual authorized
+connected remote MCP selection, and its complete SDK-discovered tool inventory.
+The inventory comes from the existing bounded/paginated connection probe, not
+operator-supplied names or a new gateway route. Exactly one original remote tool
+must map to the expected native name: missing tools, duplicate names and native
+sanitization collisions (for example `read.counter` versus `read_counter`) refuse
+before allocation. The same inventory is rechecked after every verified prompt;
+observed changes or lost authorization invalidate acceptance.
+
+The existing native export supplies MCP proof only for new completed assistant
+tool records with matching native session/message bindings, unique call IDs,
+selected private MCP configuration/revision and bounded untruncated results.
+Native tool name, configured server, exact arguments and independent expected
+result must match this archived prompt. Loaded history, ACP display-only events,
+foreign server/tool/prompt, error states and ambiguous configured server prefixes
+do not supply proof. No second ingestion, runtime, provider auth or proxy exists.
+
+This follows the pinned OpenCode1.19.5
+[MCP native naming/error contract](https://github.com/anomalyco/opencode/blob/v1.19.5/packages/opencode/src/mcp/catalog.ts)
+and [native MCP result conversion](https://github.com/anomalyco/opencode/blob/v1.19.5/packages/opencode/src/session/tools.ts).
+Inventories are before/after observations, not an attestation of an adversarial
+upstream server’s internal execution. The actual call still uses existing
+current-epoch gateway authorization.
+
+Use existing account/template/default-skill/MCP/GitHub inputs. The script changes
+no configuration, adds no credentials, and retains one allocation/one activation
+and all prior lifecycle proofs. Matching normal server/runtime artifacts are
+required; no new migration or manual artifact publication. Coordinator receipts
+are still required for live acceptance, ordinary default-path rollout and the
+production-day gate before tunnel deletion.

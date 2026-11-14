@@ -1,6 +1,6 @@
 "use client";
 
-import type { Harness, SandboxStatus } from "@armada/core";
+import { type Harness, idlePauseMessage, type SandboxStatus } from "@armada/core";
 import {
   AlertTriangleIcon,
   ArrowDownIcon,
@@ -408,6 +408,7 @@ export function SandboxChat(props: Props) {
   const chat = useMemo(() => projectChat(eventsOf(events, shownConversation)), [events, shownConversation]);
   // A stopped or failed machine runs no turn, whatever its last prompt event said before it stopped.
   const turnRunning = chat.running && LIVE.includes(status);
+  const pauseMessage = idlePauseMessage({ status, idlePaused, expiresAt: props.expiresAt ?? null }, new Date());
   const failure = [...chat.items].reverse().find((item) => item.kind === "outcome" && item.status === "failed");
   const reason = failure?.kind === "outcome" ? failure.reason : undefined;
 
@@ -431,9 +432,20 @@ export function SandboxChat(props: Props) {
                 <StatusDot tone="success" pulse /> Live
               </span>
             )}
-            <StatusBadge status={status} idlePaused={idlePaused} expiresAt={props.expiresAt ?? null} />
+            <StatusBadge
+              status={status}
+              idlePaused={idlePaused}
+              expiresAt={props.expiresAt ?? null}
+              readyLabel="Waiting for you"
+            />
           </div>
         </div>
+
+        {pauseMessage && (
+          <p className="border-b px-4 py-2 text-xs text-muted-foreground sm:px-6" role="status">
+            {pauseMessage}
+          </p>
+        )}
 
         {turnModel?.modelSelectionReason && (
           <details className="border-b px-4 py-2 text-sm sm:px-6">

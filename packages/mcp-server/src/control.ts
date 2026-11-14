@@ -795,6 +795,7 @@ async function dispatch(
         claudeVersion: options.modalRuntimeLaunch ? 1 : 0,
         opencodeVersion: options.modalRuntimeLaunch ? 1 : 0,
         opencodeShellProofVersion: options.modalRuntimeLaunch ? 1 : 0,
+        opencodeMcpProofVersion: options.modalRuntimeLaunch && options.runtimeMcp ? 1 : 0,
         variablesVersion: options.templates && options.modalRuntimeLaunch && options.modalRuntimeHostFor ? 1 : 0,
       },
       boatRuntime: {
@@ -1208,9 +1209,12 @@ async function dispatch(
     case "sandbox/mcp-preflight-v1":
       if (body.runtimeVersion !== 1 || !options.runtimeMcp)
         throw new VaultError("unavailable", "Runtime MCP v1 is unavailable.");
+      if (body.toolInventory !== undefined && typeof body.toolInventory !== "boolean")
+        throw new VaultError("invalid", "toolInventory must be boolean.");
       return options.runtimeMcp.preflight(caller, {
         org: required(body, "org"),
         connections: body.connections as string[],
+        ...(body.toolInventory === true ? { toolInventory: true } : {}),
       });
     case "sandbox/github-preflight-v1":
       if (body.runtimeVersion !== 1 || !options.runtimeGitHub)
