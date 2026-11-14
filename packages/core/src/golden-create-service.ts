@@ -61,7 +61,13 @@ export interface GoldenCreateDeps {
   mint?(installationId: number, repoIds: number[]): Promise<{ token: string; revoke(): Promise<void> }>;
   ssh(
     provider: Provider,
-    input: { sandboxId: string; token: string; script: string; onWarning?: (warning: GoldenBuildWarning) => void },
+    input: {
+      sandboxId: string;
+      token: string;
+      script: string;
+      repositories?: readonly string[];
+      onWarning?: (warning: GoldenBuildWarning) => void;
+    },
   ): Promise<void>;
   /** Fail-closed secret scan of the builder, before it may be snapshotted. */
   scan(provider: Provider, sandboxId: string, context?: { buildId: string }): Promise<void>;
@@ -193,6 +199,7 @@ export class GoldenCreateService {
       await this.deps.ssh(provider, {
         sandboxId: builder.id,
         token: issued.token,
+        repositories: prepared.map((repo) => `${repo.owner}/${repo.repo}`),
         onWarning: (warning) => {
           if (!warnings.includes(warning)) warnings.push(warning);
         },
@@ -550,6 +557,35 @@ function ownershipSetup(repos: readonly Pick<PreparedRepo, "dir">[]): string {
   ].join("\n");
 }
 
+/** Only closed classifications leave the guest; never forward Git stderr or paths. */
+const GIT_FAILURE_CLASSIFIER = [
+  "armada_git_stderr() {",
+  '  local index="$1" line reason=unknown',
+  '  while IFS= read -r line || [ -n "$line" ]; do',
+  '    case "$line" in',
+  '      *"Authentication failed"*|*"could not read Username"*|*"could not read Password"*|*"terminal prompts disabled"*|*"returned error: 403"*|*"returned error: 401"*) reason=auth_denied ;;',
+  '      *"Repository not found"*|*"repository "*" not found"*) reason=repository_not_found ;;',
+  '      *"Remote branch "*" not found"*|*"Could not find remote branch"*) reason=branch_missing ;;',
+  '      *"No space left on device"*|*"Disk quota exceeded"*) reason=storage_failed ;;',
+  '      *"already exists and is not an empty directory"*) reason=destination_exists ;;',
+  '      *"git-lfs"*|*"Git LFS"*|*"smudge filter"*|*"filter-process"*) reason=lfs_failed ;;',
+  '      *"Could not resolve host"*|*"Failed to connect"*|*"RPC failed"*|*"early EOF"*|*"index-pack failed"*|*"SSL certificate"*) reason=transport_failed ;;',
+  "    esac",
+  "  done",
+  '  printf "ARMADA_GIT_FAILURE %s %s\\n" "$index" "$reason" >&2',
+  "}",
+  "armada_clone() {",
+  '  local index="$1" fd collector status',
+  "  shift",
+  '  exec {fd}> >(armada_git_stderr "$index")',
+  "  collector=$!",
+  '  if "$@" 2>&"$fd"; then status=0; else status=$?; fi',
+  "  exec {fd}>&-",
+  '  wait "$collector"',
+  '  return "$status"',
+  "}",
+].join("\n");
+
 /** Shared credential-safe checkout frame. Runtime/image transports supply the token only in memory. */
 export function goldenCheckoutScript(
   repos: readonly Pick<PreparedRepo, "owner" | "repo" | "branch" | "dir">[],
@@ -562,10 +598,11 @@ export function goldenCheckoutScript(
     "export GIT_ASKPASS=/bin/false",
     "export GIT_CONFIG_COUNT=1",
     "export GIT_CONFIG_KEY_0=credential.helper",
-    'export GIT_CONFIG_VALUE_0=\'!f() { while IFS= read -r line; do case $line in protocol=https|host=github.com|host=github.com:443) ;; *) exit 1 ;; esac; done; printf "username=x-access-token\\npassword=%s\\n" "$ARMADA_GIT_TOKEN"; }; f\'',
+    `export GIT_CONFIG_VALUE_0='!f() { protocol=; host=; while IFS= read -r line; do case "$line" in protocol=https) protocol=https ;; protocol=*) exit 1 ;; host=github.com|host=github.com:443) host=github.com ;; host=*) exit 1 ;; "") break ;; *) : ;; esac; done; [ "$protocol" = https ] && [ "$host" = github.com ] || exit 1; case "\${1:-get}" in get) printf "username=x-access-token\\npassword=%s\\n" "$ARMADA_GIT_TOKEN" ;; store|erase) : ;; *) exit 1 ;; esac; }; f'`,
+    GIT_FAILURE_CLASSIFIER,
     ...repos.map(
-      (r) =>
-        `git clone ${options.shallow ? "--depth=1 " : ""}--branch ${shellQuote(r.branch ?? "main")} --single-branch https://github.com/${safe(r.owner)}/${safe(r.repo)}.git ${GOLDEN_ROOT}/${safe(r.dir)}`,
+      (r, index) =>
+        `armada_clone ${index + 1} git clone ${options.shallow ? "--depth=1 " : ""}--branch ${shellQuote(r.branch ?? "main")} --single-branch https://github.com/${safe(r.owner)}/${safe(r.repo)}.git ${GOLDEN_ROOT}/${safe(r.dir)}`,
     ),
     "unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_CONFIG_NOSYSTEM GIT_CONFIG_GLOBAL GIT_TERMINAL_PROMPT GIT_ASKPASS",
     "unset ARMADA_GIT_TOKEN",

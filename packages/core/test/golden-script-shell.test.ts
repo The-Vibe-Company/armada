@@ -329,3 +329,89 @@ chmod 555 "$ARMADA_TEST_IMAGE_BIN"
     rmSync(base, { recursive: true, force: true });
   }
 });
+
+// This shell protocol is the production transport boundary; no real Git, network,
+// installation or user credential store participates in these cases.
+test.each([
+  ["protocol=https\nhost=github.com\nwwwauth[]=Basic realm=GitHub\n\n", true],
+  ["protocol=https\nhost=github.com:443\nusername=git\ncapability[]=authtype\n\n", true],
+  ["protocol=https\nhost=other.example\nwwwauth[]=Basic realm=GitHub\n\n", false],
+  ["protocol=http\nhost=github.com\n\n", false],
+  ["protocol=https\nwwwauth[]=Basic realm=GitHub\n\n", false],
+])(
+  "checkout credential protocol tolerates challenge metadata without widening host access (%j)",
+  async (description, accepted) => {
+    const { goldenCheckoutScript } = await import("../src/server.ts");
+    const script = goldenCheckoutScript([{ owner: "acme", repo: "private", dir: "private", branch: "main" }]);
+    const result = spawnSync(
+      "/bin/bash",
+      [
+        "-c",
+        `set -euo pipefail
+    git() { printf '%s' "$FIXTURE_CREDENTIAL_INPUT" | sh -c "\${GIT_CONFIG_VALUE_0#\\!} get"; }
+    ${script}`,
+      ],
+      {
+        env: {
+          PATH: process.env.PATH ?? "",
+          ARMADA_GIT_TOKEN: "synthetic-credential",
+          FIXTURE_CREDENTIAL_INPUT: description,
+        },
+        encoding: "utf8",
+      },
+    );
+    expect(result.status === 0).toBe(accepted);
+    expect(result.stdout).toBe(accepted ? "username=x-access-token\npassword=synthetic-credential\n" : "");
+  },
+);
+
+test.each([
+  ["fatal: Authentication failed for https://opaque@example/", "auth_denied"],
+  ["fatal: Repository not found. opaque", "repository_not_found"],
+  ["fatal: Remote branch missing not found in upstream origin opaque", "branch_missing"],
+  ["fatal: unable to access opaque: Could not resolve host", "transport_failed"],
+  ["fatal: git-lfs opaque error", "lfs_failed"],
+  ["fatal: destination path opaque already exists and is not an empty directory.", "destination_exists"],
+  ["fatal: opaque: No space left on device", "storage_failed"],
+  ["fatal: arbitrary-opaque-error", "unknown"],
+])("clone stderr is reduced to a closed category (%s)", async (stderr, reason) => {
+  const { goldenCheckoutScript } = await import("../src/server.ts");
+  const script = goldenCheckoutScript([{ owner: "acme", repo: "private", dir: "private", branch: "main" }]);
+  const result = spawnSync(
+    "/bin/bash",
+    [
+      "-c",
+      `set -euo pipefail
+    git() { printf '%s\\n' "$FIXTURE_GIT_STDERR" >&2; return 128; }
+    ${script}`,
+    ],
+    {
+      env: { PATH: process.env.PATH ?? "", ARMADA_GIT_TOKEN: "synthetic-credential", FIXTURE_GIT_STDERR: stderr },
+      encoding: "utf8",
+    },
+  );
+  expect(result.status).toBe(128);
+  expect(result.stderr).toBe(`ARMADA_GIT_FAILURE 1 ${reason}\n`);
+  expect(result.stderr).not.toContain("opaque");
+  expect(result.stderr).not.toContain("synthetic-credential");
+});
+
+test("clone diagnostics finish in repository order and an empty failed checkout gets its own unknown reason", async () => {
+  const { goldenCheckoutScript } = await import("../src/server.ts");
+  const script = goldenCheckoutScript([
+    { owner: "acme", repo: "first", dir: "first", branch: "main" },
+    { owner: "acme", repo: "second", dir: "second", branch: "main" },
+  ]);
+  const result = spawnSync(
+    "/bin/bash",
+    [
+      "-c",
+      `set -euo pipefail
+    git() { if [ "\${@: -1}" = /home/user/first ]; then printf 'Authentication failed warning opaque\\n' >&2; return 0; fi; return 128; }
+    ${script}`,
+    ],
+    { env: { PATH: process.env.PATH ?? "", ARMADA_GIT_TOKEN: "synthetic-credential" }, encoding: "utf8" },
+  );
+  expect(result.status).toBe(128);
+  expect(result.stderr).toBe("ARMADA_GIT_FAILURE 1 auth_denied\nARMADA_GIT_FAILURE 2 unknown\n");
+});

@@ -25,7 +25,7 @@ export interface SshExecDeps {
 /** Token is first stdin line. The one quoted remote command reads it before running the script. */
 export async function sshStdinCheckout(
   provider: Provider,
-  input: { sandboxId: string; token: string; script: string; timeoutMs?: number },
+  input: { sandboxId: string; token: string; script: string; timeoutMs?: number; repositories?: readonly string[] },
   deps: SshExecDeps = {},
 ): Promise<void> {
   await sshExchange(provider, input, deps, false, input.timeoutMs);
@@ -261,7 +261,7 @@ export async function sshPrivateSkillCommand(
 
 async function sshExchange(
   provider: Pick<Provider, "sshKey">,
-  input: { sandboxId: string; token: string; script: string },
+  input: { sandboxId: string; token: string; script: string; repositories?: readonly string[] },
   deps: SshExecDeps,
   capture: boolean,
   timeoutMs = capture ? 30_000 : 600_000,
@@ -337,6 +337,7 @@ async function sshExchange(
       privateTransport,
       input.sandboxId,
       deps.githubHydration === true,
+      input.repositories,
     );
   } catch (error) {
     if (!privateTransport || error instanceof PrivateSshError) throw error;
@@ -368,6 +369,29 @@ function knownLine(host: string, port: string, key: string) {
   if (!/^(ssh-|ecdsa-|sk-)/.test(key)) throw new Error("Invalid SSH host key.");
   return `[${host}]:${port} ${key}\n`;
 }
+/** Only closed classes cross the guest stderr boundary; raw Git output may contain credentials. */
+const GIT_FAILURE_MESSAGES = {
+  auth_denied:
+    "GitHub credentials were rejected. Grant your account and the Armada GitHub App read access, reconnect GitHub, then rebuild.",
+  repository_not_found:
+    "GitHub could not find or authorize the repository. Check its URL and grant your account and the Armada GitHub App read access, then rebuild.",
+  branch_missing: "The requested branch was not found. Correct the branch, then rebuild.",
+  transport_failed: "The Git transfer failed. Check connectivity and retry after the network is healthy.",
+  lfs_failed: "Git LFS checkout failed. Check LFS availability and repository access, then rebuild.",
+  destination_exists:
+    "The checkout destination already exists. Choose a distinct repository directory or ask an administrator to inspect the builder.",
+  storage_failed: "The builder could not write the checkout. Ask an administrator to check disk space and permissions.",
+  unknown:
+    "Git exited unsuccessfully without a recognized safe reason. Ask an administrator to inspect checkout diagnostics before retrying.",
+} as const;
+
+function safeGitRepository(repositories: readonly string[] | undefined, index: number): string {
+  const repository = repositories?.[index - 1];
+  return repository && /^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/.test(repository)
+    ? repository
+    : `repository ${index}`;
+}
+
 function command(
   spawnImpl: typeof spawn,
   file: string,
@@ -379,6 +403,7 @@ function command(
   privateTransport = false,
   sandboxId?: string,
   githubHydration = false,
+  repositories?: readonly string[],
 ) {
   return new Promise<string>((resolve, reject) => {
     // Typed as the base ChildProcess, not the stdio-narrowed overload: which @types/node overload
@@ -390,6 +415,7 @@ function command(
     let hydrationPhase: GitHubHydrationPhase | undefined;
     let exitCode: string | undefined;
     let commandIndex: string | undefined;
+    let gitFailure: { index: number; reason: keyof typeof GIT_FAILURE_MESSAGES } | undefined;
     let timedOut = false;
     let privateReason: (typeof PRIVATE_SSH_FAILURES)[number] | undefined;
     const output: Buffer[] = [];
@@ -454,6 +480,11 @@ function command(
           exitCode = match[2];
           commandIndex = match[3];
         }
+        const git =
+          /^ARMADA_GIT_FAILURE ([1-9]|1[0-6]) (auth_denied|repository_not_found|branch_missing|transport_failed|lfs_failed|destination_exists|storage_failed|unknown)$/.exec(
+            line,
+          );
+        if (git) gitFailure = { index: Number(git[1]), reason: git[2] as keyof typeof GIT_FAILURE_MESSAGES };
         const github = githubHydration
           ? /^ARMADA_GITHUB_FAILURE (privilege|payload|directories|lock|executables|install|token_write|sudo|bootstrap)$/.exec(
               line,
@@ -524,7 +555,9 @@ function command(
               safeMessage: timedOut
                 ? `Build timed out during ${phase}.`
                 : phase === "checkout"
-                  ? `Clone failed (exit ${exitCode ?? code ?? "unknown"}). Check the requested branches and GitHub access, then rebuild.`
+                  ? gitFailure
+                    ? `Could not clone ${safeGitRepository(repositories, gitFailure.index)}: ${GIT_FAILURE_MESSAGES[gitFailure.reason]}`
+                    : `Clone failed (exit ${exitCode ?? code ?? "unknown"}). Check the requested branches and GitHub access, then rebuild.`
                   : phase === "init" && commandIndex && Number(commandIndex) > 0
                     ? `Init command ${commandIndex} exited ${exitCode ?? code ?? "unknown"}. Correct the command, then rebuild.`
                     : phase === "inline_scan"
