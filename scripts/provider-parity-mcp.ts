@@ -96,7 +96,17 @@ export async function prepareMcpProbe(
     if (inventory !== undefined && current !== inventory) fail("invalid_mcp_inventory");
     inventory = current;
   }
-  if (harness === "opencode") await checkInventory();
+  const boundedInventory = () =>
+    io.poll(
+      async () => {
+        await checkInventory();
+        return true;
+      },
+      (value) => value,
+      1,
+      io.until,
+    );
+  if (harness === "opencode") await boundedInventory();
   return {
     verifyManifest(manifest: {
       definition?: { connections?: unknown };
@@ -222,7 +232,7 @@ export async function prepareMcpProbe(
         110,
         io.until,
       );
-      if (harness === "opencode") await checkInventory();
+      if (harness === "opencode") await boundedInventory();
     },
   };
 }

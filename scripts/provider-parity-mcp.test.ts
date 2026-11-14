@@ -14,6 +14,7 @@ for (const mode of [
   "opencode_inventory_missing",
   "opencode_collision",
   "opencode_inventory_changed",
+  "opencode_inventory_late",
   "opencode_no_native",
   "opencode_foreign_prompt",
   "opencode_wrong_server",
@@ -115,6 +116,7 @@ for (const mode of [
               });
               const n = (inventoryReads.get(id) ?? 0) + 1;
               inventoryReads.set(id, n);
+              if (mode === "opencode_inventory_late" && n > 1) now += 110_001;
               result = {
                 mcpReady: true,
                 connections: [binding.connectionId],
@@ -374,7 +376,8 @@ for (const mode of [
         expect(calls.filter((path) => path.startsWith("docker:"))).toHaveLength(0);
     }
     expect(lines.join("\n")).not.toContain(binding.expectedText);
-    if (mode === "opencode_valid" || mode === "opencode_inventory_changed") expect(inventoryReads.get("modal")).toBe(2);
+    if (mode === "opencode_valid" || mode === "opencode_inventory_changed" || mode === "opencode_inventory_late")
+      expect(inventoryReads.get("modal")).toBe(2);
   });
 }
 
