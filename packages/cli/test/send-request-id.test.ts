@@ -34,6 +34,8 @@ async function send(extra: string[], status = 200) {
 test("ordinary CLI send uses one provider-neutral request shape with generated or explicit UUID", async () => {
   const generated = await send([]);
   expect(generated.exit).toBe(0);
+  expect(generated.error).toContain("Waking the sandbox if paused");
+  expect(generated.error).not.toContain("uncertain delivery");
   expect(generated.calls).toHaveLength(1);
   expect(generated.calls[0]?.path).toBe("/api/v1/sandbox/send");
   expect(generated.calls[0]?.body).toEqual({
