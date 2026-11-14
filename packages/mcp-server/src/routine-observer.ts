@@ -15,7 +15,10 @@ export async function observeRoutinePrompt(
   },
 ): Promise<RoutineTaskState> {
   const docker = await ports.docker?.invoke(caller, "status", { id: turn.sandboxId, prompt_id: turn.promptId });
-  if (docker?.handled) return (docker.result as DockerSandboxStatus).prompt?.state ?? "unknown";
+  if (docker?.handled) {
+    const state = (docker.result as DockerSandboxStatus).prompt?.state;
+    return state === "queued" ? "running" : (state ?? "unknown");
+  }
   const sandbox = await ports.get(turn.sandboxId);
   if (!sandbox || sandbox.status === "deleted") return "unknown";
   const result = await promptOutcome(await ports.provider(sandbox), {

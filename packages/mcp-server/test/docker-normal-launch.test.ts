@@ -83,6 +83,7 @@ async function fixture(
     lifecycleGenerationAfterCreate?: number;
     harness?: Harness;
     checkoutExitCode?: number;
+    distinctPromptIds?: boolean;
     githubConfigurationAcknowledged?: boolean;
     daemonVersion?: string;
   } = {},
@@ -140,6 +141,7 @@ async function fixture(
     malformedSkills = false;
   let session: Awaited<ReturnType<typeof authority.enrol>> | undefined;
   const receipt = { promptId: randomUUID(), conversationId: randomUUID(), status: "queued" };
+  const promptReceipts = new Map<string, typeof receipt>();
   const jobs: unknown[] = [],
     native: unknown[] = [],
     checkoutStatuses: string[] = [];
@@ -167,6 +169,11 @@ async function fixture(
       if (next.command) {
         const command = next.command;
         native.push(command);
+        if (command.op === "prompt" && !promptReceipts.has(command.requestId))
+          promptReceipts.set(
+            command.requestId,
+            options.distinctPromptIds && promptReceipts.size ? { ...receipt, promptId: randomUUID() } : receipt,
+          );
         if (command.op === "exec")
           checkoutStatuses.push(
             (await db.query<{ status: string }>("select status from public.sandboxes where id=$1", [body.requestId]))
@@ -208,7 +215,9 @@ async function fixture(
                               origin: "https://skillpack.app/v1",
                             })),
                           }
-                        : receipt,
+                        : command.op === "prompt"
+                          ? promptReceipts.get(command.requestId)!
+                          : receipt,
           },
         });
       }
@@ -291,6 +300,7 @@ async function fixture(
     native,
     checkoutStatuses,
     receipt,
+    promptReceipts,
     github,
     service,
     mcp,
@@ -776,26 +786,26 @@ test("normal launch claims remain service-only even for their owner's user JWT",
   const f = await fixture();
   await f.service().launch(f.caller, f.body);
   for (const role of ["anon", "authenticated"]) {
-    await db.transaction(async (tx) => {
-      await tx.query(`select set_config('request.jwt.claim.sub',$1,true)`, [f.actor.userId]);
-      await tx.exec(`set local role ${role}`);
-      const grants = (
-        await tx.query<{ table_access: boolean; column_access: boolean }>(
-          `select has_table_privilege(current_user,'public.docker_launch_requests','SELECT,INSERT,UPDATE,DELETE,TRUNCATE') as table_access,
-         has_any_column_privilege(current_user,'public.docker_launch_requests','SELECT,INSERT,UPDATE,REFERENCES') as column_access`,
-        )
-      ).rows[0];
-      expect(grants).toEqual({ table_access: false, column_access: false });
-    });
-    await expect(
-      db.transaction(async (tx) => {
+    for (const table of ["docker_launch_requests", "docker_queued_prompts"]) {
+      await db.transaction(async (tx) => {
         await tx.query(`select set_config('request.jwt.claim.sub',$1,true)`, [f.actor.userId]);
         await tx.exec(`set local role ${role}`);
-        await tx.query(`select request_enc,result_enc from public.docker_launch_requests where sandbox_id=$1`, [
-          f.body.requestId,
-        ]);
-      }),
-    ).rejects.toThrow("permission denied");
+        const grants = (
+          await tx.query<{ table_access: boolean; column_access: boolean }>(
+            `select has_table_privilege(current_user,'public.${table}','SELECT,INSERT,UPDATE,DELETE,TRUNCATE') as table_access,
+         has_any_column_privilege(current_user,'public.${table}','SELECT,INSERT,UPDATE,REFERENCES') as column_access`,
+          )
+        ).rows[0];
+        expect(grants).toEqual({ table_access: false, column_access: false });
+      });
+      await expect(
+        db.transaction(async (tx) => {
+          await tx.query(`select set_config('request.jwt.claim.sub',$1,true)`, [f.actor.userId]);
+          await tx.exec(`set local role ${role}`);
+          await tx.query(`select * from public.${table} where sandbox_id=$1`, [f.body.requestId]);
+        }),
+      ).rejects.toThrow("permission denied");
+    }
   }
 });
 
@@ -813,46 +823,256 @@ test.each(["claude", "opencode"] as const)("normal Docker launch selects and boo
   );
 });
 
+async function publishFinished(f: Fixture, sequence = 0, promptId = f.receipt.promptId) {
+  const session = f.session();
+  if (!session) throw Error("no runtime");
+  const events: AgentEvent[] = [
+    {
+      id: randomUUID(),
+      at: sequence + 1,
+      kind: "prompt",
+      promptId,
+      conversationId: f.receipt.conversationId,
+      text: "native turn",
+      status: "finished",
+    },
+  ];
+  const response = await createRuntimeEvents(authority, key).route(
+    new Request("https://armada.example/api/runtime/events", {
+      method: "POST",
+      headers: { authorization: `Bearer ${session.runtimeToken}`, "x-armada-runtime-epoch": session.epoch },
+      body: JSON.stringify({
+        sandboxId: f.body.requestId,
+        generation: session.epoch,
+        events: events.map((event, i) => ({ sequence: sequence + i + 1, event })),
+      }),
+    }),
+  );
+  expect(response?.status).toBe(200);
+}
+
 test.each([false, true])(
-  "send immediately after accepted launch waits for preparation and its first conversation: initial prompt %s",
+  "send during accepted startup immediately returns a stable queued receipt and dispatches after preparation: initial %s",
   async (initial) => {
-    const f = await fixture();
+    const f = await fixture({ distinctPromptIds: true });
     const server = f.service(sql, true, 10000, officialImage, true);
     const { prompt: _prompt, ...empty } = f.body;
     const accepted = await server.launch(f.caller, initial ? f.body : empty);
-    expect(accepted.sandbox.status).toBe("starting");
     expect(launchedDockerSandbox(accepted)).toBe(f.body.requestId);
-    let prepared = false;
-    const clock = {
-      now: f.clock.now,
-      wait: async (ms: number) => {
-        if (!prepared) {
-          prepared = true;
-          await server.drain();
-        }
-        await f.clock.wait(ms);
+    let waited = false;
+    const sender = createDockerNormalSend(sql, key, {
+      enabled: true,
+      clock: {
+        now: f.clock.now,
+        wait: async () => {
+          waited = true;
+          throw Error("accepted send must not wait");
+        },
       },
-    };
-    const requestId = randomUUID();
-    const sender = createDockerNormalSend(sql, key, { enabled: true, clock });
-    const controls = createDockerSandboxControls(sql, key, { clock, send: sender });
-    const sent = await controls.invoke(f.caller, "send", {
-      id: f.body.requestId,
-      request_id: requestId,
-      prompt: "Follow up immediately",
     });
-    expect(sent).toMatchObject({ handled: true, result: { requestId } });
-    const prompts = f.native.filter((c) => (c as { op: string }).op === "prompt") as {
-      input: { text: string; conversationId?: string };
-    }[];
-    expect(prompts.map((c) => c.input.text)).toEqual(
-      initial ? [f.body.prompt, "Follow up immediately"] : ["Follow up immediately"],
-    );
-    expect(prompts.at(-1)?.input.conversationId).toBe(initial ? f.receipt.conversationId : undefined);
-    expect(f.jobs.filter((j) => (j as { operation: string }).operation === "resume")).toHaveLength(0);
+    const controls = createDockerSandboxControls(sql, key, { send: sender, clock: f.clock });
+    const args = { id: f.body.requestId, request_id: randomUUID(), prompt: "Follow up immediately" };
+    const acceptedTurn = await controls.invoke(f.caller, "send", args);
+    expect(acceptedTurn).toMatchObject({
+      handled: true,
+      result: { status: "queued", state: "queued", conversationId: null },
+    });
+    if (!acceptedTurn.handled) throw Error("not handled");
+    const queued = acceptedTurn.result as { promptId: string };
+    expect(queued.promptId).toMatch(/^[a-f0-9-]{36}$/);
+    expect(waited).toBe(false);
+    expect(f.native).toHaveLength(0);
+    expect(await controls.invoke(f.caller, "send", args)).toEqual(acceptedTurn);
+    await expect(controls.invoke(f.caller, "send", { ...args, prompt: "Changed" })).rejects.toThrow();
+    expect(
+      await controls.invoke(f.caller, "status", { id: f.body.requestId, prompt_id: queued.promptId }),
+    ).toMatchObject({
+      handled: true,
+      result: { prompt: { promptId: queued.promptId, state: "queued" }, settled: false },
+    });
+    await server.drain();
+    if (initial) {
+      await server.drainQueued();
+      expect(f.native.filter((c) => (c as { op: string }).op === "prompt")).toHaveLength(1);
+      await publishFinished(f);
+    }
+    await server.drainQueued();
+    const dispatched = (
+      await db.query<{ status: string; native_prompt_id: string }>(
+        "select status,native_prompt_id from docker_queued_prompts where sandbox_id=$1",
+        [f.body.requestId],
+      )
+    ).rows[0];
+    const nativePrompt = f.promptReceipts.get(`docker_prompt_${args.request_id}`)?.promptId;
+    if (!nativePrompt) throw Error("native prompt did not acknowledge");
+    expect(dispatched).toEqual({ status: "admitted", native_prompt_id: nativePrompt });
+    expect(f.native.at(-1)).toMatchObject({
+      op: "prompt",
+      input: { text: args.prompt, ...(initial ? { conversationId: f.receipt.conversationId } : {}) },
+    });
+    await publishFinished(f, initial ? 1 : 0, nativePrompt);
+    expect(
+      await controls.invoke(f.caller, "status", { id: f.body.requestId, prompt_id: queued.promptId }),
+    ).toMatchObject({ handled: true, result: { prompt: { promptId: queued.promptId, state: "finished" } } });
+    expect(await controls.invoke(f.caller, "logs", { id: f.body.requestId })).toMatchObject({
+      handled: true,
+      result: { events: expect.arrayContaining([expect.objectContaining({ promptId: queued.promptId })]) },
+    });
+    const before = f.native.length;
+    await server.drainQueued();
+    expect(f.native).toHaveLength(before);
+    expect(await controls.invoke(f.caller, "send", args)).toEqual(acceptedTurn);
     await server.close();
   },
 );
+
+test("queued prompt receipt publication loss reconciles one native turn and preserves public history identity", async () => {
+  const f = await fixture();
+  let lost = false;
+  const interrupted: Sql = {
+    ...sql,
+    query: async (q, v) => {
+      if (!lost && q.includes("set status='admitted',native_prompt_id=")) {
+        lost = true;
+        throw Error("synthetic queue publication loss");
+      }
+      return sql.query(q, v);
+    },
+  };
+  const server = f.service(interrupted, true, 10000, officialImage, true);
+  const { prompt: _prompt, ...empty } = f.body;
+  await server.launch(f.caller, empty);
+  const controls = createDockerSandboxControls(sql, key, {
+    clock: f.clock,
+    send: createDockerNormalSend(sql, key, { enabled: true, clock: f.clock }),
+  });
+  const queued = await controls.invoke(f.caller, "send", {
+    id: f.body.requestId,
+    request_id: randomUUID(),
+    prompt: "Dispatch exactly once",
+  });
+  if (!queued.handled) throw Error("not handled");
+  const { promptId } = queued.result as { promptId: string };
+  await server.drain();
+  await server.drainQueued();
+  expect(lost).toBe(true);
+  await publishFinished(f);
+  // Journal may arrive before the queue projection write. The validated native receipt still links its public ID.
+  expect(await controls.invoke(f.caller, "logs", { id: f.body.requestId })).toMatchObject({
+    handled: true,
+    result: { events: expect.arrayContaining([expect.objectContaining({ promptId })]) },
+  });
+  const recovered = f.service(sql, true, 10000, officialImage, true);
+  await recovered.drainQueued();
+  expect(f.native.filter((c) => (c as { op: string }).op === "prompt")).toHaveLength(1);
+  expect(await controls.invoke(f.caller, "status", { id: f.body.requestId, prompt_id: promptId })).toMatchObject({
+    handled: true,
+    result: { prompt: { promptId, state: "finished" } },
+  });
+  await server.close();
+  await recovered.close();
+});
+
+test("queued sends retain FIFO order across server recovery and stop fences dispatch", async () => {
+  const f = await fixture({ distinctPromptIds: true });
+  const server = f.service(sql, true, 10000, officialImage, true);
+  const { prompt: _prompt, ...empty } = f.body;
+  await server.launch(f.caller, empty);
+  const sender = createDockerNormalSend(sql, key, { enabled: true, clock: f.clock });
+  const controls = createDockerSandboxControls(sql, key, { send: sender, clock: f.clock });
+  const one = { id: f.body.requestId, request_id: randomUUID(), prompt: "First queued" },
+    two = { ...one, request_id: randomUUID(), prompt: "Second queued" };
+  await controls.invoke(f.caller, "send", one);
+  const accepted = await controls.invoke(f.caller, "send", two);
+  if (!accepted.handled) throw Error("not handled");
+  const { promptId } = accepted.result as { promptId: string };
+  await server.drain();
+  const recovered = f.service(sql, true, 10000, officialImage, true);
+  await recovered.drainQueued();
+  await recovered.drainQueued();
+  expect(f.native.filter((c) => (c as { op: string }).op === "prompt")).toHaveLength(1);
+  await publishFinished(f);
+  await recovered.drainQueued();
+  expect(
+    (f.native.filter((c) => (c as { op: string }).op === "prompt") as { input: { text: string } }[]).map(
+      (c) => c.input.text,
+    ),
+  ).toEqual([one.prompt, two.prompt]);
+  // Existing queue replay is stable even after recovery; a later stop cannot re-wake it.
+  expect(await controls.invoke(f.caller, "send", two)).toEqual(accepted);
+  await controls.invoke(f.caller, "stop", { id: f.body.requestId });
+  await recovered.drainQueued();
+  expect(await controls.invoke(f.caller, "status", { id: f.body.requestId, prompt_id: promptId })).toMatchObject({
+    handled: true,
+    result: { prompt: { promptId, state: "interrupted" } },
+  });
+  await server.close();
+  await recovered.close();
+});
+
+test("queued dispatch failure is visible by default until a newer ordinary send", async () => {
+  const f = await fixture();
+  const server = f.service(sql, true, 10000, officialImage, true);
+  const { prompt: _prompt, ...empty } = f.body;
+  await server.launch(f.caller, empty);
+  const sender = createDockerNormalSend(sql, key, { enabled: true, clock: f.clock });
+  const controls = createDockerSandboxControls(sql, key, { send: sender, clock: f.clock });
+  const queued = await controls.invoke(f.caller, "send", {
+    id: f.body.requestId,
+    request_id: randomUUID(),
+    prompt: "Pinned model only",
+  });
+  if (!queued.handled) throw Error("not handled");
+  const { promptId } = queued.result as { promptId: string };
+  await server.drain();
+  // Revoke the model binding after startup, at the real admission boundary rather than fake native output.
+  await db.query("update public.credentials set status='revoked' where id=$1", [f.body.credentialId]);
+  await server.drainQueued();
+  // No native prompt may be enqueued with a revoked credential.
+  expect(await controls.invoke(f.caller, "status", { id: f.body.requestId })).toMatchObject({
+    handled: true,
+    result: { prompt: { promptId, state: "failed" } },
+  });
+  await db.query("update public.credentials set status='active' where id=$1", [f.body.credentialId]);
+  const later = await sender.send(
+    f.caller,
+    { request_id: randomUUID(), prompt: "New ordinary turn" },
+    { id: f.body.requestId, org_id: f.actor.orgId, owner_id: f.actor.userId, status: "ready", conversation_ids: [] },
+  );
+  expect(await controls.invoke(f.caller, "status", { id: f.body.requestId })).toMatchObject({
+    handled: true,
+    result: { prompt: { promptId: later.promptId, state: "running" } },
+  });
+  expect(await controls.invoke(f.caller, "status", { id: f.body.requestId, prompt_id: promptId })).toMatchObject({
+    handled: true,
+    result: { prompt: { promptId, state: "failed" } },
+  });
+  await server.close();
+});
+
+test("startup failure terminalizes its accepted queued prompt with the real startup reason", async () => {
+  const f = await fixture();
+  const server = f.service(sql, true, 10000, officialImage, true);
+  await server.launch(f.caller, f.body);
+  const sender = createDockerNormalSend(sql, key, { enabled: true, clock: f.clock });
+  const controls = createDockerSandboxControls(sql, key, { send: sender, clock: f.clock });
+  const result = await controls.invoke(f.caller, "send", {
+    id: f.body.requestId,
+    request_id: randomUUID(),
+    prompt: "Accepted before boot",
+  });
+  if (!result.handled) throw Error("not handled");
+  const { promptId } = result.result as { promptId: string };
+  f.setFailure("image");
+  await server.drain();
+  await server.drainQueued();
+  expect(await controls.invoke(f.caller, "status", { id: f.body.requestId, prompt_id: promptId })).toMatchObject({
+    handled: true,
+    result: { prompt: { promptId, state: "failed", reason: DOCKER_IMAGE_UNAVAILABLE_MESSAGE }, settled: true },
+  });
+  expect(f.native).toHaveLength(0);
+  await server.close();
+});
 
 test("send refreshes the first conversation when its ready row predates launch receipt publication", async () => {
   const f = await fixture();
@@ -873,40 +1093,36 @@ test("send refreshes the first conversation when its ready row predates launch r
   });
 });
 
-test("a still-starting owner send returns a pending outcome within its budget, not a conflict or a wake", async () => {
-  const f = await fixture();
-  const server = f.service(sql, true, 10000, officialImage, true);
-  await server.launch(f.caller, f.body);
-  f.setDrive(false);
-  const sender = createDockerNormalSend(sql, key, { enabled: true, clock: f.clock, timeoutMs: 500 });
-  const row = {
-    id: f.body.requestId,
-    org_id: f.actor.orgId,
-    owner_id: f.actor.userId,
-    status: "starting",
-    conversation_ids: [],
-  };
-  await rejected(sender.send(f.caller, { request_id: randomUUID(), prompt: "Wait for launch" }, row), "unavailable");
-  expect(f.native).toHaveLength(0);
-  expect(f.jobs).toHaveLength(0);
-  await server.close();
-});
-
 test("stop after accepted starting launch bypasses queued startup and settles without allocating or prompting", async () => {
   const f = await fixture();
   const server = f.service(sql, true, 10000, officialImage, true);
   await server.launch(f.caller, f.body);
-  const controls = createDockerSandboxControls(sql, key, { clock: f.clock });
+  const controls = createDockerSandboxControls(sql, key, {
+    clock: f.clock,
+    send: createDockerNormalSend(sql, key, { enabled: true, clock: f.clock }),
+  });
   const status = await controls.invoke(f.caller, "status", { id: f.body.requestId });
   expect(status.handled && (status.result as DockerSandboxStatus).status).toBe("starting");
   const logs = await controls.invoke(f.caller, "logs", { id: f.body.requestId });
   expect(logs).toMatchObject({ handled: true, result: { events: [] } });
+  const accepted = await controls.invoke(f.caller, "send", {
+    id: f.body.requestId,
+    request_id: randomUUID(),
+    prompt: "Cancel this queued send",
+  });
+  if (!accepted.handled) throw Error("not handled");
+  const queuedId = (accepted.result as { promptId: string }).promptId;
   expect(await controls.invoke(f.caller, "stop", { id: f.body.requestId })).toEqual({
     handled: true,
     result: { id: f.body.requestId, status: "stopped" },
   });
   expect(f.jobs.map((j) => (j as { operation: string }).operation)).toEqual(["stop"]);
   await server.drain();
+  await server.drainQueued();
+  expect(await controls.invoke(f.caller, "status", { id: f.body.requestId, prompt_id: queuedId })).toMatchObject({
+    handled: true,
+    result: { prompt: { promptId: queuedId, state: "failed" } },
+  });
   expect(await hosts.poll(f.hostToken, f.installationId)).toBeNull();
   expect(f.native).toHaveLength(0);
   expect((await server.launch(f.caller, f.body)).sandbox.status).toBe("stopped");

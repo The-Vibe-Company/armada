@@ -211,6 +211,24 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
           )
             deny();
         }
+        const reserved = (
+          await tx.query<{ input_enc: Uint8Array<ArrayBuffer>; valid: boolean }>(
+            `select q.input_enc,(q.status='dispatching' and q.owner_id=s.owner_id and q.actor_epoch=e.epoch and q.lifecycle_generation=s.lifecycle_generation) as valid
+          from public.docker_queued_prompts q join public.sandboxes s on s.id=q.sandbox_id
+          join public.mcp_actor_epochs e on e.user_id=q.owner_id and e.org_id=s.org_id
+          where q.sandbox_id=$1 and q.request_id=$2`,
+            [sandboxId, input.requestId],
+          )
+        ).rows[0];
+        if (reserved) {
+          const payload = JSON.parse(await decryptSecret(reserved.input_enc, key));
+          if (
+            !reserved.valid ||
+            payload.prompt !== input.text ||
+            (payload.conversationId !== null && payload.conversationId !== input.conversationId)
+          )
+            deny();
+        }
         const id = `docker_prompt_${input.requestId}`;
         // Exact retries keep their original canonical payload, including the first
         // request's absent conversationId, even after its receipt is reconciled.

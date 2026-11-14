@@ -42,6 +42,7 @@ import type { createDockerBootstrapService } from "./docker-bootstrap-service.ts
 import { resolveDockerLaunchAccount } from "./docker-launch-account.ts";
 import { createDockerLaunchEnvironment } from "./docker-launch-environment.ts";
 import { dockerLaunchRequestHash, matchesDockerLaunchRequestHash } from "./docker-launch-identity.ts";
+import { createDockerPromptWorker } from "./docker-prompt-worker.ts";
 import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import { resolveDockerSnapshot } from "./docker-snapshot-data.ts";
@@ -132,7 +133,7 @@ type Options = {
   deferLaunch?: boolean;
   /** Trusted server release configuration, never accepted from a caller. */
   officialImage?: string;
-  github?: Pick<RuntimeGitHub, "prepare" | "prepareLaunch" | "preflightRepositories">;
+  github?: Pick<RuntimeGitHub, "prepare" | "prepareLaunch" | "prepareTurn" | "preflightRepositories">;
   credentials: Pick<LaunchCredentialResolver, "resolve" | "skillpackKey">;
   mcp?: RuntimeMcp;
   bootstrap?: ReturnType<typeof createDockerBootstrapService>;
@@ -805,6 +806,13 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       throw failure("unavailable");
     }
   }
+  const promptWorker = createDockerPromptWorker(sql, key, {
+    enabled: options.enabled === true,
+    ...(options.github ? { github: { prepareTurn: options.github.prepareTurn } } : {}),
+    clock,
+    ...(options.mcp ? { prepareMcp: options.mcp.prepare } : {}),
+    ...(options.github ? { prepareSnapshotGitHub: options.github.prepareLaunch } : {}),
+  });
   let stopping = false;
   let timer: ReturnType<typeof setInterval> | undefined;
   const working = new Set<Promise<void>>();
@@ -876,10 +884,12 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
     launch: (caller: Caller, body: Record<string, unknown>, admission?: Parameters<typeof launch>[2]) =>
       launch(caller, body, admission),
     drain,
+    drainQueued: promptWorker.drain,
     startBackground() {
       if (timer || !options.deferLaunch) return;
       timer = setInterval(() => {
         void drain().catch(() => {});
+        void promptWorker.drain().catch(() => {});
       }, 250);
       timer.unref();
     },
@@ -887,6 +897,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       stopping = true;
       if (timer) clearInterval(timer);
       await Promise.allSettled([...working]);
+      await promptWorker.close();
     },
   };
 }

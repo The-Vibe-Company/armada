@@ -91,6 +91,7 @@ export type {
   DockerHostSummary,
   DockerLaunchRequest,
   DockerLaunchResult,
+  DockerQueuedPromptReceipt,
   DockerSandboxRecord,
   DockerSandboxStatus,
   LaunchCapabilityName,
