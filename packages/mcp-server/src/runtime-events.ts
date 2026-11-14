@@ -196,8 +196,8 @@ export function createRuntimeEvents(
           const marker = item.event.promptId && !known.has(item.event.promptId) ? item.event.promptId : null;
           sequences.push(item.sequence);
           markers.push(marker);
-          // bytea array elements must be PostgreSQL hex input, not Uint8Array's decimal string.
-          encrypted.push(`\\x${Buffer.from(await encryptSecret(item.serialized, key)).toString("hex")}`);
+          // Send hex as text so both SQL adapters and direct drivers preserve the encrypted bytes.
+          encrypted.push(Buffer.from(await encryptSecret(item.serialized, key)).toString("hex"));
           pending.set(item.sequence, item.serialized);
           if (marker) {
             known.add(marker);
@@ -210,8 +210,8 @@ export function createRuntimeEvents(
       if (sequences.length)
         await tx.query(
           `insert into public.runtime_events(sandbox_id,sequence,epoch,counted_prompt_id,event_enc)
-           select $1,sequence,$2,marker,event_enc
-           from unnest($3::bigint[],$4::text[],$5::bytea[]) as batch(sequence,marker,event_enc)`,
+           select $1,sequence,$2,marker,decode(event_hex,'hex')
+           from unnest($3::bigint[],$4::text[],$5::text[]) as batch(sequence,marker,event_hex)`,
           [scope.sandboxId, scope.epoch, sequences, markers, encrypted],
         );
       const usage = reportedTurnUsage(fresh);
