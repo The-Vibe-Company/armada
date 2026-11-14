@@ -1,5 +1,6 @@
 import { readBoundedText } from "@armada/auth";
 import { DOCKER_JOB_FAILURE_REASONS, type DockerJobFailureReason } from "@armada/core";
+import { dockerResourceLimits } from "../../core/src/docker-resources.ts";
 import type { CallerResult } from "./caller.ts";
 import { type createDockerHostStore, DockerHostDenied } from "./docker-host-store.ts";
 import type { DockerSnapshots } from "./docker-snapshots.ts";
@@ -110,7 +111,12 @@ export function createDockerHostRoutes(
               ...("imageId" in body ? ["imageId"] : []),
             ]
           : path.endsWith("/poll") && "version" in body
-            ? ["installationId", "version", ...("skipSnapshots" in body ? ["skipSnapshots"] : [])]
+            ? [
+                "installationId",
+                "version",
+                ...("resources" in body ? ["resources"] : []),
+                ...("skipSnapshots" in body ? ["skipSnapshots"] : []),
+              ]
             : ["installationId"],
       );
       const installationId = string(body.installationId);
@@ -120,6 +126,15 @@ export function createDockerHostRoutes(
         return Response.json({ revoked: await store.unregister(token, installationId) }, { headers });
       }
       if (path.endsWith("/poll")) {
+        if (body.resources !== undefined) {
+          if (!object(body.resources)) throw new InvalidInput();
+          fields(body.resources, ["cpus", "memoryBytes"]);
+          try {
+            dockerResourceLimits(body.resources as { cpus: number; memoryBytes: number });
+          } catch {
+            throw new InvalidInput();
+          }
+        }
         const version = body.version === undefined ? undefined : string(body.version);
         if (version !== undefined && !/^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?$/.test(version)) throw new InvalidInput();
         if (body.skipSnapshots !== undefined && body.skipSnapshots !== true) throw new InvalidInput();
