@@ -1,6 +1,6 @@
 {
   "name": "@armada/mcp-server",
-  "version": "2.36.0",
+  "version": "2.37.0",
   "private": true,
   "type": "module",
   "exports": {
@@ -13,6 +13,7 @@
     "@modelcontextprotocol/sdk": "1.32.2",
     "zod": "4.6.7",
     "@armada/provider-modal": "workspace:*",
+    "jose": "6.2.16",
     "modal": "0.11.1",
     "@armada/agent-runtime": "workspace:*",
     "@armada/mcp-gateway": "workspace:*"

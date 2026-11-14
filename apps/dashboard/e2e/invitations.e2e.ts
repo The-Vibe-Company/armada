@@ -173,3 +173,24 @@ test("a link without a token explains what to do", async ({ page }) => {
   await page.goto("/invitations/accept");
   await expect(page.getByRole("heading", { name: "Open your invitation link" })).toBeVisible();
 });
+
+test("an unconfirmed invitation change hides diagnostics and offers observation before retry", async ({ page }) => {
+  await openAcme(page);
+  const diagnostic = "HTTP 503: invitation_token_enc org_id digest sha256:example";
+  await mock("fail-next-invitation", { message: diagnostic });
+  await invite(page, "carol@example.com");
+  await expect(alert(page)).toContainText("Reload this organization");
+  await expect(alert(page)).not.toContainText(diagnostic);
+  await expect(page.locator('[data-member="bob@example.com"]')).toBeVisible();
+  for (const [name, width] of [
+    ["desktop", 1280],
+    ["mobile", 390],
+  ] as const) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.screenshot({ path: `test-results/invite-action-after-${name}.png`, fullPage: true });
+  }
+  await page.reload();
+  await expect(page.getByText("No pending invitations.", { exact: true })).toBeVisible();
+  await invite(page, "carol@example.com");
+  await expect(page.locator('[data-invitation="carol@example.com"]')).toBeVisible();
+});

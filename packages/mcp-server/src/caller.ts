@@ -1,5 +1,6 @@
 import { type AuthFetch, type AuthStore, assertSupabaseUrl, authenticate, bearerKind } from "@armada/auth";
 import type { MemberRole } from "@armada/core";
+import { verifySessionJwt } from "./session-jwt.ts";
 
 /**
  * Who one request is, and the orgs it may act in. An Armada token (service or OAuth access) is bound
@@ -67,6 +68,35 @@ export async function authenticateCaller(
     return { ok: true, caller: { userId, orgs: [{ orgId, role }], via } };
   }
   if (!JWT.test(token)) return { ok: false };
+  if (options.store.sessionMemberships) {
+    let session: Awaited<ReturnType<typeof verifySessionJwt>>;
+    try {
+      session = await verifySessionJwt(token, options.supabase, options.now);
+    } catch {
+      throw new AuthUnavailable("Session signing keys are unavailable.");
+    }
+    if (session === null) return { ok: false };
+    if (session) {
+      try {
+        const memberships = await options.store.sessionMemberships(
+          session.userId,
+          session.sessionId,
+          options.now.toISOString(),
+        );
+        if (memberships === null) return { ok: false };
+        return {
+          ok: true,
+          caller: {
+            userId: session.userId,
+            orgs: memberships.map(({ orgId, role }) => ({ orgId, role })),
+            via: "supabase",
+          },
+        };
+      } catch (error) {
+        throw new AuthUnavailable("The session store is unavailable.", error);
+      }
+    }
+  }
   const userId = await verifySupabaseUser(token, options.supabase);
   if (!userId) return { ok: false };
   let memberships: Awaited<ReturnType<AuthStore["memberships"]>>;

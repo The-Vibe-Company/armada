@@ -529,8 +529,10 @@ function sandbox(
 
 let state = seed();
 let dockerHosts: Row[] | null = null;
+let skillpackActionFailure: string | null = null;
 let vaultActionFailure: { status: number; code?: string; message: string } | null = null;
 let invitationListFailure: string | null = null;
+let invitationActionFailure: string | null = null;
 let snapshotListFailure: string | null = null;
 let templateListFailure: { unsupported: boolean; message: string } | null = null;
 let vaultListFailure: { unsupported: boolean; message: string } | null = null;
@@ -1853,6 +1855,11 @@ function invitations(route: string, body: Row, request: Request): Response {
     if (invitationListFailure) return controlFail(503, "unavailable", invitationListFailure);
     return json({ invitations: state.invitations.filter((row) => row.orgId === org.id).map(invitationDto) });
   }
+  if (invitationActionFailure) {
+    const message = invitationActionFailure;
+    invitationActionFailure = null;
+    return controlFail(503, "unavailable", message);
+  }
   if (route === "create") {
     const email = String(body.email ?? "").toLowerCase();
     if (!/^[^\s@]+@[^\s@]+\.[a-z]{2,}$/.test(email) || (body.role !== "member" && body.role !== "admin"))
@@ -2625,6 +2632,11 @@ function skillpackDto(row: Row): Row {
 
 function singleton(route: string, body: Row, scope: "user" | "org", owner: string): Response {
   if (body.kind !== "skillpack") return controlFail(400, "invalid", "Unknown credential.");
+  if (skillpackActionFailure) {
+    const message = skillpackActionFailure;
+    skillpackActionFailure = null;
+    return controlFail(503, "unavailable", message);
+  }
   const mine = (row: Row) => row.scope === scope && row.owner_id === owner && row.kind === "skillpack";
   const now = new Date().toISOString();
   if (route === "creds/rm") {
@@ -2764,8 +2776,10 @@ function control(url: URL, body: Row): Response {
     vaultListFailure = null;
     vaultActionFailure = null;
     accountListFailure = null;
+    skillpackActionFailure = null;
     dockerHosts = Array.isArray(body.dockerHosts) ? body.dockerHosts : null;
     invitationListFailure = typeof body.invitationListFailure === "string" ? body.invitationListFailure : null;
+    invitationActionFailure = null;
     snapshotListFailure = typeof body.snapshotListFailure === "string" ? body.snapshotListFailure : null;
     if (body.emptyGoldens) state.goldens = [];
     // Keep a visible header but make its current revision unreadable, as a partial control API read can be.
@@ -3055,6 +3069,10 @@ function control(url: URL, body: Row): Response {
     state.events.set(String(body.sandbox), events);
     return json({ ok: true });
   }
+  if (url.pathname === "/__test/fail-next-skillpack") {
+    skillpackActionFailure = String(body.message);
+    return json({ ok: true });
+  }
   if (url.pathname === "/__test/accounts") {
     if (body.listFailure !== undefined)
       accountListFailure = typeof body.listFailure === "string" ? body.listFailure : null;
@@ -3205,6 +3223,10 @@ function control(url: URL, body: Row): Response {
   }
   if (url.pathname === "/__test/unverified-email") {
     state.unverifiedEmails.push(String(body.email));
+    return json({ ok: true });
+  }
+  if (url.pathname === "/__test/fail-next-invitation") {
+    invitationActionFailure = String(body.message);
     return json({ ok: true });
   }
   if (url.pathname === "/__test/invitation-list-failure") {

@@ -326,6 +326,15 @@ Use --org to override a saved selection. Reuse returned IDs with status/logs/sen
 Example: armada list --owner me --page 1 --limit 25 --json
 Example: armada list --org ORG_UUID --page 2 --page-info
 `,
+  advice: `Usage: armada advice <sandbox-id> [--org UUID] [--json]
+Read resource-sizing advice after Armada login and server authorization.
+Collects one bounded sample and considers up to the last 10 comparable sessions.
+Missing or partial evidence can produce no recommendation; do not treat unknowns as measured headroom.
+This never resizes a running machine or changes defaults; recommendations concern future launches.
+Human output summarizes supported advice or the no-recommendation reason.
+Use --json to inspect the full evidence response. Use a sandbox ID from armada list.
+Example: armada advice SANDBOX_UUID --org ORG_UUID --json
+`,
   "org setup": `Usage: armada org setup [--org <name>] [--json]
 Show organization provider setup status. Sign in before running the operation.
 Use --org to override a saved selection. This reports configuration, not a live lifecycle test.

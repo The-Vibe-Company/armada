@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { checkSkillpackKey, skillpackKeysFromList } from "../src/lib/skillpack-key.ts";
+import { checkSkillpackKey, skillpackActionFailure, skillpackKeysFromList } from "../src/lib/skillpack-key.ts";
 
 const ORG = "00000000-0000-4000-8000-000000000010";
 const OTHER = "00000000-0000-4000-8000-000000000011";
@@ -48,4 +48,13 @@ test("a pasted key is checked with the server's parser, trimmed, and an error ne
     expect(refused.error).toContain("cmp_pat_");
     expect(refused.error).not.toContain(wrong);
   }
+});
+
+test("key action failures give recovery without confirming an ambiguous mutation", () => {
+  for (const status of [undefined, 409, 503])
+    expect(skillpackActionFailure(status)).toContain("check whether it was saved or removed");
+  expect(skillpackActionFailure(401)).toContain("Sign in again");
+  expect(skillpackActionFailure(403)).toContain("organization admin");
+  expect(skillpackActionFailure(400)).toContain("Check your key in Skillpack");
+  expect(skillpackActionFailure(404)).toContain("Reload Skills");
 });

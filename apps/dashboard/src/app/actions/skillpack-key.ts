@@ -5,7 +5,7 @@ import { type ActionResult, done, fail, formString } from "@/lib/action";
 import { ControlError } from "@/lib/control";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { viewerSkillpackKey } from "@/lib/data/skillpack-key";
-import { checkSkillpackKey, SKILLS_PATH, type SkillpackScope } from "@/lib/skillpack-key";
+import { checkSkillpackKey, SKILLS_PATH, type SkillpackScope, skillpackActionFailure } from "@/lib/skillpack-key";
 
 /**
  * The Skills page's writes (#957), one control API call each as the signed-in viewer. The pasted key goes to the
@@ -38,7 +38,7 @@ async function guarded(data: FormData, run: (context: Context) => Promise<Action
     return result;
   } catch (error) {
     if (!(error instanceof ControlError)) throw error;
-    return fail(error.message);
+    return fail(skillpackActionFailure(error.status));
   }
 }
 
