@@ -516,7 +516,15 @@ async function backendSlotQuery<T>(sql: Sql, query: string, params: unknown[]): 
         e.schema === "public" &&
         e.table === "golden_backend_slots" &&
         (e.constraint === "golden_backend_one_binding" || e.constraint === "boat_backend_one_slot");
-      if (knownRaise || knownConstraint) throw new GoldenError("conflict", BACKEND_CONFLICT_MESSAGE);
+      if (knownRaise || knownConstraint)
+        throw new GoldenError(
+          "conflict",
+          knownConstraint && e.constraint === "golden_backend_one_binding"
+            ? "This golden is already bound to another backend. Ask an administrator to restore its original provider connection."
+            : e.message === "golden backend build already in progress"
+              ? "Another build of this golden is still running or awaiting recovery. Check its build status before retrying."
+              : "This backend has reached its golden capacity. Update an existing golden instead of creating another, or ask an administrator to increase capacity.",
+        );
     }
     throw error;
   }
@@ -567,10 +575,24 @@ export async function assertGoldenBackendBinding(
   if (PROVIDER_LIMITS[golden.provider].defaultGoldenCapacity === undefined && provider.maxGoldens === undefined) return;
   const identity = backendId ?? (await provider.backendIdentity?.())?.id;
   if (!identity) throw new GoldenError("conflict", "Golden backend binding cannot be verified.");
-  const result = await sql.query<{ busy: boolean }>(
-    `select build_id is not null as busy from public.golden_backend_slots
-     where provider = $1 and backend_id = $2 and golden_id = $3::uuid`,
+  const result = await sql.query<{ busy: boolean; job_id?: string; started_at?: string }>(
+    `select s.build_id is not null as busy, j.id as job_id, j.created_at::text as started_at
+     from public.golden_backend_slots s
+     left join public.golden_build_jobs j on j.reservation_id = s.build_id
+     where s.provider = $1 and s.backend_id = $2 and s.golden_id = $3::uuid`,
     [golden.provider, identity, golden.id],
   );
-  if (result.rows.length !== 1 || result.rows[0]?.busy) throw new GoldenError("conflict", BACKEND_CONFLICT_MESSAGE);
+  if (result.rows.length !== 1)
+    throw new GoldenError(
+      "conflict",
+      "This golden is not bound to the connected provider account. Ask an administrator to restore its original provider connection; retrying a build will not repair the binding.",
+    );
+  const slot = result.rows[0];
+  if (slot?.busy)
+    throw new GoldenError(
+      "conflict",
+      slot.job_id
+        ? `Another build of this golden is still running or awaiting recovery (started ${slot.started_at}). Check armada golden build-status ${slot.job_id}; wait for completion or ask an administrator to investigate recovery.`
+        : "This golden has a build reservation with no durable job. Ask an administrator to reconcile the reservation before retrying; no new build was started.",
+    );
 }
