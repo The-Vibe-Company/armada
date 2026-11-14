@@ -1392,3 +1392,37 @@ create/enable acknowledgements and uncertain admissions cannot become a pass;
 unconfirmed cleanup remains a failure with the routine ID and nonce reported.
 This proves one scheduled initial execution, not pause across a later hourly
 boundary, daily-limit exhaustion or the older routine script's entire campaign.
+
+### Readable-variable delivery parity
+
+Use a dedicated **non-secret** canary variable with value
+`parity_readable_<fresh random UUID>`. Publish a smoke template revision binding
+it to an environment key such as `ARMADA_PARITY_READABLE`, then add this metadata
+to that provider case (never put the value in the case JSON):
+
+```json
+"readableVariable": {
+  "id": "<variable UUID>",
+  "version": 1,
+  "key": "ARMADA_PARITY_READABLE"
+}
+```
+
+Run `--parity --feature readable-variables`, optionally `--only modal|docker`.
+The probe reads authorized variable metadata/value, requires the dedicated
+canary shape and exact template/version binding, checks frozen provenance, and
+first verifies a guest exec digest, then asks the native harness to hash the delivered environment value with a fresh
+public nonce. The prompt/command contains only the key and nonce—not the value
+or expected digest. Only the exact final parent-assistant digest plus the same
+turn's finished event passes; tool echoes, partial/retracted messages and other
+prompts cannot pass. Ordinary operator values are refused as explicit not-run,
+without a sandbox allocation. No variable or template is created or modified.
+
+Full runs share the configured template launch between template and readable-
+variable evidence, with one cleanup and no extra allocation for the variable
+row. Missing configuration is explicit not-run; unsupported delivery stays debt. An unavailable exec API leaves the proof not-run rather than trusting a model answer alone.
+Observation/requests share a 110-second budget; cleanup remains independent.
+Transient template-admission failures reconcile only the identical durable
+request key. The safe `parity_template_intent` record permits reconciliation;
+if no allocation identity can be recovered, cleanup is explicitly unconfirmed,
+never a successful absence. No values or raw manifests are printed.
