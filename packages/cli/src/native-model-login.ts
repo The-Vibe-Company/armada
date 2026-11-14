@@ -3,12 +3,14 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { VaultError } from "@armada/core";
+import {
+  NATIVE_CODEX_LOGIN_TIMEOUT_MS,
+  NATIVE_CODEX_START_TIMEOUT_MS,
+  NativeCodexLoginProtocol,
+  validateNativeCodexAuth,
+} from "./native-login-protocol.ts";
 
-/**
- * User-initiated local native device login, not a central OAuth client.
- * Codex owns OAuth and writes its private file. Only the device URL/code leave
- * this boundary; neither native stdout nor provider errors are forwarded.
- */
+/** User-initiated foreground native login. Never forward native stdout/stderr or keep credentials after cleanup. */
 export async function nativeCodexLogin(options: {
   path: string;
   signal: AbortSignal;
@@ -16,8 +18,20 @@ export async function nativeCodexLogin(options: {
   executable?: string;
 }): Promise<string> {
   if (process.platform === "win32") throw new VaultError("unavailable", "Secure native login requires Linux or macOS.");
-  if (options.signal.aborted) throw new VaultError("invalid", "Native login cancelled.");
-  const home = await mkdtemp(join(tmpdir(), "armada-native-login-"));
+  if (options.signal.aborted)
+    throw new VaultError("invalid", "Native Codex login was cancelled before starting. No account was published.");
+  const home = await mkdtemp(join(tmpdir(), "armada-native-login-")).catch(() => {
+    throw new VaultError(
+      "unavailable",
+      "Could not create a private temporary Codex login directory. No account was published.",
+    );
+  });
+  const deadline = new AbortController();
+  let timer = setTimeout(
+    () => deadline.abort(new DOMException("Login startup deadline", "TimeoutError")),
+    NATIVE_CODEX_START_TIMEOUT_MS,
+  );
+  const signal = AbortSignal.any([options.signal, deadline.signal]);
   const child = spawn(options.executable ?? "codex", ["-c", 'cli_auth_credentials_store="file"', "app-server"], {
     detached: true,
     cwd: home,
@@ -28,28 +42,48 @@ export async function nativeCodexLogin(options: {
     child.once("close", () => resolve());
     child.once("error", () => resolve());
   });
-  let abort: () => void = () => {};
+  let abort = () => {};
+  const protocol = new NativeCodexLoginProtocol(
+    (message) => child.stdin.write(`${JSON.stringify(message)}\n`),
+    (url, code) => {
+      clearTimeout(timer);
+      timer = setTimeout(
+        () => deadline.abort(new DOMException("Approval deadline", "TimeoutError")),
+        NATIVE_CODEX_LOGIN_TIMEOUT_MS,
+      );
+      options.device(url, code);
+    },
+  );
+  let value: string | undefined;
+  let failure: VaultError | undefined;
   try {
     await new Promise<void>((resolve, reject) => {
       let buffer = "",
-        bytes = 0,
-        loginId: string | undefined;
-      const fail = () => reject(new VaultError("unavailable", "Native Codex login failed or cancelled."));
-      abort = fail;
-      options.signal.addEventListener("abort", abort, { once: true });
-      if (options.signal.aborted) {
-        fail();
+        bytes = 0;
+      abort = () => reject(protocol.cancelled(signal));
+      signal.addEventListener("abort", abort, { once: true });
+      if (signal.aborted) {
+        abort();
         return;
       }
-      child.once("error", fail);
-      child.once("exit", fail);
+      child.once("error", (error: NodeJS.ErrnoException) =>
+        reject(
+          protocol.failure(
+            error.code === "ENOENT"
+              ? "Could not start Codex: executable not found on PATH"
+              : error.code === "EACCES"
+                ? "Could not start Codex: executable permission denied"
+                : "Could not start the native Codex process",
+          ),
+        ),
+      );
+      child.once("exit", (code, reason) => reject(protocol.exited(code, reason)));
       child.stderr.resume();
-      const send = (value: unknown) => child.stdin.write(`${JSON.stringify(value)}\n`);
-      child.stdin.on("error", fail);
+      child.stdin.on("error", () => reject(protocol.failure("The connection to the Codex app-server closed")));
       child.stdout.on("data", (chunk: Buffer) => {
         bytes += chunk.length;
         if (bytes > 65536) {
-          fail();
+          reject(protocol.failure("Codex exceeded the bounded login protocol output"));
           return;
         }
         buffer += chunk.toString("utf8");
@@ -58,73 +92,35 @@ export async function nativeCodexLogin(options: {
           const line = buffer.slice(0, end);
           buffer = buffer.slice(end + 1);
           try {
-            const message = JSON.parse(line);
-            if (message.error) {
-              fail();
-              return;
-            }
-            if (message.id === 1) {
-              send({ method: "initialized", params: {} });
-              send({ id: 2, method: "account/login/start", params: { type: "chatgptDeviceCode" } });
-            } else if (message.id === 2) {
-              const result = message.result;
-              const url = new URL(result.verificationUrl);
-              if (
-                result.type !== "chatgptDeviceCode" ||
-                typeof result.loginId !== "string" ||
-                url.origin !== "https://auth.openai.com" ||
-                url.pathname !== "/codex/device" ||
-                url.search ||
-                url.hash ||
-                url.username ||
-                url.password ||
-                typeof result.userCode !== "string" ||
-                !/^[A-Z0-9-]{4,32}$/.test(result.userCode)
-              ) {
-                fail();
-                return;
-              }
-              loginId = result.loginId;
-              options.device(url.href, result.userCode);
-            } else if (message.method === "account/login/completed") {
-              if (!loginId || message.params?.loginId !== loginId || message.params?.success !== true) {
-                fail();
-                return;
-              }
-              resolve();
-            }
-          } catch {
-            fail();
+            if (protocol.receive(JSON.parse(line))) resolve();
+          } catch (error) {
+            reject(error instanceof VaultError ? error : protocol.failure("Codex sent invalid login protocol JSON"));
             return;
           }
           end = buffer.indexOf("\n");
         }
       });
-      send({
-        id: 1,
-        method: "initialize",
-        params: {
-          clientInfo: { name: "armada-local-login", version: "1" },
-          capabilities: {},
-        },
-      });
+      protocol.start();
     });
-    if (options.signal.aborted) throw new VaultError("invalid", "Native login cancelled.");
-    const value = await readFile(join(home, "auth.json"), "utf8");
-    if (Buffer.byteLength(value) > 65536) throw Error("oversized");
-    const auth = JSON.parse(value);
-    if (
-      !auth.tokens ||
-      typeof auth.tokens.access_token !== "string" ||
-      typeof auth.tokens.refresh_token !== "string" ||
-      typeof auth.tokens.account_id !== "string"
-    )
-      throw Error("invalid native auth");
-    return value;
-  } catch {
-    throw new VaultError("unavailable", "Native Codex login failed or cancelled. No account was published.");
+    if (signal.aborted) throw protocol.cancelled(signal);
+    let raw: string;
+    try {
+      raw = await readFile(join(home, "auth.json"), "utf8");
+    } catch (error) {
+      const missing = !!error && typeof error === "object" && "code" in error && error.code === "ENOENT";
+      throw protocol.failure(
+        missing
+          ? "Codex approved the login but wrote no auth.json"
+          : "Codex approved the login but its auth.json could not be read",
+      );
+    }
+    if (signal.aborted) throw protocol.cancelled(signal);
+    value = validateNativeCodexAuth(raw);
+  } catch (error) {
+    failure = error instanceof VaultError ? error : protocol.failure("Native Codex login failed unexpectedly");
   } finally {
-    options.signal.removeEventListener("abort", abort);
+    clearTimeout(timer);
+    signal.removeEventListener("abort", abort);
     if (child.pid) {
       try {
         process.kill(-child.pid, "SIGKILL");
@@ -135,17 +131,25 @@ export async function nativeCodexLogin(options: {
     child.stdin.destroy();
     child.stdout.destroy();
     child.stderr.destroy();
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
         exited,
         new Promise<void>((resolve) => {
-          timer = setTimeout(resolve, 2000);
+          cleanupTimer = setTimeout(resolve, 2000);
         }),
       ]);
     } finally {
-      if (timer) clearTimeout(timer);
+      if (cleanupTimer) clearTimeout(cleanupTimer);
     }
-    await rm(home, { recursive: true, force: true });
+    try {
+      await rm(home, { recursive: true, force: true });
+    } catch {
+      failure = protocol.failure("Could not remove the private temporary Codex authentication directory");
+    }
   }
+  if (failure) throw failure;
+  if (signal.aborted) throw protocol.cancelled(signal);
+  if (value === undefined) throw protocol.failure("Codex produced no usable native authentication");
+  return value;
 }
