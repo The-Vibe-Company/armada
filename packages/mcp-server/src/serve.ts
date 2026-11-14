@@ -287,7 +287,7 @@ export async function startServer(
     if (!runtimeLaunch) throw Error("Boat runtime default requires installed runtime artifacts.");
     launch.boatRuntimeDefault = {
       policy: runtimeLaunch,
-      credentials: launchCredentials(store, config.encryptionKey, undefined, modelAuth),
+      credentials: launchCredentials(store, config.encryptionKey, undefined, modelAuth, { store, app: githubApp }),
       connections: runtimeMcp.connections,
       provider: async (actor, golden) =>
         createBoatProvider({
@@ -324,7 +324,10 @@ export async function startServer(
   }
   // Docker placement is a separate, explicit API preview. Host polling remains
   // enabled independently so disabling new placement does not strand cleanup.
-  const dockerCredentials = launchCredentials(store, config.encryptionKey, undefined, modelAuth);
+  const dockerCredentials = launchCredentials(store, config.encryptionKey, undefined, modelAuth, {
+    store,
+    app: githubApp,
+  });
   const dockerEnabled = env.ARMADA_DOCKER_HOSTS === "1" && env.ARMADA_DOCKER_PLACEMENT === "1";
   let dockerBootstrap: ReturnType<typeof createDockerBootstrapService> | undefined;
   if (dockerEnabled) {

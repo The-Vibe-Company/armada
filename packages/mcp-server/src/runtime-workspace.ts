@@ -26,7 +26,7 @@ export function runtimeWorkspace(
             sandbox.id,
           )
         : { status: "not_connected" as const, message: "GitHub is not configured." };
-      await prepareLaunchWorkspace(
+      const warnings = await prepareLaunchWorkspace(
         host,
         sandbox.providerSandboxId,
         sandbox.id,
@@ -36,7 +36,7 @@ export function runtimeWorkspace(
         sleep,
         (request, step) => agent.workspaceExec(request, step, epoch, signal),
       );
-      return access;
+      return warnings.length ? { ...access, message: [access.message, ...warnings].filter(Boolean).join(" ") } : access;
     },
   };
 }

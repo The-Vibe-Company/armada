@@ -311,3 +311,36 @@ for (const visibility of [undefined, "private", "org"]) {
     });
   }
 }
+
+test("repository authorization refusal keeps no_credentials and the reconnect remedy in CLI JSON", async () => {
+  let errors = "";
+  const code = await run(
+    ["launch", "web", "--agent", "codex", "--json"],
+    { out: () => {}, err: (text) => (errors += text) },
+    {
+      auth: {
+        out: () => {},
+        err: () => {},
+        env: { ARMADA_TOKEN: token },
+        session: memorySessionStore(),
+        now: () => new Date(),
+        open: () => {},
+        fetch: async () =>
+          Response.json(
+            {
+              error: {
+                code: "no_credentials",
+                message: "Repository private needs a GitHub connection with read access. Run armada github connect.",
+              },
+            },
+            { status: 400 },
+          ),
+      },
+    },
+  );
+  expect(code).toBe(2);
+  const failure = JSON.parse(errors.trim().split("\n").at(-1)!);
+  expect(failure.error.code).toBe("no_credentials");
+  expect(failure.error.message).toContain("Repository private");
+  expect(failure.error.message).toContain("armada github connect");
+});

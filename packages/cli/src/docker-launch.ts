@@ -163,7 +163,7 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
     if (args.options.has("--json")) io.out(`${JSON.stringify(result, null, 2)}\n`);
     else
       io.out(
-        `Docker sandbox: ${result.sandbox.providerSandboxId}\nArmada id: ${result.sandbox.id}\nStatus: ${result.sandbox.status}\n${result.promptId ? `Prompt: ${result.promptId}\n` : ""}`,
+        `Docker sandbox: ${result.sandbox.providerSandboxId}\nArmada id: ${result.sandbox.id}\nStatus: ${result.sandbox.status}\n${result.promptId ? `Prompt: ${result.promptId}\n` : ""}${result.github?.message ? `Note: ${result.github.message}\n` : ""}${result.sandbox.statusReason ? `Reason: ${result.sandbox.statusReason}\n` : ""}`,
       );
     return 0;
   } catch (error) {

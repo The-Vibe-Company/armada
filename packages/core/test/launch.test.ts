@@ -556,7 +556,7 @@ describe("launch", () => {
       GOLDEN_ROOT,
       GOLDEN_ROOT,
     ]);
-    expect(world.execs[0]?.command).toContain("'pull' '--ff-only' 'origin' 'main'");
+    expect(world.execs[0]?.command).toContain("git fetch origin 'main'");
     expect(world.execs[1]?.command).toContain("'dev'");
     expect(world.execs[2]?.command).toBe("pnpm i");
     expect(world.prompts).toEqual([
@@ -803,13 +803,15 @@ exit 1
     const world = setup({
       golden: golden("org"),
       exec: (command) =>
-        command.includes("'pull'") ? { exitCode: 128, stderr: "fatal: not possible to fast-forward" } : { exitCode: 0 },
+        command.includes("git fetch")
+          ? { exitCode: 128, stderr: "fatal: not possible to fast-forward" }
+          : { exitCode: 0 },
     });
     await expect(
       launchSandbox(world.provider, world.stores, owner, { golden: "web", harness: "claude" }),
     ).rejects.toThrow(/git pull of web failed \(exit 128\)\.\nfatal: not possible to fast-forward/);
     expect(world.execs.some((exec) => exec.command === "pnpm i")).toBe(false);
-    expect(world.execs.filter((exec) => exec.command.includes("'pull'"))).toHaveLength(1);
+    expect(world.execs.filter((exec) => exec.command.includes("git fetch"))).toHaveLength(1);
   });
 
   test.each([
@@ -828,10 +830,12 @@ exit 1
       golden: golden("org"),
       prepare: true,
       exec: (command) =>
-        command.includes("'pull'") && (!transient || rejectedPulls++ === 0)
+        command.includes("git fetch") && (!transient || rejectedPulls++ === 0)
           ? {
-              exitCode: 128,
-              stderr: "fatal: detected dubious ownership in repository at '/home/user/web'\n" + "x".repeat(2500),
+              exitCode: 75,
+              stderr:
+                "ARMADA_REPOSITORY_FETCH_FAILED\nfatal: detected dubious ownership in repository at '/home/user/web'\n" +
+                "x".repeat(2500),
             }
           : { exitCode: 0 },
     });
@@ -849,7 +853,7 @@ exit 1
         },
         {
           sleep: async (ms) => {
-            expect(world.execs.filter((exec) => exec.command.includes("'pull'"))).toHaveLength(1);
+            expect(world.execs.filter((exec) => exec.command.includes("git fetch"))).toHaveLength(1);
             waits.push(ms);
           },
         },
@@ -870,9 +874,9 @@ exit 1
         retry: transient ? "succeeded" : "ownership_refused",
       },
     ]);
-    expect(world.execs.filter((exec) => exec.cwd === "/home/user/web" && exec.command.includes("'pull'"))).toHaveLength(
-      2,
-    );
+    expect(
+      world.execs.filter((exec) => exec.cwd === "/home/user/web" && exec.command.includes("git fetch")),
+    ).toHaveLength(2);
     if (transient) {
       expect(failure).not.toBeInstanceOf(LaunchError);
       expect([...world.rows.values()][0]?.status).toBe("running");
@@ -886,7 +890,7 @@ exit 1
     expect(error.code).toBe("init_failed");
     expect(error.safeReason).toBe("repository_ownership_mismatch");
     expect(error.cause).toBeInstanceOf(LaunchError);
-    expect((error.cause as Error).message).toContain("git pull of web failed (exit 128)");
+    expect((error.cause as Error).message).toContain("git pull of web failed (exit 75)");
     expect(error.sandboxId).toBeString();
     expect(error.message).toContain(`sandbox ${error.sandboxId}:`);
     expect(error.message).not.toContain("bx_1");
@@ -965,6 +969,7 @@ exit 1
     );
     expect(world.execs[0]?.command).toContain("user.name 'The Octocat'");
     expect(JSON.stringify(world.execs)).not.toContain(GITHUB_TOKEN);
+    expect(world.execs.find((exec) => exec.command.includes("git fetch"))?.command).not.toContain("credential.helper=");
     expect(result.github).toEqual({ status: "connected", login: "octocat" });
     expect(result.sandbox.status).toBe("ready");
   });
@@ -1566,4 +1571,170 @@ test("plain launches merge default layers before installation; opt-out keeps exp
       skipSkillDefaults: "yes" as never,
     }),
   ).rejects.toMatchObject({ code: "invalid_request" });
+});
+
+test("repository authorization preflight refuses before fork", async () => {
+  const world = setup({ golden: golden("org") });
+  world.stores.credentials.authorizeRepositories = async (actor, _credentials, repos) => {
+    expect(actor.userId).toBe(owner.userId);
+    expect(repos.map((repo) => repo.dir)).toEqual(["web", "api"]);
+    throw new LaunchError("no_credentials", "Repository web needs GitHub access; run armada github connect.");
+  };
+  await expect(
+    launchSandbox(world.provider, world.stores, owner, { golden: "web", harness: "claude" }),
+  ).rejects.toMatchObject({ code: "no_credentials" });
+  expect(world.forks).toEqual([]);
+});
+
+test.each(["boat", "modal", "docker"])(
+  "shared %s refresh preserves helper authority and warns only on completed fetch network failure",
+  async (id) => {
+    const g = golden("org");
+    g.config.repos = g.config.repos.slice(0, 1);
+    g.config.init = ["echo ready"];
+    const commands: string[] = [];
+    const warnings = await prepareLaunchWorkspace(
+      {
+        id,
+        exec: async (request) => {
+          commands.push(request.command);
+          expect(request.command).not.toContain("credential.helper=");
+          return {
+            detached: false,
+            exitCode: request.command.includes("git fetch") ? 75 : 0,
+            stdout: "",
+            stderr: request.command.includes("git fetch")
+              ? "fatal: Could not resolve host opaque-provider-data\nARMADA_REPOSITORY_FETCH_FAILED\n"
+              : "",
+            timedOut: false,
+            truncated: false,
+          };
+        },
+      },
+      "physical",
+      "logical",
+      g,
+      ["opaque-provider-data"],
+      () => {},
+    );
+    expect(warnings).toEqual([expect.stringContaining("repository web")]);
+    expect(warnings.join(" ")).toContain("snapshot checkout");
+    expect(warnings.join(" ")).not.toContain("opaque-provider-data");
+    expect(commands.at(-1)).toBe("echo ready");
+  },
+);
+
+test.each(["auth", "merge-network", "timeout", "init"])(
+  "refresh policy blocks %s failure without exposing credential diagnostics",
+  async (mode) => {
+    const g = golden("org");
+    g.config.repos = g.config.repos.slice(0, 1);
+    g.config.init = ["echo ready"];
+    const failure = prepareLaunchWorkspace(
+      {
+        id: "boat",
+        exec: async (request) => {
+          const repository = request.command.includes("git fetch");
+          const fails = mode === "init" ? !repository : repository;
+          return {
+            detached: false,
+            exitCode: fails ? 1 : 0,
+            stdout: "",
+            stderr: !fails
+              ? ""
+              : mode === "auth"
+                ? "fatal: could not read Username for https://github.com: terminal prompts disabled opaque-private-token"
+                : mode === "merge-network"
+                  ? "RPC failed\nARMADA_REPOSITORY_FETCH_FAILED\n"
+                  : "ARMADA_REPOSITORY_FETCH_FAILED\nCould not resolve host",
+            timedOut: fails && mode === "timeout",
+            truncated: false,
+          };
+        },
+      },
+      "physical",
+      "logical",
+      g,
+      ["opaque-private-token"],
+      () => {},
+    );
+    if (mode === "auth")
+      await expect(failure).rejects.toMatchObject({
+        code: "no_credentials",
+        message: expect.stringContaining("Repository web needs a GitHub connection"),
+      });
+    else await expect(failure).rejects.toMatchObject({ code: "init_failed" });
+  },
+);
+
+test("native launch exposes snapshot fallback warnings in its existing GitHub result", async () => {
+  const world = setup({
+    golden: golden("org"),
+    github: { status: "connected", token: GITHUB_TOKEN, identity: IDENTITY },
+    exec: (command) =>
+      command.includes("git fetch")
+        ? { exitCode: 75, stderr: "Could not resolve host\nARMADA_REPOSITORY_FETCH_FAILED\n" }
+        : { exitCode: 0 },
+  });
+  const result = await launchSandbox(world.provider, world.stores, owner, { golden: "web", harness: "claude" });
+  expect(result.sandbox.status).toBe("ready");
+  expect(result.github.message).toContain("snapshot checkout");
+  expect(world.execs.some((exec) => exec.command === "pnpm i")).toBe(true);
+});
+
+test("generated refresh never merges after a failed fetch and preserves its completed failure marker", async () => {
+  const { pullCommand } = await import("../src/index.ts");
+  const spec = pullCommand(golden("org").config.repos[0]!);
+  const result = spawnSync(
+    "/bin/bash",
+    [
+      "-c",
+      `env() { [ "$1" = GIT_TERMINAL_PROMPT=0 ] || return 92; shift; "$@"; }
+    git() { printf '%s\\n' "$1"; if [ "$1" = fetch ]; then printf 'Could not resolve host\\n' >&2; return 128; fi; return 0; }
+    ${spec.command}`,
+    ],
+    { encoding: "utf8" },
+  );
+  expect(result.status).toBe(75);
+  expect(result.stdout.trim()).toBe("fetch");
+  expect(result.stderr).toContain("ARMADA_REPOSITORY_FETCH_FAILED");
+  expect(spec.command).not.toContain("credential.helper=");
+});
+
+test("generated refresh uses the installed caller helper without writing its token to commands or config", async () => {
+  const { gitSetupCommand, pullCommand } = await import("../src/index.ts");
+  const secret = "ghu_fixture_only";
+  const spec = pullCommand(golden("org").config.repos[0]!);
+  // Model only Git's helper selection protocol, never invoke real Git, a network,
+  // or an ambient credential store. The executed helper is generated by setupGitHub.
+  const result = spawnSync(
+    "/bin/bash",
+    [
+      "-c",
+      `set -eu
+    helper=''
+    env() { [ "$1" = GIT_TERMINAL_PROMPT=0 ] || return 92; shift; "$@"; }
+    git() {
+      while [ "$1" = -c ]; do if [ "$2" = credential.helper= ]; then helper=''; fi; shift 2; done
+      case "$1" in
+        config) if [ "$2" = --global ] && [ "$3" = --add ] && [ "$4" = credential.https://github.com.helper ]; then helper="$5"; fi ;;
+        pull|fetch)
+          [ -n "$helper" ] || return 128
+          local credential
+          credential=$(printf 'protocol=https\\nhost=github.com\\nwwwauth[]=Basic realm=GitHub\\n\\n' | sh -c "\${helper#!} get") || return 128
+          case "$credential" in *"password=$GH_TOKEN"*) printf 'fetch-authorized\\n' ;; *) return 128 ;; esac ;;
+        merge) printf 'merge-authorized\\n' ;;
+        *) return 93 ;;
+      esac
+    }
+    ${gitSetupCommand(IDENTITY)}
+    ${spec.command}
+    printf '%s\\n' "$helper"`,
+    ],
+    { env: { PATH: process.env.PATH ?? "", GH_TOKEN: secret }, encoding: "utf8" },
+  );
+  expect(result.status, result.stderr).toBe(0);
+  expect(result.stdout).toContain("fetch-authorized");
+  expect(result.stdout).toContain("merge-authorized");
+  expect(spec.command + result.stdout + result.stderr).not.toContain(secret);
 });

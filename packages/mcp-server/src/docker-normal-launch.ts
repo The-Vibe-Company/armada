@@ -12,6 +12,7 @@ import {
   HARNESSES,
   type Harness,
   type LaunchCredentialResolver,
+  LaunchError,
   normalizeGitHubGoldenConfig,
   officialSandboxImage,
   ProviderError,
@@ -34,6 +35,7 @@ import {
   decryptSecret,
   encryptSecret,
   mergeSkillPins,
+  prepareLaunchWorkspace,
   resolveLaunchSecrets,
   resolveLaunchVariables,
 } from "@armada/core/server";
@@ -135,7 +137,7 @@ type Options = {
   /** Trusted server release configuration, never accepted from a caller. */
   officialImage?: string;
   github?: Pick<RuntimeGitHub, "prepare" | "prepareLaunch" | "prepareTurn" | "preflightRepositories">;
-  credentials: Pick<LaunchCredentialResolver, "resolve" | "skillpackKey">;
+  credentials: Pick<LaunchCredentialResolver, "resolve" | "skillpackKey" | "authorizeRepositories">;
   mcp?: RuntimeMcp;
   bootstrap?: ReturnType<typeof createDockerBootstrapService>;
   clock?: Clock;
@@ -299,14 +301,25 @@ function normalize(body: Record<string, unknown>, image: string): Request {
   };
 }
 /** A launch that did not become ready, in the host's own words when it could not fetch the image (#1507). */
-const notReady = (row: Row) =>
-  failure(
+const repositoryAccessMessage = (message: string | null | undefined): message is string =>
+  typeof message === "string" &&
+  (/^Repository [A-Za-z0-9][A-Za-z0-9_.-]{0,80} needs a GitHub connection with read access\. Run armada github connect, grant your account and the Armada GitHub App access, then launch again\.$/.test(
+    message,
+  ) ||
+    /^Repository [A-Za-z0-9][A-Za-z0-9_.-]{0,80} could not be verified as public before launch\. Run armada github connect or retry when GitHub is available\.$/.test(
+      message,
+    ));
+const notReady = (row: Row) => {
+  if (row.status === "failed" && repositoryAccessMessage(row.status_reason))
+    return new LaunchError("no_credentials", row.status_reason);
+  return failure(
     "sandbox_not_ready",
     row.status_reason === DOCKER_IMAGE_UNAVAILABLE_MESSAGE ||
       Object.values(DOCKER_LAUNCH_FAILURE_MESSAGES).some((message) => message === row.status_reason)
       ? DOCKER_IMAGE_UNAVAILABLE_MESSAGE
       : undefined,
   );
+};
 const scoped = (tx: Sql): Sql => ({ query: tx.query.bind(tx), transaction: (work) => work(tx) });
 const iso = (date: Date | string) => new Date(date).toISOString();
 const active = (row: Row) =>
@@ -430,6 +443,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
         row.status !== "failed"
           ? null
           : row.status_reason === DOCKER_IMAGE_UNAVAILABLE_MESSAGE ||
+              repositoryAccessMessage(row.status_reason) ||
               Object.values(DOCKER_LAUNCH_FAILURE_MESSAGES).some((message) => message === row.status_reason)
             ? row.status_reason
             : "Docker sandbox failed.",
@@ -510,10 +524,9 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       if (state.row && state.receipt) return envelope(state.row, state.receipt);
       if (options.enabled !== true || !options.bootstrap) throw failure("unavailable");
       if (!state.manifest) {
-        if (request.repos && (!options.deferLaunch || admission)) {
-          if (!options.github) throw failure("unavailable");
-          await options.github.preflightRepositories(caller, request.org, request.repos ?? source?.config.repos ?? []);
-        }
+        const needsRepositoryPreflight = Boolean(
+          (request.repos && (!options.deferLaunch || admission)) || source?.config.repos.length,
+        );
         // Resolve outside the reservation transaction; only the binding is retained.
         const { resolved, binding } = await resolveDockerLaunchAccount(
           options.credentials,
@@ -521,6 +534,14 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
           request,
         );
         const launchActor = { ...actor, role: state.membership.role };
+        if (needsRepositoryPreflight) {
+          const repositories = request.repos ?? source?.config.repos ?? [];
+          await options.credentials.authorizeRepositories?.(launchActor, resolved, repositories);
+          if (request.repos) {
+            if (!options.github) throw failure("unavailable");
+            await options.github.preflightRepositories(caller, request.org, repositories);
+          }
+        }
         const defaults = request.skipSkillDefaults
           ? { org: [], personal: [] }
           : await createSkillDefaultsService(sql).resolve(launchActor, null);
@@ -609,10 +630,18 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       if (options.deferLaunch && !admission && !workerId) return envelope(state.row);
       let phase: string = DOCKER_LAUNCH_FAILURE_MESSAGES.startup;
       try {
-        if (workerId && request.repos) {
+        if (workerId && (request.repos?.length || manifest.snapshotConfig?.repos.length)) {
           phase = DOCKER_LAUNCH_FAILURE_MESSAGES.github;
-          if (!options.github) throw failure("unavailable");
-          await options.github.preflightRepositories(caller, request.org, request.repos);
+          const repositories = request.repos ?? manifest.snapshotConfig!.repos;
+          await options.credentials.authorizeRepositories?.(
+            { ...actor, role: state.membership.role },
+            {},
+            repositories,
+          );
+          if (request.repos) {
+            if (!options.github) throw failure("unavailable");
+            await options.github.preflightRepositories(caller, request.org, repositories);
+          }
         }
         phase = DOCKER_LAUNCH_FAILURE_MESSAGES.startup;
         const deadline = clock.now() + (options.timeoutMs ?? 600_000);
@@ -660,8 +689,60 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
         phase = DOCKER_LAUNCH_FAILURE_MESSAGES.environment;
         await createDockerLaunchEnvironment(sql, key, clock)(caller, request.requestId);
         phase = DOCKER_LAUNCH_FAILURE_MESSAGES.github;
-        if (!manifest.request.repos && manifest.snapshotConfig?.repos.length && options.github)
-          receipt.github = await options.github.prepareLaunch(caller, request.requestId);
+        if (!manifest.request.repos && manifest.snapshotConfig?.repos.length) {
+          receipt.github = options.github
+            ? await options.github.prepareLaunch(caller, request.requestId)
+            : {
+                status: "not_connected",
+                message: "GitHub is not connected; public snapshot repositories refresh anonymously.",
+              };
+          phase = DOCKER_LAUNCH_FAILURE_MESSAGES.checkout;
+          const agent = createRuntimeAgent(
+            createRuntimeCommands(createRuntimeEnrolments(sql, key), key, {
+              now: clock.now,
+              wait: async () => {
+                await live();
+                await wait();
+              },
+            }),
+            {
+              provider: "docker",
+              harness: request.harness,
+              ownerId: actor.userId,
+              sandboxId: request.requestId,
+              providerSandboxId: request.requestId,
+              cwd: "/home/user",
+              defaults: { model: request.model, reasoningEffort: request.reasoningEffort },
+            },
+          );
+          const warnings = await prepareLaunchWorkspace(
+            {
+              id: "docker",
+              exec: async () => {
+                throw Error("Snapshot refresh requires enrolled workspace execution.");
+              },
+            },
+            request.requestId,
+            request.requestId,
+            // Snapshot init/dependencies were baked during build; refresh must not rerun them.
+            { config: { repos: manifest.snapshotConfig.repos, init: [] } },
+            [],
+            () => {},
+            async (ms) => {
+              await live();
+              await clock.wait(ms);
+            },
+            async (command, step) => {
+              await live();
+              return agent.workspaceExec(command, step, receipt.epoch);
+            },
+          );
+          if (warnings.length)
+            receipt.github = {
+              ...receipt.github,
+              message: [receipt.github.message, ...warnings].filter(Boolean).join(" "),
+            };
+        }
         if (manifest.request.repos) {
           if (!options.github) throw failure("unavailable");
           const github = await options.github.prepare(caller, request.requestId);
@@ -803,6 +884,12 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       } catch (error) {
         if (error instanceof RuntimeGitHubConnectionError) phase = DOCKER_LAUNCH_FAILURE_MESSAGES.githubNotConnected;
         else if (error instanceof RuntimeGitHubDeliveryError) phase = DOCKER_LAUNCH_FAILURE_MESSAGES.githubDelivery;
+        else if (
+          error instanceof LaunchError &&
+          error.code === "no_credentials" &&
+          repositoryAccessMessage(error.message)
+        )
+          phase = error.message;
         if (workerId && !stopping) {
           // Only the live lease may record a terminal failure. No exception or command output crosses this boundary.
           await sql.query(
@@ -817,7 +904,12 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
         throw error;
       }
     } catch (error) {
-      if (error instanceof ProviderError || error instanceof VaultError) throw error;
+      if (
+        error instanceof ProviderError ||
+        error instanceof VaultError ||
+        (error instanceof LaunchError && error.code === "no_credentials" && repositoryAccessMessage(error.message))
+      )
+        throw error;
       throw failure("unavailable");
     }
   }

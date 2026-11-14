@@ -21,7 +21,16 @@ import {
   goldenForLaunch,
   waitReady,
 } from "./golden.ts";
-import { GOLDEN_ROOT, GoldenError, initCommand, pullCommand, type ShellCommand } from "./golden-config.ts";
+import {
+  GOLDEN_ROOT,
+  GoldenError,
+  type GoldenRepo,
+  initCommand,
+  pullCommand,
+  REPOSITORY_FETCH_FAILED_EXIT,
+  REPOSITORY_FETCH_FAILED_MARKER,
+  type ShellCommand,
+} from "./golden-config.ts";
 import { type HelperNegotiation, negotiateHelper } from "./helper.ts";
 import { LaunchError, type LaunchInitializationStage } from "./launch-error.ts";
 import { type MachineSize, resolveMachineSize } from "./machine-size.ts";
@@ -90,6 +99,12 @@ export interface LaunchCredentialResolver {
     credentialId?: string,
     credentialVersion?: number,
   ): Promise<HarnessCredentials>;
+  /** Read-only caller repository authorization before provider allocation. */
+  authorizeRepositories?(
+    actor: GoldenActor,
+    credentials: Pick<HarnessCredentials, "github">,
+    repos: readonly GoldenRepo[],
+  ): Promise<void>;
   /** Server-owned native credential admission, before provider allocation/hydration. */
   admit?(actor: GoldenActor, credentials: HarnessCredentials, sandboxId: string): Promise<void>;
   hydrateNative?(
@@ -379,6 +394,7 @@ export async function launchSandbox(
   const env = connected ? { ...credentials.env, ...githubEnv(connected.token) } : credentials.env;
   const secrets = connected ? [...credentials.secrets, connected.token] : credentials.secrets;
 
+  await stores.credentials.authorizeRepositories?.(actor, credentials, golden.config.repos);
   const id = (options.newId ?? (() => crypto.randomUUID()))();
   const releaseOperation = await stores.goldens.beginOperation?.(golden.id, {
     kind: "launch",
@@ -533,8 +549,18 @@ export async function launchSandbox(
           : { status: github.status, message: github.message };
       if (!runtime && github.status === "connected" && github.expiresAt)
         launchGithub.tokenExpiresAt = github.expiresAt.toISOString();
-      if (!runtime)
-        await prepareLaunchWorkspace(provider, ready.id, record.id, golden, secrets, progress, options.sleep);
+      if (!runtime) {
+        const warnings = await prepareLaunchWorkspace(
+          provider,
+          ready.id,
+          record.id,
+          golden,
+          secrets,
+          progress,
+          options.sleep,
+        );
+        if (warnings.length) launchGithub.message = [launchGithub.message, ...warnings].filter(Boolean).join(" ");
+      }
       progress("initialization_cwd");
       if (!runtime && repositoryDir !== null && prepareNativeCwd)
         await prepareNativeCwd({ sandboxId: ready.id, harness, cwd: `${GOLDEN_ROOT}/${repositoryDir}` });
@@ -798,7 +824,7 @@ export async function prepareLaunchWorkspace(
   provider: Pick<Provider, "id" | "exec">,
   sandboxId: string,
   armadaSandboxId: string,
-  golden: GoldenRecord,
+  golden: Pick<GoldenRecord, "config">,
   secrets: readonly string[],
   progress: (stage: LaunchInitializationStage) => void,
   sleep: (ms: number) => Promise<void> = delay,
@@ -806,7 +832,7 @@ export async function prepareLaunchWorkspace(
     request: Parameters<Provider["exec"]>[0],
     step: { phase: "repository" | "init"; index: number; attempt: number },
   ) => ReturnType<Provider["exec"]>,
-): Promise<void> {
+): Promise<string[]> {
   const runner = (phase: "repository" | "init", index: number) => {
     let attempt = 0;
     return transport
@@ -816,18 +842,28 @@ export async function prepareLaunchWorkspace(
         }
       : provider;
   };
+  const warnings: string[] = [];
   for (const [index, repo] of golden.config.repos.entries()) {
     progress("initialization_repository");
-    await run(runner("repository", index), sandboxId, pullCommand(repo), `git pull of ${repo.dir}`, secrets, {
-      dir: repo.dir,
-      sandboxId: armadaSandboxId,
-      sleep,
-    });
+    const warning = await run(
+      runner("repository", index),
+      sandboxId,
+      pullCommand(repo),
+      `git pull of ${repo.dir}`,
+      secrets,
+      {
+        dir: repo.dir,
+        sandboxId: armadaSandboxId,
+        sleep,
+      },
+    );
+    if (warning) warnings.push(warning);
   }
   for (const [index, command] of golden.config.init.entries()) {
     progress("initialization_commands");
     await run(runner("init", index), sandboxId, initCommand(command), `init command ${index + 1}`, secrets);
   }
+  return warnings;
 }
 
 /** Identity and the credential helper, before any repo is pulled. A failure here is a broken sandbox, so it fails the launch. */
@@ -869,6 +905,14 @@ async function writeCodexAuth(provider: Provider, sandboxId: string, secrets: re
   }
 }
 
+function isFetchFailure(result: Awaited<ReturnType<Provider["exec"]>>): boolean {
+  return (
+    !result.detached &&
+    result.exitCode === REPOSITORY_FETCH_FAILED_EXIT &&
+    result.stderr.split(/\r?\n/).includes(REPOSITORY_FETCH_FAILED_MARKER)
+  );
+}
+
 async function run(
   provider: Pick<Provider, "id" | "exec">,
   sandboxId: string,
@@ -876,7 +920,7 @@ async function run(
   label: string,
   secrets: readonly string[],
   repository?: { dir: string; sandboxId: string; sleep: (ms: number) => Promise<void> },
-): Promise<void> {
+): Promise<string | void> {
   const request = {
     sandboxId,
     command: spec.command,
@@ -890,7 +934,7 @@ async function run(
     repository !== undefined &&
     !result.detached &&
     !result.timedOut &&
-    result.exitCode === 128 &&
+    (result.exitCode === 128 || isFetchFailure(result)) &&
     result.stderr.includes("detected dubious ownership in repository")
   ) {
     await repository.sleep(OWNERSHIP_RETRY_DELAY_MS);
@@ -901,7 +945,10 @@ async function run(
       if (result.detached) retry = "detached";
       else if (result.timedOut) retry = "timed_out";
       else if (result.exitCode === 0) retry = "succeeded";
-      else if (result.exitCode === 128 && result.stderr.includes("detected dubious ownership in repository"))
+      else if (
+        (result.exitCode === 128 || isFetchFailure(result)) &&
+        result.stderr.includes("detected dubious ownership in repository")
+      )
         retry = "ownership_refused";
       else retry = "exit_nonzero";
     } finally {
@@ -926,6 +973,25 @@ async function run(
   if (result.detached) throw new LaunchError("init_failed", `${label} started in the background.`);
   if (result.timedOut) {
     throw new LaunchError("init_failed", `${label} timed out.${output(result.stderr, result.stdout, secrets)}`);
+  }
+  if (result.exitCode !== 0 && repository !== undefined) {
+    // Match only fixed Git diagnostic classes. Never publish arbitrary stderr or credentials.
+    if (
+      /Authentication failed|could not read (?:Username|Password)|terminal prompts disabled|Repository not found|repository .* not found|returned error: (?:401|403)/i.test(
+        result.stderr,
+      )
+    )
+      throw new LaunchError(
+        "no_credentials",
+        `Repository ${repository.dir} needs a GitHub connection with read access. Run armada github connect, grant your account and the Armada GitHub App access, then launch again.`,
+      );
+    if (
+      isFetchFailure(result) &&
+      /Could not resolve host|Failed to connect|Could not resolve proxy|Connection (?:timed out|reset)|RPC failed|early EOF|index-pack failed|returned error: (?:408|429|500|502|503|504)/i.test(
+        result.stderr,
+      )
+    )
+      return `Warning: repository ${repository.dir} could not refresh because the Git transfer failed; launching with its snapshot checkout. Retry refresh when the network is healthy.`;
   }
   if (result.exitCode !== 0) {
     const failure = new LaunchError(

@@ -848,7 +848,13 @@ async function dispatch(
           stores: {
             goldens: base.stores.goldens,
             sandboxes: base.stores.sandboxes,
-            credentials: launchCredentials(options.store, options.encryptionKey, undefined, options.modelAuth),
+            credentials: launchCredentials(
+              options.store,
+              options.encryptionKey,
+              undefined,
+              options.modelAuth,
+              options.github ? { ...options.github, store: options.store } : undefined,
+            ),
             ...(options.runtimeMcp ? { connections: options.runtimeMcp.connections } : {}),
           },
           provider: (golden) => options.modalRuntimeHostFor!({ ...golden, runtimeTransport: "dialout" }, caller),
