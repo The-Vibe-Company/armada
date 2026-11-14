@@ -7,6 +7,7 @@ import {
   parseDockerHostJob,
 } from "../../core/src/docker-host-job.ts";
 import { DockerMachineError, type DockerMachineRequest } from "../../core/src/docker-machine.ts";
+import type { DockerSandboxLimits } from "../../core/src/docker-resource-policy.ts";
 
 export type Job = DockerHostJob;
 export type Receipt = {
@@ -29,7 +30,21 @@ export type State = {
   hostId: string;
   hostToken: string;
   receipts: Receipt[];
+  /** Permanent compact replay fences; never evict within an installation. */
+  retired?: [
+    requestId: string,
+    hash: string,
+    generation: string,
+    machineHash: string,
+    operation: Receipt["operation"],
+    outcome: "completed" | "failed",
+    reason: DockerJobFailureReason | null,
+    imageId: string | null,
+  ][];
+  cleanupLimit?: number;
   lastPollAt?: string;
+  /** Receipt identities for unique active generations, in fair sweep order. */
+  activeTtl?: string[];
   /** Fair bounded retries across retained confirmations and process restarts. */
   expiryReportAfter?: string;
 };
@@ -39,10 +54,11 @@ export interface Store {
 }
 export interface Api {
   register(server: string, token: string, installationId: string): Promise<{ hostId: string; hostToken: string }>;
-  poll(state: State, options?: { skipSnapshots?: boolean }): Promise<{ job: Job | null }>;
+  poll(state: State, options?: { skipSnapshots?: boolean }): Promise<{ job: Job | null; limits?: DockerSandboxLimits }>;
   result(state: State, receipt: Receipt, expired?: true): Promise<void>;
 }
 export interface Executor {
+  configureLimits?(limits: DockerSandboxLimits | undefined): void;
   buildSnapshot?(job: Extract<Job, { operation: "buildSnapshot" }>, recoverOnly?: boolean): Promise<string>;
   startRuntime?(request: DockerMachineRequest, bootstrap: BootstrapDescriptor): Promise<unknown>;
   resume?(request: DockerMachineRequest): Promise<unknown>;
@@ -75,6 +91,33 @@ function fingerprint(job: Pick<Job, "request">): string {
     ...(r.snapshot ? [r.snapshot] : []),
   ]);
 }
+function updateActiveTtl(state: State, receipt: Receipt): void {
+  const active = state.activeTtl;
+  if (!active) return;
+  const same = (id: string) => {
+    const other = state.receipts.find((item) => item.requestId === id);
+    return (
+      other?.request.sandboxId === receipt.request.sandboxId && other.request.generation === receipt.request.generation
+    );
+  };
+  if (
+    receipt.expired ||
+    ((receipt.operation === "stop" || receipt.operation === "delete") && receipt.outcome === "completed")
+  ) {
+    state.activeTtl = active.filter((id) => !same(id));
+  } else if (
+    (receipt.operation === "create" || receipt.operation === "bootstrap" || receipt.operation === "resume") &&
+    !active.some(same) &&
+    !state.receipts.some(
+      (item) =>
+        item.expired &&
+        item.request.sandboxId === receipt.request.sandboxId &&
+        item.request.generation === receipt.request.generation,
+    )
+  ) {
+    active.push(receipt.requestId);
+  }
+}
 export async function register(store: Store, api: Api, server: string, token: string): Promise<void> {
   if (!validToken(token)) throw new Error("Invalid registration token");
   const origin = serverOrigin(server);
@@ -92,22 +135,57 @@ export async function register(store: Store, api: Api, server: string, token: st
 /** One serialized production iteration. Durable receipts precede all machine operations. */
 export async function tick(store: Store, api: Api, executor: Executor, skipSnapshots = false): Promise<void> {
   const state = await store.load();
-  // Sweep even when the server is offline or has revoked the credential. One failed sweep cannot block others.
-  for (const receipt of state.receipts.filter(
-    (r) => r.operation === "create" || r.operation === "bootstrap" || r.operation === "resume",
-  )) {
+  // Upgrade legacy state once. Replay identity is retained independently of TTL work.
+  if (!state.activeTtl) {
+    state.activeTtl = [];
+    const terminal = new Set<string>();
+    const stopped = new Set<string>();
+    const resumed = new Set(
+      state.receipts.filter((r) => r.operation === "resume").map((r) => generationKey(r.request)),
+    );
+    for (const retired of state.retired ?? []) {
+      if ((retired[4] === "stop" || retired[4] === "delete") && retired[5] !== "completed") continue;
+      if (retired[4] === "stop") stopped.add(retired[2]);
+      // Compacted launch receipts carry durable reported expiry proof. Deletes
+      // are permanent; snapshots do not describe a running machine.
+      else if (retired[4] !== "buildSnapshot") terminal.add(retired[2]);
+    }
+    for (const receipt of state.receipts) {
+      const key = generationKey(receipt.request);
+      if (terminal.has(key) || (stopped.has(key) && !resumed.has(key))) continue;
+      // Old compaction lost stop/resume ordering. A retained resume is uncertain,
+      // not terminal evidence: keep its local expiry obligation rather than
+      // disabling offline TTL for a legitimately resumed container.
+      updateActiveTtl(state, receipt);
+    }
+  }
+  // One generation per tick bounds the serial Docker prefix. Rotate durably before
+  // attempting I/O, so a failing generation cannot monopolize subsequent ticks.
+  const id = state.activeTtl.shift();
+  if (id) {
+    state.activeTtl.push(id);
     try {
-      if ((await executor.stopIfExpired(receipt.request)) === true && !receipt.expired) {
-        receipt.expired = true;
-        try {
-          await store.save(state);
-        } catch {
-          // Never publish a confirmation that has not survived persistence.
-          delete receipt.expired;
-        }
-      }
+      await store.save(state);
     } catch {
-      /* retry the sweep; an earlier durable confirmation can still be reported */
+      // Disk failure must not disable local physical expiry.
+    }
+    const receipt = state.receipts.find((r) => r.requestId === id);
+    if (receipt) {
+      try {
+        if ((await executor.stopIfExpired(receipt.request)) === true) {
+          receipt.expired = true;
+          state.activeTtl = state.activeTtl.filter((item) => item !== id);
+          try {
+            await store.save(state);
+          } catch {
+            // No durable proof: retain the retry and never publish confirmation.
+            delete receipt.expired;
+            state.activeTtl.push(id);
+          }
+        }
+      } catch {
+        /* uncertain ownership/stop: retry on a later fair turn */
+      }
     }
   }
   // Never let offline reporting delay another machine's physical TTL sweep.
@@ -171,10 +249,12 @@ export async function tick(store: Store, api: Api, executor: Executor, skipSnaps
     const saved = latest.receipts.find((item) => item.requestId === receipt.requestId);
     if (!saved) throw Error("Missing durable receipt");
     Object.assign(saved, receipt);
+    updateActiveTtl(latest, saved);
     Object.assign(state, latest);
     await store.save(state);
   }
   const polled = await api.poll(state, { skipSnapshots });
+  executor.configureLimits?.(polled.limits);
   state.lastPollAt = new Date().toISOString();
   if (!polled.job) {
     await store.save(state);
@@ -200,6 +280,41 @@ export async function tick(store: Store, api: Api, executor: Executor, skipSnaps
   )
     throw new Error("Changed host job");
   if (!receipt) {
+    const retired = state.retired ?? [];
+    const old = retired.find((r) => r[0] === job.requestId);
+    if (old) {
+      if (old[1] !== digest(JSON.stringify([job.operation, fingerprint(job), inputHash ?? null])))
+        throw new Error("Changed retired host job");
+      const replay = {
+        requestId: job.requestId,
+        request: job.request,
+        operation: job.operation,
+        ...(inputHash ? { inputHash } : {}),
+        outcome: old[5],
+        ...(old[6] ? { reason: old[6] } : {}),
+        ...(old[7] ? { imageId: old[7] } : {}),
+      } as Receipt;
+      await api.result(state, replay);
+      return;
+    }
+    const oldGeneration = retired.filter((r) => r[2] === generationKey(job.request));
+    const cleanup = job.operation === "stop" || job.operation === "delete";
+    if (
+      oldGeneration.some((r) => r[3] !== digest(fingerprint(job))) ||
+      oldGeneration.some(
+        (r) =>
+          r[4] === job.operation &&
+          (job.operation === "create" || job.operation === "bootstrap" || job.operation === "buildSnapshot"),
+      )
+    )
+      throw new Error("Retired machine generation");
+    // Reserve durable space for cleanup and TTL updates, not just the next launch.
+    const count = retired.length + state.receipts.length;
+    state.cleanupLimit ??= Math.max(17408, count + 1024);
+    if (count >= (cleanup ? state.cleanupLimit : 16384))
+      throw new Error("Host replay ledger capacity reached; retire installation");
+    if (!cleanup && Buffer.byteLength(JSON.stringify(state)) > 8 * 1024 * 1024)
+      throw new Error("Host admission capacity reached; cleanup remains available");
     const generation = state.receipts.filter(
       (r) => r.request.sandboxId === job.request.sandboxId && r.request.generation === job.request.generation,
     );
@@ -221,9 +336,48 @@ export async function tick(store: Store, api: Api, executor: Executor, skipSnaps
           : { ...base, operation: job.operation };
     receipt = created;
     state.receipts.push(created);
+    updateActiveTtl(state, created);
     await store.save(state);
     admitted = true;
   }
   await execute(receipt, job, admitted);
   await api.result(state, receipt);
+}
+
+function digest(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+function generationKey(request: DockerMachineRequest): string {
+  return digest(JSON.stringify([request.sandboxId, request.generation]));
+}
+/** Lossless identity fences: old requests are rejected, never re-executed.
+ * Keep live TTL obligations and all uncertain receipts in full.
+ */
+export function compactReceipts(state: State): void {
+  state.cleanupLimit ??= Math.max(17408, state.receipts.length + (state.retired?.length ?? 0) + 1024);
+  if (Buffer.byteLength(JSON.stringify(state)) < 1024 * 1024) return;
+  state.retired ??= [];
+  const retired = state.retired;
+  state.receipts = state.receipts.filter((receipt) => {
+    if (!receipt.outcome || retired.length >= state.cleanupLimit!) return true;
+    const closed =
+      receipt.operation === "stop" ||
+      receipt.operation === "delete" ||
+      receipt.operation === "buildSnapshot" ||
+      (receipt.expired && receipt.expiryReported);
+    if (!closed) return true;
+    retired.push([
+      receipt.requestId,
+      digest(
+        JSON.stringify([receipt.operation, fingerprint(receipt), "inputHash" in receipt ? receipt.inputHash : null]),
+      ),
+      generationKey(receipt.request),
+      digest(fingerprint(receipt)),
+      receipt.operation,
+      receipt.outcome,
+      receipt.reason ?? null,
+      receipt.operation === "buildSnapshot" ? (receipt.imageId ?? null) : null,
+    ]);
+    return false;
+  });
 }

@@ -2,7 +2,6 @@ import { assertProvider, createSqlAuthStore, oauthOptionsFromEnv } from "@armada
 import {
   createApplicationVault,
   createGoldenAdoption,
-  createRoutineScheduler,
   createRoutineService,
   createSkillDefaultsService,
   createSqlVaultStore,
@@ -13,7 +12,7 @@ import {
   githubInstallationAppFromEnv,
   type LaunchOptions,
   resolveBoatKey,
-  type Sql,
+  resolveGitHubAccess,
   VaultError,
 } from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
@@ -22,7 +21,7 @@ import { readBoatRuntimeManifest } from "./boat-runtime-manifest.ts";
 import { boatRuntimeResume } from "./boat-runtime-resume.ts";
 import { authenticateCaller } from "./caller.ts";
 import { configFromEnv } from "./config.ts";
-import { type ConfiguredControlOptions, handleControlRequest, templateRuntime } from "./control.ts";
+import { type ConfiguredControlOptions, handleControlRequest } from "./control.ts";
 import { createCredentialBindingRecovery } from "./credential-binding-recovery.ts";
 import { createSqlData } from "./data.ts";
 import { retryDatabaseBoot } from "./database-boot.ts";
@@ -56,11 +55,10 @@ import { createModelAuthOwnership } from "./model-auth.ts";
 import { createModelUsageApi } from "./model-usage.ts";
 import type { NamedLaunchCredentials } from "./named-credentials.ts";
 import { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
-import { createOttoApi } from "./otto/api.ts";
+import { createOttoRoutes } from "./otto/routes.ts";
 import { createOttoRuntime } from "./otto/runtime.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
 import { pruneServerRetention } from "./retention-maintenance.ts";
-import { observeRoutinePrompt } from "./routine-observer.ts";
 import { startRoutineWorker } from "./routine-worker.ts";
 import { createRuntimeArtifactRoute } from "./runtime-artifacts.ts";
 import { createRuntimeCheckpoint } from "./runtime-checkpoint.ts";
@@ -83,6 +81,9 @@ import { createSandboxAccountChange } from "./sandbox-account-change.ts";
 import { createSandboxArmadaAccess } from "./sandbox-armada-access.ts";
 import { createSandboxBillingAccount } from "./sandbox-billing-account.ts";
 import { createSandboxLifecycle } from "./sandbox-lifecycle.ts";
+import { createServerRequestDrain } from "./server-request-drain.ts";
+import { createServerRoutineScheduler } from "./server-routines.ts";
+import { installServerShutdown } from "./server-shutdown.ts";
 import { startServerWorkers } from "./server-workers.ts";
 import { bunSql } from "./sql.ts";
 import { createSubscriptionMigration } from "./subscription-migration.ts";
@@ -287,7 +288,7 @@ export async function startServer(
     if (!runtimeLaunch) throw Error("Boat runtime default requires installed runtime artifacts.");
     launch.boatRuntimeDefault = {
       policy: runtimeLaunch,
-      credentials: launchCredentials(store, config.encryptionKey, undefined, modelAuth),
+      credentials: launchCredentials(store, config.encryptionKey, undefined, modelAuth, { store, app: githubApp }),
       connections: runtimeMcp.connections,
       provider: async (actor, golden) =>
         createBoatProvider({
@@ -324,7 +325,10 @@ export async function startServer(
   }
   // Docker placement is a separate, explicit API preview. Host polling remains
   // enabled independently so disabling new placement does not strand cleanup.
-  const dockerCredentials = launchCredentials(store, config.encryptionKey, undefined, modelAuth);
+  const dockerCredentials = launchCredentials(store, config.encryptionKey, undefined, modelAuth, {
+    store,
+    app: githubApp,
+  });
   const dockerEnabled = env.ARMADA_DOCKER_HOSTS === "1" && env.ARMADA_DOCKER_PLACEMENT === "1";
   let dockerBootstrap: ReturnType<typeof createDockerBootstrapService> | undefined;
   if (dockerEnabled) {
@@ -359,6 +363,24 @@ export async function startServer(
       credentialScope: tokens.scope,
     })) as import("@armada/provider-modal").ModalProvider;
   };
+  if (config.modalAgentPath === "runtime") {
+    if (!modalRuntimePolicy)
+      throw Error("Modal runtime default requires the explicit runtime policy; no native fallback.");
+    launch.modalRuntimeDefault = {
+      policy: modalRuntimePolicy,
+      credentials: launchCredentials(store, config.encryptionKey, undefined, modelAuth),
+      connections: runtimeMcp.connections,
+      provider: (actor, golden) =>
+        modalRuntimeHostFor(
+          { ...golden, runtimeTransport: "dialout" },
+          {
+            userId: actor.userId,
+            orgs: [{ orgId: actor.orgId, role: actor.role }],
+            via: "service",
+          },
+        ),
+    };
+  }
   const boatResume = runtimeLaunch
     ? boatRuntimeResume({ sql, vault: store, key: config.encryptionKey, policy: runtimeLaunch, modelAuth })
     : undefined;
@@ -598,23 +620,33 @@ export async function startServer(
             ),
           ]
         : []),
-      ...(otto
-        ? [
-            otto.route,
-            createOttoApi(
-              ottoSql ?? sql,
-              otto.scope,
-              (request) =>
-                authenticateCaller(request.headers.get("authorization"), {
-                  store: authStore,
-                  supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
-                  now: new Date(),
-                }),
-              undefined,
-              config.encryptionKey,
-            ),
-          ]
-        : []),
+      ...(otto ? [otto.route] : []),
+      ...createOttoRoutes({
+        reader: store,
+        sql: ottoSql ?? sql,
+        scopes: otto?.scopes ?? [],
+        authenticate: (request) =>
+          authenticateCaller(request.headers.get("authorization"), {
+            store: authStore,
+            supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
+            now: new Date(),
+          }),
+        observerToken: env.ARMADA_OTTO_GITHUB_TOKEN,
+        encryptionKey: config.encryptionKey,
+        canReadRepository: async (caller, repository) => {
+          const access = await resolveGitHubAccess(
+            { store, app: githubApp, encryptionKey: config.encryptionKey, caller: "account_status" },
+            caller.userId,
+          );
+          if (access.status !== "connected") return false;
+          const response = await globalThis.fetch(`https://api.github.com/repos/${repository}`, {
+            redirect: "error",
+            signal: AbortSignal.timeout(2000),
+            headers: { authorization: `Bearer ${access.token}`, accept: "application/vnd.github+json" },
+          });
+          return response.ok;
+        },
+      }),
       createDockerHostInstallRoute(env.ARMADA_RUNTIME_ARTIFACT_DIR, config.publicUrl),
       createRuntimeArtifactRoute(env.ARMADA_RUNTIME_ARTIFACT_DIR),
       runtimeEnrolments.route,
@@ -634,50 +666,8 @@ export async function startServer(
   });
   mcp.startBackground();
   dockerLaunch?.startBackground();
-  let draining = false;
-  const requests = new Set<Promise<unknown>>();
-  const fetch = (request: Request) => {
-    if (draining)
-      return Response.json({ error: "temporarily_unavailable" }, { status: 503, headers: { "retry-after": "5" } });
-    const pending = handler(request).then((response) => {
-      // Gateway POST tools use SSE responses: the handler can return before the
-      // admitted tool finishes. GET notification streams instead end at MCP close.
-      if (request.method !== "POST" || !response.body) return response;
-      const reader = response.body.getReader();
-      const finished = Promise.withResolvers<void>();
-      requests.add(finished.promise);
-      void finished.promise.then(() => requests.delete(finished.promise));
-      const body = new ReadableStream<Uint8Array>({
-        async pull(controller) {
-          try {
-            const chunk = await reader.read();
-            if (chunk.done) {
-              controller.close();
-              finished.resolve();
-            } else controller.enqueue(chunk.value);
-          } catch (error) {
-            controller.error(error);
-            finished.resolve();
-          }
-        },
-        async cancel(reason) {
-          try {
-            await reader.cancel(reason);
-          } finally {
-            finished.resolve();
-          }
-        },
-      });
-      return new Response(body, {
-        status: response.status,
-        statusText: response.statusText,
-        headers: response.headers,
-      });
-    });
-    requests.add(pending);
-    void pending.finally(() => requests.delete(pending)).catch(() => {});
-    return pending;
-  };
+  const requestDrain = createServerRequestDrain(handler);
+  const { fetch, requests } = requestDrain;
   const server = Object.assign(
     Bun.serve<RuntimeSocketData>({
       port: config.port,
@@ -729,109 +719,27 @@ export async function startServer(
     env.ARMADA_INVITATION_MAIL === "supabase" && control.invitations
       ? startInvitationWorker(control.invitations)
       : undefined;
-  const routineScheduler = createRoutineScheduler(sql, {
-    observe: async (actor, turn) => {
-      const orgId = actor.orgs[0]?.orgId;
-      const member = (
-        await sql.query<{ role: "admin" | "member" }>(
-          "select role from public.members where org_id=$1 and user_id=$2",
-          [orgId, actor.userId],
-        )
-      ).rows[0];
-      if (!member) return "unknown";
-      const caller = { userId: actor.userId, orgs: [{ orgId: orgId!, role: member.role }], via: "service" as const };
-      return observeRoutinePrompt(caller, turn, {
-        ...(control.dockerControls ? { docker: control.dockerControls } : {}),
-        get: (id) => data(caller).sandboxes.get(id),
-        provider: (sandbox) => providers.resolve(sandbox, caller),
-      });
-    },
-    launch: async (actor, input, admission) => {
-      // Re-read the persisted execution owner's role, never impersonate the editing admin.
-      const orgId = input.org as string;
-      const member = (
-        await sql.query<{ role: "admin" | "member" }>(
-          "select role from public.members where org_id=$1 and user_id=$2",
-          [orgId, actor.userId],
-        )
-      ).rows[0];
-      if (!member) throw new Error("Routine owner unavailable.");
-      const caller = { userId: actor.userId, orgs: [{ orgId, role: member.role }], via: "service" as const };
-      const runtime = templateRuntime(control, caller);
-      if (!runtime) throw new VaultError("unavailable", "Routine launch runtime unavailable.");
-      const authorize = async (tx: Sql = sql) => {
-        const grant = (
-          await tx.query(
-            `select m.user_id from public.routine_runs run
-          join public.routines r on r.id=run.routine_id
-          join public.members m on m.org_id=r.org_id and m.user_id=run.owner_id
-          where run.request_key=$1 and run.owner_id=$2 and run.org_id=$3
-          and (r.scope='personal' or m.role='admin')`,
-            [input.requestKey, actor.userId, orgId],
-          )
-        ).rows[0];
-        if (!grant) throw new VaultError("forbidden", "Routine owner authorization changed.");
-      };
-      return templates.command(caller, "launch", input, {
-        ...runtime,
-        beforeDockerReserve: async (tx: Sql, id: string) => {
-          await authorize(tx);
-          await admission.beforeFork(tx);
-          await runtime.options?.beforeFork?.(id);
-        },
-        beforeDockerStart: () => authorize(),
-        options: {
-          ...runtime.options,
-          beforeFork: async (id) => {
-            await authorize();
-            await runtime.options?.beforeFork?.(id);
-            await admission.beforeFork();
-          },
-          beforeStart: async (provider, sandbox) => {
-            await authorize();
-            await runtime.options?.beforeStart?.(provider, sandbox);
-          },
-        },
-      });
-    },
-  });
+  const routineScheduler = createServerRoutineScheduler({ sql, control, templates, providers, data });
   const routineWorker = startRoutineWorker(routineScheduler, options.logError);
   const ottoWorker = otto?.start();
   const allWorkersDone = Promise.all([workers.done, invitationWorker?.done, routineWorker.done, ottoWorker?.done]).then(
     () => {},
   );
-  const stop = server.stop.bind(server);
-  let shutdown: Promise<void> | undefined;
-  server.stop = (closeActiveConnections?: boolean) => {
-    if (shutdown) {
-      if (closeActiveConnections) void stop(true);
-      return shutdown;
-    }
-    draining = true;
-    workers.stop();
-    invitationWorker?.stop();
-    routineWorker.stop();
-    ottoWorker?.stop();
-    // Requests may still use the gateway and SQL while finishing a launch.
-    // Drain handlers and POST response streams; idle GET SSE needs
-    // MCP close to finish. SQL stays alive until the native HTTP drain completes.
-    const socketsStopped = runtimeSockets.stop();
-    const stopped = stop(closeActiveConnections);
-    shutdown = Promise.all([
-      allWorkersDone,
-      dockerLaunch?.close(),
-      socketsStopped,
-      (async () => {
-        while (requests.size) await Promise.allSettled([...requests]);
-      })(),
-    ])
-      .then(() => mcp.close())
-      .then(() => stopped)
-      .then(() => Promise.all([sql.close(), ottoSql?.close()]))
-      .then(() => {});
-    server.workerDone = shutdown;
-    return shutdown;
-  };
+  installServerShutdown(server, {
+    beginDrain: () => {
+      requestDrain.beginDrain();
+      workers.stop();
+      invitationWorker?.stop();
+      routineWorker.stop();
+      ottoWorker?.stop();
+    },
+    workersDone: allWorkersDone,
+    stopSockets: () => runtimeSockets.stop(),
+    closeDocker: () => dockerLaunch?.close(),
+    requests,
+    closeMcp: () => mcp.close(),
+    closePools: () => Promise.all([sql.close(), ottoSql?.close()]),
+  });
   // Expose the tracked task for hosts that gracefully drain before process termination.
   Object.assign(server, { goldenWorker: workers.goldenWorker, lifecycleWorker: workers.lifecycleWorker });
   server.workerDone = allWorkersDone;

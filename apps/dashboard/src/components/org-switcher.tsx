@@ -39,7 +39,7 @@ export function OrgSwitcher({
     return (
       <div className="mx-3 mb-3 rounded-md border border-dashed bg-background p-3 text-sm md:mb-4">
         <p className="font-medium">No organization yet</p>
-        <p className="mt-1 text-muted-foreground">Goldens, sandboxes and keys belong to an organization.</p>
+        <p className="mt-1 text-muted-foreground">Snapshots, sandboxes and keys belong to an organization.</p>
         <Button asChild size="sm" className="mt-3">
           <Link href="/orgs">Create an organization</Link>
         </Button>

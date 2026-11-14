@@ -15,6 +15,14 @@ import type { SandboxPlacementProviderId } from "./sandbox-provider.ts";
 export interface DockerHostListRequest {
   org: string;
 }
+export interface DockerHostResourceSummary {
+  machine: { cpus: number; memoryBytes: number; availableCpus?: number; availableMemoryBytes?: number };
+  perSandbox: { cpus: number; memoryBytes: number; pids: number };
+  capacity: number;
+  /** Automatic slots withheld because external workloads consume headroom. */
+  heldBack?: number;
+  mode: "automatic" | "manual";
+}
 export interface DockerHostSummary {
   id: string;
   name: string | null;
@@ -25,6 +33,12 @@ export interface DockerHostSummary {
   revokedAt: string | null;
   /** The daemon version the host last reported (#1453); absent or null until a host has reported one. */
   version?: string | null;
+  /** Physical reservations, including pending starts until confirmed stopped. */
+  running?: number;
+  /** Missing on older servers; null until upgraded host hardware has been observed. */
+  resources?: DockerHostResourceSummary | null;
+  canManageLimits?: boolean;
+  limitsSupported?: boolean;
   /** Retained sandboxes, including stopped/failed, excluding deleted. */
   sandboxes: number;
 }
@@ -90,10 +104,12 @@ export interface LaunchOptionsResponse {
   ttl: { defaultSeconds: number; maxSeconds: Partial<Record<SandboxPlacementProviderId, number>> };
   providers: LaunchProviderOption[];
   modalRuntime?: {
+    defaultPath?: "native" | "runtime";
     version: number;
     enabled: boolean;
     followupVersion?: number;
     idleLaunchVersion?: number;
+    emptyResumeVersion?: number;
     idleTemplateVersion?: number;
     resumeVersion?: number;
     mcpVersion?: number;

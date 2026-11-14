@@ -10,7 +10,9 @@ import {
   type Harness,
   type HarnessCredentials,
   type LaunchCredentialResolver,
+  LaunchError,
   MODEL_CREDENTIAL_KINDS,
+  normalizeGitHubGoldenConfig,
   OPENCODE_ENDPOINT_ENV,
   parseCredentialValue,
   resolveCredentials,
@@ -53,9 +55,96 @@ export function launchCredentials(
   encryptionKey: string | undefined,
   github?: GitHubLaunchOptions,
   ownership?: ModelAuthOwnership,
+  /** Runtime preflight only: never add this GitHub token to harness credentials/env. */
+  repositoryGithub?: GitHubLaunchOptions,
 ): LaunchCredentialResolver {
+  const repositoryAccess = github ?? repositoryGithub;
   return {
     installPrivateSkill,
+    ...(repositoryAccess
+      ? ({
+          async authorizeRepositories(actor, credentials, repositories) {
+            const access =
+              credentials.github ??
+              (await resolveGitHubAccess(
+                { ...repositoryAccess, encryptionKey, caller: "launch", minimumLifetimeMs: 3_600_000 },
+                actor.userId,
+              ));
+            const connected = access?.status === "connected" ? access : undefined;
+            for (const repository of repositories) {
+              let identity: { owner: string; repo: string };
+              try {
+                identity = normalizeGitHubGoldenConfig({ repos: [repository], init: [] }).repos[0]!;
+              } catch {
+                continue;
+              } // Legacy non-GitHub sources retain their existing refresh path.
+              const denied = () =>
+                new LaunchError(
+                  "no_credentials",
+                  `Repository ${repository.dir} needs a GitHub connection with read access. Run armada github connect, grant your account and the Armada GitHub App access, then launch again.`,
+                );
+              const unknown = () =>
+                new LaunchError(
+                  "no_credentials",
+                  `Repository ${repository.dir} could not be verified as public before launch. Run armada github connect or retry when GitHub is available.`,
+                );
+              const request = async (suffix = "") => {
+                try {
+                  return await (repositoryAccess.fetch ?? fetch)(
+                    `https://api.github.com/repos/${identity.owner}/${identity.repo}${suffix}`,
+                    {
+                      redirect: "error",
+                      signal: AbortSignal.timeout(2000),
+                      headers: {
+                        accept: "application/vnd.github+json",
+                        ...(connected ? { authorization: `Bearer ${connected.token}` } : {}),
+                      },
+                    },
+                  );
+                } catch {
+                  return undefined;
+                } // No cheap evidence: refresh still classifies its own outcome.
+              };
+              const response = await request();
+              if (
+                !response ||
+                response.status >= 500 ||
+                response.status === 429 ||
+                response.headers.get("x-ratelimit-remaining") === "0" ||
+                response.headers.has("retry-after")
+              ) {
+                if (!connected) throw unknown();
+                continue;
+              }
+              if ([401, 403, 404].includes(response.status)) throw denied();
+              if (!response.ok) {
+                if (!connected) throw unknown();
+                continue;
+              }
+              const metadata: unknown = await response.json().catch(() => null);
+              if (
+                !metadata ||
+                typeof metadata !== "object" ||
+                !("private" in metadata) ||
+                typeof metadata.private !== "boolean"
+              ) {
+                if (!connected) throw unknown();
+                continue;
+              }
+              if (!metadata.private) continue;
+              if (!connected) throw denied();
+              const contents = await request(`/git/ref/heads/${encodeURIComponent(repository.branch)}`);
+              if (
+                contents &&
+                [401, 403, 404].includes(contents.status) &&
+                contents.headers.get("x-ratelimit-remaining") !== "0" &&
+                !contents.headers.has("retry-after")
+              )
+                throw denied();
+            }
+          },
+        } satisfies Pick<LaunchCredentialResolver, "authorizeRepositories">)
+      : {}),
     async skillpackKey(actor) {
       try {
         return (await resolveSkillpackCredential(reader, encryptionKey, actor))?.key ?? null;

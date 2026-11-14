@@ -18,7 +18,7 @@ import type { Bucket, ResourceState } from "./resource-list.ts";
 /**
  * The Templates page (#949, slice 6b of #906): launch presets as the control API's `templates/*` routes return them.
  * A template is a header (name, scope, current revision) and immutable numbered revisions, each freezing four
- * choices: an environment (a golden on one provider), tools (connection ids), the agent with its model and effort,
+ * choices: a snapshot (a golden on one provider), tools (connection ids), the agent with its model and effort,
  * and readable variables (id and version). Secret bindings contain IDs and versions only, never values.
  */
 export type TemplateScope = "personal" | "org";
@@ -165,7 +165,7 @@ export function templateProblems(definition: TemplateDefinition, lookups: Templa
   const problems: TemplateProblem[] = [];
   const golden = lookups.goldens.find((row) => row.id === definition.goldenId);
   if (definition.provider !== "docker" && (!golden || golden.provider !== definition.provider))
-    problems.push({ kind: "environment", text: "Its environment was removed or is no longer visible to you." });
+    problems.push({ kind: "environment", text: "Its snapshot was removed or is no longer visible to you." });
   else if (definition.provider !== "docker" && golden && !golden.ready)
     problems.push({ kind: "environment", text: `${golden.name} has no snapshot yet.` });
   if (lookups.connections)
@@ -214,7 +214,7 @@ export function templateState(
   const first = problems[0]?.kind;
   const label =
     first === "environment"
-      ? "Environment unavailable"
+      ? "Snapshot unavailable"
       : first === "tool"
         ? "Tool not ready"
         : first === "secret"
@@ -289,10 +289,10 @@ export function templateRequest(
   if (fields.scope !== "personal" && fields.scope !== "org") return { ok: false, error: "Choose who can use it." };
   const scope = fields.scope;
   const golden = lookups.goldens.find((row) => row.id === fields.goldenId);
-  if (!golden) return { ok: false, error: "Choose an environment." };
+  if (!golden) return { ok: false, error: "Choose a snapshot." };
   if (!golden.ready) return { ok: false, error: `${golden.name} has no snapshot yet: snapshot it first.` };
   if (scope === "org" && golden.visibility !== "org")
-    return { ok: false, error: `${golden.name} is private: an organization template needs a shared environment.` };
+    return { ok: false, error: `${golden.name} is private: an organization template needs a shared snapshot.` };
   const model = modelChoice(fields.harness, fields);
   if (!model.ok) return model;
   let modelAccount: TemplateDefinition["modelAccount"];
@@ -409,17 +409,17 @@ export function unreadableSelections(
 
 /** Why a launch was refused, in words, from the server's value-free reason code. */
 const LAUNCH_REASONS: Record<string, string> = {
-  environment_unavailable: "Its environment is no longer available, or has no snapshot.",
-  environment_binding_changed: "Its environment moved to another Modal workspace. Publish a new revision.",
-  environment_snapshot_unavailable: "Its environment's snapshot was retired. Rebuild the environment and try again.",
-  environment_admission_unavailable: "Its environment changed while launching. Try again.",
+  environment_unavailable: "Its snapshot is no longer available or has not been built.",
+  environment_binding_changed: "Its snapshot moved to another Modal workspace. Publish a new revision.",
+  environment_snapshot_unavailable: "Its saved snapshot was retired. Rebuild the snapshot and try again.",
+  environment_admission_unavailable: "Its snapshot changed while launching. Try again.",
   secret_unavailable: "A secret is expired, revoked or inaccessible. Publish a revision with an available secret.",
   secret_version_changed: "A secret changed. Publish a new revision to use its current version.",
   secret_delivery_unavailable: "This provider cannot deliver secret environment values.",
   variable_unavailable: "A variable it uses was revoked or deleted. Publish a new revision without it.",
   variable_version_changed: "A variable it uses changed. Publish a new revision to use the new value.",
   environment_limits_exceeded:
-    "Template variables and secrets exceed the environment limits (64 entries, 8 KiB per value, 64 KiB total). Reduce the bindings.",
+    "Template variables and secrets exceed the snapshot limits (64 entries, 8 KiB per value, 64 KiB total). Reduce the bindings.",
   variable_delivery_unavailable: "This provider cannot deliver variables yet.",
   connection_unavailable: "A tool it uses is not connected. Reconnect it in Tools, or publish a revision without it.",
   connection_version_changed: "A tool it uses was reconnected while launching. Try again.",
@@ -449,7 +449,7 @@ export function templateFailure(status: number | undefined, message: string): st
   if (refused) return launchReason(refused[1]);
   switch (status) {
     case 400:
-      return "The server refused this template. Check the environment, tools and variables, then try again.";
+      return "The server refused this template. Check the snapshot, tools and variables, then try again.";
     case 403:
       return message === "Template administrator permission required."
         ? "Only an admin changes organization templates."

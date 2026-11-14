@@ -4,6 +4,7 @@ import { providerParitySmoke } from "./provider-parity-smoke.ts";
 import {
   deleteSmokeReceipts,
   readSmokeJournal,
+  SMOKE_CLEANUP_BUDGET_MS,
   type SmokeSandboxReceipt,
   STAGING_ORIGIN,
   saveSmokeJournal,
@@ -338,8 +339,11 @@ async function runPostDeploySmoke(
     report(0, "configure", error instanceof SmokeFailure ? error : new SmokeFailure("invalid_configuration"));
     return false;
   }
-  // Reserve the final five minutes for best-effort cleanup, independently of a failed step.
-  const deadline = Math.min(io.now() + 35 * 60_000, (cleanupEnd ?? Number.POSITIVE_INFINITY) - 5 * 60_000);
+  // Keep the existing work/local-cleanup allowance, then reserve both ordered journal cleanup waves.
+  const deadline = Math.min(
+    io.now() + 35 * 60_000,
+    (cleanupEnd ?? Number.POSITIVE_INFINITY) - SMOKE_CLEANUP_BUDGET_MS - 5 * 60_000,
+  );
   const cleanupDeadline = deadline + 5 * 60_000;
   let cleaning = false;
   const protectedCanaries = new Set<string>();
@@ -1228,11 +1232,21 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
         requiresOperator: true,
       }),
     );
-  const cleanupEnd = io.now() + 40 * 60_000;
-  const cleanupIo = { fetch: io.fetch, out: io.out, now: io.now, sleep: io.sleep, deadline: cleanupEnd };
+  const cleanupIo = {
+    fetch: io.fetch,
+    out: io.out,
+    now: io.now,
+    sleep: io.sleep,
+    deadline: io.now() + SMOKE_CLEANUP_BUDGET_MS,
+  };
   rows = await deleteSmokeReceipts(STAGING_ORIGIN, env.ARMADA_TOKEN, rows, cleanupIo);
   await saveSmokeJournal(path, [...deferred, ...rows]);
   const earlierRows = rows;
+  // Historical reconciliation must not spend this run's work or final-cleanup reserve.
+  // Standard release modes: up to 20m historical + 35m work + 5m local + 20m final cleanup.
+  // The existing staging job still caps the whole job at 85m; no cleanup call exceeds its caller deadline.
+  const cleanupEnd = io.now() + 40 * 60_000 + SMOKE_CLEANUP_BUDGET_MS;
+  cleanupIo.deadline = cleanupEnd;
   rows = [];
   let passed = false;
   let unknownLaunch = false;

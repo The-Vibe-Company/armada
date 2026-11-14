@@ -359,4 +359,3 @@ export function createNativeStateStore(sql: Sql, key: string | undefined) {
     },
   };
 }
-export type NativeStateStore = ReturnType<typeof createNativeStateStore>;

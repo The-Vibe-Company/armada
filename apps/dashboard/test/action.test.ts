@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { explainDbError, isUuid } from "../src/lib/action.ts";
+import { explainDbError, fail, isUuid } from "../src/lib/action.ts";
 
 describe("action errors", () => {
   test("a row level security denial is one sentence, whatever Postgres says", () => {
@@ -37,5 +37,12 @@ describe("action errors", () => {
     expect(isUuid("00000000-0000-4000-8000-000000000001")).toBe(true);
     expect(isUuid("1 or 1=1")).toBe(false);
     expect(isUuid(undefined)).toBe(false);
+  });
+});
+
+test("dashboard failures translate legacy snapshot names without changing identifiers", () => {
+  expect(fail("Golden capacity reached; remove old goldens (golden_id).")).toEqual({
+    ok: false,
+    error: "Snapshot capacity reached; remove old snapshots (golden_id).",
   });
 });

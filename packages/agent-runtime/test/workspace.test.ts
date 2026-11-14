@@ -1,24 +1,14 @@
 import { expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pullCommand } from "../../core/src/golden-config.ts";
 import { Journal, Runner, type RunnerRequest } from "../src/index.ts";
 
-const git = "/usr/lib/git-core/git";
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "runtime-workspace-")),
-    home = join(root, "home"),
-    bin = join(root, "bin");
+    home = join(root, "home");
   await mkdir(home);
-  await mkdir(bin);
-  await symlink(git, join(bin, "git"));
-  const command = (...args: string[]) => {
-    const r = Bun.spawnSync([git, ...args], { env: { PATH: "/usr/bin:/bin", HOME: home } });
-    if (r.exitCode) throw Error(r.stderr.toString());
-    return r.stdout.toString().trim();
-  };
   const journal = new Journal(join(root, "journal"), (v) => v),
     grant = { sandboxId: "workspace", generation: "1", token: "x".repeat(32), expiresAt: Date.now() + 60000 };
   let starts = 0;
@@ -37,7 +27,7 @@ async function fixture() {
     undefined,
     undefined,
     undefined,
-    { execEnv: { HOME: home, PATH: `${bin}:/usr/bin:/bin` } },
+    { execEnv: { HOME: home, PATH: "/usr/bin:/bin" } },
   );
   const call = (r: RunnerRequest, signal?: AbortSignal) =>
     runner.handle(
@@ -66,7 +56,6 @@ async function fixture() {
     grant,
     call,
     step,
-    command,
     starts: () => starts,
     async close() {
       journal.close();
@@ -75,60 +64,16 @@ async function fixture() {
   };
 }
 const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
-test("private runtime workspace performs a real fast-forward before init, replays once, and never resets a divergent checkout", async () => {
-  const f = await fixture(),
-    origin = join(f.root, "origin"),
-    writer = join(f.root, "writer"),
-    checkout = join(f.root, "checkout");
+// Core launch tests own the generated fast-forward policy. This boundary owns
+// durable command execution, not Git's repository/commit/fast-forward engine.
+test("private workspace command replay runs once without starting inference", async () => {
+  const f = await fixture();
   try {
-    f.command("init", "--bare", origin);
-    f.command("init", "-b", "main", writer);
-    f.command("-C", writer, "config", "user.name", "Fixture");
-    f.command("-C", writer, "config", "user.email", "fixture@example.test");
-    await writeFile(join(writer, "file"), "first");
-    f.command("-C", writer, "add", "file");
-    f.command("-C", writer, "-c", "commit.gpgsign=false", "commit", "-m", "first");
-    f.command("-C", writer, "remote", "add", "origin", origin);
-    f.command("-C", writer, "push", "origin", "main");
-    f.command("--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/main");
-    f.command("clone", origin, checkout);
-    await writeFile(join(writer, "file"), "second");
-    f.command("-C", writer, "-c", "commit.gpgsign=false", "commit", "-am", "second");
-    f.command("-C", writer, "push", "origin", "main");
-    const head = f.command("-C", writer, "rev-parse", "HEAD"),
-      spec = pullCommand({ url: "https://github.com/fixture/project.git", branch: "main", dir: "project" });
-    // Private transport takes the server's cwd; production server uses the shared
-    // native /home/user builders. No test-only workspace-root option is needed.
-    expect(await (await f.step("pull", spec.command, checkout, "repository")).json()).toMatchObject({
-      result: { exitCode: 0, detached: false },
-    });
-    expect(f.command("-C", checkout, "rev-parse", "HEAD")).toBe(head);
-    const init = `test "$(git rev-parse HEAD)" = ${quote(head)} && printf 'ran\\n' >> marker`;
-    expect(await (await f.step("init", init, checkout)).json()).toMatchObject({ result: { exitCode: 0 } });
-    expect((await f.step("init", init, checkout)).status).toBe(200);
-    expect(await readFile(join(checkout, "marker"), "utf8")).toBe("ran\n");
-    f.command(
-      "-C",
-      checkout,
-      "-c",
-      "user.name=Fixture",
-      "-c",
-      "user.email=fixture@example.test",
-      "-c",
-      "commit.gpgsign=false",
-      "commit",
-      "--allow-empty",
-      "-m",
-      "local",
-    );
-    const local = f.command("-C", checkout, "rev-parse", "HEAD");
-    await writeFile(join(writer, "file"), "third");
-    f.command("-C", writer, "-c", "commit.gpgsign=false", "commit", "-am", "third");
-    f.command("-C", writer, "push", "origin", "main");
-    expect(await (await f.step("divergent", spec.command, checkout, "repository")).json()).toMatchObject({
-      result: { exitCode: 128 },
-    });
-    expect(f.command("-C", checkout, "rev-parse", "HEAD")).toBe(local);
+    const command = "printf 'ran\n' >> marker";
+    const first = await (await f.step("init", command, f.home)).json();
+    expect(first).toMatchObject({ result: { exitCode: 0, detached: false, timedOut: false } });
+    expect(await (await f.step("init", command, f.home)).json()).toEqual(first);
+    expect(await readFile(join(f.home, "marker"), "utf8")).toBe("ran\n");
     expect(f.starts()).toBe(0);
     expect(
       f.journal
@@ -139,7 +84,7 @@ test("private runtime workspace performs a real fast-forward before init, replay
             e.event.type === "armada/workspaceStep" &&
             (e.event.data as { status: string }).status !== "running",
         ),
-    ).toHaveLength(3);
+    ).toHaveLength(1);
   } finally {
     await f.close();
   }

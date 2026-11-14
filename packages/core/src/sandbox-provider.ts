@@ -62,6 +62,8 @@ export interface HostCapabilities {
   readonly retainSourceOnSnapshotUncertainty: boolean;
   /** A stopping observation is an in-flight stop; wait rather than reissuing stop. */
   readonly waitForPendingStop: boolean;
+  /** Durable stop phases already fence native admission; continue without re-observing or recapturing work. */
+  readonly fencedStopPhases: readonly string[];
   /** Physical lifetime must reserve future logical extension time at worker launch. */
   readonly reserveExtensionHeadroom: boolean;
   /** Dispose a completed disposable builder without creating an unwanted stop checkpoint. */
@@ -87,6 +89,7 @@ export const HOST_CAPABILITIES: Readonly<Record<SandboxProviderId, HostCapabilit
     goldenRestore: "fresh-fork",
     retainSourceOnSnapshotUncertainty: false,
     waitForPendingStop: true,
+    fencedStopPhases: [],
     reserveExtensionHeadroom: false,
     goldenSnapshotPublication: "replace-stable",
     goldenBuilderCleanup: "stop",
@@ -98,6 +101,7 @@ export const HOST_CAPABILITIES: Readonly<Record<SandboxProviderId, HostCapabilit
     goldenRestore: "shared-source",
     retainSourceOnSnapshotUncertainty: true,
     waitForPendingStop: false,
+    fencedStopPhases: ["checkpoint", "snapshot", "terminate"],
     reserveExtensionHeadroom: true,
     goldenSnapshotPublication: "publish-immutable",
     goldenBuilderCleanup: "delete",

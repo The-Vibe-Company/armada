@@ -3,14 +3,27 @@
 import { CircleCheckIcon, Loader2Icon, ServerIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useActionState, useCallback, useEffect, useRef, useState } from "react";
-import { dockerHostConnected, registerDockerHost, revokeDockerHost } from "@/app/actions/docker-hosts";
+import {
+  dockerHostConnected,
+  registerDockerHost,
+  revokeDockerHost,
+  updateDockerHostLimits,
+} from "@/app/actions/docker-hosts";
 import { ConfirmedAction } from "@/components/confirmed-action";
 import { CopyButton } from "@/components/copy-button";
 import { CreateDialog } from "@/components/create-dialog";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { expiryCountdown, HOST_NAME_MAX, revokeWarning } from "@/lib/docker-hosts";
+import { type DockerHost, expiryCountdown, HOST_NAME_MAX, revokeWarning } from "@/lib/docker-hosts";
 import { cn } from "@/lib/utils";
 
 /** How often the open dialog asks whether the new host has connected; the daemon itself polls every 20 seconds. */
@@ -263,5 +276,122 @@ export function RevokeHost({
       <input type="hidden" name="org" value={orgId} />
       <input type="hidden" name="hostId" value={hostId} />
     </ConfirmedAction>
+  );
+}
+
+/** Resource edits live in a short centered dialog, separate from host registration. */
+export function HostLimitsDialog({ orgId, host }: { orgId: string; host: DockerHost }) {
+  const [open, setOpen] = useState(false);
+  if (host.state === "revoked")
+    return <p className="text-sm text-muted-foreground">Resource limits are unavailable for revoked hosts.</p>;
+  if (!host.limitsSupported)
+    return (
+      <p className="text-sm text-muted-foreground">
+        Limits unavailable. Update the host daemon and wait for it to report machine resources.
+      </p>
+    );
+  if (!host.canManageLimits)
+    return <p className="text-sm text-muted-foreground">Only the host owner can change resource limits.</p>;
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <div className="space-y-1.5">
+        <DialogTrigger asChild>
+          <Button variant="outline" size="sm" disabled={host.state !== "online"}>
+            Edit limits
+          </Button>
+        </DialogTrigger>
+        {host.state !== "online" && (
+          <p className="text-sm text-muted-foreground">Bring the host online to change limits.</p>
+        )}
+      </div>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Host resource limits</DialogTitle>
+          <DialogDescription>
+            Stop all sandboxes and wait for builds and pending work to finish before changing CPU or memory. Capacity
+            can change while running, but cannot be lowered below current reservations.
+          </DialogDescription>
+        </DialogHeader>
+        {open && <HostLimitsForm orgId={orgId} host={host} onSaved={() => setOpen(false)} />}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function HostLimitsForm({ orgId, host, onSaved }: { orgId: string; host: DockerHost; onSaved: () => void }) {
+  const router = useRouter();
+  const [state, submit, pending] = useActionState(updateDockerHostLimits, null);
+  const errorRef = useRef<HTMLParagraphElement>(null);
+  useEffect(() => {
+    if (state?.ok) {
+      onSaved();
+      router.refresh();
+    } else if (state) errorRef.current?.focus();
+  }, [state, onSaved, router]);
+  return (
+    <form action={submit} className="space-y-4" aria-busy={pending}>
+      <input type="hidden" name="org" value={orgId} />
+      <input type="hidden" name="hostId" value={host.id} />
+      <p id="host-limits-hint" className="text-xs text-muted-foreground">
+        Leave a field blank to keep its current setting. Use automatic resets every override.
+      </p>
+      {!host.resources && (
+        <p role="status" className="text-sm text-muted-foreground">
+          Current resources are unavailable. Use automatic to clear overrides, then wait for the host to report its
+          resources.
+        </p>
+      )}
+      <div className="space-y-1.5">
+        <Label htmlFor="host-limit-cpus">CPUs per sandbox</Label>
+        <Input
+          id="host-limit-cpus"
+          name="cpus"
+          type="number"
+          min="0"
+          step="any"
+          placeholder={host.resources ? String(host.resources.perSandbox.cpus) : "Unknown"}
+          aria-describedby="host-limits-hint"
+          disabled={pending || !host.resources}
+        />
+      </div>
+      <div className="space-y-1.5">
+        <Label htmlFor="host-limit-memory">Memory per sandbox</Label>
+        <Input
+          id="host-limit-memory"
+          name="memory"
+          placeholder="e.g. 4g or 512m"
+          autoComplete="off"
+          aria-describedby="host-limits-hint"
+          disabled={pending || !host.resources}
+        />
+      </div>
+      <div className="space-y-1.5">
+        <Label htmlFor="host-limit-count">Maximum running sandboxes</Label>
+        <Input
+          id="host-limit-count"
+          name="maxSandboxes"
+          type="number"
+          min="1"
+          step="1"
+          placeholder={host.resources ? String(host.resources.capacity) : "Unknown"}
+          aria-describedby="host-limits-hint"
+          disabled={pending || !host.resources}
+        />
+      </div>
+      {state && !state.ok && (
+        <p ref={errorRef} tabIndex={-1} role="alert" className="text-sm text-destructive outline-none">
+          {state.error}
+        </p>
+      )}
+      <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+        <Button type="submit" name="mode" value="auto" variant="outline" disabled={pending} formNoValidate>
+          Use automatic
+        </Button>
+        <Button type="submit" name="mode" value="save" disabled={pending || !host.resources}>
+          {pending && <Loader2Icon aria-hidden className="animate-spin" />}
+          {pending ? "Saving…" : "Save"}
+        </Button>
+      </div>
+    </form>
   );
 }

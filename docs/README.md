@@ -5,7 +5,7 @@ Choose a starting point below; these are selected guides, not an inventory of ev
 ## Use
 
 - [Onboarding](dave-onboarding.md): connect an organization, provider, model credentials and GitHub, then launch through the CLI or MCP.
-- [Goldens](golden-create.md) and [build jobs](golden-build-jobs.md): create a workspace and track durable build outcomes.
+- [Snapshots](golden-create.md) and [build jobs](golden-build-jobs.md): create a workspace and track durable build outcomes.
 - [Templates CLI](templates-cli.md): use published launch presets; consult its stated limits rather than assuming all proposed template features are available.
 - [Armada skill installation](armada-skill-install.md): install the pinned tool-knowledge skill for your coding agent.
 - [Organization invitations](cli-invitations.md): distinguish direct membership from invitations and explicit acceptance.

@@ -4,7 +4,8 @@ This guide takes a new user from nothing to a coding agent running on Boat or Mo
 
 | What | Value |
 | --- | --- |
-| Armada server (control API, OAuth, health) | `https://armada-mcp-production.up.railway.app` |
+| CLI default and dashboard | `https://armada.thevibecompany.co` |
+| Direct server (control API, OAuth, health) | `https://armada-mcp-production.up.railway.app` |
 | MCP endpoint (Streamable HTTP) | `https://armada-mcp-production.up.railway.app/mcp` |
 | npm package | `@the-vibe-company/armada` (the `armada` command) |
 
@@ -12,7 +13,7 @@ This guide takes a new user from nothing to a coding agent running on Boat or Mo
 
 ## 1. Install the CLI
 
-The package ships a prebuilt binary for linux and macOS (x64 and arm64), so it needs neither Bun nor a build. Version 2 replaces the legacy CLI under the `latest` dist-tag (docs/releasing.md):
+The package ships a prebuilt binary for linux and macOS (x64 and arm64), so it needs neither Bun nor a build. Version 2 replaces the legacy CLI under the `latest` dist-tag ([release guide](releasing.md)):
 
 ```sh
 npx @the-vibe-company/armada --help        # run once, with Node 18 or later
@@ -27,7 +28,7 @@ From a clone of this repository, `bun run armada <args>` runs the same CLI from 
 
 ## 2. Point the CLI at production
 
-The CLI talks only to the Armada API. It needs no Supabase, provider or database settings, and the production server, `https://armada.thevibecompany.co`, is its default. For another deployment pass its full URL to `armada login --url https://<your-armada>`, or set `ARMADA_URL`.
+The CLI talks only to the Armada API. It needs no Supabase, provider or database settings. Its default origin, `https://armada.thevibecompany.co`, is the dashboard, which forwards control API requests to the server. MCP clients use the direct server’s `/mcp` endpoint in the table above, not the dashboard origin. For another deployment pass its full URL to `armada login --url https://<your-armada>`, or set `ARMADA_URL`.
 
 ## 3. Sign in
 
@@ -43,7 +44,22 @@ The session (the Armada URL, an access token and a refresh token) is saved in `~
 
 This first sign-in creates your Armada account. An admin can invite you before you have one (step 4); adding you directly from the CLI needs it.
 
-## 4. Join an org
+## 4. Create or select an org
+
+For a new organization, choose a name (this guide uses `my-team`) and run:
+
+```sh
+armada org create my-team
+armada org use my-team
+armada org current
+```
+
+Creation makes you its first admin. Selection persists for this Armada server; the examples
+below also pass `--org my-team` explicitly. Replace `my-team` consistently with your org's
+name or UUID. If joining an existing org instead, follow the invitation path below, then
+run `armada org use <org>`; an admin must complete its provider setup.
+
+### Joining an existing org
 
 An org admin invites you by email, from the dashboard or with `armada org invitations create <email> [--role admin|member] [--org <name|UUID>]`, or adds an existing account directly from the CLI:
 
@@ -58,36 +74,198 @@ Once you are a member, check:
 ```sh
 armada org list                          # your orgs: name, your role, id
 armada org members list --org <org>
-armada golden list --org <org>           # the goldens you can launch
+armada snapshot list --org <org>           # the snapshots you can launch
 ```
 
 Admins also manage roles (`armada org members role <email> admin|member --org <org>`) and removal (`armada org members remove <email> --org <org>`). Anyone can create an org with `armada org create <name>` and becomes its first admin.
 
-## 5. Credentials
+## 5. Prepare a first Modal snapshot
 
-A launch injects only the credentials of the chosen agent: yours first, else the org's. Values are read from stdin or a file, never from an argument, and are stored encrypted. They are never shown again.
+Complete these steps in order. A provider connection pays for machines; model credentials
+pay for the agent. GitHub sign-in to Armada alone does not authorize repository checkout.
 
-```sh
-printenv CLAUDE_CODE_OAUTH_TOKEN | armada creds set claude-oauth   # yours, for Claude Code (the token `claude setup-token` prints)
-armada creds set codex-auth --file ~/.codex/auth.json              # yours, for Codex
-armada creds list --org <org>                                       # kinds and dates, never values
+### Connect Modal (org admin)
+
+In the [Modal dashboard](https://modal.com), select the workspace that should own your
+sandboxes, open workspace settings and create an **API token** (not a web proxy token).
+Copy both its token ID and token secret; see [Modal authentication](https://modal.com/docs/sdk/js/latest/intro).
+Using a local text editor, save them outside any repository in `~/.config/armada/modal.json`
+(create the directory if needed), with this JSON shape, replacing both placeholder values:
+
+```json
+{"token_id":"your_token_id","token_secret":"your_token_secret"}
 ```
 
-Agent kinds: `claude-oauth` or `anthropic` for Claude Code, `openai` or `codex-auth` for Codex. Sandboxes are paid for by the org's Boat or Modal connection: an admin sets it up with `armada org connect boat|modal` (see [Organization provider setup and recovery](#organization-provider-setup-and-recovery)). A member may also store a personal `boat` or `modal` credential for private goldens.
+Keep the file private and never commit it or put credential values in command arguments
+or shell history. Disable shell tracing (`set +x`) before handling credentials.
+
+```sh
+chmod 600 ~/.config/armada/modal.json
+armada org connect modal --org my-team --file ~/.config/armada/modal.json
+armada org setup --org my-team
+```
+
+Alternatively, pipe the same JSON from your secret manager to
+`armada org connect modal --org my-team` (no `--file`). Do not pass Modal's TOML
+configuration file as JSON. Expect Modal to be configured in setup status; this checks
+authentication and stores the pair encrypted, but does not build a sandbox. If connection
+fails, fix the pair or workspace access before proceeding. See [provider recovery](#organization-provider-setup-and-recovery)
+for replacement and Boat setup. Personal provider credentials do not complete org setup.
+
+### Store a model credential
+
+Start with one named model account. For API billing, create a key in the
+[Anthropic Console](https://console.anthropic.com/) for Claude Code or the
+[OpenAI API platform](https://platform.openai.com/api-keys) for Codex. Save the value alone
+in a private file outside your repository (for example `~/.config/armada/model-key`, mode
+`600`), then use the matching command:
+
+```sh
+armada creds set anthropic --name "Claude API" --file ~/.config/armada/model-key
+# OR, for an OpenAI API key:
+armada creds set openai --name "OpenAI API" --file ~/.config/armada/model-key
+```
+
+API keys use the key's provider billing account; subscription credentials use the
+eligible subscription account's access and limits. A subscription is not free usage
+or an API credit balance, and signing in to Armada does not provide a model subscription.
+The Boat/Modal machine is billed separately through the connected sandbox provider.
+
+#### Keep an API account and add a subscription
+
+For Codex, keep the OpenAI API account above and add an eligible ChatGPT account:
+
+```sh
+armada creds login codex --name "Personal ChatGPT"
+armada creds list
+```
+
+Approve the native Codex device login in your browser and **keep the terminal/session
+open until Armada confirms import**. This creates another account; it does not replace
+the API account or automatically switch its billing. If native login is unavailable,
+import an existing private Codex login file instead (not in addition to a successful
+import): `armada creds import codex --name "Personal ChatGPT" --file ~/.codex/auth.json`.
+See [native subscription authentication](native-subscription-auth.md) for prerequisites,
+file-based login and recovery.
+
+The list shows account IDs, names, kinds and defaults, never secret values. Copy the
+actual IDs for "OpenAI API" and "Personal ChatGPT". After building `first-modal` below,
+choose deliberately on each launch (replace the UUID placeholders):
+
+```sh
+armada launch first-modal --org my-team --provider modal --agent codex \
+  --credential-id <openai-api-account-uuid> "Summarize the repositories"
+# OR use the subscription account:
+armada launch first-modal --org my-team --provider modal --agent codex \
+  --credential-id <chatgpt-account-uuid> "Summarize the repositories"
+```
+
+For Claude, keep "Claude API" and run `claude setup-token` locally. Save the
+output token alone in a private file outside your repository, mode `600`, then:
+
+```sh
+armada creds import claude --name "Personal Claude" --file ~/.config/armada/claude-token
+armada creds list
+```
+
+There is no `armada creds login claude` device flow. Launch with `--agent claude`
+and `--credential-id <claude-api-account-uuid>` or `<claude-subscription-account-uuid>`
+to choose the API or eligible Claude subscription account, respectively.
+
+Optionally run `armada creds default <chosen-account-uuid>` to choose the default
+for future launches of that agent. Without an explicit ID, your personal compatible
+accounts take precedence over the org's; within that scope, a default wins, or a sole
+compatible account is used. Multiple compatible accounts without one default require
+selection rather than guessing. An explicitly selected refused/expired/revoked account
+does not silently fall back to another billing account. Existing sandboxes remain bound
+to their chosen account; a new default does not switch them.
+
+These examples create personal accounts. Org admins can add `--org my-team` to account
+creation/import, listing and default commands to manage org accounts instead; passing
+`--org` to launch alone does not override personal-account precedence.
+
+**Previously used unnamed commands?** Legacy `creds set openai`, `anthropic`,
+`codex-auth` or `claude-oauth` without `--name` update the sole account of that
+kind in that scope, or create one if absent; ambiguous multiple accounts are rejected.
+Different kinds coexist rather than replace each other. In an all-legacy "Default"
+setup, the compatibility defaults prefer OpenAI API over Codex auth and Claude OAuth
+over Anthropic API. Do not rely on adding a subscription to change billing: list IDs
+and select one explicitly. Named creation adds an account; intentional replacement
+uses `--id UUID --expected-version N`.
+
+Values are read from hidden input, stdin or a private file, stored encrypted and never
+shown again. They do not belong in a snapshot, setup script, command argument or chat.
+
+### Authorize GitHub
+
+```sh
+armada github connect
+armada github status
+```
+
+Complete the browser authorization as the GitHub user who can access **both** repositories.
+If installation access is missing, run `armada github install`, select the GitHub account or
+organization and grant the Armada GitHub App access to both repositories (ask its owner to
+approve if required), then check `armada github status` again. Continue only once connected
+with the required repository access. This is separate from using GitHub to sign in to Armada.
+See [GitHub App details](github-app.md).
+
+### Build a two-repository snapshot on Modal
+
+Choose two GitHub repositories you can read. In this example replace `your-owner` with
+their owner and `frontend` and `backend` with their actual repository names. Replace `main`
+with an existing branch in each repository if different. `first-modal` is the new snapshot
+name you choose, not an existing snapshot you must obtain.
+
+```sh
+armada snapshot create first-modal --org my-team --provider modal \
+  --repo https://github.com/your-owner/frontend.git@main \
+  --repo https://github.com/your-owner/backend.git@main
+```
+
+Repeat `--repo` once per repository; do not use a comma-separated list. This minimal build
+needs no project-specific commands. The server checks out both repos in a disposable
+builder, scans for secrets, saves the snapshot and cleans up the builder. Only admins
+create org snapshots; an ordinary member adds `--private` for a personal snapshot.
+
+For dependencies needed in the snapshot, optionally add `--setup ./golden-setup.sh` to
+that create command: this reads a **local** script and executes its contents once in the
+builder after checkout, before scanning and snapshotting. By contrast, `--init` commands
+are saved configuration executed at **every launch**, after repository pulls; they are not
+build-time setup. Neither should contain credentials. See [snapshot configuration](golden-create.md)
+for directory layout and project-specific initialization.
+
+Creation prints `Build job: <job-id>`. It normally waits up to 60 seconds. A completed
+build yields a snapshot; a queued/running build may instead print `Build is ...` with the
+next command. Keep that job ID and read its status:
+
+```sh
+armada snapshot build-status <job-id>   # replace with the ID printed by create
+armada snapshot list --org my-team --provider modal
+```
+
+If still queued/running, check the same job later; do not submit another create. If failed
+or `recovery_required`, read its reported error and resolve it before launching. Proceed
+to step 6 only when the job is `succeeded` and `first-modal` is listed for Modal.
 
 ## 6. Launch from the CLI
 
 ```sh
-armada launch <golden> --agent claude "Fix the flaky test in packages/core" --org <org>
-armada launch <golden> --agent codex --repo owner/repo --ttl 2h --json       # no prompt: the sandbox waits, ready
+armada launch first-modal --org my-team --provider modal --agent claude \
+  "Summarize the two repositories without changing files"
+# OR, if you stored Codex credentials in step 5:
+armada launch first-modal --org my-team --provider modal --agent codex \
+  "Summarize the two repositories without changing files"
 ```
 
-`armada launch` asks the server to resolve credentials and fork the golden. It prints the sandbox id
-(`--json` prints the full record). Optional `--repo` selects one repository already recorded in the
-golden, by `owner/repo` or by its configured directory, and starts the native agent there: the
+`armada launch` asks the server to resolve credentials and fork the snapshot. It prints the sandbox id
+(`--json` prints the full record). Use that ID for `armada status <sandbox-id>`,
+`armada logs <sandbox-id>` and, when finished, `armada stop <sandbox-id>` to stop charges.
+Omit the prompt to leave the sandbox waiting for your first `armada send` instead. Optional `--repo` selects one repository already recorded in the
+snapshot, by `owner/repo` or by its configured directory, and starts the native agent there: the
 agent's real initial working directory, set after the pulls and init and before its first prompt,
 also for an idle launch. It is a starting directory, not confinement: the agent can still reach the
-other repositories. It is not a URL, and unlike `golden create --repo <url>[@branch]` it is given
+other repositories. It is not a URL, and unlike `snapshot create --repo <url>[@branch]` it is given
 only once. Unknown or ambiguous selectors are rejected before a machine is allocated. Without it,
 launch keeps its previous behavior. MCP `launch` and `POST /api/v1/sandbox/launch` accept the same
 optional `repo` string.
@@ -144,16 +322,16 @@ bearer_token_env_var = "ARMADA_TOKEN"
 
 ## 8. Drive an agent through MCP
 
-The sandbox tools are `launch`, `list`, `status`, `wait`, `logs`, `send`, `steer`, `interrupt`, `exec` and `stop`. Golden tools (`golden_list`, `golden_capabilities`, `golden_create`, `golden_update`, `golden_build_status`, `golden_snapshot`, `golden_adopt`) list, build and maintain goldens. You see your org's goldens and sandboxes and your own private ones, never another member's private ones. Example arguments:
+The sandbox tools are `launch`, `list`, `status`, `wait`, `logs`, `send`, `steer`, `interrupt`, `exec` and `stop`. Snapshot tools (`golden_list`, `golden_capabilities`, `golden_create`, `golden_update`, `golden_build_status`, `golden_snapshot`, `golden_adopt`) list, build and maintain snapshots. You see your org's snapshots and sandboxes and your own private ones, never another member's private ones. Example arguments:
 
 ```jsonc
-// golden_list: the goldens you can launch, with their orgId
+// golden_list: the snapshots you can launch, with their orgId
 {}
 
-// launch: fork a golden and start the agent (leave out prompt for an idle, ready sandbox)
-{ "golden": "<golden>", "harness": "claude", "prompt": "Fix the flaky test in packages/core", "ttl_seconds": 14400 }
+// launch: fork a snapshot and start the agent (leave out prompt for an idle, ready sandbox)
+{ "golden": "<snapshot>", "harness": "claude", "prompt": "Fix the flaky test in packages/core", "ttl_seconds": 14400 }
 // → { "id": "<sandbox id>", "status": "running", "promptId": "…", "expiresAt": "…", … }
-// add "org": "<orgId>" when the golden name exists in several of your orgs
+// add "org": "<orgId>" when the snapshot name exists in several of your orgs
 
 // list: your sandboxes, newest first
 { "status": ["running", "ready"], "limit": 20 }
@@ -204,7 +382,7 @@ Connections perform a bounded, read-only authentication check before encrypted s
 credential or unavailable provider leaves the stored credential unchanged. No sandbox or App is created.
 
 In the dashboard, an admin connects, replaces and disconnects the active organization's providers in
-Settings. New goldens, rebuilds and launches use only a provider the organization has connected; goldens
+Settings. New snapshots, rebuilds and launches use only a provider the organization has connected; snapshots
 and sandboxes already on a disconnected provider stay listed and manageable.
 
 The shared authenticated control API exposes `POST org/provider/status` (`{org}`),

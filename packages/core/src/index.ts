@@ -92,6 +92,7 @@ export type {
   DockerHostListResponse,
   DockerHostRegistrationRequest,
   DockerHostRegistrationResponse,
+  DockerHostResourceSummary,
   DockerHostRevokeRequest,
   DockerHostRevokeResponse,
   DockerHostSummary,
@@ -115,12 +116,15 @@ export {
   type DockerJobFailureReason,
   type DockerSnapshotRecord,
 } from "./docker-api.ts";
+export { dockerHostResourceDisplay, validDockerHostResources } from "./docker-host-resources-view.ts";
 export {
   DOCKER_LOCAL_IMAGE_LABELS,
   type DockerSnapshotBinding,
   isDockerImageReference,
   parseDockerSnapshotBinding,
 } from "./docker-image.ts";
+export type { DockerResourceOverrides, DockerSandboxLimits } from "./docker-resource-policy.ts";
+export { parseDockerMemory } from "./docker-resource-policy.ts";
 export { parseDockerSnapshotRecord } from "./docker-snapshot.ts";
 export {
   boundEventEntries,
@@ -275,6 +279,8 @@ export {
   parseConnectionModels,
   parseOpenCodeEndpoint,
 } from "./opencode-endpoint.ts";
+export type { OttoEngine, OttoEnginePreflight } from "./otto/engine.ts";
+export type { OttoMechanicalEvidence } from "./otto/evidence.ts";
 export type {
   OttoCompleteness,
   OttoFact,
@@ -284,6 +290,7 @@ export type {
   OttoTask,
   OttoTruth,
 } from "./otto/index.ts";
+export type { OttoObjective, OttoObjectiveMessage } from "./otto/objectives.ts";
 export {
   dedupeEvents,
   type PromptOutcome,

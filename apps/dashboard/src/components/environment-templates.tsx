@@ -15,7 +15,7 @@ export function EnvironmentTemplates({
     <TemplateUsage
       list={list}
       uses={(definition) => definition.goldenId === goldenId && definition.provider === provider}
-      empty="No visible templates use this environment."
+      empty="No visible templates use this snapshot."
       data-environment-templates
     />
   );

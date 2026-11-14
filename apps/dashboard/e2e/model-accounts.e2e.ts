@@ -313,7 +313,7 @@ test("a server older than named accounts is said plainly, and launches send no a
   await expect(page.locator('[data-accounts="legacy"]')).toContainText("Account management needs an update");
   await expect(
     page.locator('[data-accounts="legacy"]').getByRole("link", { name: "Choose a snapshot" }),
-  ).toHaveAttribute("href", "/environments");
+  ).toHaveAttribute("href", "/snapshots");
   await expect(page.getByRole("button", { name: "Add a model account", exact: true })).toHaveCount(0);
 
   const dialog = await openLaunch(page);

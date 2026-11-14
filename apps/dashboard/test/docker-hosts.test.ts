@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import {
   connectedHostName,
   type DockerHost,
+  dockerHostLimitsInput,
   expiryCountdown,
   hostFact,
   hostName,
@@ -84,9 +85,15 @@ test("the expiry counts down as m:ss and reads expired once it passes", () => {
 });
 
 test("a row's fact names its sandboxes and daemon version, unknown when the host has not reported one", () => {
-  expect(hostFact({ sandboxes: 2, version: "1.4.0" })).toBe("2 sandboxes · v1.4.0");
-  expect(hostFact({ sandboxes: 0, version: "v2.0.0" })).toBe("No sandboxes · v2.0.0");
-  expect(hostFact({ sandboxes: 1, version: null })).toBe("1 sandbox · version unknown");
+  expect(hostFact({ sandboxes: 2, version: "1.4.0" })).toBe(
+    "?/unknown running/capacity · 2 sandboxes retained · v1.4.0",
+  );
+  expect(hostFact({ sandboxes: 0, version: "v2.0.0" })).toBe(
+    "?/unknown running/capacity · No sandboxes retained · v2.0.0",
+  );
+  expect(hostFact({ sandboxes: 1, version: null })).toBe(
+    "?/unknown running/capacity · 1 sandbox retained · version unknown",
+  );
 });
 
 test("a host's reported daemon version is parsed; a blank or missing one reads as unknown", () => {
@@ -159,4 +166,76 @@ test("a Docker sandbox page names its host in short, readable words", () => {
   expect(sandboxHostLabel(list, OTHER)).toBe("Host 11111111");
   expect(sandboxHostLabel(null, ID)).toBe("Host 70bde9cd");
   expect(sandboxHostLabel(list, null)).toBe("Unknown");
+});
+
+test("resource observations survive parsing while malformed capacity data is excluded", () => {
+  const resources = {
+    machine: { cpus: 8, memoryBytes: 26 * 1024 ** 3 },
+    perSandbox: { cpus: 2, memoryBytes: 4 * 1024 ** 3, pids: 4096 },
+    capacity: 6,
+    mode: "automatic" as const,
+  };
+  const value = host({ running: 3, resources });
+  const parsed = parseDockerHostList({ placement: true, hosts: [value] });
+  expect(parsed?.hosts[0]?.resources).toEqual(resources);
+  expect(hostFact(parsed!.hosts[0]!)).toContain("3/6 running/capacity");
+  for (const broken of [
+    { ...resources, capacity: -1 },
+    { ...resources, mode: "surprise" },
+    { ...resources, perSandbox: { ...resources.perSandbox, cpus: 99 } },
+  ]) {
+    expect(parseDockerHostList({ placement: true, hosts: [{ ...value, resources: broken }] })?.skipped).toBe(1);
+  }
+});
+
+test("host limit permissions and daemon support survive parsing without granting them to older hosts", () => {
+  const parse = (fields: Record<string, unknown>) =>
+    parseDockerHostList({ placement: true, hosts: [{ ...host(), ...fields }] });
+  expect(parse({ canManageLimits: true, limitsSupported: false })?.hosts[0]).toMatchObject({
+    canManageLimits: true,
+    limitsSupported: false,
+  });
+  expect(parse({})?.hosts[0]?.canManageLimits).toBeUndefined();
+  expect(parse({})?.hosts[0]?.limitsSupported).toBeUndefined();
+  for (const fields of [{ canManageLimits: "true" }, { limitsSupported: 1 }])
+    expect(parse(fields)).toMatchObject({ hosts: [], skipped: 1 });
+});
+
+test("limit form serialization preserves blank overrides and resets all overrides only for automatic", () => {
+  const data = new FormData();
+  data.set("cpus", " 2.5 ");
+  data.set("memory", "4g");
+  data.set("maxSandboxes", "");
+  expect(dockerHostLimitsInput(data)).toEqual({
+    ok: true,
+    patch: { cpus: 2.5, memoryBytes: 4 * 1024 ** 3 },
+  });
+  data.set("mode", "auto");
+  expect(dockerHostLimitsInput(data)).toEqual({ ok: true, patch: { auto: true } });
+  expect(dockerHostLimitsInput(new FormData())).toMatchObject({ ok: false });
+  for (const [field, value] of [
+    ["cpus", "NaN"],
+    ["memory", "four gigs"],
+    ["maxSandboxes", "1.5"],
+  ]) {
+    const invalid = new FormData();
+    invalid.set(field, value);
+    expect(dockerHostLimitsInput(invalid)).toMatchObject({ ok: false });
+  }
+});
+
+test("busy-machine capacity including zero remains visible with held-back guidance", () => {
+  const resources = {
+    machine: { cpus: 16, memoryBytes: 38 * 1024 ** 3 },
+    perSandbox: { cpus: 2, memoryBytes: 4 * 1024 ** 3, pids: 4096 },
+    capacity: 7,
+    heldBack: 2,
+    mode: "automatic" as const,
+  };
+  const parsed = parseDockerHostList({ placement: true, hosts: [host({ resources, running: 5 })] });
+  expect(hostFact(parsed!.hosts[0]!)).toContain("5/7 (2 held back: machine busy)");
+  expect(
+    parseDockerHostList({ placement: true, hosts: [host({ resources: { ...resources, capacity: 0 }, running: 0 })] })
+      ?.skipped,
+  ).toBe(0);
 });

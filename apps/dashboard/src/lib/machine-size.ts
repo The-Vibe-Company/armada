@@ -78,7 +78,7 @@ export function launchDefault(
 export function describeDefault(provider: SandboxProviderId, evidence: MachineSizeEvidence): string {
   const size = evidence.effective ? MACHINE_SIZE_LABELS[evidence.effective] : null;
   if (evidence.source === "repository" && size) return `${size}, the default for ${evidence.repositoryDir}`;
-  if (evidence.source === "golden" && size) return `${size}, the golden's default`;
+  if (evidence.source === "golden" && size) return `${size}, the snapshot's default`;
   return `No default set: ${PROVIDER_LABELS[provider]} uses its own size, which Armada does not record`;
 }
 
@@ -96,7 +96,7 @@ export function sizeCaveat(provider: SandboxProviderId, chosen: MachineSize | nu
   if (!chosen) return null;
   if (provider === "modal") return "Modal requests and limits; the same label on Boat is a different machine.";
   if (chosen === "xlarge") return "Extra large needs a Boat plan that includes it.";
-  return "Boat refuses a size whose disk cannot hold the golden.";
+  return "Boat refuses a size whose disk cannot hold the snapshot.";
 }
 
 /**
@@ -121,7 +121,7 @@ export function describeEvidence(provider: SandboxProviderId, row: { machine_siz
       ? "chosen at launch"
       : evidence.source === "repository"
         ? `default for ${evidence.repositoryDir}`
-        : "golden default";
+        : "snapshot default";
   return `${MACHINE_SIZE_LABELS[size]} (${source}) · ${sizeSpec(provider, size)}`;
 }
 
@@ -165,7 +165,7 @@ export function goldenSizing(golden: { size_policy?: unknown }, directories: rea
 /** One line for the golden card: which defaults are set, or that the provider decides. */
 export function policySummary(provider: SandboxProviderId, policy: MachineSizePolicy | null): string {
   const parts = [
-    ...(policy?.golden ? [`Golden: ${MACHINE_SIZE_LABELS[policy.golden]}`] : []),
+    ...(policy?.golden ? [`Snapshot: ${MACHINE_SIZE_LABELS[policy.golden]}`] : []),
     ...Object.entries(policy?.repositories ?? {}).map(([dir, size]) => `${dir}: ${MACHINE_SIZE_LABELS[size]}`),
   ];
   return parts.length > 0 ? parts.join(" · ") : `No defaults: ${PROVIDER_LABELS[provider]} decides`;
@@ -181,7 +181,7 @@ export function sizePolicyBlocker(
 ): string | null {
   if (golden.visibility === "private")
     return golden.owner_id === viewer.id ? null : "Only its owner changes its size defaults.";
-  return viewer.isAdmin ? null : "Only an org admin changes an org golden's size defaults.";
+  return viewer.isAdmin ? null : "Only an org admin changes an org snapshot's size defaults.";
 }
 
 /**

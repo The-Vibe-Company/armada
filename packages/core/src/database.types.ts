@@ -388,6 +388,14 @@ export type Database = {
           daemon_version: string | null;
           draining_at: string | null;
           name: string | null;
+          machine_cpus: number | null;
+          machine_memory_bytes: number | null;
+          sandbox_cpus: number | null;
+          sandbox_memory_bytes: number | null;
+          max_sandboxes: number | null;
+          resource_policy_version: number | null;
+          available_cpus: number | null;
+          available_memory_bytes: number | null;
         };
         Insert: {
           id: string;
@@ -403,6 +411,14 @@ export type Database = {
           daemon_version?: string | null;
           draining_at?: string | null;
           name?: string | null;
+          machine_cpus?: number | null;
+          machine_memory_bytes?: number | null;
+          sandbox_cpus?: number | null;
+          sandbox_memory_bytes?: number | null;
+          max_sandboxes?: number | null;
+          resource_policy_version?: number | null;
+          available_cpus?: number | null;
+          available_memory_bytes?: number | null;
         };
         Update: {
           id?: string;
@@ -418,6 +434,14 @@ export type Database = {
           daemon_version?: string | null;
           draining_at?: string | null;
           name?: string | null;
+          machine_cpus?: number | null;
+          machine_memory_bytes?: number | null;
+          sandbox_cpus?: number | null;
+          sandbox_memory_bytes?: number | null;
+          max_sandboxes?: number | null;
+          resource_policy_version?: number | null;
+          available_cpus?: number | null;
+          available_memory_bytes?: number | null;
         };
         Relationships: [
           {
@@ -2988,6 +3012,7 @@ export type Database = {
           fingerprint: string;
           response: Json | null;
           created_at: string;
+          authority: Json | null;
         };
         Insert: {
           id: string;
@@ -2997,6 +3022,7 @@ export type Database = {
           fingerprint: string;
           response?: Json | null;
           created_at?: string;
+          authority?: Json | null;
         };
         Update: {
           id?: string;
@@ -3006,6 +3032,7 @@ export type Database = {
           fingerprint?: string;
           response?: Json | null;
           created_at?: string;
+          authority?: Json | null;
         };
         Relationships: [
           {
@@ -3127,6 +3154,52 @@ export type Database = {
         };
         Relationships: [];
       };
+      otto_engine_preferences: {
+        Row: {
+          org_id: string;
+          owner_id: string;
+          harness: string;
+          model: string;
+          credential_id: string;
+        };
+        Insert: {
+          org_id: string;
+          owner_id: string;
+          harness: string;
+          model: string;
+          credential_id: string;
+        };
+        Update: {
+          org_id?: string;
+          owner_id?: string;
+          harness?: string;
+          model?: string;
+          credential_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "otto_engine_preferences_credential_id_fkey";
+            columns: ["credential_id"];
+            isOneToOne: false;
+            referencedRelation: "credentials";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "otto_engine_preferences_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "otto_engine_preferences_owner_id_fkey";
+            columns: ["owner_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       otto_facts: {
         Row: {
           id: string;
@@ -3208,6 +3281,92 @@ export type Database = {
             columns: ["org_id"];
             isOneToOne: false;
             referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      otto_objective_messages: {
+        Row: {
+          id: string;
+          objective_id: string;
+          org_id: string;
+          owner_id: string;
+          body: string;
+          revision: number;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          objective_id: string;
+          org_id: string;
+          owner_id: string;
+          body: string;
+          revision?: number;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          objective_id?: string;
+          org_id?: string;
+          owner_id?: string;
+          body?: string;
+          revision?: number;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "otto_objective_messages_objective_id_org_id_owner_id_fkey";
+            columns: ["objective_id", "org_id", "owner_id"];
+            isOneToOne: false;
+            referencedRelation: "otto_objectives";
+            referencedColumns: ["id", "org_id", "owner_id"];
+          },
+        ];
+      };
+      otto_objectives: {
+        Row: {
+          id: string;
+          org_id: string;
+          owner_id: string;
+          repository: string;
+          request: string;
+          revision: number;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          org_id: string;
+          owner_id: string;
+          repository: string;
+          request: string;
+          revision?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          org_id?: string;
+          owner_id?: string;
+          repository?: string;
+          request?: string;
+          revision?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "otto_objectives_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "otto_objectives_owner_id_fkey";
+            columns: ["owner_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
             referencedColumns: ["id"];
           },
         ];
@@ -3913,6 +4072,7 @@ export type Database = {
           verified_at: string | null;
           receipt: Json | null;
           created_at: string;
+          empty_checkpoint: boolean;
         };
         Insert: {
           sandbox_id: string;
@@ -3928,6 +4088,7 @@ export type Database = {
           verified_at?: string | null;
           receipt?: Json | null;
           created_at?: string;
+          empty_checkpoint?: boolean;
         };
         Update: {
           sandbox_id?: string;
@@ -3943,6 +4104,7 @@ export type Database = {
           verified_at?: string | null;
           receipt?: Json | null;
           created_at?: string;
+          empty_checkpoint?: boolean;
         };
         Relationships: [
           {
@@ -4522,8 +4684,11 @@ export type OrdinaryLaunchReceiptRow = Database["public"]["Tables"]["ordinary_la
 export type OrgSkillDefaultsRow = Database["public"]["Tables"]["org_skill_defaults"]["Row"];
 export type OrganizationInvitationRow = Database["public"]["Tables"]["organization_invitations"]["Row"];
 export type Org = Database["public"]["Tables"]["orgs"]["Row"];
+export type OttoEnginePreferenceRow = Database["public"]["Tables"]["otto_engine_preferences"]["Row"];
 export type OttoFactRow = Database["public"]["Tables"]["otto_facts"]["Row"];
 export type OttoGitHubPageRow = Database["public"]["Tables"]["otto_github_pages"]["Row"];
+export type OttoObjectiveMessageRow = Database["public"]["Tables"]["otto_objective_messages"]["Row"];
+export type OttoObjectiveRow = Database["public"]["Tables"]["otto_objectives"]["Row"];
 export type OttoOrphanDayRow = Database["public"]["Tables"]["otto_orphan_days"]["Row"];
 export type OttoResourceRow = Database["public"]["Tables"]["otto_resources"]["Row"];
 export type OttoTaskRow = Database["public"]["Tables"]["otto_tasks"]["Row"];

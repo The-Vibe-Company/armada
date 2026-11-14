@@ -17,6 +17,7 @@ import {
   type GoldenStore,
   type HarnessCredentials,
   LaunchError,
+  type LaunchOptions,
   type LaunchStores,
   launchSandbox,
   type PromptStatus,
@@ -59,107 +60,210 @@ const owner: GoldenActor = { userId: OWNER, orgId: ORG, role: "member" };
 const other: GoldenActor = { userId: OTHER, orgId: ORG, role: "member" };
 
 describe("launch", () => {
-  test.each([true, false])(
-    "ordinary runtime default prepares workspace before publication/inference (prompt=%s)",
-    async (prompted) => {
-      const world = setup({ golden: golden("org") }),
-        order: string[] = [],
-        commands: string[] = [];
-      const resolve = world.stores.credentials.resolve.bind(world.stores.credentials);
-      const credentials = {
-        ...world.stores.credentials,
-        async resolve(...args: Parameters<typeof resolve>) {
-          return { ...(await resolve(...args)), binding: { credentialId: OWNER, credentialVersion: 1 } };
+  for (const provider of ["boat", "modal"] as const)
+    test.each([true, false])(
+      `${provider} ordinary runtime default prepares workspace before publication/inference (prompt=%s)`,
+      async (prompted) => {
+        const source = golden("org");
+        const world = setup({
+            golden: {
+              ...source,
+              provider,
+              ...(provider === "modal"
+                ? {
+                    providerSandboxId: "modal-builder",
+                    providerSnapshotId: "modal-image",
+                    modal: { workspace: "ws", environment: "main", appId: "app" },
+                  }
+                : {}),
+            },
+          }),
+          order: string[] = [],
+          commands: string[] = [];
+        const childId = provider === "modal" ? "modal-child" : "bx_1";
+        const compute: Provider = {
+          ...world.provider,
+          id: provider,
+          async fork(request) {
+            return { ...(await world.provider.fork(request)), id: childId };
+          },
+          async get(id, options) {
+            return { ...(await world.provider.get(id, options)), id: childId };
+          },
+        };
+        const native: Provider = {
+          ...world.provider,
+          id: provider,
+          async fork() {
+            throw Error("Native fork must not run under the default");
+          },
+        };
+        const resolve = world.stores.credentials.resolve.bind(world.stores.credentials);
+        const credentials = {
+          ...world.stores.credentials,
+          async resolve(...args: Parameters<typeof resolve>) {
+            return { ...(await resolve(...args)), binding: { credentialId: OWNER, credentialVersion: 1 } };
+          },
+        };
+        const result = await launchSandbox(
+          native,
+          world.stores,
+          owner,
+          { golden: "web", harness: "codex", ...(prompted ? { prompt: "ordinary request" } : {}) },
+          {
+            beforeStart: async () => {
+              order.push("admit");
+            },
+            [provider === "boat" ? "boatRuntimeDefault" : "modalRuntimeDefault"]: {
+              provider: async () => compute,
+              credentials,
+              connections: {
+                async validate() {},
+                async bind() {
+                  order.push("bind");
+                },
+                async prepare() {
+                  order.push("mcp");
+                },
+              },
+              policy: {
+                async start() {
+                  order.push("start");
+                  return {
+                    epoch: "1",
+                    async prepareWorkspace(g, onStage, _sleep) {
+                      order.push("workspace");
+                      let retry = false;
+                      await prepareLaunchWorkspace(
+                        {
+                          id: provider,
+                          exec: async () => {
+                            throw Error("No native exec");
+                          },
+                        },
+                        "bx_1",
+                        "logical",
+                        g,
+                        [],
+                        onStage,
+                        async (ms) => {
+                          expect(ms).toBe(1000);
+                          retry = true;
+                        },
+                        async (req, step) => {
+                          commands.push(`${step.phase}:${step.index}:${step.attempt}:${req.cwd}:${req.command}`);
+                          return {
+                            detached: false as const,
+                            timedOut: false,
+                            truncated: false,
+                            exitCode: step.phase === "repository" && step.index === 0 && step.attempt === 0 ? 128 : 0,
+                            stdout: "",
+                            stderr:
+                              step.phase === "repository" && step.index === 0 && step.attempt === 0
+                                ? "detected dubious ownership in repository"
+                                : "",
+                          };
+                        },
+                      );
+                      expect(retry).toBe(true);
+                      return { status: "not_connected" };
+                    },
+                    async prompt() {
+                      expect(order).toEqual(["bind", "start", "workspace", "mcp", "admit"]);
+                      return { promptId: "runtime", conversationId: "conversation", status: "queued" };
+                    },
+                  };
+                },
+              },
+            } satisfies NonNullable<LaunchOptions["boatRuntimeDefault"]>,
+          },
+        );
+        expect(result.runtime).toEqual({ kind: "armada", epoch: "1" });
+        expect(result.sandbox.provider).toBe(provider);
+        expect(result.sandbox.providerSandboxId).toBe(childId);
+        expect(result.sandbox.runtimeTransport).toBe(provider === "modal" ? "dialout" : undefined);
+        expect(result.sandbox.boatRuntime).toBe(provider === "boat" ? true : undefined);
+        expect(order).toEqual(["bind", "start", "workspace", "mcp", "admit"]);
+        if (!prompted) {
+          expect(result.sandbox.status).toBe("ready");
+          expect(result.sandbox.conversationIds).toEqual([]);
+          expect(result.promptId).toBeUndefined();
+        }
+        expect(commands).toHaveLength(4);
+        expect(commands[0]).toContain("repository:0:0:/home/user/web:");
+        expect(commands[1]).toContain("repository:0:1:");
+        expect(commands[2]).toContain("repository:1:0:/home/user/api:");
+        expect(commands[3]).toContain("init:0:0:/home/user:");
+        expect(world.execs).toHaveLength(0);
+        expect(world.prompts).toHaveLength(0);
+        expect(world.forks[0]?.env).toEqual({});
+      },
+    );
+  test.each(["startup", "account", "secret", "provider"] as const)(
+    "Modal default refuses %s without native fallback",
+    async (failure) => {
+      const world = setup({
+        golden: {
+          ...golden("org"),
+          provider: "modal",
+          providerSandboxId: "master",
+          providerSnapshotId: "image",
+          modal: { workspace: "ws", environment: "main", appId: "app" },
+        },
+      });
+      let nativeForks = 0;
+      const native: Provider = {
+        ...world.provider,
+        id: "modal",
+        async fork() {
+          nativeForks++;
+          throw Error("Native fallback forbidden");
         },
       };
-      const result = await launchSandbox(
-        world.provider,
-        world.stores,
-        owner,
-        { golden: "web", harness: "codex", ...(prompted ? { prompt: "ordinary request" } : {}) },
-        {
-          beforeStart: async () => {
-            order.push("admit");
-          },
-          boatRuntimeDefault: {
-            provider: async () => world.provider,
-            credentials,
-            connections: {
-              async validate() {},
-              async bind() {
-                order.push("bind");
-              },
-              async prepare() {
-                order.push("mcp");
-              },
-            },
-            policy: {
-              async start() {
-                order.push("start");
-                return {
-                  epoch: "1",
-                  async prepareWorkspace(g, onStage, _sleep) {
-                    order.push("workspace");
-                    let retry = false;
-                    await prepareLaunchWorkspace(
-                      {
-                        id: "boat",
-                        exec: async () => {
-                          throw Error("No native exec");
-                        },
-                      },
-                      "bx_1",
-                      "logical",
-                      g,
-                      [],
-                      onStage,
-                      async (ms) => {
-                        expect(ms).toBe(1000);
-                        retry = true;
-                      },
-                      async (req, step) => {
-                        commands.push(`${step.phase}:${step.index}:${step.attempt}:${req.cwd}:${req.command}`);
-                        return {
-                          detached: false as const,
-                          timedOut: false,
-                          truncated: false,
-                          exitCode: step.phase === "repository" && step.index === 0 && step.attempt === 0 ? 128 : 0,
-                          stdout: "",
-                          stderr:
-                            step.phase === "repository" && step.index === 0 && step.attempt === 0
-                              ? "detected dubious ownership in repository"
-                              : "",
-                        };
-                      },
-                    );
-                    expect(retry).toBe(true);
-                    return { status: "not_connected" };
-                  },
-                  async prompt() {
-                    expect(order).toEqual(["bind", "start", "workspace", "mcp", "admit"]);
-                    return { promptId: "runtime", conversationId: "conversation", status: "queued" };
-                  },
-                };
-              },
-            },
-          },
+      const compute: Provider = {
+        ...world.provider,
+        id: "modal",
+        async fork(request) {
+          return { ...(await world.provider.fork(request)), id: "modal-child" };
         },
-      );
-      expect(result.runtime).toEqual({ kind: "armada", epoch: "1" });
-      expect(order).toEqual(["bind", "start", "workspace", "mcp", "admit"]);
-      if (!prompted) {
-        expect(result.sandbox.status).toBe("ready");
-        expect(result.sandbox.conversationIds).toEqual([]);
-        expect(result.promptId).toBeUndefined();
-      }
-      expect(commands).toHaveLength(4);
-      expect(commands[0]).toContain("repository:0:0:/home/user/web:");
-      expect(commands[1]).toContain("repository:0:1:");
-      expect(commands[2]).toContain("repository:1:0:/home/user/api:");
-      expect(commands[3]).toContain("init:0:0:/home/user:");
-      expect(world.execs).toHaveLength(0);
-      expect(world.prompts).toHaveLength(0);
-      expect(world.forks[0]?.env).toEqual({});
+        async get(id, opts) {
+          return { ...(await world.provider.get(id, opts)), id: "modal-child" };
+        },
+      };
+      const resolve = world.stores.credentials.resolve.bind(world.stores.credentials);
+      await expect(
+        launchSandbox(
+          native,
+          world.stores,
+          owner,
+          { golden: "web", harness: "codex", prompt: "answer" },
+          {
+            nativeSecretBindings: failure === "secret",
+            modalRuntimeDefault: {
+              provider: async () => (failure === "provider" ? { ...compute, id: "boat" } : compute),
+              credentials: {
+                async resolve(...args) {
+                  const credentials = await resolve(...args);
+                  return {
+                    ...credentials,
+                    ...(failure !== "account" ? { binding: { credentialId: OWNER, credentialVersion: 1 } } : {}),
+                  };
+                },
+              },
+              connections: { async validate() {}, async bind() {} },
+              policy: {
+                async start() {
+                  throw Error("Private startup failure");
+                },
+              },
+            },
+          },
+        ),
+      ).rejects.toMatchObject({ code: failure === "startup" ? "start_failed" : "invalid_request" });
+      expect(nativeForks).toBe(0);
+      expect(world.prompts).toEqual([]);
+      expect(world.execs).toEqual([]);
+      expect(world.forks).toHaveLength(failure === "startup" ? 1 : 0);
     },
   );
   test.each(["key", "auth"] as const)(
@@ -556,7 +660,7 @@ describe("launch", () => {
       GOLDEN_ROOT,
       GOLDEN_ROOT,
     ]);
-    expect(world.execs[0]?.command).toContain("'pull' '--ff-only' 'origin' 'main'");
+    expect(world.execs[0]?.command).toContain("git fetch origin 'main'");
     expect(world.execs[1]?.command).toContain("'dev'");
     expect(world.execs[2]?.command).toBe("pnpm i");
     expect(world.prompts).toEqual([
@@ -803,13 +907,15 @@ exit 1
     const world = setup({
       golden: golden("org"),
       exec: (command) =>
-        command.includes("'pull'") ? { exitCode: 128, stderr: "fatal: not possible to fast-forward" } : { exitCode: 0 },
+        command.includes("git fetch")
+          ? { exitCode: 128, stderr: "fatal: not possible to fast-forward" }
+          : { exitCode: 0 },
     });
     await expect(
       launchSandbox(world.provider, world.stores, owner, { golden: "web", harness: "claude" }),
     ).rejects.toThrow(/git pull of web failed \(exit 128\)\.\nfatal: not possible to fast-forward/);
     expect(world.execs.some((exec) => exec.command === "pnpm i")).toBe(false);
-    expect(world.execs.filter((exec) => exec.command.includes("'pull'"))).toHaveLength(1);
+    expect(world.execs.filter((exec) => exec.command.includes("git fetch"))).toHaveLength(1);
   });
 
   test.each([
@@ -828,10 +934,12 @@ exit 1
       golden: golden("org"),
       prepare: true,
       exec: (command) =>
-        command.includes("'pull'") && (!transient || rejectedPulls++ === 0)
+        command.includes("git fetch") && (!transient || rejectedPulls++ === 0)
           ? {
-              exitCode: 128,
-              stderr: "fatal: detected dubious ownership in repository at '/home/user/web'\n" + "x".repeat(2500),
+              exitCode: 75,
+              stderr:
+                "ARMADA_REPOSITORY_FETCH_FAILED\nfatal: detected dubious ownership in repository at '/home/user/web'\n" +
+                "x".repeat(2500),
             }
           : { exitCode: 0 },
     });
@@ -849,7 +957,7 @@ exit 1
         },
         {
           sleep: async (ms) => {
-            expect(world.execs.filter((exec) => exec.command.includes("'pull'"))).toHaveLength(1);
+            expect(world.execs.filter((exec) => exec.command.includes("git fetch"))).toHaveLength(1);
             waits.push(ms);
           },
         },
@@ -870,9 +978,9 @@ exit 1
         retry: transient ? "succeeded" : "ownership_refused",
       },
     ]);
-    expect(world.execs.filter((exec) => exec.cwd === "/home/user/web" && exec.command.includes("'pull'"))).toHaveLength(
-      2,
-    );
+    expect(
+      world.execs.filter((exec) => exec.cwd === "/home/user/web" && exec.command.includes("git fetch")),
+    ).toHaveLength(2);
     if (transient) {
       expect(failure).not.toBeInstanceOf(LaunchError);
       expect([...world.rows.values()][0]?.status).toBe("running");
@@ -886,7 +994,7 @@ exit 1
     expect(error.code).toBe("init_failed");
     expect(error.safeReason).toBe("repository_ownership_mismatch");
     expect(error.cause).toBeInstanceOf(LaunchError);
-    expect((error.cause as Error).message).toContain("git pull of web failed (exit 128)");
+    expect((error.cause as Error).message).toContain("git pull of web failed (exit 75)");
     expect(error.sandboxId).toBeString();
     expect(error.message).toContain(`sandbox ${error.sandboxId}:`);
     expect(error.message).not.toContain("bx_1");
@@ -965,6 +1073,7 @@ exit 1
     );
     expect(world.execs[0]?.command).toContain("user.name 'The Octocat'");
     expect(JSON.stringify(world.execs)).not.toContain(GITHUB_TOKEN);
+    expect(world.execs.find((exec) => exec.command.includes("git fetch"))?.command).not.toContain("credential.helper=");
     expect(result.github).toEqual({ status: "connected", login: "octocat" });
     expect(result.sandbox.status).toBe("ready");
   });
@@ -1566,4 +1675,189 @@ test("plain launches merge default layers before installation; opt-out keeps exp
       skipSkillDefaults: "yes" as never,
     }),
   ).rejects.toMatchObject({ code: "invalid_request" });
+});
+
+test("repository authorization preflight refuses before fork", async () => {
+  const world = setup({ golden: golden("org") });
+  world.stores.credentials.authorizeRepositories = async (actor, _credentials, repos) => {
+    expect(actor.userId).toBe(owner.userId);
+    expect(repos.map((repo) => repo.dir)).toEqual(["web", "api"]);
+    throw new LaunchError("no_credentials", "Repository web needs GitHub access; run armada github connect.");
+  };
+  await expect(
+    launchSandbox(world.provider, world.stores, owner, { golden: "web", harness: "claude" }),
+  ).rejects.toMatchObject({ code: "no_credentials" });
+  expect(world.forks).toEqual([]);
+});
+
+test.each(["boat", "modal", "docker"])(
+  "shared %s refresh preserves helper authority and warns only on completed fetch network failure",
+  async (id) => {
+    const g = golden("org");
+    g.config.repos = g.config.repos.slice(0, 1);
+    g.config.init = ["echo ready"];
+    const commands: string[] = [];
+    const warnings = await prepareLaunchWorkspace(
+      {
+        id,
+        exec: async (request) => {
+          commands.push(request.command);
+          expect(request.command).not.toContain("credential.helper=");
+          return {
+            detached: false,
+            exitCode: request.command.includes("git fetch") ? 75 : 0,
+            stdout: "",
+            stderr: request.command.includes("git fetch")
+              ? "fatal: Could not resolve host opaque-provider-data\nARMADA_REPOSITORY_FETCH_FAILED\n"
+              : "",
+            timedOut: false,
+            truncated: false,
+          };
+        },
+      },
+      "physical",
+      "logical",
+      g,
+      ["opaque-provider-data"],
+      () => {},
+    );
+    expect(warnings).toEqual([expect.stringContaining("repository web")]);
+    expect(warnings.join(" ")).toContain("snapshot checkout");
+    expect(warnings.join(" ")).not.toContain("opaque-provider-data");
+    expect(commands.at(-1)).toBe("echo ready");
+  },
+);
+
+test.each(["auth", "merge-network", "timeout", "init"])(
+  "refresh policy blocks %s failure without exposing credential diagnostics",
+  async (mode) => {
+    const g = golden("org");
+    g.config.repos = g.config.repos.slice(0, 1);
+    g.config.init = ["echo ready"];
+    const failure = prepareLaunchWorkspace(
+      {
+        id: "boat",
+        exec: async (request) => {
+          const repository = request.command.includes("git fetch");
+          const fails = mode === "init" ? !repository : repository;
+          return {
+            detached: false,
+            exitCode: fails ? 1 : 0,
+            stdout: "",
+            stderr: !fails
+              ? ""
+              : mode === "auth"
+                ? "fatal: could not read Username for https://github.com: terminal prompts disabled opaque-private-token"
+                : mode === "merge-network"
+                  ? "RPC failed\nARMADA_REPOSITORY_FETCH_FAILED\n"
+                  : "ARMADA_REPOSITORY_FETCH_FAILED\nCould not resolve host",
+            timedOut: fails && mode === "timeout",
+            truncated: false,
+          };
+        },
+      },
+      "physical",
+      "logical",
+      g,
+      ["opaque-private-token"],
+      () => {},
+    );
+    if (mode === "auth")
+      await expect(failure).rejects.toMatchObject({
+        code: "no_credentials",
+        message: expect.stringContaining("Repository web needs a GitHub connection"),
+      });
+    else await expect(failure).rejects.toMatchObject({ code: "init_failed" });
+  },
+);
+
+test("native launch exposes snapshot fallback warnings in its existing GitHub result", async () => {
+  const world = setup({
+    golden: golden("org"),
+    github: { status: "connected", token: GITHUB_TOKEN, identity: IDENTITY },
+    exec: (command) =>
+      command.includes("git fetch")
+        ? { exitCode: 75, stderr: "Could not resolve host\nARMADA_REPOSITORY_FETCH_FAILED\n" }
+        : { exitCode: 0 },
+  });
+  const result = await launchSandbox(world.provider, world.stores, owner, { golden: "web", harness: "claude" });
+  expect(result.sandbox.status).toBe("ready");
+  expect(result.github.message).toContain("snapshot checkout");
+  expect(world.execs.some((exec) => exec.command === "pnpm i")).toBe(true);
+});
+
+test("generated refresh never merges after a failed fetch and preserves its completed failure marker", async () => {
+  const { pullCommand } = await import("../src/index.ts");
+  const spec = pullCommand(golden("org").config.repos[0]!);
+  const result = spawnSync(
+    "/bin/bash",
+    [
+      "-c",
+      `env() { [ "$1" = GIT_TERMINAL_PROMPT=0 ] || return 92; shift; "$@"; }
+    git() { printf '%s\\n' "$1"; if [ "$1" = fetch ]; then printf 'Could not resolve host\\n' >&2; return 128; fi; return 0; }
+    ${spec.command}`,
+    ],
+    { encoding: "utf8" },
+  );
+  expect(result.status).toBe(75);
+  expect(result.stdout.trim()).toBe("fetch");
+  expect(result.stderr).toContain("ARMADA_REPOSITORY_FETCH_FAILED");
+  expect(spec.command).not.toContain("credential.helper=");
+});
+
+test("generated refresh uses the installed caller helper without writing its token to commands or config", async () => {
+  const { gitSetupCommand, pullCommand } = await import("../src/index.ts");
+  const secret = "ghu_fixture_only";
+  const spec = pullCommand(golden("org").config.repos[0]!);
+  // Model only Git's helper selection protocol, never invoke real Git, a network,
+  // or an ambient credential store. The executed helper is generated by setupGitHub.
+  const result = spawnSync(
+    "/bin/bash",
+    [
+      "-c",
+      `set -eu
+    helper=''
+    env() { [ "$1" = GIT_TERMINAL_PROMPT=0 ] || return 92; shift; "$@"; }
+    git() {
+      while [ "$1" = -c ]; do if [ "$2" = credential.helper= ]; then helper=''; fi; shift 2; done
+      case "$1" in
+        config) if [ "$2" = --global ] && [ "$3" = --add ] && [ "$4" = credential.https://github.com.helper ]; then helper="$5"; fi ;;
+        pull|fetch)
+          [ -n "$helper" ] || return 128
+          local credential
+          credential=$(printf 'protocol=https\\nhost=github.com\\nwwwauth[]=Basic realm=GitHub\\n\\n' | sh -c "\${helper#!} get") || return 128
+          case "$credential" in *"password=$GH_TOKEN"*) printf 'fetch-authorized\\n' ;; *) return 128 ;; esac ;;
+        merge) printf 'merge-authorized\\n' ;;
+        *) return 93 ;;
+      esac
+    }
+    ${gitSetupCommand(IDENTITY)}
+    ${spec.command}
+    printf '%s\\n' "$helper"`,
+    ],
+    { env: { PATH: process.env.PATH ?? "", GH_TOKEN: secret }, encoding: "utf8" },
+  );
+  expect(result.status, result.stderr).toBe(0);
+  expect(result.stdout).toContain("fetch-authorized");
+  expect(result.stdout).toContain("merge-authorized");
+  expect(spec.command + result.stdout + result.stderr).not.toContain(secret);
+});
+
+test("host_full fork refusal remains definite and does not publish or clean up a sandbox", async () => {
+  const world = setup({ golden: golden("org") });
+  const refusal = new ProviderError({
+    provider: "docker",
+    code: "host_full",
+    retryable: false,
+    message: "Stop a sandbox on the selected host or raise its limit.",
+  });
+  world.provider.fork = async () => {
+    throw refusal;
+  };
+  await expect(launchSandbox(world.provider, world.stores, owner, { golden: "web", harness: "codex" })).rejects.toBe(
+    refusal,
+  );
+  expect(world.rows.size).toBe(0);
+  expect(world.stopped).toEqual([]);
+  expect(world.deleted).toEqual([]);
 });

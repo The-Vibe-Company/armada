@@ -79,7 +79,7 @@ export function launchArgs(
   if (provider === "boat" && HARNESS_CATALOG[harness].boatProvider === null)
     return { ok: false, error: `${HARNESS_CATALOG[harness].label} currently requires Modal.` };
   const repo = fields.repo?.trim() ?? "";
-  if (repo && !REPO.test(repo)) return { ok: false, error: "Choose a repository recorded in the golden." };
+  if (repo && !REPO.test(repo)) return { ok: false, error: "Choose a repository recorded in the snapshot." };
   const size = fields.size?.trim() ?? "";
   if (size && !(MACHINE_SIZES as readonly string[]).includes(size))
     return { ok: false, error: "Choose a machine size from the list." };

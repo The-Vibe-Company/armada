@@ -17,7 +17,7 @@
   <a href="#documentation">Docs</a>
 </p>
 
-**Armada gives every coding task its own machine.** Snapshot your repositories once as a *golden*. Launch Claude Code or Codex into a fresh Boat or Modal sandbox with the model and reasoning effort you choose. Follow every event, redirect the agent mid-turn, stop the machine and pick the same conversation back up later, from the web, the terminal or any MCP client.
+**Armada gives every coding task its own machine.** Save your repositories and setup once as a *snapshot*. Launch Claude Code or Codex into a fresh Boat or Modal sandbox with the model and reasoning effort you choose. Follow every event, redirect the agent mid-turn, stop the machine and pick the same conversation back up later, from the web, the terminal or any MCP client.
 
 ```sh
 npm install -g @the-vibe-company/armada
@@ -28,23 +28,23 @@ Open source, MIT. Sandboxes run on the Boat or Modal account you connect, and ag
 
 ## Why Armada
 
-- **Start from a ready workspace.** A golden snapshots your repositories, branches and setup after a secret scan; every launch forks it and pulls the latest commits.
+- **Start from a ready workspace.** A snapshot saves your repositories, branches and setup after a secret scan; every launch forks it and pulls the latest commits.
 - **Choose the agent and the brain.** Claude Code or Codex, with the exact model and reasoning effort you name. Armada never swaps in another model.
 - **One task, one sandbox.** Each launch gets its own Boat or Modal machine, only that agent's credentials, and your GitHub identity once you connect it.
 - **See and steer every move.** Follow events live, send the next prompt, steer or interrupt the running turn, run a command beside it.
 - **Stop and pick up later.** Stopping normally preserves the disk and conversation for the next prompt. If a Modal checkpoint fails, the current disk is not retained and resume is refused; [push work before stopping](docs/modal-stop-recovery.md).
-- **Bring your tools and your team.** Attach the MCP servers you connected, share goldens with your org or keep them private, and give bots a service token.
+- **Bring your tools and your team.** Attach the MCP servers you connected, share snapshots with your org or keep them private, and give bots a service token.
 
 ## How it works
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/armada-how-it-works-dark.svg">
-    <img src="docs/images/armada-how-it-works-light.svg" width="720" alt="How Armada works, in four steps. 1 Golden: your repositories and setup script, a fail-closed secret scan, a snapshot per provider. 2 Launch: Claude Code or Codex with your model and reasoning effort, on Boat or Modal, with your connected MCP servers. 3 Sandbox: a fresh fork with repositories pulled, git and gh acting as you, and only that agent's keys. 4 Drive: follow live events, send, steer, interrupt, stop and resume. The web dashboard, the armada CLI and MCP clients use the same server and rules.">
+    <img src="docs/images/armada-how-it-works-light.svg" width="720" alt="How Armada works, in four steps. 1 Snapshot: your repositories and setup script, a fail-closed secret scan, a snapshot per provider. 2 Launch: Claude Code or Codex with your model and reasoning effort, on Boat or Modal, with your connected MCP servers. 3 Sandbox: a fresh fork with repositories pulled, git and gh acting as you, and only that agent's keys. 4 Drive: follow live events, send, steer, interrupt, stop and resume. The web dashboard, the armada CLI and MCP clients use the same server and rules.">
   </picture>
 </p>
 
-1. **Golden**: build once from your repositories (`armada golden create`).
+1. **Snapshot**: build once from your repositories (`armada snapshot create`).
 2. **Launch**: pick Claude Code or Codex, the model, the effort and the provider (`armada launch`).
 3. **Sandbox**: a fresh, isolated fork where `git` and `gh` act as you.
 4. **Drive**: follow, steer, stop and resume (`armada logs --follow`, `armada send`).
@@ -66,7 +66,7 @@ The CLI only talks to the Armada API. It keeps your Armada session (or reads `AR
 
 ## Quickstart
 
-Installing is the first step; an agent also needs a sandbox provider, model credentials, GitHub access and a ready golden. Each step below also has a page in the [dashboard](https://armada.thevibecompany.co), which walks a new organization through the same setup.
+Installing is the first step; an agent also needs a sandbox provider, model credentials, GitHub access and a ready snapshot. Each step below also has a page in the [dashboard](https://armada.thevibecompany.co), which walks a new organization through the same setup.
 
 **1. Sign in.** The browser opens (GitHub by default, `--provider google` for Google); `--email <address>` signs you in with a code from an email instead. Use `--url <armada-url>` (or `ARMADA_URL`) for another deployment.
 
@@ -92,22 +92,22 @@ armada creds set codex-auth --file ~/.codex/auth.json              # Codex; or k
 armada creds list
 ```
 
-**4. Connect GitHub.** Goldens are cloned over your own GitHub connection, and sandboxes use it so commits and pull requests come from you.
+**4. Connect GitHub.** Snapshots are cloned over your own GitHub connection, and sandboxes use it so commits and pull requests come from you.
 
 ```sh
 armada github connect
 ```
 
-**5. Build a golden.** The server clones the repositories in a disposable sandbox, runs your optional `--setup` script, scans for leaked secrets and only then saves the snapshot. `--init` commands run at every launch, after the pull. Add `--provider modal` to build it for Modal. Only admins build organization goldens; members add `--private` to build one for themselves.
+**5. Build a snapshot.** The server clones the repositories in a disposable sandbox, runs your optional `--setup` script, scans for leaked secrets and only then saves the snapshot. `--init` commands run at every launch, after the pull. Add `--provider modal` to build it for Modal. Only admins build organization snapshots; members add `--private` to build one for themselves.
 
 ```sh
-armada golden create web --repo https://github.com/acme/web@main --init "bun install" --org acme
-armada golden list
+armada snapshot create web --repo https://github.com/acme/web@main --init "bun install" --org acme
+armada snapshot list
 ```
 
-A long build keeps running on the server: `armada golden build-status <job-id>` reports it.
+A long build keeps running on the server: `armada snapshot build-status <job-id>` reports it.
 
-**6. Launch an agent.** With a prompt the agent starts at once; without one the sandbox waits, ready, for your first prompt. In a golden with several repositories, `--repo owner/repo` starts the agent in that one ([details](docs/dave-onboarding.md#6-launch-from-the-cli)).
+**6. Launch an agent.** With a prompt the agent starts at once; without one the sandbox waits, ready, for your first prompt. In a snapshot with several repositories, `--repo owner/repo` starts the agent in that one ([details](docs/dave-onboarding.md#6-launch-from-the-cli)).
 
 ```sh
 armada launch web --agent claude --model claude-opus-5-5 --reasoning-effort high --ttl 4h \
@@ -148,7 +148,7 @@ Details: [docs/cli-capabilities-and-mcp-shortcuts.md](docs/cli-capabilities-and-
 
 ## Drive Armada from your own agent
 
-Armada is also a remote MCP server. Add it to Claude Code, Codex, Cursor or your own coordinator, and that agent can list and build goldens, launch sandboxes and drive them with `golden_list`, `golden_create`, `launch`, `list`, `status`, `wait`, `logs`, `send`, `steer`, `interrupt`, `exec`, `extend` and `stop`.
+Armada is also a remote MCP server. Add it to Claude Code, Codex, Cursor or your own coordinator, and that agent can list and build snapshots, launch sandboxes and drive them with `golden_list`, `golden_create`, `launch`, `list`, `status`, `wait`, `logs`, `send`, `steer`, `interrupt`, `exec`, `extend` and `stop`.
 
 MCP clients sign in with OAuth; bots and CI use a service token bound to one organization:
 
@@ -163,10 +163,10 @@ Your coordinator decides what to work on and when to merge; Armada gives each ta
 | | Admin | Member |
 | --- | :---: | :---: |
 | Launch, watch and stop the organization's agents | ✓ | ✓ |
-| Create private goldens and private sandboxes | ✓ | ✓ |
-| Change organization goldens, members and provider keys | ✓ | |
+| Create private snapshots and private sandboxes | ✓ | ✓ |
+| Change organization snapshots, members and provider keys | ✓ | |
 
-A private golden or sandbox is visible only to its owner, not even to admins. Admins can add an existing account immediately with `armada org members add` (no invitation email), or create a pending invitation, including before the recipient has an account. An invitation grants membership only after explicit acceptance by a personal login with the matching verified email; opening its link does not join. See [invitations and acceptance](docs/cli-invitations.md#accept-an-invitation).
+A private snapshot or sandbox is visible only to its owner, not even to admins. Admins can add an existing account immediately with `armada org members add` (no invitation email), or create a pending invitation, including before the recipient has an account. An invitation grants membership only after explicit acceptance by a personal login with the matching verified email; opening its link does not join. See [invitations and acceptance](docs/cli-invitations.md#accept-an-invitation).
 
 ## Documentation
 
@@ -199,7 +199,7 @@ Save the last page's `cursor` and pass it with `--since` to resume. Errors go to
 stderr and return a nonzero exit code.
 
 Command discovery works before signing in: use `armada COMMAND --help` (or
-`-h`) for sandbox, golden, authentication, organization, credential and MCP
+`-h`) for sandbox, snapshot, authentication, organization, credential and MCP
 commands. These work without reading a session or contacting a server.
 Logs has a focused reader reference: `armada logs --help` explains cursor resume,
 tail constraints and the JSON pipe format. Other commands retain the shared

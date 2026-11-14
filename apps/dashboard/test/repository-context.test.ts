@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { goldenRepositoryDirs, repositoryChoice, sandboxRepositoryDir } from "../src/lib/repository-context.ts";
 
-test("the choices are exactly the golden config's repository directories, as the server derives them", () => {
+test("the choices are exactly the snapshot config's repository directories, as the server derives them", () => {
   const config = {
     repos: [
       { url: "https://github.com/acme/web.git", branch: "main" },

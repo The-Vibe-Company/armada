@@ -1,0 +1,77 @@
+import { expect, test } from "bun:test";
+import { dockerResourcePolicy, parseDockerMemory } from "../src/docker-resource-policy.ts";
+import { dockerResourceArgs, dockerResourceLimits, GIB } from "../src/docker-resources.ts";
+
+test("Docker defaults shrink to fit and disable extra swap while bounding processes", () => {
+  expect(dockerResourceLimits({ cpus: 16, memoryBytes: 32 * GIB })).toEqual({
+    cpus: 2,
+    memoryBytes: 4 * GIB,
+    pids: 4096,
+  });
+  expect(dockerResourceArgs({ cpus: 1, memoryBytes: GIB })).toEqual([
+    "--cpus",
+    "1",
+    "--memory",
+    String(GIB),
+    "--memory-swap",
+    String(GIB),
+    "--pids-limit",
+    "4096",
+  ]);
+  for (const resources of [
+    { cpus: 0, memoryBytes: GIB },
+    { cpus: NaN, memoryBytes: GIB },
+    { cpus: 2, memoryBytes: 0 },
+  ])
+    expect(() => dockerResourceLimits(resources)).toThrow();
+});
+
+test("automatic Docker capacity respects memory reserve, 2x CPU and small hosts", () => {
+  for (const [cpus, memory, expected] of [
+    [16, 26, 6],
+    [2, 64, 2],
+    [8, 10, 2],
+    [1, 1, 1],
+    [2, 2, 1],
+    [4, 6, 1],
+  ])
+    expect(dockerResourcePolicy({ cpus: cpus!, memoryBytes: memory! * GIB }).capacity).toBe(expected!);
+});
+
+test("manual policy fits hardware, recomputes capacity and parses exact memory units", () => {
+  const machine = { cpus: 8, memoryBytes: 26 * GIB };
+  expect(dockerResourcePolicy(machine, { cpus: 1, memoryBytes: 2 * GIB, maxSandboxes: 12 })).toMatchObject({
+    perSandbox: { cpus: 1, memoryBytes: 2 * GIB, pids: 4096 },
+    capacity: 12,
+    mode: "manual",
+  });
+  expect(dockerResourcePolicy(machine, { memoryBytes: 2 * GIB }).capacity).toBe(8);
+  for (const patch of [
+    { cpus: 9 },
+    { cpus: 0.001 },
+    { memoryBytes: 27 * GIB },
+    { maxSandboxes: 7 },
+    { maxSandboxes: 1.1 },
+  ])
+    expect(() => dockerResourcePolicy(machine, patch)).toThrow();
+  expect(parseDockerMemory("4g")).toBe(4 * GIB);
+  expect(parseDockerMemory("512MiB")).toBe(GIB / 2);
+  expect(parseDockerMemory("1.5g")).toBe(1.5 * GIB);
+  for (const raw of ["-1g", "unlimited", "1", "4foo", "Infinity", "0.000000001g"])
+    expect(() => parseDockerMemory(raw)).toThrow();
+});
+
+test("automatic headroom withholds busy-machine slots, retains running reservations and honors explicit max", () => {
+  const machine = { cpus: 16, memoryBytes: 38 * GIB, availableCpus: 8, availableMemoryBytes: 30 * GIB };
+  expect(dockerResourcePolicy(machine, {}, 5)).toMatchObject({ capacity: 7, heldBack: 2 });
+  expect(dockerResourcePolicy({ ...machine, availableMemoryBytes: 2 * GIB }, {}, 5)).toMatchObject({
+    capacity: 5,
+    heldBack: 4,
+  });
+  expect(dockerResourcePolicy({ ...machine, availableMemoryBytes: 0, availableCpus: 0 })).toMatchObject({
+    capacity: 0,
+    heldBack: 9,
+  });
+  expect(dockerResourcePolicy(machine, { maxSandboxes: 9 }, 5)).toMatchObject({ capacity: 9 });
+  expect(() => dockerResourcePolicy({ ...machine, availableMemoryBytes: -1 })).toThrow();
+});

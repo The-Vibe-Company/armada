@@ -1,6 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { readBoundedText } from "@armada/auth";
-import type { Sql } from "@armada/core/server";
+import { canonicalOttoRepository, type Sql } from "@armada/core/server";
 import type { Route } from "../http.ts";
 import { observeQueue, observeWork } from "./work-evidence.ts";
 
@@ -93,7 +93,12 @@ export function createOttoObserver(sql: Sql, scope: OttoScope) {
       } catch {
         return new Response(null, { status: 400 });
       }
-      if (object(body.repository).full_name !== scope.repository) return new Response(null, { status: 403 });
+      const fullName = object(body.repository).full_name;
+      if (
+        typeof fullName !== "string" ||
+        canonicalOttoRepository(fullName) !== canonicalOttoRepository(scope.repository)
+      )
+        return new Response(null, { status: 403 });
       try {
         if (event === "pull_request" || event === "issues") {
           const observed = item(body[event === "issues" ? "issue" : "pull_request"], event === "pull_request");
@@ -154,6 +159,9 @@ export function createOttoObserver(sql: Sql, scope: OttoScope) {
       let complete = false;
       try {
         while (path && seen.size < 100) {
+          const target = new URL(path, "https://api.github.com");
+          if (target.origin !== "https://api.github.com" || target.pathname !== `/repos/${scope.repository}/${type}`)
+            throw Error("unsafe_pagination");
           if (seen.has(path)) throw Error("pagination_cycle");
           seen.add(path);
           const cached: { etag: string | null; items: Item[]; next_path: string | null } | undefined = (

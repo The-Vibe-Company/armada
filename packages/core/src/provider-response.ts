@@ -50,6 +50,8 @@ export function launchResponse(result: LaunchResult) {
   const { sandbox } = result;
   return {
     id: sandbox.id,
+    ...(result.runtime ? { runtime: result.runtime } : {}),
+    ...(sandbox.runtimeTransport ? { runtimeTransport: sandbox.runtimeTransport } : {}),
     ...sandboxIdentity(sandbox),
     golden: result.golden.name,
     repositoryDir: sandbox.repositoryDir ?? null,

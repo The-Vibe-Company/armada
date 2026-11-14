@@ -5,7 +5,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BootstrapDescriptor } from "../../core/src/docker-host-job.ts";
 import { createDockerMachineExecutor, DockerMachineError } from "../../core/src/docker-machine.ts";
-import { type Api, type Executor, type Job, register, type State, type Store, tick } from "../src/daemon.ts";
+import {
+  type Api,
+  compactReceipts,
+  type Executor,
+  type Job,
+  register,
+  type State,
+  type Store,
+  tick,
+} from "../src/daemon.ts";
 import { fileStore, httpApi } from "../src/native.ts";
 
 function fail(): never {
@@ -315,7 +324,7 @@ test("offline TTL stop confirmation survives restart and lost ACK without replay
   expect(f.executed).toEqual(["create"]);
 });
 
-test("all physical TTL stops precede bounded fair reporting across restarted ticks", async () => {
+test("bounded TTL sweeps retire confirmed generations while reporting fairly across restarted ticks", async () => {
   const f = fixture();
   await tick(f.store, f.api, f.executor);
   const first = f.job.requestId;
@@ -352,7 +361,7 @@ test("all physical TTL stops precede bounded fair reporting across restarted tic
   expect(reports).toEqual([first, second]);
   await tick(f.store, api, executor);
   expect(reports).toEqual([first, second, first]);
-  expect(sweepCounts).toEqual([2, 4, 6]);
+  expect(sweepCounts).toEqual([1, 2, 2]);
   expect(f.executed).toEqual(["create", "create"]);
 });
 
@@ -781,3 +790,249 @@ test("snapshot failures durably report a bounded reason and log no exception out
     console.error = original;
   }
 });
+
+test("poll policy is applied before machine work and older-server absence resets it", async () => {
+  const f = fixture();
+  const limits = { cpus: 0.5, memoryBytes: 512 * 1024 ** 2, pids: 4096 };
+  const applied: unknown[] = [];
+  f.executor.configureLimits = (value) => {
+    applied.push(value);
+  };
+  const original = f.executor.create;
+  f.executor.create = async (request) => {
+    expect(applied).toEqual([limits]);
+    return original(request);
+  };
+  f.api.poll = async () => ({ job: f.job, limits });
+  await tick(f.store, f.api, f.executor);
+  f.api.poll = async () => ({ job: null });
+  await tick(f.store, f.api, f.executor);
+  expect(applied).toEqual([limits, undefined]);
+});
+
+test("compaction preserves cleanup capacity, TTL facts and restart replay fences", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "armada-ledger-"));
+  try {
+    const store = await fileStore(directory);
+    const f = fixture("delete");
+    const initial = await f.store.load();
+    const old = {
+      requestId: crypto.randomUUID(),
+      operation: "stop" as const,
+      outcome: "completed" as const,
+      request: {
+        ...f.job.request,
+        sandboxId: crypto.randomUUID(),
+        generation: crypto.randomUUID(),
+        image: `sha256:${"a".repeat(64)}`,
+      },
+    };
+    initial.receipts = Array.from({ length: 51500 }, () => ({
+      ...old,
+      requestId: crypto.randomUUID(),
+      request: { ...old.request, sandboxId: crypto.randomUUID(), generation: crypto.randomUUID() },
+    }));
+    const replay = initial.receipts[0]!;
+    const pending = { request: old.request, operation: "stop" as const, requestId: crypto.randomUUID() };
+    const active = { ...old, requestId: crypto.randomUUID(), operation: "create" as const };
+    initial.receipts.push(pending, active);
+    expect(Buffer.byteLength(JSON.stringify(initial))).toBeGreaterThan(15 * 1024 * 1024);
+    await store.save(initial);
+    let effects = 0;
+    const executor: Executor = {
+      async create() {
+        effects++;
+      },
+      async stop() {
+        effects++;
+      },
+      async delete() {
+        effects++;
+      },
+      async stopIfExpired() {
+        return true;
+      },
+    };
+    let job: Job = f.job;
+    const expiredReports: string[] = [];
+    const outcomes: string[] = [];
+    const api: Api = {
+      ...f.api,
+      async poll() {
+        return { job };
+      },
+      async result(_state, receipt, expired) {
+        if (expired) expiredReports.push(receipt.requestId);
+        else outcomes.push(receipt.outcome ?? "pending");
+      },
+    };
+    await tick(store, api, executor);
+    const saved = await store.load();
+    expect(effects).toBe(1);
+    expect(saved.receipts.some((r) => r.requestId === pending.requestId && !r.outcome)).toBe(true);
+    expect(saved.retired?.some((r) => r[0] === active.requestId)).toBe(true);
+    expect(expiredReports).toContain(active.requestId);
+    job = { requestId: replay.requestId, operation: replay.operation, request: replay.request } as Job;
+    await tick(store, api, executor);
+    expect(outcomes.at(-1)).toBe("completed");
+    expect(effects).toBe(1);
+    job = { request: active.request, requestId: crypto.randomUUID(), operation: "create" };
+    await expect(tick(store, api, executor)).rejects.toThrow("Retired machine generation");
+    expect(effects).toBe(1);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("native poll carries sampled availability without changing the private credential boundary", async () => {
+  const f = fixture();
+  const resources = { cpus: 8, memoryBytes: 32 * 1024 ** 3, availableCpus: 3, availableMemoryBytes: 12 * 1024 ** 3 };
+  const api = httpApi(
+    Object.assign(
+      async (_url: string | URL | Request, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body));
+        expect(body.resources).toEqual(resources);
+        expect(JSON.stringify(body)).not.toContain(f.state().hostToken);
+        return Response.json({ job: null });
+      },
+      { preconnect: fetch.preconnect },
+    ),
+    async () => resources,
+  );
+  expect(await api.poll(await f.store.load())).toEqual({ job: null });
+});
+
+test("older policy-capable servers retain the quota handshake when availability fields are refused", async () => {
+  const f = fixture();
+  let calls = 0;
+  const api = httpApi(
+    Object.assign(
+      async (_url: string | URL | Request, init?: RequestInit) => {
+        calls++;
+        const body = JSON.parse(String(init?.body));
+        expect(body.resourcePolicyVersion).toBe(1);
+        if ("availableCpus" in body.resources) return new Response(null, { status: 400 });
+        return Response.json({ job: null, limits: { cpus: 1, memoryBytes: 1024 ** 3, pids: 4096 } });
+      },
+      { preconnect: fetch.preconnect },
+    ),
+    async () => ({ cpus: 8, memoryBytes: 32 * 1024 ** 3, availableCpus: 2, availableMemoryBytes: 10 * 1024 ** 3 }),
+  );
+  expect(await api.poll(await f.store.load())).toMatchObject({ limits: { cpus: 1 } });
+  expect(calls).toBe(2);
+});
+
+test("TTL index deduplicates active receipts, retires terminal history and rotates uncertain failures before mailbox polling", async () => {
+  const f = fixture();
+  await tick(f.store, f.api, f.executor);
+  const legacy = await f.store.load();
+  delete legacy.activeTtl;
+  const original = legacy.receipts[0] ?? fail();
+  const terminal = {
+    ...original,
+    requestId: crypto.randomUUID(),
+    request: { ...original.request, sandboxId: crypto.randomUUID(), generation: crypto.randomUUID() },
+    expired: true as const,
+    expiryReported: true as const,
+  };
+  const later = {
+    ...original,
+    requestId: crypto.randomUUID(),
+    request: { ...original.request, sandboxId: crypto.randomUUID(), generation: crypto.randomUUID() },
+  };
+  legacy.receipts.push(
+    { ...original, requestId: crypto.randomUUID(), operation: "resume", inputHash: "resume_input" },
+    terminal,
+    {
+      ...original,
+      request: terminal.request,
+      requestId: crypto.randomUUID(),
+      operation: "bootstrap",
+      inputHash: "bootstrap_input",
+    },
+    later,
+  );
+  await f.store.save(legacy);
+  const checked: string[] = [];
+  let polls = 0;
+  const executor: Executor = {
+    ...f.executor,
+    async stopIfExpired(request) {
+      checked.push(request.generation);
+      if (request.generation === original.request.generation) throw new Error("uncertain Docker outcome");
+      return true;
+    },
+  };
+  const api: Api = {
+    ...f.api,
+    async poll() {
+      polls++;
+      throw new Error("offline");
+    },
+    async result() {},
+  };
+  for (let i = 0; i < 4; i++) await expect(tick(f.store, api, executor)).rejects.toThrow("offline");
+  expect(checked).toEqual([
+    original.request.generation,
+    later.request.generation,
+    original.request.generation,
+    original.request.generation,
+  ]);
+  expect(polls).toBe(4);
+  expect((await f.store.load()).receipts).toHaveLength(5);
+});
+
+// Build legacy compacted state through the production compactor, not invented fences.
+test.each(["stop", "delete", "expired", "resumed"] as const)(
+  "legacy compacted %s history preserves only uncertain live TTL obligations",
+  async (kind) => {
+    const f = fixture();
+    await tick(f.store, f.api, f.executor);
+    const state = await f.store.load();
+    delete state.activeTtl;
+    const original = state.receipts[0] ?? fail();
+    if (kind === "expired") {
+      original.expired = true;
+      original.expiryReported = true;
+      state.receipts.push({
+        ...original,
+        operation: "bootstrap",
+        inputHash: "bootstrap_input",
+        requestId: crypto.randomUUID(),
+      });
+      const bootstrap = state.receipts[1] ?? fail();
+      delete bootstrap.expired;
+      delete bootstrap.expiryReported;
+    } else {
+      state.receipts.push({
+        request: original.request,
+        requestId: crypto.randomUUID(),
+        operation: kind === "delete" ? "delete" : "stop",
+        outcome: "completed",
+      });
+      if (kind === "resumed")
+        state.receipts.push({
+          ...original,
+          operation: "resume",
+          inputHash: "resume_input",
+          requestId: crypto.randomUUID(),
+        });
+    }
+    // Reach the real compaction threshold with closed unrelated receipts.
+    state.receipts.push(
+      ...Array.from({ length: 4500 }, () => ({
+        request: { ...original.request, sandboxId: crypto.randomUUID(), generation: crypto.randomUUID() },
+        requestId: crypto.randomUUID(),
+        operation: "delete" as const,
+        outcome: "completed" as const,
+      })),
+    );
+    compactReceipts(state);
+    expect(state.retired?.length).toBeGreaterThan(0);
+    await f.store.save(state);
+    f.swept.length = 0;
+    f.deny();
+    await expect(tick(f.store, f.api, f.executor)).rejects.toThrow("denied");
+    expect(f.swept).toEqual(kind === "resumed" ? [original.request.generation] : []);
+  },
+);

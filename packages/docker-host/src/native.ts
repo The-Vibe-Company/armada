@@ -3,8 +3,9 @@ import { constants } from "node:fs";
 import { lstat, mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { DockerMachineCli } from "../../core/src/docker-machine.ts";
+import { type DockerHostResources, dockerHostResources } from "../../core/src/docker-resources.ts";
 import { VERSION } from "../../core/src/version.ts";
-import { type Api, type Job, type State, type Store, serverOrigin, validId, validToken } from "./daemon.ts";
+import { type Api, compactReceipts, type State, type Store, serverOrigin, validId, validToken } from "./daemon.ts";
 
 const MAX_STATE_BYTES = 16 * 1024 * 1024;
 
@@ -66,6 +67,7 @@ export async function fileStore(
     load,
     exists,
     async save(state) {
+      compactReceipts(state);
       const serialized = JSON.stringify(state);
       if (Buffer.byteLength(serialized) > MAX_STATE_BYTES) throw new Error("Host state capacity reached");
       if (await exists()) await load(); // Refuse unsafe existing configuration rather than replacing it.
@@ -149,7 +151,10 @@ class HostRequestDenied extends Error {
 }
 
 /** Outbound HTTPS only. Redirects cannot forward host credentials to another origin. */
-export function httpApi(request: typeof fetch = fetch): Api & {
+export function httpApi(
+  request: typeof fetch = fetch,
+  resources?: (state: State) => Promise<DockerHostResources>,
+): Api & {
   unregister(state: State): Promise<boolean>;
   reuseRegistration(state: State, token: string): Promise<{ hostId: string; name: string | null }>;
 } {
@@ -227,13 +232,33 @@ export function httpApi(request: typeof fetch = fetch): Api & {
       return (await post(server, "register", token, { installationId })) as { hostId: string; hostToken: string };
     },
     async poll(state, options) {
-      return (await post(state.server, "poll", state.hostToken, {
+      const body = {
         installationId: state.installationId,
         version: VERSION,
         ...(options?.skipSnapshots ? { skipSnapshots: true } : {}),
-      })) as {
-        job: Job | null;
       };
+      try {
+        return (await post(state.server, "poll", state.hostToken, {
+          ...body,
+          resources: resources ? await resources(state) : dockerHostResources(),
+          resourcePolicyVersion: 1,
+        })) as Awaited<ReturnType<Api["poll"]>>;
+      } catch (error) {
+        // Older servers reject the additive resource field before claiming a job.
+        if (!(error instanceof HostRequestDenied) || error.status !== 400) throw error;
+        try {
+          // The preceding policy-capable server knows quotas but not availability.
+          // Keep its handshake so manual-limit hosts can still receive work.
+          return (await post(state.server, "poll", state.hostToken, {
+            ...body,
+            resources: dockerHostResources(),
+            resourcePolicyVersion: 1,
+          })) as Awaited<ReturnType<Api["poll"]>>;
+        } catch (legacyError) {
+          if (!(legacyError instanceof HostRequestDenied) || legacyError.status !== 400) throw legacyError;
+          return (await post(state.server, "poll", state.hostToken, body)) as Awaited<ReturnType<Api["poll"]>>;
+        }
+      }
     },
     async result(state, receipt, expired) {
       const body = {

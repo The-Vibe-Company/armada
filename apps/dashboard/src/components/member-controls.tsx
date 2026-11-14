@@ -97,7 +97,7 @@ export function MemberRoleForm({ org, orgName, user, email, role, self }: Member
             <AlertDialogTitle>Give up admin of {orgName}?</AlertDialogTitle>
             <AlertDialogDescription>
               You become a member. Only another admin can make you an admin again, and you can no longer manage its
-              members, goldens or providers.
+              members, snapshots or providers.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -137,8 +137,8 @@ export function RemoveMember({ org, orgName, user, email, self }: Omit<Member, "
         <AlertDialogHeader>
           <AlertDialogTitle>{self ? `Leave ${orgName}?` : `Remove ${email} from ${orgName}?`}</AlertDialogTitle>
           <AlertDialogDescription>
-            {self ? "You lose" : "They lose"} access to its goldens, sandboxes and subscriptions at once. Only an admin
-            can invite {self ? "you" : "them"} back.
+            {self ? "You lose" : "They lose"} access to its snapshots, sandboxes and subscriptions at once. Only an
+            admin can invite {self ? "you" : "them"} back.
           </AlertDialogDescription>
         </AlertDialogHeader>
         {state && !state.ok && <Refusal error={state.error} />}

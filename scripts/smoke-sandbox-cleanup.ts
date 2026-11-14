@@ -91,7 +91,8 @@ const RETRY_CODES = new Set([
   "dependency_unavailable",
   "outcome_unknown",
 ]);
-const CLEANUP_MS = 300_000; // Share the existing five-minute reserve across both deletion waves.
+const CLEANUP_WAVE_MS = 600_000; // Match parity lifecycle observation; provider deletion retains activity leases.
+export const SMOKE_CLEANUP_BUDGET_MS = 2 * CLEANUP_WAVE_MS;
 
 export async function deleteSmokeReceipts(
   origin: string,
@@ -110,8 +111,7 @@ export async function deleteSmokeReceipts(
   const remaining = ordered.slice(limit);
   // Deleted ordinary parents are the durable authority fence required before
   // their delegated children may be removed. Do not race the two admissions.
-  const deadline = Math.min(now() + CLEANUP_MS, io.deadline ?? Number.POSITIVE_INFINITY);
-  const cleanup = async (row: SmokeSandboxReceipt) => {
+  const cleanup = async (row: SmokeSandboxReceipt, deadline: number) => {
     let phase = "stop";
     let httpStatus: number | null = null;
     let code = "request_failed";
@@ -154,29 +154,44 @@ export async function deleteSmokeReceipts(
       await sleep(Math.min(5_000, deadline - now()));
     }
     try {
-      // Dispatch stop once. An unknown acknowledgement is reconciled by read,
-      // never by blindly replaying stop hooks on an archiving machine.
+      // Observe admitted/unknown stops without replaying hooks on archiving compute.
+      // A busy refusal may be retried after a ready observation; the endpoint fences admitted stops.
       let terminalStop = false;
       let alreadyDeleted = false;
-      try {
-        const stopped = await request("stop");
-        if (!stopped.ok && !RETRY_CODES.has(code)) throw Error(code);
-        if (stopped.ok && stopped.body?.id === row.id) {
-          terminalStop = stopped.body.status === "stopped" || stopped.body.status === "failed";
-          alreadyDeleted = stopped.body.status === "deleted";
+      let retryStopAdmission = false;
+      async function dispatchStop() {
+        try {
+          const stopped = await request("stop");
+          if (!stopped.ok && !RETRY_CODES.has(code)) throw Error(code);
+          // Only an explicit busy response permits retry. Lost acknowledgement is read-only reconciliation.
+          retryStopAdmission =
+            !stopped.ok && httpStatus === 409 && ["conflict", "sandbox_not_ready", "sandbox_busy"].includes(code);
+          if (stopped.ok && stopped.body?.id === row.id) {
+            terminalStop = stopped.body.status === "stopped" || stopped.body.status === "failed";
+            alreadyDeleted = stopped.body.status === "deleted";
+          }
+        } catch (error) {
+          if (code !== "request_failed" && !RETRY_CODES.has(code)) throw error;
+          retryStopAdmission = false;
         }
-      } catch (error) {
-        if (code !== "request_failed" && !RETRY_CODES.has(code)) throw error;
       }
+      await dispatchStop();
       while (!terminalStop && !alreadyDeleted) {
-        const status = await request("status");
+        let status: Awaited<ReturnType<typeof request>>;
+        try {
+          status = await request("status");
+        } catch (error) {
+          if (code !== "request_failed") throw error;
+          await pause();
+          continue;
+        }
         if (!status.ok) {
           if (!RETRY_CODES.has(code)) throw Error(code);
           await pause();
           continue;
         }
+        if (status.body?.id !== row.id) throw Error(code);
         if (status.body?.status === "deleted") {
-          if (status.body.id !== row.id) throw Error(code);
           alreadyDeleted = true;
           break;
         }
@@ -184,10 +199,20 @@ export async function deleteSmokeReceipts(
         if (!["starting", "ready", "running", "stopping"].includes(String(status.body?.status))) throw Error(code);
         code = "stop_not_terminal";
         await pause();
+        if (retryStopAdmission && (status.body?.status === "ready" || status.body?.status === "running"))
+          await dispatchStop();
+        if (status.body?.status === "stopping") retryStopAdmission = false;
       }
       if (!alreadyDeleted)
         while (true) {
-          const deleted = await request("delete");
+          let deleted: Awaited<ReturnType<typeof request>>;
+          try {
+            deleted = await request("delete");
+          } catch (error) {
+            if (code !== "request_failed") throw error;
+            await pause();
+            continue;
+          }
           if (deleted.ok && deleted.body?.id === row.id && deleted.body.status === "deleted") break;
           if (!RETRY_CODES.has(code) && !(deleted.ok && deleted.body?.id === row.id)) throw Error(code);
           // A pending delete retains a two-minute activity lease. Do not refresh
@@ -201,7 +226,14 @@ export async function deleteSmokeReceipts(
       io.out(JSON.stringify({ step: "delete_smoke_sandbox", pass: false, ...row, phase, httpStatus, code }));
     }
   };
-  await Promise.all(selected.filter((row) => !row.requestKey.startsWith("smoke-scoped-")).map(cleanup));
-  await Promise.all(selected.filter((row) => row.requestKey.startsWith("smoke-scoped-")).map(cleanup));
+  for (const scoped of [false, true]) {
+    // The dependent wave must not inherit a deadline consumed by parent shutdown/deletion.
+    const deadline = Math.min(now() + CLEANUP_WAVE_MS, io.deadline ?? Number.POSITIVE_INFINITY);
+    await Promise.all(
+      selected
+        .filter((row) => row.requestKey.startsWith("smoke-scoped-") === scoped)
+        .map((row) => cleanup(row, deadline)),
+    );
+  }
   return remaining;
 }

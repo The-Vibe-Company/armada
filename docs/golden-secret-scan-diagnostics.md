@@ -1,11 +1,11 @@
-# Golden secret scan locations
+# Snapshot secret scan locations
 
-A rejected golden build names the first available safe location, never the value:
+A rejected snapshot build names the first available safe location, never the value:
 
     repository armada, git object <object-id>, commit <commit-id>
 
 The build phase remains secret_scan. The curated location is persisted with the
-durable job and appears in golden build-status, the CLI failure line and the
+durable job and appears in snapshot build-status, the CLI failure line and the
 dashboard build error. Manual snapshot errors carry the same safe location.
 
 ## What is exposed
@@ -46,22 +46,22 @@ repository whose old history is not needed:
 }
 ```
 
-This is **one repository entry**, not the complete golden config. Preserve all
-other repositories and init commands: `golden update --config` intentionally
+This is **one repository entry**, not the complete snapshot config. Preserve all
+other repositories and init commands: `snapshot update --config` intentionally
 replaces the full configuration and the CLI requires explicit `--replace`
 confirmation. To derive the owner's complete current config
 without dropping entries, after the updated CLI/server release:
 
 ```sh
-armada golden list --provider boat --org <org-id> --json > goldens.json
+armada snapshot list --provider boat --org <org-id> --json > goldens.json
 jq -e '
   [.[] | select(.name == "two-repos-prod-test")]
-  | if length == 1 then .[0].config else error("Expected exactly one Boat golden") end
+  | if length == 1 then .[0].config else error("Expected exactly one Boat snapshot") end
   | if ([.repos[] | select(.dir == "armada")] | length) == 1
     then .repos |= map(if .dir == "armada" then . + {history: "shallow"} else . end)
     else error("Expected exactly one armada checkout directory") end
 ' goldens.json > golden.json
-armada golden update two-repos-prod-test --provider boat --org <org-id> --config golden.json --replace
+armada snapshot update two-repos-prod-test --provider boat --org <org-id> --config golden.json --replace
 ```
 
 Review `golden.json` before the final mutating command. In the dashboard, open
@@ -70,7 +70,7 @@ Armada row; other rows retain their modes. If a failed build is still tracked,
 choose **New build request** first to use a fresh admission key. Existing stored modes survive editing
 and additive updates; the immutable build request hash includes the field.
 
-| Config | Boat / Modal golden | Docker host snapshot |
+| Config | Boat / Modal snapshot | Docker host snapshot |
 | --- | --- | --- |
 | omitted | full single-branch history (unchanged) | existing shallow default (unchanged) |
 | `"history": "shallow"` | latest commit only for that branch | latest commit only for that branch |

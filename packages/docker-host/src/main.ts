@@ -1,7 +1,14 @@
 #!/usr/bin/env bun
+
 import { join } from "node:path";
 import { createDockerMachineExecutor } from "../../core/src/docker-machine.ts";
+import {
+  type DockerSandboxLimits,
+  dockerHostResources,
+  dockerResourceLimits,
+} from "../../core/src/docker-resources.ts";
 import { VERSION } from "../../core/src/version.ts";
+import { createAvailabilitySampler } from "./availability.ts";
 import { register, serverOrigin, tick, validToken } from "./daemon.ts";
 import { dockerCli, fileStore, httpApi } from "./native.ts";
 import { dockerRuntimeStarter } from "./runtime-install.ts";
@@ -147,7 +154,7 @@ async function main(args: string[]) {
     }
   };
   try {
-    const api = httpApi();
+    const api = httpApi(fetch, createAvailabilitySampler(dockerCli));
     if (command === "register" || command === "install") {
       if (await store.exists()) throw new Error("Host already registered");
       const token = (await Bun.stdin.text()).trim();
@@ -160,14 +167,20 @@ async function main(args: string[]) {
       return;
     }
     const state = await store.load();
+    let limits = dockerResourceLimits(dockerHostResources());
     const executor = createDockerMachineExecutor({
       installationId: state.installationId,
       hostId: state.hostId,
       cli: dockerCli,
       now: Date.now,
+      limits: () => limits,
     });
     const runtime = {
       ...executor,
+      configureLimits(next: DockerSandboxLimits | undefined) {
+        if (next && next.pids !== 4096) throw new Error("Invalid process policy");
+        limits = dockerResourceLimits(dockerHostResources(), next);
+      },
       startRuntime: dockerRuntimeStarter(executor, {
         serverUrl: state.server,
         cacheDir: join(directory, "runtime-cache"),

@@ -89,7 +89,7 @@ export interface ToolContext {
   runtimeCheckpoint?: RuntimeCheckpoint;
   runtimeSend?: RuntimeFollowup;
   measure?: import("./request-timing.ts").RequestTiming["measure"];
-  storedProvider?(target: ProviderTarget): Promise<Provider>;
+  storedProviders?: Partial<Record<SandboxProviderId, ToolContext["provider"]>>;
   templates?: TemplateService;
   skillDefaults?: SkillDefaultsService;
   applicationVault?: ApplicationVault;
@@ -661,16 +661,16 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
   const measure: NonNullable<ToolContext["measure"]> = context.measure ?? ((_phase, work) => work());
   const statusOf = async (sandboxId: string, promptId: string | undefined, stored = false): Promise<StatusReport> => {
     const found = await measure("sandbox_read", () => visible(sandboxId));
-    const useStored = stored && found.provider === "modal" && context.storedProvider !== undefined;
+    const storedProvider = stored ? context.storedProviders?.[found.provider] : undefined;
     const provider =
       found.status === "deleted" || isStatusReadFenced(found)
         ? null
-        : useStored
-          ? await context.storedProvider!(found)
+        : storedProvider
+          ? await storedProvider(found)
           : await context.provider(found);
     const result = await measure("state", () =>
       readStatus(provider, data.sandboxes, found, {
-        stored: useStored,
+        stored: storedProvider !== undefined,
         ...(promptId ? { promptId } : {}),
         now: context.now(),
       }),
@@ -1040,6 +1040,8 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         output: {
           id: z.string(),
           provider: providerOutput,
+          runtime: z.object({ kind: z.literal("armada"), epoch: z.string() }).optional(),
+          runtimeTransport: z.literal("dialout").optional(),
           providerSandboxId: z.string(),
           boatId: compat("providerSandboxId"),
           golden: z.string(),
@@ -1122,6 +1124,24 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           args.idempotencyKey ?? crypto.randomUUID(),
           { ...args, goldenId: chosen.id },
           dispatch,
+          {
+            target: {
+              provider: chosen.provider,
+              orgId: chosen.orgId,
+              visibility: chosen.visibility,
+              modal: chosen.modal,
+            },
+            management:
+              (await provider.managementIdentity?.()) ??
+              (() => {
+                throw new ToolError("invalid", "Provider cannot pin management authority.");
+              })(),
+            backendId:
+              (await provider.backendIdentity?.())?.id ??
+              (() => {
+                throw new ToolError("invalid", "Provider cannot pin allocation authority.");
+              })(),
+          },
         );
       },
     );
@@ -1135,9 +1155,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         "Owner-only allocation recovery by durable receipt id. An empty lookup is not proof of no allocation; never refork an unknown receipt. Discovered provider ids can be retired by an operator through provider controls.",
       input: {
         id: z.string().uuid(),
-        golden: z.string().min(1),
         org: z.string().optional(),
-        provider: z.enum(SANDBOX_PROVIDERS).optional(),
       },
       output: {
         id: z.string(),
@@ -1147,11 +1165,11 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       },
     },
     async (args) => {
-      const actor = await launchActor(args.golden, args.org);
-      const chosen = await goldenForLaunch(data.goldens, actor, args.golden, args.provider);
+      const member = resolveCreateOrg(caller.orgs, args.org);
+      const actor = { orgId: member.orgId, userId: caller.userId };
       if (!context.ordinaryLaunchReceipts)
         throw new ToolError("invalid", "Durable launch receipts are not configured.");
-      return context.ordinaryLaunchReceipts.inspect(actor, args.id, await context.provider(chosen));
+      return context.ordinaryLaunchReceipts.inspect(actor, args.id, context.provider);
     },
   );
 
@@ -1332,10 +1350,8 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     async (args) => {
       const found = await visible(args.id);
       if (found.status === "deleted") throw new ToolError("conflict", "Sandbox is deleted.");
-      const provider =
-        found.provider === "modal" && context.storedProvider
-          ? await context.storedProvider(found)
-          : await context.provider(found);
+      const storedProvider = context.storedProviders?.[found.provider];
+      const provider = storedProvider ? await storedProvider(found) : await context.provider(found);
       const page = await readLogs(provider, found.providerSandboxId, {
         ...(args.since_cursor ? { since_cursor: args.since_cursor } : {}),
         ...(args.conversation_id ? { conversation_id: args.conversation_id } : {}),
@@ -1411,9 +1427,9 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
   tool(
     "runtime_resume",
     {
-      title: "Resume a checkpointed Boat runtime",
+      title: "Resume a checkpointed runtime",
       description:
-        "Explicitly activates the same stopped VM, verifies sealed local history/native thread, enrols a new epoch and admits one instruction in the existing conversation. Owner-only; stable request_id, no implicit retry of uncertain activation. Cached outcome is historical, not current machine state.",
+        "Activates the retained sandbox under a fresh epoch and verifies its sealed checkpoint. Continues the saved native conversation, or starts the first only from a verified empty journal. Owner-only; stable request_id, no implicit retry of uncertain activation. Cached outcome is historical, not current machine state.",
       input: {
         id,
         request_id: z.string().uuid(),
@@ -1429,7 +1445,11 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         status: z.enum(["queued", "running", "finished", "failed", "interrupted"]),
         resumed: z.literal(true),
         runtime: z.object({ kind: z.literal("armada"), epoch: z.string() }),
-        sourceCheckpoint: z.object({ epoch: z.string(), watermark: z.number().int().nonnegative() }),
+        sourceCheckpoint: z.object({
+          epoch: z.string(),
+          watermark: z.number().int().nonnegative(),
+          empty: z.literal(true).optional(),
+        }),
       },
       destructive: true,
     },
@@ -1607,7 +1627,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         "sandbox opens a conversation and later sends continue the latest one. To redirect a turn that is " +
         "still running, use steer. The turn runs with the model and effort chosen at launch; model and " +
         "reasoning_effort override them for this turn only. Experimental runtime follow-up requires request_id, " +
-        "an existing conversation; checkpointed stopped sandboxes wake automatically. Model/effort remain pinned to launch.",
+        "an empty ready sandbox, existing conversation, or verified empty checkpoint; stopped sandboxes wake automatically. Model/effort remain pinned to launch.",
       input: {
         id,
         request_id: z

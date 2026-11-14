@@ -24,17 +24,17 @@ the exact private skill versions you intend to pin.
 Prefer an existing golden. To create one with authorized repos:
 
 ```sh
-armada golden create NAME --repo https://github.com/example/project@main --provider boat --idempotency-key BUILD_KEY --timeout 60
+armada snapshot create NAME --repo https://github.com/example/project@main --provider boat --idempotency-key BUILD_KEY --timeout 60
 ```
 
 Goldens must contain no secrets, including git history. Setup scripts are build
 inputs, not secret injection. On disconnect preserve the admission key and inspect
-`armada golden build-status --idempotency-key BUILD_KEY --org ORG`;
-do not resubmit with a new key. Use `armada golden build-status JOB_ID` once
+`armada snapshot build-status --idempotency-key BUILD_KEY --org ORG`;
+do not resubmit with a new key. Use `armada snapshot build-status JOB_ID` once
 known. A failed secret scan needs source/history cleanup, never bypassing scans.
-`armada golden update NAME --replace --config CONFIG_FILE --provider boat` rebuilds an
-existing golden; `armada golden connect NAME --provider boat` opens its canonical
-master for maintenance and `armada golden snapshot NAME --provider boat` scans
+`armada snapshot update NAME --replace --config CONFIG_FILE --provider boat` rebuilds an
+existing golden; `armada snapshot connect NAME --provider boat` opens its canonical
+master for maintenance and `armada snapshot snapshot NAME --provider boat` scans
 and freezes it. These affect future work: obtain permission before changing a
 shared environment.
 

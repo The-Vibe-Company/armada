@@ -29,6 +29,7 @@ import type { AuthIo } from "../../cli/src/auth-commands.ts";
 import { run } from "../../cli/src/run.ts";
 import { createCredentialBindingRecovery } from "../src/credential-binding-recovery.ts";
 import { type ControlOptions, controlOptionsFromEnv, createSqlData, handleControlRequest } from "../src/index.ts";
+import { launchCredentials } from "../src/launch-credentials.ts";
 import { createModalIntegration } from "../src/modal-integration.ts";
 import { modalLaunchEnvironment } from "../src/modal-launch-environment.ts";
 import { createModelAuthOwnership } from "../src/model-auth.ts";
@@ -39,6 +40,7 @@ import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { createRuntimeFollowup } from "../src/runtime-followup.ts";
 import { createRuntimeHistory } from "../src/runtime-history.ts";
 import { createRuntimeStartup } from "../src/runtime-startup.ts";
+import { callSharedTool } from "../src/tool-api.ts";
 import { rowOnlyConnection } from "./row-only-database.ts";
 import { fakeBoat } from "./support.ts";
 
@@ -2009,7 +2011,7 @@ for (const scenario of ["missing", "revoked-personal", "unreadable-personal"] as
   });
 }
 
-test("access launch grants scoped authority before the first prompt while retaining an ordinary private sandbox", async () => {
+test("access launch resolves an omitted account and grants only its persisted binding before the first prompt", async () => {
   await withServer(async ({ db, options, cli }) => {
     const { createSandboxArmadaAccess } = await import("../src/sandbox-armada-access.ts");
     const org = await options.store.createOrg("Access", STAN);
@@ -2027,10 +2029,14 @@ test("access launch grants scoped authority before the first prompt while retain
     ).rows[0]!;
     const account = (
       await db.query<{ id: string }>(
-        `insert into credentials(scope,owner_id,kind,name,value_enc) values('user',$1,'openai','access account',$2) returning id`,
+        `insert into credentials(scope,owner_id,kind,name,value_enc,is_default) values('user',$1,'openai','access account',$2,true) returning id`,
         [STAN, await encryptSecret("synthetic-api-account", KEY)],
       )
     ).rows[0]!;
+    await db.query(
+      "insert into credentials(scope,owner_id,kind,name,value_enc) values('user',$1,'openai','unselected account',$2)",
+      [STAN, await encryptSecret("synthetic-other-account", KEY)],
+    );
     const fake = fakeBoat();
     let installedToken = "";
     let statusAtInstall: unknown;
@@ -2179,7 +2185,6 @@ test("access launch grants scoped authority before the first prompt while retain
             golden: placement === "boat" ? "access-boat" : "access",
             provider: placement,
             harness: "codex",
-            credentialId: account.id,
             model: "gpt-6.1-sol",
             ttlSeconds: 900,
             prompt: "Staging contract probe",
@@ -2205,8 +2210,6 @@ test("access launch grants scoped authority before the first prompt while retain
       "modal",
       "--agent",
       "codex",
-      "--credential-id",
-      account.id,
       "--repo",
       "web",
       "--armada-access",
@@ -2217,6 +2220,15 @@ test("access launch grants scoped authority before the first prompt while retain
     const launched = JSON.parse(result.out);
     expect(statusAtInstall).toBe("starting");
     expect(launched.harness).toBe("codex");
+    expect(launched.credentialId).toBe(account.id);
+    expect(
+      (
+        await db.query<{ credential_ids: string[] }>(
+          "select credential_ids from armada_access_parents where sandbox_id=$1",
+          [launched.id],
+        )
+      ).rows[0]?.credential_ids,
+    ).toEqual([account.id]);
     expect(launched.repositoryDir).toBe("web");
     expect((await db.query("select id from orchestrators")).rows).toHaveLength(0);
     expect(
@@ -2789,12 +2801,15 @@ test("versioned runtime launch is explicit/default-off and never selects native 
 // Public HTTP admission owns the opt-in: no allocation when disabled/malformed,
 // and no native agent/configuration fallback on the accepted model-only path.
 test.each([
-  { harness: "codex" as const, fromDefaults: false },
-  { harness: "claude" as const, fromDefaults: true },
-  { harness: "opencode" as const, fromDefaults: true },
+  { harness: "codex" as const, fromDefaults: false, entry: "explicit" },
+  { harness: "claude" as const, fromDefaults: true, entry: "explicit" },
+  { harness: "opencode" as const, fromDefaults: true, entry: "explicit" },
+  { harness: "codex" as const, fromDefaults: true, entry: "ordinary-api" },
+  { harness: "codex" as const, fromDefaults: true, entry: "ordinary-mcp" },
 ])(
-  "Modal runtime launch prepares explicit/default MCP and skills before its first prompt ($harness defaults=$fromDefaults)",
-  async ({ harness, fromDefaults }) => {
+  "Modal runtime launch prepares explicit/default MCP and skills before its first prompt ($harness defaults=$fromDefaults entry=$entry)",
+  async ({ harness, fromDefaults, entry }) => {
+    const ordinary = entry !== "explicit";
     await withServer(async ({ db, options }) => {
       const org = await options.store.createOrg("Modal runtime", STAN);
       options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
@@ -2814,7 +2829,7 @@ test.each([
       const bearer = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`;
       const request = (body: object) =>
         handleControlRequest(
-          new Request("https://armada.test/api/v1/sandbox/launch-modal-runtime-v1", {
+          new Request(`https://armada.test/api/v1/${ordinary ? "sandbox/launch" : "sandbox/launch-modal-runtime-v1"}`, {
             method: "POST",
             headers: { authorization: `Bearer ${bearer}` },
             body: JSON.stringify(body),
@@ -2828,8 +2843,7 @@ test.each([
         harness,
         ...(harness === "opencode" ? { model: "opencode/fixture", reasoningEffort: "default" } : {}),
         prompt: "reply",
-        runtimeVersion: 1,
-        runtimeTransport: "dialout",
+        ...(!ordinary ? { runtimeVersion: 1, runtimeTransport: "dialout" } : {}),
         skipSkillDefaults: true,
         connections: [],
       };
@@ -2865,9 +2879,19 @@ test.each([
       options.providerFor = () => {
         throw Error("No Boat provider for Modal");
       };
-      expect((await request(body))?.status).toBe(503);
+      if (!ordinary) expect((await request(body))?.status).toBe(503);
       expect(fake.forks).toHaveLength(0);
-      options.modalRuntimeHostFor = async () => host;
+      options.modalRuntimeHostFor = async (target) => {
+        expect(target.runtimeTransport).toBe("dialout");
+        return host;
+      };
+      const native = {
+        ...host,
+        async fork() {
+          throw Error("No native fork under runtime default");
+        },
+      };
+      if (ordinary) options.providers = { resolve: async () => native };
       options.modalRuntimeLaunch = {
         async start(input) {
           starts++;
@@ -2898,14 +2922,15 @@ test.each([
           };
         },
       };
-      for (const bad of [
-        { ...body, skipSkillDefaults: "invalid" },
-        { ...body, skills: "invalid" },
-        { ...body, connections: ["invalid"] },
-        { ...body, harness: "unknown" },
-        { ...body, runtimeTransport: undefined },
-      ])
-        expect((await request(bad))?.status).toBe(400);
+      if (!ordinary)
+        for (const bad of [
+          { ...body, skipSkillDefaults: "invalid" },
+          { ...body, skills: "invalid" },
+          { ...body, connections: ["invalid"] },
+          { ...body, harness: "unknown" },
+          { ...body, runtimeTransport: undefined },
+        ])
+          expect((await request(bad))?.status).toBe(400);
       expect(fake.forks).toHaveLength(0);
       options.runtimeMcp = {
         async preflight() {
@@ -2933,12 +2958,61 @@ test.each([
           },
         },
       };
-      const response = await request({
+      if (ordinary) {
+        if (!options.runtimeMcp.connections) throw Error("Missing runtime connection policy");
+        options.launch = {
+          ...options.launch,
+          modalRuntimeDefault: {
+            policy: options.modalRuntimeLaunch,
+            credentials: launchCredentials(options.store, KEY, undefined, options.modelAuth),
+            connections: options.runtimeMcp.connections,
+            provider: (actor, golden) =>
+              options.modalRuntimeHostFor!(
+                { ...golden, runtimeTransport: "dialout" },
+                { userId: actor.userId, orgs: [{ orgId: actor.orgId, role: actor.role }], via: "service" },
+              ),
+          },
+        };
+      }
+      const input = {
         ...body,
         connections: fromDefaults ? undefined : [connection],
         skills: fromDefaults ? undefined : [skill],
         skipSkillDefaults: fromDefaults ? undefined : true,
-      });
+      };
+      if (entry === "ordinary-mcp") {
+        const caller = { userId: STAN, orgs: [{ orgId: org.id, role: "admin" as const }], via: "service" as const };
+        if (!options.data || !options.launch || !options.skillDefaults) throw Error("Missing default scoped context");
+        const result = await callSharedTool(
+          {
+            caller,
+            data: options.data(caller),
+            provider: async () => native,
+            launchCredentials: launchCredentials(options.store, KEY, undefined, options.modelAuth),
+            exposedSecrets: async () => [],
+            launch: options.launch,
+            skillDefaults: options.skillDefaults,
+            now: () => new Date(),
+            sleep: async () => {
+              throw Error("No waits");
+            },
+          },
+          "launch",
+          input,
+        );
+        expect(result).toMatchObject({
+          runtime: { kind: "armada", epoch: "1" },
+          runtimeTransport: "dialout",
+          provider: "modal",
+          promptId: "modal-initial",
+        });
+        expect(starts).toBe(1);
+        expect(fake.forks).toHaveLength(1);
+        expect(fake.prompts).toHaveLength(0);
+        expect(fake.execs).toHaveLength(0);
+        return;
+      }
+      const response = await request(input);
       if (response?.status !== 200) throw Error(JSON.stringify(await response?.json()));
       expect(response?.status).toBe(200);
       expect(await response?.json()).toMatchObject({

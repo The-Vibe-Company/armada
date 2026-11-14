@@ -20,7 +20,7 @@ export const INSTALL = "npm install -g @the-vibe-company/armada";
 
 /** The CLI line under each chapter of the story: every command and flag is one `armada --help` documents. */
 export const STORY = {
-  golden: "armada golden create widgets --repo https://github.com/acme/widgets --provider modal",
+  golden: "armada snapshot create widgets --repo https://github.com/acme/widgets --provider modal",
   launch: 'armada launch widgets --agent claude --model claude-opus-5-5 --reasoning-effort high "Add a dark theme"',
   tools: "armada mcp add docs https://mcp.example.com/mcp --scope org",
   resume: 'armada send 6f1c2a9e-4b7d-4e2a-9c51-3d8e0f7a2b14 "Now cover the empty cart"',
@@ -34,7 +34,7 @@ export const SETUP: { command: string; note: string }[] = [
   { command: "armada login", note: "Sign in through the browser, or by email" },
   { command: STORY.keys, note: "Your agent's key, from a file, never an argument" },
   {
-    command: "armada golden create widgets --repo https://github.com/acme/widgets",
+    command: "armada snapshot create widgets --repo https://github.com/acme/widgets",
     note: "GitHub connected; --provider boat or modal picks where it is built",
   },
   { command: 'armada launch widgets --agent codex "Fix the flaky checkout test"', note: "Your first agent" },

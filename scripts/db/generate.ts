@@ -27,6 +27,9 @@ type Schema = {
 };
 
 const ROW_ALIASES: Record<string, string> = {
+  otto_engine_preferences: "OttoEnginePreferenceRow",
+  otto_objectives: "OttoObjectiveRow",
+  otto_objective_messages: "OttoObjectiveMessageRow",
   ordinary_launch_receipts: "OrdinaryLaunchReceiptRow",
   sandbox_account_usage_pricing: "SandboxAccountUsagePricingRow",
   runtime_github_capabilities: "RuntimeGitHubCapabilityRow",

@@ -137,7 +137,7 @@ test("legacy synchronous update reply is treated as version-skew/unknown outcome
   expect(result.code).toBe(1);
   expect(result.calls).toHaveLength(1);
   expect(result.errors).toContain("did not return a durable build receipt");
-  expect(result.errors).toContain("inspect golden list before retrying");
+  expect(result.errors).toContain("inspect snapshot list before retrying");
   expect(result.errors).not.toContain("Build undefined");
 });
 

@@ -14,3 +14,10 @@ export function required(body: Record<string, unknown>, key: string): string {
   if (value === undefined) throw new VaultError("invalid", `${key} is required.`);
   return value;
 }
+
+export function requiredNumber(body: Record<string, unknown>, key: string): number {
+  const value = body[key];
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1)
+    throw new VaultError("invalid", `${key} must be a positive integer.`);
+  return value;
+}

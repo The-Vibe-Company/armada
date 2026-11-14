@@ -1,6 +1,6 @@
-import { createHash, timingSafeEqual } from "node:crypto";
+import { timingSafeEqual } from "node:crypto";
 import type { ExecRequest, ExecResult, Harness } from "@armada/core";
-import { HARNESSES, validateReadableVariables } from "@armada/core";
+import { HARNESSES } from "@armada/core";
 import { PRIVATE_SKILL_FAILURES } from "../../core/src/private-skill-error.ts";
 import { ChildOwner } from "./children.ts";
 import { validateHarnessCwd } from "./cwd.ts";
@@ -9,8 +9,11 @@ import { execCredentialValues, validateExecEnvironment, validateExecReadables } 
 import { githubRuntimeEnvironment } from "./github-tools.ts";
 import { checkpointIdentityKey } from "./identity.ts";
 import type { Journal } from "./journal.ts";
-import { mcpDigest, mcpSecretValues, validateMcpConfiguration } from "./mcp.ts";
+import { mcpSecretValues, validateMcpConfiguration } from "./mcp.ts";
+import { recordMcpRevision } from "./mcp-revisions.ts";
+import { withNativeAuthPublication } from "./native-auth-publication.ts";
 import { NativeEpoch } from "./native-epoch.ts";
+import { observeRuntime } from "./observation.ts";
 import { groupState, type ProcessIdentity, processIdentity } from "./processes.ts";
 import {
   AUTH_HEADER,
@@ -24,6 +27,9 @@ import {
   type StoredPrompt,
   type Turn,
 } from "./protocol.ts";
+import { ReadableConfigurations } from "./readable-configurations.ts";
+import { readRuntimeJson } from "./request-framing.ts";
+import { executeWithReceipt } from "./request-receipts.ts";
 import { sampleVmResources } from "./resource-sampler.ts";
 import { installRuntimeSkills } from "./skills.ts";
 import { executeWorkspace, validateWorkspaceExec } from "./workspace-exec.ts";
@@ -47,7 +53,7 @@ export class Runner {
   private refreshNativeSecrets: (() => void) | undefined;
   private commands = new Set<Promise<unknown>>();
   private resumingNative = false;
-  private readableDigests = new Map<string, string>();
+  private readonly readableConfigurations: ReadableConfigurations;
   private configureGitHub: RunnerExecutionOptions["configureGitHub"];
   constructor(
     readonly journal: Journal,
@@ -69,6 +75,7 @@ export class Runner {
     if (execution.credentialFreeBuilder !== undefined && typeof execution.credentialFreeBuilder !== "boolean")
       throw Error("invalid_exec_environment");
     this.credentialFreeBuilder = execution.credentialFreeBuilder ?? false;
+    this.readableConfigurations = new ReadableConfigurations(drivers);
     this.configureGitHub = execution.configureGitHub;
     this.refreshNativeSecrets = execution.refreshNativeSecrets;
     this.publishNativeAuth = execution.publishNativeAuth;
@@ -162,36 +169,7 @@ export class Runner {
     )
       return Response.json({ error: "unauthorized" }, { status: 401 });
     try {
-      if (Number(request.headers.get("content-length") ?? 0) > 1048576) throw Error("request_too_large");
-      const reader = request.body?.getReader();
-      const decoder = new TextDecoder();
-      let raw = "";
-      let bytes = 0;
-      try {
-        if (reader) {
-          while (true) {
-            const chunk = await reader.read();
-            if (chunk.done) break;
-            bytes += chunk.value.byteLength;
-            if (bytes > 1048576) {
-              // Cancellation is advisory; a producer must not hold the refusal open.
-              void reader.cancel().catch(() => {});
-              throw Error("request_too_large");
-            }
-            raw += decoder.decode(chunk.value, { stream: true });
-          }
-          raw += decoder.decode();
-        }
-      } finally {
-        reader?.releaseLock();
-      }
-      if (Buffer.byteLength(raw) > 1048576) throw Error("request_too_large");
-      let r: RunnerRequest;
-      try {
-        r = JSON.parse(raw) as RunnerRequest;
-      } catch {
-        throw Error("invalid_request");
-      }
+      const r = (await readRuntimeJson(request)) as RunnerRequest;
       if (this.closing) throw Error("sandbox_not_ready");
       if (!r || typeof r !== "object" || Array.isArray(r)) throw Error("invalid_request");
       if (r.version !== 1 || r.sandboxId !== this.grant.sandboxId || typeof r.requestId !== "string" || !r.requestId)
@@ -256,16 +234,7 @@ export class Runner {
           Object.keys(r).some((k) => !["version", "requestId", "sandboxId", "op", "harness", "variables"].includes(k))
         )
           throw Error("invalid_request");
-        const variables = validateReadableVariables(r.variables);
-        const digest = JSON.stringify(Object.entries(variables).sort());
-        const previous = this.readableDigests.get(r.harness);
-        if (previous !== undefined && previous !== digest) throw Error("invalid_request");
-        if (previous === digest)
-          return Response.json({ version: 1, requestId: r.requestId, result: { acknowledged: true } });
-        const bootstrap = this.drivers[r.harness]?.configureReadableVariables;
-        if (!bootstrap) throw Error("invalid_request");
-        bootstrap.call(this.drivers[r.harness], variables);
-        this.readableDigests.set(r.harness, digest);
+        this.readableConfigurations.configure(r.harness, r.variables);
         return Response.json({ version: 1, requestId: r.requestId, result: { acknowledged: true } });
       }
       if (r.op === "configureGitHub") {
@@ -306,24 +275,7 @@ export class Runner {
         const result = await sampleVmResources();
         return Response.json({ version: 1, requestId: r.requestId, result });
       }
-      const old = this.journal.db.query("SELECT body FROM requests WHERE id=?").get(r.requestId) as {
-        body: string;
-      } | null;
-      if (old && r.op !== "checkpoint")
-        return new Response(old.body, { headers: { "content-type": "application/json" } });
-      const mutating = !["events", "health", "getPrompt", "getExec", "checkpoint", "observeOrchestrator"].includes(
-        r.op,
-      );
-      // Fence before side effects. A crash leaves an explicit unknown outcome, never a duplicate turn.
-      if (mutating)
-        this.journal.db
-          .query("INSERT INTO requests VALUES(?,?)")
-          .run(r.requestId, JSON.stringify({ version: 1, requestId: r.requestId, error: "request_outcome_unknown" }));
-      const result = await this.dispatch(r, request.signal);
-      const body = this.journal.redact(JSON.stringify({ version: 1, requestId: r.requestId, result }));
-      if (!["events", "health", "getPrompt", "getExec", "checkpoint", "observeOrchestrator"].includes(r.op))
-        this.journal.db.query("INSERT OR REPLACE INTO requests VALUES(?,?)").run(r.requestId, body);
-      return new Response(body, { headers: { "content-type": "application/json" } });
+      return await executeWithReceipt(this.journal, r, () => this.dispatch(r, request.signal));
     } catch (error) {
       return Response.json(
         { error: this.journal.redact(error instanceof Error ? error.message : "runner_error") },
@@ -340,35 +292,7 @@ export class Runner {
     if (this.credentialFreeBuilder && Object.keys(configuration.servers).length)
       throw Error("builder_credentials_forbidden");
     if (values.some((v) => v === configuration.revision)) throw Error("invalid_mcp_configuration");
-    const prefix = `mcp:v2:${checkpointIdentityKey(this.grant)}:`,
-      key = prefix + mcpDigest(configuration.revision),
-      digest = mcpDigest(configuration);
-    const previous = this.journal.db.query("SELECT value FROM metadata WHERE key=?").get(key) as {
-      value: string;
-    } | null;
-    const current = this.journal.db.query("SELECT value FROM metadata WHERE key=?").get(`${prefix}current`) as {
-      value: string;
-    } | null;
-    if (previous && previous.value !== digest) throw Error("mcp_revision_conflict");
-    if (previous && current && current.value !== key) throw Error("stale_mcp_revision");
-    if (
-      !previous &&
-      Number(
-        (
-          this.journal.db
-            .query("SELECT count(*) AS n FROM metadata WHERE substr(key,1,?)=? AND key<>?")
-            .get(prefix.length, prefix, `${prefix}current`) as { n: number }
-        ).n,
-      ) >= 4096
-    )
-      throw Error("mcp_revision_limit");
-    if (Date.now() >= this.grant.expiresAt) throw Error("unauthorized");
-    // Register before SQL metadata, snapshot replacement, events, native stderr or any acknowledgement.
-    this.journal.registerSecrets(values);
-    this.journal.db.transaction(() => {
-      this.journal.db.query("INSERT OR REPLACE INTO metadata VALUES(?,?)").run(key, digest);
-      this.journal.db.query("INSERT OR REPLACE INTO metadata VALUES(?,?)").run(`${prefix}current`, key);
-    })();
+    recordMcpRevision(this.journal, this.grant, configuration, values);
     this.mcp = configuration;
     return { revision: configuration.revision };
   }
@@ -394,47 +318,14 @@ export class Runner {
         (typeof r.conversationId !== "string" || !r.conversationId || r.conversationId.length > 256)
       )
         throw Error("invalid_request");
-      const watermark = Number(
-        (this.journal.db.query("SELECT coalesce(max(seq),0) AS watermark FROM events").get() as { watermark: number })
-          .watermark,
-      );
-      let state: "active" | "quiescent" | "unknown" =
-        this.barrier || this.journal.checkpointPending(this.grant) ? "unknown" : "quiescent";
-      const processes: Array<{ pid: number; state: string }> = [];
-      for (const row of this.journal.db.query("SELECT pid,body FROM processes").all() as {
-        pid: number;
-        body: string;
-      }[]) {
-        const saved = JSON.parse(row.body) as { status: string; identity?: ProcessIdentity };
-        if (!["running", "running_after_restart", "unknown_after_restart"].includes(saved.status)) continue;
-        const status = groupState(row.pid, saved.identity);
-        processes.push({ pid: row.pid, state: status });
-        if (status === "unverifiable") state = "unknown";
-        else if (status === "live" && state !== "unknown") state = "active";
-      }
-      if ((this.active.size > 0 || this.commands.size > 0) && state !== "unknown") state = "active";
-      const acknowledgedSequence = this.journal.ack;
-      if (state === "quiescent" && acknowledgedSequence < watermark) state = "unknown";
-      const evidence = createHash("sha256")
-        .update(
-          JSON.stringify({
-            generation: this.grant.generation,
-            watermark,
-            acknowledgedSequence,
-            active: [...this.active.keys()].sort(),
-            commands: this.commands.size,
-            processes,
-          }),
-        )
-        .digest("hex");
-      return {
-        physicalGeneration: this.grant.generation,
-        state,
-        evidence,
-        eventWatermark: watermark,
-        acknowledgedSequence,
-        nativeSessionId: r.conversationId ? (this.journal.session(r.conversationId) ?? null) : null,
-      };
+      return observeRuntime({
+        journal: this.journal,
+        grant: this.grant,
+        barrier: this.barrier,
+        active: this.active,
+        commands: this.commands,
+        conversationId: r.conversationId,
+      });
     }
     if (r.op === "resumeNativeSession") {
       if (this.credentialFreeBuilder || this.barrier || this.active.size || this.commands.size || this.resumingNative)
@@ -472,49 +363,14 @@ export class Runner {
       const resume = this.drivers[r.input.harness]?.resumeSession?.bind(this.drivers[r.input.harness]);
       if (!resume) throw Error("native_resume_unsupported");
       this.resumingNative = true;
-      // Consume actual604's sync redactor refresh and async private publication
-      // from the SAME execution object. A native handshake can rotate auth even
-      // without inference; its ACK must wait for publication, including failures.
-      const refresh = () => {
-        const callback = Reflect.get(this.execution, "refreshNativeSecrets");
-        if (callback === undefined) return;
-        if (typeof callback !== "function" || Reflect.apply(callback, this.execution, []) !== undefined)
-          throw Error("native_auth_state_unacknowledged");
-      };
-      const publish = async () => {
-        const callback = Reflect.get(this.execution, "publishNativeAuth");
-        if (callback === undefined) return;
-        if (typeof callback !== "function") throw Error("native_auth_state_unacknowledged");
-        await Reflect.apply(callback, this.execution, []);
-      };
-      const work = Promise.resolve().then(async () => {
-        try {
-          refresh();
-        } catch {
-          throw Error("native_auth_state_unacknowledged");
-        }
-        const outcome = await Promise.resolve()
-          .then(() =>
-            resume({
-              request: r.input,
-              sessionId: saved.session,
-              signal: AbortSignal.timeout(Math.max(1, Math.min(90000, this.grant.expiresAt - Date.now()))),
-              ...(this.mcp ? { mcp: this.mcp } : {}),
-            }),
-          )
-          .then(
-            (value) => ({ ok: true as const, value }),
-            (error) => ({ ok: false as const, error }),
-          );
-        try {
-          refresh();
-          await publish();
-        } catch {
-          throw Error("native_auth_state_unacknowledged");
-        }
-        if (!outcome.ok) throw outcome.error;
-        return outcome.value;
-      });
+      const work = withNativeAuthPublication(this.execution, () =>
+        resume({
+          request: r.input,
+          sessionId: saved.session,
+          signal: AbortSignal.timeout(Math.max(1, Math.min(90000, this.grant.expiresAt - Date.now()))),
+          ...(this.mcp ? { mcp: this.mcp } : {}),
+        }),
+      );
       this.commands.add(work);
       try {
         const result = await work;

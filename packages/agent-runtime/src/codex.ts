@@ -11,6 +11,7 @@ import type { ThreadStartResponse } from "./codex-schema/v2/ThreadStartResponse.
 import type { TurnCompletedNotification } from "./codex-schema/v2/TurnCompletedNotification.ts";
 import type { TurnStartParams } from "./codex-schema/v2/TurnStartParams.ts";
 import type { TurnStartResponse } from "./codex-schema/v2/TurnStartResponse.ts";
+import { codexTurnUsage } from "./codex-turn-usage.ts";
 import { validateHarnessCwd } from "./cwd.ts";
 import { bounded } from "./deadline.ts";
 import { HarnessError } from "./errors.ts";
@@ -243,30 +244,9 @@ export class CodexDriver implements Driver {
         }
         if (m.method === "thread/tokenUsage/updated") {
           const total = m.params?.tokenUsage?.total;
-          if (
-            total &&
-            ["inputTokens", "outputTokens", "cachedInputTokens"].every(
-              (key) => Number.isSafeInteger(total[key]) && total[key] >= 0,
-            )
-          ) {
-            const delta = (key: string) =>
-              baseline &&
-              Number.isSafeInteger(total[key]) &&
-              Number.isSafeInteger(baseline[key]) &&
-              total[key] >= baseline[key]!
-                ? total[key] - baseline[key]!
-                : null;
-            usage.latest = {
-              inputTokens: delta("inputTokens"),
-              outputTokens: delta("outputTokens"),
-              cachedTokens: delta("cachedInputTokens"),
-              ...(Number.isSafeInteger(total.cacheWriteInputTokens)
-                ? { cacheWriteTokens: delta("cacheWriteInputTokens") }
-                : {}),
-              ...(Number.isSafeInteger(total.reasoningOutputTokens)
-                ? { reasoningTokens: delta("reasoningOutputTokens") }
-                : {}),
-            };
+          const delta = codexTurnUsage(total, baseline);
+          if (delta) {
+            usage.latest = delta;
             this.tokenTotals.set(threadId, { ...total });
           }
           return;

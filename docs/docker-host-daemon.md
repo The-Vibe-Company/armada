@@ -721,3 +721,183 @@ owned Docker host without `--credential-id`, and inspect the returned pin. Repea
 the same request ID after changing the default: it must return the same sandbox
 without allocation/rebilling. An explicit API-key account must remain explicit.
 This procedure is not evidence that live subscription auth has passed.
+
+### Default machine limits (#1773, slice a)
+
+Updated daemons report CPU count and physical memory in each poll. Every new
+sandbox receives at most 2 CPUs, 4 GiB RAM (shrunk to the machine size) and
+4096 processes. Memory swap equals memory, preventing an additional swap budget.
+Snapshot builds use a request-scoped Buildx docker-container builder with the
+same CPU/memory/swap budget; its process cap is applied before build work.
+The builder is removed after each attempt; shared builders/images are untouched.
+Buildx with the docker-container driver is required for snapshot builds.
+
+This first slice does not persist resource reports, enforce host admission or
+provide overrides/UI. Those are subsequent #1773 slices; do not treat this as
+capacity protection. Existing retained containers keep their creation limits.
+Older daemons still poll without reports; updated daemons retry without the
+additive report when an older server refuses it. Host ACKs remain machine facts,
+not runtime readiness.
+
+Coordinator-only proof after normal deployment and daemon upgrade: launch a
+sandbox and inspect HostConfig NanoCpus, Memory, MemorySwap and PidsLimit. Build
+a snapshot and inspect its request-scoped BuildKit container during the build,
+then confirm its removal. Verify small-machine limits fit the host. No real-host
+verification was performed by this change.
+
+### Automatic capacity admission (#1773, slice b)
+
+Apply `20261114130000_docker_host_resources.sql` through the normal authorized
+deployment path before deploying the server. Authenticated daemon polls persist
+CPU/memory observations; old daemons without observations retain unknown capacity
+and no admission limit. No new JWT access is granted.
+
+New allocations and wakes from stopped/idle-paused state check capacity while
+holding the host lock. The automatic limit is the smaller of the 2x CPU budget
+and memory budget after a 2 GiB reserve, minimum one. Pending starts reserve a
+slot to prevent concurrent launches exceeding capacity. A stop request alone
+does not release it: confirmed physical stop/delete or daemon TTL-stop proof
+does. A failed logical startup is conservatively retained until physical stop is
+proven. Full hosts return an immediate actionable conflict, not a readiness wait.
+Historical request retries retain their original allocation without another slot.
+
+Coordinator-only acceptance: on an upgraded host, launch to the computed limit,
+then verify one more launch returns HTTP 409 with the host name and running/limit.
+Stop one sandbox, confirm its physical ACK, and retry the rejected request.
+Repeat by attempting to wake an idle-paused sandbox while the host is full;
+it must remain paused, then wake after another sandbox physically stops.
+Older-daemon unknown-capacity behavior remains supported. Overrides and dashboard
+capacity display belong to slice (c), not this deployment. No real-host checks
+were performed here.
+
+### Capacity visibility (#1773, slice c1)
+
+The host list API now adds observed hardware, effective automatic per-sandbox
+limits, admission capacity and running reservations. CLI `armada host list` and
+`armada host show HOST` (exact name or UUID, optional `--json`) show these values;
+the dashboard host row shows running/capacity and its Facts show hardware,
+limits and automatic/manual mode. Retained sandbox count is separate from
+running reservations. Pending starts reserve slots until physically stopped,
+so running/capacity includes these reservations.
+
+An old server or daemon without hardware observations shows
+“Unknown — upgrade the host” rather than zero capacity or an invented limit.
+No new migration is added in this display slice; it depends on slice b's
+resource-observation migration. Overrides and their daemon enforcement remain
+the next #1773 slice, not a capability claimed by this display.
+Coordinator-only check: compare CLI text/JSON and dashboard Facts with the
+host's observed hardware and Docker inspection, then stop a sandbox and confirm
+the running/capacity display changes after the physical stop ACK.
+
+### Owner overrides (#1773, final implementation slice)
+
+Apply `20261114140000_docker_host_limit_overrides.sql` via the authorized release
+path before deploying this server. Upgrade every participating host daemon and
+wait for its policy-version heartbeat before enabling overrides. Old daemons
+without that capability keep automatic operation; once a manual override exists,
+they receive cleanup jobs but no new starts/builds until upgraded.
+
+The current host owner (a current organization member, not another admin) uses:
+
+```text
+armada host limits HOST --cpus 1 --memory 2g --max-sandboxes 4
+armada host limits HOST --auto
+```
+
+HOST is an exact name or UUID. Omitted options preserve existing overrides.
+`--auto` resets all overrides and cannot be combined with other options.
+The dashboard offers the same owner-scoped controls under host resource limits.
+CPU and memory must fit observed hardware (minimum 0.01 CPU / 6 MiB).
+Automatic capacity retains the 2 GiB reserve and 2x CPU budget. A manual max can
+use that reserve but cannot exceed total RAM / per-sandbox RAM or the 2x CPU
+budget; memory is never deliberately overcommitted.
+
+Stop all sandboxes and finish pending work/builds before changing CPU or memory;
+only future starts and resumes receive those changes. Capacity-only edits are
+allowed while running, but never below existing reservations. Host-row locking
+serializes edits with launch/wake admission. Retained containers receive the
+current policy through Docker update before resume, and new containers and
+request-scoped builders use the same limits. Hardware shrink invalidating a
+manual policy refuses new work while preserving cleanup; drain and reset using
+`--auto` or the dashboard's Use automatic action.
+
+Coordinator-only acceptance: on the owner's real host, stop running work, set
+small CPU/memory limits through CLI, launch and inspect NanoCpus/Memory/
+MemorySwap/PidsLimit, then stop/resume and inspect again. Verify a snapshot
+builder's caps during a build. Launch to manual capacity, verify one extra
+launch and paused wake are refused, raise capacity within hardware budget and
+retry. Use dashboard edits and automatic reset and compare displayed mode and
+running/capacity. Confirm another org admin cannot edit this owner's limits.
+No deployment, remote migration or real-host acceptance was performed here.
+
+### Durable receipt retention and capacity
+
+The daemon compacts terminal stop/delete/build receipts and TTL receipts whose
+expiry confirmation was acknowledged once state reaches 1 MiB. Pending receipts,
+uncertain machine outcomes without a terminal result, and active TTL obligations
+remain in full. Each retired record retains the request identity, SHA-256 of the
+exact operation/request/input fingerprint, and generation and machine fingerprint
+digests. Retired request IDs replay their saved outcome on exact redelivery (including
+snapshot image IDs); changed input is rejected. Neither path executes again. Retired create/bootstrap/build identities cannot be repeated for that generation
+under a new request ID (resume remains available);
+cleanup must still match its original machine fingerprint. Fences are never
+evicted or aged out within an installation.
+
+Admission stops at 16,384 total full receipts plus fences or 8 MiB of state for
+non-cleanup jobs. Legacy installations receive a one-time cleanup ceiling of their existing
+identity count plus 1,024 if higher; this ceiling is persisted, never renewed.
+Another 1,024 identities and the remaining half of the 16 MiB
+atomic state limit are reserved for stop/delete and local TTL confirmations.
+This is a finite installation lifetime, not indefinite history eviction: at the
+admission limit drain the host and replace its registration/installation. At
+the cleanup limit use operator-controlled Docker cleanup, then retire the host.
+Do not delete receipts, fences, or state to resume an existing registration:
+doing so removes replay protection. Preserve the private state for investigation;
+never copy it into a new installation or publish it (it contains the host token).
+Disk-full or permission failures still require operator storage repair; reserved
+logical capacity cannot repair unavailable storage.
+
+### Available-machine automatic capacity (#1773 follow-up)
+
+Apply `20261114160000_docker_available_resources.sql` through the authorized
+release path before deploying the server, then upgrade the host daemon.
+Each poll samples Linux MemAvailable and one-minute load, plus the current
+registration's labelled running sandbox containers using
+[Docker stats](https://docs.docker.com/reference/cli/docker/container/stats/).
+The CLI's memory metric excludes inactive file cache. Armada's working-set
+memory and CPU use are credited back, so its own running agents are not charged
+twice. Unrelated containers and host processes consume the remaining headroom.
+Snapshot builders are conservatively treated as other work during their build.
+
+Headroom decreases immediately and recovers through a quarter-weight EWMA
+on successful polls (normally every 20 seconds), snapping within 0.05 CPU /
+16 MiB to avoid permanently losing an integer boundary slot. This deliberately
+favors safety over instant recovery after a load spike. Sampling errors report
+zero headroom, not invented free hardware; cleanup remains available.
+These are estimates, not reservations against unrelated workloads; Docker's
+per-container caps remain the enforcement boundary.
+
+Automatic admission uses the smaller of total-hardware capacity and available
+CPU/memory capacity, retaining the 2 GiB reserve and 2x CPU budget. It can be zero
+on an entirely busy host, but never below already-admitted running/pending
+reservations. Existing sandboxes are never killed or stopped by a lower sample.
+The CLI and dashboard show e.g. `5/7 (2 held back: machine busy)`.
+Explicit max-sandbox overrides remain an owner's deliberate capacity choice;
+CPU/memory overrides without an explicit max still get automatic headroom-based
+capacity. Automatic reset and its response use current observed headroom.
+
+Old daemons with no availability report retain total-hardware behavior; their
+next poll clears old availability values. New daemons fall back to the earlier
+quota handshake if a preceding server rejects the new fields, preserving manual
+limits during an upgrade. A full host returns HTTP 409 with `host_full` through
+normal control and preview APIs; CLI JSON retains that code and both clients
+provide stop/raise-limit guidance rather than claiming an unknown launch outcome.
+
+Coordinator-only follow-up acceptance: on the verified owner host, compare idle
+automatic capacity to capacity while an unrelated container consumes memory/CPU.
+Confirm held-back slots and gradual recovery after freeing that workload, with
+existing sandboxes untouched. Fill capacity and verify normal launch and idle
+wake return `host_full`, including CLI JSON and dashboard refusal. Repeat with
+an explicit manual max and with an old-daemon/preceding-server pairing.
+No deployment, remote SQL, unrelated workload changes or real-host proof was
+performed by this PR.

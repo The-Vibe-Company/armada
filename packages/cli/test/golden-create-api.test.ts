@@ -101,8 +101,14 @@ test("token-only golden create prints an actionable API conflict and exits nonze
     },
   );
   expect(code).toBe(1);
-  expect(errorOutput).toContain(message);
-  expect(JSON.parse(errorOutput.trim().split("\n").at(-1)!)).toEqual({ error: { code: "conflict", message } });
+  expect(errorOutput).toContain("Snapshot capacity or binding is unavailable or busy. Use an existing snapshot");
+  expect(JSON.parse(errorOutput.trim().split("\n").at(-1)!)).toEqual({
+    error: {
+      code: "conflict",
+      message:
+        "Snapshot capacity or binding is unavailable or busy. Use an existing snapshot you can access, retry after any active build finishes, or ask an administrator to check the binding.",
+    },
+  });
   expect(errorOutput).not.toContain(token);
   expect(output).toBe("");
   expect(requests).toBe(1);

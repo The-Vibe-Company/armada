@@ -4,7 +4,7 @@ import { runtimeWorkspace } from "../src/runtime-workspace.ts";
 
 // Real workspace policy, fake private command transport: no process/provider I/O.
 // Protects health -> GitHub -> pull -> init ordering and failure short-circuiting.
-test.each(["success", "health", "github", "repository", "init"] as const)(
+test.each(["success", "health", "github", "repository", "init", "network"] as const)(
   "enrolled Modal workspace setup preserves epoch-bound ordering (%s)",
   async (failure) => {
     const order: string[] = [];
@@ -57,8 +57,11 @@ test.each(["success", "health", "github", "repository", "init"] as const)(
           return {
             detached: false,
             stdout: "",
-            stderr: "",
-            exitCode: failure === step.phase ? 1 : 0,
+            stderr:
+              failure === "network" && step.phase === "repository"
+                ? "ARMADA_REPOSITORY_FETCH_FAILED\nCould not resolve host: github.com"
+                : "",
+            exitCode: failure === "network" && step.phase === "repository" ? 75 : failure === step.phase ? 1 : 0,
             timedOut: false,
             truncated: false,
           };
@@ -81,9 +84,14 @@ test.each(["success", "health", "github", "repository", "init"] as const)(
         throw Error("No wall-clock retries");
       },
     );
-    if (failure === "success") expect(await work).toMatchObject({ status: "connected", login: "owner" });
-    else await expect(work).rejects.toThrow();
+    if (failure === "success" || failure === "network") {
+      const result = await work;
+      expect(result).toMatchObject({ status: "connected", login: "owner" });
+      if (failure === "network") expect(result.message).toContain("Warning: repository web");
+    } else await expect(work).rejects.toThrow();
     const phases = ["health", "github", "repository", "init"];
-    expect(order).toEqual(failure === "success" ? phases : phases.slice(0, phases.indexOf(failure) + 1));
+    expect(order).toEqual(
+      failure === "success" || failure === "network" ? phases : phases.slice(0, phases.indexOf(failure) + 1),
+    );
   },
 );

@@ -63,8 +63,12 @@ export class Journal {
   prompts(): StoredPrompt[] {
     return (this.db.query("SELECT body FROM prompts").all() as { body: string }[]).map((r) => JSON.parse(r.body));
   }
-  get(id: string) {
-    return this.prompts().find((p) => p.promptId === id);
+  get(id: string): StoredPrompt | undefined {
+    if (typeof id !== "string") return undefined;
+    const row = this.db.query("SELECT body FROM prompts WHERE id=?").get(id) as { body: string } | null;
+    if (!row) return undefined;
+    const prompt = JSON.parse(row.body) as StoredPrompt;
+    return prompt.promptId === id ? prompt : undefined;
   }
   session(conversation: string): string | undefined {
     return (
@@ -150,8 +154,8 @@ export class Journal {
       .query("INSERT OR REPLACE INTO metadata VALUES('runner:identity',?)")
       .run(JSON.stringify(checkpointIdentity(identity)));
   }
-  /** A resume must not treat an empty/rolled-back disk as a fresh conversation. */
-  requireCheckpoint(identity: CheckpointIdentity, watermark: number, conversationId: string) {
+  /** A sealed empty checkpoint is distinct from fresh or rolled-back storage. */
+  requireCheckpoint(identity: CheckpointIdentity, watermark: number, conversationId: string | null) {
     const source = this.assertRestoreSource(identity);
     const seal = this.db
       .query("SELECT value FROM metadata WHERE key=?")
@@ -165,7 +169,9 @@ export class Journal {
       watermark < 0 ||
       high !== watermark ||
       this.ack !== watermark ||
-      !this.session(conversationId) ||
+      (conversationId === null
+        ? this.prompts().length !== 0 || this.db.query("SELECT conversation FROM sessions LIMIT 1").get() !== null
+        : !this.session(conversationId)) ||
       this.prompts().some((prompt) => !isFinalPromptStatus(prompt.status))
     )
       throw Error("resume_checkpoint_mismatch");

@@ -105,8 +105,13 @@ test("a malformed launch receipt still gets deleted and a failed delete persists
             calls.push(action);
             if (action === "launch")
               return Response.json({ sandbox: { id: row.id, provider: "modal" }, promptId: "unexpected-prompt" });
-            if (action === "stop") return Response.json({ status: "stopped" });
-            if (action === "status") return Response.json({ status: "stopped", providerState: "stopped" });
+            if (action === "stop") return Response.json({ id: JSON.parse(String(init.body)).id, status: "stopped" });
+            if (action === "status")
+              return Response.json({
+                id: JSON.parse(String(init.body)).id,
+                status: "stopped",
+                providerState: "stopped",
+              });
             if (action === "delete") {
               const id = new URL(url).pathname.split("/").at(-1);
               return Response.json({ id, status: id === row.id && deleted ? "deleted" : "stopped" });
@@ -449,4 +454,164 @@ test("cleanup reconciles transient status refusal and acknowledged pending delet
   expect(remaining).toEqual([]);
   expect(statuses).toBe(2);
   expect(deletes).toBe(3);
+});
+
+test("slow parent deletion cannot consume the dependent child's entire observation window", async () => {
+  let clock = 0;
+  let parentDeleted = false;
+  let childStopAt: number | undefined;
+  const child = {
+    ...row,
+    id: "33333333-3333-4333-8333-333333333333",
+    requestKey: "smoke-scoped-11111111-1111-4111-8111-111111111111",
+  };
+  const remaining = await deleteSmokeReceipts(STAGING_ORIGIN, "token", [child, row], {
+    now: () => clock,
+    sleep: async (ms) => {
+      clock += ms;
+    },
+    out: () => {},
+    fetch: async (url, init) => {
+      const id = init.method === "DELETE" ? new URL(url).pathname.split("/").at(-1) : JSON.parse(String(init.body)).id;
+      if (id === child.id) {
+        expect(parentDeleted).toBe(true);
+        if (url.endsWith("/stop")) {
+          childStopAt = clock;
+          return Response.json({ id, status: "stopping" });
+        }
+        if (url.endsWith("/status")) return Response.json({ id, status: clock < 660_000 ? "stopping" : "stopped" });
+        if (clock < 720_000) return Response.json({ error: { code: "sandbox_not_ready" } }, { status: 409 });
+        return Response.json({ id, status: "deleted" });
+      }
+      if (url.endsWith("/stop")) return Response.json({ id, status: "stopped" });
+      expect(init.method).toBe("DELETE");
+      if (clock < 360_000) return Response.json({ error: { code: "sandbox_not_ready" } }, { status: 409 });
+      parentDeleted = true;
+      return Response.json({ id, status: "deleted" });
+    },
+  });
+  expect(remaining).toEqual([]);
+  expect(childStopAt).toBe(360_000);
+  expect(clock).toBe(720_000);
+});
+
+test("a definite busy stop admission is retried only after the sandbox is ready", async () => {
+  let clock = 0,
+    stops = 0;
+  const remaining = await deleteSmokeReceipts(STAGING_ORIGIN, "token", [row], {
+    now: () => clock,
+    sleep: async (ms) => {
+      clock += ms;
+    },
+    out: () => {},
+    fetch: async (url, init) => {
+      if (url.endsWith("/stop")) {
+        stops++;
+        return stops === 1
+          ? Response.json({ error: { code: "sandbox_not_ready" } }, { status: 409 })
+          : Response.json({ id: row.id, status: "stopping" });
+      }
+      if (url.endsWith("/status")) return Response.json({ id: row.id, status: stops === 1 ? "ready" : "stopped" });
+      expect(init.method).toBe("DELETE");
+      expect(stops).toBe(2);
+      return Response.json({ id: row.id, status: "deleted" });
+    },
+  });
+  expect(remaining).toEqual([]);
+  expect(stops).toBe(2);
+});
+
+test.each(["stop", "status", "delete"])(
+  "lost %s acknowledgement is reconciled without replaying an admitted stop",
+  async (lost) => {
+    let clock = 0,
+      stops = 0,
+      statuses = 0,
+      deletes = 0;
+    const remaining = await deleteSmokeReceipts(STAGING_ORIGIN, "token", [row], {
+      now: () => clock,
+      sleep: async (ms) => {
+        clock += ms;
+      },
+      out: () => {},
+      fetch: async (url, init) => {
+        if (url.endsWith("/stop")) {
+          stops++;
+          if (lost === "stop") throw Error("transport_placeholder");
+          return Response.json({ id: row.id, status: lost === "status" ? "stopping" : "stopped" });
+        }
+        if (url.endsWith("/status")) {
+          statuses++;
+          if (lost === "status" && statuses === 1) throw Error("transport_placeholder");
+          return Response.json({ id: row.id, status: "stopped" });
+        }
+        expect(init.method).toBe("DELETE");
+        deletes++;
+        if (lost === "delete" && deletes === 1) throw Error("transport_placeholder");
+        return Response.json({ id: row.id, status: "deleted" });
+      },
+    });
+    expect(remaining).toEqual([]);
+    expect(stops).toBe(1);
+    expect(deletes).toBe(lost === "delete" ? 2 : 1);
+  },
+);
+
+test("journal cleanup still gets its full reserve after the work window is consumed", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "smoke-cleanup-reserve-"));
+  const path = join(directory, "journal.json");
+  let clock = 0;
+  const output: Record<string, unknown>[] = [];
+  try {
+    const result = await postDeploySmoke(
+      {
+        ARMADA_URL: STAGING_ORIGIN,
+        ARMADA_TOKEN: "token",
+        ARMADA_SMOKE: "create_real_compute",
+        ARMADA_SMOKE_JOURNAL: path,
+        ARMADA_SMOKE_CASES: JSON.stringify([
+          {
+            provider: "modal",
+            harness: "codex",
+            org: row.org,
+            golden: "smoke",
+            model: "model",
+            modelAccountId: "account",
+            repo: "/repo",
+          },
+        ]),
+      },
+      [],
+      {
+        now: () => clock,
+        sleep: async (ms) => {
+          clock += ms;
+        },
+        out: (line) => {
+          try {
+            output.push(JSON.parse(line));
+          } catch {}
+        },
+        fetch: async (url, init) => {
+          if (url.endsWith("/launch")) {
+            clock = 35 * 60_000 - 1;
+            return Response.json({ sandbox: { id: row.id, provider: "modal" }, promptId: "unexpected_prompt" });
+          }
+          if (url.endsWith("/stop") || url.endsWith("/status")) return Response.json({ id: row.id, status: "stopped" });
+          expect(init.method).toBe("DELETE");
+          return clock < 41 * 60_000
+            ? Response.json({ error: { code: "sandbox_not_ready" } }, { status: 409 })
+            : Response.json({ id: row.id, status: "deleted" });
+        },
+      },
+    );
+    expect(result).toBe(false); // The deliberately malformed functional receipt still fails.
+    expect(output.find((item) => item.step === "smoke_cleanup_summary")).toMatchObject({
+      pass: true,
+      remainingRows: 0,
+    });
+    expect(await readSmokeJournal(path)).toEqual([]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });

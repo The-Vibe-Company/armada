@@ -40,8 +40,8 @@ const PAGE = join(ROOT, "src/app/landing/page.tsx");
 const modules = [...reach(PAGE)];
 
 /**
- * `armada --help`, one usage block per line that starts `  armada `: the commands it documents (`golden <sub>`
- * for goldens, the first word otherwise) and, for each, the text of its blocks, where its flags are.
+ * `armada --help`, one usage block per line that starts `  armada `: the commands it documents (`snapshot <sub>`
+ * for snapshots, the first word otherwise) and, for each, the text of its blocks, where its flags are.
  */
 async function help(): Promise<Map<string, string>> {
   let text = "";
@@ -50,8 +50,8 @@ async function help(): Promise<Map<string, string>> {
   for (const block of text.split(/\n(?= {2}armada )/)) {
     const [, first = "", second = ""] = block.match(/^ {2}armada ([a-z][a-z|-]*)(?: ([a-z][a-z|-]*))?/) ?? [];
     for (const word of first.split("|").filter(Boolean))
-      for (const sub of word === "golden" ? second.split("|") : [""]) {
-        const name = sub ? `golden ${sub}` : word;
+      for (const sub of word === "snapshot" ? second.split("|") : [""]) {
+        const name = sub ? `snapshot ${sub}` : word;
         usage.set(name, `${usage.get(name) ?? ""}${block}\n`);
       }
   }
@@ -66,7 +66,7 @@ describe("what the landing says", () => {
     expect(shown.length).toBeGreaterThan(5);
     const unknown = shown.flatMap((line) => {
       const [, first = "", second = ""] = line.split(" ");
-      const command = first === "golden" ? `golden ${second}` : first;
+      const command = first === "snapshot" ? `snapshot ${second}` : first;
       const own = usage.get(command);
       if (own === undefined) return [`${line}: no command ${command}`];
       const flags = line.match(/(?<=\s)--[a-z][a-z-]*/g) ?? [];

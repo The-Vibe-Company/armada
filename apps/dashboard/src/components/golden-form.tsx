@@ -28,6 +28,7 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Textarea } from "@/components/ui/textarea";
 import { usePreservedActionForm } from "@/components/use-preserved-action-form";
 import type { ActionResult } from "@/lib/action";
+import { snapshotText } from "@/lib/action";
 import {
   type CapacityState,
   GOLDEN_PROVIDERS,
@@ -260,7 +261,7 @@ function ScopedGoldenForm({
     if (pending || finding || findInFlight.current || !canStart) event.preventDefault();
   }
 
-  const verb = mode === "create" ? "Build golden" : "Rebuild golden";
+  const verb = mode === "create" ? "Build snapshot" : "Rebuild snapshot";
   // An admitted job that has not finished keeps the form locked: nothing is edited or sent again meanwhile.
   const jobActive = observed !== null && ["queued", "running", "recovery_required"].includes(observed.state);
   const builtOn = admittedProvider ? `${PROVIDER_LABELS[admittedProvider]} ` : "";
@@ -280,7 +281,7 @@ function ScopedGoldenForm({
       action={formAction}
       onSubmit={guard}
       aria-busy={pending}
-      aria-label={mode === "create" ? "Create a golden" : `Rebuild ${name} on ${PROVIDER_LABELS[provider ?? "boat"]}`}
+      aria-label={mode === "create" ? "Create a snapshot" : `Rebuild ${name} on ${PROVIDER_LABELS[provider ?? "boat"]}`}
       className="space-y-4"
       data-golden-form={mode}
     >
@@ -333,7 +334,7 @@ function ScopedGoldenForm({
                 </Label>
               </RadioGroup>
               <p id={`${id}-visibility-hint`} className="max-w-64 text-xs text-muted-foreground">
-                {isAdmin ? VISIBILITY_HINT[chosenVisibility] : "Only an org admin creates org goldens."}
+                {isAdmin ? VISIBILITY_HINT[chosenVisibility] : "Only an org admin creates org snapshots."}
               </p>
             </fieldset>
             {providers.length === 1 && providerChoice}
@@ -459,7 +460,7 @@ function ScopedGoldenForm({
               className="font-mono text-xs"
             />
             <p id={`${id}-init-hint`} className="text-xs text-muted-foreground">
-              One per line, recorded in the golden. Never put a secret here.
+              One per line, recorded in the snapshot. Never put a secret here.
             </p>
           </div>
           <div className="space-y-2">
@@ -495,13 +496,13 @@ function ScopedGoldenForm({
                 ? observed.state === "failed" || observed.state === "recovery_required"
                   ? {
                       ok: false,
-                      error: `Build ${observed.jobId}: ${observed.state} (${goldenBuildFailureText(observed)}). Last-good golden retained.`,
+                      error: `Build ${observed.jobId}: ${observed.state} (${snapshotText(goldenBuildFailureText(observed))}). Last-good snapshot retained.`,
                     }
                   : {
                       ok: true,
                       message:
                         observed.state === "succeeded" && observed.result
-                          ? `${mode === "create" ? "Built" : "Rebuilt"} ${builtOn}golden '${observed.result.name}' and saved snapshot ${observed.result.snapshot}.`
+                          ? `${mode === "create" ? "Built" : "Rebuilt"} ${builtOn}snapshot '${observed.result.name}' and saved snapshot ${observed.result.snapshot}.`
                           : `Build ${observed.jobId}: ${observed.state} (${observed.phase})`,
                     }
                 : state
@@ -655,10 +656,10 @@ const VISIBILITY_HINT: Record<"org" | "private", string> = {
 
 const CAPACITY_HINT: Record<CapacityState["kind"], (state: CapacityState) => string> = {
   available: (state) =>
-    state.kind === "available" ? `${state.used} of ${state.capacity} goldens visible to you.` : "",
-  full: () => "At its golden limit: rebuild the existing golden instead.",
-  legacy: () => "Over its golden limit: rebuild an existing golden instead.",
-  unknown: () => "No golden limit reported.",
+    state.kind === "available" ? `${state.used} of ${state.capacity} snapshots visible to you.` : "",
+  full: () => "At its snapshot limit: rebuild the existing snapshot instead.",
+  legacy: () => "Over its snapshot limit: rebuild an existing snapshot instead.",
+  unknown: () => "No snapshot limit reported.",
   unavailable: (state) => (state.kind === "unavailable" ? `Unavailable: ${state.reason}` : ""),
 };
 

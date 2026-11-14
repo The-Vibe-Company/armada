@@ -26,7 +26,7 @@ const CAPABILITY_LABELS: Record<DockerCapability, string> = {
   stop: "Stop",
   delete: "Delete",
   resume: "Resume",
-  goldens: "Environments (goldens)",
+  goldens: "Snapshots",
   repositories: "Repositories",
   variables: "Readable variables",
   secrets: "Application secret bindings",

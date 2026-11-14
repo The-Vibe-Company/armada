@@ -13,7 +13,7 @@ import { control } from "./control.ts";
 import { listHosts } from "./host-commands.ts";
 
 const commands =
-  "login logout launch list detail status logs send steer stop wait exec golden host account creds org doctor completion template routine";
+  "login logout launch list detail status logs send steer stop wait exec snapshot host account creds org doctor completion template routine";
 export function completion(argv: readonly string[], auth: Pick<AuthIo, "out">): number {
   if (argv.length !== 1 || !["bash", "zsh", "fish"].includes(argv[0] ?? ""))
     throw new AuthError("Run armada completion bash|zsh|fish, then source the generated script.", "usage");
@@ -115,7 +115,7 @@ export async function prepareLaunch(argv: readonly string[], auth: AuthIo): Prom
     const { goldens } = await control<{ goldens: GoldenRecord[] }>(auth, "golden/list", { org });
     const golden = await choose(
       `${org}/${provider}/golden`,
-      "Golden (create one with armada golden create)",
+      "Snapshot (create one with armada snapshot create)",
       goldens.filter((g) => g.provider === provider).map((g) => ({ value: g.name, label: g.name })),
     );
     result.unshift(golden);

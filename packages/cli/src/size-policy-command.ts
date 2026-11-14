@@ -14,7 +14,7 @@ export async function sizePolicyCommand(
   for (const key of args.options.keys())
     if (!allowed.has(key)) throw new GoldenError("invalid_config", `Unsupported size-policy option '${key}'.`);
   const [golden, ...extra] = args.positionals;
-  if (!golden || extra.length) throw new GoldenError("invalid_config", "Give exactly one golden name.");
+  if (!golden || extra.length) throw new GoldenError("invalid_config", "Give exactly one snapshot name.");
   const provider = single(args, "--provider");
   if (provider !== undefined && provider !== "boat" && provider !== "modal")
     throw new GoldenError("invalid_config", "--provider is boat or modal.");

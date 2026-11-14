@@ -263,3 +263,77 @@ test("retained owner/admin diagnostics and delegated cleanup are independent of 
   await db.query(`delete from public.members where org_id=$1 and user_id=$2`, [f.actor.orgId, f.actor.userId]);
   await denied(retained.get(f.actor, saved.id));
 });
+
+test("host capacity reserves pending starts, preserves retries, and releases only confirmed physical stops", async () => {
+  const f = await fixture();
+  // Heartbeat observations, not user-supplied launch choices, establish capacity.
+  await hosts.poll(f.hostToken, f.installationId, "2.31.0", false, { cpus: 2, memoryBytes: 6 * 1024 ** 3 });
+  await db.query("update public.docker_hosts set name='capacity-host' where id=$1", [f.hostId]);
+  const first = await service.reserve(f.actor, f.input);
+  expect((await hosts.list(f.actor))[0]).toMatchObject({
+    running: 1,
+    resources: {
+      capacity: 1,
+      mode: "automatic",
+      machine: { cpus: 2, memoryBytes: 6 * 1024 ** 3 },
+      perSandbox: { cpus: 2, memoryBytes: 4 * 1024 ** 3, pids: 4096 },
+    },
+  });
+  expect(await service.reserve(f.actor, f.input)).toEqual(first);
+  const next = { ...f.input, requestId: randomUUID() };
+  await expect(service.reserve(f.actor, next)).rejects.toThrow(
+    "Host capacity-host is full: 1/1 sandboxes running; stop one or raise the limit.",
+  );
+  await hosts.complete(f.hostToken, f.installationId, { requestId: first.id, outcome: "completed" });
+  const stop = randomUUID();
+  await service.stop(f.actor, first.id, stop);
+  await expect(service.reserve(f.actor, next)).rejects.toThrow("is full");
+  await hosts.complete(f.hostToken, f.installationId, { requestId: stop, outcome: "completed" });
+  const second = await service.reserve(f.actor, next);
+  expect(second.id).toBe(next.requestId);
+  // A daemon TTL observation is physical stop proof too, including failed startup rows.
+  await hosts.expired(f.hostToken, f.installationId, { requestId: second.id });
+  expect((await service.reserve(f.actor, { ...f.input, requestId: randomUUID() })).status).toBe("starting");
+});
+
+test("available resource admission and displayed held-back slots agree without evicting reservations", async () => {
+  const f = await fixture();
+  const hardware = { cpus: 16, memoryBytes: 38 * 1024 ** 3 };
+  await hosts.poll(
+    f.hostToken,
+    f.installationId,
+    "2.33.0",
+    false,
+    { ...hardware, availableCpus: 8, availableMemoryBytes: 30 * 1024 ** 3 },
+    1,
+  );
+  const saved = [];
+  for (let i = 0; i < 5; i++) saved.push(await service.reserve(f.actor, { ...f.input, requestId: randomUUID() }));
+  expect((await hosts.list(f.actor))[0]).toMatchObject({ running: 5, resources: { capacity: 7, heldBack: 2 } });
+  await hosts.poll(
+    f.hostToken,
+    f.installationId,
+    "2.33.0",
+    false,
+    { ...hardware, availableCpus: 0, availableMemoryBytes: 0 },
+    1,
+  );
+  expect((await hosts.list(f.actor))[0]).toMatchObject({ running: 5, resources: { capacity: 5, heldBack: 4 } });
+  await expect(service.reserve(f.actor, { ...f.input, requestId: randomUUID() })).rejects.toMatchObject({
+    code: "host_full",
+  });
+  // Earlier admitted UUIDs reconcile, rather than consuming another slot under pressure.
+  expect((await service.reserve(f.actor, { ...f.input, requestId: saved[0]!.id })).id).toBe(saved[0]!.id);
+  await hosts.poll(
+    f.hostToken,
+    f.installationId,
+    "2.33.0",
+    false,
+    { ...hardware, availableCpus: 8, availableMemoryBytes: 30 * 1024 ** 3 },
+    1,
+  );
+  expect((await service.reserve(f.actor, { ...f.input, requestId: randomUUID() })).status).toBe("starting");
+  // An older daemon's next poll removes stale observations rather than inventing current headroom.
+  await hosts.poll(f.hostToken, f.installationId, "2.32.0", false, hardware, 1);
+  expect((await hosts.list(f.actor))[0]?.resources?.capacity).toBe(9);
+});

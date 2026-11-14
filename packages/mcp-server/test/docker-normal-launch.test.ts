@@ -9,6 +9,7 @@ import {
   type DockerSandboxStatus,
   type Harness,
   type LaunchCredentialResolver,
+  LaunchError,
   officialSandboxImage,
   ProviderError,
   type SandboxListMetadata,
@@ -86,6 +87,10 @@ async function fixture(
     lifecycleGenerationAfterCreate?: number;
     harness?: Harness;
     checkoutExitCode?: number;
+    refreshFailure?: "auth" | "network";
+    repositoryAccessDenied?: boolean;
+    publicRepositoryAccess?: boolean;
+    withholdWorkspace?: "timeout" | "stop";
     distinctPromptIds?: boolean;
     githubConfigurationAcknowledged?: boolean;
     daemonVersion?: string;
@@ -172,6 +177,11 @@ async function fixture(
       if (next.command) {
         const command = next.command;
         native.push(command);
+        if (command.op === "workspaceExec" && options.withholdWorkspace) {
+          if (options.withholdWorkspace === "stop")
+            await db.query("update sandboxes set stop_requested_at=now() where id=$1", [body.requestId]);
+          return;
+        }
         if (command.op === "prompt" && command.input.conversationId)
           receipt.conversationId = command.input.conversationId as typeof receipt.conversationId;
         if (command.op === "prompt" && !promptReceipts.has(command.requestId))
@@ -199,13 +209,23 @@ async function fixture(
                       acknowledged:
                         command.op !== "configureGitHub" || options.githubConfigurationAcknowledged !== false,
                     }
-                  : command.op === "exec"
+                  : command.op === "exec" || command.op === "workspaceExec"
                     ? {
                         detached: false,
-                        exitCode: options.checkoutExitCode ?? 0,
+                        exitCode:
+                          command.op === "workspaceExec" && options.refreshFailure
+                            ? options.refreshFailure === "network"
+                              ? 75
+                              : 128
+                            : (options.checkoutExitCode ?? 0),
                         timedOut: false,
                         stdout: "",
-                        stderr: "",
+                        stderr:
+                          command.op === "workspaceExec" && options.refreshFailure
+                            ? options.refreshFailure === "network"
+                              ? "ARMADA_REPOSITORY_FETCH_FAILED\nCould not resolve host: github.com"
+                              : "fatal: could not read Username for https://github.com: terminal prompts disabled"
+                            : "",
                         truncated: false,
                       }
                     : command.op === "configureMcp"
@@ -236,7 +256,30 @@ async function fixture(
     },
   };
   let resolutions = 0;
-  const resolver: Pick<LaunchCredentialResolver, "resolve"> = {
+  const publicRepositoryAccess = options.publicRepositoryAccess
+    ? launchCredentials(createSqlVaultStore(sql), key, undefined, undefined, {
+        store: createSqlVaultStore(sql),
+        app: { clientId: "offline-app", clientSecret: "offline-app-secret" },
+        fetch: (async (url: string | URL | Request, init?: RequestInit) => {
+          const path = String(url);
+          if (path === "https://api.github.com/user") return Response.json({ id: 123, login: "owner", name: "Owner" });
+          expect(new Headers(init?.headers).has("authorization")).toBe(false);
+          return Response.json({ private: false, full_name: "example/project" });
+        }) as typeof fetch,
+      }).authorizeRepositories
+    : undefined;
+  const resolver: Pick<LaunchCredentialResolver, "resolve" | "authorizeRepositories"> = {
+    ...(publicRepositoryAccess ? { authorizeRepositories: publicRepositoryAccess } : {}),
+    ...(options.repositoryAccessDenied
+      ? {
+          async authorizeRepositories(_actor, _resolved, repos) {
+            throw new LaunchError(
+              "no_credentials",
+              `Repository ${repos[0]!.dir} needs a GitHub connection with read access. Run armada github connect, grant your account and the Armada GitHub App access, then launch again.`,
+            );
+          },
+        }
+      : {}),
     async resolve(...args) {
       resolutions++;
       return credentials.resolve(...args);
@@ -370,7 +413,10 @@ test("normal launch drives create, bootstrap, health and one first prompt, seals
     },
     golden: null,
     helper: null,
-    github: { status: "unavailable" },
+    github: {
+      status: "unavailable",
+      message: "GitHub access requires repositories in the Docker launch or snapshot configuration.",
+    },
     runtime: { kind: "armada", epoch: f.session()?.epoch },
     ttlSeconds: 14400,
     promptId: f.receipt.promptId,
@@ -1375,7 +1421,11 @@ test("deferred launch reconciles an uncertain first-prompt receipt without marki
     },
   };
   const server = f.service(interrupted, true, 10000, officialImage, true);
-  await server.launch(f.caller, f.body);
+  const pending = await server.launch(f.caller, f.body);
+  expect(pending.github).toEqual({
+    status: "unavailable",
+    message: "GitHub preparation has not completed for this launch.",
+  });
   await server.drain();
   expect(failed).toBe(true);
   expect((await server.launch(f.caller, f.body)).sandbox.status).toBe("starting");
@@ -2129,8 +2179,8 @@ test("a lost Docker template response retains one reconciling claim and never re
   expect(await counts(f)).toMatchObject({ sandboxes: 1, claims: 1, jobs: 2 });
 });
 
-async function snapshotFixture(enabled = true) {
-  const f = await fixture();
+async function snapshotFixture(enabled = true, options: Parameters<typeof fixture>[0] = {}) {
+  const f = await fixture(options);
   for (const [userId, githubId, access] of [
     [f.actor.userId, 123, "offline-snapshot-access"],
     [f.admin.userId, 124, "offline-admin-access"],
@@ -2230,7 +2280,19 @@ test.each(["private", "org"] as const)(
     const launched = await f.service().launch(f.caller, { ...body, snapshotId: id });
     expect(launched.sandbox).toMatchObject({ image, snapshotId: id, hostId: f.hostId });
     expect(f.jobs[0]).toMatchObject({ request: { image, snapshot: { id, ownerId: creator.userId, visibility } } });
-    expect((f.native as { op: string }[]).map((cmd) => cmd.op)).toEqual(["health", "configureGitHub", "prompt"]);
+    expect((f.native as { op: string }[]).map((cmd) => cmd.op)).toEqual([
+      "health",
+      "configureGitHub",
+      "workspaceExec",
+      "prompt",
+    ]);
+    const refresh = (f.native as { op: string; input?: { command: string } }[]).find(
+      (command) => command.op === "workspaceExec",
+    );
+    expect(refresh?.input?.command).toContain("git fetch origin");
+    expect(refresh?.input?.command).not.toContain("credential.helper=");
+    expect(refresh?.input?.command).not.toContain("git clone");
+    expect(refresh?.input?.command).not.toContain("printf built");
     const controls = createDockerSandboxControls(sql, key, {
       clock: f.clock,
       resume: bootstrap,
@@ -2271,6 +2333,188 @@ test.each(["private", "org"] as const)(
         ).rows[0],
       ).toEqual({ write: false });
     });
+  },
+);
+
+test("snapshot caller-access port refuses before Docker host admission with the requested repository remedy", async () => {
+  const f = await snapshotFixture(true, { repositoryAccessDenied: true });
+  const id = randomUUID();
+  await f.snapshots.command(f.caller, "create", {
+    org: f.actor.orgId,
+    hostId: f.hostId,
+    requestId: id,
+    name: "access-proof",
+    visibility: "private",
+    config: f.config,
+  });
+  const build = await hosts.poll(f.hostToken, f.installationId);
+  if (build?.operation !== "buildSnapshot") throw Error("Snapshot fixture build missing");
+  await hosts.complete(f.hostToken, f.installationId, {
+    requestId: id,
+    outcome: "completed",
+    imageId: `sha256:${"f".repeat(64)}`,
+  });
+  const { hostId: _, ...body } = f.body;
+  const before = await counts(f);
+  await expect(
+    f.service(sql, true, 10000, officialImage, true).launch(f.caller, { ...body, snapshotId: id }),
+  ).rejects.toMatchObject({
+    code: "no_credentials",
+    message: expect.stringContaining("Repository project needs a GitHub connection"),
+  });
+  expect(await counts(f)).toEqual(before);
+  expect(f.jobs).toEqual([]);
+  expect(f.native).toEqual([]);
+});
+
+test.each([false, true])(
+  "public snapshot refresh remains anonymous when GitHub is disconnected (deferred=%s)",
+  async (deferred) => {
+    const f = await snapshotFixture(true, { publicRepositoryAccess: true });
+    const id = randomUUID();
+    await f.snapshots.command(f.caller, "create", {
+      org: f.actor.orgId,
+      hostId: f.hostId,
+      requestId: id,
+      name: "public-refresh",
+      visibility: "private",
+      config: f.config,
+    });
+    const build = await hosts.poll(f.hostToken, f.installationId);
+    if (build?.operation !== "buildSnapshot") throw Error("Snapshot fixture build missing");
+    await hosts.complete(f.hostToken, f.installationId, {
+      requestId: id,
+      outcome: "completed",
+      imageId: `sha256:${"a".repeat(64)}`,
+    });
+    const { hostId: _, ...body } = f.body;
+    const service = f.service(sql, true, 10000, officialImage, deferred);
+    try {
+      // Deferred work rechecks the caller after admission; public visibility remains provable anonymously.
+      if (!deferred) await db.query("delete from github_connections where user_id=$1", [f.actor.userId]);
+      let result = await service.launch(f.caller, { ...body, snapshotId: id });
+      if (deferred) {
+        await db.query("delete from github_connections where user_id=$1", [f.actor.userId]);
+        await service.drain();
+        result = await service.launch(f.caller, { ...body, snapshotId: id });
+      }
+      expect(result.sandbox.status).toBe("running");
+      expect(result.github.status).toBe("not_connected");
+      const operations = (f.native as { op: string }[]).map((command) => command.op);
+      expect(operations).toEqual(["health", "workspaceExec", "prompt"]);
+      const refresh = (f.native as { op: string; input?: { command: string } }[]).find(
+        (command) => command.op === "workspaceExec",
+      );
+      expect(refresh?.input?.command).toContain("git fetch origin");
+      expect(refresh?.input?.command).not.toContain("git clone");
+      expect(refresh?.input?.command).not.toContain("printf built");
+    } finally {
+      await service.close();
+    }
+  },
+);
+
+test.each(["timeout", "stop"] as const)(
+  "snapshot refresh wait honors launch admission while its runtime reply is withheld (%s)",
+  async (mode) => {
+    const f = await snapshotFixture(true, { withholdWorkspace: mode });
+    const id = randomUUID();
+    await f.snapshots.command(f.caller, "create", {
+      org: f.actor.orgId,
+      hostId: f.hostId,
+      requestId: id,
+      name: "bounded-refresh",
+      visibility: "private",
+      config: f.config,
+    });
+    const build = await hosts.poll(f.hostToken, f.installationId);
+    if (build?.operation !== "buildSnapshot") throw Error("Snapshot fixture build missing");
+    await hosts.complete(f.hostToken, f.installationId, {
+      requestId: id,
+      outcome: "completed",
+      imageId: `sha256:${"c".repeat(64)}`,
+    });
+    const { hostId: _, ...body } = f.body;
+    const startedAt = f.clock.now();
+    await expect(f.service(sql, true, 5000).launch(f.caller, { ...body, snapshotId: id })).rejects.toBeInstanceOf(
+      ProviderError,
+    );
+    const elapsed = f.clock.now() - startedAt;
+    expect(elapsed).toBeLessThanOrEqual(5250);
+    if (mode === "timeout") expect(elapsed).toBeGreaterThanOrEqual(5000);
+    expect((f.native as { op: string }[]).some((command) => command.op === "workspaceExec")).toBe(true);
+    expect((f.native as { op: string }[]).some((command) => command.op === "prompt")).toBe(false);
+  },
+);
+
+test.each(["auth", "auth-deferred", "network"] as const)(
+  "snapshot refresh uses the shared authorization/fallback policy before prompt (%s)",
+  async (mode) => {
+    const f = await snapshotFixture(true, { refreshFailure: mode === "network" ? "network" : "auth" });
+    const id = randomUUID();
+    await f.snapshots.command(f.caller, "create", {
+      org: f.actor.orgId,
+      hostId: f.hostId,
+      requestId: id,
+      name: "refresh-policy",
+      visibility: "private",
+      config: f.config,
+    });
+    const build = await hosts.poll(f.hostToken, f.installationId);
+    if (build?.operation !== "buildSnapshot") throw Error("Snapshot fixture build missing");
+    await hosts.complete(f.hostToken, f.installationId, {
+      requestId: id,
+      outcome: "completed",
+      imageId: `sha256:${"e".repeat(64)}`,
+    });
+    const { hostId: _, ...body } = f.body;
+    const request = { ...body, snapshotId: id };
+    const service = f.service(sql, true, 10000, officialImage, mode === "auth-deferred");
+    try {
+      if (mode === "network") {
+        const result = await service.launch(f.caller, request);
+        expect(result.github.message).toContain("repository project");
+        expect(result.github.message).toContain("snapshot checkout");
+        expect((f.native as { op: string }[]).map((command) => command.op)).toEqual([
+          "health",
+          "configureGitHub",
+          "workspaceExec",
+          "prompt",
+        ]);
+      } else {
+        if (mode === "auth-deferred") {
+          expect((await service.launch(f.caller, request)).sandbox.status).toBe("starting");
+          await service.drain();
+          expect(
+            (
+              await db.query<{ status_reason: string }>("select status_reason from sandboxes where id=$1", [
+                f.body.requestId,
+              ])
+            ).rows[0]?.status_reason,
+          ).toContain("Repository project needs a GitHub connection");
+        }
+        if (mode === "auth-deferred") {
+          const replay = await service.launch(f.caller, request);
+          expect(replay.sandbox).toMatchObject({
+            status: "failed",
+            statusReason: expect.stringContaining("Repository project needs a GitHub connection"),
+          });
+        } else
+          await expect(service.launch(f.caller, request)).rejects.toMatchObject({
+            code: "no_credentials",
+            message: expect.stringContaining("Repository project needs a GitHub connection"),
+          });
+        expect((f.native as { op: string }[]).some((command) => command.op === "prompt")).toBe(false);
+      }
+      const refresh = (f.native as { op: string; input?: { command: string } }[]).find(
+        (command) => command.op === "workspaceExec",
+      );
+      expect(refresh?.input?.command).toContain("git fetch origin");
+      expect(refresh?.input?.command).not.toContain("credential.helper=");
+      expect(refresh?.input?.command).not.toContain("git clone");
+    } finally {
+      await service.close();
+    }
   },
 );
 

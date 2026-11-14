@@ -8,7 +8,7 @@ import { readDockerLaunchOption, readSelectedDockerHosts, viewerDockerHosts } fr
 import { listSelectedAccounts } from "@/lib/data/model-accounts";
 import { isSelectedOrganization, selectedOrganization } from "@/lib/data/selected-org";
 import { requireViewer } from "@/lib/data/viewer";
-import { connectedHostName, HOSTS_PATH, hostNameInput } from "@/lib/docker-hosts";
+import { connectedHostName, dockerHostLimitsInput, HOSTS_PATH, hostNameInput } from "@/lib/docker-hosts";
 import {
   dockerHarnesses,
   dockerLaunchBlocker,
@@ -170,4 +170,31 @@ export async function launchOnDockerHost(
   revalidatePath("/sandboxes");
   // The dialog navigates once it has forgotten this launch's request key, so a later launch is a new request.
   return { ok: true, message: "Launched. Opening the sandbox…", sandboxId: id };
+}
+
+/** The host owner, not the organization's admin role, controls its machine's resource limits. */
+export async function updateDockerHostLimits(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
+  const org = formString(data, "org");
+  const hostId = formString(data, "hostId");
+  if (!isUuid(org) || !isUuid(hostId)) return fail("That request is not valid.");
+  if (!(await isSelectedOrganization(org))) return fail("Switch to that organization first.");
+  const input = dockerHostLimitsInput(data);
+  if (!input.ok) return fail(input.error);
+  const control = await viewerDockerHosts();
+  if (!control) return fail("The Armada server is not configured for this dashboard.");
+  try {
+    const host = (await control.list(org)).hosts.find((candidate) => candidate.id === hostId);
+    if (!host?.canManageLimits) return fail("Only the host owner can change its limits.");
+    if (!host.limitsSupported)
+      return fail("Update the host daemon and wait for it to report resources before changing limits.");
+    if (!host.resources && !("auto" in input.patch))
+      return fail("Current resources are unavailable. Use automatic to clear overrides first.");
+    if (host.state !== "online") return fail("The host must be online to change limits.");
+    await control.limits(org, hostId, input.patch);
+    revalidatePath(HOSTS_PATH);
+    return done("Host limits updated. They apply to future starts and resumes.");
+  } catch (error) {
+    if (!(error instanceof ControlError)) throw error;
+    return fail(error.message);
+  }
 }

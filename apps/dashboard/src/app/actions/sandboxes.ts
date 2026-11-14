@@ -227,7 +227,7 @@ export async function launchFromGolden(_previous: ActionResult | null, data: For
       golden.provider === parsed.args.provider &&
       golden.org_id === parsed.args.org,
   );
-  if (matches.length === 0) return fail("That golden is not available in this organization.");
+  if (matches.length === 0) return fail("That snapshot is not available in this organization.");
   // Who may open the sandbox is its owner and the org's admins (#680); the launch no longer chooses a visibility.
   // Connections go only when the person chose them; otherwise the server applies and checks the defaults (#681).
   let connections: string[] | undefined;

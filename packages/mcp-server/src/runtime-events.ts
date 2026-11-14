@@ -167,26 +167,38 @@ export function createRuntimeEvents(
           : []
         ).map((row) => row.id),
       );
+      const existing = new Map(
+        (items.length
+          ? (
+              await tx.query<{ sequence: string; event_enc: Uint8Array<ArrayBuffer> }>(
+                "select sequence::text,event_enc from public.runtime_events where sandbox_id=$1 and sequence=any($2::bigint[])",
+                [scope.sandboxId, [...new Set(items.map((item) => item.sequence))]],
+              )
+            ).rows
+          : []
+        ).map((row) => [Number(row.sequence), row.event_enc]),
+      );
       let addedPrompt = false;
       const fresh: AgentEvent[] = [];
+      const pending = new Map<number, string>();
+      const sequences: number[] = [];
+      const markers: (string | null)[] = [];
+      const encrypted: string[] = [];
       for (const item of items) {
         if (item.sequence > ack + 1) break; // Commit only the contiguous prefix, never an event beyond a gap.
-        const previous = (
-          await tx.query<{ event_enc: Uint8Array<ArrayBuffer> }>(
-            "select event_enc from public.runtime_events where sandbox_id=$1 and sequence=$2",
-            [scope.sandboxId, item.sequence],
-          )
-        ).rows[0];
-        if (previous) {
-          if ((await decryptSecret(previous.event_enc, key)) !== item.serialized) throw new ConflictingEvent();
+        const previous = existing.get(item.sequence);
+        const serialized = pending.get(item.sequence);
+        if (previous || serialized !== undefined) {
+          if ((serialized ?? (await decryptSecret(previous!, key))) !== item.serialized) throw new ConflictingEvent();
         } else {
           // A missing row below the high-water mark is corruption, not permission to rewrite history.
           if (item.sequence <= ack) throw new ConflictingEvent();
           const marker = item.event.promptId && !known.has(item.event.promptId) ? item.event.promptId : null;
-          await tx.query(
-            "insert into public.runtime_events(sandbox_id,sequence,epoch,counted_prompt_id,event_enc) values($1,$2,$3,$4,$5)",
-            [scope.sandboxId, item.sequence, scope.epoch, marker, await encryptSecret(item.serialized, key)],
-          );
+          sequences.push(item.sequence);
+          markers.push(marker);
+          // Send hex as text so both SQL adapters and direct drivers preserve the encrypted bytes.
+          encrypted.push(Buffer.from(await encryptSecret(item.serialized, key)).toString("hex"));
+          pending.set(item.sequence, item.serialized);
           if (marker) {
             known.add(marker);
             addedPrompt = true;
@@ -195,6 +207,13 @@ export function createRuntimeEvents(
         }
         ack = Math.max(ack, item.sequence);
       }
+      if (sequences.length)
+        await tx.query(
+          `insert into public.runtime_events(sandbox_id,sequence,epoch,counted_prompt_id,event_enc)
+           select $1,sequence,$2,marker,decode(event_hex,'hex')
+           from unnest($3::bigint[],$4::text[],$5::text[]) as batch(sequence,marker,event_hex)`,
+          [scope.sandboxId, scope.epoch, sequences, markers, encrypted],
+        );
       const usage = reportedTurnUsage(fresh);
       if (addedPrompt || usage.turns.length) {
         // recordUsage merges cumulative snapshots, not per-batch deltas. Prompt-only

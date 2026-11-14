@@ -12,17 +12,17 @@ artifact. Existing disposable-builder cleanup remains a separate build protocol.
 ## Revision admission and permanent collection barriers
 
 Launch, connect and snapshot admission carry the snapshot **and master pointer
-read by that operation**. SQL locks the canonical golden and compares both before
+read by that operation**. SQL locks the canonical snapshot and compares both before
 recording a durable operation fence. A stale reader cannot fork a revision that
 has since been replaced/retired. Ambiguous forks retain their fences indefinitely:
 age, lease expiry and lack of a child receipt do not prove no VM was allocated.
 
-Publication, admission and retirement claim serialize on the golden row and a
+Publication, admission and retirement claim serialize on the snapshot row and a
 provider/saved-handle advisory lock. Before a delete, the service checks every
 canonical pointer, including private/hidden and logically removed rows; unresolved
 operation fences; busy backend reservations; and queued/running/recovery jobs.
 Known fork/connect/build dependencies protect their exact input/output revision,
-not every older handle on that golden: a build consuming current C must not
+not every older handle on that snapshot: a build consuming current C must not
 prevent retiring older A and exhaust the saved-snapshot quota. Unknown legacy
 references, unknown reservations and snapshot-writer fences remain conservative.
 New admissions explicitly distinguish a known null input from legacy unknowns.
@@ -38,7 +38,7 @@ generic protected/deferred reason, never another resource's identity.
 
 ## Provider proof and deletion
 
-The service-only ledger/outbox retains the golden ID, immutable source target
+The service-only ledger/outbox retains the snapshot ID, immutable source target
 (org/owner/visibility/Modal workspace-environment-App), backend account identity,
 credential **scope and owner** (no credentials), source builder, saved handle,
 underlying artifact fingerprint and successful producer job when available.
@@ -100,9 +100,9 @@ After applying migration `20261110120400_golden_snapshot_retirement.sql`, use th
 API-only CLI against the normal Armada origin:
 
 ```sh
-armada golden retirement dry-run GOLDEN_UUID --org ORG_UUID --limit 20 --json > review.json
+armada snapshot retirement dry-run GOLDEN_UUID --org ORG_UUID --limit 20 --json > review.json
 # Review the exact proof/fingerprints in review.json before confirmation.
-armada golden retirement reconcile GOLDEN_UUID --org ORG_UUID --limit 20 --file review.json --json
+armada snapshot retirement reconcile GOLDEN_UUID --org ORG_UUID --limit 20 --file review.json --json
 ```
 
 Equivalent authenticated POST routes are
@@ -110,8 +110,8 @@ Equivalent authenticated POST routes are
 `/api/v1/golden/retirement/reconcile`, with `{ id, org, limit }` for dry-run, and additionally `receipts` (the reviewed
 64-character proof digests) for reconcile (`1..50`, default
 `20`). The dashboard proxy exposes exactly those two closed authenticated paths.
-Only a private owner or organization admin may operate on the selected golden;
-live membership is rechecked. Results contain only that golden's old/new handles,
+Only a private owner or organization admin may operate on the selected snapshot;
+live membership is rechecked. Results contain only that snapshot's old/new handles,
 `eligible`/`protected`/`deferred` and safe reason codes. Eligible results include the
 exact non-secret account/authority, source/artifact/producer-job and replacement
 proof, plus an optimistic-concurrency `receipt` bound to those facts and the
@@ -171,13 +171,13 @@ not permission to create production resources.
 
 The deployed old writer uses `INSERT golden_operation_fences(golden_id)`.
 After 204, its omitted expected snapshot/master become NULL. On an existing
-ready canonical golden those differ from the real pointers, so admission rejects
+ready canonical snapshot those differ from the real pointers, so admission rejects
 with SQLSTATE **23514**, `Golden revision changed`. This is intentional and must
 not be worked around by dropping a trigger or accepting NULL expected revisions.
 A health/version response alone does not prove writer/schema compatibility.
 
 1. Establish a **controlled new-admission hold across every origin and MCP/control
-   surface**, including direct backend access. Hold golden/launch/restore/snapshot
+   surface**, including direct backend access. Hold snapshot/launch/restore/snapshot
    and other new allocation-capable admissions and operator mutations. Existing
    user VMs must not be stopped, interrupted or deleted to obtain quiescence.
 2. Drain/stop **old Armada application writer and worker replicas**, not provider
@@ -230,7 +230,7 @@ A health/version response alone does not prove writer/schema compatibility.
    differences explicitly. The compatibility alias guard, source admission guard
    and immutable provenance/barriers must all be enabled for the writer session.
 7. Run a **rollback-only SQL admission postflight**, as the actual server writer
-   role, using an existing non-removed golden with a non-null ready canonical
+   role, using an existing non-removed snapshot with a non-null ready canonical
    snapshot. Replace only the placeholder ID; never start/fork/stop any provider
    resource for this check. Record fence counts before/after to prove no ownership
    was persisted or cleared. This does not clear pre-existing unknown fences.

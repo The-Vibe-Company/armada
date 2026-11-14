@@ -26,7 +26,7 @@ export function repositoryChoice(
 ): { ok: true; repo: string | undefined } | { ok: false; error: string } {
   if (value === "") return { ok: true, repo: undefined };
   if (!dirs.includes(value))
-    return { ok: false, error: "That repository is not part of this golden. Reload and try again." };
+    return { ok: false, error: "That repository is not part of this snapshot. Reload and try again." };
   return { ok: true, repo: value };
 }
 

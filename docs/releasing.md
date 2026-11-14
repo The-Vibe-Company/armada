@@ -234,6 +234,11 @@ the source version. Only then does it build/upload the dashboard. Vercel waits
 for Ready. npm only follows successful production for publishing releases.
 No deploy hook or moving main checkout substitutes for the validated source.
 
+Steady-state releases do **not** require a merge freeze: continue merging green
+PRs while the release owns staging. See the [merge queue operating policy and
+acceptance evidence](merge-queue.md#releases-do-not-freeze-merges-1850). The
+one-time provider cutover freeze above is separate.
+
 Ordinary main workflows retain only the latest pending main without cancelling
 active work. Pinned release/manual calls use separate outer groups; the shared
 staging deployment/smoke job lock retains waiters FIFO with queue:max, preserving

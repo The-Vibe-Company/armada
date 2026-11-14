@@ -314,7 +314,7 @@ test("Docker snapshots build through the normal golden command and launch throug
       snapshots: [{ ...snapshot, status: "ready", image: `sha256:${"a".repeat(64)}` }],
     }),
   );
-  expect(offered.out).toContain(`armada golden rebuild ${id} --provider docker --org ${org}`);
+  expect(offered.out).toContain(`armada snapshot rebuild ${id} --provider docker --org ${org}`);
   const rebuilt = await capture(
     ["golden", "rebuild", id, "--provider", "docker", "--org", org, "--request-id", requestId],
     async (request) => {
@@ -374,4 +374,21 @@ test("Docker launch omits an unspecified account for server default resolution w
       throw Error("must not contact server");
     }),
   ).toMatchObject({ code: 2 });
+});
+
+test("Docker launch text exposes snapshot refresh warnings", async () => {
+  const result = await capture([...args, "--agent", "codex"], async () =>
+    Response.json({
+      sandbox: { id: requestId, provider: "docker", providerSandboxId: "docker-logical", status: "ready" },
+      golden: null,
+      runtime: { epoch: "1" },
+      github: {
+        status: "connected",
+        message: "Warning: repository private could not refresh; launching with its snapshot checkout.",
+      },
+    }),
+  );
+  expect(result.code).toBe(0);
+  expect(result.out).toContain("Note: Warning: repository private");
+  expect(result.out).toContain("snapshot checkout");
 });

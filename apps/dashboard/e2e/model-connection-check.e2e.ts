@@ -134,6 +134,6 @@ test("a model check without a matching running sandbox offers the next step inst
   const dialog = page.getByRole("dialog");
   await expect(dialog).toContainText("No matching sandbox is running.");
   await expect(dialog.getByRole("button", { name: "Send tiny check" })).toBeDisabled();
-  await expect(dialog.getByRole("link", { name: "Choose a snapshot" })).toHaveAttribute("href", "/environments");
+  await expect(dialog.getByRole("link", { name: "Choose a snapshot" })).toHaveAttribute("href", "/snapshots");
   await expect(dialog.locator('[name="sandboxId"]')).toHaveCount(0);
 });

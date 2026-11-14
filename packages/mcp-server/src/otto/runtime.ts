@@ -1,15 +1,17 @@
-import type { Sql } from "@armada/core/server";
+import { createHmac, timingSafeEqual } from "node:crypto";
+import { readBoundedText } from "@armada/auth";
+import { canonicalOttoRepository, isOttoUuid, ottoRepositoryScopes, type Sql } from "@armada/core/server";
 import type { Route } from "../http.ts";
 import { createOttoObserver, type OttoScope } from "./observation.ts";
 import { recordOrphanDays } from "./orphan-days.ts";
 import { readOttoModel } from "./read-model.ts";
 
 /** Opt-in, one repository binding; credentials never leave the server process. */
-export function createOttoRuntime(sql: Sql, env: Record<string, string | undefined>) {
+function createRepositoryRuntime(sql: Sql, env: Record<string, string | undefined>) {
   const orgId = env.ARMADA_OTTO_ORG_ID,
     repository = env.ARMADA_OTTO_REPOSITORY;
   if (!orgId && !repository) return undefined;
-  if (!orgId || !/^[0-9a-f-]{36}$/i.test(orgId) || !repository || !/^[\w.-]+\/[\w.-]+$/.test(repository))
+  if (!orgId || !isOttoUuid(orgId) || !repository || !/^[\w.-]+\/[\w.-]+$/.test(repository))
     throw Error("Invalid Otto repository binding");
   const scope: OttoScope = { orgId, repository };
   const observer = createOttoObserver(sql, scope);
@@ -84,6 +86,54 @@ export function createOttoRuntime(sql: Sql, env: Record<string, string | undefin
         }
       })();
       return { done, stop: () => shutdown.abort() };
+    },
+  };
+}
+
+/** Explicit repository allowlist; each repository retains its own lock, cache and failure boundary. */
+export function createOttoRuntime(sql: Sql, env: Record<string, string | undefined>) {
+  const scopes = ottoRepositoryScopes(env);
+  if (!scopes.length) return undefined;
+  const runtimes = scopes.map(
+    (scope) => createRepositoryRuntime(sql, { ...env, ARMADA_OTTO_REPOSITORY: scope.repository })!,
+  );
+  return {
+    scope: runtimes[0]!.scope,
+    scopes: runtimes.map((runtime) => runtime.scope),
+    route: (async (request) => {
+      if (new URL(request.url).pathname !== "/api/v1/otto/github/webhook") return null;
+      if (request.method !== "POST") return new Response(null, { status: 405 });
+      const secret = env.ARMADA_OTTO_WEBHOOK_SECRET;
+      if (!secret) return Response.json({ error: "webhook_not_configured" }, { status: 503 });
+      const signature = request.headers.get("x-hub-signature-256") ?? "";
+      if (!/^sha256=[a-f0-9]{64}$/.test(signature)) return new Response(null, { status: 401 });
+      let raw: string;
+      try {
+        raw = await readBoundedText(request, 1024 * 1024);
+      } catch {
+        return new Response(null, { status: 413 });
+      }
+      const expected = `sha256=${createHmac("sha256", secret).update(raw).digest("hex")}`;
+      if (!timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return new Response(null, { status: 401 });
+      let repository: unknown;
+      try {
+        repository = JSON.parse(raw)?.repository?.full_name;
+      } catch {
+        return new Response(null, { status: 400 });
+      }
+      const name = typeof repository === "string" ? canonicalOttoRepository(repository) : null;
+      const runtime = runtimes.find((runtime) => canonicalOttoRepository(runtime.scope.repository) === name);
+      if (!runtime) return new Response(null, { status: 403 });
+      return runtime.route(new Request(request.url, { method: "POST", headers: request.headers, body: raw }));
+    }) as Route,
+    start() {
+      const workers = runtimes.map((runtime) => runtime.start());
+      return {
+        done: Promise.all(workers.map((worker) => worker.done)),
+        stop: () => {
+          for (const worker of workers) worker.stop();
+        },
+      };
     },
   };
 }

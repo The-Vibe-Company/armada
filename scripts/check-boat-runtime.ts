@@ -1,4 +1,4 @@
-/** Coordinator-only staging check: ONE launch, no automatic allocation retry. */
+/** Coordinator-only, on-demand production check: ONE launch, no automatic allocation retry. */
 
 import type { AgentEvent } from "../packages/core/src/provider.ts";
 import type { SandboxUsage } from "../packages/core/src/sandbox-usage.ts";
@@ -18,12 +18,14 @@ if (harness !== "codex" && harness !== "claude")
   throw Error("ARMADA_RUNTIME_HARNESS must be codex or claude; no launch attempted.");
 const credentialId = process.env.ARMADA_RUNTIME_CREDENTIAL_ID;
 if (!token || !golden || !org || !credentialId) throw Error("Missing coordinator staging inputs.");
+const ordinaryMode = process.argv.includes("--ordinary");
 const idleMode = process.argv.includes("--idle");
 const usageMode = process.argv.includes("--usage");
 const usageCheck = createRuntimeUsageCheck(credentialId);
 let usageProof: ReturnType<typeof usageCheck.verify> | undefined;
 interface Reply {
   boatRuntime?: {
+    defaultPath?: "native" | "runtime";
     enabled?: boolean;
     diagnosticsVersion?: number;
     followupVersion?: number;
@@ -80,6 +82,8 @@ if (options.boatRuntime?.enabled !== true || options.boatRuntime.diagnosticsVers
   throw Error(
     "Use the armada-server origin with experimental Boat runtime diagnostics v1 enabled; no launch attempted.",
   );
+if (ordinaryMode && options.boatRuntime.defaultPath !== "runtime")
+  throw Error("Ordinary Boat launch requires server runtime default; no launch attempted.");
 const workspaceMode = process.argv.includes("--workspace");
 const workspaceSteps = new Map<string, string>();
 const workspaceEvents = new Set<string>();
@@ -306,9 +310,8 @@ try {
     ? `Remember token ${memory}. ${mcpInstruction} After it succeeds, reply exactly ${marker}. Do not change files.`
     : `${followup ? `Remember token ${memory}. ` : ""}Reply exactly ${marker}. Do not use tools or change files.`;
   const launchStarted = performance.now();
-  const launched = await api("sandbox/launch-runtime-v1", {
-    runtimeVersion: 1,
-    boatRuntime: true,
+  const launched = await api(ordinaryMode ? "sandbox/launch" : "sandbox/launch-runtime-v1", {
+    ...(ordinaryMode ? {} : { runtimeVersion: 1, boatRuntime: true }),
     provider: "boat",
     harness,
     golden,
@@ -324,6 +327,7 @@ try {
   console.log(
     JSON.stringify({
       operation: "runtime_launch_timing",
+      launchPath: ordinaryMode ? "ordinary" : "runtime-opt-in",
       harness,
       mode: idleMode ? "idle" : "prompt",
       launchRequestMs,

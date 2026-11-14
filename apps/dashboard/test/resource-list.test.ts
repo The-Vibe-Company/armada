@@ -33,8 +33,8 @@ describe("the Build lists", () => {
   });
 
   test("the filter keeps an item holding every word of the query, in any case and order", () => {
-    expect(matchesQuery("shared-golden Boat acme/web acme/api", "API boat")).toBe(true);
-    expect(matchesQuery("shared-golden Boat acme/web", "modal")).toBe(false);
+    expect(matchesQuery("shared-snapshot Boat acme/web acme/api", "API boat")).toBe(true);
+    expect(matchesQuery("shared-snapshot Boat acme/web", "modal")).toBe(false);
     expect(matchesQuery("anything", "   ")).toBe(true);
   });
 });
@@ -70,9 +70,13 @@ describe("an environment's row", () => {
       provider: "boat",
       readiness: unsnapshotted,
       providerMissing: false,
-      buildBlocker: "Only an org admin rebuilds an org golden.",
+      buildBlocker: "Only an org admin rebuilds an org snapshot.",
     });
-    expect(other).toMatchObject({ bucket: "rest", action: null, detail: "Only an org admin rebuilds an org golden." });
+    expect(other).toMatchObject({
+      bucket: "rest",
+      action: null,
+      detail: "Only an org admin rebuilds an org snapshot.",
+    });
   });
 
   test("a provider the org has not connected is the fix, before the snapshot it cannot build yet", () => {

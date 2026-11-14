@@ -84,44 +84,18 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
     async request<T>(path: string, init: RequestInit = {}): Promise<T> {
       const url = apiUrl(origin, path);
       const signal = init.signal ?? AbortSignal.timeout(timeoutMs);
-      let response: Response;
-      try {
-        response = await io.fetch(url, {
-          ...init,
-          // Bun has an independent fetch idle deadline. The explicit AbortSignal
-          // owns this request's budget, including long synchronous golden builds.
-          ...{ timeout: false },
-          headers: {
-            ...headers(init.headers),
-            authorization: `Bearer ${token}`,
-            accept: "application/json",
-          },
-          redirect: "error",
-          signal,
-        });
-      } catch (error) {
-        throw new AuthError(
-          path === "/api/v1/templates/launch"
-            ? TEMPLATE_LAUNCH_UNKNOWN
-            : signal.aborted || (error instanceof Error && error.name === "TimeoutError")
-              ? `The server did not answer in time; the operation may have been accepted.${
-                  path === "/api/v1/sandbox/launch" ? " Run armada list to check before retrying." : ""
-                }`
-              : path === "/api/v1/sandbox/launch"
-                ? "Launch outcome unknown. Run armada list to check before retrying."
-                : "Armada could not reach the server.",
-          "unavailable",
-        );
-      }
-
-      if (response.status === 401 && !environmentToken && saved) {
-        saved = await refresh(origin, io, saved.refreshToken, saved, timeoutMs, init.signal ?? undefined);
-        token = saved.accessToken;
+      const attempt = async (): Promise<Response> => {
         try {
-          response = await io.fetch(url, {
+          return await io.fetch(url, {
             ...init,
+            // Bun has an independent fetch idle deadline. The explicit AbortSignal
+            // owns this request's budget, including long synchronous golden builds.
             ...{ timeout: false },
-            headers: { ...headers(init.headers), authorization: `Bearer ${token}`, accept: "application/json" },
+            headers: {
+              ...headers(init.headers),
+              authorization: `Bearer ${token}`,
+              accept: "application/json",
+            },
             redirect: "error",
             signal,
           });
@@ -139,6 +113,13 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
             "unavailable",
           );
         }
+      };
+      let response = await attempt();
+
+      if (response.status === 401 && !environmentToken && saved) {
+        saved = await refresh(origin, io, saved.refreshToken, saved, timeoutMs, init.signal ?? undefined);
+        token = saved.accessToken;
+        response = await attempt();
       }
       const payload: unknown = await response.json().catch(() => null);
       if (
@@ -152,6 +133,12 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
         payload && typeof payload === "object" && "error" in payload
           ? (payload as { error?: { code?: string } }).error?.code
           : undefined;
+      if (response.status === 409 && failureCode === "host_full")
+        throw new ArmadaApiError(
+          "host_full",
+          409,
+          "The selected Docker host is full. Stop a sandbox on that host or raise its limit before retrying.",
+        );
       // Older control servers used not_found for both resource misses and route misses.
       // Compare only the fixed legacy sentinel; never echo untrusted response text.
       const legacyUnknownRoute =
@@ -249,7 +236,7 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
           401: "Run armada login or update ARMADA_TOKEN.",
           403: "Template access denied. Current membership is required; only admins can mutate organization templates.",
           404: "Template or revision not found or not visible.",
-          409: "Template reference changed or is unavailable. Check its golden, connections, variable and model-account versions before retrying.",
+          409: "Template reference changed or is unavailable. Check its snapshot, connections, variable and model-account versions before retrying.",
         };
         const message = apiMessage(payload, "");
         throw new ArmadaApiError(
@@ -283,6 +270,18 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
         );
       }
       if (/^\/api\/v1\/sandbox\/launch(?:-sized-v1|-access-v1)?$/.test(path)) {
+        if (response.status === 400 && failureCode === "no_credentials")
+          throw new ArmadaApiError(
+            "no_credentials",
+            400,
+            apiMessage(
+              payload,
+              "A configured repository needs a GitHub connection with read access. Run armada github connect, then retry.",
+            ),
+            undefined,
+            undefined,
+            2,
+          );
         if (response.status === 429 && failureCode === "rate_limited")
           throw new ArmadaApiError(
             "rate_limited",

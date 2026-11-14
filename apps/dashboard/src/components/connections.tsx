@@ -532,7 +532,7 @@ function StdioFields({
       <input type="hidden" name="kind" value="stdio" />
       <p className="rounded-md border bg-muted/40 px-3 py-2 text-xs text-pretty text-muted-foreground">
         <span className="font-medium text-foreground">Runs in each sandbox launched with it</span>, never on Armada. Pin
-        an exact package version, as in the example below; other programs must already be in the golden. No secret is
+        an exact package version, as in the example below; other programs must already be in the snapshot. No secret is
         passed in, and everyone who can use it sees its command.
       </p>
       <div className={cn(lead && "grid gap-4 sm:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]")}>

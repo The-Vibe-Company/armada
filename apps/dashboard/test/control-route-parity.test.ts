@@ -10,8 +10,8 @@ const cli = resolve(import.meta.dir, "../../../packages/cli/src");
 const id = "11111111-1111-4111-8111-111111111111";
 
 // Independent architecture contract: inventory the CLI, never the proxy's allow-list.
-// Literal/flow-union routes are static; operations' mutable route dispatch is exercised
-// with its source-declared commands/actions. Unknown route expressions fail closed.
+// Literal/flow-union routes are static; sandbox and MCP mutable dispatch is exercised
+// with the CLI's source-declared commands/actions. Unknown route expressions fail closed.
 // For a new routing pattern, extend strings() with finite CLI-derived values, or
 // add a real-dispatch probe below for mutable routing. Never copy the proxy list;
 // mutation-check that removing the new route makes this guard fail.
@@ -25,6 +25,8 @@ test("CLI user POST routes reach the dashboard proxy while machine-token routes 
     strict: true,
     // Route inference needs imported CLI types, not every installed ambient package.
     types: [],
+    // Collection/utility types drive route inference; DOM declarations do not.
+    lib: ["lib.es2023.d.ts"],
   });
   const checker = program.getTypeChecker();
   const sources = program.getSourceFiles().filter((source) => files.includes(source.fileName));
@@ -146,8 +148,13 @@ test("CLI user POST routes reach the dashboard proxy while machine-token routes 
       ts.isFunctionDeclaration(declaration) &&
       declaration.getSourceFile().fileName === resolve(cli, "control.ts");
     if (control) {
-      // Mutable operation routing is covered below using the real dispatcher.
-      if (owner(call)?.name?.text === "operation" && call.arguments[1]?.getText() === "route") continue;
+      // Both mutable command owners are exercised below through the real operation entry point.
+      const mutableOwner = owner(call);
+      const realDispatch =
+        (mutableOwner?.name?.text === "operation" && call.getSourceFile().fileName === resolve(cli, "operations.ts")) ||
+        (mutableOwner?.name?.text === "mcpCommand" &&
+          call.getSourceFile().fileName === resolve(cli, "mcp-commands.ts"));
+      if (realDispatch && call.arguments[1]?.getText() === "route") continue;
       for (const route of strings(call.arguments[1] ?? fail(call))) routes.add(`/api/v1/${route}`);
       continue;
     }
@@ -235,7 +242,14 @@ test("CLI user POST routes reach the dashboard proxy while machine-token routes 
         call.expression.text === "operation",
     );
     const commands = strings(operationCall?.arguments[0] ?? fail(sources[0] as ts.Node));
-    const operationsSource = sources.find((source) => source.fileName === resolve(cli, "operations.ts"));
+    const mcpCall = calls.find(
+      (call) =>
+        owner(call)?.name?.text === "operation" &&
+        checker.getResolvedSignature(call)?.declaration?.getSourceFile().fileName === resolve(cli, "mcp-commands.ts"),
+    );
+    const mcpSource = checker
+      .getResolvedSignature(mcpCall ?? fail(sources[0] as ts.Node))
+      ?.declaration?.getSourceFile();
     let actions: string[] | undefined;
     const findActions = (node: ts.Node) => {
       if (
@@ -247,7 +261,8 @@ test("CLI user POST routes reach the dashboard proxy while machine-token routes 
         actions = node.initializer.elements.flatMap((element) => strings(element));
       ts.forEachChild(node, findActions);
     };
-    findActions(operationsSource ?? fail(sources[0] as ts.Node));
+    findActions(mcpSource ?? fail(sources[0] as ts.Node));
+    expect(commands).toContain("mcp");
     expect(actions?.length).toBeGreaterThan(0);
     for (const command of commands) {
       if (command === "rm") continue; // DELETE is a separate contract.

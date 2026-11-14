@@ -548,9 +548,9 @@ still revoke it.
 
 Matching schema/server/runtime deployment must include
 `20261114090000_runtime_idle_publication.sql`. Native Modal behavior is unchanged.
-The template extension below adds promptless pinned claims. Stop/wake of a sandbox
-that has never had a conversation, default rollout and authorized tunnel deletion
-remain separate work. Live acceptance requires a coordinator receipt, not these tests.
+The template and empty-checkpoint extensions below add those admission/lifecycle
+cases. Default rollout and authorized tunnel deletion remain separate work.
+Live acceptance requires a coordinator receipt, not these tests.
 
 
 ## Promptless pinned templates
@@ -586,3 +586,106 @@ Matching normal server/runtime deployment and the existing
 `20261114090000_runtime_idle_publication.sql` prerequisite are required. Live
 acceptance remains coordinator-owned; this does not enable default cutover or
 tunnel deletion.
+
+
+## Stop and wake before the first conversation
+
+`--empty-resume` checks a retained empty sandbox, not recall of an already-started
+conversation. It implies `--idle` and refuses `--resume` before allocation so the
+check keeps exactly one allocation and one retained activation:
+
+```sh
+ARMADA_RUNTIME_SMOKE=one_real_modal_launch bun scripts/check-modal-runtime.ts --empty-resume
+```
+
+Existing harness/account/template flags can be combined, for example
+`--empty-resume --variables --usage --skills --mcp --github` with an eligible
+published template and existing authorized inputs. Preflight requires
+`emptyResumeVersion:1` and the applicable existing idle/template capabilities.
+
+The check verifies an empty-ready receipt/status/archive, writes a unique
+non-secret file witness through ordinary exec, checkpoints and confirms retained
+stop. Stopped checkpoint/archive reads must not activate compute or reveal an
+inference turn. It then sends one first instruction WITHOUT a conversation ID.
+The receipt must acknowledge a fresh epoch and `sourceCheckpoint.empty:true`
+with the exact old epoch/watermark. A second exec reads/removes the retained file
+witness; the answer and subsequent same-conversation recall are still required
+before the final checkpoint/stop. Unknown stop or first-send outcomes are never
+retried. The witness adds no model turn or credential/configuration input.
+
+The server durably records the empty-restore decision and a stable server-owned
+first conversation before activation. Only a synchronized, sealed journal with
+NO prompts or native session mapping may attest `conversationId:null`; an empty
+or rolled-back disk is not sufficient. That attestation deliberately skips native
+session-load because there is no native session. Existing nonempty restores still
+require their native session proof. A fresh server reconciles the same operation
+and never reactivates/re-enrols or repeats accepted inference. Configured GitHub
+and MCP access are reauthorized before resumed inference on both shared placements.
+The existing GitHub resume smoke accepts only an unconfigured broker or a fresh
+current-epoch revision distinct from the old one before its explicit refresh;
+automatic reauthorization is not mistaken for surviving stale credentials.
+
+Matching schema/server/runtime must include
+`20261114150137_runtime_empty_checkpoint_resume.sql` (private server-only mode;
+existing operations default to nonempty). No default flip, native fallback, new
+credentials or manual artifact publication. Live acceptance remains coordinator
+owned; secrets/multi-conversation/default readiness and the production-day gate
+still precede authorized tunnel deletion.
+
+
+## Coordinator-controlled ordinary launch default (not activated by this PR)
+
+The temporary server selector `ARMADA_MODAL_AGENT_PATH` accepts only `native`
+(default/rollback) or `runtime`. Runtime default requires the existing explicit
+`ARMADA_MODAL_DIALOUT=1` and matching `ARMADA_MODAL_RUNTIME_MANIFEST`; invalid or
+incomplete configuration fails startup, never silently chooses native. This PR
+does not set any deployment variable. Do not enable it before the readiness
+matrix and unsupported-flow decisions below are accepted.
+
+The shared core admission policy selects the compute-only Modal host, private
+model-account resolver, common MCP lifecycle and enrolled startup BEFORE fork.
+Ordinary HTTP `sandbox/launch`, MCP `launch`/sized launch, pinned templates and
+owner-scoped routines all use that policy. Request JSON cannot enable/bypass it.
+Selected provider identity must still equal the golden provider; runtime failure,
+missing account binding and unsupported raw-secret/stdio/helper flows never
+fall back to native allocation or inference.
+
+Fresh launch receipts expose `runtime.kind/epoch` and the actual persisted Modal
+`runtimeTransport:dialout`, including ordinary MCP and template receipts. Existing
+completed ordinary/native request receipts remain historical and unchanged after
+a default switch; replay is not a new launch. Existing sandboxes keep their frozen
+transport, so changing the default does not reroute active/stopped native rows.
+
+After coordinator-controlled staging activation, add `--ordinary` to the same
+single-allocation smoke:
+
+```sh
+ARMADA_RUNTIME_SMOKE=one_real_modal_launch bun scripts/check-modal-runtime.ts --ordinary --empty-resume --variables --usage --skills --mcp --github
+```
+
+The script preflights `modalRuntime.defaultPath:runtime`, uses ONLY ordinary routes
+(`sandbox/launch` or `templates/launch`) and omits explicit runtime version/transport
+selection. It still requires actual enrolled/immutable-routing receipts and all
+existing archive/session/epoch/checkpoint/tool/cost/disk proofs. New feature inputs,
+credentials, configuration mutations or artifact publication are not needed.
+Use matching account/harness flags. Unknown allocation or send is not retried.
+
+Rollback sets ONLY `ARMADA_MODAL_AGENT_PATH=native` for future launches. Keep the
+enrolled opt-in, artifacts and resume/control services available for existing
+dial-out rows; keep native control for pre-cutover rows. No resource conversion,
+row rewrite, deployment, default activation or tunnel deletion is performed here.
+
+Before any production cutover: coordinator must verify full ordinary AND explicit
+paths across supported harness/account variants, templates/routines, busy-turn
+controls, GitHub/MCP/skills/readables, idle/empty stop-wake, archives, usage/cost and
+matched cold/warm/resume timings. Raw application-secret templates remain explicitly
+refused; pinned stdio MCP and helper/parallel-conversation compatibility require
+implementation or an explicit owner scope decision before universal default/tunnel
+removal. Fail-closed refusal is not parity acceptance. Staging checks remain Modal
++ owner Docker; Boat production checks are coordinator-only/on demand.
+
+Only after recorded staging approval may the coordinator enable production default,
+record exact SHA/config/time and one full successful production day, then explicitly
+authorize a separate tunnel deletion PR. Preserve machine management, provider
+binding, snapshots and bootstrap exec, and retire/handle old native consumers before
+removing their control/listener/grant/event/distribution paths.

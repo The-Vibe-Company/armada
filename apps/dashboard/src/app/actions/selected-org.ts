@@ -29,8 +29,8 @@ export async function switchOrganization(_previous: ActionResult | null, data: F
       ? CLOUD_PROVIDERS_PATH
       : section === "orgs"
         ? `/orgs/${id}`
-        : section === "environments" || section === "goldens"
-          ? "/environments"
+        : section === "snapshots" || section === "environments" || section === "goldens"
+          ? "/snapshots"
           : section === "harness" || section === "credentials"
             ? HARNESS_PATH
             : section === "tools" || section === "connections"

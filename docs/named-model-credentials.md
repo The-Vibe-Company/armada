@@ -35,7 +35,7 @@ harness default, sole compatible personal row, org default, sole compatible org
 row. Ambiguity, expired/revoked/deleted selections and incompatible explicit IDs
 fail, never silently change billing. Removed defaults remain blocking tombstones
 until another default is chosen. Model credentials are injected only at launch,
-never into goldens.
+never into snapshots.
 
 Launch persists `sandboxes.credential_id` and `credential_version` (TypeScript
 `credentialId` and `credentialVersion`). `HarnessCredentials.binding` carries the

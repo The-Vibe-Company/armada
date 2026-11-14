@@ -71,7 +71,7 @@ test.each([
   } else {
     expect(code).toBe(1);
     expect(calls).toHaveLength(1);
-    expect(errors).toContain("golden list --json");
+    expect(errors).toContain("snapshot list --json");
     expect(errors).toContain("Nothing was removed");
   }
 });

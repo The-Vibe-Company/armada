@@ -49,7 +49,7 @@ export async function buildDockerSnapshot(
   try {
     config = parseGoldenConfig(JSON.parse(formString(data, "config")));
   } catch {
-    return createFail("Choose a golden JSON file with repositories and init commands, without credentials.");
+    return createFail("Choose a snapshot JSON file with repositories and init commands, without credentials.");
   }
   const viewer = await requireViewer(),
     serverUrl = mcpUrl();
@@ -65,7 +65,7 @@ export async function buildDockerSnapshot(
         )
       ).snapshot,
     );
-    revalidatePath("/environments");
+    revalidatePath("/snapshots");
     return { ok: true, message: "Snapshot build started.", snapshotId: row.id };
   } catch (error) {
     return createFail(
@@ -187,7 +187,7 @@ export async function rebuildDockerSnapshot(
     );
     if (row.id !== requestId)
       return createFail("Rebuild outcome unknown. Retry this same rebuild; do not start another request.");
-    revalidatePath("/environments");
+    revalidatePath("/snapshots");
     return { ok: true, message: "Snapshot rebuild started.", snapshotId: row.id };
   } catch (error) {
     return createFail(
