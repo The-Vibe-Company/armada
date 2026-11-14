@@ -17,6 +17,8 @@
   <a href="#documentation">Docs</a>
 </p>
 
+**Have your own Linux machine?** [Run agents on your Docker host](docs/own-machine-quickstart.md) without hosting the Armada server (requires server opt-in).
+
 **Armada gives every coding task its own machine.** Save your repositories and setup once as a *snapshot*. Launch Claude Code or Codex into a fresh Boat or Modal sandbox with the model and reasoning effort you choose. Follow every event, redirect the agent mid-turn, stop the machine and pick the same conversation back up later, from the web, the terminal or any MCP client.
 
 ```sh
@@ -44,6 +46,8 @@ Open source, MIT. Sandboxes run on the Boat or Modal account you connect, and ag
   </picture>
 </p>
 
+For your own compute, [register a Docker host and choose fresh launch or a host-local snapshot](docs/own-machine-quickstart.md) instead of the cloud path below.
+
 1. **Snapshot**: build once from your repositories (`armada snapshot create`).
 2. **Launch**: pick Claude Code or Codex, the model, the effort and the provider (`armada launch`).
 3. **Sandbox**: a fresh, isolated fork where `git` and `gh` act as you.
@@ -65,6 +69,8 @@ The package ships a prebuilt binary for Linux and macOS, x64 and arm64, so it ne
 The CLI only talks to the Armada API. It keeps your Armada session (or reads `ARMADA_TOKEN`) and never holds provider, database or Supabase credentials.
 
 ## Quickstart
+
+For self-hosted compute instead of Boat/Modal, follow the [own-machine quickstart](docs/own-machine-quickstart.md): register your Linux Docker host, launch fresh, or build a host-local snapshot.
 
 Installing is the first step; an agent also needs a sandbox provider, model credentials, GitHub access and a ready snapshot. Each step below also has a page in the [dashboard](https://armada.thevibecompany.co), which walks a new organization through the same setup.
 

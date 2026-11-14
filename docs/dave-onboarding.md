@@ -2,6 +2,8 @@
 
 This guide takes a new user from nothing to a coding agent running on Boat or Modal through the production Armada server, from the `armada` CLI or from an MCP client (Claude Code, Codex, Cursor, a coordinator).
 
+**Using your own Linux machine?** Follow the [own-machine quickstart](own-machine-quickstart.md) instead of the Boat/Modal provider steps below. It covers prerequisites, registration, first launch and an optional two-repository snapshot. Self-hosted compute does not mean self-hosting Armada; availability depends on your server operator.
+
 | What | Value |
 | --- | --- |
 | CLI default and dashboard | `https://armada.thevibecompany.co` |
