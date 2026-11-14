@@ -45,6 +45,34 @@ Remove a member as an organization admin after Armada login.
 Use --org to override a saved organization selection.
 Example: armada org members remove teammate@example.com --org my-team
 `,
+  "org invitations create": `Usage: armada org invitations create <email> [--role admin|member] [--org <name|UUID>] [--json]
+Invite someone as an organization admin after Armada login; the default role is member.
+Select an organization with --org or armada org use.
+Sent means the email provider accepted delivery, not confirmed inbox receipt.
+Example: armada org invitations create teammate@example.com --org my-team
+`,
+  "org invitations list": `Usage: armada org invitations list [--org <name|UUID>] [--json]
+List invitation metadata as an organization admin after Armada login.
+Select an organization with --org or armada org use; output includes IDs, not tokens.
+Example: armada org invitations list --org my-team --json
+`,
+  "org invitations resend": `Usage: armada org invitations resend <id> [--org <name|UUID>] [--json]
+Resend an invitation as an organization admin after Armada login.
+Use an invitation ID from org invitations list, and select --org or armada org use.
+Sent means email-provider acceptance, not confirmed inbox receipt.
+Example: armada org invitations resend INVITATION_UUID --org my-team
+`,
+  "org invitations revoke": `Usage: armada org invitations revoke <id> [--org <name|UUID>] [--json]
+Revoke an invitation as an organization admin after Armada login.
+Use an invitation ID from org invitations list, and select --org or armada org use.
+Example: armada org invitations revoke INVITATION_UUID --org my-team
+`,
+  "org invitations accept": `Usage: armada org invitations accept [--file <path>] [--json]
+Accept an invitation after Armada login using a token from stdin or a private file.
+Never put the token in command arguments. --org is not accepted by this command.
+The server validates the invitation and signed-in identity; the token is not printed.
+Example: armada org invitations accept --file /private/invitation-token
+`,
   "org setup": `Usage: armada org setup [--org <name>]
 Show organization provider setup status. Sign in before running the operation.
 Example: armada org setup --org my-team
