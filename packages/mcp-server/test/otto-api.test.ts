@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { createOttoApi } from "../src/otto/api.ts";
+import { cacheOttoRepositoryAccess, createOttoApi } from "../src/otto/api.ts";
 
 test("Otto API rejects unauthenticated and out-of-scope reads before querying SQL", async () => {
   let queries = 0;
@@ -60,6 +60,7 @@ test("Otto selects only bound repositories, binds fact cursors and denies remove
   const scopes = ["example/web", "example/skills"].map((repository) => ({ orgId: "org", repository }));
   const caller = { userId: "member", orgs: [{ orgId: "org", role: "member" as const }], via: "service" as const };
   let allowed = true;
+  let clock = 0;
   const queried: unknown[][] = [];
   const api = createOttoApi(
     {
@@ -83,7 +84,7 @@ test("Otto selects only bound repositories, binds fact cursors and denies remove
     },
     scopes,
     async () => ({ ok: true, caller }),
-    undefined,
+    () => new Date(clock),
     undefined,
     async () => allowed,
   );
@@ -101,6 +102,39 @@ test("Otto selects only bound repositories, binds fact cursors and denies remove
   expect((await get("facts", "example/skills"))?.status).toBe(200);
   expect(queried.map((params) => params[1])).toEqual(["example/web", "example/skills"]);
   allowed = false;
+  clock += 60_000;
   expect((await get("facts"))?.status).toBe(503);
   expect(queried).toHaveLength(2);
+});
+
+test("repository access decisions coalesce concurrent views, isolate users/repos, expire and retry failures", async () => {
+  const caller = { userId: "member", orgs: [], via: "service" as const };
+  let clock = 0,
+    calls = 0,
+    allowed = true,
+    fail = false;
+  const check = cacheOttoRepositoryAccess(
+    async () => {
+      calls++;
+      if (fail) throw Error("unavailable");
+      return allowed;
+    },
+    () => clock,
+  );
+  expect(await Promise.all(Array.from({ length: 5 }, () => check(caller, "example/web")))).toEqual(Array(5).fill(true));
+  expect(calls).toBe(1);
+  await check({ ...caller, userId: "other" }, "example/web");
+  await check(caller, "example/skills");
+  expect(calls).toBe(3);
+  allowed = false;
+  clock = 59_999;
+  expect(await check(caller, "example/web")).toBe(true);
+  clock = 60_000;
+  expect(await check(caller, "example/web")).toBe(false);
+  clock += 60_000;
+  fail = true;
+  await expect(check(caller, "example/web")).rejects.toThrow("unavailable");
+  fail = false;
+  expect(await check(caller, "example/web")).toBe(false);
+  expect(calls).toBe(6);
 });

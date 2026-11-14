@@ -48,7 +48,9 @@ Authenticated GET endpoints are `summary`, `tasks`, `resources`, `orphans`, `fac
 under `/api/v1/otto/`. Pass `org_id=<bound UUID>` and optionally the exact bound
 `repository` (required when multiple are configured). The authenticated
 `repositories` endpoint lists the explicit bindings for the selected organization;
-actual evidence reads recheck connected GitHub access. Use `limit=1..100` and the opaque `nextCursor` returned by each view.
+actual evidence reads check connected GitHub access, coalesced per user/repository
+for 60 seconds (including denials). Revocation therefore becomes visible after
+at most that decision TTL; membership is still checked on every request. Use `limit=1..100` and the opaque `nextCursor` returned by each view.
 Every page carries `items`, `observedAt`, `completeness`, `nextCursor`; responses
 are not cached. Resource/task projections are server-owned and disposable.
 The facts cursor is an observation-time/UUID pair. No write API is exposed.
@@ -181,7 +183,8 @@ Coordinator staging acceptance (not performed by this worker):
    that repository on GitHub. Select a PR then refresh; selection must remain
    within the same repository. Follow list pagination through the API using
    the same `repository` parameter; no page may contain the other repo's facts.
-2. Revoke the member's access to one repository and refresh its view: it must
+2. Revoke the member's access to one repository, allow the 60-second access
+   decision cache to expire, and refresh its view: it must
    be unavailable, not a complete empty inventory. Select the other repository:
    it must remain usable. Restore access, then interrupt one reconciliation
    traversal (e.g. deny a later GitHub page); its listing must be partial/unknown,

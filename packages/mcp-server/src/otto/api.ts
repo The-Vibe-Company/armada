@@ -7,6 +7,31 @@ import { orphanDays } from "./orphan-days.ts";
 import { readOttoModel } from "./read-model.ts";
 import { readOttoSnapshot } from "./snapshot.ts";
 
+/** Coalesce the parallel observation views; retain decisions, never GitHub credentials. */
+export function cacheOttoRepositoryAccess(
+  check: (caller: Caller, repository: string) => Promise<boolean>,
+  now = Date.now,
+) {
+  const decisions = new Map<string, { expiresAt: number; result: Promise<boolean> }>();
+  return (caller: Caller, repository: string): Promise<boolean> => {
+    const key = JSON.stringify([caller.userId, repository]);
+    const cached = decisions.get(key);
+    if (cached && cached.expiresAt > now()) return cached.result;
+    // Bound memory even when many users visit during one TTL.
+    for (const [key, entry] of decisions) if (entry.expiresAt <= now()) decisions.delete(key);
+    if (decisions.size >= 1000) decisions.delete(decisions.keys().next().value!);
+    const entry = { expiresAt: now() + 60_000, result: Promise.resolve(false) };
+    entry.result = Promise.resolve()
+      .then(() => check(caller, repository))
+      .catch((error) => {
+        if (decisions.get(key) === entry) decisions.delete(key);
+        throw error;
+      });
+    decisions.set(key, entry);
+    return entry.result;
+  };
+}
+
 /** Auth is deliberately per request; service role reads never bypass caller membership. */
 export function createOttoApi(
   sql: Sql,
@@ -16,6 +41,9 @@ export function createOttoApi(
   encryptionKey?: string,
   canReadRepository?: (caller: Caller, repository: string) => Promise<boolean>,
 ): Route {
+  const checkRepositoryAccess = canReadRepository
+    ? cacheOttoRepositoryAccess(canReadRepository, () => now().getTime())
+    : undefined;
   return async (request) => {
     const url = new URL(request.url);
     const view = url.pathname.match(/^\/api\/v1\/otto\/(repositories|summary|tasks|resources|orphans|facts)$/)?.[1];
@@ -57,7 +85,7 @@ export function createOttoApi(
           ? authorized[0]
           : undefined;
       if (!scope) return reply({ error: "not_found" }, 404);
-      if (canReadRepository && !(await canReadRepository(auth.caller, scope.repository)))
+      if (checkRepositoryAccess && !(await checkRepositoryAccess(auth.caller, scope.repository)))
         return reply({ error: "repository_unavailable" }, 503);
       const limit = Number(url.searchParams.get("limit") ?? 50);
       if (!Number.isInteger(limit) || limit < 1 || limit > 100) return reply({ error: "invalid_limit" }, 400);

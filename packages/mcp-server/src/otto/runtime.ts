@@ -1,3 +1,4 @@
+import { createHmac, timingSafeEqual } from "node:crypto";
 import { readBoundedText } from "@armada/auth";
 import type { Sql } from "@armada/core/server";
 import type { Route } from "../http.ts";
@@ -109,10 +110,20 @@ export function createOttoRuntime(sql: Sql, env: Record<string, string | undefin
     route: (async (request) => {
       if (new URL(request.url).pathname !== "/api/v1/otto/github/webhook") return null;
       if (request.method !== "POST") return new Response(null, { status: 405 });
+      const secret = env.ARMADA_OTTO_WEBHOOK_SECRET;
+      if (!secret) return Response.json({ error: "webhook_not_configured" }, { status: 503 });
+      const signature = request.headers.get("x-hub-signature-256") ?? "";
+      if (!/^sha256=[a-f0-9]{64}$/.test(signature)) return new Response(null, { status: 401 });
       let raw: string;
-      let repository: unknown;
       try {
         raw = await readBoundedText(request, 1024 * 1024);
+      } catch {
+        return new Response(null, { status: 413 });
+      }
+      const expected = `sha256=${createHmac("sha256", secret).update(raw).digest("hex")}`;
+      if (!timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return new Response(null, { status: 401 });
+      let repository: unknown;
+      try {
         repository = JSON.parse(raw)?.repository?.full_name;
       } catch {
         return new Response(null, { status: 400 });
