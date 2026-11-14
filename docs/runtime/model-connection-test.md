@@ -12,8 +12,10 @@ An already bootstrapped Modal runtime accepts this authenticated protocol-1 RPC:
 ```
 
 Only the selected API-key connection from the current private bootstrap is used.
-The RPC accepts no URL, key, arbitrary headers or prompt. Standard OpenAI and Anthropic API keys use the vendor default address when no
-custom endpoint is bound. Subscription credentials are not checked. Builders,
+The RPC accepts no URL, key, arbitrary headers or prompt. Standard OpenAI and
+Anthropic API keys use the vendor default address when no custom endpoint is
+bound. Custom OpenCode connections are supported on Modal; subscription and
+OpenCode plan-key credentials are not checked. Builders,
 checkpointed/busy runners and unsupported/unconfigured harnesses refuse it.
 The operation joins the runtime's in-flight command set so checkpoint waits
 for it. It creates no prompt, journal event or replay receipt; each invocation
@@ -22,7 +24,10 @@ is fresh and may incur a tiny provider charge. No automatic retry is made.
 Codex sends one Responses request (16-token output cap, no storage); Claude
 sends one Messages request (one-token cap) with its configured bearer or
 x-api-key mechanism. A valid incomplete Responses result counts as connectivity,
-not a completed answer. This does not prove harness tool/streaming compatibility.
+not a completed answer. Custom OpenCode connections use their declared protocol:
+chat completions, Responses or Messages, with the same output caps. The runtime
+removes the `armada/` model prefix only against the bound declared model list.
+This does not prove harness tool/streaming compatibility.
 The total deadline is 15 seconds, response body is capped at 16 KiB, redirects
 are forbidden, and caller cancellation aborts the request. JSON response shape
 is checked; an HTML 200 is not success.
@@ -100,10 +105,11 @@ must fail closed. No model key leaves the existing private bootstrap. The Models
 
 ## Models page
 
-Each active Claude Code or Codex API-key account on Models offers **Test connection**,
-for both standard vendor keys and custom endpoints. Subscription and OpenCode
-checks are not supported. Open the dialog, choose an already-running Modal sandbox
-bound to this account and enter the deployment/model, then **Send tiny check**. Launch an idle
+Each active Claude Code or Codex API-key account and each custom OpenCode account
+with declared models on Models offers **Test connection**, for both standard
+vendor keys and custom endpoints. Subscription and OpenCode plan-key checks are
+not supported. Open the dialog, choose an already-running Modal sandbox bound to
+this account and enter the deployment/model, then **Send tiny check**. Launch an idle
 sandbox with this account first if needed; the action never creates/resumes one.
 The dashboard checks user-JWT sandbox metadata for the exact selected account,
 version, owner and organization before the API call. The API independently

@@ -39,7 +39,28 @@ The same launch is `POST /api/v1/sandbox/launch` with `harness:"opencode"`,
 `provider:"modal"`, golden/org, `credentialId`, `model:"armada/deepseek-flash"`
 and `reasoningEffort:"default"`. The server pins the account ID/revision.
 Dashboard/iOS harness choices derive from the shared/generated catalog; account
-creation in the dashboard supports a raw key, while custom endpoints use the CLI.
+creation in the dashboard supports provider presets, declared models and raw plan keys.
+
+## Test a custom connection
+
+On Account → Models, a custom OpenCode connection with declared models offers
+**Test connection**. Choose an idle, already-running Modal sandbox bound to the
+current account revision and its declared model. The runtime strips the fixed
+`armada/` model prefix and sends one bounded request using the connection's
+configured protocol: OpenAI-compatible chat completions, OpenAI/Azure Responses,
+or Anthropic Messages. No request runs directly from Armada's server; no key,
+address or arbitrary prompt is accepted by the Test action. The model must be
+in the bound connection's declared list. This proves connectivity, not a full
+agent turn, tool use or streaming.
+
+OpenCode plan-key checks remain unavailable: the native CLI owns its plan
+routing/session headers. OpenCode still runs only on Modal. No sandbox is
+started or resumed for a check. Coordinator staging: launch an idle Modal
+sandbox with a saved DeepSeek custom connection, then send a tiny check from
+Models with its declared model. Expect safe success/authentication/model-error
+feedback, no raw provider text or secrets, and no new prompt/conversation.
+Requires the updated server/dashboard/runtime; existing runtimes may reject the
+new OpenCode test operation. No new migration or setting is required.
 
 ## Runtime/artifact and deployment prerequisites (coordinator only)
 

@@ -62,7 +62,7 @@ export interface RunnerExecutionOptions {
   restoredFrom?: { epoch: string; watermark: number; conversationId: string | null };
   /** Only runtime bootstrap supplies this callback; RPC cannot supply credentials or destinations. */
   testModelConnection?: (
-    harness: "claude" | "codex",
+    harness: "claude" | "codex" | "opencode",
     model: string,
     signal: AbortSignal,
   ) => Promise<ModelConnectionTestResult>;
@@ -114,7 +114,7 @@ export interface IngestClient {
 }
 export type RunnerRequest = { version: 1; requestId: string; sandboxId: string } & (
   | { op: "health" }
-  | { op: "testModelConnection"; harness: "claude" | "codex"; model: string }
+  | { op: "testModelConnection"; harness: "claude" | "codex" | "opencode"; model: string }
   | { op: "observeOrchestrator"; conversationId?: string }
   | {
       op: "resumeNativeSession";
