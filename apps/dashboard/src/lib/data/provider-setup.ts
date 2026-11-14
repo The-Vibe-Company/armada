@@ -33,5 +33,5 @@ export async function newWorkBlocker(org: string, provider: SandboxProviderId): 
     return `The organization's sandbox providers could not be checked. ${setup.message}`;
   if (isConfigured(setup.status, provider)) return null;
   const label = SETUP_PROVIDER_INFO[provider].label;
-  return `${label} is not connected for this organization. An admin connects it in Settings.`;
+  return `${label} is not connected for this organization. An admin connects it in Providers → Overview.`;
 }
