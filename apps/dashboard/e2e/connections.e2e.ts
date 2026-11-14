@@ -298,6 +298,7 @@ test("a bearer token is write-only: refused tokens are reported, and the field n
     ["mobile", 390],
   ] as const) {
     await page.setViewportSize({ width, height: 900 });
+    await dialog.getByRole("alert").scrollIntoViewIfNeeded();
     await page.screenshot({ path: `test-results/tool-action-after-${name}.png`, fullPage: true });
   }
   await expect(dialog.getByLabel("Bearer token")).toHaveValue("");
