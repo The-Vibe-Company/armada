@@ -29,7 +29,6 @@ export function parsePrivateSkillReceipt(
 }
 function parseReceipt(output: string, skill: string, harness: string, workspaceId?: string): SkillReceipt {
   const [reference, version] = skill.split("@");
-  let receipt: SkillReceipt;
   const lock = JSON.parse(output);
   const [org, slug] = reference!.split("/");
   const workspace = lock.workspaces?.[workspaceId ?? `catalog:${org}`];
@@ -51,7 +50,7 @@ function parseReceipt(output: string, skill: string, harness: string, workspaceI
     )
   )
     throw new Error("invalid_receipt");
-  receipt = {
+  const receipt: SkillReceipt = {
     reference: skill,
     version: version!,
     skillId: entry.skillId,

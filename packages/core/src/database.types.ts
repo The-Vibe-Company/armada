@@ -2979,6 +2979,51 @@ export type Database = {
           },
         ];
       };
+      ordinary_launch_receipts: {
+        Row: {
+          id: string;
+          org_id: string;
+          owner_id: string;
+          request_key: string;
+          fingerprint: string;
+          response: Json | null;
+          created_at: string;
+        };
+        Insert: {
+          id: string;
+          org_id: string;
+          owner_id: string;
+          request_key: string;
+          fingerprint: string;
+          response?: Json | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          org_id?: string;
+          owner_id?: string;
+          request_key?: string;
+          fingerprint?: string;
+          response?: Json | null;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "ordinary_launch_receipts_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "ordinary_launch_receipts_owner_id_fkey";
+            columns: ["owner_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       org_skill_defaults: {
         Row: {
           org_id: string;
@@ -4473,6 +4518,7 @@ export type OrchestratorRuntimeCreateKeyRow = Database["public"]["Tables"]["orch
 export type OrchestratorRuntimeEventRow = Database["public"]["Tables"]["orchestrator_runtime_events"]["Row"];
 export type OrchestratorWait = Database["public"]["Tables"]["orchestrator_waits"]["Row"];
 export type OrchestratorIdentityRow = Database["public"]["Tables"]["orchestrators"]["Row"];
+export type OrdinaryLaunchReceiptRow = Database["public"]["Tables"]["ordinary_launch_receipts"]["Row"];
 export type OrgSkillDefaultsRow = Database["public"]["Tables"]["org_skill_defaults"]["Row"];
 export type OrganizationInvitationRow = Database["public"]["Tables"]["organization_invitations"]["Row"];
 export type Org = Database["public"]["Tables"]["orgs"]["Row"];

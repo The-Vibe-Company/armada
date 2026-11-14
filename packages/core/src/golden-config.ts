@@ -68,6 +68,8 @@ export interface GoldenRepo {
   branch: string;
   /** A single directory under {@link GOLDEN_ROOT}. */
   dir: string;
+  /** Explicit per-repository checkout history; omission preserves the provider's existing default. */
+  history?: "full" | "shallow";
 }
 
 /** The versionable golden file, and the `goldens.config` object. No secrets. */
@@ -78,7 +80,7 @@ export interface GoldenConfig {
 
 /** A GitHub-only representation safe to hand to the server's checkout authorization layer. */
 export interface GitHubGoldenConfig {
-  repos: { owner: string; repo: string; branch: string; dir: string }[];
+  repos: { owner: string; repo: string; branch: string; dir: string; history?: "full" | "shallow" }[];
   init: string[];
 }
 
@@ -88,7 +90,12 @@ export interface GitHubGoldenConfig {
  */
 export function normalizeGitHubGoldenConfig(config: GoldenConfig): GitHubGoldenConfig {
   return {
-    repos: config.repos.map((repo) => ({ ...githubRepoIdentity(repo.url), branch: repo.branch, dir: repo.dir })),
+    repos: config.repos.map((repo) => ({
+      ...githubRepoIdentity(repo.url),
+      branch: repo.branch,
+      dir: repo.dir,
+      ...(repo.history !== undefined ? { history: repo.history } : {}),
+    })),
     init: [...config.init],
   };
 }
@@ -266,10 +273,10 @@ export function initCommand(command: string): ShellCommand {
   return { command, cwd: GOLDEN_ROOT, timeoutSeconds: INIT_TIMEOUT_SECONDS };
 }
 
-function parseRepo(input: unknown): { url: string; branch: string; dir?: string } {
+function parseRepo(input: unknown): { url: string; branch: string; dir?: string; history?: "full" | "shallow" } {
   if (!isRecord(input)) throw new GoldenError("invalid_config", "A repository must be an object.");
   for (const key of Object.keys(input)) {
-    if (key !== "url" && key !== "branch" && key !== "dir") {
+    if (key !== "url" && key !== "branch" && key !== "dir" && key !== "history") {
       throw new GoldenError("invalid_config", `Unknown repository key '${key}'.`);
     }
   }
@@ -277,11 +284,14 @@ function parseRepo(input: unknown): { url: string; branch: string; dir?: string 
   const url = parseRepoUrl(input.url);
   const branch = input.branch === undefined ? "main" : input.branch;
   if (typeof branch !== "string" || !isBranch(branch)) throw badBranch(typeof branch === "string" ? branch : "");
-  if (input.dir === undefined) return { url, branch };
+  if (input.history !== undefined && input.history !== "full" && input.history !== "shallow")
+    throw new GoldenError("invalid_config", 'Repository history must be "full" or "shallow".');
+  const history = input.history === undefined ? {} : { history: input.history as "full" | "shallow" };
+  if (input.dir === undefined) return { url, branch, ...history };
   if (typeof input.dir !== "string" || !DIR.test(input.dir)) {
     throw new GoldenError("invalid_config", "A repository directory must be a single path segment.");
   }
-  return { url, branch, dir: input.dir };
+  return { url, branch, dir: input.dir, ...history };
 }
 
 function parseInit(input: unknown): string[] {
@@ -304,7 +314,9 @@ function parseInit(input: unknown): string[] {
 }
 
 /** Assigns each repo a single-segment directory: its own `dir`, else the URL's basename, with a `-2`, `-3`, ... suffix on collision. */
-export function assignDirs(repos: { url: string; branch: string; dir?: string }[]): GoldenRepo[] {
+export function assignDirs(
+  repos: { url: string; branch: string; dir?: string; history?: "full" | "shallow" }[],
+): GoldenRepo[] {
   const used = new Set<string>();
   return repos.map((repo) => {
     let dir = repo.dir ?? basename(repo.url);
@@ -323,7 +335,12 @@ export function assignDirs(repos: { url: string; branch: string; dir?: string }[
       dir = `${dir}-${suffix}`;
     }
     used.add(dir);
-    return { url: repo.url, branch: repo.branch, dir };
+    return {
+      url: repo.url,
+      branch: repo.branch,
+      dir,
+      ...(repo.history !== undefined ? { history: repo.history } : {}),
+    };
   });
 }
 

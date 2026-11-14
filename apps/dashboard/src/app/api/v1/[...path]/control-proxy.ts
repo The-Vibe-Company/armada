@@ -77,6 +77,7 @@ const PRIVATE_POST_PATHS = new Set([
   "golden/size-policy",
   "golden/create",
   "golden/build/status",
+  "golden/build/find",
   "golden/build/cancel",
   "golden/update",
   "golden/update-add-repos",
@@ -218,6 +219,7 @@ export async function forwardControl(
             "golden/update",
             "golden/update-add-repos",
             "golden/build/status",
+            "golden/build/find",
             "golden/build/cancel",
           ].includes(relative)
             ? 15_000

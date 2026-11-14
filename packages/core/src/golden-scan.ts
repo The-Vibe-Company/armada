@@ -40,7 +40,8 @@ const SCAN_ROOTS = "/home/user /root /tmp";
  * and object shas are ever inspected for *presence* of a match (`grep -l`/`-q`); the matched text
  * itself is never printed, logged, or returned.
  */
-export function goldenScanScript(extraRoots: readonly string[] = []): string {
+export function goldenScanScript(extraRoots: readonly string[] = [], repositoryDirs: readonly string[] = []): string {
+  validateRepositoryDirs(repositoryDirs);
   if (extraRoots.some((root) => !/^\/[A-Za-z0-9_./-]+$/.test(root)))
     throw new GoldenError("invalid_config", "Invalid scan root.");
   const roots = [SCAN_ROOTS, ...extraRoots].join(" ");
@@ -57,6 +58,17 @@ export function goldenScanScript(extraRoots: readonly string[] = []): string {
     "done",
     `pattern='${GITHUB_TOKEN_PATTERN}|${SKILLPACK_TOKEN_PATTERN}|armada_gh_[a-f0-9]{64}'`,
     `roots='${roots}'`,
+    "scan_repository() {",
+    "  repository=0",
+    ...repositoryDirs.map(
+      (directory, index) =>
+        `  case "$1" in "/home/user/${directory}"|"/home/user/${directory}/"*) repository=${index + 1}; return ;; esac`,
+    ),
+    "}",
+    "scan_report_location() {",
+    '  scan_repository "$2"',
+    '  printf "ARMADA_SCAN_LOCATION %s %s %s %s\\n" "$repository" "$1" "${3:--}" "${4:--}"',
+    "}",
     // Classify paths in memory; only fixed labels and counts leave this process.
     "scan_location() {",
     '  case "$1" in',
@@ -79,10 +91,11 @@ export function goldenScanScript(extraRoots: readonly string[] = []): string {
     "  esac",
     "}",
     "scan_counts() {",
-    "  local surface=$1 path location count",
+    "  local surface=$1 path location count located=0",
     "  local -A counts=()",
     "  while IFS= read -r -d '' path; do",
     '    scan_location "$path"',
+    '    if [ "$located" -eq 0 ]; then scan_report_location "$surface" "$path"; located=1; fi',
     // For an otherwise unclassified root-home content hit, distinguish GNU grep's binary
     // heuristic from text without emitting file names or bytes. This is diagnostic only:
     // both classes still reject, and a failed classification fails the scan closed.
@@ -156,7 +169,17 @@ export function goldenScanScript(extraRoots: readonly string[] = []): string {
     '    git -c safe.directory="$repo" -C "$repo" cat-file -p "$sha" 2>/dev/null | grep -aE "$pattern" >/dev/null 2>/dev/null',
     '    statuses=("${PIPESTATUS[@]}")',
     '    if [ "${statuses[0]}" -ne 0 ]; then rm -f "$objects_file"; exit 95; fi',
-    '    if [ "${statuses[1]}" -eq 0 ]; then printf "ARMADA_SCAN_MATCH git_object git_storage 1\n"; rm -f "$objects_file"; exit 97; fi',
+    '    if [ "${statuses[1]}" -eq 0 ]; then',
+    "      commit=-",
+    '      if [ "$kind" = commit ]; then commit=$sha; elif [ "$kind" = blob ] && command -v timeout >/dev/null 2>&1; then',
+    '        commits=$(timeout 1s git -c safe.directory="$repo" -C "$repo" log --all --reverse --topo-order --format=%H --find-object="$sha" 2>/dev/null)',
+    "        if [ \"$?\" -eq 0 ]; then commit=${commits%%$'\\n'*}; fi",
+    "      fi",
+    '      [[ "$commit" =~ ^([a-f0-9]{40}|[a-f0-9]{64})$ ]] || commit=-',
+    '      scan_report_location git_object "$repo" "$sha" "$commit"',
+    '      printf "ARMADA_SCAN_MATCH git_object git_storage 1\\n"',
+    '      rm -f "$objects_file"; exit 97',
+    "    fi",
     '    if [ "${statuses[1]}" -gt 1 ]; then rm -f "$objects_file"; exit 95; fi',
     '  done <"$objects_file"',
     '  rm -f "$objects_file"',
@@ -169,9 +192,9 @@ export function goldenScanScript(extraRoots: readonly string[] = []): string {
 export async function scanGoldenSandbox(
   provider: Provider,
   sandboxId: string,
-  context?: { buildId: string },
+  context?: { buildId?: string; repositories?: readonly string[] },
 ): Promise<void> {
-  const script = goldenScanScript();
+  const script = goldenScanScript([], context?.repositories);
   const result = await provider.exec({
     sandboxId,
     // Root-owned image files are part of the snapshot. Non-interactive sudo fails closed when
@@ -188,14 +211,11 @@ export async function scanGoldenSandbox(
     throw new GoldenError("setup_failed", "The secret scan timed out.", { safeMessage: "The secret scan timed out." });
   if (result.exitCode === 97) {
     reportScanMatches(result.stdout, context?.buildId);
-    throw new GoldenError(
-      "setup_failed",
-      "The golden builder still has token-shaped material on disk; the golden was not saved.",
-      {
-        safeMessage:
-          "Secret scan found token-shaped material on disk. Remove credentials from repositories and setup before rebuilding; the golden was not saved.",
-      },
-    );
+    const location = safeScanLocation(result.stdout, context?.repositories ?? []);
+    const message = location
+      ? `Secret scan found token-shaped material: ${location}. Remove credentials from repositories and setup before rebuilding; the golden was not saved.`
+      : "Secret scan found token-shaped material on disk. Remove credentials from repositories and setup before rebuilding; the golden was not saved.";
+    throw new GoldenError("setup_failed", message, { safeMessage: message });
   }
   if (result.exitCode !== 0) {
     throw new GoldenError("setup_failed", "The secret scan could not run to completion; the golden was not saved.", {
@@ -231,4 +251,34 @@ function reportScanMatches(stdout: string, buildId?: string): void {
   }
   if (!reported)
     console.error(JSON.stringify({ event: "golden_scan_rejected", ...correlation, diagnostics: "unavailable" }));
+}
+
+function validateRepositoryDirs(directories: readonly string[]): void {
+  const token = new RegExp(`${GITHUB_TOKEN_PATTERN}|${SKILLPACK_TOKEN_PATTERN}|armada_gh_[a-f0-9]{64}`);
+  if (
+    directories.length > 16 ||
+    directories.some((directory) => !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,80}$/.test(directory) || token.test(directory))
+  )
+    throw new GoldenError("invalid_config", "Invalid repository directory for scan diagnostics.");
+}
+
+/** No filenames, provider payloads or matched values are accepted by this closed diagnostic protocol. */
+function safeScanLocation(stdout: string, repositories: readonly string[]): string | undefined {
+  for (const line of stdout.slice(0, 8192).split("\n").slice(0, 64)) {
+    const match =
+      /^ARMADA_SCAN_LOCATION (0|[1-9]|1[0-6]) (file_content|path_name|git_object) (-|[a-f0-9]{40}|[a-f0-9]{64}) (-|[a-f0-9]{40}|[a-f0-9]{64})$/.exec(
+        line,
+      );
+    if (!match) continue;
+    const index = Number(match[1]);
+    if (index !== 0 && index > repositories.length) continue;
+    const where = index === 0 ? "outside configured repositories" : `repository ${repositories[index - 1]}`;
+    if (match[2] === "git_object") {
+      if (match[3] === "-") continue;
+      return `${where}, git object ${match[3]}${match[4] !== "-" ? `, commit ${match[4]}` : ""}`;
+    }
+    if (match[3] !== "-" || match[4] !== "-") continue;
+    return `${where}, ${match[2] === "file_content" ? "file content" : "path name"}`;
+  }
+  return undefined;
 }

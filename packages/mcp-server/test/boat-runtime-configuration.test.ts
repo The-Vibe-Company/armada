@@ -5,6 +5,7 @@ import {
   type GoldenActor,
   type HarnessCredentials,
   type SandboxRecord,
+  type Sql,
 } from "@armada/core";
 import { boatRuntimeConfiguration } from "../src/boat-runtime-configuration.ts";
 import { runtimeConfiguration } from "../src/runtime-configuration.ts";
@@ -214,7 +215,7 @@ test.each([
         },
       },
     };
-  await expect(boatRuntimeConfiguration(input)).rejects.toMatchObject({
+  await expect(boatRuntimeConfiguration(input, {} as Sql)).rejects.toMatchObject({
     code: "unavailable",
     message: "Boat runtime configuration is unavailable.",
   });

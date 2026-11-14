@@ -264,14 +264,33 @@ export default async function GoldensPage({ searchParams }: Props) {
   // Build recovery belongs to the page; only an explicit item opens a detail.
   // Otherwise a Back/reload of the list would reopen a dismissed rebuild.
   const initial = requested;
+  // A missing host feature is not a failed inventory read. If hosts are supported (or their read failed),
+  // an unavailable snapshot list remains unknown even when no connected machine can be shown.
+  const snapshotsUnavailable =
+    selected !== null && hostRead.state !== "disabled" && snapshotRead.state === "unavailable";
+  const inventoryIncomplete = snapshotsUnavailable || setup?.state === "unavailable" || skipped > 0;
+  const reload = (
+    <Button asChild variant="outline" size="sm">
+      {/* A document request must recheck server data rather than reuse the client router's cached render. */}
+      <a href="/environments">Reload Snapshots</a>
+    </Button>
+  );
 
   const notices = (
     <>
       <SnapshotBuildRefresh building={snapshots.some((row) => row.status === "building")} />
-      {hasDocker && snapshotRead.state === "unavailable" && (
-        <p role="alert" className="text-sm text-destructive">
-          {snapshotRead.message}
-        </p>
+      {snapshotsUnavailable && (
+        <Alert variant="destructive">
+          <TriangleAlertIcon />
+          <AlertTitle>Self-hosted snapshots could not be loaded</AlertTitle>
+          <AlertDescription>
+            <p>
+              Some snapshots may be missing. Reload Snapshots to try again. If this continues, ask an Armada
+              administrator to check self-hosted access.
+            </p>
+            {reload}
+          </AlertDescription>
+        </Alert>
       )}
       {skipped > 0 && (
         <p role="status" className="text-sm text-muted-foreground">
@@ -283,11 +302,11 @@ export default async function GoldensPage({ searchParams }: Props) {
           <TriangleAlertIcon />
           <AlertTitle>Provider status unavailable</AlertTitle>
           <AlertDescription>
-            <p>{setup.message}</p>
-            {/* A document request, not a client navigation: the router would reuse its cached render (staleTimes). */}
-            <a className="underline underline-offset-4" href="/environments">
-              Check again
-            </a>
+            <p>
+              Provider connections could not be checked. Reload Snapshots to try again. Existing snapshots remain
+              visible; cloud builds need a confirmed provider connection.
+            </p>
+            {reload}
           </AlertDescription>
         </Alert>
       )}
@@ -355,18 +374,27 @@ export default async function GoldensPage({ searchParams }: Props) {
         ) : null
       }
       empty={
-        selected ? (
+        selected && inventoryIncomplete ? (
+          <Empty title="Snapshots are not fully loaded" action={reload} icon={<LayersIcon />}>
+            We cannot confirm whether snapshots are available. Reload Snapshots, or ask an Armada administrator to check
+            access if this continues.
+          </Empty>
+        ) : selected ? (
           <Empty title="No snapshots yet" icon={<LayersIcon />}>
             {create
               ? "Use New to build the first one: the repositories an agent starts with, saved as a snapshot."
               : "Connect a sandbox provider to build the first one."}
           </Empty>
         ) : (
-          <Empty title="No organization">
-            <Link className="underline underline-offset-4" href="/orgs">
-              Create or join an organization
-            </Link>{" "}
-            to build snapshots.
+          <Empty
+            title="No organization yet"
+            action={
+              <Button asChild>
+                <Link href="/orgs">Choose an organization</Link>
+              </Button>
+            }
+          >
+            Create or join an organization before building snapshots.
           </Empty>
         )
       }

@@ -8,6 +8,24 @@ import { join } from "node:path";
 // repeated, and a known allocation gets one stop even after checkpoint failure.
 test.each([
   "success",
+  "idle",
+  "idle-resume",
+  "idle-variables",
+  "idle-variables-resume",
+  "idle-usage-variables-skills-mcp-github-resume",
+  "idle-template-wrong-status",
+  "idle-template-foreign-status",
+  "idle-template-active-conversation",
+  "idle-claude",
+  "idle-opencode",
+  "idle-old-version",
+  "idle-bad-receipt",
+  "idle-running-history",
+  "idle-lost-first-send",
+  "idle-wrong-first-epoch",
+  "idle-wrong-first-request",
+  "idle-wrong-first-conversation",
+  "idle-template-old-version",
   "opencode",
   "opencode-resume",
   "opencode-mcp",
@@ -152,8 +170,9 @@ test.each([
   "usage-resume-stopped-drift",
   "usage-variables-skills-mcp-github-resume",
 ])("Modal one-allocation check is fail-closed (%s)", async (scenario) => {
-  const opencode = scenario.startsWith("opencode");
-  const claude = scenario.startsWith("claude") || scenario === "opencode-claude-conflict";
+  const idle = scenario.startsWith("idle");
+  const opencode = scenario.startsWith("opencode") || scenario === "idle-opencode";
+  const claude = scenario.startsWith("claude") || scenario === "opencode-claude-conflict" || scenario === "idle-claude";
   const shellOld = scenario === "opencode-shell-old";
   const inventoryReject = [
     "opencode-mcp-collision",
@@ -161,29 +180,47 @@ test.each([
     "opencode-mcp-inventory-missing",
   ].includes(scenario);
   const proofReject = ["opencode-mcp-inventory-drift", "opencode-mcp-display-only"].includes(scenario);
-  const mode = inventoryReject
-    ? "mcp-preflight-denied"
-    : proofReject
-      ? "mcp-no-result"
-      : scenario === "opencode-github-display-only"
-        ? "github-missing-tool"
-        : ["opencode-variables-bad-exit", "opencode-variables-truncated"].includes(scenario)
-          ? "variables-wrong-hash"
-          : shellOld
+  const mode = ["idle", "idle-claude", "idle-opencode"].includes(scenario)
+    ? "success"
+    : ["idle-variables", "idle-variables-resume", "idle-usage-variables-skills-mcp-github-resume"].includes(scenario)
+      ? scenario.slice("idle-".length)
+      : ["idle-template-wrong-status", "idle-template-foreign-status", "idle-template-active-conversation"].includes(
+            scenario,
+          )
+        ? "variables-no-tool"
+        : scenario === "idle-resume"
+          ? "resume"
+          : scenario === "idle-old-version"
             ? "old-followup"
-            : scenario === "opencode" || scenario === "claude"
-              ? "success"
-              : ["opencode-old-version", "opencode-claude-conflict", "claude-old-version"].includes(scenario)
-                ? "old-followup"
-                : scenario === "opencode-mcp-old-version"
-                  ? "mcp-old-version"
-                  : scenario === "claude-mcp-wrong-result-id"
+            : scenario === "idle-template-old-version"
+              ? "variables-old-version"
+              : idle
+                ? "tool-result"
+                : inventoryReject
+                  ? "mcp-preflight-denied"
+                  : proofReject
                     ? "mcp-no-result"
-                    : opencode
-                      ? scenario.slice("opencode-".length)
-                      : claude
-                        ? scenario.slice("claude-".length)
-                        : scenario;
+                    : scenario === "opencode-github-display-only"
+                      ? "github-missing-tool"
+                      : ["opencode-variables-bad-exit", "opencode-variables-truncated"].includes(scenario)
+                        ? "variables-wrong-hash"
+                        : shellOld
+                          ? "old-followup"
+                          : scenario === "opencode" || scenario === "claude"
+                            ? "success"
+                            : ["opencode-old-version", "opencode-claude-conflict", "claude-old-version"].includes(
+                                  scenario,
+                                )
+                              ? "old-followup"
+                              : scenario === "opencode-mcp-old-version"
+                                ? "mcp-old-version"
+                                : scenario === "claude-mcp-wrong-result-id"
+                                  ? "mcp-no-result"
+                                  : opencode
+                                    ? scenario.slice("opencode-".length)
+                                    : claude
+                                      ? scenario.slice("claude-".length)
+                                      : scenario;
   const github = mode.includes("github");
   const mcp = mode.includes("mcp");
   const skills = mode.includes("skills");
@@ -202,12 +239,12 @@ test.each([
     await writeFile(
       preload,
       `
-let launches=0,stops=0,checkpoints=0,sends=0,resumes=0,answer='',memory='',now=0,firstCheckpoint='',githubRevision=0,goldenReads=0,defaultReads=0,skillStatuses=0,variableCommand='',actualVariableOutput='',usagePages=0,mcpPreflights=0;
+let launches=0,stops=0,checkpoints=0,sends=0,resumes=0,answer='',memory='',now=0,firstCheckpoint='',githubRevision=0,goldenReads=0,defaultReads=0,skillStatuses=0,variableCommand='',actualVariableOutput='',usagePages=0,mcpPreflights=0,firstSends=0;
 const variableValues=${JSON.stringify(variableValues)};
 const variableDigest='${variableDigest}';
 const templateDefinition={provider:'modal',harness:'${opencode ? "opencode" : claude ? "claude" : "codex"}',goldenId:'${mode === "variables-wrong-golden" ? "foreign" : "golden-id"}',model:'${usage ? "gpt-6.1-sol" : "fixture-model"}',reasoningEffort:'high',modelAccount:{id:'${mode === "variables-wrong-account" ? "foreign" : accountId}',version:1},variables:${mode === "variables-missing-vars"}?[]:[{key:'APP_REGION',variableId:'region',version:1},{key:'${mode === "variables-wrong-keys" ? "APP_REGION" : "EMPTY_VALUE"}',variableId:'empty',version:1}],secrets:${mode === "variables-secrets"}?[{key:'APP_TOKEN',secretId:'foreign',version:1}]:[],skills:[],connections:${mcp}?['${mcpId}']:[]};
 const receipts=['personal/notes@3.0.0','catalog/other@1.0.0'].map(reference=>({reference,version:reference.split('@')[1],skillId:'11111111-1111-4111-8111-111111111111',checksum:'sha256:'+'a'.repeat(64),origin:'https://skillpack.app/v1'}));
-const usageIds=()=>['prompt',...(sends?['followup']:[]),...(resumes?['resumed']:[]),...(resumes&&sends>1?['github-resumed']:[]),...(${mode === "usage-extra-observation"}?['background']:[])];
+const usageIds=()=>[...(${idle}&&!firstSends?[]:['prompt']),...(sends?['followup']:[]),...(resumes?['resumed']:[]),...(resumes&&sends>1?['github-resumed']:[]),...(${mode === "usage-extra-observation"}?['background']:[])];
 const usageData=()=>({model:'gpt-6.1-sol',inputTokens:100,outputTokens:20,cachedTokens:10,cacheWriteTokens:${["usage-unknown", "usage-zero-missing"].includes(mode)}?null:0,reasoningTokens:null,...(${mode === "usage-forged-guest-money"}?{usd:'999',pricing:{usd:'999'}}:{})});
 const projectedUsage=()=>{
  const raw=usageData(),ids=usageIds(),missing=${mode === "usage-unknown"};
@@ -216,17 +253,31 @@ const projectedUsage=()=>{
  return {turnCount:ids.length,computeSeconds:1,turns:ids.map(promptId=>({...counts,promptId,model:'${mode === "usage-wrong-model" ? "foreign" : "gpt-6.1-sol"}',pricing:${mode === "usage-no-admission"}?null:quote})),tokenTotals:{inputTokens:100*ids.length+(${mode === "usage-wrong-totals"}||(stops>0&&${mode === "usage-stopped-drift"})||(stops===2&&${mode === "usage-resume-stopped-drift"})?1:0),outputTokens:20*ids.length,cachedTokens:10*ids.length,cacheWriteTokens:missing?null:0,reasoningTokens:null,incomplete:true},cost:{currency:'USD',basis:'estimated',usd:missing?null:${mode === "usage-forged-cost"}?'999':['0','0.00029','0.00058','0.00087','0.00116','0.00145'][ids.length],unknown:missing?'tokens':null,unpricedTurns:missing?ids.length:0}};
 };
 Date.now=()=>now;Bun.sleep=async(ms)=>{now+=Number(ms);};
-process.on('exit',()=>{console.log('COUNTERS '+JSON.stringify({launches,stops,checkpoints,sends,resumes}));console.log('SKILLS '+JSON.stringify({defaultReads,skillStatuses,goldenReads}));});
+process.on('exit',()=>{console.log('COUNTERS '+JSON.stringify({launches,stops,checkpoints,sends,resumes}));console.log('SKILLS '+JSON.stringify({defaultReads,skillStatuses,goldenReads}));console.log('IDLE '+JSON.stringify({firstSends}));});
+const readPrompt=(prompt)=>{
+  if(${variables}) {
+    variableCommand=prompt.match(/(node -e '.*?') successfully/)[1];
+    const env={...process.env,...variableValues};if(${mode === "variables-missing-env"})delete env.EMPTY_VALUE;
+    const program=variableCommand.slice("node -e '".length,-1);
+    const executed=Bun.spawnSync([process.execPath,'-e',program],{env});
+    if(executed.exitCode!==0)throw Error('readable program failed');actualVariableOutput=executed.stdout.toString();
+    if(prompt.includes(variableDigest)||Object.values(variableValues).some(value=>value&&prompt.includes(value)))throw Error('readable data leaked into prompt');
+  }
+  if(${mcp}&&(!prompt.includes('${mcpServer}')||!prompt.includes('read_counter')))throw Error('MCP instruction missing');
+  answer=prompt.match(/ARMADA_MODAL_[a-f0-9]+/)[0];memory=prompt.match(/ARMADA_MEMORY_[a-f0-9]+/)[0];
+};
+const templateReceipt=(body,idle)=>({state:'succeeded',status:idle?'ready':'running',id:'worker',provider:'modal',runtime:{kind:'armada',epoch:'1'},promptId:idle?null:'prompt',conversationId:idle?null:'conversation',manifest:{templateId:'${templateId}',requestKey:body.requestKey,revision:2,revisionId:'44444444-4444-4444-8444-444444444444',golden:{id:'golden-id',orgId:'org-id',provider:'modal'},account:${mode === "variables-receipt-mismatch"}?{id:'foreign',version:1}:templateDefinition.modelAccount,definition:templateDefinition,variables:variableValues,skillReceipts:receipts}});
 globalThis.fetch=async(url,options)=>{
  const path=new URL(url).pathname,body=JSON.parse(options.body);
  if(new Headers(options.headers).get('authorization')!=='Bearer '+process.env.ARMADA_TOKEN)throw Error('auth');
- if(path.endsWith('/launch/options'))return Response.json({modalRuntime:{version:1,enabled:${mode !== "disabled"},followupVersion:${mode === "old-followup" && !claude && !opencode ? 0 : 1},claudeVersion:${scenario === "claude-old-version" ? 0 : 1},opencodeVersion:${scenario === "opencode-old-version" ? 0 : 1},opencodeShellProofVersion:${shellOld ? 0 : 1},opencodeMcpProofVersion:${scenario === "opencode-mcp-old-version" ? 0 : 1},resumeVersion:${mode === "old-resume" ? 0 : 1},mcpVersion:${mode === "mcp-old-version" ? 1 : 2},skillsVersion:${mode === "skills-old-version" ? 0 : 1},variablesVersion:${mode === "variables-old-version" ? 0 : 1},usageVersion:${mode === "usage-old-version" ? 0 : 1}}});
+ if(path.endsWith('/launch/options'))return Response.json({modalRuntime:{version:1,enabled:${mode !== "disabled"},followupVersion:${mode === "old-followup" && !claude && !opencode && !idle ? 0 : 1},claudeVersion:${scenario === "claude-old-version" ? 0 : 1},idleLaunchVersion:${scenario === "idle-old-version" ? 0 : 1},idleTemplateVersion:${scenario === "idle-template-old-version" ? 0 : 1},opencodeVersion:${scenario === "opencode-old-version" ? 0 : 1},opencodeShellProofVersion:${shellOld ? 0 : 1},opencodeMcpProofVersion:${scenario === "opencode-mcp-old-version" ? 0 : 1},resumeVersion:${mode === "old-resume" ? 0 : 1},mcpVersion:${mode === "mcp-old-version" ? 1 : 2},skillsVersion:${mode === "skills-old-version" ? 0 : 1},variablesVersion:${mode === "variables-old-version" ? 0 : 1},usageVersion:${mode === "usage-old-version" ? 0 : 1}}});
  if(path.endsWith('/golden/list')){if(++goldenReads!==1)throw Error('golden resolved twice');return Response.json({goldens:[{id:'golden-id',name:'golden',provider:'modal',orgId:'org-id'}]});}
  if(path.endsWith('/templates/get')){if(body.org!=='org-id'||body.id!=='${templateId}'||Object.hasOwn(body,'revision'))throw Error('wrong template lookup');return Response.json({item:{id:'${mode === "variables-wrong-template" ? "foreign" : templateId}',status:'active',orgId:'org-id'},revision:{id:'44444444-4444-4444-8444-444444444444',revision:2,definition:templateDefinition}});}
  if(path.endsWith('/sandbox/mcp-preflight-v1')){if(body.org!=='org-id'||body.runtimeVersion!==1||JSON.stringify(body.connections)!==JSON.stringify(['${mcpId}']))throw Error('wrong MCP preflight');if(${opencode}&&body.toolInventory!==true)throw Error('missing inventory admission');
  mcpPreflights++;return Response.json({mcpReady:${mode !== "mcp-preflight-denied" || inventoryReject},...(${opencode}&&!${scenario === "opencode-mcp-inventory-missing"}?{mcpToolInventory:[{connectionId:'${mcpId}',tools:['read_counter',...(${scenario === "opencode-mcp-collision"}?['read.counter']:[]),...(${scenario === "opencode-mcp-duplicate-name"}?['read_counter']:[]),...(${scenario === "opencode-mcp-inventory-drift"}&&mcpPreflights>1?['changed']:[])]}]}:{})});}
  if(path.endsWith('/skills/defaults/get')){defaultReads++;if(body.org!=='org-id'||(body.scope==='golden'?body.goldenId!=='golden-id':Object.hasOwn(body,'goldenId')))throw Error('wrong defaults scope');return Response.json({skills:${mode === "skills-empty"}?[]:({golden:['catalog/notes@1.0.0','catalog/other@1.0.0'],org:['notes@2.0.0'],personal:['personal/notes@3.0.0']}[body.scope])});}
- if(path.endsWith('/sandbox/status')){skillStatuses++;return Response.json({...(${usage}?{usage:projectedUsage()}:{}),skills:${mode === "skills-status-mismatch"}||(resumes&&stops===1&&${mode === "skills-resume-status-mismatch"})||(stops===2&&${mode === "skills-resume-stop-status-mismatch"})?receipts.slice(1):receipts});}
+ if(path.endsWith('/sandbox/status')){skillStatuses++;return Response.json({
+ ...(${idle}&&${variables}&&!firstSends?{id:'${scenario === "idle-template-foreign-status" ? "foreign" : "worker"}',status:'${scenario === "idle-template-wrong-status" ? "running" : "ready"}',conversationIds:${scenario === "idle-template-active-conversation"}?['foreign']:[],prompt:null}:{}),...(${usage}?{usage:projectedUsage()}:{}),skills:${mode === "skills-status-mismatch"}||(resumes&&stops===1&&${mode === "skills-resume-status-mismatch"})||(stops===2&&${mode === "skills-resume-stop-status-mismatch"})?receipts.slice(1):receipts});}
  if(path.endsWith('/sandbox/github-preflight-v1')){if(body.org!=='org-id'||body.repository!=='example/web')throw Error('bad preflight');return Response.json({githubReady:true,provider:${mode === "github-old-preflight"}?undefined:'modal'});}
  if(path.endsWith('/github/refresh'))return Response.json({status:'connected',runtime:{kind:'armada',epoch:${mode === "github-wrong-epoch"}?'99':resumes?'2':'1'},revision:${mode === "github-resume-reused-revision"}?(githubRevision++,'1'):String(++githubRevision)});
  if(path.endsWith('/github/runtime-status')){
@@ -237,20 +288,26 @@ globalThis.fetch=async(url,options)=>{
   launches++;if(launches!==1||body.provider!=='modal'||body.runtimeTransport!=='dialout'||body.runtimeVersion!==1||body.harness!=='${opencode ? "opencode" : claude ? "claude" : "codex"}'||body.ttlSeconds!==900||(${skills}?(defaultReads!==3||Object.hasOwn(body,'skipSkillDefaults')||Object.hasOwn(body,'skills')):(body.skipSkillDefaults!==true||body.skills.length)))throw Error('unsafe launch');
   if(${variables}) {
     if(body.id!=='${templateId}'||body.revision!==2||!body.requestKey||body.org!=='org-id'||['golden','credentialId','model','connections'].some(key=>Object.hasOwn(body,key)))throw Error('ambiguous template launch');
-    variableCommand=body.prompt.match(/(node -e '.*?') successfully/)[1];
-    const env={...process.env,...variableValues};if(${mode === "variables-missing-env"})delete env.EMPTY_VALUE;
-    const program=variableCommand.slice("node -e '".length,-1);
-    const executed=Bun.spawnSync([process.execPath,'-e',program],{env});
-    if(executed.exitCode!==0)throw Error('readable program failed');actualVariableOutput=executed.stdout.toString();
-    if(body.prompt.includes(variableDigest)||Object.values(variableValues).some(value=>value&&body.prompt.includes(value)))throw Error('readable data leaked into prompt');
+
   } else if(JSON.stringify(body.connections)!==JSON.stringify(${mcp}?['${mcpId}']:[]))throw Error('unsafe direct connections');
-  if(${mcp}&&(!body.prompt.includes('${mcpServer}')||!body.prompt.includes('read_counter')))throw Error('MCP instruction missing');
+  if(${idle}) {
+    if(Object.hasOwn(body,'prompt'))throw Error('Idle launch must omit prompt');
+    if(${variables})return Response.json(templateReceipt(body,true));
+    return Response.json({sandbox:{id:'worker',provider:'modal',runtimeTransport:'dialout',status:'${scenario === "idle-bad-receipt" ? "running" : "ready"}',conversationIds:[],goldenId:'golden-id'},runtime:{kind:'armada',epoch:'1'},promptId:null,conversationId:null});
+  }
+  readPrompt(body.prompt);
   if(${mode === "lost-launch"})throw Error('private transport diagnostics must not surface');
-  answer=body.prompt.match(/ARMADA_MODAL_[a-f0-9]+/)[0];memory=body.prompt.match(/ARMADA_MEMORY_[a-f0-9]+/)[0];
-  if(${variables})return Response.json({state:'succeeded',id:'worker',provider:'modal',runtime:{kind:'armada',epoch:'1'},promptId:'prompt',conversationId:'conversation',manifest:{templateId:'${templateId}',requestKey:body.requestKey,revision:2,revisionId:'44444444-4444-4444-8444-444444444444',golden:{id:'golden-id',orgId:'org-id',provider:'modal'},account:${mode === "variables-receipt-mismatch"}?{id:'foreign',version:1}:templateDefinition.modelAccount,definition:templateDefinition,variables:variableValues,skillReceipts:receipts}});
+  if(${variables})return Response.json(templateReceipt(body,false));
   return Response.json({sandbox:{id:'worker',provider:'modal',runtimeTransport:'dialout',goldenId:'${mode === "skills-wrong-golden" ? "foreign" : "golden-id"}',...(${skills && mode !== "skills-missing-launch"}?{skills:receipts}:{})},runtime:{kind:'armada',epoch:'1'},promptId:'prompt',conversationId:'conversation'});
  }
  if(path.endsWith('/sandbox/send')){
+  if(${idle}&&!firstSends) {
+    firstSends++;if(Object.hasOwn(body,'conversation_id')||body.id!=='worker'||!/^[a-f0-9-]{36}$/.test(body.request_id))throw Error('Unsafe first send');
+    readPrompt(body.prompt);
+    if(${scenario === "idle-lost-first-send"})throw Error('private transport diagnostics must not surface');
+    return Response.json({requestId:${scenario === "idle-wrong-first-request"}?'wrong':body.request_id,runtime:{kind:'armada',epoch:'${scenario === "idle-wrong-first-epoch" ? "2" : "1"}'},promptId:'prompt',conversationId:'${scenario === "idle-wrong-first-conversation" ? "" : "conversation"}'});
+  }
+
   if(++sends>(${github && resume}?2:1)||body.id!=='worker'||body.conversation_id!=='conversation'||!/^[a-f0-9-]{36}$/.test(body.request_id)||body.prompt.includes(memory))throw Error('unsafe followup');
   if(${mcp}&&(!body.prompt.includes('${mcpServer}')||!body.prompt.includes('read_counter')))throw Error('MCP instruction missing');
   if(${variables}&&(!body.prompt.includes(variableCommand)||body.prompt.includes(variableDigest)||Object.values(variableValues).some(value=>value&&body.prompt.includes(value))))throw Error('invalid readable followup instruction');
@@ -258,6 +315,8 @@ globalThis.fetch=async(url,options)=>{
   return Response.json({requestId:${mode === "wrong-request"}? 'wrong':body.request_id,runtime:{kind:'armada',epoch:${mode === "stale-epoch"}?'2':resumes?'2':'1'},promptId:${mode === "reused-prompt"}?'prompt':resumes?'github-resumed':'followup',conversationId:'${mode === "wrong-conversation" ? "foreign" : "conversation"}'});
  }
  if(path.endsWith('/logs/read')){
+  if(${idle}&&!firstSends)return Response.json({source:'armada-runtime',events:${scenario === "idle-running-history"}?[{id:'unexpected',at:1,kind:'prompt',promptId:'unexpected',status:'finished',text:''}]:[]});
+
   const pair=(promptId,text,kind='assistant')=>[{id:'answer-'+promptId,at:1,promptId,kind:'message',partial:false,responseKind:kind,tools:[],text},{id:'finished-'+promptId,at:2,promptId,kind:'prompt',text:'',status:'finished'}];
   let events=[...pair(${mode === "wrong-prompt"}?'foreign':'prompt',answer,'${mode === "tool-result" ? "tool_result" : "assistant"}'),...(sends?pair('followup',memory):[]),...(resumes?pair('resumed',memory,'${mode === "resume-tool-result" ? "tool_result" : "assistant"}'):[])];
   if(${github} && sends && !${mode === "github-missing-tool" && scenario !== "opencode-github-display-only"}){
@@ -337,6 +396,7 @@ globalThis.fetch=async(url,options)=>{
         preload,
         "scripts/check-modal-runtime.ts",
         ...(resume ? ["--resume"] : []),
+        ...(idle ? ["--idle"] : []),
         ...(claude ? ["--claude"] : []),
         ...(opencode ? ["--opencode"] : []),
         ...(github || shellOld ? ["--github"] : []),
@@ -378,6 +438,38 @@ globalThis.fetch=async(url,options)=>{
     ]);
     if (scenario === "opencode-mcp-old-version")
       expect(stderr).toContain("OpenCode native MCP proof v1 is unavailable");
+    if (idle) {
+      const started = JSON.parse(stdout.match(/IDLE (.+)/)?.[1] ?? "null");
+      expect(started.firstSends).toBe(
+        [
+          "idle",
+          "idle-resume",
+          "idle-claude",
+          "idle-opencode",
+          "idle-variables",
+          "idle-variables-resume",
+          "idle-usage-variables-skills-mcp-github-resume",
+          "idle-lost-first-send",
+          "idle-wrong-first-epoch",
+          "idle-wrong-first-request",
+          "idle-wrong-first-conversation",
+        ].includes(scenario)
+          ? 1
+          : 0,
+      );
+      if (scenario === "idle-old-version")
+        expect(stderr).toContain("Modal promptless launch/first-send v1 is unavailable");
+      if (
+        ["idle-template-wrong-status", "idle-template-foreign-status", "idle-template-active-conversation"].includes(
+          scenario,
+        )
+      )
+        expect(stderr).toContain("Promptless template current status is not empty");
+      if (scenario === "idle-template-old-version")
+        expect(stderr).toContain("Modal promptless template v1 is unavailable");
+      if (scenario === "idle-bad-receipt") expect(stderr).toContain("Idle Modal launch did not publish");
+      if (scenario === "idle-running-history") expect(stderr).toContain("Idle archive already contains inference");
+    }
     if (scenario === "opencode-mcp-collision" || scenario === "opencode-mcp-duplicate-name")
       expect(stderr).toContain("missing or ambiguous");
     if (scenario === "opencode-mcp-inventory-missing")
@@ -672,7 +764,7 @@ globalThis.fetch=async(url,options)=>{
       const observed = JSON.parse(stdout.match(/SKILLS (.+)/)?.[1] ?? "null");
       expect(observed.defaultReads).toBe(mode === "skills-old-version" ? 0 : 3);
       expect(observed.goldenReads).toBe(mode === "skills-old-version" ? 0 : 1);
-      expect(observed.skillStatuses).toBe(
+      expect(observed.skillStatuses - (idle && variables ? 1 : 0)).toBe(
         ["skills-empty", "skills-old-version"].includes(mode)
           ? 0
           : mode === "skills-wrong-golden"

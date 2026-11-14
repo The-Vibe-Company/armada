@@ -743,7 +743,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
                 {
                   ...runtime.options,
                   credentialVersion: m.account.version,
-                  nativeEnvironmentBindings: Boolean(def.variables.length || def.secrets?.length),
+                  nativeSecretBindings: Boolean(def.secrets?.length),
                   newId: () => request.sandbox_id,
                   beforeFork: async (sandboxId) => {
                     await revalidate(actor, org, m);
@@ -762,8 +762,8 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
                     await runtime.options?.beforeStart?.(p, s);
                     if (def.variables.length || def.secrets?.length) {
                       const variables = await resolveEnvironment(selection.a, m);
-                      // Enrolled Modal receives frozen readables privately before its driver starts.
-                      if (s.runtimeTransport !== "dialout")
+                      // Enrolled runtimes receive frozen readables privately before their driver starts.
+                      if (s.runtimeTransport !== "dialout" && !s.boatRuntime)
                         await p.configureReadableVariables!({
                           sandboxId: s.providerSandboxId,
                           harness: def.harness,

@@ -16,6 +16,74 @@ Armada is a launcher, not a workflow engine. It does not split work into tasks, 
 
 The specification is issue [#455](https://github.com/The-Vibe-Company/armada/issues/455); `AGENTS.md` maps every package.
 
+## Contribute: quickstart
+
+UI contributions do **not** require Supabase, provider accounts or deployment
+credentials. Start here; the operator setup below is only for running a real
+Armada deployment.
+
+### Clone and install
+
+Install [Bun](https://bun.sh) **1.4.2**, pinned by `packageManager` in
+`package.json`, then:
+
+```sh
+git clone https://github.com/The-Vibe-Company/armada.git
+cd armada
+bun --version                       # must match the pinned version
+bun install --frozen-lockfile
+```
+
+### Credential-free UI development
+
+```sh
+bun run dev
+```
+
+This starts the fixture-only dashboard on port **3100** and the mock
+Supabase/Armada server on **54399**; both ports must be free. Sign in as
+`alice@example.com` with code `123456`. No real sandboxes are launched and no
+production credentials are needed. Ctrl-C stops both processes. This loop is for
+UI work, not evidence of a working provider lifecycle or deployment.
+
+### Validate your change
+
+From the repository root:
+
+```sh
+git fetch origin main
+bun scripts/prepare-runtime.ts       # portable runtime required by local server tests
+bun run verify:changed --base origin/main --dry-run
+bun run verify:changed --base origin/main
+bun run format                      # Biome formatting and safe fixes; inspect the diff
+bun run armada --help                # the CLI from source
+```
+
+`verify:changed` runs lint and strict typecheck plus unit tests in changed
+workspaces and their transitive consumers. It includes staged, unstaged and
+untracked files. Root/config changes conservatively select **every** workspace;
+executable changes also include root script tests. Inspect `--dry-run` first:
+this is a local shortcut, not the CI verdict or a two-minute guarantee.
+
+On a resource-constrained sandbox, do not run the full unit suite (including a
+changed selection that expands to all workspaces). Instead run `bun run lint`,
+`bun run typecheck` and explicit relevant test files, for example
+`bun test path/to/changed.test.ts`; CI runs the rest. On a sufficiently
+provisioned machine, `bun run verify` remains available for lint, strict
+typecheck and the full unit suite.
+
+Every `packages/*/package.json` carries the same version, the one
+`armada --version` prints; a test fails if they drift. Local binaries are
+optional: `bun run build` builds for this machine,
+`bun run build --target linux-arm64` selects one target, and
+`bun run build:all` builds all supported targets. These are not prerequisites
+for UI contributions or per-PR CI.
+
+## Operator setup
+
+The following sections require real infrastructure; skip them for fixture-only
+contributions.
+
 ## Database
 
 `supabase/migrations` is the schema, applied by the [Supabase CLI](https://supabase.com/docs/guides/cli) (`supabase db reset` on a local project, or `supabase migration up`). It assumes a fresh Supabase database: Auth's `auth.users` and `auth.uid()`, and the `authenticated` and `service_role` roles. Schema changes are always new migrations.
@@ -119,28 +187,19 @@ bunx playwright install chromium
 bun run e2e                # Playwright against a mock of Supabase and the Armada server
 ```
 
-## Develop
-
-Requires [Bun](https://bun.sh) 1.4.2 (`packageManager` in `package.json`).
-
-```sh
-bun install
-bun scripts/prepare-runtime.ts       # portable runtime required by local server tests
-bun run verify                       # Biome lint, strict tsc and every test: what CI runs
-bun run format                       # Biome with safe fixes
-bun run armada --help                # the CLI from source
-
-bun run build                        # dist/armada and dist/armada-server for this machine
-bun run build --target linux-arm64   # one target
-bun run build:all                    # linux and macOS, x64 and arm64
-```
-
-Every `packages/*/package.json` carries the same version, the one `armada --version` prints; a test fails if they drift.
-
 ## CI and releases
 
-`.github/workflows/ci.yml` runs on every pull request and on `main`: lint, typecheck and test; and, per platform, the compiled binary, its npm packages, an install with npm and Bun and a smoke run.
+[CI](../.github/workflows/ci.yml) runs on pull requests, merge groups and manual
+dispatch, not pushes to main. Its single required verdict,
+`Lint, typecheck and test`, aggregates six unit shards, with lint, strict
+typecheck and migration guards in shard 1. It does not build binaries or run
+provider/network or browser tests per PR. See [CI budget](ci-budget.md) for the
+canonical check policy and [merge queue](merge-queue.md) for merge requirements.
 
-Release Please opens the version PR from conventional commits. Merging it publishes `@the-vibe-company/armada` and its platform packages to npm with provenance: [releasing.md](releasing.md).
+Binary compilation, platform/npm installation smoke checks and publication
+belong to the publishing release path, not PR CI. Release Please prepares version
+PRs; production deployment requires the release's exact-SHA staging smoke.
+See [releasing](releasing.md) for publication boundaries and operator prerequisites.
 
-Dashboard browser tests are manual-only: run `bun run e2e` against the local mock. They do not gate PRs or the merge queue.
+Dashboard browser tests are manual-only: run `bun run e2e` against the local mock.
+They do not gate PRs or the merge queue.

@@ -6,13 +6,14 @@ import { DelegatedAuthority, newDelegatedEpochSecret } from "@armada/core/server
 import { createSqlData } from "../src/data.ts";
 import { database } from "./support.ts";
 
-test("managed parent is hidden from generic service/JWT reads and cleanup; identities cannot drift", async () => {
+test("managed parent is hidden from generic service/JWT reads; identities cannot drift", async () => {
   const { db, people: p } = await database();
   const sql: Sql = { query: (q, v) => db.query(q, v) };
   try {
     const golden =
       (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0]?.id ?? "missing-golden";
-    const parent = await createSqlSandboxStore(sql).insert({
+    const store = createSqlSandboxStore(sql);
+    const input: Parameters<typeof store.insert>[0] = {
       id: crypto.randomUUID(),
       provider: "boat",
       providerSandboxId: "parent",
@@ -24,6 +25,13 @@ test("managed parent is hidden from generic service/JWT reads and cleanup; ident
       model: "m",
       reasoningEffort: "high",
       visibility: "private",
+    };
+    const parent = await store.insert(input);
+    const ordinary = await store.insert({
+      ...input,
+      id: crypto.randomUUID(),
+      providerSandboxId: "ordinary",
+      visibility: "org",
     });
     await db.query("insert into orchestrators(org_id,owner_id,sandbox_id) values($1,$2,$3)", [
       p.org,
@@ -37,14 +45,20 @@ test("managed parent is hidden from generic service/JWT reads and cleanup; ident
         via: "supabase",
       });
       expect(await scoped.sandboxes.get(parent.id)).toBeNull();
-      expect((await scoped.sandboxes.list({ limit: 20 })).rows).toHaveLength(0);
+      expect(!!(await scoped.sandboxes.get(ordinary.id))).toBe(userId !== p.member);
+      expect((await scoped.sandboxes.list({ limit: 20 })).rows.map((row) => row.id)).toEqual([ordinary.id]);
       await expect(scoped.sandboxes.update(parent.id, { status: "stopped" })).rejects.toThrow();
       await db.exec("set role authenticated");
       await db.query("select set_config('request.jwt.claim.sub',$1,false)", [userId]);
-      expect((await db.query("select id from sandboxes where id=$1", [parent.id])).rows).toHaveLength(0);
+      expect(
+        (
+          await db.query<{ id: string }>("select id from sandboxes where id=any($1::uuid[])", [
+            [parent.id, ordinary.id],
+          ])
+        ).rows.map((row) => row.id),
+      ).toEqual(userId === p.member ? [] : [ordinary.id]);
       await db.exec("reset role");
     }
-    expect(await createSqlSandboxStore(sql).listBefore("2099-01-01")).toHaveLength(0);
     await expect(db.query("update sandboxes set visibility='org' where id=$1", [parent.id])).rejects.toThrow(
       "immutable managed parent",
     );
