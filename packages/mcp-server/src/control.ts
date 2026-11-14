@@ -72,9 +72,6 @@ import {
   listCredentials,
   listMembers,
   listOrgs,
-  type McpBrokerPort,
-  type McpConnectionInput,
-  type McpRegistry,
   type ModelChoice,
   mutateCredentialAccount,
   normalizeGitHubGoldenConfig,
@@ -113,6 +110,7 @@ import { validateAzureModelAccount } from "./azure-model-account.ts";
 import { AuthUnavailable, authenticateCaller, type Caller, type SupabaseProject } from "./caller.ts";
 import { databasePoolMax } from "./config.ts";
 import { readBody, readVaultBody } from "./control-body.ts";
+import { optional, required, UUID } from "./control-input.ts";
 import { type CredentialBindingRecovery, createCredentialBindingRecovery } from "./credential-binding-recovery.ts";
 import { createSqlData, type DataSource, type ScopedData } from "./data.ts";
 import type { GitHubAccountApi } from "./github-account.ts";
@@ -121,6 +119,7 @@ import { InvitationError, type Invitations, invitationsFromEnv } from "./invitat
 import { exposedSecrets, launchCredentials } from "./launch-credentials.ts";
 import { launchOptions, launchProviderOptions } from "./launch-options.ts";
 import { catalogAuthenticationFromEnv } from "./mcp-catalog-client.ts";
+import { dispatchMcp, type McpControlOptions } from "./mcp-control.ts";
 import { createMcpLifecycle } from "./mcp-lifecycle.ts";
 import { createHistoricalSandboxProviderResolver } from "./mcp-sandbox-provider.ts";
 import { createModalIntegration } from "./modal-integration.ts";
@@ -149,7 +148,6 @@ import { createSubscriptionMigration } from "./subscription-migration.ts";
 import { callSharedTool, ToolApiError } from "./tool-api.ts";
 
 export const CONTROL_PREFIX = "/api/v1/";
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface ControlOptions {
   sandboxBillingAccount?: (
@@ -198,7 +196,7 @@ export interface ControlOptions {
   modelAccountValidator?: NonNullable<Parameters<typeof mutateCredentialAccount>[4]>;
   githubAccount?: GitHubAccountApi;
   goldenRetirements?: import("@armada/core/server").GoldenSnapshotRetirements;
-  mcp?: { registry: McpRegistry; broker?: McpBrokerPort };
+  mcp?: NonNullable<McpControlOptions["mcp"]>;
   connections?: LaunchStores["connections"];
   /** Same verified bearer dependencies as MCP: Armada service/OAuth tokens and Supabase sessions. */
   authStore: AuthStore;
@@ -1955,19 +1953,6 @@ function scopedOrg(caller: Caller, requested: string | undefined): string | unde
   return orgId;
 }
 
-function optional(body: Record<string, unknown>, key: string): string | undefined {
-  const value = body[key];
-  if (value === undefined || value === null) return undefined;
-  if (typeof value !== "string") throw new VaultError("invalid", `${key} must be text.`);
-  return value;
-}
-
-function required(body: Record<string, unknown>, key: string): string {
-  const value = optional(body, key);
-  if (value === undefined) throw new VaultError("invalid", `${key} is required.`);
-  return value;
-}
-
 function requiredRepos(body: Record<string, unknown>): string[] {
   const value = body.repos;
   if (!Array.isArray(value) || value.length === 0 || !value.every((item) => typeof item === "string" && item !== "")) {
@@ -2142,94 +2127,6 @@ function selectGolden(rows: GoldenRecord[], body: Record<string, unknown>): Gold
   if (selected.length > 1)
     throw new GoldenError("conflict", "Golden exists on boat and modal. Pass --provider boat or modal.");
   return selected[0];
-}
-
-async function dispatchMcp(action: string, userId: string, body: Record<string, unknown>, options: ControlOptions) {
-  if (action === "oauth/callback") {
-    const callback = options.mcp?.broker?.callback;
-    if (!callback || !options.mcp) throw new VaultError("unavailable", "MCP OAuth callback broker is not configured.");
-    const result = await callback.call(
-      options.mcp.broker,
-      userId,
-      required(body, "state"),
-      required(body, "code"),
-      optional(body, "issuer"),
-    );
-    const connection = await options.mcp.registry.get(userId, result.orgId, result.connectionId);
-    return {
-      connection: {
-        ...connection,
-        status: connection.status === "disabled" || result.status === "connected" ? connection.status : result.status,
-      },
-    };
-  }
-  const orgId = required(body, "org");
-  if (!UUID.test(orgId)) throw new VaultError("invalid", "org must be an organization UUID.");
-  // Membership checked even if the registry is not configured.
-  const orgs = await listOrgs(options.store, userId);
-  if (!orgs.some((o) => o.id === orgId)) throw new VaultError("forbidden", "Organization membership required.");
-  if (!options.mcp) throw new VaultError("unavailable", "MCP registry is not configured on this server.");
-  const { registry, broker } = options.mcp;
-  if (action === "catalog") return { services: await registry.catalog() };
-  if (action === "metadata") {
-    const id = required(body, "id");
-    if (!UUID.test(id)) throw new VaultError("invalid", "id must be a connection UUID.");
-    return { connection: await registry.metadata(userId, orgId, id, body) };
-  }
-  if (action === "list") return { connections: await registry.list(userId, orgId) };
-  if (action === "create" || action === "update") {
-    if (action === "update" && !UUID.test(required(body, "id")))
-      throw new VaultError("invalid", "id must be a connection UUID.");
-    return {
-      connection: await registry.save(
-        userId,
-        orgId,
-        body as unknown as McpConnectionInput,
-        action === "update" ? required(body, "id") : undefined,
-      ),
-    };
-  }
-  const id = required(body, "id");
-  if (!UUID.test(id)) throw new VaultError("invalid", "id must be a connection UUID.");
-  if (action === "sandbox-connections") return { connections: await registry.sandboxConnections(userId, orgId, id) };
-  if (action === "set-enabled") {
-    if (typeof body.enabled !== "boolean") throw new VaultError("invalid", "enabled must be a boolean.");
-    return { connection: await registry.setEnabled(userId, orgId, id, body.enabled) };
-  }
-  const connection = await registry.get(userId, orgId, id);
-  if (action === "delete" || action === "revoke") {
-    await registry.revoke(userId, orgId, id, action === "delete");
-    return { ok: true };
-  }
-  if (action === "connect" && connection.scope === "org" && !orgs.some((o) => o.id === orgId && o.role === "admin"))
-    throw new VaultError("forbidden", "Only an organization administrator may connect a shared grant.");
-  if (action === "connect" && connection.status === "disabled")
-    throw new VaultError("conflict", "Enable this MCP connection before connecting.");
-  if (connection.transport === "stdio") {
-    if (action === "connect") return { connection: await registry.configureStdio(userId, orgId, id) };
-    if (action === "status") return { connection };
-  }
-  if (action === "status" && connection.status === "disabled") return { connection };
-  if (action === "connect" || action === "status") {
-    if (!broker)
-      return {
-        connection: {
-          ...connection,
-          status: "unavailable",
-          lastError: "MCP broker is not configured. Ask your administrator to configure the OAuth/gateway service.",
-        },
-      };
-    const result = await broker[action]({ userId, orgId, connectionId: id });
-    const current = await registry.get(userId, orgId, id);
-    return {
-      connection: {
-        ...current,
-        status: current.status === "disabled" || result.status === "connected" ? current.status : result.status,
-      },
-      ...("authorizationUrl" in result && result.authorizationUrl ? { authorizationUrl: result.authorizationUrl } : {}),
-    };
-  }
-  throw new VaultError("not_found", "Unknown MCP control action.");
 }
 
 async function selectedCaller(options: ControlOptions, caller: Caller, ref: string | undefined): Promise<Caller> {
