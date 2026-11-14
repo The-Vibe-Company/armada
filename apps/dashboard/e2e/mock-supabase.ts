@@ -529,6 +529,7 @@ function sandbox(
 
 let state = seed();
 let dockerHosts: Row[] | null = null;
+let skillpackActionFailure: string | null = null;
 let vaultActionFailure: { status: number; code?: string; message: string } | null = null;
 let invitationListFailure: string | null = null;
 let invitationActionFailure: string | null = null;
@@ -2631,6 +2632,11 @@ function skillpackDto(row: Row): Row {
 
 function singleton(route: string, body: Row, scope: "user" | "org", owner: string): Response {
   if (body.kind !== "skillpack") return controlFail(400, "invalid", "Unknown credential.");
+  if (skillpackActionFailure) {
+    const message = skillpackActionFailure;
+    skillpackActionFailure = null;
+    return controlFail(503, "unavailable", message);
+  }
   const mine = (row: Row) => row.scope === scope && row.owner_id === owner && row.kind === "skillpack";
   const now = new Date().toISOString();
   if (route === "creds/rm") {
@@ -2770,6 +2776,7 @@ function control(url: URL, body: Row): Response {
     vaultListFailure = null;
     vaultActionFailure = null;
     accountListFailure = null;
+    skillpackActionFailure = null;
     dockerHosts = Array.isArray(body.dockerHosts) ? body.dockerHosts : null;
     invitationListFailure = typeof body.invitationListFailure === "string" ? body.invitationListFailure : null;
     invitationActionFailure = null;
@@ -3060,6 +3067,10 @@ function control(url: URL, body: Row): Response {
       tools: [],
     });
     state.events.set(String(body.sandbox), events);
+    return json({ ok: true });
+  }
+  if (url.pathname === "/__test/fail-next-skillpack") {
+    skillpackActionFailure = String(body.message);
     return json({ ok: true });
   }
   if (url.pathname === "/__test/accounts") {

@@ -151,3 +151,35 @@ test("a member sees the organization's key but only an admin changes it", async 
   const dialog = await openAdd(page);
   await expect(dialog.getByRole("radio", { name: /Org \(Acme\)/ })).toBeDisabled();
 });
+
+test("an unconfirmed key change hides diagnostics and still clears the pasted key", async ({ page }) => {
+  await signIn(page, "alice@example.com", "/skills");
+  const dialog = await openAdd(page);
+  await dialog.getByLabel("Key", { exact: true }).fill(KEY);
+  const diagnostic = "HTTP 503: credential_enc scope_id digest sha256:example";
+  expect(
+    (
+      await fetch(`${MOCK}/__test/fail-next-skillpack`, {
+        method: "POST",
+        body: JSON.stringify({ message: diagnostic }),
+      })
+    ).ok,
+  ).toBe(true);
+  await dialog.getByRole("button", { name: "Store key", exact: true }).click();
+  await expect(dialog.getByRole("alert")).toContainText("Reload Skills");
+  await expect(dialog.getByRole("alert")).not.toContainText(diagnostic);
+  await expect(dialog.getByLabel("Key", { exact: true })).toHaveValue("");
+  expect(await page.content()).not.toContain(KEY);
+  expect(await stored()).toHaveLength(0);
+  for (const [name, width] of [
+    ["desktop", 1280],
+    ["mobile", 390],
+  ] as const) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.screenshot({ path: `test-results/skill-action-after-${name}.png`, fullPage: true });
+  }
+  await dialog.getByLabel("Key", { exact: true }).fill(KEY);
+  await dialog.getByRole("button", { name: "Store key", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect(row(page, "user")).toHaveAttribute("data-skillpack-state", "active");
+});
