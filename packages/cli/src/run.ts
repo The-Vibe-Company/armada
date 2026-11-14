@@ -44,6 +44,7 @@ import { launchDocker } from "./docker-launch.ts";
 import { dockerSnapshotCommand } from "./docker-snapshots.ts";
 import { hostCommand } from "./host-commands.ts";
 import { type LocalHostIo, localHostCommand, productionLocalHostIo } from "./local-host.ts";
+import { onboardingHelp } from "./onboarding-help.ts";
 import { operation, parseTtl } from "./operations.ts";
 import { profileStores, selectProfile } from "./profiles.ts";
 import { printOptionalResourceAdvice } from "./resource-advice.ts";
@@ -320,6 +321,11 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
             ...(deps.readStdin ? { readStdin: deps.readStdin } : {}),
           }),
       );
+    const focusedHelp = onboardingHelp(localArgs);
+    if (focusedHelp) {
+      io.out(focusedHelp);
+      return 0;
+    }
     const selected = selectProfile(argv, deps.env ?? deps.auth?.env ?? process.env);
     argv = selected.args;
     deps = { ...deps, env: selected.env };
