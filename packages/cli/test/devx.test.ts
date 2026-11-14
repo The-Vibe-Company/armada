@@ -98,7 +98,7 @@ test("doctor reports personal-login GitHub requirement when a service bearer is 
   expect(f.output()).toContain("Unset ARMADA_TOKEN");
   expect(JSON.parse(f.output()).checks.find((row: { check: string }) => row.check === "GitHub")).toMatchObject({
     status: "unknown",
-    detail: expect.stringContaining("Sign in as a person with armada login (not a service token)"),
+    detail: expect.stringContaining("sign in as a person with armada login (not a service token)"),
   });
 });
 
