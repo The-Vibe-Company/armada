@@ -1089,9 +1089,12 @@ Codex and **Azure for OpenCode**. The shared preset requires at least one model;
 for Azure, enter the **deployment name configured in your Azure resource**,
 not an assumed underlying model name. In dashboard **Models → Add a model
 account**, select the appropriate provider, enter its OpenAI v1 address and API
-key, and enter the deployment under **Model IDs** (or **Other model IDs** when a
-catalog is shown). A catalog model name is usable only if your deployment
-actually has that name. The preset refuses an empty model list before saving.
+key, and enter its actual deployment under **Azure deployment names**. Azure
+presets do not offer the generic model catalog or infer prices from an underlying
+model name. **Test and add connection** sends one tiny billable Responses request
+per declared deployment before saving. Empty lists, rejected/invalid responses
+and unavailable checks save nothing. All declarations must pass; this is not an
+optional browser-only check.
 
 CLI equivalents from this checkout, with the staging Armada token already
 exported from your secret source:
@@ -1117,16 +1120,31 @@ billing account. Neither command accepts a secret in argv; omit `--file` to read
 stdin. Use a CLI containing `creds connect` (the source command avoids an old
 installed CLI). OpenCode uses API-key authentication and the v1 Responses path;
 legacy versioned Azure URLs and interactive Entra sign-in are not supported by
-that preset. Save success means **configuration saved, not deployment tested**.
+that preset. Both commands use the same mandatory server admission as the
+dashboard. Save success means each declared Azure deployment returned an accepted
+native Responses receipt, **not** that answer/follow-up/resume with a harness is
+proven. See Microsoft’s [v1 endpoint/deployment guidance](https://learn.microsoft.com/en-us/azure/ai-foundry/model-inference/concepts/endpoints).
 
-The older **OpenAI API key → Use a custom endpoint** dashboard route can still
-save an endpoint without any deployment list; that legacy gap is tracked in
-#1579. Missing declared metadata does not prove the key or endpoint is invalid,
-but a harness default is not a safe substitute for an Azure deployment name.
-For an existing account, **Replace key → Azure AI Foundry** re-enters the address,
-key and deployment through the required-model preset (and rotates its version);
-or create a new correctly configured account with the commands above.
-An account's name alone cannot establish its sealed endpoint or authentication.
+The older **OpenAI API key → Use a custom endpoint** route now also requires an
+explicit deployment/model list. CLI `creds set openai --base-url` requires
+`--models`; direct named/legacy API writes cannot omit the list or bypass the
+Azure check. Existing sealed accounts remain readable; they are not rewritten,
+automatically verified or rebound. For an old undeclared Azure account, choose
+**Replace key → Azure AI Foundry**, re-enter address/key/deployment and test/save
+(version rotation), or create a new account with the commands above.
+
+Admission is intentionally limited to public Microsoft Azure OpenAI/Foundry
+resource hosts (`*.openai.azure.com`, `*.services.ai.azure.com`,
+`*.cognitiveservices.azure.com`), HTTPS default port and an `/openai/v1` address.
+DNS must resolve exclusively to public addresses and is pinned to the socket;
+redirects are refused. Private endpoints, custom proxy addresses and legacy
+non-v1 addresses are not accepted by the Azure presets. Other generic Responses
+connections remain separate and are not contacted from the server. The overall
+check budget is 25 seconds; clients allow 45 seconds for the account write.
+Only closed HTTP/error diagnostics are returned, never the upstream body, key or
+address. These tiny setup requests are billable validation, not sandbox turns;
+they do not fabricate sandbox usage/cost receipts. An account name alone does not
+establish its sealed endpoint or authentication.
 
 For Codex, dashboard **Test connection** (or
 `bun run armada creds test SANDBOX_ID --model "$AZURE_DEPLOYMENT"`) sends a tiny
@@ -1136,9 +1154,10 @@ lifecycle. This check is not implemented for OpenCode. Its live verification is
 the existing `opencode-azure` accounts cell: use the new account ID and
 `armada/YOUR-ACTUAL-DEPLOYMENT-NAME` as the model. Codex uses the bare deployment
 name. Run both Modal and owned-Docker cells for answer, follow-up, resumed recall,
-usage, honest costs and cleanup. Neither account creation flow automatically
-performs this live test; completing that onboarding validation remains #1579
-work, not a claim made by the configuration or smoke-table repair.
+usage, honest costs and cleanup. Creation now performs the bounded Azure
+**deployment** check for both harnesses without starting a sandbox; it does not
+perform this full lifecycle test. Actual Modal/Docker accounts observations
+remain required before claiming parity for a newly connected deployment.
 
 An absent pair prints `not-run: no account on staging`, including subscriptions.
 Only provision supported connections: the generic **Other OpenAI-compatible**
@@ -1165,7 +1184,8 @@ not-implemented debt and before/after resume usage and cost checks independently
 name means fixed-point quote validation, not invoice validation: its reason
 retains the server's `estimated` or `api_equivalent` basis with the reported USD
 amount, or `unknown` and its reason. An API-equivalent subscription quote is not
-the subscription payment. A failed cost check
+the subscription payment. `Included in subscription` remains an explicit classification,
+never a zero-dollar pay-as-you-go charge or an inferred invoice. A failed cost check
 never becomes a displayed verified price. Unconfigured/undeclared cells have an
 explicit `all` not-run row, without synthetic feature passes or zero costs.
 This is reporting only; it makes no extra provider calls.
@@ -1244,3 +1264,52 @@ Boat-specific exemption. Missing `gh`/Git tooling, revoked access, failed clone,
 or refused dry-run fails the cell; only a coordinator execution is proof that
 the selected account/provider passes. Older scripts remain until their other
 checks (including real write/refresh lifecycle checks) are migrated.
+
+### Harness feature rows
+
+The `codex`, `claude-code` and `opencode` rows require a real launch followed by
+an answered, finished turn, not an advertised capability. They reuse each
+case's lifecycle sandbox and configured model account. `claude-code` maps to the
+wire harness `claude`; the other feature IDs match their harness IDs.
+
+Use `--parity --only docker --feature opencode` (or the other provider/harness)
+with an `ARMADA_SMOKE_CASES` case explicitly selecting that harness, compatible
+`modelAccountId` and model. A case configured for a different harness reports
+`not-run: harness_account_not_configured` without allocating compute; the probe
+never guesses an account or model. In a full parity run, only the configured
+harness is proved. To exercise multiple available accounts/harnesses, use the
+existing `--parity --accounts` matrix: each configured account case runs these
+same harness rows and cleanup. Missing account cells remain not-run. Boat stays
+outside staging acceptance; its coordinator-only production opt-in is unchanged.
+
+### Cost classification in parity receipts
+
+`usage.cost.classification` separates the billing meaning from an optional USD
+quote: `priced` is a precise persisted list/connection-price estimate (not an
+invoice); `included_in_subscription` means admitted subscription turns have no
+per-token bill; `unknown` means a complete USD estimate cannot be established.
+A subscription may still carry a frozen `api_equivalent` USD reference, or null
+USD with `unknown: price`. Missing admission or turn coverage is never inferred
+to be a subscription. Custom endpoints without declared prices remain unknown.
+
+The historical `exact-cost` parity row now proves this classification before and
+after resume. It validates precise USD sums when quotes exist, explicit null USD
+and price reasons otherwise, and preserves the earlier per-turn quotes across
+resume. A subscription pass is labeled `included in subscription`, not zero USD.
+
+### Steer and interrupt parity
+
+`--parity --feature steer` and `--parity --feature interrupt` reuse the selected
+provider case's sandbox. The probe sends a controlled terminal-wait task and
+observes that exact prompt running before issuing the control once. Steer must
+produce its unique redirected final assistant answer and a finished event on
+the same run (the Boat steer-record ID is not assumed to be a run ID). Interrupt
+must produce an interrupted outcome for the original prompt; an acknowledgement
+alone, or ordinary completion, is not a pass. Tool-result echoes are not answers.
+
+Each control shares a 110-second observation/request budget, with no mutation
+retries. Cleanup remains independent. Advertised unsupported controls remain
+visible debt. Full runs place these controls after resume/usage observations so
+the deliberately interrupted task does not contaminate their cost evidence;
+there are no extra sandbox allocations. These are coordinator/provider probes,
+not unit-test sleeps or CI provider calls.

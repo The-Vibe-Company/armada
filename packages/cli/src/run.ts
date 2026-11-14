@@ -108,13 +108,16 @@ Usage:
                                            server over your own GitHub connection. No BOAT_API_KEY needed.
                                            --setup reads a local script and sends its content to run after
                                            cloning, before the scan.
-  armada golden update <name> (--repo <url>[@branch] ... | --config <file>) [--init <cmd> ...]
+  armada golden update <name> (--add-repo <url>[@branch] ... | --repo <url>[@branch] ... | --config <file>) [--init <cmd> ...]
                                [--setup <local-file>] [--provider boat|modal] [--org <org>] [--idempotency-key <key>] [--timeout <seconds>]
                                            Rebuild the existing golden in place. One golden may contain
                                            many repositories; visibility and ownership stay unchanged.
+                                           --repo/--config REPLACE the complete repository list and init commands.
+                                           --add-repo preserves all stored repositories and init commands (requires updated server).
                                            Create/update admit a durable job, then poll for up to --timeout
                                            seconds (default 60, max 600; 0 returns after admission).
                                            Disconnecting never resubmits or cancels the job.
+  armada golden build-cancel <job-id> [--org <org>] [--json]  Cancel your queued, never-started build
   armada golden build-status <job-id>      Read the authenticated durable build status
   armada golden build-status --idempotency-key <key> --org <org>
                                            Recover an uncertain admission using the saved key.
@@ -217,15 +220,21 @@ Usage:
   armada org members list|add|remove|role  [--org <name>] add <email> [--role admin|member]
                                            Direct membership administration; add requires an existing account,
                                            grants membership immediately and does not send an invitation.
-  armada creds login codex --name <name> [--org <name>]\n                                           Native local device login; five-minute expiry, Ctrl-C cancels\n  armada creds import claude|codex --name <name> [--file <path>] [--org <name>]
+  armada creds login codex --name <name> [--org <name>]
+                                           Native local device login; up to 16 minutes after the device code.
+                                           Keep this terminal open; Ctrl-C/shell exit cancels.
+  armada creds import claude|codex --name <name> [--file <path>] [--org <name>]
                                            Import a locally obtained native token/auth.json; never pass secrets as arguments
   armada creds presets [--json]             List the same model connection providers as the dashboard
   armada creds connect <preset> --name NAME [--file PATH] [--org NAME]
                                            Provider key from stdin/file; custom providers take --models and --base-url
+                                           Azure models are resource deployment names; official Azure addresses are tested
+                                           with a tiny billable request per deployment. A failed check saves nothing.
   armada creds set <kind> [--org <name>] [--file <path>]
                                            Store a credential, encrypted; the value is read from stdin or a file
                                            Model accounts: --name NAME creates; --id UUID --expected-version N replaces
-                                           Codex: --base-url URL [--api-version VERSION]; key still comes from stdin/file
+                                           Codex: --base-url URL --models deployment,model [--api-version VERSION]
+                                           Key from stdin/file; Azure requires actual deployment names, not model catalog IDs
                                            Codex endpoints require Modal and the Responses API, not chat completions
                                            Claude: --base-url URL [--endpoint-auth bearer|api-key] (default bearer)
                                            Claude gateways require Modal and support Claude models only; key from stdin/file
@@ -558,6 +567,8 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
       path ? (deps.readFile ?? ((p) => Bun.file(p).text()))(path) : (deps.readStdin ?? (() => Bun.stdin.text()))(),
     );
   const args = parseArgs(rest, subcommand === "retirement" ? ["--limit"] : ["--host", "--request-id"]);
+  if (args.options.has("--add-repo") && subcommand !== "update")
+    throw new GoldenError("invalid_config", "--add-repo is only supported by golden update.");
   if (single(args, "--provider") === "docker") {
     const auth = authOf(io, deps);
     return dockerSnapshotCommand(
@@ -682,6 +693,23 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
       io.out(`${JSON.stringify(result)}\n`);
       return 0;
     }
+    case "build-cancel": {
+      const auth = authOf(io, deps);
+      const client = await createArmadaApiClient({
+        env: auth.env,
+        fetch: deps.fetch ?? auth.fetch,
+        session: auth.session,
+      });
+      const job = await client.request<GoldenBuildStatus>("/api/v1/golden/build/cancel", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jobId: oneName(args.positionals), org: single(args, "--org") }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (flag(args, "--json")) io.out(JSON.stringify(job) + "\n");
+      else io.out(`Build ${job.jobId}: ${goldenBuildFailureText(job)}\n`);
+      return 0;
+    }
     case "build-status": {
       const auth = authOf(io, deps);
       const client = await createArmadaApiClient({
@@ -699,6 +727,8 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
         }),
         signal: AbortSignal.timeout(10_000),
       });
+      if (!flag(args, "--json") && (job.state === "failed" || job.state === "recovery_required"))
+        io.err(`Build ${job.jobId}: ${goldenBuildFailureText(job)}\n`);
       io.out(JSON.stringify(job) + "\n");
       return job.state === "failed" || job.state === "recovery_required" ? 1 : 0;
     }
@@ -735,6 +765,17 @@ async function admitGoldenBuild(
     ...init,
     body: JSON.stringify({ ...JSON.parse(String(init.body)), idempotencyKey: key }),
   });
+  if (
+    !job ||
+    typeof job.jobId !== "string" ||
+    !job.jobId ||
+    typeof job.phase !== "string" ||
+    !["queued", "running", "failed", "recovery_required", "succeeded"].includes(job.state)
+  )
+    throw new GoldenError(
+      "build_failed",
+      "The server did not return a durable build receipt; the CLI/server may be out of date and the operation may already have completed. Upgrade them together and inspect golden list before retrying; do not resubmit blindly.",
+    );
   if (!flag(args, "--json")) io.out(`Build job: ${job.jobId}\n`);
   const deadline = AbortSignal.timeout(Math.max(1, seconds * 1000));
   let current = job;
@@ -781,7 +822,29 @@ async function admitGoldenBuild(
 
 async function update(positionals: string[], args: ReturnType<typeof parseArgs>, io: Io, deps: Deps): Promise<number> {
   const name = oneName(positionals);
-  const config = await readConfig(args, deps);
+  const additions = values(args, "--add-repo");
+  if (additions.length && ["--repo", "--config", "--init", "--setup"].some((key) => args.options.has(key)))
+    throw new GoldenError(
+      "invalid_config",
+      "--add-repo preserves the stored config. Do not combine it with --repo, --config, --init or --setup; use --config for intentional replacement.",
+    );
+  let config: GoldenConfig | undefined;
+  try {
+    if (additions.length)
+      configFromFlags(additions, []); // Never reconstruct the stored list.
+    else config = await readConfig(args, deps);
+  } catch (error) {
+    if (error instanceof GoldenError)
+      throw new GoldenError(
+        error.code,
+        `${error.message} Check config JSON/paths and use full GitHub git URLs (https://github.com/owner/repo.git[@branch]). Use --add-repo to append; --repo replaces the complete list.`,
+      );
+    throw error;
+  }
+  if (!additions.length)
+    io.err(
+      "Warning: --repo/--config replaces ALL stored repositories and init commands. To append without removing existing repositories, use --add-repo.\n",
+    );
   const setupFile = single(args, "--setup");
   let setup: string | undefined;
   if (setupFile !== undefined) {
@@ -792,26 +855,62 @@ async function update(positionals: string[], args: ReturnType<typeof parseArgs>,
     }
   }
   const auth = authOf(io, deps);
-  const client = await createArmadaApiClient({ env: auth.env, fetch: deps.fetch ?? auth.fetch, session: auth.session });
-  const result = await admitGoldenBuild(client, args, io, deps, "/api/v1/golden/update", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      name,
-      ...(providerFlag(args) ? { provider: providerFlag(args) } : {}),
-      config,
-      ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }),
-      ...(setup === undefined ? {} : { setup }),
-    }),
-    signal: AbortSignal.timeout(10_000),
-  });
+  const client = await createArmadaApiClient(
+    { env: auth.env, fetch: deps.fetch ?? auth.fetch, session: auth.session },
+    { preserveServerErrors: true },
+  );
+  let result: Awaited<ReturnType<typeof admitGoldenBuild>>;
+  try {
+    result = await admitGoldenBuild(
+      client,
+      args,
+      io,
+      deps,
+      additions.length ? "/api/v1/golden/update-add-repos" : "/api/v1/golden/update",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name,
+          ...(providerFlag(args) ? { provider: providerFlag(args) } : {}),
+          ...(additions.length ? { addRepos: additions } : { config }),
+          ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }),
+          ...(setup === undefined ? {} : { setup }),
+        }),
+        signal: AbortSignal.timeout(10_000),
+      },
+    );
+  } catch (error) {
+    if (error instanceof ArmadaApiError) {
+      const help =
+        additions.length && error.status === 404 && !/No golden named/i.test(error.message)
+          ? "This server does not support --add-repo. Upgrade the Armada server and CLI together, then retry. No replacement fallback was attempted."
+          : error.status === 404
+            ? "Run armada golden list --org <org> --json and select the exact name, organization and --provider."
+            : /idempotency/i.test(error.message)
+              ? "Recover the existing job with golden build-status --idempotency-key <key> --org <org>. Reuse a key only for the identical request."
+              : /exists on boat and modal/i.test(error.message)
+                ? "Repeat the update with --provider boat or --provider modal; no build was admitted."
+                : error.status === 400
+                  ? "Check the repository URL/branch and config. --repo replaces the full list; --add-repo preserves it. If required fields are rejected, upgrade the CLI and server together."
+                  : /capacity or binding/i.test(error.message)
+                    ? "For a rebuild, an administrator must distinguish a missing backend binding from an active/stale reservation. Check the existing build ID with golden build-status; do not create a second Boat golden."
+                    : error.status === 403
+                      ? "Use the golden owner (private) or org admin (shared). For GitHub access, grant the caller and Armada GitHub App access to every requested repository."
+                      : error.status >= 500
+                        ? "Check provider connection/billing and server configuration with an administrator. If the outcome is uncertain, recover the printed admission key before resubmitting."
+                        : "Check the reported binding/build status before retrying; do not clear a live reservation.";
+      throw new ArmadaApiError(error.serverCode, error.status, `${error.message} ${help}`);
+    }
+    throw error;
+  }
   if (!result) return 0;
   if (flag(args, "--json")) {
     io.out(`${JSON.stringify(result)}\n`);
     return 0;
   }
   io.out(
-    `Updated golden ${result.name} (${result.visibility}).\nSaved snapshot: ${result.snapshot}\nRepos: ${config.repos.map((repo) => repo.dir).join(", ")}.\n`,
+    `Updated golden ${result.name} (${result.visibility}).\nSaved snapshot: ${result.snapshot}\n${config ? `Repos: ${config.repos.map((repo) => repo.dir).join(", ")}.` : "Existing repositories and init commands retained."}\n`,
   );
   return 0;
 }
@@ -830,7 +929,10 @@ async function create(positionals: string[], args: ReturnType<typeof parseArgs>,
     }
   }
   const auth = authOf(io, deps);
-  const client = await createArmadaApiClient({ env: auth.env, fetch: deps.fetch ?? auth.fetch, session: auth.session });
+  const client = await createArmadaApiClient(
+    { env: auth.env, fetch: deps.fetch ?? auth.fetch, session: auth.session },
+    { preserveServerErrors: true },
+  );
   const result = await admitGoldenBuild(client, args, io, deps, "/api/v1/golden/create", {
     method: "POST",
     headers: { "content-type": "application/json" },

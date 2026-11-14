@@ -2,6 +2,7 @@ import { readBoundedText } from "@armada/auth";
 import { type Sql, VaultError } from "@armada/core/server";
 import type { Route } from "./http.ts";
 import { createRuntimeEnrolments, RuntimeEnrolmentDenied } from "./runtime-enrolment.ts";
+import { runtimeHttpFailure } from "./runtime-http-failure.ts";
 import type { createSubscriptionBroker } from "./subscription-broker.ts";
 
 class InvalidRequest extends Error {}
@@ -104,7 +105,7 @@ export function createRuntimeModelAccess(
             : error instanceof VaultError && ["credential_refused", "forbidden", "not_found"].includes(error.code)
               ? 403
               : 503;
-      return Response.json({ error: "runtime_model_access_unavailable" }, { status, headers });
+      return runtimeHttpFailure(status, "runtime_model_access_unavailable");
     }
   };
 }

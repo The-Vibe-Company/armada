@@ -117,6 +117,26 @@ export async function goldenBuildStatus(jobId: string) {
   return result;
 }
 
+/** Cancels only the caller's queued, never-started build; the server rechecks ownership and state. */
+export async function cancelGoldenBuild(jobId: string, org: string): Promise<ActionResult> {
+  const viewer = await requireViewer();
+  if (!isUuid(jobId) || !isUuid(org)) return fail("That request is not valid.");
+  if (!(await isSelectedOrganization(org))) return fail("Switch to that organization first.");
+  const serverUrl = mcpUrl();
+  if (!serverUrl || !viewer.token) return fail("The Armada server is not configured for this dashboard.");
+  try {
+    const result = await createControlClient({ serverUrl, token: viewer.token }).post("golden/build/cancel", {
+      jobId,
+      org,
+    });
+    if (!isGoldenBuildStatus(result)) return fail("The Armada server sent an unexpected answer.");
+    return { ok: true, message: "Queued build cancelled.", build: result };
+  } catch (error) {
+    if (error instanceof ControlError) return fail(error.message);
+    throw error;
+  }
+}
+
 /**
  * Recovers a lost admission receipt by the key saved before submitting, in the selected org only. It reads; it
  * never submits another build.

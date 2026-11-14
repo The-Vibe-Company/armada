@@ -9,6 +9,23 @@ const boatNotRun = { status: "not-run", reason: "not_part_of_release_gate" };
 // route/receipt regressions without provider compute, credentials, or sleeps.
 for (const mode of [
   "online",
+  "h_codex",
+  "h_claude",
+  "h_opencode",
+  "h_missing",
+  "h_failed",
+
+  "control_steer",
+  "control_interrupt",
+  "control_echo",
+  "control_finished",
+  "control_unsupported",
+  "control_api_unsupported",
+  "control_full",
+  "subscription",
+  "subscription_priced",
+  "subscription_bad_billing",
+  "custom_unknown",
   "docker_send_pending",
   "github",
   "github_scp",
@@ -22,6 +39,7 @@ for (const mode of [
   "github_unsupported",
   "accounts",
   "accounts_api_equivalent",
+  "accounts_subscription",
   "accounts_unknown",
   "accounts_invalid",
   "accounts_missing_model",
@@ -55,6 +73,14 @@ for (const mode of [
   "baseline_quota",
 ] as const) {
   test(`parity normal lifecycle and honest reporting: ${mode}`, async () => {
+    const subscription = mode.startsWith("subscription") || mode === "accounts_subscription";
+    const unpricedSubscription = mode === "subscription" || mode === "accounts_subscription";
+    const requestedHarness =
+      mode === "h_claude" ? "claude-code" : mode === "h_opencode" || mode === "h_missing" ? "opencode" : "codex";
+    const configuredHarness = mode === "h_claude" ? "claude" : mode === "h_opencode" ? "opencode" : "codex";
+    const controlFeature = ["control_interrupt", "control_finished"].includes(mode) ? "interrupt" : "steer";
+    const controlMarkers = new Map<string, string>();
+    const controlled = new Set<string>();
     const debtFeature =
       mode === "unimplemented" ? "mcp" : mode === "idle-pause" || mode === "wake-on-send" ? mode : undefined;
     const lines: string[] = [];
@@ -77,7 +103,7 @@ for (const mode of [
               ...(account ? { account: mode === "accounts_invalid" ? "unknown-account" : account } : {}),
               provider,
               org: provider,
-              harness: "codex",
+              harness: configuredHarness,
               ...(mode === "accounts_missing_model" && account === "codex-azure"
                 ? { model: "", notRunReason: "account has no declared model" }
                 : { model: "fake-model" }),
@@ -92,19 +118,25 @@ for (const mode of [
           { provider: "boat", harness: "invalid" },
         ]),
       },
-      mode.startsWith("github")
-        ? ["--parity", "--feature", "github"]
-        : mode.startsWith("accounts")
-          ? ["--parity", "--accounts"]
-          : mode === "usage_filter"
-            ? ["--parity", "--only", "docker", "--feature", "exact-cost"]
-            : mode === "filtered"
-              ? ["--parity", "--only", "docker", "--feature", "exec"]
-              : debtFeature
-                ? ["--parity", "--feature", debtFeature]
-                : mode === "invalid_filter"
-                  ? ["--parity", "--feature", "typo"]
-                  : ["--parity"],
+      mode.startsWith("h_")
+        ? ["--parity", "--feature", requestedHarness]
+        : ["control_api_unsupported", "control_full"].includes(mode)
+          ? ["--parity"]
+          : mode.startsWith("control_")
+            ? ["--parity", "--feature", controlFeature]
+            : mode.startsWith("github")
+              ? ["--parity", "--feature", "github"]
+              : mode.startsWith("accounts")
+                ? ["--parity", "--accounts"]
+                : mode === "usage_filter"
+                  ? ["--parity", "--only", "docker", "--feature", "exact-cost"]
+                  : mode === "filtered"
+                    ? ["--parity", "--only", "docker", "--feature", "exec"]
+                    : debtFeature
+                      ? ["--parity", "--feature", debtFeature]
+                      : mode === "invalid_filter"
+                        ? ["--parity", "--feature", "typo"]
+                        : ["--parity"],
       {
         now: () => 0,
         sleep: async () => {},
@@ -126,8 +158,10 @@ for (const mode of [
               result = {
                 providers: providers.map((id) => ({
                   id,
-                  harnesses: ["codex"],
+                  harnesses: [configuredHarness],
                   capabilities: {
+                    steer: mode.startsWith("control_") && mode !== "control_unsupported",
+                    interrupt: mode.startsWith("control_") && mode !== "control_unsupported",
                     launch: true,
                     exec: true,
                     github: mode !== "github_unsupported",
@@ -139,6 +173,8 @@ for (const mode of [
                     delete: true,
                   },
                   unsupportedReasons: {
+                    steer: "Steer unavailable for this harness.",
+                    interrupt: "Interrupt unavailable for this harness.",
                     github: "GitHub disabled by server.",
                     stop: "Stop unavailable | <test>\n(#1579)",
                     resume: "Server resume disabled.",
@@ -168,6 +204,10 @@ for (const mode of [
               result = { hosts: [{ id: "owned-host", state: mode === "offline" ? "offline" : "online" }] };
               break;
             case "sandbox/launch":
+              if (mode.startsWith("h_")) {
+                expect(body.harness).toBe(configuredHarness);
+                expect(body.credentialId).toBe("fake-account");
+              }
               if (mode.startsWith("accounts")) turns.set(p, []);
               if (p === "docker") {
                 expect(body).not.toHaveProperty("image");
@@ -197,6 +237,28 @@ for (const mode of [
               states.set(p, "ready");
               result = { sandbox: { id: p, provider: p } };
               break;
+            case "sandbox/wait":
+              result = {
+                prompt: {
+                  promptId: turns.get(p)?.at(-1),
+                  state: controlled.has(p) ? (mode === "control_finished" ? "finished" : "interrupted") : "running",
+                },
+              };
+              break;
+            case "sandbox/steer":
+              if (mode === "control_api_unsupported")
+                return Response.json(
+                  { error: { code: "unsupported", message: "This harness cannot steer." } },
+                  { status: 400 },
+                );
+              expect(body.text).toContain("Cancel the waiting task");
+              controlMarkers.set(p, body.text.match(/PARITY_STEER_[a-z0-9]+/)[0]);
+              result = { id: p, promptId: "steer-record", delivery: "restart" };
+              break;
+            case "sandbox/interrupt":
+              controlled.add(p);
+              result = { id: p, interrupted: true };
+              break;
             case "sandbox/send": {
               if (mode === "docker_send_pending" && p === "docker")
                 return Response.json(
@@ -213,9 +275,28 @@ for (const mode of [
               break;
             }
             case "logs/read":
+              if (controlMarkers.has(p)) {
+                result = {
+                  events: [
+                    {
+                      kind: "message",
+                      promptId: "steered-run",
+                      text: controlMarkers.get(p),
+                      partial: false,
+                      responseKind: mode === "control_echo" ? "tool_result" : "assistant",
+                    },
+                    { kind: "prompt", promptId: "steered-run", status: "finished" },
+                  ],
+                };
+                break;
+              }
               result = {
                 events: [
-                  { kind: "prompt", promptId: turns.get(p)?.at(-1), status: "finished" },
+                  {
+                    kind: "prompt",
+                    promptId: turns.get(p)?.at(-1),
+                    status: mode === "h_failed" ? "failed" : "finished",
+                  },
                   { kind: "message", promptId: turns.get(p)?.at(-1), text: `SMOKE_OK ${prompts.get(p)}` },
                 ],
               };
@@ -262,13 +343,22 @@ for (const mode of [
                     inputTokens: mode === "usage_missing" ? null : 10,
                     outputTokens: 5,
                     pricing: {
+                      ...(subscription
+                        ? {
+                            basis: "api_equivalent",
+                            billing: mode === "subscription_bad_billing" ? "per_token" : "subscription",
+                            credentialId: "account",
+                          }
+                        : {}),
                       unknown:
-                        mode === "accounts_unknown" ||
+                        unpricedSubscription ||
+                        ["accounts_unknown", "custom_unknown"].includes(mode) ||
                         (mode === "accounts_price_lost" && (turns.get(p)?.length ?? 0) > 1)
                           ? "price"
                           : null,
                       usd:
-                        mode === "accounts_unknown" ||
+                        unpricedSubscription ||
+                        ["accounts_unknown", "custom_unknown"].includes(mode) ||
                         (mode === "accounts_price_lost" && (turns.get(p)?.length ?? 0) > 1)
                           ? null
                           : mode === "price_changed" && (turns.get(p)?.length ?? 0) > 1
@@ -281,20 +371,33 @@ for (const mode of [
                     },
                   })),
                   cost: {
+                    classification: subscription
+                      ? "included_in_subscription"
+                      : mode.startsWith("accounts_unknown") ||
+                          mode === "custom_unknown" ||
+                          mode === "accounts_price_lost"
+                        ? "unknown"
+                        : "priced",
                     currency: "USD",
-                    basis: mode === "accounts_api_equivalent" ? "api_equivalent" : "estimated",
+                    basis: subscription || mode === "accounts_api_equivalent" ? "api_equivalent" : "estimated",
                     unknown:
                       mode.startsWith("accounts_unknown") ||
+                      unpricedSubscription ||
+                      mode === "custom_unknown" ||
                       (mode === "accounts_price_lost" && (turns.get(p)?.length ?? 0) > 1)
                         ? "price"
                         : null,
                     unpricedTurns:
                       mode.startsWith("accounts_unknown") ||
+                      unpricedSubscription ||
+                      mode === "custom_unknown" ||
                       (mode === "accounts_price_lost" && (turns.get(p)?.length ?? 0) > 1)
                         ? turns.get(p)?.length
                         : 0,
                     usd:
                       mode.startsWith("accounts_unknown") ||
+                      unpricedSubscription ||
+                      mode === "custom_unknown" ||
                       (mode === "accounts_price_lost" && (turns.get(p)?.length ?? 0) > 1)
                         ? null
                         : mode === "cost_mismatch"
@@ -375,11 +478,13 @@ for (const mode of [
           expect(summary).toContain(`| ${account} | ${provider} | mcp | not-run: probe_not_implemented |`);
           expect(summary).toContain(`| ${account} | ${provider} | resume-recall | pass |`);
           expect(summary).toContain(`| ${account} | ${provider} | usage-after-resume | pass |`);
-          const cost = badCost
-            ? "fail: invalid_cost_receipt"
-            : mode === "accounts_unknown"
-              ? "pass: unknown: price"
-              : `pass: ${mode === "accounts_api_equivalent" ? "api_equivalent" : "estimated"}: USD 0.3`;
+          const cost = subscription
+            ? "pass: included in subscription"
+            : badCost
+              ? "fail: invalid_cost_receipt"
+              : mode === "accounts_unknown"
+                ? "pass: unknown: price"
+                : `pass: ${mode === "accounts_api_equivalent" ? "api_equivalent" : "estimated"}: USD 0.3`;
           expect(summary).toContain(`| ${account} | ${provider} | exact-cost | ${cost} |`);
           if (mode === "accounts_stop_unsupported")
             expect(summary).toContain(
@@ -493,6 +598,79 @@ for (const mode of [
       expect(report.features["exact-cost-before-resume"].docker.status).toBe("not-run");
       expect(report.features["exact-cost-after-resume"].docker.status).toBe("pass");
       expect(report.features["exact-cost"].docker.status).toBe("not-run");
+      return;
+    }
+    if (mode.startsWith("h_")) {
+      expect(passed).toBe(mode !== "h_failed");
+      for (const provider of ["modal", "docker"]) {
+        const cell = report.features[requestedHarness][provider];
+        expect(cell.status).toBe(mode === "h_missing" || mode === "h_failed" ? "not-run" : "pass");
+        if (mode === "h_missing") {
+          expect(cell.reason).toBe("harness_account_not_configured");
+          expect(calls).not.toContain(`${provider}:sandbox/launch`);
+        } else {
+          expect(calls.filter((call) => call === `${provider}:sandbox/launch`)).toHaveLength(1);
+          expect(turns.get(provider)).toHaveLength(1);
+          expect(report.features.cleanup[provider].status).toBe("pass");
+          if (mode === "h_failed") expect(cell.reason).toBe("send: turn_failed");
+        }
+      }
+      return;
+    }
+
+    if (mode === "subscription_bad_billing") {
+      expect(passed).toBe(false);
+      expect(report.features["exact-cost"].modal).toMatchObject({ status: "fail", reason: "invalid_cost_receipt" });
+      return;
+    }
+    if (subscription || mode === "custom_unknown") {
+      expect(passed).toBe(true);
+      for (const provider of ["modal", "docker"]) {
+        for (const name of ["exact-cost", "exact-cost-before-resume", "exact-cost-after-resume"])
+          expect(report.features[name][provider]).toMatchObject({
+            status: "pass",
+            reason: subscription ? "included in subscription" : "unknown: price",
+          });
+        expect(turns.get(provider)).toHaveLength(2);
+      }
+      return;
+    }
+    if (mode === "control_full") {
+      expect(passed).toBe(true);
+      for (const provider of ["modal", "docker"]) {
+        expect(report.features.steer[provider].status).toBe("pass");
+        expect(report.features.interrupt[provider].status).toBe("pass");
+        expect(calls.filter((call) => call === `${provider}:sandbox/launch`)).toHaveLength(1);
+        expect(turns.get(provider)).toHaveLength(4);
+        expect(report.features.cleanup[provider].status).toBe("pass");
+      }
+      return;
+    }
+    if (mode === "control_api_unsupported") {
+      expect(passed).toBe(true);
+      for (const provider of ["modal", "docker"]) {
+        expect(report.features.steer[provider].status).toBe("unsupported");
+        expect(report.features.interrupt[provider]).toMatchObject({
+          status: "not-run",
+          reason: "steer_failed",
+          diagnostic: { code: "unsupported" },
+        });
+        expect(calls).not.toContain(`${provider}:sandbox/interrupt`);
+        expect(report.features.cleanup[provider].status).toBe("pass");
+      }
+      return;
+    }
+    if (mode.startsWith("control_")) {
+      const fail = mode === "control_echo" || mode === "control_finished";
+      expect(passed).toBe(!fail);
+      for (const provider of ["modal", "docker"]) {
+        expect(report.features[controlFeature][provider].status).toBe(
+          mode === "control_unsupported" ? "unsupported" : fail ? "fail" : "pass",
+        );
+        expect(calls.filter((call) => call === `${provider}:sandbox/launch`)).toHaveLength(1);
+        expect(report.features.cleanup[provider].status).toBe("pass");
+        expect(turns.get(provider)?.length ?? 0).toBe(mode === "control_unsupported" ? 0 : 1);
+      }
       return;
     }
     if (mode === "docker_send_pending") {
@@ -677,6 +855,8 @@ function productionBoatFixture(
                 id: "boat",
                 harnesses: ["codex"],
                 capabilities: {
+                  steer: false,
+                  interrupt: false,
                   launch: true,
                   followupPrompts: true,
                   status: true,
@@ -686,7 +866,7 @@ function productionBoatFixture(
                   resume: true,
                   delete: true,
                 },
-                unsupportedReasons: {},
+                unsupportedReasons: { steer: "Unavailable", interrupt: "Unavailable" },
               },
             ],
           });
@@ -736,7 +916,13 @@ function productionBoatFixture(
                 outputTokens: 2,
                 pricing: { unknown: null, usd: "0.1" },
               })),
-              cost: { currency: "USD", unknown: null, unpricedTurns: 0, usd: `0.${turns.length}` },
+              cost: {
+                classification: "priced",
+                currency: "USD",
+                unknown: null,
+                unpricedTurns: 0,
+                usd: `0.${turns.length}`,
+              },
             },
           });
         case "sandbox/status":

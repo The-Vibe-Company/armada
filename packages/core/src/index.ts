@@ -8,6 +8,12 @@ export {
   githubHydrationPhase,
 } from "./api-failure.ts";
 export { type ApplicationSecretBinding, parseApplicationSecretBindings } from "./application-secret-bindings.ts";
+export {
+  AZURE_ACCOUNT_CHECK_TIMEOUT_MS,
+  isAzureResourceHost,
+  MODEL_ACCOUNT_WRITE_TIMEOUT_MS,
+  validateAzureOpenAIAddress,
+} from "./azure-endpoint.ts";
 export { CLAUDE_ENDPOINT_ENV, type ClaudeEndpoint, parseClaudeEndpoint } from "./claude-endpoint.ts";
 export { CLIENT_CONFIG_PATH, type ClientConfig } from "./client-config.ts";
 export { CODEX_ENDPOINT_ENV, type CodexEndpoint, parseCodexEndpoint } from "./codex-endpoint.ts";
@@ -173,6 +179,7 @@ export type { GoldenBuildStatus } from "./golden-build-status.ts";
 export { goldenBuildFailureText, providerPaymentRequiredMessage } from "./golden-build-status.ts";
 export type { GoldenBuildWarning } from "./golden-build-warning.ts";
 export {
+  addGoldenRepositories,
   assignDirs,
   configFromFlags,
   type GitHubGoldenConfig,

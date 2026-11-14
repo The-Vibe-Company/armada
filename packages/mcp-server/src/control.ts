@@ -38,6 +38,7 @@ import {
 } from "@armada/core";
 import {
   type ApplicationVault,
+  addGoldenRepositories,
   addMember,
   assertGoldenMutation,
   connectGolden,
@@ -109,6 +110,7 @@ import {
 import { createBoatProvider } from "@armada/provider-boat";
 import { GatewayError } from "../../mcp-gateway/src/network.ts";
 import { apiFailureCode, providerFailureResponse } from "./api-failure.ts";
+import { validateAzureModelAccount } from "./azure-model-account.ts";
 import { AuthUnavailable, authenticateCaller, type Caller, type SupabaseProject } from "./caller.ts";
 import { databasePoolMax } from "./config.ts";
 import { type CredentialBindingRecovery, createCredentialBindingRecovery } from "./credential-binding-recovery.ts";
@@ -193,6 +195,8 @@ export interface ControlOptions {
   modelUsage?: ModelUsageApi;
   invitations?: Invitations;
   providerValidator?: ProviderValidator;
+  /** Server-owned account admission; never selected or disabled by request JSON. */
+  modelAccountValidator?: NonNullable<Parameters<typeof mutateCredentialAccount>[4]>;
   githubAccount?: GitHubAccountApi;
   goldenRetirements?: import("@armada/core/server").GoldenSnapshotRetirements;
   mcp?: { registry: McpRegistry; broker?: McpBrokerPort };
@@ -349,7 +353,7 @@ export async function handleControlRequest(request: Request, options: ControlOpt
     if (result === undefined) return fail(404, "unknown_route", "Unknown route.");
     return Response.json(result, {
       status:
-        (route === "golden/create" || route === "golden/update") &&
+        (route === "golden/create" || route === "golden/update" || route === "golden/update-add-repos") &&
         typeof result === "object" &&
         result !== null &&
         "jobId" in result
@@ -1114,26 +1118,38 @@ async function dispatch(
     case "creds/accounts/default":
     case "creds/accounts/remove": {
       const action = route.split("/").at(-1) as "set" | "rename" | "default" | "remove";
-      const account = await mutateCredentialAccount(store, encryptionKey, userId, {
-        action,
-        ...(body.expectedVersion === undefined ? {} : { expectedVersion: requiredNumber(body, "expectedVersion") }),
-        ...(optional(body, "expiresAt") ? { expiresAt: required(body, "expiresAt") } : {}),
-        scope: scope(body),
-        ...(org ? { org } : {}),
-        ...(body.id !== undefined ? { id: required(body, "id") } : {}),
-        ...(body.name !== undefined ? { name: required(body, "name") } : {}),
-        ...(optional(body, "kind") ? { kind: parseCredentialKind(required(body, "kind")) } : {}),
-        ...(optional(body, "value") ? { value: required(body, "value") } : {}),
-      });
+      const account = await mutateCredentialAccount(
+        store,
+        encryptionKey,
+        userId,
+        {
+          action,
+          ...(body.expectedVersion === undefined ? {} : { expectedVersion: requiredNumber(body, "expectedVersion") }),
+          ...(optional(body, "expiresAt") ? { expiresAt: required(body, "expiresAt") } : {}),
+          scope: scope(body),
+          ...(org ? { org } : {}),
+          ...(body.id !== undefined ? { id: required(body, "id") } : {}),
+          ...(body.name !== undefined ? { name: required(body, "name") } : {}),
+          ...(optional(body, "kind") ? { kind: parseCredentialKind(required(body, "kind")) } : {}),
+          ...(optional(body, "value") ? { value: required(body, "value") } : {}),
+        },
+        options.modelAccountValidator ?? validateAzureModelAccount,
+      );
       return { account };
     }
     case "creds/set":
-      await setCredential(store, encryptionKey, userId, {
-        scope: scope(body),
-        org,
-        kind: parseCredentialKind(required(body, "kind")),
-        value: required(body, "value"),
-      });
+      await setCredential(
+        store,
+        encryptionKey,
+        userId,
+        {
+          scope: scope(body),
+          org,
+          kind: parseCredentialKind(required(body, "kind")),
+          value: required(body, "value"),
+        },
+        options.modelAccountValidator ?? validateAzureModelAccount,
+      );
       return { ok: true };
     case "creds/list":
       return listCredentials(store, userId, org);
@@ -1366,6 +1382,15 @@ async function dispatch(
     }
     case "golden/list":
       return listGoldens(options, await selectedCaller(options, caller, optional(body, "org")));
+    case "golden/build/cancel": {
+      if (!options.goldenBuilds) throw new VaultError("unavailable", "Durable golden builds are not configured.");
+      const scoped = await selectedCaller(options, caller, optional(body, "org"));
+      return options.goldenBuilds.cancel(
+        caller.userId,
+        required(body, "jobId"),
+        scoped.orgs.map((org) => org.orgId),
+      );
+    }
     case "golden/build/status":
       if (!options.goldenBuilds) throw new VaultError("unavailable", "Durable golden builds are not configured.");
       return options.goldenBuilds.status(
@@ -1379,6 +1404,8 @@ async function dispatch(
       return createGoldenRoute(options, caller, body);
     case "golden/update":
       return updateGoldenRoute(options, caller, body);
+    case "golden/update-add-repos":
+      return updateGoldenRoute(options, caller, body, true);
     case "golden/snapshot":
       return snapshotGoldenRoute(options, caller, body);
     case "golden/connect":
@@ -1461,7 +1488,12 @@ async function createGoldenRoute(options: ControlOptions, caller: Caller, body: 
 }
 
 /** Rebuild an existing visible golden in place. The row, owner and visibility come from storage, never the body. */
-async function updateGoldenRoute(options: ControlOptions, caller: Caller, body: Record<string, unknown>) {
+async function updateGoldenRoute(
+  options: ControlOptions,
+  caller: Caller,
+  body: Record<string, unknown>,
+  additive = false,
+) {
   if (!options.goldenBuilds || (!options.providers && !options.providerFor) || !options.data)
     throw new VaultError("unavailable", "Secure golden creation is not configured on this server.");
   required(body, "idempotencyKey");
@@ -1472,8 +1504,22 @@ async function updateGoldenRoute(options: ControlOptions, caller: Caller, body: 
   if (!existingGolden) throw new GoldenError("not_found", `No golden named '${name}'.`);
   const actor: GoldenActor = { userId: caller.userId, orgId: org.id, role: org.role };
   assertGoldenMutation(actor, existingGolden);
-  if (body.config === undefined) throw new VaultError("invalid", "config is required.");
-  const config = normalizeGitHubGoldenConfig(parseGoldenConfig(body.config));
+  if (additive && (body.config !== undefined || body.setup !== undefined))
+    throw new VaultError(
+      "invalid",
+      "--add-repo cannot replace config or setup. Use --config with the complete desired configuration for replacement.",
+    );
+  if (!additive && body.addRepos !== undefined)
+    throw new VaultError(
+      "invalid",
+      "Additive repository updates require the golden/update-add-repos route. Upgrade the CLI; do not retry as a replacement.",
+    );
+  if (!additive && body.config === undefined) throw new VaultError("invalid", "config is required.");
+  if (additive && (!Array.isArray(body.addRepos) || !body.addRepos.every((repo) => typeof repo === "string")))
+    throw new VaultError("invalid", "addRepos must be a non-empty list of repository URLs.");
+  const config = normalizeGitHubGoldenConfig(
+    additive ? addGoldenRepositories(existingGolden.config, body.addRepos as string[]) : parseGoldenConfig(body.config),
+  );
   const provider = await providerForGolden(options, caller, existingGolden);
   return options.goldenBuilds.admit(
     provider,

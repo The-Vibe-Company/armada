@@ -66,6 +66,8 @@ type State = {
   goldenCalls: { route: string; body: Row; authorized: boolean }[];
   goldenGate: {
     hold: boolean;
+    /** Keep admission queued for cancellation checks, without advancing to a running builder. */
+    holdQueued?: boolean;
     fail: { status: number; code?: string; message: string } | null;
     /** The job is admitted, then a gateway in front of the server loses the answer (a 504 without a code). */
     loseAnswer?: boolean;
@@ -2161,7 +2163,7 @@ type GoldenJob = {
   body: Row;
   owner: string;
   key: string;
-  status: { state: string; phase: string; errorCode: string | null; result: Row | null };
+  status: { state: string; phase: string; errorCode: string | null; failureReason?: string | null; result: Row | null };
 };
 const goldenJobs = new Map<string, GoldenJob>();
 const IDEMPOTENCY_KEY = /^[A-Za-z0-9_-]{16,128}$/;
@@ -2226,6 +2228,7 @@ async function goldenJobStatus(body: Row, request: Request): Promise<Response> {
   if (!job || job.owner !== userId || !isMember(job.body.org, userId))
     return json({ error: { code: "not_found", message: "No such build." } }, 404);
   if (job.status.state === "queued" || job.status.state === "running") {
+    if (state.goldenGate.holdQueued && job.status.state === "queued") return json(jobJson(job));
     if (state.goldenGate.hold)
       job.status = { state: "running", phase: "checkout_baseline", errorCode: null, result: null };
     else {
@@ -2235,6 +2238,33 @@ async function goldenJobStatus(body: Row, request: Request): Promise<Response> {
         : { state: "failed", phase: "publish", errorCode: "build_failed", result: null };
     }
   }
+  return json(jobJson(job));
+}
+
+function cancelGoldenJob(body: Row, request: Request): Response {
+  const userId = viewer(request);
+  if (!userId) return json({ error: { code: "unauthorized", message: "Sign in." } }, 401);
+  const job = goldenJobs.get(String(body.jobId));
+  if (!job || job.owner !== userId || !isMember(job.body.org, userId) || (body.org && body.org !== job.body.org))
+    return json({ error: { code: "not_found", message: "No such build." } }, 404);
+  if (job.status.state !== "queued" || job.status.phase !== "queued")
+    return json(
+      {
+        error: {
+          code: "conflict",
+          message:
+            "Only a queued, never-started build can be cancelled. Check its status; running builds need recovery.",
+        },
+      },
+      409,
+    );
+  job.status = {
+    state: "failed",
+    phase: "queued",
+    errorCode: "build_failed",
+    failureReason: "detail:Queued build cancelled by its owner; no builder was started. You can submit a new build.",
+    result: null,
+  };
   return json(jobJson(job));
 }
 
@@ -2948,6 +2978,7 @@ function control(url: URL, body: Row): Response {
       loseAnswer: body.loseAnswer === true,
       failStatus: body.failStatus === true,
       hold: body.hold === true,
+      holdQueued: body.holdQueued === true,
       fail: body.fail ? (body.fail as State["providerStatusFail"]) : null,
     };
     return json({ ok: true });
@@ -2963,6 +2994,7 @@ function control(url: URL, body: Row): Response {
   }
   if (url.pathname === "/__test/golden-release") {
     state.goldenGate.hold = false;
+    state.goldenGate.holdQueued = false;
     return json({ ok: true });
   }
   if (url.pathname === "/__test/goldens") {
@@ -3313,6 +3345,7 @@ const server = Bun.serve({
       if (route === "skillpack/catalog" || route === "skillpack/versions")
         return skillCatalogRoute(route, body, request);
       if (route === "golden/build/status") return goldenJobStatus(body, request);
+      if (route === "golden/build/cancel") return cancelGoldenJob(body, request);
       if (route === "golden/create" || route === "golden/update") return goldenBuild(route, body, request);
       if (route === "golden/capabilities") return goldenCapabilities(body, request);
       if (route === "golden/remove") return goldenRemove(body, request);

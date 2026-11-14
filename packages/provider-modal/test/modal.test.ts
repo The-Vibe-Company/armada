@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { type AgentEvent, ProviderError, type Sql } from "@armada/core";
-import { createSqlVaultStore, GoldenBuildJobs } from "@armada/core/server";
+import { createSqlVaultStore, encryptSecret, GoldenBuildJobs } from "@armada/core/server";
 import type { Image, ModalClient, Sandbox } from "modal";
 import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import { type Driver, Journal, Runner } from "../../agent-runtime/src/index.ts";
@@ -426,6 +426,20 @@ test("detail verifies the App once per read and still rejects a changed binding"
 test("durable golden recovery persists an interrupted Modal builder before exact owned cleanup, never replays create", async () => {
   const f = fixture();
   const key = Buffer.alloc(32, 61).toString("base64");
+  // Admission now verifies repository access before reserving work. Seed a cached
+  // caller connection and synthetic GitHub responses; recovery still never clones.
+  await db.query(
+    "insert into github_connections(user_id,github_id,login,refresh_token_enc,access_token_enc,access_expires_at) values($1,77,'builder',$2,$3,now()+interval '8 hours')",
+    [scope.userId, await encryptSecret("fixture-refresh", key), await encryptSecret("fixture-access", key)],
+  );
+  const githubFetch = (async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url === "https://api.github.com/user") return Response.json({ id: 77, login: "builder", name: null });
+    if (url.startsWith("https://api.github.com/user/installations")) return Response.json({ installations: [] });
+    if (url === "https://api.github.com/repos/acme/web")
+      return Response.json({ id: 1, name: "web", owner: { login: "acme" }, default_branch: "main", private: false });
+    throw new Error("Unexpected fixture GitHub route");
+  }) as typeof fetch;
   const actor = { userId: scope.userId, orgId: scope.orgId, role: "admin" as const };
   let concurrentAfterPersist: (() => Promise<void>) | undefined;
   const recoverySql: Sql = {
@@ -450,7 +464,13 @@ test("durable golden recovery persists an interrupted Modal builder before exact
     sql: recoverySql,
     encryptionKey: key,
     service: {
-      github: { store: createSqlVaultStore(db), encryptionKey: key, app: null },
+      github: {
+        store: createSqlVaultStore(db),
+        encryptionKey: key,
+        app: { clientId: "fixture", clientSecret: "fixture" },
+        fetch: githubFetch,
+      },
+      fetch: githubFetch,
       installationApp: null,
       ssh: async () => {
         throw Error("Build commands must not replay");

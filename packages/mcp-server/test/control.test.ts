@@ -2301,7 +2301,11 @@ test("CLI/API connection checks require the owner and current bound revision, ex
     expect(
       (
         await owner.run(["creds", "set", "openai", "--name", "Foundry"], {
-          stdin: JSON.stringify({ endpoint: { version: 1, baseUrl: "https://example.com/v1" }, apiKey: key }),
+          stdin: JSON.stringify({
+            endpoint: { version: 1, baseUrl: "https://example.com/v1" },
+            apiKey: key,
+            models: ["deployment"],
+          }),
         })
       ).code,
     ).toBe(0);
@@ -2393,6 +2397,7 @@ test("CLI/API connection checks require the owner and current bound revision, ex
           stdin: JSON.stringify({
             endpoint: { version: 1, baseUrl: "https://example.com/v1" },
             apiKey: crypto.randomUUID(),
+            models: ["deployment"],
           }),
         })
       ).code,
