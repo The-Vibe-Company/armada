@@ -69,6 +69,7 @@ test("doctor reports session, server, GitHub repository scope, host daemon and m
 
 test.each([
   [{ status: "not_connected", login: null }, "warning", "armada github connect"],
+  [{ status: "not_connected", login: null, configured: false }, "unknown", "server operator"],
   [{ status: "needs_reconnect", login: "owner" }, "warning", "armada github reconnect"],
   [{ status: "connected", login: "owner", installations: [] }, "warning", "armada github install"],
   [{ status: "unavailable", login: null, configured: false }, "unknown", "server operator"],
@@ -94,6 +95,7 @@ test("doctor reports personal-login GitHub requirement when a service bearer is 
     "/api/v1/github/status": Response.json({ error: "forbidden" }, { status: 403 }),
   });
   expect(await doctor(["--json"], f.auth)).toBe(0);
+  expect(f.output()).toContain("Unset ARMADA_TOKEN");
   expect(JSON.parse(f.output()).checks.find((row: { check: string }) => row.check === "GitHub")).toMatchObject({
     status: "unknown",
     detail: expect.stringContaining("Sign in as a person with armada login (not a service token)"),

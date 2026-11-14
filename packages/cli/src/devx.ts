@@ -175,7 +175,13 @@ export async function doctor(argv: readonly string[], auth: AuthIo): Promise<num
         installations?: { account: string; repository_selection?: string }[];
       };
     }>(auth, "github/status", {});
-    if (connection.status === "connected") {
+    if (connection.configured === false) {
+      add(
+        "GitHub",
+        "unknown",
+        "GitHub is not configured on this server. Ask the server operator to configure the GitHub App.",
+      );
+    } else if (connection.status === "connected") {
       const installations = (connection.installations ?? []).map(
         (installation) =>
           `${installation.account} (${
@@ -209,16 +215,14 @@ export async function doctor(argv: readonly string[], auth: AuthIo): Promise<num
       add(
         "GitHub",
         "unknown",
-        connection.configured === false
-          ? "GitHub is not configured on this server. Ask the server operator to configure the GitHub App."
-          : "Could not confirm GitHub access. Run armada github status; reconnect only if it reports an expired or revoked connection.",
+        "Could not confirm GitHub access. Run armada github status; reconnect only if it reports an expired or revoked connection.",
       );
     }
   } catch {
     add(
       "GitHub",
       "unknown",
-      "Could not read GitHub connection. Sign in as a person with armada login (not a service token), then run armada github status; check the server connection if already signed in.",
+      "Could not read GitHub connection. Unset ARMADA_TOKEN and sign in as a person with armada login (not a service token), then run armada github status; check the server connection if already signed in.",
     );
   }
   if (!org) {
