@@ -225,12 +225,18 @@ alias. The legacy `DOCKER_DEFAULT_IMAGE` remains available for explicit operator
 preview APIs only. A normal launch's GitHub delivery diagnostic names the
 `configureGitHub` step; it is not evidence of a missing user grant.
 
-An accepted Docker launch can be followed immediately by `sandbox/send`. The
-server waits within the send admission budget for launch preparation and its
-initial conversation, then admits the follow-up with the original request ID.
-If preparation outlasts that budget, the outcome is retryable pending, not a
-starting-state conflict; retry identical input with the same request ID. The
-dashboard retains that key and draft on an unconfirmed send.
+An accepted Docker launch can be followed immediately by `sandbox/send`. While
+preparation is pending, send persists the encrypted instruction and returns an
+immediate receipt with a stable public `promptId`, `status: "queued"`,
+`state: "queued"`, and `conversationId: null`. No client retry loop is required.
+The dedicated server worker dispatches accepted sends in order after preparation
+and the prior native turn settle. Reusing the same request ID returns the original
+receipt; changing its text or selected conversation is a conflict.
+
+Status resolves the queued public prompt ID before native admission and retains
+that ID when the native journal later arrives. Queue facts in logs are separate
+from native journal evidence. If startup fails, the queued prompt becomes failed
+with the sandbox's safe startup reason; stop/expiry/revocation fence dispatch.
 
 Stop/delete mailbox work takes priority over queued startups and snapshot builds.
 Stop intent fences queued creation/bootstrap before a physical stop ACK can

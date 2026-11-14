@@ -2,6 +2,7 @@ import { ProviderError } from "@armada/core";
 import { decryptSecret, type Sql } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import { createDockerLaunchEnvironment } from "./docker-launch-environment.ts";
+import { createDockerQueuedPrompts } from "./docker-queued-prompts.ts";
 import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
@@ -13,6 +14,8 @@ export function createDockerNormalSend(
   key: string,
   options: {
     enabled?: boolean;
+    /** Internal worker only: dispatch an already accepted, fenced queue record. */
+    dispatchQueued?: boolean;
     github?: Pick<RuntimeGitHub, "prepareTurn">;
     clock?: { now(): number; wait(ms: number): Promise<void> };
     timeoutMs?: number;
@@ -55,45 +58,24 @@ export function createDockerNormalSend(
           (typeof args.conversation_id !== "string" || !uuid.test(args.conversation_id)))
       )
         throw failure("invalid_request", "Docker send requires request_id and prompt; model and effort remain pinned.");
-      // Launch is an accepted reservation, not readiness. Preserve its first prompt/conversation
-      // before admitting this follow-up; do not mistake ordinary preparation for a resume conflict.
-      const deadline = clock.now() + (options.timeoutMs ?? 25_000);
-      for (;;) {
-        // Read readiness and launch completion from one database snapshot. A stale ready row
-        // must not discard the first conversation published just before the launch receipt.
+      if (!options.dispatchQueued) {
+        const queued = await createDockerQueuedPrompts(sql, key).accept(caller, row.id, row.org_id, {
+          request_id: args.request_id,
+          prompt: args.prompt,
+          ...(args.conversation_id === undefined ? {} : { conversation_id: args.conversation_id as string }),
+        });
+        if (queued) return queued;
         const current = (
-          await sql.query<typeof row & { launch_pending: boolean }>(
-            `select s.id,s.org_id,s.owner_id,s.status,s.conversation_ids,s.docker_snapshot_id,
-             exists(select 1 from public.docker_launch_requests d where d.sandbox_id=s.id and d.result_enc is null) as launch_pending
-           from public.sandboxes s join public.members m on m.org_id=s.org_id and m.user_id=$2
-           where s.id=$1 and s.owner_id=$2 and s.org_id=$3`,
+          await sql.query<typeof row>(
+            `select s.id,s.org_id,s.owner_id,s.status,s.conversation_ids,s.docker_snapshot_id from public.sandboxes s
+          join public.members m on m.user_id=$2 and m.org_id=s.org_id where s.id=$1 and s.owner_id=$2 and s.org_id=$3`,
             [row.id, caller.userId, row.org_id],
           )
         ).rows[0];
         if (!current) throw failure("unavailable", "Docker sandbox is no longer accessible.");
         row = current;
-        if (!current.launch_pending && row.status !== "starting") break;
-        if (["stopping", "stopped", "failed", "deleted"].includes(row.status))
-          throw failure(
-            "unavailable",
-            "Docker sandbox stopped or failed during startup. Inspect its status before retrying.",
-          );
-        // A retry of this exact resume request still owns completing that existing wake.
-        if (!current.launch_pending && wake) {
-          const resume = await sql.query(
-            `select request_id from public.docker_host_jobs where bound_sandbox_id=$1 and request_id=$2
-             and bound_operation='resume' and bound_actor_id=$3 and outcome is distinct from 'failed'`,
-            [row.id, args.request_id, caller.userId],
-          );
-          if (resume.rows.length) break;
-        }
-        if (clock.now() >= deadline)
-          throw failure(
-            "unavailable",
-            "Docker launch preparation is pending. Retry identical input with the same request_id.",
-          );
-        await clock.wait(Math.min(250, deadline - clock.now()));
       }
+      const deadline = clock.now() + (options.timeoutMs ?? 25_000);
       // A saved prompt UUID is admission history, never a fresh wake instruction.
       // In particular, retrying it after a later idle stop must not resume compute.
       const previous = (
@@ -111,7 +93,11 @@ export function createDockerNormalSend(
              and bound_operation='resume' and bound_actor_id=$3 and outcome is distinct from 'failed'`,
             [row.id, args.request_id, caller.userId],
           );
-          if (!pendingResume.rows.length) throw failure("conflict", "Docker sandbox is already starting.");
+          if (!pendingResume.rows.length)
+            throw failure(
+              "unavailable",
+              "Docker sandbox resume is pending. Retry identical input with the same request_id.",
+            );
         }
         row = await wake();
         if (!["ready", "running"].includes(row.status))

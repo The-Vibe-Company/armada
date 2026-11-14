@@ -32,6 +32,7 @@ const ROW_ALIASES: Record<string, string> = {
   runtime_resumes: "RuntimeResumeRow",
   runtime_checkpoints: "RuntimeCheckpointRow",
   docker_snapshots: "DockerSnapshotRow",
+  docker_queued_prompts: "DockerQueuedPromptRow",
   docker_hosts: "DockerHostRow",
   docker_host_jobs: "DockerHostJobRow",
   docker_launch_requests: "DockerLaunchRequestRow",

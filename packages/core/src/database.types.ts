@@ -480,6 +480,81 @@ export type Database = {
           },
         ];
       };
+      docker_queued_prompts: {
+        Row: {
+          sandbox_id: string;
+          request_id: string;
+          prompt_id: string;
+          owner_id: string;
+          actor_epoch: number;
+          lifecycle_generation: number;
+          position: number;
+          input_enc: string;
+          input_hash: string;
+          status: string;
+          native_prompt_id: string | null;
+          native_conversation_id: string | null;
+          failure_reason: string | null;
+          failure_native_sequence: number | null;
+          worker_id: string | null;
+          worker_expires_at: string | null;
+          created_at: string;
+        };
+        Insert: {
+          sandbox_id: string;
+          request_id: string;
+          prompt_id: string;
+          owner_id: string;
+          actor_epoch: number;
+          lifecycle_generation: number;
+          position: number;
+          input_enc: string;
+          input_hash: string;
+          status?: string;
+          native_prompt_id?: string | null;
+          native_conversation_id?: string | null;
+          failure_reason?: string | null;
+          failure_native_sequence?: number | null;
+          worker_id?: string | null;
+          worker_expires_at?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          sandbox_id?: string;
+          request_id?: string;
+          prompt_id?: string;
+          owner_id?: string;
+          actor_epoch?: number;
+          lifecycle_generation?: number;
+          position?: number;
+          input_enc?: string;
+          input_hash?: string;
+          status?: string;
+          native_prompt_id?: string | null;
+          native_conversation_id?: string | null;
+          failure_reason?: string | null;
+          failure_native_sequence?: number | null;
+          worker_id?: string | null;
+          worker_expires_at?: string | null;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "docker_queued_prompts_owner_id_fkey";
+            columns: ["owner_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "docker_queued_prompts_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: false;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       docker_snapshots: {
         Row: {
           id: string;
@@ -4344,6 +4419,7 @@ export type Credential = Database["public"]["Tables"]["credentials"]["Row"];
 export type DockerHostJobRow = Database["public"]["Tables"]["docker_host_jobs"]["Row"];
 export type DockerHostRow = Database["public"]["Tables"]["docker_hosts"]["Row"];
 export type DockerLaunchRequestRow = Database["public"]["Tables"]["docker_launch_requests"]["Row"];
+export type DockerQueuedPromptRow = Database["public"]["Tables"]["docker_queued_prompts"]["Row"];
 export type DockerSnapshotRow = Database["public"]["Tables"]["docker_snapshots"]["Row"];
 export type GitHubAuthorization = Database["public"]["Tables"]["github_authorizations"]["Row"];
 export type GitHubConnection = Database["public"]["Tables"]["github_connections"]["Row"];
