@@ -257,3 +257,27 @@ export function dockerHostLimitsInput(
   if (Object.keys(patch).length === 0) return { ok: false, error: "Enter a limit to change, or choose Use automatic." };
   return { ok: true, patch };
 }
+
+/** Host action guidance, without provider/API diagnostics; launch admission policy stays in the action. */
+export function dockerHostActionFailure(
+  status: number | undefined,
+  action: "register" | "revoke" | "limits" | "launch",
+): string {
+  if (status === 401) return "This session cannot manage Hosts. Sign in again, then reload Hosts.";
+  if (status === 403)
+    return action === "limits"
+      ? "Only the host owner can change its limits. Reload Hosts to check your access."
+      : "You no longer have permission for this host action. Ask an organization admin for help.";
+  if (status === 404)
+    return action === "register"
+      ? "Host setup is not available here. Ask an Armada administrator to check server setup, then reload Hosts."
+      : action === "launch"
+        ? "This launch setup is no longer available. Reload Hosts and choose an available host and model account."
+        : "This host is no longer available. Reload Hosts to check its current state.";
+  if (status === 400) return "The host settings were not accepted. Check the form before trying again.";
+  if (action === "register")
+    return "Host setup could not be confirmed. Reload Hosts and check Unfinished setup before adding the machine again.";
+  if (action === "launch")
+    return "The server could not complete this launch. Reload Hosts and check the host's capacity and model account before trying again.";
+  return "The host change could not be confirmed. Reload Hosts to check its current state before trying again.";
+}

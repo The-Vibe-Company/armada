@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import {
   connectedHostName,
   type DockerHost,
+  dockerHostActionFailure,
   dockerHostLimitsInput,
   expiryCountdown,
   hostFact,
@@ -238,4 +239,14 @@ test("busy-machine capacity including zero remains visible with held-back guidan
     parseDockerHostList({ placement: true, hosts: [host({ resources: { ...resources, capacity: 0 }, running: 0 })] })
       ?.skipped,
   ).toBe(0);
+});
+
+test("host action recovery distinguishes unavailable setup, ownership and uncertain changes", () => {
+  expect(dockerHostActionFailure(404, "register")).toContain("check server setup");
+  expect(dockerHostActionFailure(403, "limits")).toContain("host owner");
+  expect(dockerHostActionFailure(403, "register")).toContain("organization admin");
+  expect(dockerHostActionFailure(401, "revoke")).toContain("Sign in again");
+  expect(dockerHostActionFailure(503, "register")).toContain("Unfinished setup");
+  expect(dockerHostActionFailure(undefined, "limits")).toContain("could not be confirmed");
+  expect(dockerHostActionFailure(409, "launch")).toContain("capacity and model account");
 });
