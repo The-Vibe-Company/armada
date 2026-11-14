@@ -9,6 +9,7 @@ const boatNotRun = { status: "not-run", reason: "not_part_of_release_gate" };
 // route/receipt regressions without provider compute, credentials, or sleeps.
 for (const mode of [
   "online",
+  "docker_send_pending",
   "github",
   "github_scp",
   "github_ssh",
@@ -196,6 +197,11 @@ for (const mode of [
               result = { sandbox: { id: p, provider: p } };
               break;
             case "sandbox/send": {
+              if (mode === "docker_send_pending" && p === "docker")
+                return Response.json(
+                  { error: { code: "sandbox_not_ready", message: "Docker launch preparation is pending." } },
+                  { status: 409 },
+                );
               if (p !== "docker") expect(body.request_id).toBeUndefined();
               if (body.prompt.includes("Remember this token")) prompts.set(p, body.prompt.match(/PARITY_[a-z0-9]+/)[0]);
               states.set(p, p === "docker" ? "running" : "ready");
@@ -468,6 +474,35 @@ for (const mode of [
       expect(report.features["exact-cost-after-resume"].docker.status).toBe("pass");
       expect(report.features["exact-cost"].docker.status).toBe("not-run");
       return;
+    }
+    if (mode === "docker_send_pending") {
+      expect(passed).toBe(false);
+      for (const name of ["resume-recall", "usage", "exact-cost"]) {
+        expect(report.features[name].docker).toMatchObject({
+          status: "not-run",
+          reason: "send: sandbox_not_ready",
+          diagnostic: { code: "sandbox_not_ready", httpStatus: 409 },
+        });
+      }
+      expect(report.features.cleanup.docker.status).toBe("pass");
+      expect(calls.filter((call) => call === "docker:sandbox/launch")).toHaveLength(1);
+      return;
+    }
+    if (mode === "online") {
+      for (const provider of ["modal", "docker"]) {
+        for (const name of [
+          "resume-recall",
+          "usage",
+          "exact-cost",
+          "usage-before-resume",
+          "usage-after-resume",
+          "exact-cost-before-resume",
+          "exact-cost-after-resume",
+        ])
+          expect(report.features[name][provider].status).toBe("pass");
+        expect(calls.filter((call) => call === `${provider}:sandbox/launch`)).toHaveLength(1);
+        expect(turns.get(provider)).toHaveLength(2);
+      }
     }
     if (["cost_mismatch", "usage_missing", "price_changed", "usage_filter", "usage_lost"].includes(mode)) {
       const cell = report.features["exact-cost"].docker;

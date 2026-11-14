@@ -861,6 +861,26 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           );
       }
     }
+    // These probes already share the provider's lifecycle sandbox. If a
+    // prerequisite prevents observation, report that cause, not implementation debt.
+    for (const name of ["resume-recall", "usage", "exact-cost"]) {
+      if (feature && feature !== name) continue;
+      const cell = report[name]?.[c.provider];
+      if (cell?.status !== "not-run" || !["probe_not_implemented", "resume_not_observed"].includes(cell.reason ?? ""))
+        continue;
+      const prerequisite = ["launch", "send", "stop", "resume"]
+        .map((step) => ({ step, cell: report[feature ? `prerequisite:${step}` : step]?.[c.provider] }))
+        .find(({ cell }) => cell && cell.status !== "pass");
+      record(
+        name,
+        c.provider,
+        "not-run",
+        prerequisite
+          ? `${prerequisite.step}: ${prerequisite.cell?.reason ?? prerequisite.cell?.status}`
+          : "resume_not_observed",
+        prerequisite?.cell?.diagnostic,
+      );
+    }
     // Probe failures never replace cleanup. A failed journal write or lost
     // resume acknowledgement still leaves a known allocation to reconcile.
     if (id) {
