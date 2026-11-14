@@ -17,6 +17,7 @@ export {
 export { CLAUDE_ENDPOINT_ENV, type ClaudeEndpoint, parseClaudeEndpoint } from "./claude-endpoint.ts";
 export { CLIENT_CONFIG_PATH, type ClientConfig } from "./client-config.ts";
 export { CODEX_ENDPOINT_ENV, type CodexEndpoint, parseCodexEndpoint } from "./codex-endpoint.ts";
+export { COMPATIBLE_MODEL_PROVIDERS } from "./compatible-providers.ts";
 export {
   type CatalogModel,
   CONNECTION_PRESETS,

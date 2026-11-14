@@ -1,5 +1,6 @@
 import { CLAUDE_ENDPOINT_ENV } from "./claude-endpoint.ts";
 import { CODEX_ENDPOINT_ENV } from "./codex-endpoint.ts";
+import { COMPATIBLE_MODEL_PROVIDERS } from "./compatible-providers.ts";
 import { HARNESSES, type Harness } from "./contract.ts";
 import { CODEX_AUTH_ENV, type HarnessCredentials, redact } from "./credentials.ts";
 import {
@@ -370,12 +371,26 @@ export async function launchSandbox(
   const snapshot = golden.providerSnapshotId;
   if (!snapshot) throw new GoldenError("conflict", `Golden '${golden.name}' has no snapshot yet.`);
   const credentials = await stores.credentials.resolve(actor, harness, request.credentialId, options.credentialVersion);
+  if (
+    [CLAUDE_ENDPOINT_ENV, CODEX_ENDPOINT_ENV].some((name) => {
+      const raw = credentials.env[name];
+      return (
+        raw &&
+        JSON.parse(raw).baseUrl === COMPATIBLE_MODEL_PROVIDERS.morph[harness === "claude" ? "claude" : "codex"].baseUrl
+      );
+    })
+  ) {
+    const models: readonly string[] = COMPATIBLE_MODEL_PROVIDERS.morph.models;
+    choice.model = request.model ?? models[0]!;
+    if (!models.includes(choice.model))
+      throw new LaunchError("invalid_request", "Choose a Morph plan model for this account.");
+  }
   if (defaultRuntime && !credentials.binding)
     throw new LaunchError(
       "invalid_request",
       `${golden.provider === "boat" ? "Boat" : "Modal"} runtime default requires a bound model account; no native fallback.`,
     );
-  if (credentials.env[CLAUDE_ENDPOINT_ENV] && provider.id !== "modal")
+  if (credentials.env[CLAUDE_ENDPOINT_ENV] && provider.id !== "modal" && !runtime)
     throw new LaunchError("invalid_request", "Custom Claude gateways currently require Modal.");
   if (credentials.env[CODEX_ENDPOINT_ENV] && provider.id !== "modal" && !runtime)
     throw new LaunchError("invalid_request", "Custom Codex endpoints currently require Modal.");

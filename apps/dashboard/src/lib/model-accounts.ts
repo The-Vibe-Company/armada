@@ -55,6 +55,7 @@ const KIND_PRESENTATION: Record<AccountKind, Omit<KindInfo, "harness" | "harness
     valueLabel: "OAuth token",
     hint: "Run claude setup-token on your machine, sign in, and paste the token it prints.",
   },
+  morph: { label: "Morph", billing: "api", valueLabel: "API key", hint: "One Morph key for Claude Code and Codex." },
   anthropic: {
     label: "Anthropic API key",
     billing: "api",

@@ -4240,7 +4240,8 @@ export type Database = {
         | "codex_auth"
         | "modal"
         | "skillpack"
-        | "opencode";
+        | "opencode"
+        | "morph";
       credential_scope: "user" | "org";
       harness: "claude" | "codex" | "opencode";
       member_role: "admin" | "member";
