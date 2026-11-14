@@ -139,7 +139,15 @@ export function createDockerHostRoutes(
         if (version !== undefined && !/^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?$/.test(version)) throw new InvalidInput();
         if (body.skipSnapshots !== undefined && body.skipSnapshots !== true) throw new InvalidInput();
         return Response.json(
-          { job: await store.poll(token, installationId, version, body.skipSnapshots === true) },
+          {
+            job: await store.poll(
+              token,
+              installationId,
+              version,
+              body.skipSnapshots === true,
+              body.resources as { cpus: number; memoryBytes: number } | undefined,
+            ),
+          },
           { headers },
         );
       }

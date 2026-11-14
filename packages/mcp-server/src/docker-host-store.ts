@@ -13,6 +13,8 @@ import {
   type DockerHostJob,
   parseDockerHostJob,
 } from "../../core/src/docker-host-job.ts";
+import type { DockerHostResources } from "../../core/src/docker-resources.ts";
+import { DockerHostFull } from "./docker-capacity.ts";
 
 import { authorizeSnapshotBuild, resolveDockerSnapshot } from "./docker-snapshot-data.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
@@ -97,7 +99,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
     try {
       if (!sql.transaction) deny();
       return await sql.transaction(work);
-    } catch {
+    } catch (error) {
+      if (error instanceof DockerHostFull) throw error;
       return deny();
     }
   }
@@ -656,7 +659,13 @@ export function createDockerHostStore(sql: Sql, key: string) {
       }
       return false;
     },
-    poll(hostToken: string, installationId: string, version?: string, skipSnapshots = false): Promise<Job | null> {
+    poll(
+      hostToken: string,
+      installationId: string,
+      version?: string,
+      skipSnapshots = false,
+      resources?: DockerHostResources,
+    ): Promise<Job | null> {
       return transaction(async (tx) => {
         // Cleanup bypasses queued startup/snapshot work; already executing native work remains serial.
         // Stop intent fences every later startup, so an absent-resource ACK cannot admit a queued create.
@@ -673,6 +682,13 @@ export function createDockerHostStore(sql: Sql, key: string) {
           host.id,
           version ?? null,
         ]);
+        if (resources) {
+          await tx.query("update public.docker_hosts set machine_cpus=$2,machine_memory_bytes=$3 where id=$1", [
+            host.id,
+            resources.cpus,
+            resources.memoryBytes,
+          ]);
+        }
         await tx.query(
           "update public.docker_snapshots set status='failed',image_id=null,failure_reason='Snapshot build expired before an image was published.' where host_id=$1 and status='building' and build_expires_at<=now()",
           [host.id],

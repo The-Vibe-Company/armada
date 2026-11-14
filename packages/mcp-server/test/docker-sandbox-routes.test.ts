@@ -252,3 +252,15 @@ test("public Docker preview dispatches two same-conversation prompts through run
   });
   expect(JSON.stringify(archive)).not.toMatch(/armada_enrol_|armada_runtime_/);
 });
+
+test("full host refusal is an actionable HTTP conflict rather than a generic server failure", async () => {
+  const f = await fixture();
+  await f.hosts.poll(f.hostToken, f.installationId, "2.31.0", false, { cpus: 2, memoryBytes: 6 * 1024 ** 3 });
+  expect((await f.post("launch", f.launch)).status).toBe(201);
+  const response = await f.post("launch", { ...f.launch, requestId: randomUUID() });
+  expect(response.status).toBe(409);
+  expect(await response.json()).toMatchObject({
+    error: "host_full",
+    message: expect.stringContaining("1/1 sandboxes running; stop one or raise the limit"),
+  });
+});
