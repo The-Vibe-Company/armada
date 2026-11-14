@@ -125,6 +125,8 @@ const features = [
   "scoped-child-access",
 ];
 const accountMatrix = {
+  "claude-morph": "claude",
+  "codex-morph": "codex",
   "codex-openai": "codex",
   "codex-subscription": "codex",
   "codex-azure": "codex",
@@ -1977,7 +1979,8 @@ async function accountsParity(env: NodeJS.ProcessEnv, io: Io, args: string[]): P
     accounts[account] = {};
     for (const provider of providers) {
       const c = cases.find((c) => c.account === account && c.provider === provider);
-      const reason = c?.notRunReason ?? "no account on staging";
+      const reason =
+        c?.notRunReason ?? (account.endsWith("-morph") ? "no account configured" : "no account on staging");
       let result: object = { status: "not-run", reason };
       let status = `not-run: ${reason}`;
       if (c && !c.notRunReason) {

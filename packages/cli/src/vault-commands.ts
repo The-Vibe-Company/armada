@@ -341,7 +341,14 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
           "Connection check failed: " +
             (result.status === null
               ? "connection failed or timed out"
-              : "HTTP " + result.status + " " + (result.code ?? result.error)) +
+              : "HTTP " +
+                result.status +
+                " " +
+                (result.code ?? result.error) +
+                (result.status === 401 ? " (account authentication rejected; check the saved key)" : "") +
+                (result.status === 429 && result.retryAfterSeconds !== undefined
+                  ? ` (retry after ${result.retryAfterSeconds} seconds)`
+                  : "")) +
             ".\n",
         );
       return result.ok ? 0 : 1;
