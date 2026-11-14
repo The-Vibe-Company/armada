@@ -169,17 +169,19 @@ export const itemKey = (item: Pick<VaultItem, "kind" | "id">) => `${item.kind}-$
  * A control API refusal in words. The vault's own messages are deliberately generic ("Application vault access
  * denied."), so the dashboard says what each status means for this page instead.
  */
-export function vaultFailure(status: number | undefined, fallback: string): string {
+export function vaultFailure(status: number | undefined): string {
   switch (status) {
+    case 401:
+      return "This session cannot access Variables. Sign in again, then reload Variables.";
     case 400:
       return "The server refused that name or value. Check the rules under each field and try again.";
     case 403:
-      return "Only an admin changes organization variables and secrets.";
+      return "You no longer have access to this item, or permission to change it. Ask an organization admin for help.";
     case 404:
       return "It no longer exists. Refresh the page.";
     case 409:
       return "It changed since this page loaded, or the name is already used. Refresh and try again.";
     default:
-      return fallback;
+      return "The request could not be confirmed. Reload Variables to check the current state before trying again.";
   }
 }

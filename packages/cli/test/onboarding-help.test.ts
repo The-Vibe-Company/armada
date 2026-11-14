@@ -5,6 +5,7 @@ import { run } from "../src/run.ts";
 test("nested onboarding help is focused and performs no authenticated or secret I/O", async () => {
   for (const command of [
     "org setup",
+    "list",
     "send",
     "steer",
     "exec",
@@ -219,6 +220,8 @@ test("help detection leaves malformed operations and literal payloads to their p
     ["interrupt", "--conversation", "-h"],
     ["steer", "sandbox-id", "--help"],
     ["exec", "sandbox-id", "--", "-h"],
+    ["list", "--status", "-h"],
+    ["list", "--", "--help"],
     ["constructor", "--help"],
     ["toString", "-h"],
   ])

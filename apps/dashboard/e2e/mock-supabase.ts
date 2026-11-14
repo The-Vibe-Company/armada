@@ -530,6 +530,7 @@ function sandbox(
 let state = seed();
 let dockerHosts: Row[] | null = null;
 let skillpackActionFailure: string | null = null;
+let vaultActionFailure: { status: number; code?: string; message: string } | null = null;
 let invitationListFailure: string | null = null;
 let snapshotListFailure: string | null = null;
 let templateListFailure: { unsupported: boolean; message: string } | null = null;
@@ -1345,6 +1346,13 @@ function vaultRoute(route: string, body: Row, request: Request): Response {
   const denied = () => refuse(403, "forbidden", "Application vault access denied.");
   if (kind === "secret" && operation === "read") return invalid();
   if (!isMember(body.org, userId)) return denied();
+  if (operation !== "list" && vaultActionFailure) {
+    const failure = vaultActionFailure;
+    vaultActionFailure = null;
+    return failure.code
+      ? refuse(failure.status, failure.code, failure.message)
+      : json({ error: failure.message }, failure.status);
+  }
   if (operation === "list" && vaultListFailure)
     return vaultListFailure.unsupported
       ? json({ error: vaultListFailure.message }, 404)
@@ -2760,6 +2768,7 @@ function control(url: URL, body: Row): Response {
     state = seed();
     templateListFailure = null;
     vaultListFailure = null;
+    vaultActionFailure = null;
     accountListFailure = null;
     skillpackActionFailure = null;
     dockerHosts = Array.isArray(body.dockerHosts) ? body.dockerHosts : null;
@@ -3244,6 +3253,14 @@ function control(url: URL, body: Row): Response {
     return json({ ok: true });
   }
   /** Another tab or the CLI revokes a vault item: the page still holds the version it loaded. */
+  if (url.pathname === "/__test/fail-next-vault") {
+    vaultActionFailure = {
+      status: Number(body.status ?? 503),
+      message: String(body.message),
+      ...(typeof body.code === "string" ? { code: body.code } : {}),
+    };
+    return json({ ok: true });
+  }
   if (url.pathname === "/__test/vault-list-failure") {
     vaultListFailure =
       typeof body.message === "string" ? { unsupported: body.unsupported === true, message: body.message } : null;

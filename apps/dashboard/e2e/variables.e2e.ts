@@ -204,3 +204,46 @@ test("a change made elsewhere is refused as stale, without losing the page", asy
   await expect(replace.getByRole("alert")).toHaveText(/changed since this page loaded.*Refresh and try again/);
   await expect(replace.getByLabel("Secret value")).toHaveValue("");
 });
+
+// Owns action-to-screen error containment; lifecycle/value rules stay in the existing tests above.
+test("failed variable actions hide diagnostics, retain the draft and allow a fresh read", async ({ page }) => {
+  await signIn(page, "alice@example.com", "/variables");
+  const dialog = await openAdd(page);
+  await dialog.getByLabel("Name").fill("EXAMPLE_SETTING");
+  await dialog.getByLabel("Value", { exact: true }).fill("example_value");
+  const diagnostic = "HTTP 503: value_enc vault_item_id digest sha256:example";
+  expect(
+    (
+      await fetch(`${MOCK}/__test/fail-next-vault`, {
+        method: "POST",
+        body: JSON.stringify({ code: "unavailable", message: diagnostic }),
+      })
+    ).ok,
+  ).toBe(true);
+  await dialog.getByRole("button", { name: "Save variable", exact: true }).click();
+  await expect(dialog.getByRole("alert")).toContainText("Reload Variables");
+  await expect(dialog.getByRole("alert")).not.toContainText(diagnostic);
+  await expect(dialog.getByLabel("Value", { exact: true })).toHaveValue("example_value");
+  for (const [name, width] of [
+    ["desktop", 1280],
+    ["mobile", 390],
+  ] as const) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.screenshot({ path: `test-results/variable-action-after-${name}.png`, fullPage: true });
+  }
+  await page.keyboard.press("Escape");
+  const variable = await panel(page, "APP_REGION");
+  expect(
+    (
+      await fetch(`${MOCK}/__test/fail-next-vault`, {
+        method: "POST",
+        body: JSON.stringify({ status: 502, message: diagnostic }),
+      })
+    ).ok,
+  ).toBe(true);
+  await variable.getByRole("button", { name: "Show value" }).click();
+  await expect(variable.getByRole("alert")).toContainText("Reload Variables");
+  await expect(variable.getByRole("alert")).not.toContainText("502");
+  await variable.getByRole("button", { name: "Show value" }).click();
+  await expect(variable.locator("[data-variable-value]")).toHaveText("eu-west-1");
+});
