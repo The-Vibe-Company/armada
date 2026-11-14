@@ -27,6 +27,7 @@ import {
   type Turn,
 } from "./protocol.ts";
 import { readRuntimeJson } from "./request-framing.ts";
+import { executeWithReceipt } from "./request-receipts.ts";
 import { sampleVmResources } from "./resource-sampler.ts";
 import { installRuntimeSkills } from "./skills.ts";
 import { executeWorkspace, validateWorkspaceExec } from "./workspace-exec.ts";
@@ -280,24 +281,7 @@ export class Runner {
         const result = await sampleVmResources();
         return Response.json({ version: 1, requestId: r.requestId, result });
       }
-      const old = this.journal.db.query("SELECT body FROM requests WHERE id=?").get(r.requestId) as {
-        body: string;
-      } | null;
-      if (old && r.op !== "checkpoint")
-        return new Response(old.body, { headers: { "content-type": "application/json" } });
-      const mutating = !["events", "health", "getPrompt", "getExec", "checkpoint", "observeOrchestrator"].includes(
-        r.op,
-      );
-      // Fence before side effects. A crash leaves an explicit unknown outcome, never a duplicate turn.
-      if (mutating)
-        this.journal.db
-          .query("INSERT INTO requests VALUES(?,?)")
-          .run(r.requestId, JSON.stringify({ version: 1, requestId: r.requestId, error: "request_outcome_unknown" }));
-      const result = await this.dispatch(r, request.signal);
-      const body = this.journal.redact(JSON.stringify({ version: 1, requestId: r.requestId, result }));
-      if (!["events", "health", "getPrompt", "getExec", "checkpoint", "observeOrchestrator"].includes(r.op))
-        this.journal.db.query("INSERT OR REPLACE INTO requests VALUES(?,?)").run(r.requestId, body);
-      return new Response(body, { headers: { "content-type": "application/json" } });
+      return await executeWithReceipt(this.journal, r, () => this.dispatch(r, request.signal));
     } catch (error) {
       return Response.json(
         { error: this.journal.redact(error instanceof Error ? error.message : "runner_error") },
