@@ -1322,3 +1322,23 @@ visible debt. Full runs place these controls after resume/usage observations so
 the deliberately interrupted task does not contaminate their cost evidence;
 there are no extra sandbox allocations. These are coordinator/provider probes,
 not unit-test sleeps or CI provider calls.
+
+### Configured template-revision parity
+
+Add `template: {"id":"<template UUID>","revision":2}` to a provider case and run
+`--parity --feature templates` (optionally `--only docker` or `--only modal`).
+The probe launches that existing revision idle, checks the frozen manifest's
+provider, harness, model and admitted account against the case, then requires a
+finished answered turn. It never creates, publishes or deletes the operator's
+template. Use a dedicated smoke template; its configured resources are real.
+Missing configuration is `not-run: template_revision_not_configured`, with no
+allocation for the filtered feature.
+
+In a full run, this is one additional launch per configured provider case,
+because template admission is a distinct launch path. The combined table counts
+these starts and includes template cleanup failures. Pending admission replays
+only the identical durable request key; claimed sandbox IDs are journaled before
+waiting for completion and cleaned up even if acknowledgement remains unknown.
+Child probes share the outer run deadline; cleanup keeps its independent budget.
+Boat retains the coordinator-only production opt-in. Template CRUD/publication
+and routine execution are not established by this launch probe.
