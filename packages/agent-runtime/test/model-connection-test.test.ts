@@ -241,3 +241,22 @@ test("private test RPC is grant protected, refuses request destinations/builders
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test.each(["17", "key_echo", "999999999999", "-1"])(
+  "rate-limit diagnostics publish only bounded retry seconds (%s)",
+  async (retry) => {
+    const result = await testModelConnection(
+      { harness: "codex", endpoint: { version: 1, baseUrl: "https://example.com/v1" }, apiKey: "private_test_key" },
+      "morph-kimik31",
+      new AbortController().signal,
+      async () => new Response("{}", { status: 429, headers: { "retry-after": retry } }),
+    );
+    expect(result).toEqual({
+      ok: false,
+      status: 429,
+      error: "provider_rejected",
+      code: null,
+      ...(retry === "17" ? { retryAfterSeconds: 17 } : {}),
+    });
+  },
+);

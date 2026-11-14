@@ -142,3 +142,10 @@ describe("cost", () => {
     expect(sandboxCost(null, "claude", "estimated").label).toBe("Estimated cost");
   });
 });
+
+test.each(["claude", "codex"] as const)("Morph %s usage preserves tokens without inventing a price", (harness) => {
+  const cost = turnCost(turn("morph-kimik31", 100, 10, 20), harness);
+  expect(cost).toMatchObject({ inputTokens: 100, cachedTokens: 10, outputTokens: 20, usd: null });
+  expect(modelPrice("morph-kimik31")).toBeNull();
+  expect(costBasis("morph")).toBe("estimated");
+});

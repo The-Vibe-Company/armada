@@ -298,6 +298,11 @@ test.each([
     exit: 1,
     message: "connection failed or timed out",
   },
+  {
+    result: { ok: false, status: 429, error: "provider_rejected", code: null, retryAfterSeconds: 17 },
+    exit: 1,
+    message: "retry after 17 seconds",
+  },
 ])(
   "connection test CLI prints closed diagnostics and reflects failure in exit status (%j)",
   async ({ result, exit, message }) => {
@@ -319,22 +324,25 @@ test.each([
   },
 );
 
-test("connection test CLI refuses malformed diagnostic fields rather than echoing them", async () => {
-  const h = setup();
-  const secret = randomUUID();
-  h.auth.fetch = (async () =>
-    Response.json({
-      test: { ok: false, status: 401, error: "provider_rejected", code: secret },
-    })) as unknown as typeof fetch;
-  expect(
-    await run(
-      ["creds", "test", "sandbox", "--model", "deployment", "--json"],
-      { out: h.auth.out, err: h.auth.err },
-      { auth: h.auth },
-    ),
-  ).not.toBe(0);
-  expect(h.output.join("")).not.toContain(secret);
-});
+test.each(["code", "retryAfterSeconds"])(
+  "connection test CLI refuses malformed diagnostic field %s rather than echoing it",
+  async (field) => {
+    const h = setup();
+    const secret = randomUUID();
+    h.auth.fetch = (async () =>
+      Response.json({
+        test: { ok: false, status: 429, error: "provider_rejected", code: null, [field]: secret },
+      })) as unknown as typeof fetch;
+    expect(
+      await run(
+        ["creds", "test", "sandbox", "--model", "deployment", "--json"],
+        { out: h.auth.out, err: h.auth.err },
+        { auth: h.auth },
+      ),
+    ).not.toBe(0);
+    expect(h.output.join("")).not.toContain(secret);
+  },
+);
 
 test.each(["openai", "anthropic"])("CLI stores exact per-model prices on a %s connection replacement", async (kind) => {
   const h = setup();

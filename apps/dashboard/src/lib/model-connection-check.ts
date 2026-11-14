@@ -54,5 +54,7 @@ export function connectionTestOutcome(result: ModelConnectionTestResult): Action
     error = "The provider's usage limit was reached. Check the account's limits before trying again.";
   else if (result.error === "invalid_response")
     error = "The provider returned an unsupported response. Check that this connection supports the selected agent.";
+  if (result.status === 429 && result.retryAfterSeconds !== undefined)
+    error += ` Retry after ${result.retryAfterSeconds} seconds.`;
   return { ok: false, error };
 }

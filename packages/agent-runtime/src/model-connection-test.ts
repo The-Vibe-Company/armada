@@ -121,7 +121,18 @@ export async function testModelConnection(
         const rawCode = failure.code ?? failure.type;
         const code = rawCode !== connection.apiKey ? modelConnectionErrorCode(rawCode) : null;
         if (!response.ok || body.status === "failed" || body.type === "error")
-          return { ok: false, status: response.status, error: "provider_rejected", code };
+          return {
+            ok: false,
+            status: response.status,
+            error: "provider_rejected",
+            code,
+            ...(() => {
+              const raw = response.headers.get("retry-after");
+              if (response.status !== 429 || !raw || !/^\d{1,8}$/.test(raw)) return {};
+              const seconds = Number(raw);
+              return seconds <= 31_536_000 ? { retryAfterSeconds: seconds } : {};
+            })(),
+          };
         const valid =
           typeof body.id === "string" &&
           (responses

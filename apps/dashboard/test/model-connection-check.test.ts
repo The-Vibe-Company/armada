@@ -114,3 +114,13 @@ test("model checks translate closed diagnostics into readable guidance without H
     error: "The provider returned an unsupported response. Check that this connection supports the selected agent.",
   });
 });
+
+test("a rate-limited connection displays the provider retry delay", () => {
+  expect(
+    connectionTestOutcome({ ok: false, status: 429, error: "provider_rejected", code: null, retryAfterSeconds: 17 }),
+  ).toEqual({
+    ok: false,
+    error:
+      "The provider's usage limit was reached. Check the account's limits before trying again. Retry after 17 seconds.",
+  });
+});

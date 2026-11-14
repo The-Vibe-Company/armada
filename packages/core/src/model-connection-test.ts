@@ -21,11 +21,24 @@ export interface ModelConnectionTestResult {
   status: number | null;
   error: "provider_rejected" | "invalid_response" | "connection_failed" | null;
   code: string | null;
+  /** Bounded Retry-After delta seconds; only present for a rate-limited response. */
+  retryAfterSeconds?: number;
 }
 export function isModelConnectionTestResult(value: unknown): value is ModelConnectionTestResult {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const v = value as Record<string, unknown>;
-  if (Object.keys(v).some((key) => !["ok", "status", "error", "code"].includes(key))) return false;
+  if (Object.keys(v).some((key) => !["ok", "status", "error", "code", "retryAfterSeconds"].includes(key))) return false;
+  if (
+    v.retryAfterSeconds !== undefined &&
+    (v.ok !== false ||
+      v.status !== 429 ||
+      v.error !== "provider_rejected" ||
+      typeof v.retryAfterSeconds !== "number" ||
+      !Number.isSafeInteger(v.retryAfterSeconds) ||
+      v.retryAfterSeconds < 0 ||
+      v.retryAfterSeconds > 31_536_000)
+  )
+    return false;
   const status = typeof v.status === "number" && Number.isInteger(v.status) && v.status >= 100 && v.status <= 599;
   if (v.ok === true)
     return status && Number(v.status) >= 200 && Number(v.status) < 300 && v.error === null && v.code === null;
