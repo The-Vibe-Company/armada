@@ -545,3 +545,56 @@ test("an accepted renamed save with missing provenance retains capacity for reco
 
 // Token resolution in these fixtures must not leak audit records to stdout.
 captureGitHubAuditLogs();
+
+test.each(["create", "rebuild", "execution-evidence"])(
+  "expired queued %s admission releases only provably unstarted reservations",
+  async (mode) => {
+    const s = await fixture();
+    try {
+      const token = await s.token(s.people.admin);
+      const target = (await s.db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0]!;
+      if (mode === "rebuild")
+        await s.db.query(
+          "insert into golden_backend_slots(provider,backend_id,max_goldens,org_id,owner_id,golden_id) values('boat','test-boat-account',1,$1,$2,$3)",
+          [s.people.org, s.people.admin, target.id],
+        );
+      const response = await s.http(token, mode === "rebuild" ? "golden/update" : "golden/create", {
+        name: mode === "rebuild" ? "shared" : "expired",
+        org: s.people.org,
+        repos: ["acme/web"],
+        config: { repos: [{ url: "https://github.com/acme/web.git" }], init: [] },
+        idempotencyKey: crypto.randomUUID(),
+      });
+      expect(response.status).toBe(202);
+      const job = (await response.json()) as GoldenBuildStatus;
+      const originalSlots = (
+        await s.db.query<{ golden_id: string | null; build_id: string | null }>(
+          "select golden_id,build_id from golden_backend_slots",
+        )
+      ).rows;
+      await s.db.query("update golden_build_jobs set created_at=now()-interval '61 minutes' where id=$1", [job.jobId]);
+      if (mode === "execution-evidence")
+        await s.db.query("update golden_build_jobs set builder_id='retained-builder' where id=$1", [job.jobId]);
+      expect(await s.builds.runOne()).toBe(true);
+      const status = await s.builds.status(s.people.admin, job.jobId);
+      expect(status).toMatchObject({
+        state: mode === "execution-evidence" ? "recovery_required" : "failed",
+        phase: "queued",
+      });
+      expect(status.failureReason).toContain(
+        mode === "execution-evidence" ? "execution evidence" : "no builder was started",
+      );
+      expect(s.allocations()).toBe(0);
+      const slots = (
+        await s.db.query<{ golden_id: string | null; build_id: string | null }>(
+          "select golden_id,build_id from golden_backend_slots",
+        )
+      ).rows;
+      if (mode === "rebuild") expect(slots).toEqual([{ golden_id: target.id, build_id: null }]);
+      else if (mode === "execution-evidence") expect(slots).toEqual(originalSlots);
+      else expect(slots).toEqual([]);
+    } finally {
+      await s.close();
+    }
+  },
+);

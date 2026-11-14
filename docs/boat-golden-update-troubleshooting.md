@@ -36,6 +36,12 @@ Neither capacity nor a missing binding proves a GitHub authorization problem.
 
 ## Recovery limits
 
+Queued admissions expire after one hour without starting a builder. On the next
+worker tick, the job becomes failed with a queue-expiry explanation and its own
+reservation is released atomically; a rebuild retains its existing golden binding.
+A queued row with execution evidence is held for recovery instead of being unlocked.
+This needs the worker to be running; it is not a database timer.
+
 Durable running jobs have fenced leases and deadlines. Expired jobs transition
 to recovery; reservations are released only after safe builder reconciliation.
 A timeout must not simply clear a reservation while a provider operation could
