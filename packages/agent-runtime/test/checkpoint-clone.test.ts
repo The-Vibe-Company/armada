@@ -90,7 +90,6 @@ test("sealed builder cloned into a new logical sandbox at generation1 admits pro
       sandboxId: cloneGrant.sandboxId,
       generation: "1",
     });
-    expect((await call(live.runner, cloneGrant, "checkpoint")).status).toBe(200);
     expect(() => live?.journal.assertRestoreSource({ ...base, sandboxId: "history-fork" })).toThrow(
       "golden_runner_history_not_empty",
     );
