@@ -1,5 +1,38 @@
 # Changelog
 
+## [2.37.0](https://github.com/The-Vibe-Company/armada/compare/v2.36.0...v2.37.0) (2026-11-14)
+
+
+### Features
+
+* **smoke:** prove Modal OpenCode MCP native execution ([#1956](https://github.com/The-Vibe-Company/armada/issues/1956)) ([121473a](https://github.com/The-Vibe-Company/armada/commit/121473ab60008dad58496f885a98448a728079f0))
+
+
+### Bug Fixes
+
+* **cli:** clarify sandbox list filters and paging help ([#1962](https://github.com/The-Vibe-Company/armada/issues/1962)) ([82bce7e](https://github.com/The-Vibe-Company/armada/commit/82bce7eec69ffe516f4043e4eac0c30e7a7896d2))
+* **dashboard:** clarify incomplete host inventory and recovery ([#1950](https://github.com/The-Vibe-Company/armada/issues/1950)) ([09838bf](https://github.com/The-Vibe-Company/armada/commit/09838bf68ca88576e9988a989ec73265a0a11dee))
+* **dashboard:** clarify unconfirmed sandbox lifecycle requests ([#1954](https://github.com/The-Vibe-Company/armada/issues/1954)) ([8628916](https://github.com/The-Vibe-Company/armada/commit/86289164d11a14828ddbcf51e1fedc03cce70afa))
+* **dashboard:** curate invitation administration errors ([#1965](https://github.com/The-Vibe-Company/armada/issues/1965)) ([491fc95](https://github.com/The-Vibe-Company/armada/commit/491fc956023bcdec1065ea98081d6984a1564cbb))
+* **dashboard:** curate skill key action errors ([#1964](https://github.com/The-Vibe-Company/armada/issues/1964)) ([01151ce](https://github.com/The-Vibe-Company/armada/commit/01151ce46a8091594140748ee79e8c11936eecd8))
+* **dashboard:** curate template action and launch errors ([#1957](https://github.com/The-Vibe-Company/armada/issues/1957)) ([cc5bfc8](https://github.com/The-Vibe-Company/armada/commit/cc5bfc8d100595dece3c810d15a3d6a918d9c252))
+* **dashboard:** curate variable action error guidance ([#1963](https://github.com/The-Vibe-Company/armada/issues/1963)) ([3164635](https://github.com/The-Vibe-Company/armada/commit/3164635678c7088d5f8c89de35afb582ba1bc903))
+* **dashboard:** distinguish unknown and empty sandbox inventories ([#1955](https://github.com/The-Vibe-Company/armada/issues/1955)) ([1dfee15](https://github.com/The-Vibe-Company/armada/commit/1dfee15f104c9a65703aeaaadea3058001bebf8b))
+* **dashboard:** guide recovery from unreadable invitations ([#1951](https://github.com/The-Vibe-Company/armada/issues/1951)) ([467993a](https://github.com/The-Vibe-Company/armada/commit/467993a401d35689d6771d501e3613bf4caf499f))
+* **smoke:** prove controls on running turns and final steer output ([#1946](https://github.com/The-Vibe-Company/armada/issues/1946)) ([9d31f11](https://github.com/The-Vibe-Company/armada/commit/9d31f1130d6990f2aa5564e255546cb3768462c2))
+* **usage:** persist Modal tunnel token reports before ACK ([#1943](https://github.com/The-Vibe-Company/armada/issues/1943)) ([4de16f8](https://github.com/The-Vibe-Company/armada/commit/4de16f8cddca21195454cc02e1768cda5e48d094))
+
+
+### Performance Improvements
+
+* **auth:** verify ES256 sessions locally with fresh authorization ([#1966](https://github.com/The-Vibe-Company/armada/issues/1966)) ([85d0aef](https://github.com/The-Vibe-Company/armada/commit/85d0aef638b405331a6b64c4308e83c136196e71))
+* **dashboard:** overlap resource lists with template usage ([#1945](https://github.com/The-Vibe-Company/armada/issues/1945)) ([922063d](https://github.com/The-Vibe-Company/armada/commit/922063d1ffdff5f54638c1baea8956f3a2169d5a))
+* **dashboard:** overlap template list and lookup reads ([#1942](https://github.com/The-Vibe-Company/armada/issues/1942)) ([1737966](https://github.com/The-Vibe-Company/armada/commit/1737966c9a9c45ac195ab410c8d7e84ec9531870))
+* **dashboard:** revalidate cached Skills content in place ([#1947](https://github.com/The-Vibe-Company/armada/issues/1947)) ([82f8ca0](https://github.com/The-Vibe-Company/armada/commit/82f8ca0ff330a4ec1d18aa38184fa5d71c182862))
+* **server:** avoid full tool catalogue setup for HTTP lists ([#1944](https://github.com/The-Vibe-Company/armada/issues/1944)) ([a28dbe6](https://github.com/The-Vibe-Company/armada/commit/a28dbe62c647e105d60b84190f3051ac43ba7fd9))
+* **server:** overlap credential metadata reads per organization ([#1949](https://github.com/The-Vibe-Company/armada/issues/1949)) ([09aa0f0](https://github.com/The-Vibe-Company/armada/commit/09aa0f0cedee7b547d0e57149b3ccf624b3a3bd6))
+* **server:** overlap own metadata with organization resolution ([#1958](https://github.com/The-Vibe-Company/armada/issues/1958)) ([c837cbe](https://github.com/The-Vibe-Company/armada/commit/c837cbe8181a17616a3374d4161a59263f9fc38b))
+
 ## [2.36.0](https://github.com/The-Vibe-Company/armada/compare/v2.35.2...v2.36.0) (2026-11-14)
 
 
