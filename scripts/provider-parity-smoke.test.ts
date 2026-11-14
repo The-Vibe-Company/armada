@@ -61,6 +61,8 @@ for (const mode of [
   "github_unconfigured",
   "github_unsupported",
   "accounts",
+  "accounts_api_equivalent",
+  "accounts_subscription",
   "accounts_unknown",
   "accounts_invalid",
   "accounts_missing_model",
@@ -94,6 +96,8 @@ for (const mode of [
   "baseline_quota",
 ] as const) {
   test(`parity normal lifecycle and honest reporting: ${mode}`, async () => {
+    const subscription = mode.startsWith("subscription") || mode === "accounts_subscription";
+    const unpricedSubscription = mode === "subscription" || mode === "accounts_subscription";
     let clock = 0;
     const woken = new Set<string>();
     const idleReads = new Map<string, number>();
@@ -234,7 +238,7 @@ for (const mode of [
                     steer: "Steer unavailable for this harness.",
                     interrupt: "Interrupt unavailable for this harness.",
                     github: "GitHub disabled by server.",
-                    stop: "Stop unavailable (#1579)",
+                    stop: "Stop unavailable | <test>\n(#1579)",
                     resume: "Server resume disabled.",
                   },
                 })),
@@ -482,7 +486,7 @@ for (const mode of [
                     inputTokens: mode === "usage_missing" ? null : 10,
                     outputTokens: 5,
                     pricing: {
-                      ...(mode.startsWith("subscription")
+                      ...(subscription
                         ? {
                             basis: "api_equivalent",
                             billing: mode === "subscription_bad_billing" ? "per_token" : "subscription",
@@ -490,12 +494,14 @@ for (const mode of [
                           }
                         : {}),
                       unknown:
-                        ["accounts_unknown", "subscription", "custom_unknown"].includes(mode) ||
+                        unpricedSubscription ||
+                        ["accounts_unknown", "custom_unknown"].includes(mode) ||
                         (mode === "accounts_price_lost" && (turns.get(p)?.length ?? 0) > 1)
                           ? "price"
                           : null,
                       usd:
-                        ["accounts_unknown", "subscription", "custom_unknown"].includes(mode) ||
+                        unpricedSubscription ||
+                        ["accounts_unknown", "custom_unknown"].includes(mode) ||
                         (mode === "accounts_price_lost" && (turns.get(p)?.length ?? 0) > 1)
                           ? null
                           : mode === "price_changed" && (turns.get(p)?.length ?? 0) > 1
@@ -508,7 +514,7 @@ for (const mode of [
                     },
                   })),
                   cost: {
-                    classification: mode.startsWith("subscription")
+                    classification: subscription
                       ? "included_in_subscription"
                       : mode.startsWith("accounts_unknown") ||
                           mode === "custom_unknown" ||
@@ -516,24 +522,24 @@ for (const mode of [
                         ? "unknown"
                         : "priced",
                     currency: "USD",
-                    basis: mode.startsWith("subscription") ? "api_equivalent" : "estimated",
+                    basis: subscription || mode === "accounts_api_equivalent" ? "api_equivalent" : "estimated",
                     unknown:
                       mode.startsWith("accounts_unknown") ||
-                      mode === "subscription" ||
+                      unpricedSubscription ||
                       mode === "custom_unknown" ||
                       (mode === "accounts_price_lost" && (turns.get(p)?.length ?? 0) > 1)
                         ? "price"
                         : null,
                     unpricedTurns:
                       mode.startsWith("accounts_unknown") ||
-                      mode === "subscription" ||
+                      unpricedSubscription ||
                       mode === "custom_unknown" ||
                       (mode === "accounts_price_lost" && (turns.get(p)?.length ?? 0) > 1)
                         ? turns.get(p)?.length
                         : 0,
                     usd:
                       mode.startsWith("accounts_unknown") ||
-                      mode === "subscription" ||
+                      unpricedSubscription ||
                       mode === "custom_unknown" ||
                       (mode === "accounts_price_lost" && (turns.get(p)?.length ?? 0) > 1)
                         ? null
@@ -596,6 +602,10 @@ for (const mode of [
       const badCost = mode === "accounts_unknown_bad" || mode === "accounts_price_lost";
       expect(passed).toBe(!badCost);
       const report = JSON.parse(lines.find((line) => line.startsWith('{"step":"accounts_parity"'))!);
+      const summary = lines.find((line) => line.startsWith("## Accounts parity\n")) ?? "";
+      expect(summary).toContain("## Account feature and cost details");
+      expect(summary).toContain("| Account | Provider | Feature | Result |");
+      expect(summary).toContain("| codex-subscription | modal | all | not-run: no account on staging |");
       for (const account of ["codex-openai", "codex-azure"]) {
         for (const provider of ["modal", "docker"]) {
           const cell = report.accounts[account][provider];
@@ -604,8 +614,25 @@ for (const mode of [
             expect(lines.join("\n")).toContain(
               `| codex-azure | ${provider} | not-run: account has no declared model |`,
             );
+            expect(summary).toContain(`| codex-azure | ${provider} | all | not-run: account has no declared model |`);
             continue;
           }
+          expect(summary).toContain(`| ${account} | ${provider} | launch | pass |`);
+          expect(summary).toContain(`| ${account} | ${provider} | mcp | not-run: probe_not_implemented |`);
+          expect(summary).toContain(`| ${account} | ${provider} | resume-recall | pass |`);
+          expect(summary).toContain(`| ${account} | ${provider} | usage-after-resume | pass |`);
+          const cost = subscription
+            ? "pass: included in subscription"
+            : badCost
+              ? "fail: invalid_cost_receipt"
+              : mode === "accounts_unknown"
+                ? "pass: unknown: price"
+                : `pass: ${mode === "accounts_api_equivalent" ? "api_equivalent" : "estimated"}: USD 0.3`;
+          expect(summary).toContain(`| ${account} | ${provider} | exact-cost | ${cost} |`);
+          if (mode === "accounts_stop_unsupported")
+            expect(summary).toContain(
+              `| ${account} | ${provider} | stop | unsupported: Stop unavailable \\| &lt;test&gt; (#1579) |`,
+            );
           expect(cell.status).toBe(badCost ? "fail" : mode === "accounts_stop_unsupported" ? "not-run" : "pass");
           expect(cell.features["resume-recall"][provider].status).toBe("pass");
           if (mode === "accounts_unknown") expect(cell.features["exact-cost"][provider].reason).toBe("unknown: price");
@@ -739,13 +766,13 @@ for (const mode of [
       expect(report.features["exact-cost"].modal).toMatchObject({ status: "fail", reason: "invalid_cost_receipt" });
       return;
     }
-    if (mode.startsWith("subscription") || mode === "custom_unknown") {
+    if (subscription || mode === "custom_unknown") {
       expect(passed).toBe(true);
       for (const provider of ["modal", "docker"]) {
         for (const name of ["exact-cost", "exact-cost-before-resume", "exact-cost-after-resume"])
           expect(report.features[name][provider]).toMatchObject({
             status: "pass",
-            reason: mode.startsWith("subscription") ? "included in subscription" : "unknown: price",
+            reason: subscription ? "included in subscription" : "unknown: price",
           });
         expect(turns.get(provider)).toHaveLength(2);
       }
@@ -1408,3 +1435,42 @@ for (const [name, override, field] of [
     expect(lines.join("\n")).not.toContain("never-echo-this");
   });
 }
+
+test("accounts appends both human-readable tables to the Actions summary without allocating absent cells", async () => {
+  const { mkdtemp, readFile, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const root = await mkdtemp(join(tmpdir(), "armada-accounts-table-"));
+  const summaryFile = join(root, "summary.md");
+  const lines: string[] = [];
+  try {
+    expect(
+      await postDeploySmoke(
+        {
+          ARMADA_URL: "https://armada-mcp-staging.up.railway.app",
+          ARMADA_TOKEN: "fixture-token",
+          ARMADA_SMOKE: "create_real_compute",
+          ARMADA_SMOKE_CASES: "[]",
+          GITHUB_STEP_SUMMARY: summaryFile,
+        },
+        ["--parity", "--accounts"],
+        {
+          now: () => 0,
+          sleep: async () => {},
+          out: (line) => lines.push(line),
+          fetch: async () => {
+            throw Error("absent accounts must not allocate");
+          },
+        },
+      ),
+    ).toBe(true);
+    const summary = await readFile(summaryFile, "utf8");
+    expect(summary.match(/## Accounts parity/g)).toHaveLength(1);
+    expect(summary.match(/## Account feature and cost details/g)).toHaveLength(1);
+    expect(summary).toContain("| codex-subscription | docker | all | not-run: no account on staging |");
+    expect(summary).not.toContain("USD 0");
+    expect(lines.some((line) => line.startsWith("## Accounts parity"))).toBe(false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
