@@ -5,6 +5,11 @@ import { join } from "node:path";
 
 test.each([
   "success",
+  "idle",
+  "idle-resume",
+  "idle-not-ready",
+  "idle-conversation",
+  "idle-lost-send",
   "disabled",
   "wrong-source",
   "runtime-failed",
@@ -64,6 +69,7 @@ test.each([
   "workspace-resume-rerun",
   "old-workspace",
 ] as const)("one-launch coordinator check is fail-closed (%s)", async (mode) => {
+  const idle = mode.startsWith("idle");
   const workspace = mode.startsWith("workspace") || mode === "old-workspace";
   const workspaceResume = workspace && mode.includes("resume");
   const claude = mode === "claude-resume";
@@ -106,8 +112,9 @@ globalThis.fetch=async(url,options)=>{
  if(path.endsWith('/sandbox/launch-runtime-v1')){if(++launches!==1)throw Error('allocation repeated');if(${mcp}){if(Object.hasOwn(body,'connections'))throw Error('MCP defaults were bypassed');mcpConfigurations=1;}
   if(body.runtimeVersion!==1||body.boatRuntime!==true||body.harness!==${JSON.stringify(claude ? "claude" : "codex")})throw Error('missing explicit opt-in');
   if(${skills}&&(defaultReads!==3||Object.hasOwn(body,'skills')||Object.hasOwn(body,'skipSkillDefaults')))throw Error('defaults bypassed');
+  if(${idle}){if(Object.hasOwn(body,'prompt'))throw Error('idle launch sent a prompt');phase=0;return Response.json({sandbox:{id:'worker',boatRuntime:true,status:'${mode === "idle-not-ready" ? "running" : "ready"}',conversationIds:${mode === "idle-conversation" ? "['unexpected']" : "[]"}},runtime:{kind:'armada',epoch:'1'}});}
   marker=body.prompt.match(/ARMADA_RUNTIME_[a-f0-9]+/)[0];memory=body.prompt.match(/ARMADA_MEMORY_[a-f0-9]+/)?.[0]??'';return Response.json({sandbox:{id:'worker',goldenId:'${mode === "skills-golden" ? "wrong" : "golden"}',boatRuntime:true,...(${skills}?{skills:receipts}:{})},runtime:{kind:'armada',epoch:'1'},promptId:'prompt',conversationId:'conversation'});}
- if(path.endsWith('/sandbox/send')){sends++;if(body.id!=='worker'||body.conversation_id!=='conversation'||!body.request_id||body.prompt.includes(memory))throw Error('wrong continuation');if(${mode === "followup-lost"})throw Error('lost follow-up response');if(phase>=3){if(${combined || triple} && githubConfigurations!==2)throw Error('no new epoch GitHub setup');if(${mcp} && mcpConfigurations!==2)throw Error('no new epoch automatic MCP setup');phase=4;return Response.json({promptId:'github-resumed',conversationId:'conversation',requestId:body.request_id,runtime:{kind:'armada',epoch:'2'}});}phase=2;return Response.json({promptId:'followup',conversationId:'conversation',requestId:body.request_id,runtime:{kind:'armada',epoch:'1'}});}
+ if(path.endsWith('/sandbox/send')){sends++;if(${idle}&&phase===0){if(body.id!=='worker'||!body.request_id||Object.hasOwn(body,'conversation_id'))throw Error('invalid first send');if(${mode === "idle-lost-send"})throw Error('unknown first send');marker=body.prompt.match(/ARMADA_RUNTIME_[a-f0-9]+/)[0];memory=body.prompt.match(/ARMADA_MEMORY_[a-f0-9]+/)?.[0]??'';phase=1;return Response.json({promptId:'prompt',conversationId:'conversation',requestId:body.request_id,runtime:{kind:'armada',epoch:'1'}});}if(body.id!=='worker'||body.conversation_id!=='conversation'||!body.request_id||body.prompt.includes(memory))throw Error('wrong continuation');if(${mode === "followup-lost"})throw Error('lost follow-up response');if(phase>=3){if(${combined || triple} && githubConfigurations!==2)throw Error('no new epoch GitHub setup');if(${mcp} && mcpConfigurations!==2)throw Error('no new epoch automatic MCP setup');phase=4;return Response.json({promptId:'github-resumed',conversationId:'conversation',requestId:body.request_id,runtime:{kind:'armada',epoch:'2'}});}phase=2;return Response.json({promptId:'followup',conversationId:'conversation',requestId:body.request_id,runtime:{kind:'armada',epoch:'1'}});}
  if(path.endsWith('/logs/read') && ${mode === "runtime-failed"})return Response.json({source:'armada-runtime',events:[],runtimeFailure:{status:'failed',reason:'Armada runtime process failed.'}});
  if(path.endsWith('/sandbox/resume-runtime-v1')){if(++resumes!==1||stops!==1||body.id!=='worker'||body.conversation_id!=='conversation'||!body.request_id||body.runtimeVersion!==1||body.prompt.includes(memory))throw Error('wrong resume or repeated activation');if(${mode === "resume-lost"})throw Error('lost resume');phase=3;if(${mcp})mcpConfigurations=2;return Response.json({id:'worker',requestId:body.request_id,resumed:true,runtime:{kind:'armada',epoch:'${mode === "bad-resume" ? "1" : "2"}'},sourceCheckpoint:{epoch:'1',watermark:4},promptId:'resumed',conversationId:'conversation'});}
  if(path.endsWith('/sandbox/checkpoint-runtime-v1')){checkpoints++;if(${mode === "checkpoint-lost"})throw Error('lost checkpoint response');return Response.json({id:'worker',requestId:body.request_id,runtime:{kind:'armada',epoch:phase>=3?'2':'1'},checkpoint:{state:'complete',watermark:phase===4?8:phase===3?6:4,acknowledgedSequence:${mode === "bad-checkpoint" ? 3 : 4}+(phase===4?4:phase===3?2:0)}});}
@@ -124,6 +131,7 @@ globalThis.fetch=async(url,options)=>{
         "--preload",
         preload,
         "scripts/check-boat-runtime.ts",
+        ...(idle ? ["--idle"] : []),
         ...(mcp ? ["--mcp"] : []),
         ...(skills ? ["--skills"] : []),
         ...(usage ? ["--usage"] : []),
@@ -137,7 +145,7 @@ globalThis.fetch=async(url,options)=>{
         triple
           ? ["--github"]
           : []),
-        ...(["claude-resume", "resume", "old-resume", "resume-lost", "bad-resume"].includes(mode) ||
+        ...(["idle-resume", "claude-resume", "resume", "old-resume", "resume-lost", "bad-resume"].includes(mode) ||
         combined ||
         mcpResume ||
         skillResume ||
@@ -173,6 +181,8 @@ globalThis.fetch=async(url,options)=>{
       [
         "claude-resume",
         "success",
+        "idle",
+        "idle-resume",
         "followup",
         "checkpoint",
         "resume",
@@ -191,17 +201,38 @@ globalThis.fetch=async(url,options)=>{
         "workspace-resume",
       ].includes(mode),
     );
+    if (["success", "idle", "claude-resume"].includes(mode)) {
+      const timing = out
+        .split("\n")
+        .map((line) => {
+          try {
+            return JSON.parse(line);
+          } catch {
+            return null;
+          }
+        })
+        .find((value) => value?.operation === "runtime_launch_timing");
+      expect(timing).toMatchObject({
+        harness: claude ? "claude" : "codex",
+        mode: idle ? "idle" : "prompt",
+        boundary: "launch_request_to_response",
+      });
+      expect(Number.isFinite(timing.launchRequestMs)).toBe(true);
+      expect(timing.launchRequestMs).toBeGreaterThanOrEqual(0);
+    }
     expect(out + err).not.toContain(token);
     expect(out + err).not.toContain(privateArgument);
     if (mode === "mcp-invalid-json")
       expect(out + err).toContain("MCP args must be valid non-secret JSON; no launch attempted.");
     expect(out).toContain(
-      `COUNTERS ${JSON.stringify({ launches: ["invalid-harness", "disabled", "old-diagnostics", "old-followup", "old-checkpoint", "old-resume", "old-github", "github-preflight-denied", "old-mcp", "mcp-preflight-denied", "mcp-invalid-json", "mcp-no-default", "skills-empty", "old-workspace"].includes(mode) ? 0 : 1, stops: ["invalid-harness", "disabled", "old-diagnostics", "old-followup", "old-checkpoint", "old-resume", "old-github", "github-preflight-denied", "old-mcp", "mcp-preflight-denied", "mcp-invalid-json", "mcp-no-default", "skills-empty", "old-workspace"].includes(mode) ? 0 : ["claude-resume", "resume", "resume-lost", "bad-resume"].includes(mode) || combined || mcpResume || skillResume || usageResume || workspaceResume ? 2 : 1 })}`,
+      `COUNTERS ${JSON.stringify({ launches: ["invalid-harness", "disabled", "old-diagnostics", "old-followup", "old-checkpoint", "old-resume", "old-github", "github-preflight-denied", "old-mcp", "mcp-preflight-denied", "mcp-invalid-json", "mcp-no-default", "skills-empty", "old-workspace"].includes(mode) ? 0 : 1, stops: ["invalid-harness", "disabled", "old-diagnostics", "old-followup", "old-checkpoint", "old-resume", "old-github", "github-preflight-denied", "old-mcp", "mcp-preflight-denied", "mcp-invalid-json", "mcp-no-default", "skills-empty", "old-workspace"].includes(mode) ? 0 : ["idle-resume", "claude-resume", "resume", "resume-lost", "bad-resume"].includes(mode) || combined || mcpResume || skillResume || usageResume || workspaceResume ? 2 : 1 })}`,
     );
     if (
       [
         "claude-resume",
         "success",
+        "idle",
+        "idle-resume",
         "followup",
         "checkpoint",
         "resume",
@@ -232,7 +263,11 @@ globalThis.fetch=async(url,options)=>{
     }
     if (["bad-checkpoint", "checkpoint-lost"].includes(mode))
       expect(out).not.toContain("Runtime checkpoint and stopped history verified");
-    if (mode === "resume" || claude) {
+    if (idle)
+      expect(out).toContain(
+        `SENDS ${mode === "idle-resume" ? 2 : mode === "idle-not-ready" || mode === "idle-conversation" ? 0 : 1}`,
+      );
+    if (mode === "resume" || mode === "idle-resume" || claude) {
       expect(out).toContain('"resume":"verified"');
       expect(out).toContain("Runtime resume and stopped history verified.");
       expect(out).toContain("RESUMES 1");

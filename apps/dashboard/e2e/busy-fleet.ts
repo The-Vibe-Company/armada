@@ -1,5 +1,3 @@
-import { MOCK } from "./helpers";
-
 /**
  * A busy organization's last thirty hours, as production showed it when #801 was written: 175 stopped sandboxes, a
  * few live agents, five "box moved" interruptions that were resent or relaunched, a night's harness crashes long
@@ -227,26 +225,4 @@ export function busyFleet(): Row[] {
       stopped_at: ago(29 * HOUR - n * 9 * MIN),
     });
   return rows;
-}
-
-/** Puts the busy organization into the mock, next to its own three sandboxes. */
-export async function seedBusyFleet(): Promise<void> {
-  const response = await fetch(`${MOCK}/__test/add-sandboxes`, {
-    method: "POST",
-    body: JSON.stringify({ rows: busyFleet() }),
-  });
-  if (!response.ok) throw new Error(`seeding the busy fleet failed: ${response.status}`);
-  // The mock's own running sandbox started its turn a quarter of an hour ago, like the rest of this busy day.
-  await fetch(`${MOCK}/__test/sandbox-events`, {
-    method: "POST",
-    body: JSON.stringify({
-      sandbox: "00000000-0000-4000-8000-000000000030",
-      events: [
-        prompt("a1", Date.now() - 15 * MIN, "Fix the failing test", "running"),
-        message("a2", Date.now() - MIN, "Looking at the test suite.", "a1", [
-          { id: "t1", name: "Read", input: { file_path: "test/clock.test.ts" } },
-        ]),
-      ],
-    }),
-  });
 }

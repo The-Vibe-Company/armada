@@ -1,6 +1,7 @@
 import type { Harness } from "@armada/core";
 import { type Provider, SKILL_PIN_PATTERN, type SkillReceipt } from "@armada/core";
 import { installPrivateSkill, PrivateSkillError, parseSkillReceipt, skillInstallCommand } from "@armada/core/server";
+import { shellQuote as quote } from "../../core/src/shell-quote.ts";
 
 const toolReference = `---
 name: armada-tools
@@ -89,8 +90,4 @@ export async function bootstrapSandboxAccess(
   await request.recordReceipt?.(receipt);
   await request.configureAuthority();
   return receipt;
-}
-
-function quote(value: string): string {
-  return `'${value.replaceAll("'", "'\\''")}'`;
 }

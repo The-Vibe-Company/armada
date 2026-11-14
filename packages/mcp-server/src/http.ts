@@ -43,6 +43,10 @@ export const HEALTH_PATH = "/healthz";
 export type Route = (request: Request) => Promise<Response | null>;
 
 export interface HandlerOptions {
+  sandboxBillingAccount?: (
+    caller: import("./caller.ts").Caller,
+    id: string,
+  ) => Promise<import("./sandbox-billing-account.ts").SandboxBillingAccount | null>;
   dockerControls?: import("./docker-sandbox-controls.ts").DockerSandboxControls;
   runtimeGitHub?: RuntimeGitHub;
   runtimeResume?: RuntimeResume;
@@ -58,6 +62,8 @@ export interface HandlerOptions {
   ready?: () => Promise<boolean>;
   /** Public Git deployment identity; never a credential or arbitrary environment value. */
   commitSha?: string;
+  /** Non-secret, already-resolved global policy. Not proof a provider paused. */
+  idlePauseDelayMs?: number;
   modelAuth?: ModelAuthOwnership;
   publicUrl: string;
   /** Enabled social login providers. Empty by default: email login always works. */
@@ -144,6 +150,11 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
           ok: ready,
           version: VERSION,
           ...(options.commitSha && /^[a-f0-9]{40}$/.test(options.commitSha) ? { commit: options.commitSha } : {}),
+          ...(typeof options.idlePauseDelayMs === "number" &&
+          Number.isSafeInteger(options.idlePauseDelayMs) &&
+          options.idlePauseDelayMs > 0
+            ? { idlePauseDelayMs: options.idlePauseDelayMs }
+            : {}),
           ...(!ready ? { reason: "database_unavailable" } : {}),
         },
         {
@@ -179,6 +190,9 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
     const server = createArmadaServer(
       {
         caller,
+        ...(options.sandboxBillingAccount
+          ? { sandboxBillingAccount: (id: string) => options.sandboxBillingAccount!(caller, id) }
+          : {}),
         ...(options.dockerControls ? { dockerControls: options.dockerControls } : {}),
         ...(options.runtimeSend ? { runtimeSend: options.runtimeSend } : {}),
         ...(options.runtimeCheckpoint ? { runtimeCheckpoint: options.runtimeCheckpoint } : {}),

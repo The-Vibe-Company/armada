@@ -9,6 +9,16 @@ const boatNotRun = { status: "not-run", reason: "not_part_of_release_gate" };
 // route/receipt regressions without provider compute, credentials, or sleeps.
 for (const mode of [
   "online",
+  "github",
+  "github_scp",
+  "github_ssh",
+  "github_auth_failed",
+  "github_clone_failed",
+  "github_push_failed",
+  "github_invalid",
+  "github_unbound",
+  "github_unconfigured",
+  "github_unsupported",
   "accounts",
   "accounts_unknown",
   "accounts_invalid",
@@ -69,22 +79,27 @@ for (const mode of [
               modelAccountId: "fake-account",
               golden: "fake-golden",
               hostId: "owned-host",
+              ...(mode.startsWith("github") && mode !== "github_unconfigured"
+                ? { githubRepository: mode === "github_invalid" ? "owner/repo'; echo unsafe" : "owner/private-fixture" }
+                : {}),
             })),
           ),
           { provider: "boat", harness: "invalid" },
         ]),
       },
-      mode.startsWith("accounts")
-        ? ["--parity", "--accounts"]
-        : mode === "usage_filter"
-          ? ["--parity", "--only", "docker", "--feature", "exact-cost"]
-          : mode === "filtered"
-            ? ["--parity", "--only", "docker", "--feature", "exec"]
-            : debtFeature
-              ? ["--parity", "--feature", debtFeature]
-              : mode === "invalid_filter"
-                ? ["--parity", "--feature", "typo"]
-                : ["--parity"],
+      mode.startsWith("github")
+        ? ["--parity", "--feature", "github"]
+        : mode.startsWith("accounts")
+          ? ["--parity", "--accounts"]
+          : mode === "usage_filter"
+            ? ["--parity", "--only", "docker", "--feature", "exact-cost"]
+            : mode === "filtered"
+              ? ["--parity", "--only", "docker", "--feature", "exec"]
+              : debtFeature
+                ? ["--parity", "--feature", debtFeature]
+                : mode === "invalid_filter"
+                  ? ["--parity", "--feature", "typo"]
+                  : ["--parity"],
       {
         now: () => 0,
         sleep: async () => {},
@@ -110,6 +125,7 @@ for (const mode of [
                   capabilities: {
                     launch: true,
                     exec: true,
+                    github: mode !== "github_unsupported",
                     followupPrompts: true,
                     status: true,
                     logs: true,
@@ -118,10 +134,29 @@ for (const mode of [
                     delete: true,
                   },
                   unsupportedReasons: {
+                    github: "GitHub disabled by server.",
                     stop: "Stop unavailable (#1579)",
                     resume: "Server resume disabled.",
                   },
                 })),
+              };
+              break;
+            case "golden/size-policy":
+              result = {
+                provider: p,
+                repositories:
+                  mode === "github_unbound"
+                    ? []
+                    : [
+                        {
+                          url:
+                            mode === "github_scp"
+                              ? "git@github.com:owner/private-fixture.git"
+                              : mode === "github_ssh"
+                                ? "ssh://git@github.com/owner/private-fixture.git"
+                                : "https://github.com/owner/private-fixture.git",
+                        },
+                      ],
               };
               break;
             case "docker/hosts/list":
@@ -129,7 +164,17 @@ for (const mode of [
               break;
             case "sandbox/launch":
               if (mode.startsWith("accounts")) turns.set(p, []);
-              if (p === "docker") expect(body).not.toHaveProperty("image");
+              if (p === "docker") {
+                expect(body).not.toHaveProperty("image");
+                if (mode.startsWith("github") && mode !== "github_unconfigured")
+                  expect(body.repos).toEqual([
+                    {
+                      url: "https://github.com/owner/private-fixture.git",
+                      branch: "main",
+                      dir: "armada-parity-github",
+                    },
+                  ]);
+              }
               if (p === "modal" && (mode === "quota" || mode === "server_failure"))
                 return Response.json(
                   {
@@ -138,7 +183,7 @@ for (const mode of [
                       message:
                         mode === "quota"
                           ? "The Modal plan start limit per day has been reached."
-                          : "Access denied. token=do-not-print ghp_abcdefghijklmnopqrstuvwxyz0123456789 sk-abcdefghijklmnopqrstuvwxyz eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.c2lnbmF0dXJl",
+                          : `Access denied. token=do-not-print ghp_${"abcdefghijklmnopqrstuvwxyz0123456789"} sk-abcdefghijklmnopqrstuvwxyz eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.c2lnbmF0dXJl`,
                       details: { secret: "do-not-print-details" },
                     },
                   },
@@ -166,6 +211,23 @@ for (const mode of [
               };
               break;
             case "sandbox/exec":
+              if (String(body.command).includes("PARITY_GITHUB_OK")) {
+                expect(body.command).toContain("clone --quiet");
+                expect(body.command).toContain("core.hooksPath=/dev/null");
+                expect(body.command).toContain("push --dry-run");
+                expect(body.command).toContain(".private and .permissions.push");
+                expect(body.command).toContain("trap ");
+                expect(body.command).not.toContain("Bearer");
+                result =
+                  mode === "github_auth_failed"
+                    ? { exitCode: 11, timedOut: false, stdout: "PARITY_GITHUB_AUTH_FAILED" }
+                    : mode === "github_clone_failed"
+                      ? { exitCode: 12, timedOut: false, stdout: "PARITY_GITHUB_CLONE_FAILED" }
+                      : mode === "github_push_failed"
+                        ? { exitCode: 13, timedOut: false, stdout: "PARITY_GITHUB_PUSH_FAILED" }
+                        : { exitCode: 0, timedOut: false, stdout: "PARITY_GITHUB_OK" };
+                break;
+              }
               result = { exitCode: 0, timedOut: false, stdout: "PARITY_EXEC_OK" };
               break;
             case "sandbox/detail":
@@ -275,7 +337,10 @@ for (const mode of [
       if (mode === "accounts_invalid") {
         expect(passed).toBe(false);
         expect(calls).toHaveLength(0);
-        expect(lines.find((line) => line.startsWith("{"))).toContain("invalid_accounts_configuration");
+        expect(JSON.parse(lines.find((line) => line.startsWith("{"))!)).toMatchObject({
+          code: "invalid_accounts_configuration",
+          field: "ARMADA_SMOKE_CASES[1].account",
+        });
         return;
       }
       const badCost = mode === "accounts_unknown_bad" || mode === "accounts_price_lost";
@@ -289,6 +354,8 @@ for (const mode of [
           if (mode === "accounts_unknown") expect(cell.features["exact-cost"][provider].reason).toBe("unknown: price");
         }
       }
+      expect(lines.join("\n")).toContain("| claude-anthropic | modal | not-run: no account on staging |");
+      expect(lines.join("\n")).toContain("| codex-subscription | docker | not-run: no account on staging |");
       expect(report.accounts["codex-subscription"].modal).toEqual({
         status: "not-run",
         reason: "no account on staging",
@@ -296,6 +363,12 @@ for (const mode of [
       expect(calls.filter((call) => call.endsWith(":sandbox/launch"))).toHaveLength(4);
       expect(calls.filter((call) => call.endsWith(":sandbox/delete"))).toHaveLength(4);
       expect(calls.some((call) => call.startsWith("boat:"))).toBe(false);
+      return;
+    }
+    if (mode === "github_invalid") {
+      expect(passed).toBe(false);
+      expect(calls).toHaveLength(0);
+      expect(lines.join("\n")).toContain("invalid_configuration");
       return;
     }
     if (mode === "invalid_filter") {
@@ -307,6 +380,35 @@ for (const mode of [
     const report = JSON.parse(lines.find((line) => line.startsWith('{"step":"provider_parity"'))!);
     for (const cells of Object.values(report.features) as Record<string, unknown>[])
       expect(cells.boat).toEqual(boatNotRun);
+    if (mode === "github_unbound") {
+      expect(passed).toBe(false);
+      expect(report.features.github.modal.status).toBe("fail");
+      expect(report.features.github.modal.diagnostic.code).toBe("github_repository_not_in_golden");
+      expect(report.features.github.docker.status).toBe("pass");
+      expect(calls).not.toContain("modal:sandbox/launch");
+      return;
+    }
+    if (mode.startsWith("github")) {
+      expect(passed).toBe(!["github_auth_failed", "github_clone_failed", "github_push_failed"].includes(mode));
+      for (const provider of providers) {
+        const cell = report.features.github[provider];
+        expect(cell.status).toBe(
+          mode === "github_unconfigured"
+            ? "not-run"
+            : mode === "github_unsupported"
+              ? "unsupported"
+              : ["github", "github_scp", "github_ssh"].includes(mode)
+                ? "pass"
+                : "fail",
+        );
+        if (mode === "github_unconfigured") expect(calls).toHaveLength(0);
+        else expect(report.features.cleanup[provider].status).toBe("pass");
+      }
+      expect(calls.filter((call) => call.endsWith(":sandbox/launch"))).toHaveLength(
+        mode === "github_unconfigured" ? 0 : 2,
+      );
+      return;
+    }
     if (mode === "filtered" || debtFeature) {
       expect(passed).toBe(true);
       if (debtFeature) {
@@ -519,6 +621,11 @@ function productionBoatFixture(
               },
             ],
           });
+        case "golden/size-policy":
+          return Response.json({
+            provider: "boat",
+            repositories: [{ url: "https://github.com/owner/private-fixture.git" }],
+          });
         case "sandbox/launch":
           if (fault === "deadline_exhausted") clock += 35 * 60_000;
           expect(body.provider).toBe("boat");
@@ -566,7 +673,11 @@ function productionBoatFixture(
         case "sandbox/status":
           return Response.json({ id: "new-production-boat", status });
         case "sandbox/exec":
-          return Response.json({ exitCode: 0, timedOut: false, stdout: "PARITY_EXEC_OK" });
+          return Response.json({
+            exitCode: 0,
+            timedOut: false,
+            stdout: String(body.command).includes("PARITY_GITHUB_OK") ? "PARITY_GITHUB_OK" : "PARITY_EXEC_OK",
+          });
         case "sandbox/stop":
           status = "stopped";
           return Response.json({ status });
@@ -749,5 +860,79 @@ for (const fault of ["slow_turn", "turn_timeout", "stop_settling", "late_success
       const requests = fake.calls.filter((call) => call.path === "sandbox/delete").map((call) => call.body.request_id);
       expect(new Set(requests).size).toBe(1);
     }
+  });
+}
+
+test("GitHub parity uses the same probe for coordinator production Boat", async () => {
+  const fake = productionBoatFixture();
+  const env = {
+    ...productionBoatEnv,
+    ARMADA_SMOKE_CASES: JSON.stringify([{ ...productionBoatCase, githubRepository: "owner/private-fixture" }]),
+  };
+  expect(await runProductionBoat(env, fake.io, [...productionBoatArgs, "--feature", "github"])).toBe(true);
+  const report = JSON.parse(fake.lines.find((line) => line.startsWith('{"step":"provider_parity"')) ?? "{}");
+  expect(report.features.github.boat.status).toBe("pass");
+  expect(report.features.cleanup.boat.status).toBe("pass");
+  expect(fake.calls.filter((call) => call.path === "sandbox/launch")).toHaveLength(1);
+  expect(fake.calls.find((call) => call.path === "sandbox/exec")?.body.command).toContain("push --dry-run");
+});
+
+// Configuration failures must be actionable before allocating any real compute.
+for (const [name, override, field] of [
+  ["missing URL", { ARMADA_URL: undefined }, "ARMADA_URL"],
+  ["missing token", { ARMADA_TOKEN: " " }, "ARMADA_TOKEN"],
+  ["missing consent", { ARMADA_SMOKE: undefined }, "ARMADA_SMOKE"],
+  ["malformed JSON", { ARMADA_SMOKE_CASES: '{"secret":"never-echo-this"' }, "ARMADA_SMOKE_CASES"],
+  ["non-array", { ARMADA_SMOKE_CASES: "{}" }, "ARMADA_SMOKE_CASES"],
+  ["non-object", { ARMADA_SMOKE_CASES: "[null]" }, "ARMADA_SMOKE_CASES[0]"],
+  [
+    "normal case without label",
+    { ARMADA_SMOKE_CASES: '[{"provider":"boat"},{"provider":"modal"}]' },
+    "ARMADA_SMOKE_CASES[1].account",
+  ],
+  [
+    "wrong harness",
+    { ARMADA_SMOKE_CASES: '[{"provider":"modal","account":"codex-openai","harness":"opencode"}]' },
+    "ARMADA_SMOKE_CASES[0].harness",
+  ],
+  [
+    "missing Docker host",
+    {
+      ARMADA_SMOKE_CASES:
+        '[{"provider":"docker","account":"codex-openai","harness":"codex","org":"org","model":"model","modelAccountId":"account"}]',
+    },
+    "ARMADA_SMOKE_CASES[0].hostId",
+  ],
+] as const) {
+  test(`accounts configuration identifies ${name}`, async () => {
+    const lines: string[] = [];
+    expect(
+      await postDeploySmoke(
+        Object.assign(
+          {
+            ARMADA_URL: "https://armada-mcp-staging.up.railway.app",
+            ARMADA_TOKEN: "never-echo-this",
+            ARMADA_SMOKE: "create_real_compute",
+            ARMADA_SMOKE_CASES: "[]",
+          },
+          override,
+        ),
+        ["--parity", "--accounts"],
+        {
+          now: () => 0,
+          sleep: async () => {},
+          out: (line) => lines.push(line),
+          fetch: async () => {
+            throw new Error("must not allocate or call the network on invalid configuration");
+          },
+        },
+      ),
+    ).toBe(false);
+    expect(JSON.parse(lines.find((line) => line.startsWith("{"))!)).toMatchObject({
+      code: "invalid_accounts_configuration",
+      field,
+      message: expect.any(String),
+    });
+    expect(lines.join("\n")).not.toContain("never-echo-this");
   });
 }

@@ -21,13 +21,23 @@ import {
 } from "@armada/provider-modal";
 import type { Image, ModalClient, Sandbox } from "modal";
 import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
+import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 import { goldenHelperReport } from "../../core/test/support/golden-helper.ts";
-import { database, ENCRYPTION_KEY } from "./support.ts";
+import { ENCRYPTION_KEY } from "./support.ts";
 
 test("secure Modal golden publishes a NULL master, restores from its own image, and snapshots again", async () => {
-  const { db, people } = await database();
+  const db = await openMigratedDatabase();
+  const people = { org: crypto.randomUUID(), admin: crypto.randomUUID(), owner: crypto.randomUUID() };
   const files = await mkdtemp(join(tmpdir(), "armada-golden-images-"));
   try {
+    // This lifecycle creates its own golden and GitHub grant; no launch credentials are needed.
+    await db.query("insert into auth.users (id) values ($1), ($2)", [people.admin, people.owner]);
+    await db.query("insert into orgs (id, name) values ($1, 'Modal lifecycle')", [people.org]);
+    await db.query("insert into members (org_id, user_id, role) values ($1, $2, 'admin'), ($1, $3, 'member')", [
+      people.org,
+      people.admin,
+      people.owner,
+    ]);
     const actor: GoldenActor = { orgId: people.org, userId: people.admin, role: "admin" };
     const scope: Scope = {
       orgId: people.org,

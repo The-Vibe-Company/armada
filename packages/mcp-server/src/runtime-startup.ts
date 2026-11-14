@@ -1,5 +1,5 @@
 import { setTimeout as delay } from "node:timers/promises";
-import { ProviderError } from "@armada/core";
+import { isHarness, ProviderError } from "@armada/core";
 import { type createRuntimeEnrolments, RuntimeEnrolmentDenied } from "./runtime-enrolment.ts";
 import { logRuntimeStage } from "./runtime-progress.ts";
 
@@ -47,7 +47,7 @@ export function createRuntimeStartup(
   }): Promise<{ runtime: "armada"; epoch: string }> => {
     const timeout = input.readinessTimeoutMs ?? 90_000;
     if (
-      (input.configuration.selectedHarness !== "codex" && input.configuration.selectedHarness !== "claude") ||
+      !isHarness(input.configuration.selectedHarness) ||
       !Number.isSafeInteger(timeout) ||
       timeout < 1 ||
       timeout > 120_000

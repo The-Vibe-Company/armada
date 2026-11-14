@@ -57,6 +57,7 @@ export class ToolApiError extends Error {
       [
         "credential_binding_required",
         "credential_binding_unsafe",
+        "credential_binding_unsupported",
         "conflict",
         "sandbox_not_ready",
         "no_running_turn",

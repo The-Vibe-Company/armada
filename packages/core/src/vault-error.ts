@@ -1,6 +1,7 @@
 export type VaultErrorCode =
   | "credential_binding_required"
   | "credential_binding_unsafe"
+  | "credential_binding_unsupported"
   | "invalid"
   | "forbidden"
   | "not_found"

@@ -10,6 +10,7 @@ import { launchCredentials } from "../src/launch-credentials.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
+import { createSandboxAccountChange } from "../src/sandbox-account-change.ts";
 import { migratedDatabase } from "./migrated-database.ts";
 
 let db: Awaited<ReturnType<typeof migratedDatabase>>;
@@ -144,6 +145,33 @@ test("ACK is not readiness: current epoch health proof alone publishes ready wit
   );
   await reservations.stop(f.actor, f.sandbox.id, randomUUID());
   await denied(service.ready(f.actor, f.sandbox.id, healthId));
+});
+
+test("normal launch preparation cannot be bypassed by private readiness or an unrelated first prompt", async () => {
+  const f = await fixture(),
+    session = await f.enrol(),
+    healthId = randomUUID();
+  const input = { requestId: randomUUID(), text: "Original admitted prompt" };
+  await db.query(
+    `insert into public.docker_launch_requests(sandbox_id,actor_epoch,request_hash,request_enc)
+    select $1,e.epoch,$2,$3 from public.mcp_actor_epochs e where e.user_id=$4 and e.org_id=$5`,
+    [
+      f.sandbox.id,
+      "a".repeat(64),
+      await encryptSecret(JSON.stringify({ promptId: input.requestId, request: { prompt: input.text } }), key),
+      f.actor.userId,
+      f.actor.orgId,
+    ],
+  );
+  await service.ready(f.actor, f.sandbox.id, healthId);
+  await complete(session, { ready: true, generation: session.epoch });
+  await service.ready(f.actor, f.sandbox.id, healthId);
+  expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("starting");
+  await denied(service.prompt(f.actor, f.sandbox.id, input));
+  // Even after trusted preparation publishes ready, the reserved first prompt cannot be replaced.
+  await db.query("update public.sandboxes set status='ready' where id=$1", [f.sandbox.id]);
+  await denied(service.prompt(f.actor, f.sandbox.id, { ...input, requestId: randomUUID() }));
+  expect(await service.prompt(f.actor, f.sandbox.id, input)).toEqual({ state: "pending" });
 });
 
 test("a health reply from before stop or an epoch replacement cannot publish readiness", async () => {
@@ -417,4 +445,103 @@ test("journal reads acknowledged encrypted events plus saved usage after stop/de
   await denied(disabled.journal(f.admin, f.sandbox.id));
   await db.query(`delete from public.members where org_id=$1 and user_id=$2`, [f.actor.orgId, f.actor.userId]);
   await denied(disabled.journal(f.actor, f.sandbox.id));
+});
+
+test("rebound Docker usage has its epoch's admitted prices before the accepted prompt receipt is recorded", async () => {
+  const f = await fixture();
+  await ready(f);
+  const stopId = randomUUID();
+  await reservations.stop(f.actor, f.sandbox.id, stopId);
+  const stop = await hosts.poll(f.hostToken, f.installationId);
+  if (stop?.operation !== "stop") throw Error("missing retained stop");
+  await hosts.complete(f.hostToken, f.installationId, { requestId: stop.requestId, outcome: "completed" });
+  const selected = randomUUID();
+  await db.query(
+    "insert into public.credentials(id,scope,owner_id,kind,name,value_enc) values($1,'user',$2,'openai','Rebound pricing',$3)",
+    [
+      selected,
+      f.actor.userId,
+      await encryptSecret(
+        JSON.stringify({
+          apiKey: "offline-rebound-key",
+          endpoint: { version: 1, baseUrl: "https://pricing.example/v1" },
+          prices: { "gpt-6.1-sol": { input: "3", output: "4", cacheRead: "0", cacheWrite: null, reasoning: null } },
+        }),
+        key,
+      ),
+    ],
+  );
+  await createSandboxAccountChange(sql, launchCredentials(createSqlVaultStore(sql), key), async () => {
+    throw Error("not legacy");
+  })(
+    { userId: f.actor.userId, orgs: [{ orgId: f.actor.orgId, role: "member" }], via: "supabase" },
+    { id: f.sandbox.id, credentialId: selected },
+  );
+  await bootstrap.resume(f.actor, f.sandbox.id, randomUUID());
+  const resumed = await hosts.poll(f.hostToken, f.installationId);
+  if (resumed?.operation !== "resume") throw Error("missing fresh enrollment");
+  const session = await authority.enrol(resumed.bootstrap.enrolmentToken);
+  await hosts.complete(f.hostToken, f.installationId, { requestId: resumed.requestId, outcome: "completed" });
+  const health = randomUUID();
+  await service.ready(f.actor, f.sandbox.id, health);
+  await complete(session, { ready: true, generation: session.epoch });
+  await service.ready(f.actor, f.sandbox.id, health);
+  const input = { requestId: randomUUID(), text: "Usage before receipt" };
+  expect(await service.prompt(f.actor, f.sandbox.id, input)).toEqual({ state: "pending" });
+  const promptId = randomUUID(),
+    conversationId = randomUUID();
+  const response = await createRuntimeEvents(authority, key).route(
+    new Request("https://armada.example/api/runtime/events", {
+      method: "POST",
+      headers: { authorization: `Bearer ${session.runtimeToken}`, "x-armada-runtime-epoch": session.epoch },
+      body: JSON.stringify({
+        sandboxId: f.sandbox.id,
+        generation: session.epoch,
+        events: [
+          {
+            sequence: 1,
+            event: {
+              id: randomUUID(),
+              at: 1,
+              kind: "other",
+              type: "armada/turnUsage",
+              promptId,
+              data: {
+                model: "gpt-6.1-sol",
+                inputTokens: 100,
+                outputTokens: 10,
+                cachedTokens: 0,
+                cacheWriteTokens: 0,
+                reasoningTokens: 0,
+              },
+            },
+          },
+        ],
+      }),
+    }),
+  );
+  expect(response?.status).toBe(200);
+  expect(
+    (
+      await db.query<{ count: string }>("select count(*)::text as count from sandbox_turn_models where sandbox_id=$1", [
+        f.sandbox.id,
+      ])
+    ).rows[0]?.count,
+  ).toBe("0");
+  const priced = (
+    await db.query<{ usage_turns: { turns: Array<{ pricing: unknown }> } }>(
+      "select usage_turns from sandboxes where id=$1",
+      [f.sandbox.id],
+    )
+  ).rows[0]?.usage_turns.turns[0]?.pricing;
+  expect(priced).toMatchObject({ credentialId: selected, usd: "0.00034", basis: "estimated", unknown: null });
+  await complete(session, { promptId, conversationId, status: "queued" });
+  expect((await service.prompt(f.actor, f.sandbox.id, input)).state).toBe("admitted");
+  const admitted = (
+    await db.query<{ pricing_context: { credentialId: string } }>(
+      "select pricing_context from sandbox_turn_models where sandbox_id=$1 and prompt_id=$2",
+      [f.sandbox.id, promptId],
+    )
+  ).rows[0];
+  expect(admitted?.pricing_context.credentialId).toBe(selected);
 });

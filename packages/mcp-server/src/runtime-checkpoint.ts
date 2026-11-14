@@ -62,8 +62,8 @@ export function createRuntimeCheckpoint(
         ((row.boatRuntime || row.runtimeTransport === "dialout") && ["boat", "modal"].includes(row.provider))
       ) ||
       (row.harness !== "codex" &&
-        !(["boat", "docker"].includes(row.provider) && row.harness === "claude") &&
-        !(row.provider === "docker" && row.harness === "opencode")) ||
+        row.harness !== "claude" &&
+        !(["docker", "modal"].includes(row.provider) && row.harness === "opencode")) ||
       row.deletedAt
     )
       throw new VaultError("not_found", "No owned runtime checkpoint target.");

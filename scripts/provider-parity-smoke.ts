@@ -53,6 +53,7 @@ const steps = {
   status: "status",
   logs: "logs",
   exec: "exec",
+  github: "github",
   stop: "stop",
   resume: "resume",
   delete: "delete",
@@ -69,7 +70,6 @@ const features = [
   // #1562: explicit debt rows; manual stop/resume is not idle-pause/wake proof.
   "idle-pause",
   "wake-on-send",
-  "github",
   "repository-refresh",
   "readable-variables",
   "application-secrets",
@@ -100,6 +100,7 @@ const accountMatrix = {
 } as const;
 
 interface Case {
+  githubRepository?: string;
   account?: keyof typeof accountMatrix;
   provider: Provider;
   org: string;
@@ -201,6 +202,9 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       if (
         !(productionBoat ? c.provider === "boat" : ["modal", "docker"].includes(c.provider)) ||
         !isHarness(c.harness) ||
+        (c.githubRepository !== undefined &&
+          (typeof c.githubRepository !== "string" ||
+            !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}\/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/.test(c.githubRepository))) ||
         [c.org, c.model, c.modelAccountId].some((v) => typeof v !== "string" || !v.trim()) ||
         (c.provider === "docker"
           ? typeof c.hostId !== "string" || !c.hostId.trim()
@@ -317,6 +321,10 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     // A not-yet-implemented row must not allocate compute merely to print debt.
     if (feature && !Object.hasOwn(steps, feature) && !["resume-recall", "usage", "exact-cost"].includes(feature))
       continue;
+    if (feature === "github" && !c.githubRepository) {
+      record("github", c.provider, "not-run", "github_repository_not_configured");
+      continue;
+    }
     let option: LaunchProviderOption | undefined;
     let id: string | undefined;
     let stopped = false;
@@ -623,6 +631,32 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       option = options.providers.find((p) => p.id === c.provider);
       if (!option) throw new Error("missing_provider_options");
       if (!option.harnesses.includes(c.harness as never)) throw new Error("harness_not_advertised");
+      if (
+        c.githubRepository &&
+        (!feature || feature === "github") &&
+        option.capabilities.github !== false &&
+        c.provider !== "docker"
+      ) {
+        // Runtime GitHub grants are bound to the frozen golden repositories.
+        // Do not allocate a sandbox whose grant cannot authorize this fixture.
+        const configured = await api<{ provider: string; repositories: { url: string }[] }>("golden/size-policy", {
+          golden: c.golden,
+          provider: c.provider,
+        });
+        if (
+          configured.provider !== c.provider ||
+          !configured.repositories.some(
+            (repository) =>
+              /^(?:https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?$/
+                .exec(repository.url)?.[1]
+                ?.toLowerCase() === c.githubRepository!.toLowerCase(),
+          )
+        )
+          throw new ParityError({
+            code: "github_repository_not_in_golden",
+            message: "GitHub fixture must be included in the selected provider golden.",
+          });
+      }
       if (c.provider === "docker" && option.capabilities.launch) {
         const hosts = await api<{ hosts: { id: string; state: string }[] }>("docker/hosts/list");
         if (!hosts.hosts.some((h) => h.id === c.hostId && h.state === "online")) {
@@ -646,10 +680,15 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         step === "launch" ||
         step === "stop" ||
         step === "delete" ||
+        (feature === "github" && step === "send") ||
         (["resume", "resume-recall", "usage", "exact-cost"].includes(feature ?? "") &&
           ["send", "resume"].includes(step));
       if (!needed) continue;
       const selected = !feature || step === feature;
+      if (step === "github" && !c.githubRepository) {
+        record("github", c.provider, "not-run", "github_repository_not_configured");
+        continue;
+      }
       if (option?.capabilities[capability] === false) {
         const reason = option.unsupportedReasons[capability];
         record(
@@ -683,7 +722,21 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
             visibility: "private",
             ttlSeconds: 1800,
             ...(c.provider === "docker"
-              ? { hostId: c.hostId, requestId: crypto.randomUUID() }
+              ? {
+                  hostId: c.hostId,
+                  requestId: crypto.randomUUID(),
+                  ...(c.githubRepository && (!feature || feature === "github")
+                    ? {
+                        repos: [
+                          {
+                            url: `https://github.com/${c.githubRepository}.git`,
+                            branch: "main",
+                            dir: "armada-parity-github",
+                          },
+                        ],
+                      }
+                    : {}),
+                }
               : { golden: c.golden, connections: [] }),
           });
           if (typeof result.sandbox?.id !== "string" || !result.sandbox.id || result.sandbox.provider !== c.provider)
@@ -706,6 +759,41 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
             });
             if (result.exitCode !== 0 || result.timedOut !== false || result.stdout !== "PARITY_EXEC_OK")
               throw new Error("invalid_exec_receipt");
+          } else if (step === "github") {
+            // Only an operator-selected populated private test repository.
+            // Clone and receive-pack dry-run exercise the delivered Git credentials;
+            // no branch or commit is ever written to GitHub.
+            const repository = c.githubRepository!;
+            const branch = `armada-parity-${crypto.randomUUID()}`;
+            const command = [
+              "set -eu",
+              "umask 077",
+              "export GIT_TERMINAL_PROMPT=0",
+              "scratch=$(mktemp -d /tmp/armada-parity-github.XXXXXX)",
+              `trap 'rm -rf -- "$scratch"' EXIT`,
+              `test "$(gh api 'repos/${repository}' --jq '.private and .permissions.push' 2>/dev/null)" = true || { printf PARITY_GITHUB_AUTH_FAILED; exit 11; }`,
+              `git -c core.hooksPath=/dev/null -c init.templateDir= clone --quiet --depth 1 --no-checkout 'https://github.com/${repository}.git' "$scratch/repo" >/dev/null 2>&1 || { printf PARITY_GITHUB_CLONE_FAILED; exit 12; }`,
+              `git -c core.hooksPath=/dev/null -C "$scratch/repo" push --dry-run origin 'HEAD:refs/heads/${branch}' >/dev/null 2>&1 || { printf PARITY_GITHUB_PUSH_FAILED; exit 13; }`,
+              "printf PARITY_GITHUB_OK",
+            ].join("\n");
+            const result = await api<{ exitCode: number | null; timedOut: boolean; stdout?: string }>("sandbox/exec", {
+              id,
+              command,
+              cwd: "/tmp",
+              timeout_seconds: 90,
+              ...(c.provider === "docker" ? { request_id: crypto.randomUUID() } : {}),
+            });
+            if (result.exitCode !== 0 || result.timedOut !== false || result.stdout !== "PARITY_GITHUB_OK") {
+              const code =
+                result.stdout === "PARITY_GITHUB_AUTH_FAILED"
+                  ? "github_auth_failed"
+                  : result.stdout === "PARITY_GITHUB_CLONE_FAILED"
+                    ? "github_clone_failed"
+                    : result.stdout === "PARITY_GITHUB_PUSH_FAILED"
+                      ? "github_push_failed"
+                      : "github_probe_failed";
+              throw new ParityError({ code, message: code.replaceAll("_", " ") });
+            }
           } else if (step === "status") {
             const result = await api<{ id: string; provider?: string; status: string }>("sandbox/status", { id });
             // The shared schema makes provider optional. Docker retains running
@@ -822,6 +910,14 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
 async function accountsParity(env: NodeJS.ProcessEnv, io: Io, args: string[]): Promise<boolean> {
   let cases: Case[];
   let providers: Array<"modal" | "docker"> = ["modal", "docker"];
+  let field = "arguments";
+  const invalid = (path: string, reason: string): never => {
+    field = path;
+    throw new Error(reason);
+  };
+  const nonempty = (value: unknown, path: string) => {
+    if (typeof value !== "string" || !value.trim()) invalid(path, "must be a non-empty string");
+  };
   try {
     if (
       args.length === 3 &&
@@ -830,30 +926,50 @@ async function accountsParity(env: NodeJS.ProcessEnv, io: Io, args: string[]): P
       (args[2] === "modal" || args[2] === "docker")
     )
       providers = [args[2]];
-    else if (args.length !== 1 || args[0] !== "--accounts") throw new Error();
-    if (env.ARMADA_URL !== STAGING_ORIGIN || !env.ARMADA_TOKEN || env.ARMADA_SMOKE !== "create_real_compute")
-      throw new Error();
-    cases = stagingSmokeCases(JSON.parse(env.ARMADA_SMOKE_CASES ?? "[]")) as Case[];
-    if (!Array.isArray(cases)) throw new Error();
-    const seen = new Set<string>();
-    for (const c of cases) {
-      if (
-        !c ||
-        !c.account ||
-        !Object.hasOwn(accountMatrix, c.account) ||
-        accountMatrix[c.account] !== c.harness ||
-        !["modal", "docker"].includes(c.provider) ||
-        [c.org, c.model, c.modelAccountId, c.provider === "docker" ? c.hostId : c.golden].some(
-          (v) => typeof v !== "string" || !v.trim(),
-        )
-      )
-        throw new Error();
-      const key = `${c.provider}:${c.account}`;
-      if (seen.has(key)) throw new Error();
-      seen.add(key);
+    else if (args.length !== 1 || args[0] !== "--accounts")
+      invalid("arguments", "expected --accounts [--only modal|docker]");
+    if (env.ARMADA_URL !== STAGING_ORIGIN) invalid("ARMADA_URL", `must equal ${STAGING_ORIGIN}`);
+    nonempty(env.ARMADA_TOKEN, "ARMADA_TOKEN");
+    if (env.ARMADA_SMOKE !== "create_real_compute") invalid("ARMADA_SMOKE", "must equal create_real_compute");
+    field = "ARMADA_SMOKE_CASES";
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(env.ARMADA_SMOKE_CASES ?? "[]");
+    } catch {
+      invalid(field, "must be a JSON array");
     }
-  } catch {
-    io.out(JSON.stringify({ step: "configure", pass: false, code: "invalid_accounts_configuration" }));
+    if (!Array.isArray(parsed)) invalid(field, "must be a JSON array");
+    cases = [];
+    const seen = new Set<string>();
+    for (const [index, row] of (parsed as unknown[]).entries()) {
+      const path = `ARMADA_SMOKE_CASES[${index}]`;
+      if (!row || typeof row !== "object" || Array.isArray(row)) invalid(path, "must be an object");
+      const c = row as Case;
+      // Keep original indexes in diagnostics, while ignoring unused Boat fields.
+      if (c.provider === "boat") continue;
+      if (c.provider !== "modal" && c.provider !== "docker")
+        invalid(`${path}.provider`, "must be modal or docker (Boat is skipped)");
+      if (typeof c.account !== "string" || !Object.hasOwn(accountMatrix, c.account))
+        invalid(`${path}.account`, `must be one of: ${Object.keys(accountMatrix).join(", ")}`);
+      if (accountMatrix[c.account!] !== c.harness) invalid(`${path}.harness`, "must match the selected account label");
+      for (const name of ["org", "model", "modelAccountId", c.provider === "docker" ? "hostId" : "golden"] as const)
+        nonempty(c[name], `${path}.${name}`);
+      const key = `${c.provider}:${c.account}`;
+      if (seen.has(key)) invalid(`${path}.account`, "duplicate provider/account pair");
+      seen.add(key);
+      cases.push(c);
+    }
+  } catch (error) {
+    // Only controlled diagnostics: never echo supplied JSON, token or account values.
+    io.out(
+      JSON.stringify({
+        step: "configure",
+        pass: false,
+        code: "invalid_accounts_configuration",
+        field,
+        message: error instanceof Error ? error.message : "invalid configuration",
+      }),
+    );
     return false;
   }
   const accounts: Record<string, Partial<Record<Provider, unknown>>> = {};

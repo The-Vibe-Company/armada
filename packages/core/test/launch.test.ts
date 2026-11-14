@@ -6,8 +6,7 @@ import { join } from "node:path";
 import helperManifest from "../helper/manifest.json";
 import {
   type AgentEvent,
-  type CredentialSource,
-  cleanupSandboxes,
+  CODEX_AUTH_PATH,
   dedupeEvents,
   type ForkRequest,
   GH_MISSING_NOTE,
@@ -16,7 +15,7 @@ import {
   type GoldenActor,
   type GoldenRecord,
   type GoldenStore,
-  harnessCredentials,
+  type HarnessCredentials,
   LaunchError,
   type LaunchStores,
   launchSandbox,
@@ -29,6 +28,7 @@ import {
   type SandboxPatch,
   type SandboxRecord,
   type SandboxStore,
+  toHarnessCredentials,
 } from "../src/index.ts";
 import { prepareLaunchWorkspace } from "../src/launch.ts";
 import { catalogLock, catalogReference } from "./support/skillpack-catalog.ts";
@@ -38,9 +38,14 @@ const OWNER = "22222222-2222-4222-8222-222222222222";
 const OTHER = "33333333-3333-4333-8333-333333333333";
 const SNAPSHOT = `a${"1".repeat(62)}`;
 const CLAUDE_TOKEN = "sk-ant-oat01-user-token-value";
-const ORG_CLAUDE_TOKEN = "sk-ant-oat01-org-token-value";
 const OPENAI_KEY = "sk-openai-user-key-value";
 const AUTH_JSON = JSON.stringify({ tokens: { access_token: "codex-access-token-value", account_id: "acct" } });
+const authCredentials = () =>
+  toHarnessCredentials({
+    env: {},
+    files: [{ path: CODEX_AUTH_PATH, content: AUTH_JSON, mode: 0o600 }],
+    sources: [],
+  });
 
 const GITHUB_TOKEN = "ghu_launch_test_token_aaaaaaaaaaaaaaaaaaaa";
 const IDENTITY = {
@@ -54,138 +59,116 @@ const owner: GoldenActor = { userId: OWNER, orgId: ORG, role: "member" };
 const other: GoldenActor = { userId: OTHER, orgId: ORG, role: "member" };
 
 describe("launch", () => {
-  test("deployment runtime default refuses idle ordinary requests before native credentials or compute", async () => {
-    const world = setup({ golden: golden("org") });
-    let selected = 0;
-    const forbidden = async (): Promise<never> => {
-      throw Error("native fallback must never be used");
-    };
-    world.stores.credentials.resolve = forbidden;
-    world.provider.fork = forbidden;
-    await expect(
-      launchSandbox(
+  test.each([true, false])(
+    "ordinary runtime default prepares workspace before publication/inference (prompt=%s)",
+    async (prompted) => {
+      const world = setup({ golden: golden("org") }),
+        order: string[] = [],
+        commands: string[] = [];
+      const resolve = world.stores.credentials.resolve.bind(world.stores.credentials);
+      const credentials = {
+        ...world.stores.credentials,
+        async resolve(...args: Parameters<typeof resolve>) {
+          return { ...(await resolve(...args)), binding: { credentialId: OWNER, credentialVersion: 1 } };
+        },
+      };
+      const result = await launchSandbox(
         world.provider,
         world.stores,
         owner,
-        { golden: "web", harness: "codex" },
+        { golden: "web", harness: "codex", ...(prompted ? { prompt: "ordinary request" } : {}) },
         {
+          beforeStart: async () => {
+            order.push("admit");
+          },
           boatRuntimeDefault: {
-            policy: { start: forbidden },
-            provider: async () => {
-              selected++;
-              return world.provider;
+            provider: async () => world.provider,
+            credentials,
+            connections: {
+              async validate() {},
+              async bind() {
+                order.push("bind");
+              },
+              async prepare() {
+                order.push("mcp");
+              },
             },
-            credentials: world.stores.credentials,
-            connections: { validate: forbidden, bind: forbidden },
-          },
-        },
-      ),
-    ).rejects.toMatchObject({ code: "invalid_request", message: expect.stringContaining("idle sandbox") });
-    expect(selected).toBe(0);
-    expect(world.forks).toHaveLength(0);
-  });
-
-  test("ordinary runtime default uses private native-equivalent repo/init setup before MCP, final admission and inference", async () => {
-    const world = setup({ golden: golden("org") }),
-      order: string[] = [],
-      commands: string[] = [];
-    const resolve = world.stores.credentials.resolve.bind(world.stores.credentials);
-    const credentials = {
-      ...world.stores.credentials,
-      async resolve(...args: Parameters<typeof resolve>) {
-        return { ...(await resolve(...args)), binding: { credentialId: OWNER, credentialVersion: 1 } };
-      },
-    };
-    const result = await launchSandbox(
-      world.provider,
-      world.stores,
-      owner,
-      { golden: "web", harness: "codex", prompt: "ordinary request" },
-      {
-        beforeStart: async () => {
-          order.push("admit");
-        },
-        boatRuntimeDefault: {
-          provider: async () => world.provider,
-          credentials,
-          connections: {
-            async validate() {},
-            async bind() {
-              order.push("bind");
-            },
-            async prepare() {
-              order.push("mcp");
-            },
-          },
-          policy: {
-            async start() {
-              order.push("start");
-              return {
-                epoch: "1",
-                async prepareWorkspace(g, onStage, _sleep) {
-                  order.push("workspace");
-                  let retry = false;
-                  await prepareLaunchWorkspace(
-                    {
-                      id: "boat",
-                      exec: async () => {
-                        throw Error("No native exec");
+            policy: {
+              async start() {
+                order.push("start");
+                return {
+                  epoch: "1",
+                  async prepareWorkspace(g, onStage, _sleep) {
+                    order.push("workspace");
+                    let retry = false;
+                    await prepareLaunchWorkspace(
+                      {
+                        id: "boat",
+                        exec: async () => {
+                          throw Error("No native exec");
+                        },
                       },
-                    },
-                    "bx_1",
-                    "logical",
-                    g,
-                    [],
-                    onStage,
-                    async (ms) => {
-                      expect(ms).toBe(1000);
-                      retry = true;
-                    },
-                    async (req, step) => {
-                      commands.push(`${step.phase}:${step.index}:${step.attempt}:${req.cwd}:${req.command}`);
-                      return {
-                        detached: false as const,
-                        timedOut: false,
-                        truncated: false,
-                        exitCode: step.phase === "repository" && step.index === 0 && step.attempt === 0 ? 128 : 0,
-                        stdout: "",
-                        stderr:
-                          step.phase === "repository" && step.index === 0 && step.attempt === 0
-                            ? "detected dubious ownership in repository"
-                            : "",
-                      };
-                    },
-                  );
-                  expect(retry).toBe(true);
-                  return { status: "not_connected" };
-                },
-                async prompt() {
-                  expect(order).toEqual(["bind", "start", "workspace", "mcp", "admit"]);
-                  return { promptId: "runtime", conversationId: "conversation", status: "queued" };
-                },
-              };
+                      "bx_1",
+                      "logical",
+                      g,
+                      [],
+                      onStage,
+                      async (ms) => {
+                        expect(ms).toBe(1000);
+                        retry = true;
+                      },
+                      async (req, step) => {
+                        commands.push(`${step.phase}:${step.index}:${step.attempt}:${req.cwd}:${req.command}`);
+                        return {
+                          detached: false as const,
+                          timedOut: false,
+                          truncated: false,
+                          exitCode: step.phase === "repository" && step.index === 0 && step.attempt === 0 ? 128 : 0,
+                          stdout: "",
+                          stderr:
+                            step.phase === "repository" && step.index === 0 && step.attempt === 0
+                              ? "detected dubious ownership in repository"
+                              : "",
+                        };
+                      },
+                    );
+                    expect(retry).toBe(true);
+                    return { status: "not_connected" };
+                  },
+                  async prompt() {
+                    expect(order).toEqual(["bind", "start", "workspace", "mcp", "admit"]);
+                    return { promptId: "runtime", conversationId: "conversation", status: "queued" };
+                  },
+                };
+              },
             },
           },
         },
-      },
-    );
-    expect(result.runtime).toEqual({ kind: "armada", epoch: "1" });
-    expect(commands).toHaveLength(4);
-    expect(commands[0]).toContain("repository:0:0:/home/user/web:");
-    expect(commands[1]).toContain("repository:0:1:");
-    expect(commands[2]).toContain("repository:1:0:/home/user/api:");
-    expect(commands[3]).toContain("init:0:0:/home/user:");
-    expect(world.execs).toHaveLength(0);
-    expect(world.prompts).toHaveLength(0);
-    expect(world.forks[0]?.env).toEqual({});
-  });
+      );
+      expect(result.runtime).toEqual({ kind: "armada", epoch: "1" });
+      expect(order).toEqual(["bind", "start", "workspace", "mcp", "admit"]);
+      if (!prompted) {
+        expect(result.sandbox.status).toBe("ready");
+        expect(result.sandbox.conversationIds).toEqual([]);
+        expect(result.promptId).toBeUndefined();
+      }
+      expect(commands).toHaveLength(4);
+      expect(commands[0]).toContain("repository:0:0:/home/user/web:");
+      expect(commands[1]).toContain("repository:0:1:");
+      expect(commands[2]).toContain("repository:1:0:/home/user/api:");
+      expect(commands[3]).toContain("init:0:0:/home/user:");
+      expect(world.execs).toHaveLength(0);
+      expect(world.prompts).toHaveLength(0);
+      expect(world.forks[0]?.env).toEqual({});
+    },
+  );
   test.each(["key", "auth"] as const)(
     "experimental %s launch hands off after persisted selection, never native setup/prompt",
     async (kind) => {
       const world = setup({
         golden: golden("org"),
         github: { status: "connected", token: GITHUB_TOKEN, identity: IDENTITY },
-        ...(kind === "auth" ? { credentials: { user: { openai: AUTH_JSON } } } : {}),
+        ...(kind === "auth" ? { credentials: authCredentials() } : {}),
       });
       world.stores.credentials.hydrateNative = async () => {
         throw Error("must not hydrate native Boat");
@@ -369,7 +352,10 @@ describe("launch", () => {
       ),
     ).rejects.toMatchObject({
       ...(failure === "harness"
-        ? { message: "The experimental runtime supports ordinary Boat Codex/Claude or Modal Codex workers only." }
+        ? {
+            message:
+              "The experimental runtime supports ordinary Boat Codex/Claude or Modal Codex/Claude/OpenCode workers only.",
+          }
         : {}),
       code: ["harness", "mcp", "skills", "parent"].includes(failure)
         ? "invalid_request"
@@ -657,7 +643,7 @@ describe("launch", () => {
       const world = setup({
         golden: golden("org"),
         prepare: true,
-        credentials: { user: { openai: AUTH_JSON, claude_oauth: CLAUDE_TOKEN } },
+        ...(harness === "codex" ? { credentials: authCredentials() } : {}),
         github: { status: "connected", token: GITHUB_TOKEN, identity: IDENTITY },
       });
       await launchSandbox(world.provider, world.stores, owner, {
@@ -703,7 +689,6 @@ exit 1
         for (const prompt of [undefined, "Go"]) {
           const world = setup({
             golden: golden("org"),
-            credentials: { user: { openai: OPENAI_KEY, claude_oauth: CLAUDE_TOKEN } },
             exec: (command) => {
               if (!command.startsWith(`${harness} --version`)) return { exitCode: 0 };
               const result = spawnSync("/bin/sh", ["-c", command], { env: { PATH: dir }, timeout: 1000 });
@@ -772,29 +757,15 @@ exit 1
     expect(world.order).toEqual(["credentials", "fork", "ready", "exec", "exec", "exec", "exec", "prompt"]);
   });
 
-  test("the user's own credential wins over the org's, and the org's is the fallback", async () => {
-    const own = setup({
-      golden: golden("org"),
-      credentials: { user: { claude_oauth: CLAUDE_TOKEN }, org: { claude_oauth: ORG_CLAUDE_TOKEN } },
-    });
-    await launchSandbox(own.provider, own.stores, owner, { golden: "web", harness: "claude" });
-    expect(own.forks[0]?.env).toEqual({ CLAUDE_CODE_OAUTH_TOKEN: CLAUDE_TOKEN });
-
-    const fallback = setup({ golden: golden("org"), credentials: { org: { claude_oauth: ORG_CLAUDE_TOKEN } } });
-    await launchSandbox(fallback.provider, fallback.stores, owner, { golden: "web", harness: "claude" });
-    expect(fallback.forks[0]?.env).toEqual({ CLAUDE_CODE_OAUTH_TOKEN: ORG_CLAUDE_TOKEN });
-  });
-
   test("Codex gets OPENAI_API_KEY, or writes auth.json from the environment and never from the command line", async () => {
     const key = setup({
       golden: golden("org"),
-      credentials: { user: { openai: OPENAI_KEY, claude_oauth: CLAUDE_TOKEN } },
     });
     await launchSandbox(key.provider, key.stores, owner, { golden: "web", harness: "codex", prompt: "go" });
     expect(key.forks[0]).toMatchObject({ noEnv: true, env: { OPENAI_API_KEY: OPENAI_KEY } });
     expect(key.prompts[0]?.harness).toBe("codex");
 
-    const login = setup({ golden: golden("org"), credentials: { org: { openai: AUTH_JSON } } });
+    const login = setup({ golden: golden("org"), credentials: authCredentials() });
     await launchSandbox(login.provider, login.stores, owner, { golden: "web", harness: "codex" });
     expect(login.forks[0]?.env).toEqual({ ARMADA_CODEX_AUTH_JSON: AUTH_JSON });
     expect(login.execs[0]?.command).toContain('"$ARMADA_CODEX_AUTH_JSON" > /home/user/.codex/auth.json');
@@ -1065,12 +1036,11 @@ exit 1
       launchSandbox(noSnapshot.provider, noSnapshot.stores, owner, { golden: "web", harness: "claude" }),
     ).rejects.toThrow(/no snapshot yet/);
 
-    const none = setup({ golden: golden("org"), credentials: { user: { claude_oauth: CLAUDE_TOKEN } } });
-    await expect(
-      launchSandbox(none.provider, none.stores, owner, { golden: "web", harness: "codex" }),
-    ).rejects.toMatchObject({
-      code: "no_credentials",
-    });
+    const refused = new Error("Fixture credential resolution refused.");
+    const none = setup({ golden: golden("org"), credentialError: refused });
+    await expect(launchSandbox(none.provider, none.stores, owner, { golden: "web", harness: "codex" })).rejects.toBe(
+      refused,
+    );
 
     const world = setup({ golden: golden("org") });
     for (const request of [
@@ -1207,45 +1177,6 @@ describe("prompt outcome", () => {
   });
 });
 
-describe("cleanup", () => {
-  test("deletes sandboxes older than the retention from the provider, tolerates a missing one and reports failures", async () => {
-    const now = new Date("2026-11-20T00:00:00.000Z");
-    const rows = new Map<string, SandboxRecord>(
-      [
-        ["old", "bx_old", "2026-11-10T00:00:00.000Z"],
-        ["gone", "bx_gone", "2026-11-11T00:00:00.000Z"],
-        ["stuck", "bx_stuck", "2026-11-12T00:00:00.000Z"],
-        ["fresh", "bx_fresh", "2026-11-19T00:00:00.000Z"],
-      ].map(([id, boatId, createdAt]) => [
-        id as string,
-        sandboxRecord(id as string, boatId as string, createdAt as string),
-      ]),
-    );
-    const deleted: string[] = [];
-    const provider = {
-      id: "boat",
-      async delete({ sandboxId }: { sandboxId: string }) {
-        deleted.push(sandboxId);
-        if (sandboxId === "bx_gone")
-          throw new ProviderError({ provider: "boat", code: "not_found", message: "gone", retryable: false });
-        if (sandboxId === "bx_stuck")
-          throw new ProviderError({ provider: "boat", code: "unavailable", message: "boat is down", retryable: true });
-        return { status: "pending" };
-      },
-    } as unknown as Provider;
-    const store = sandboxStore(rows);
-
-    const result = await cleanupSandboxes(provider, store, { retentionDays: 7, now });
-    expect(deleted).toEqual(["bx_old", "bx_gone", "bx_stuck"]);
-    expect(result.deleted).toEqual(["old", "gone"]);
-    expect(result.failed).toEqual([{ id: "stuck", message: "boat is down" }]);
-    expect(rows.get("old")).toMatchObject({ status: "deleted", deletedAt: now.toISOString() });
-    expect(rows.get("stuck")?.status).toBe("ready");
-    expect(rows.get("fresh")?.status).toBe("ready");
-    await expect(cleanupSandboxes(provider, store, { retentionDays: 0 })).rejects.toThrow(RangeError);
-  });
-});
-
 function golden(visibility: "org" | "private"): GoldenRecord {
   return {
     id: "golden-1",
@@ -1270,7 +1201,8 @@ function golden(visibility: "org" | "private"): GoldenRecord {
 
 interface Setup {
   golden: GoldenRecord;
-  credentials?: { user?: Record<string, string>; org?: Record<string, string> };
+  credentials?: HarnessCredentials;
+  credentialError?: Error;
   exec?: (command: string) => { exitCode: number; stderr?: string; stdout?: string };
   promptError?: Error;
   insertError?: Error;
@@ -1364,17 +1296,17 @@ function setup(options: Setup) {
     async setSandbox() {},
     async setSnapshot() {},
   };
-  const credentialMap = options.credentials ?? { user: { claude_oauth: CLAUDE_TOKEN, openai: OPENAI_KEY } };
-  const source: CredentialSource = {
-    async get(scope, _ownerId, kind) {
-      return credentialMap[scope]?.[kind] ?? null;
-    },
-  };
   const credentials = {
-    resolve: async (actor: GoldenActor, harness: "claude" | "codex") => {
+    resolve: async (_actor: GoldenActor, harness: "claude" | "codex") => {
       order.push("credentials");
+      if (options.credentialError) throw options.credentialError;
       return {
-        ...(await harnessCredentials(source, actor, harness)),
+        ...(options.credentials ??
+          toHarnessCredentials({
+            env: harness === "claude" ? { CLAUDE_CODE_OAUTH_TOKEN: CLAUDE_TOKEN } : { OPENAI_API_KEY: OPENAI_KEY },
+            files: [],
+            sources: [],
+          })),
         ...(options.github ? { github: options.github } : {}),
       };
     },
@@ -1412,27 +1344,6 @@ function sandboxStore(rows: Map<string, SandboxRecord>, insertError?: Error): Sa
 
 function definedOnly(patch: SandboxPatch): Record<string, unknown> {
   return Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined));
-}
-
-function sandboxRecord(id: string, providerSandboxId: string, createdAt: string): SandboxRecord {
-  return {
-    repositoryDir: null,
-    id,
-    provider: "boat",
-    providerSandboxId,
-    goldenId: "golden-1",
-    orgId: ORG,
-    ownerId: OWNER,
-    harness: "claude",
-    status: "ready",
-    conversationIds: [],
-    createdAt,
-    stoppedAt: null,
-    deletedAt: null,
-    statusReason: null,
-    model: null,
-    reasoningEffort: null,
-  };
 }
 
 function prompt(status: PromptStatus, reason?: string): AgentEvent {

@@ -2,6 +2,7 @@ import {
   type Golden,
   type GoldenConfig,
   GoldenError,
+  isRecord,
   isSandboxProvider,
   normalizeGitHubGoldenConfig,
   parseGoldenConfig,
@@ -251,10 +252,6 @@ export function providerCapacity(
 }
 
 export type { GoldenConfig };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 /**
  * Whether a golden launches from this page, and otherwise what holds it, as a status pill: a short label in the

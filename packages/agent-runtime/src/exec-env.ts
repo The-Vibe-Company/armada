@@ -1,4 +1,5 @@
 import { isAbsolute, resolve } from "node:path";
+import { validateReadableVariables } from "@armada/core";
 import type { ExecEnvironment } from "./protocol.ts";
 
 const allowed = new Set(["GH_TOKEN", "GITHUB_TOKEN", "HOME", "PATH", "GIT_CONFIG_GLOBAL", "GIT_TERMINAL_PROMPT"]);
@@ -24,4 +25,15 @@ export function validateExecEnvironment(value: unknown, credentialFreeBuilder = 
 }
 export function execCredentialValues(env: ExecEnvironment): string[] {
   return [env.GH_TOKEN, env.GITHUB_TOKEN].filter((v): v is string => typeof v === "string");
+}
+
+/** Separate private readable channel; never relax the credential/control allowlist. */
+export function validateExecReadables(value: unknown, credentialFreeBuilder = false): Record<string, string> {
+  const variables = validateReadableVariables(value ?? {});
+  if (
+    (credentialFreeBuilder && Object.keys(variables).length) ||
+    Object.keys(variables).some((key) => allowed.has(key))
+  )
+    throw Error("invalid_exec_readables");
+  return variables;
 }

@@ -1,5 +1,7 @@
 import type { CredentialKind, Sandbox, SandboxCost, SandboxListMetadata } from "@armada/core";
 import { isUuid } from "@/lib/action";
+import type { BillingAccountMetadata } from "@/lib/billing-account";
+import type { DockerHostList } from "@/lib/docker-hosts";
 import { parseSandboxListMetadata, type SkippedSandboxRow } from "@/lib/sandbox-access";
 import { costOfRow } from "@/lib/sandbox-cost";
 import {
@@ -111,6 +113,20 @@ export async function credentialKinds(supabase: Supabase, ids: readonly (string 
   return kinds;
 }
 
+/** Only user-JWT-readable billing metadata; absent/private accounts and failed reads remain unavailable. */
+export async function credentialMetadata(
+  supabase: Supabase,
+  ids: readonly (string | null)[],
+): Promise<Map<string, BillingAccountMetadata>> {
+  const wanted = [...new Set(ids.filter((id): id is string => typeof id === "string"))];
+  const accounts = new Map<string, BillingAccountMetadata>();
+  if (wanted.length === 0) return accounts;
+  const { data, error } = await supabase.from("credentials").select("id,name,kind").in("id", wanted);
+  if (error) return accounts;
+  for (const row of data ?? []) accounts.set(row.id, { id: row.id, name: row.name, kind: row.kind });
+  return accounts;
+}
+
 /**
  * The cost of the listed sandboxes the viewer may open, by id. The usage columns are interior: row level security
  * returns them to the owner and the org's admins only, as the server's list does, so another member's row has none.
@@ -142,4 +158,38 @@ export async function sandboxCosts(supabase: Supabase, ids: readonly string[]): 
   );
   for (const row of data ?? []) costs.set(row.id, costOfRow(row, kinds.get(row.credential_id ?? "") ?? null));
   return costs;
+}
+
+/** Host bindings are interior: enrich only readable Docker rows, never the organization metadata contract. */
+export async function listSandboxHostNames(
+  supabase: Supabase,
+  rows: readonly SandboxListMetadata[],
+  hosts: DockerHostList | null,
+): Promise<Map<string, string>> {
+  const names = new Map<string, string>();
+  const wanted = rows.filter((row) => row.provider === "docker" && row.canOpen && isUuid(row.id)).map((row) => row.id);
+  if (wanted.length === 0 || hosts === null) return names;
+  const selected = await selectedOrganization();
+  if (!selected) return names;
+  const { data, error } = await supabase
+    .from("sandboxes")
+    .select("id,docker_host_id")
+    .eq("org_id", selected.org.id)
+    .eq("provider", "docker")
+    .in("id", wanted);
+  // A failed/partial read is not a claim that the host was removed or never existed.
+  if (error) return names;
+  const byId = new Map(hosts.hosts.map((host) => [host.id, host]));
+  for (const row of data ?? []) {
+    const host = row.docker_host_id ? byId.get(row.docker_host_id) : undefined;
+    names.set(
+      row.id,
+      row.docker_host_id === null
+        ? "Machine not recorded"
+        : host
+          ? (host.name ?? "Unnamed machine")
+          : "Machine name unavailable",
+    );
+  }
+  return names;
 }

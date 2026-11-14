@@ -1,3 +1,4 @@
+export { accountBindingAvailability, NATIVE_ACCOUNT_CHANGE_UNSUPPORTED } from "./account-binding-policy.ts";
 export {
   API_FAILURE_HELP,
   API_FAILURE_STATUS,
@@ -32,13 +33,10 @@ export {
   type ConnectionModelInfo,
   CREDENTIAL_KINDS,
   type CredentialReader,
-  type CredentialSource,
   connectionModels,
   credentialName,
   HARNESS_KINDS,
   type HarnessCredentials,
-  harnessCredentials,
-  type LaunchCredentialKind,
   listConnectionModels,
   MAX_AUTH_FILE_LENGTH,
   MAX_SECRET_LENGTH,
@@ -49,7 +47,6 @@ export {
   type ResolvedCredentials,
   redact,
   resolveBoatKey,
-  resolveCredential,
   resolveCredentials,
   resolveModalTokens,
   resolveSkillpackCredential,
@@ -106,6 +103,7 @@ export {
   DOCKER_DEFAULT_IMAGE,
   DOCKER_IMAGE_UNAVAILABLE_MESSAGE,
   DOCKER_JOB_FAILURE_REASONS,
+  DOCKER_LAUNCH_FAILURE_MESSAGES,
   DOCKER_SNAPSHOT_STATUSES,
   type DockerJobFailureReason,
   type DockerSnapshotRecord,
@@ -349,10 +347,7 @@ export type {
 } from "./resource-observation.ts";
 export { ROUTINE_REASON_HELP, type Routine, routineReasonHelp } from "./routines.ts";
 export {
-  type CleanupResult,
-  cleanupSandboxes,
   createSqlSandboxStore,
-  DEFAULT_SANDBOX_RETENTION_DAYS,
   MAX_STATUS_REASON_LENGTH,
   mapSandboxRow,
   type ResourceProject,

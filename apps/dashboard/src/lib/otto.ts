@@ -1,4 +1,5 @@
 import type { OttoCompleteness, OttoOrphan, OttoResource, OttoTask } from "@armada/core";
+import { isRecord } from "@armada/core";
 import { relativeAge } from "./relative-time.ts";
 
 /**
@@ -331,9 +332,6 @@ export function orphansOfDay(orphans: readonly OttoOrphan[]) {
   };
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 function isDate(value: unknown): value is string {
   return typeof value === "string" && Number.isFinite(Date.parse(value));
 }

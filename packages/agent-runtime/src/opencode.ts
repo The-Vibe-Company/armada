@@ -63,6 +63,63 @@ function exportedTurnUsage(saved: unknown, baseline: Set<string>) {
   return ids.size ? { model: models.size === 1 ? [...models][0] : null, ...totals } : missing;
 }
 
+/** Native export, not ACP display titles, owns successful shell evidence. */
+function exportedShellProofs(saved: unknown, baseline: Set<string>) {
+  if (!record(saved) || !record(saved.info) || typeof saved.info.id !== "string" || !Array.isArray(saved.messages))
+    return [];
+  const proofs: Record<string, unknown>[] = [],
+    ids = new Set<string>(),
+    calls = new Set<string>();
+  for (const message of saved.messages) {
+    if (!record(message) || !record(message.info) || typeof message.info.id !== "string" || !message.info.id) return [];
+    const id = message.info.id;
+    const info = message.info;
+    if (ids.has(id)) return [];
+    ids.add(id);
+    if (baseline.has(id) || info.role !== "assistant") continue;
+    if (info.sessionID !== saved.info.id) return [];
+    if (
+      !record(info.time) ||
+      !Number.isSafeInteger(info.time.completed) ||
+      (info.time.completed as number) < 0 ||
+      !Array.isArray(message.parts)
+    )
+      return [];
+    for (const part of message.parts) {
+      if (!record(part) || part.type !== "tool" || !["bash", "shell"].includes(String(part.tool))) continue;
+      if (part.sessionID !== saved.info.id || part.messageID !== id) return [];
+      if (typeof part.callID !== "string" || !part.callID || calls.has(part.callID)) return [];
+      calls.add(part.callID);
+      const state = part.state;
+      if (
+        !record(state) ||
+        state.status !== "completed" ||
+        !record(state.input) ||
+        typeof state.input.command !== "string" ||
+        typeof state.output !== "string" ||
+        Buffer.byteLength(state.input.command) > 262144 ||
+        Buffer.byteLength(state.output) > 65536 ||
+        !record(state.metadata) ||
+        state.metadata.exit !== 0 ||
+        state.metadata.truncated !== false ||
+        (state.metadata.timeout !== undefined && state.metadata.timeout !== false)
+      )
+        continue;
+      proofs.push({
+        version: 1,
+        nativeMessageId: id,
+        callId: part.callID,
+        tool: part.tool,
+        command: state.input.command,
+        output: state.output,
+        exitCode: 0,
+        truncated: false,
+      });
+    }
+  }
+  return proofs;
+}
+
 /** Preserve native sessions as sanitized vendor JSON exports, never the SQLite database/auth/cache. */
 export class OpenCodeDriver implements Driver {
   private acp: AcpDriver;
@@ -207,6 +264,8 @@ export class OpenCodeDriver implements Driver {
         if (sessionId) {
           try {
             const saved = await this.save(sessionId, cwd);
+            for (const proof of exportedShellProofs(saved, baseline))
+              c.emit({ kind: "other", type: "armada/opencodeShell", data: proof });
             c.emit({ kind: "other", type: "armada/turnUsage", data: exportedTurnUsage(saved, baseline) });
           } catch (error) {
             c.emit({ kind: "other", type: "armada/turnUsage", data: exportedTurnUsage(null, baseline) });

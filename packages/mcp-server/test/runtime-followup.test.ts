@@ -9,6 +9,8 @@ describe.each([
   { provider: "boat", harness: "codex" },
   { provider: "boat", harness: "claude" },
   { provider: "modal", harness: "codex" },
+  { provider: "modal", harness: "claude" },
+  { provider: "modal", harness: "opencode" },
 ] as const)("$provider $harness shared runtime send", ({ provider, harness }) => {
   let f: Awaited<ReturnType<typeof fixture>>;
   let preparations = 0;
@@ -120,4 +122,34 @@ test("a competing accepted turn invalidates an older finished probe before admis
     );
     await f.close();
   }
+});
+
+describe.each(["codex", "claude"] as const)("idle Boat %s first send", (harness) => {
+  let f: Awaited<ReturnType<typeof fixture>>;
+  beforeAll(async () => {
+    f = await fixture(undefined, "boat", harness, true);
+  }, 20_000);
+  afterAll(async () => {
+    await f?.close();
+  });
+
+  test("first send opens one conversation; uncertain replay and later follow-up retain it", async () => {
+    expect(f.journal.prompts()).toHaveLength(0);
+    const request = f.input("first instruction");
+    await expect(f.send(f.caller, { ...request, conversation_id: "foreign" })).rejects.toThrow();
+    expect(f.starts).toHaveLength(0);
+    f.lose();
+    await expect(f.send(f.caller, request)).rejects.toMatchObject({ details: { runtimeOutcome: "unknown" } });
+    expect(f.starts).toEqual([undefined]);
+    const recovered = await createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge)(f.caller, request);
+    expect(recovered.conversationId).toBeTruthy();
+    const row = await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id);
+    expect(row?.conversationIds).toEqual([recovered.conversationId]);
+    const next = await f.send(f.caller, f.input("follow-up"));
+    expect(next.conversationId).toBe(recovered.conversationId);
+    expect(await f.send(f.caller, request)).toEqual(recovered);
+    await expect(f.send(f.caller, { ...request, prompt: "changed" })).rejects.toThrow();
+    expect(f.starts).toEqual([undefined, "native-thread"]);
+    expect((await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))?.taskPromptId).toBe(next.promptId);
+  });
 });

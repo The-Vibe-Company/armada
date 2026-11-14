@@ -10,10 +10,6 @@ export function supabaseEnv(): SupabaseEnv {
   return { url, anonKey };
 }
 
-export function isConfigured(): boolean {
-  return Boolean(process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY);
-}
-
 export function mcpUrl(): string | null {
   return process.env.ARMADA_MCP_URL?.trim() || null;
 }

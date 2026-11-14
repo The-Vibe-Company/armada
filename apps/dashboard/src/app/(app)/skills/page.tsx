@@ -17,8 +17,7 @@ export const dynamic = "force-dynamic";
 const TITLE = "Skills";
 const DESCRIPTION = (
   <>
-    Armada's Skillpack integration: your sandboxes install the Skillpack skills you choose here, with no setup inside
-    the sandbox.{" "}
+    Manage your private-skill access key here. Choose skills in supported launch dialogs or templates.{" "}
     <a
       className="font-medium text-foreground underline underline-offset-4"
       href="https://skillpack.app"
@@ -44,11 +43,15 @@ export default async function SkillsPage() {
     return (
       <>
         {header}
-        <Empty title="No organization yet">
-          <Link className="underline" href="/orgs">
-            Create an organization
-          </Link>{" "}
-          to add a Skillpack key.
+        <Empty
+          title="No organization yet"
+          action={
+            <Button asChild>
+              <Link href="/orgs">Choose an organization</Link>
+            </Button>
+          }
+        >
+          Create or join an organization before connecting a private-skill key.
         </Empty>
       </>
     );
@@ -56,10 +59,14 @@ export default async function SkillsPage() {
     return (
       <>
         {header}
-        <Alert>
+        <Alert role="status">
           <InfoIcon />
+          <AlertTitle>Skill setup is not ready here</AlertTitle>
           <AlertDescription>
-            The Armada server is not configured: the Skillpack key cannot be managed here.
+            <p>Ask an Armada administrator to finish setup, then reload Skills.</p>
+            <Button asChild variant="outline" size="sm" className="mt-2">
+              <a href={SKILLS_PATH}>Reload Skills</a>
+            </Button>
           </AlertDescription>
         </Alert>
       </>
@@ -72,9 +79,12 @@ export default async function SkillsPage() {
           <CircleAlertIcon />
           <AlertTitle>The Skillpack key could not be loaded</AlertTitle>
           <AlertDescription>
-            <p>{list.message}</p>
+            <p>
+              Check your connection and reload Skills. If this continues, ask an Armada administrator to check Skillpack
+              access.
+            </p>
             <Button asChild variant="outline" size="sm" className="mt-2">
-              <Link href={SKILLS_PATH}>Try again</Link>
+              <a href={SKILLS_PATH}>Reload Skills</a>
             </Button>
           </AlertDescription>
         </Alert>

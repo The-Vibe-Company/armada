@@ -158,7 +158,13 @@ export async function tick(store: Store, api: Api, executor: Executor, skipSnaps
       receipt.outcome = "completed";
     } catch (error) {
       receipt.outcome = "failed";
-      if (error instanceof DockerMachineError && error.code === "image_unavailable") receipt.reason = error.code;
+      if (receipt.operation === "buildSnapshot") {
+        receipt.reason = "snapshot_build_failed";
+        // Do not log exception text: build output and init commands can contain credentials.
+        console.error(
+          `Snapshot ${receipt.request.sandboxId}: Snapshot image build failed. Check registry access, repository access, init commands and the secret scan; build output is suppressed to protect secrets.`,
+        );
+      } else if (error instanceof DockerMachineError && error.code === "image_unavailable") receipt.reason = error.code;
     } // Uncertain native failure is terminal for this request identity.
     // A long build continues ordinary mailbox/TTL work; merge its receipt into the latest durable state.
     const latest = await store.load();

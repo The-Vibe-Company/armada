@@ -23,7 +23,7 @@ new launches does not remove existing runtime read/cleanup routing.
 
 Launch through `POST /api/v1/sandbox/launch-runtime-v1` with
 `runtimeVersion:1`, `boatRuntime:true`, `provider:"boat"`, `harness:"codex"`,
-authorized org/golden/account and initial prompt. Skip skill defaults; remote
+authorized org/golden/account; the initial prompt is optional. Skip skill defaults; remote
 HTTP/SSE MCP uses the standard `connections` selection or registry
 `defaultForLaunch` defaults as described below. Ordinary `sandbox/launch` does not
 accept runtime selection;
@@ -330,8 +330,6 @@ failed setup cannot proceed to inference. General exec remains a separate contro
 path; this private operation is launch-only.
 
 Remaining refusals:
-- Idle launches with no initial prompt; current continuation requires an existing
-  runtime conversation.
 - OpenCode on Boat, private scoped Armada-access launches, and requested helper
   capabilities. Claude support is merged separately; it is not implemented here.
 - Templates/routines requiring native readable-variable or application-secret
@@ -345,7 +343,7 @@ preparation prevents inference; identical-request reconciliation does not activa
 compute again, and an accepted prompt replay does not rotate GitHub authority.
 Modal resume behavior is unchanged. No repository/init steps rerun.
 
-Other follow-on gaps include idle/first-send, model changes/new conversations and the remaining scoped/binding/helper
+Other follow-on gaps include model changes/arbitrary new conversations and the remaining scoped/binding/helper
 features above. Public steer/interrupt/exec controls merged separately; use their
 own acceptance gates, not this workspace check. Unsupported operations do not
 use native fallback.
@@ -366,9 +364,8 @@ ARMADA_SMOKE=create_real_compute bun scripts/post-deploy-smoke.ts
 Confirm `launch/options.boatRuntime.defaultPath:runtime`. A successful future
 case must have persisted `boatRuntime:true` and archived
 `logs/read.source:armada-runtime`, not Boat-native events; standard send/wait,
-git probes and stop must all pass. Repository/init admission is implemented; **the standard smoke still uses an
-idle launch, which remains refused** until that next slice; the merged public
-exec/git controls need their own accepted evidence. Do not relax the standard smoke to conceal remaining work, and do not
+git probes and stop must all pass. Repository/init and idle launch/first send are implemented; the merged public
+exec/git controls still need their own accepted evidence. Do not relax the standard smoke to conceal remaining work, and do not
 retry allocation after an ambiguous result. Roll back the server setting to
 `native` for ordinary native launches; no deletion is authorized here.
 
@@ -413,8 +410,8 @@ proof of idle, public exec or other features' separate acceptance gates.
 
 Current owner facts remain: quota exhausted today, no smoke default skills or
 named MCP connection. No live attempt or setting flip by this worker; real
-repository/init staging acceptance remains pending. Next smallest refusal is idle
-launch/first send, then the remaining owned parity gates; Claude/cost/subscription
+repository/init staging acceptance remains pending. Idle launch/first send now has
+its own check below; the remaining owned parity gates and Claude/cost/subscription
 work remains with #1419/#1420.
 
 ## Cutover boundary
@@ -490,3 +487,102 @@ same allocation only when their real resources are configured. Repeat with
 lifecycle. No worker real check, deployment, default flip or native deletion.
 Launch-time before/after measurement remains pending coordinator evidence; this
 slice changes resumed-turn preparation, not launch.
+
+
+## Idle launch and first-send acceptance
+
+Ordinary Boat launches honor the server default selection with or without a
+prompt. An idle runtime launch completes workspace/GitHub, skills, MCP and final
+admission before publishing `ready`, with no conversation or inference. Its first
+normal `send` (omit `conversation_id`) opens one conversation, then follows the
+same account, epoch, activity-lease and durable-command rules as later sends.
+A competing first send cannot create another conversation. Reuse the original
+request ID and identical payload after uncertainty; an accepted replay neither
+starts another turn nor overwrites a newer task. Arbitrary new conversations
+and model changes remain unsupported. Modal behavior is unchanged.
+
+Coordinator only, with existing environment-only inputs and your own Boat
+resources when staging credit is unavailable, after normal server/runtime
+delivery:
+
+```sh
+ARMADA_RUNTIME_SMOKE=one_real_boat_launch bun scripts/check-boat-runtime.ts --idle --resume
+```
+
+This uses explicit runtime admission, so production's default need not change.
+ONE allocation + ONE same-VM activation, three prompts (first send, follow-up,
+resumed send), two stops, no allocation/activation retries. Require idle
+`ready` without prompt/conversation, same-epoch first-send receipt, archived
+real exact answer (`idleLaunch:verified`, `firstSend:verified`), remembered
+token, checkpoint/stopped readback and epoch+1 same-conversation resume.
+Use `ARMADA_RUNTIME_HARNESS=claude` for a separately authorized Claude run.
+Existing workspace/MCP/skills/usage/GitHub/control flags can share this allocation
+when their real prerequisites are configured. Empty defaults remain a refusal.
+A never-prompted idle worker still has no checkpointable conversation: automatic
+idle pause/wake before any first send is not claimed.
+
+The ordinary standard smoke above is no longer blocked by idle admission, but
+still requires the operator-controlled runtime default and all its resources;
+do not flip production just to test this slice. No real check or default flip was
+performed by the worker. Launch timing before/after and >20% regression decisions
+remain coordinator evidence, not inferred from offline tests.
+
+### Launch timing evidence (#1161)
+
+The coordinator checker emits `operation:runtime_launch_timing` with `harness`,
+`mode` (`idle` or `prompt`), and monotonic `launchRequestMs`. Its boundary is
+`launch_request_to_response`: it includes server admission, host allocation,
+bootstrap and setup, but **not** first-answer latency. A timing record alone is
+not a lifecycle pass; retain the complete successful checker output as evidence.
+
+Compare with a coordinator-recorded native launch using the same request/response
+boundary, harness, golden recipe, region and idle/prompt mode. Record both server
+revisions and cold/warm cache conditions; unlike conditions are not comparable.
+Report `(runtimeMs / nativeMs - 1) * 100` in the parity PR. A regression above
+20% needs an owner decision, not an automatic baseline update or a retry until
+fast. No baseline is supplied by this script and no improvement is inferred.
+
+Boat measurement is coordinator-only, on demand in production under the current
+repository policy; it is not part of staging or the release gate. Do not allocate
+another sandbox just to obtain timing. Capture the record during the already
+authorized one-allocation lifecycle check. No worker measurement has been run.
+
+### Production 2.29.0 forward-log regression (#1161)
+
+The coordinator's Boat parity run on 2.29.0 timed out after send while fresh
+`armada logs --all --json` could show finished turns. The 2.29.0 Boat adapter
+advances a timestamp/row-ID cursor past a running prompt or partial response;
+Boat can mutate that same row without changing its timestamp/ID. Later forward
+reads therefore miss its terminal state even though a fresh history read sees it.
+This is a cursor visibility defect, not a reason to rewrite prompt IDs:
+`provider.prompt` returns Boat's `response.promptId`, and `normalizeEvent` maps
+Boat's `taskId` to the common `promptId` (not the event row's `id`).
+
+The fix is already on main in #1629 (`35730908`), **after** release 2.29.0:
+opaque Armada continuations retain unfinished row boundaries/fingerprints, reread
+changed snapshots, and continue paging the raw frontier. No extra native/runtime
+switch, prompt lookup, smoke timeout increase or full-history polling is needed.
+The provider regression now also covers 201 older rows before the active turn,
+distinct event/turn IDs, count/byte-limited pages, terminal mutation, and reaching
+the newest answer. It fails against the 2.29.0 adapter and passes on main.
+This reproduces missed completion; it cannot establish from code alone why the
+coordinator observed no matching queued/running event in that particular run.
+
+Dashboard follow-up submission itself calls `send` independently of logs. Its
+live conversation **does depend** on the same cursor contract: `sandbox-chat`
+passes its retained cursor to the events route, which uses `gateway.logs`
+(`logs` MCP tool with `since_cursor`). A missed terminal/partial update can leave
+the displayed turn stale even though send succeeded. Status is fetched separately;
+it is not evidence that the conversation stream delivered the answer.
+
+After the next normal release containing #1629, the coordinator alone reruns:
+
+```sh
+bun scripts/post-deploy-smoke.ts --parity --only boat --production-boat
+```
+
+Require the send receipt's exact `promptId` on the observed finished prompt and
+answer, follow-up/recall success, and normal stop/delete/cleanup. If still failing,
+retain receipt ID plus cursor/page event IDs to distinguish ID mismatch from
+pagination; do not infer a pass from historical logs alone. No worker provider
+call was made, and Boat must never be added to staging/release acceptance.
