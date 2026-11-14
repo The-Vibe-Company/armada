@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.35.1](https://github.com/The-Vibe-Company/armada/compare/v2.35.0...v2.35.1) (2026-11-14)
+
+
+### Bug Fixes
+
+* **cli:** clarify MCP authorization command help ([#1907](https://github.com/The-Vibe-Company/armada/issues/1907)) ([75b3f45](https://github.com/The-Vibe-Company/armada/commit/75b3f4511474ff56f55b6fb91a9450caa024d604))
+
 ## [2.35.0](https://github.com/The-Vibe-Company/armada/compare/v2.34.0...v2.35.0) (2026-11-14)
 
 
