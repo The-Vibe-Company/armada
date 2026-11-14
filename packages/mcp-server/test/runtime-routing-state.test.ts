@@ -49,10 +49,9 @@ test.each(["core", "scoped"] as const)(
       expect(runtime.boatRuntime).toBe(true);
       expect((await f.scoped.get(runtime.id))?.boatRuntime).toBe(true);
       await store.update(runtime.id, { status: "stopped", stoppedAt: new Date().toISOString() });
-      expect(
-        (await f.core.listBefore(new Date(Date.now() + 1000).toISOString())).find((row) => row.id === runtime.id)
-          ?.boatRuntime,
-      ).toBe(true);
+      expect((await f.db.query("select boat_runtime from sandboxes where id=$1", [runtime.id])).rows).toEqual([
+        { boat_runtime: true },
+      ]);
     } finally {
       await f.db.close();
     }
@@ -86,6 +85,10 @@ test("SQL makes routing immutable, target-specific and user-JWT read-only", asyn
     // First prove this otherwise-identical Modal insert works, so a provider/alias
     // guard cannot masquerade as runtime target rejection.
     await f.core.insert({ ...f.input(), provider: "modal", goldenId: modal.id });
+    expect(
+      (await f.core.insert({ ...f.input(), provider: "modal", goldenId: modal.id, runtimeTransport: "dialout" }))
+        .runtimeTransport,
+    ).toBe("dialout");
     await expect(
       f.core.insert({ ...f.input(), provider: "modal", goldenId: modal.id, boatRuntime: true }),
     ).rejects.toThrow("sandboxes_boat_runtime_target");
