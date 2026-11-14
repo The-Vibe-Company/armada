@@ -192,14 +192,20 @@ describe("a tool's row", () => {
     expect(toolState({ ...remote, status: "disabled" }, true)).toMatchObject({ bucket: "rest", label: "Disabled" });
   });
 
-  test("the strip names each tool the viewer can fix by its fix, with the server's last error", () => {
+  test("the strip names each tool the viewer can fix without exposing server diagnostics", () => {
     const state = toolState({ ...remote, status: "needs_reconnect" }, true);
+    const connection = { name: "Acme Sentry", lastError: "HTTP 503: auth_token_enc unavailable" };
     const blockers = toolBlockers([
-      { key: "c1", connection: { name: "Acme Sentry", lastError: "Token revoked." }, state },
+      { key: "c1", connection, state },
       { key: "c2", connection: { name: "Docs" }, state: toolState({ ...remote, status: "connected" }, true) },
     ]);
     expect(blockers).toEqual([
-      { key: "fix-c1", label: "Reconnect Acme Sentry", detail: "Token revoked.", target: { item: "c1" } },
+      {
+        key: "fix-c1",
+        label: "Reconnect Acme Sentry",
+        detail: "Needs reconnect: agents cannot use it until it is fixed.",
+        target: { item: "c1" },
+      },
     ]);
   });
 

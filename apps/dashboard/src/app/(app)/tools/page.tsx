@@ -10,6 +10,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
   authLabel,
+  connectionRecovery,
   hostOf,
   type McpConnection,
   type OAuthReturn,
@@ -221,7 +222,7 @@ function connectionRow(
       <StateCell
         tone={state.tone}
         label={state.label}
-        detail={connection.lastError}
+        detail={connection.lastError ? connectionRecovery(connection) : undefined}
         data-connection-status={connection.status}
       />
     ),

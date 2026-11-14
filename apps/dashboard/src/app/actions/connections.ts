@@ -16,6 +16,8 @@ import {
   checkServerUrl,
   checkStdio,
   completeUpdate,
+  connectionFailure,
+  connectionRecovery,
   type EditedDefinition,
   type McpConnection,
   statusLabel,
@@ -52,16 +54,13 @@ function outcome(prefix: string, connection: McpConnection): ActionResult {
   if (connection.transport === "stdio") {
     return connection.status === "connected"
       ? done(`${prefix}${connection.name} is configured for launch.`)
-      : fail(
-          `${prefix}${connection.name}: ${statusLabel(connection)}.${connection.lastError ? ` ${connection.lastError}` : ""}`,
-        );
+      : fail(`${prefix}${connection.name}: ${statusLabel(connection)}. ${connectionRecovery(connection)}`);
   }
   if (connection.status === "connected") {
     const account = connection.accountLabel ? ` as ${connection.accountLabel}` : "";
     return done(`${prefix}${connection.name} is connected${account}.`);
   }
-  const reason = connection.lastError ? ` ${connection.lastError}` : "";
-  return fail(`${prefix}${connection.name}: ${statusLabel(connection)}.${reason}`);
+  return fail(`${prefix}${connection.name}: ${statusLabel(connection)}. ${connectionRecovery(connection)}`);
 }
 
 function authTypeFrom(data: FormData): ConnectionAuthType | null {
@@ -100,7 +99,7 @@ async function guarded(run: () => Promise<ActionResult>): Promise<ActionResult> 
   try {
     return await run();
   } catch (error) {
-    if (error instanceof ControlError) return fail(error.message);
+    if (error instanceof ControlError) return fail(connectionFailure(error.status));
     throw error;
   }
 }
@@ -165,7 +164,7 @@ async function finishAdd(control: Control, created: McpConnection, org: string, 
     } catch (error) {
       if (!(error instanceof ControlError)) throw error;
       return fail(
-        `${created.name} was added, but not included by default: ${error.message} Use its Default switch, then Connect.`,
+        `${created.name} was added, but its default setting could not be confirmed. ${connectionFailure(error.status)} Check its Default switch before connecting.`,
       );
     }
   }
@@ -173,7 +172,9 @@ async function finishAdd(control: Control, created: McpConnection, org: string, 
     return await afterSave(control, created, org, "Added. ");
   } catch (error) {
     if (error instanceof ControlError)
-      return fail(`${created.name} was added, but connecting failed: ${error.message}`);
+      return fail(
+        `${created.name} was added, but connecting could not be confirmed. ${connectionFailure(error.status)}`,
+      );
     throw error;
   }
 }
@@ -298,7 +299,9 @@ export async function editConnection(_previous: ActionResult | null, data: FormD
       return await afterSave(context.control, updated, context.org, "Saved. ");
     } catch (error) {
       if (error instanceof ControlError) {
-        return fail(`Saved. Its previous authorization was cleared, and reconnecting failed: ${error.message}`);
+        return fail(
+          `Saved. Its previous authorization was cleared, but reconnecting could not be confirmed. ${connectionFailure(error.status)}`,
+        );
       }
       throw error;
     }
