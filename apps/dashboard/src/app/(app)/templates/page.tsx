@@ -47,7 +47,7 @@ export const maxDuration = 800;
 type Props = { searchParams: Promise<Record<string, string | string[] | undefined>> };
 
 const TITLE = "Templates";
-const DESCRIPTION = "Launch presets: an environment, tools, a model and variables.";
+const DESCRIPTION = "Reusable launch setups for your agents.";
 
 export default async function TemplatesPage({ searchParams }: Props) {
   const [selected, list, query] = await Promise.all([selectedOrganization(), listSelectedTemplates(), searchParams]);
@@ -57,11 +57,15 @@ export default async function TemplatesPage({ searchParams }: Props) {
     return (
       <>
         {header}
-        <Empty title="No organization yet">
-          <Link className="underline" href="/orgs">
-            Create an organization
-          </Link>{" "}
-          to add templates.
+        <Empty
+          title="No organization yet"
+          action={
+            <Button asChild>
+              <Link href="/orgs">Choose an organization</Link>
+            </Button>
+          }
+        >
+          Create or join an organization before saving launch setups.
         </Empty>
       </>
     );
@@ -70,12 +74,20 @@ export default async function TemplatesPage({ searchParams }: Props) {
     return (
       <>
         {header}
-        <Alert>
+        <Alert role="status">
           <InfoIcon />
+          <AlertTitle>
+            {list.state === "unsupported" ? "Template management needs an update" : "Template setup is not ready here"}
+          </AlertTitle>
           <AlertDescription>
-            {list.state === "unsupported"
-              ? list.message
-              : "The Armada server is not configured: templates cannot be managed here."}
+            <p>
+              {list.state === "unsupported"
+                ? "Ask an Armada administrator to update Armada before managing templates here."
+                : "Ask an Armada administrator to finish setup, then reload Templates."}
+            </p>
+            <Button asChild variant="outline" size="sm" className="mt-2">
+              <a href="/templates">Reload Templates</a>
+            </Button>
           </AlertDescription>
         </Alert>
       </>
@@ -89,9 +101,12 @@ export default async function TemplatesPage({ searchParams }: Props) {
           <CircleAlertIcon />
           <AlertTitle>Templates could not be loaded</AlertTitle>
           <AlertDescription>
-            <p>{list.message}</p>
+            <p>
+              Check your connection and reload Templates. If this continues, ask an Armada administrator to check
+              template access.
+            </p>
             <Button asChild variant="outline" size="sm" className="mt-2">
-              <Link href="/templates">Try again</Link>
+              <a href="/templates">Reload Templates</a>
             </Button>
           </AlertDescription>
         </Alert>
@@ -142,7 +157,7 @@ export default async function TemplatesPage({ searchParams }: Props) {
       }
       empty={
         <Empty title="No templates yet" icon={<LayoutTemplateIcon />}>
-          Use New to save an environment, tools, a model and variables that agents start from.
+          Choose New to save a reusable launch setup with the snapshot and agent settings you want.
         </Empty>
       }
     />

@@ -527,6 +527,7 @@ function sandbox(
 
 let state = seed();
 let dockerHosts: Row[] | null = null;
+let templateListFailure: { unsupported: boolean; message: string } | null = null;
 let vaultListFailure: { unsupported: boolean; message: string } | null = null;
 let accountListFailure: string | null = null;
 let sequence = 100;
@@ -1594,6 +1595,10 @@ function templateRoute(route: string, body: Row, request: Request): Response {
   const fields = allowed[operation];
   if (!fields || Object.keys(body).some((key) => !fields.includes(key))) return invalid();
   if (!isMember(body.org, userId)) return controlFail(403, "forbidden", "Template access denied.");
+  if (operation === "list" && templateListFailure)
+    return templateListFailure.unsupported
+      ? json({ error: templateListFailure.message }, 404)
+      : controlFail(503, "unavailable", templateListFailure.message);
   const visible = (row: Row) =>
     row.orgId === body.org && row.status === "active" && (row.scope === "org" || row.ownerId === userId);
   // The `launch_templates_name` unique index: one active name per org and scope (per owner when personal).
@@ -2695,6 +2700,7 @@ function control(url: URL, body: Row): Response {
   if (url.pathname === "/__test/reset") {
     for (const release of state.routineCreateWaiters) release();
     state = seed();
+    templateListFailure = null;
     vaultListFailure = null;
     accountListFailure = null;
     dockerHosts = Array.isArray(body.dockerHosts) ? body.dockerHosts : null;
@@ -3164,6 +3170,11 @@ function control(url: URL, body: Row): Response {
   /** Another tab or the CLI revokes a vault item: the page still holds the version it loaded. */
   if (url.pathname === "/__test/vault-list-failure") {
     vaultListFailure =
+      typeof body.message === "string" ? { unsupported: body.unsupported === true, message: body.message } : null;
+    return json({ ok: true });
+  }
+  if (url.pathname === "/__test/template-list-failure") {
+    templateListFailure =
       typeof body.message === "string" ? { unsupported: body.unsupported === true, message: body.message } : null;
     return json({ ok: true });
   }
