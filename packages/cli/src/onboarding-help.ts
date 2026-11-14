@@ -52,6 +52,28 @@ Omit --org for personal scope; pass it for organization scope.
 This is not an alias for creds remove <id>; use remove for a named account ID.
 Example: armada creds rm openai
 `,
+  "creds presets": `Usage: armada creds presets [--json]
+List built-in connection presets and their harness/model/address requirements.
+No login or provider call is needed. Use a preset ID with armada creds connect.
+Example: armada creds presets --json
+`,
+  "creds connect": `Usage: armada creds connect <preset> --name <name> [--file <path>] [--org <name>] [--json]
+  [--models <id,...>] [--base-url <HTTPS-url>] [--api-version <version>]
+Store a named connection after Armada login. Choose a preset with armada creds presets --json.
+Supply only the API key through stdin/hidden input or a private --file, never command arguments or JSON.
+Presets with harness models reject --models, --base-url and --api-version.
+Chosen-model presets require --models and, unless fixed by the preset, --base-url.
+Fixed-address presets reject --base-url; --api-version is only accepted by supporting presets.
+Official Azure addresses are tested with a tiny billable request per deployment before saving;
+a failed check saves nothing. Omit --org for personal scope.
+Example: armada creds connect openai --name personal --file /private/api-key
+`,
+  "creds test": `Usage: armada creds test <sandbox-id> --model <deployment-model> [--org <name>] [--json]
+Test a sandbox's bound model connection after Armada login and server authorization.
+This can make a billable provider request. No keys or URLs are accepted as arguments.
+A successful check is not a full harness compatibility test. Failure exits 1.
+Example: armada creds test SANDBOX_UUID --model deployment-name --json
+`,
   "creds set": `Usage: armada creds set <kind> [--name <name>] [--org <name>] [--file <path>]
 Store an encrypted credential after armada login. Read the secret from hidden input,
 stdin or a private file, never command arguments. API keys use provider billing;
