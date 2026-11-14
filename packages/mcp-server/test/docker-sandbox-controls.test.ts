@@ -749,7 +749,7 @@ test("ordinary Docker send resumes once and never wakes a stopped sandbox for a 
     now: () => now,
     async wait(ms: number) {
       now += ms;
-      const job = await hosts.poll(f.hostToken, f.installationId);
+      const job = await hosts.poll(f.hostToken, f.installationId, "2.28.0");
       if (job) {
         if (job.operation !== "resume") throw Error("expected resume");
         resumes++;
@@ -784,7 +784,7 @@ test("ordinary Docker send resumes once and never wakes a stopped sandbox for a 
   // An unknown outcome retries the same bound resume, not a second host instruction.
   const pending = createDockerSandboxControls(sql, key, { send, resume: bootstrap, clock, timeoutMs: 0 });
   await rejected(invoke(caller(f.actor), "send", args, pending), "conflict");
-  await rejected(invoke(caller(f.actor), "send", { ...args, request_id: randomUUID() }, controller), "conflict");
+  await rejected(invoke(caller(f.actor), "send", { ...args, request_id: randomUUID() }, controller), "unavailable");
   const result = await invoke(caller(f.actor), "send", args, controller);
   expect(result).toMatchObject({ id: f.sandbox.id, promptId, conversationId, status: "queued" });
   expect(await invoke(caller(f.actor), "send", args, controller)).toEqual(result);
@@ -792,7 +792,7 @@ test("ordinary Docker send resumes once and never wakes a stopped sandbox for a 
   await stop();
   await rejected(invoke(caller(f.actor), "send", args, controller), "conflict");
   await rejected(invoke(caller(f.actor), "send", { ...args, prompt: "changed" }, controller), "conflict");
-  expect(await hosts.poll(f.hostToken, f.installationId)).toBeNull();
+  expect(await hosts.poll(f.hostToken, f.installationId, "2.28.0")).toBeNull();
   expect((await invoke(caller(f.actor), "status", { id: f.sandbox.id })).status).toBe("stopped");
   expect(
     (

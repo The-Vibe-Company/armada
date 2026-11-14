@@ -813,6 +813,87 @@ test.each(["claude", "opencode"] as const)("normal Docker launch selects and boo
   );
 });
 
+test.each([false, true])(
+  "send immediately after accepted launch waits for preparation and its first conversation: initial prompt %s",
+  async (initial) => {
+    const f = await fixture();
+    const server = f.service(sql, true, 10000, officialImage, true);
+    const { prompt: _prompt, ...empty } = f.body;
+    const accepted = await server.launch(f.caller, initial ? f.body : empty);
+    expect(accepted.sandbox.status).toBe("starting");
+    expect(launchedDockerSandbox(accepted)).toBe(f.body.requestId);
+    let prepared = false;
+    const clock = {
+      now: f.clock.now,
+      wait: async (ms: number) => {
+        if (!prepared) {
+          prepared = true;
+          await server.drain();
+        }
+        await f.clock.wait(ms);
+      },
+    };
+    const requestId = randomUUID();
+    const sender = createDockerNormalSend(sql, key, { enabled: true, clock });
+    const controls = createDockerSandboxControls(sql, key, { clock, send: sender });
+    const sent = await controls.invoke(f.caller, "send", {
+      id: f.body.requestId,
+      request_id: requestId,
+      prompt: "Follow up immediately",
+    });
+    expect(sent).toMatchObject({ handled: true, result: { requestId } });
+    const prompts = f.native.filter((c) => (c as { op: string }).op === "prompt") as {
+      input: { text: string; conversationId?: string };
+    }[];
+    expect(prompts.map((c) => c.input.text)).toEqual(
+      initial ? [f.body.prompt, "Follow up immediately"] : ["Follow up immediately"],
+    );
+    expect(prompts.at(-1)?.input.conversationId).toBe(initial ? f.receipt.conversationId : undefined);
+    expect(f.jobs.filter((j) => (j as { operation: string }).operation === "resume")).toHaveLength(0);
+    await server.close();
+  },
+);
+
+test("a still-starting owner send returns a pending outcome within its budget, not a conflict or a wake", async () => {
+  const f = await fixture();
+  const server = f.service(sql, true, 10000, officialImage, true);
+  await server.launch(f.caller, f.body);
+  f.setDrive(false);
+  const sender = createDockerNormalSend(sql, key, { enabled: true, clock: f.clock, timeoutMs: 500 });
+  const row = {
+    id: f.body.requestId,
+    org_id: f.actor.orgId,
+    owner_id: f.actor.userId,
+    status: "starting",
+    conversation_ids: [],
+  };
+  await rejected(sender.send(f.caller, { request_id: randomUUID(), prompt: "Wait for launch" }, row), "unavailable");
+  expect(f.native).toHaveLength(0);
+  expect(f.jobs).toHaveLength(0);
+  await server.close();
+});
+
+test("stop after accepted starting launch bypasses queued startup and settles without allocating or prompting", async () => {
+  const f = await fixture();
+  const server = f.service(sql, true, 10000, officialImage, true);
+  await server.launch(f.caller, f.body);
+  const controls = createDockerSandboxControls(sql, key, { clock: f.clock });
+  const status = await controls.invoke(f.caller, "status", { id: f.body.requestId });
+  expect(status.handled && (status.result as DockerSandboxStatus).status).toBe("starting");
+  const logs = await controls.invoke(f.caller, "logs", { id: f.body.requestId });
+  expect(logs).toMatchObject({ handled: true, result: { events: [] } });
+  expect(await controls.invoke(f.caller, "stop", { id: f.body.requestId })).toEqual({
+    handled: true,
+    result: { id: f.body.requestId, status: "stopped" },
+  });
+  expect(f.jobs.map((j) => (j as { operation: string }).operation)).toEqual(["stop"]);
+  await server.drain();
+  expect(await hosts.poll(f.hostToken, f.installationId)).toBeNull();
+  expect(f.native).toHaveLength(0);
+  expect((await server.launch(f.caller, f.body)).sandbox.status).toBe("stopped");
+  await server.close();
+});
+
 test("deferred launch reconciles an uncertain first-prompt receipt without marking it failed or dispatching twice", async () => {
   const f = await fixture();
   let failed = false;
