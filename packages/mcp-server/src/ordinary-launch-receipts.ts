@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { Sql } from "@armada/core";
+import type { ProviderTarget, Sql } from "@armada/core";
 import { GoldenError, isNonMutatingProviderRefusal, LaunchError, type Provider, VaultError } from "@armada/core/server";
 
 interface Scope {
@@ -15,13 +15,19 @@ interface Receipt {
 /** Atomic, fail-closed admission. An unfinished receipt is never dispatched again. */
 export function createOrdinaryLaunchReceipts(sql: Sql) {
   return {
-    async run<T>(actor: Scope, key: string, payload: unknown, dispatch: (id: string) => Promise<T>): Promise<T> {
+    async run<T>(
+      actor: Scope,
+      key: string,
+      payload: unknown,
+      dispatch: (id: string) => Promise<T>,
+      authority: { target: ProviderTarget; backendId: string; management: { scope: "org" | "user"; ownerId: string } },
+    ): Promise<T> {
       const fingerprint = createHash("sha256").update(canonical(payload)).digest("hex");
       const id = crypto.randomUUID();
       const inserted = await sql.query<Receipt>(
-        `INSERT INTO public.ordinary_launch_receipts (id, org_id, owner_id, request_key, fingerprint)
-         VALUES ($1,$2,$3,$4,$5) ON CONFLICT (org_id, owner_id, request_key) DO NOTHING RETURNING id`,
-        [id, actor.orgId, actor.userId, key, fingerprint],
+        `INSERT INTO public.ordinary_launch_receipts (id, org_id, owner_id, request_key, fingerprint, authority)
+         VALUES ($1,$2,$3,$4,$5,$6::jsonb) ON CONFLICT (org_id, owner_id, request_key) DO NOTHING RETURNING id`,
+        [id, actor.orgId, actor.userId, key, fingerprint, JSON.stringify(authority)],
       );
       if (!inserted.rows.length) {
         const { rows } = await sql.query<Receipt>(
@@ -63,25 +69,54 @@ export function createOrdinaryLaunchReceipts(sql: Sql) {
         );
       }
     },
-    async inspect(actor: Scope, id: string, provider: Provider) {
-      const { rows } = await sql.query<{ id: string; response: unknown }>(
-        `SELECT id, response FROM public.ordinary_launch_receipts WHERE id=$1 AND org_id=$2 AND owner_id=$3`,
+    async inspect(actor: Scope, id: string, resolve: (target: ProviderTarget) => Promise<Provider>) {
+      const { rows } = await sql.query<{
+        id: string;
+        response: unknown;
+        authority: {
+          target: ProviderTarget;
+          backendId: string;
+          management: { scope: "org" | "user"; ownerId: string };
+        } | null;
+      }>(
+        `SELECT id, response, authority FROM public.ordinary_launch_receipts WHERE id=$1 AND org_id=$2 AND owner_id=$3`,
         [id, actor.orgId, actor.userId],
       );
       if (!rows[0]) throw new GoldenError("not_found", "Launch receipt not found.");
+      const blocked = () => ({ id, response: rows[0]!.response, allocations: [], outcome: "authority_blocked" });
+      const authority = rows[0].authority;
+      if (!authority || authority.target.orgId !== actor.orgId) return blocked();
+      let provider: Provider;
+      try {
+        provider = await resolve(authority.target);
+        if ((await provider.backendIdentity?.())?.id !== authority.backendId) return blocked();
+        const management = await provider.managementIdentity?.();
+        if (
+          !management ||
+          management.scope !== authority.management.scope ||
+          management.ownerId !== authority.management.ownerId
+        )
+          return blocked();
+      } catch {
+        return blocked();
+      }
       const allocations = [];
       let cursor: string | undefined;
-      do {
-        const page = await provider.list({
-          labels: { armada: "sandbox", sandbox: id, org: actor.orgId, owner: actor.userId },
-          ...(cursor ? { cursor } : {}),
-        });
-        for (const item of page.items) {
-          if (item.labels.sandbox === id && item.labels.org === actor.orgId && item.labels.owner === actor.userId)
-            allocations.push({ id: item.id, state: item.state });
-        }
-        cursor = page.cursor ?? undefined;
-      } while (cursor);
+      try {
+        do {
+          const page = await provider.list({
+            labels: { armada: "sandbox", sandbox: id, org: actor.orgId, owner: actor.userId },
+            ...(cursor ? { cursor } : {}),
+          });
+          for (const item of page.items) {
+            if (item.labels.sandbox === id && item.labels.org === actor.orgId && item.labels.owner === actor.userId)
+              allocations.push({ id: item.id, state: item.state });
+          }
+          cursor = page.cursor ?? undefined;
+        } while (cursor);
+      } catch {
+        return blocked();
+      }
       return {
         id,
         response: rows[0].response,

@@ -1122,6 +1122,24 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           args.idempotencyKey ?? crypto.randomUUID(),
           { ...args, goldenId: chosen.id },
           dispatch,
+          {
+            target: {
+              provider: chosen.provider,
+              orgId: chosen.orgId,
+              visibility: chosen.visibility,
+              modal: chosen.modal,
+            },
+            management:
+              (await provider.managementIdentity?.()) ??
+              (() => {
+                throw new ToolError("invalid", "Provider cannot pin management authority.");
+              })(),
+            backendId:
+              (await provider.backendIdentity?.())?.id ??
+              (() => {
+                throw new ToolError("invalid", "Provider cannot pin allocation authority.");
+              })(),
+          },
         );
       },
     );
@@ -1135,9 +1153,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         "Owner-only allocation recovery by durable receipt id. An empty lookup is not proof of no allocation; never refork an unknown receipt. Discovered provider ids can be retired by an operator through provider controls.",
       input: {
         id: z.string().uuid(),
-        golden: z.string().min(1),
         org: z.string().optional(),
-        provider: z.enum(SANDBOX_PROVIDERS).optional(),
       },
       output: {
         id: z.string(),
@@ -1147,11 +1163,11 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       },
     },
     async (args) => {
-      const actor = await launchActor(args.golden, args.org);
-      const chosen = await goldenForLaunch(data.goldens, actor, args.golden, args.provider);
+      const member = resolveCreateOrg(caller.orgs, args.org);
+      const actor = { orgId: member.orgId, userId: caller.userId };
       if (!context.ordinaryLaunchReceipts)
         throw new ToolError("invalid", "Durable launch receipts are not configured.");
-      return context.ordinaryLaunchReceipts.inspect(actor, args.id, await context.provider(chosen));
+      return context.ordinaryLaunchReceipts.inspect(actor, args.id, context.provider);
     },
   );
 
