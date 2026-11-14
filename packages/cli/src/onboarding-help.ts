@@ -156,6 +156,12 @@ Use a sandbox UUID, not a registry connection ID. Output is always JSON.
 This command does not mutate bindings.
 Example: armada mcp sandbox-connections SANDBOX_UUID --org ORG_UUID --json
 `,
+  "mcp revoke": `Usage: armada mcp revoke <connection-id> [--org UUID] [--json]
+Revoke an MCP connection's authorization after Armada login and server authorization.
+Select an organization with org use or --org UUID; use an ID from mcp list.
+Output is JSON even without --json. This is not mcp delete.
+Example: armada mcp revoke CONNECTION_UUID --org ORG_UUID
+`,
   "org setup": `Usage: armada org setup [--org <name>] [--json]
 Show organization provider setup status. Sign in before running the operation.
 Use --org to override a saved selection. This reports configuration, not a live lifecycle test.
@@ -415,6 +421,19 @@ Example: armada github ${action} --no-browser --timeout 300
 `;
 }
 
+function mcpAuthorizationHelp(action: "connect" | "reconnect"): string {
+  return `Usage: armada mcp ${action} <connection-id> [--org UUID] [--no-browser] [--timeout <seconds>] [--json]
+${action === "reconnect" ? "Revoke existing authorization first, then start a new connection authorization." : "Start authorization for an existing MCP registry connection."}
+Requires Armada login and server authorization. Select an organization with armada org use or --org UUID.
+Use a connection ID from mcp list, not a sandbox ID.
+Opens a server-issued authorization URL when supplied; --no-browser prints it to stderr.
+--timeout is an integer from 0 to 600 seconds (default 300).
+Zero still starts authorization and checks status; a URL alone is not success.
+On timeout, inspect mcp status before retrying. Successful output is always JSON.
+Example: armada mcp ${action} CONNECTION_UUID --org ORG_UUID --no-browser --timeout 300
+`;
+}
+
 export function onboardingHelp(argv: readonly string[]): string | undefined {
   if (!["--help", "-h"].includes(argv.at(-1) ?? "")) return undefined;
   const parts = argv.slice(0, -1);
@@ -440,6 +459,8 @@ export function onboardingHelp(argv: readonly string[]): string | undefined {
   )
     parts[0] = "snapshot";
   const command = parts.join(" ");
+  if (command === "mcp connect") return mcpAuthorizationHelp("connect");
+  if (command === "mcp reconnect") return mcpAuthorizationHelp("reconnect");
   if (command === "github connect") return githubAuthorizationHelp("connect");
   if (command === "github reconnect") return githubAuthorizationHelp("reconnect");
   if (command === "github install") return githubAuthorizationHelp("install");
