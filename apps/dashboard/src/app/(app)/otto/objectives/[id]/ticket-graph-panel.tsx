@@ -1,11 +1,14 @@
-import type { OttoTicketGraph } from "@armada/core";
-import { ticketStates } from "@armada/core";
+import type { OttoTicketGraph, ticketStates } from "@armada/core";
 import { objectiveRequest } from "@/lib/data/otto-objectives";
 
 export async function TicketGraphPanel({ orgId, id }: { orgId: string; id: string }) {
   let graph: OttoTicketGraph | null;
+  let tickets: ReturnType<typeof ticketStates>;
   try {
-    ({ graph } = await objectiveRequest<{ graph: OttoTicketGraph | null }>(orgId, `/${id}/tickets`));
+    ({ graph, tickets } = await objectiveRequest<{
+      graph: OttoTicketGraph | null;
+      tickets: ReturnType<typeof ticketStates>;
+    }>(orgId, `/${id}/tickets`));
   } catch {
     return (
       <section>
@@ -25,7 +28,7 @@ export async function TicketGraphPanel({ orgId, id }: { orgId: string; id: strin
             Brief revision {graph.briefRevision}. Planning does not create GitHub issues.
           </p>
           <ol className="space-y-4">
-            {ticketStates(graph).map((t) => (
+            {tickets.map((t) => (
               <li key={t.id} className="rounded-lg border p-5 space-y-3">
                 <h3 className="font-medium">{t.outcome}</h3>
                 <p>

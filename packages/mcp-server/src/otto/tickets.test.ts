@@ -27,3 +27,27 @@ test("invalid graphs cannot introduce cycles, foreign edges or invalid criteria"
   ])
     expect(() => validateTicketGraph({ briefRevision: 1, tickets })).toThrow();
 });
+
+test("all blocking tickets need every criterion proved before releasing a dependent", () => {
+  const graph = validateTicketGraph({
+    briefRevision: 1,
+    tickets: [
+      {
+        ...ticket("a"),
+        criteria: [
+          { use: "Open", proof: "Link" },
+          { use: "Inspect", proof: "Artifact" },
+        ],
+      },
+      ticket("b"),
+      ticket("c", ["a", "b"]),
+    ],
+  });
+  const proof = (ticketId: string, criterionIndex: number) => ({ ticketId, criterionIndex, factId: "observed_fact" });
+  expect(ticketStates(graph, [proof("a", 0), proof("b", 0)]).map((t) => t.state)).toEqual(["ready", "done", "blocked"]);
+  expect(ticketStates(graph, [proof("a", 0), proof("a", 1), proof("b", 0)]).map((t) => t.state)).toEqual([
+    "done",
+    "done",
+    "ready",
+  ]);
+});

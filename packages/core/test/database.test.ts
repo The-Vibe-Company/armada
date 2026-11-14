@@ -125,6 +125,7 @@ describe("database", () => {
         where n.nspname = 'public' and c.relkind = 'r'
         order by 1
       `);
+      // otto_ticket_publications is server-only: intentionally no JWT grant in this allowlist.
       expect(granted.rows.map((row) => row.grant)).toEqual([
         "application_secrets SELECT(created_at,epoch,expires_at,id,name,org_id,owner_id,scope,status,updated_at,version)",
         "application_vault_audit SELECT",

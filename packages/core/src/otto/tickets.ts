@@ -70,10 +70,30 @@ export function validateTicketGraph(value: unknown): OttoTicketGraph {
     })),
   };
 }
-/** Until observed proof is wired by #1830, dependencies are never presumed complete. */
-export function ticketStates(graph: OttoTicketGraph) {
+/** Trusted server projection, never parsed from submitted graph fields. */
+export interface OttoTicketProof {
+  ticketId: string;
+  criterionIndex: number;
+  factId: string;
+}
+export function ticketStates(graph: OttoTicketGraph, proofs: readonly OttoTicketProof[] = []) {
+  const done = new Set(
+    graph.tickets
+      .filter((ticket) =>
+        ticket.criteria.every((_, index) =>
+          proofs.some(
+            (proof) => proof.ticketId === ticket.id && proof.criterionIndex === index && proof.factId.length > 0,
+          ),
+        ),
+      )
+      .map((ticket) => ticket.id),
+  );
   return graph.tickets.map((ticket) => ({
     ...ticket,
-    state: ticket.dependencies.length ? ("blocked" as const) : ("ready" as const),
+    state: done.has(ticket.id)
+      ? ("done" as const)
+      : ticket.dependencies.every((id) => done.has(id))
+        ? ("ready" as const)
+        : ("blocked" as const),
   }));
 }
