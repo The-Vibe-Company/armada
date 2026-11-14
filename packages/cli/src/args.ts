@@ -88,3 +88,8 @@ export function single(args: Args, name: string): string | undefined {
   if (list.length > 1) throw new GoldenError("invalid_config", `${name} can only be set once.`);
   return list[0];
 }
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export function uuid(value: string | undefined, flag: string): void {
+  if (!value || !UUID.test(value)) throw new GoldenError("invalid_config", `${flag} must be a UUID.`);
+}
