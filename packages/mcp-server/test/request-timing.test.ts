@@ -30,8 +30,14 @@ test("SQL timing includes rejected queries and is absent outside request context
       throw failure;
     },
   });
-  await expect(withRequestTiming(timing, () => sql.query("private query"))).rejects.toBe(failure);
-  expect(timing.header()).toMatch(/^sql;dur=\d+\.\d{2}$/);
+  const results = await withRequestTiming(timing, () =>
+    Promise.allSettled([sql.query("private query"), sql.query("another private query")]),
+  );
+  expect(results).toEqual([
+    { status: "rejected", reason: failure },
+    { status: "rejected", reason: failure },
+  ]);
+  expect(timing.header()).toMatch(/^sql;dur=\d+\.\d{2};desc="2"$/);
   const recorded = timing.header();
   await expect(sql.query("another private query")).rejects.toBe(failure);
   expect(timing.header()).toBe(recorded);

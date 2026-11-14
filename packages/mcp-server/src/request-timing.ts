@@ -4,6 +4,7 @@ import type { ModalPromptPhase } from "@armada/provider-modal";
 /** Fixed, secret-free server phase names. Durations overlap: dispatch contains its subphases. */
 export type TimingPhase =
   | ModalPromptPhase
+  | "db_acquire"
   | "sql"
   | "total"
   | "auth"
@@ -25,8 +26,10 @@ export type TimingPhase =
   | "send_submit";
 
 export class RequestTiming {
+  private sqlStatements = 0;
   private readonly durations = new Map<TimingPhase, number>();
   async measure<T>(phase: TimingPhase, work: () => Promise<T>): Promise<T> {
+    if (phase === "sql") this.sqlStatements++;
     const start = performance.now();
     try {
       return await work();
@@ -35,7 +38,12 @@ export class RequestTiming {
     }
   }
   header(): string {
-    return [...this.durations].map(([name, duration]) => `${name};dur=${duration.toFixed(2)}`).join(", ");
+    return [...this.durations]
+      .map(
+        ([name, duration]) =>
+          `${name};dur=${duration.toFixed(2)}${name === "sql" ? `;desc="${this.sqlStatements}"` : ""}`,
+      )
+      .join(", ");
   }
 }
 
@@ -61,4 +69,9 @@ export function measureRequestPhase<T>(
 /** Includes pool queue and database round trip, but never SQL text or parameters. */
 export function measureSqlQuery<T>(work: () => Promise<T>): Promise<T> {
   return measureRequestPhase(current.getStore(), "sql", work);
+}
+
+/** Time waiting for a reserved client, including initial connection setup when cold. */
+export function measureDbAcquire<T>(work: () => Promise<T>): Promise<T> {
+  return measureRequestPhase(current.getStore(), "db_acquire", work);
 }
