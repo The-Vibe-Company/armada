@@ -61,7 +61,14 @@ export function objectiveStore(sql: Sql, caller: Caller, org: string) {
     async append(id: string, body: string) {
       return (
         await sql.query<OttoObjectiveMessage>(
-          `insert into public.otto_objective_messages(org_id,owner_id,objective_id,body) select $1,$2,id,$4 from public.otto_objectives where org_id=$1 and owner_id=$2 and id=$3 and exists(select 1 from public.members where org_id=$1 and user_id=$2) returning ${messageColumns}`,
+          `with advanced as (
+            update public.otto_objectives set revision=revision+1,updated_at=clock_timestamp()
+            where org_id=$1 and owner_id=$2 and id=$3
+              and exists(select 1 from public.members where org_id=$1 and user_id=$2)
+            returning id
+          )
+          insert into public.otto_objective_messages(org_id,owner_id,objective_id,body)
+          select $1,$2,id,$4 from advanced returning ${messageColumns}`,
           [...scope, id, body],
         )
       ).rows[0];

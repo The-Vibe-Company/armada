@@ -165,6 +165,8 @@ describe("database", () => {
         "orgs DELETE",
         "orgs SELECT(created_at,id,name)",
         "orgs UPDATE(boat_api_key_enc,name)",
+        "otto_objective_messages SELECT(body,created_at,id,objective_id,org_id,owner_id,revision)",
+        "otto_objectives SELECT(created_at,id,org_id,owner_id,repository,request,revision,updated_at)",
         "personal_skill_defaults SELECT",
         "readable_variables SELECT",
         "routine_runs SELECT(configuration_version,created_at,id,missed_count_capped,missed_intervals,org_id,owner_id,reason,request_key,routine_id,scheduled_due_at,state,task_checked_at,task_state,template_request_id,updated_at)",
