@@ -80,6 +80,7 @@ import { createSandboxAccountChange } from "./sandbox-account-change.ts";
 import { createSandboxArmadaAccess } from "./sandbox-armada-access.ts";
 import { createSandboxBillingAccount } from "./sandbox-billing-account.ts";
 import { createSandboxLifecycle } from "./sandbox-lifecycle.ts";
+import { createServerRequestDrain } from "./server-request-drain.ts";
 import { createServerRoutineScheduler } from "./server-routines.ts";
 import { installServerShutdown } from "./server-shutdown.ts";
 import { startServerWorkers } from "./server-workers.ts";
@@ -633,50 +634,8 @@ export async function startServer(
   });
   mcp.startBackground();
   dockerLaunch?.startBackground();
-  let draining = false;
-  const requests = new Set<Promise<unknown>>();
-  const fetch = (request: Request) => {
-    if (draining)
-      return Response.json({ error: "temporarily_unavailable" }, { status: 503, headers: { "retry-after": "5" } });
-    const pending = handler(request).then((response) => {
-      // Gateway POST tools use SSE responses: the handler can return before the
-      // admitted tool finishes. GET notification streams instead end at MCP close.
-      if (request.method !== "POST" || !response.body) return response;
-      const reader = response.body.getReader();
-      const finished = Promise.withResolvers<void>();
-      requests.add(finished.promise);
-      void finished.promise.then(() => requests.delete(finished.promise));
-      const body = new ReadableStream<Uint8Array>({
-        async pull(controller) {
-          try {
-            const chunk = await reader.read();
-            if (chunk.done) {
-              controller.close();
-              finished.resolve();
-            } else controller.enqueue(chunk.value);
-          } catch (error) {
-            controller.error(error);
-            finished.resolve();
-          }
-        },
-        async cancel(reason) {
-          try {
-            await reader.cancel(reason);
-          } finally {
-            finished.resolve();
-          }
-        },
-      });
-      return new Response(body, {
-        status: response.status,
-        statusText: response.statusText,
-        headers: response.headers,
-      });
-    });
-    requests.add(pending);
-    void pending.finally(() => requests.delete(pending)).catch(() => {});
-    return pending;
-  };
+  const requestDrain = createServerRequestDrain(handler);
+  const { fetch, requests } = requestDrain;
   const server = Object.assign(
     Bun.serve<RuntimeSocketData>({
       port: config.port,
@@ -736,7 +695,7 @@ export async function startServer(
   );
   installServerShutdown(server, {
     beginDrain: () => {
-      draining = true;
+      requestDrain.beginDrain();
       workers.stop();
       invitationWorker?.stop();
       routineWorker.stop();
