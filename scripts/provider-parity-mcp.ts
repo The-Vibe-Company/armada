@@ -191,6 +191,7 @@ export async function prepareMcpProbe(
                     proof.nativeToolName === nativeName &&
                     empty(proof.input) &&
                     result.isError === false &&
+                    typeof result.output === "string" &&
                     text(result.output) === binding.expectedText
                   );
                 })

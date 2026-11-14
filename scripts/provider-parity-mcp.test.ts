@@ -24,6 +24,7 @@ for (const mode of [
   "opencode_wrong_input",
   "opencode_error",
   "opencode_wrong_result",
+  "opencode_non_native_output",
   "unsupported",
   "source",
   "disconnected",
@@ -254,6 +255,8 @@ for (const mode of [
                 if (mode === "opencode_wrong_input") data.input = { unexpected: true };
                 if (mode === "opencode_error") data.result = { output: binding.expectedText, isError: true };
                 if (mode === "opencode_wrong_result") data.result = { output: "wrong", isError: false };
+                if (mode === "opencode_non_native_output")
+                  data.result = { output: { content: [{ type: "text", text: binding.expectedText }] }, isError: false };
               }
               result = {
                 cursor: `page_${n}`,
