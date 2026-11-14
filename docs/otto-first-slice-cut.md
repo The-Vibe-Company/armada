@@ -1,6 +1,8 @@
 # Otto first web slice: delivery cut
 
 Planning-only delivery for #1815. No application code or migrations are included.
+
+Owner addition: one conversation can feed several objectives; Otto owns routing, numbered replies and mid-turn message delivery. Standing instructions given in passing are visible, editable, versioned first-class records, not invisible memory or authorization. Two additional slices (#1835/#1836) follow the first wave; total 17, explicitly authorized by the owner after the initial 15-ticket cut.
 The owner’s adaptive-interview, five-minute start and web-first decisions supersede older proposals. #1816 owns the repository-rule rewrite; this cut does not change AGENTS.md.
 
 ## First parallel wave
@@ -15,7 +17,9 @@ START -> #1819
 START -> #1820
 START -> #1821
 #1818, #1819 -> #1822
-#1822 -> #1823
+#1818, #1822 -> #1835
+#1835 -> #1836
+#1822, #1835, #1836 -> #1823
 #1823 -> #1824
 #1823 -> #1825
 #1824, #1825 -> #1826
@@ -37,7 +41,7 @@ START -> #1821
 
 Each ticket uses cheap deterministic targeted unit checks; actual screens and lifecycle are checked through the product in authorized staging. No provider/network/browser check is added to PR CI and no new CI job is proposed. The final walkthrough covers both Armada and Skillpack, parallel objectives, restart recovery, one parked objective and proof-visible receipts. It is a future acceptance procedure, not evidence it has passed.
 
-Deferred: mobile/push, independent verifier agents, permanent rules, sub-Ottos, Linear and monetary/time-budget enforcement. First-slice budget is attempt count; duration is observed reporting only. Cancellation stops future/running work through recorded intents; it does not pretend to undo merged code or production changes.
+Deferred: mobile/push, independent verifier agents, a general permanent-rules engine, sub-Ottos, Linear and monetary/time-budget enforcement. First-slice budget is attempt count; duration is observed reporting only. Cancellation stops future/running work through recorded intents; it does not pretend to undo merged code or production changes.
 
 ## 1. #1818 — otto: create and reopen an objective thread
 
@@ -185,7 +189,67 @@ Planning source: #1815 and its owner comments; #1816 authorizes only server tool
 ## Migration discipline
 New durable decision/round state and intention/outcome journal with idempotency key, effect status and authorization scope. Record launch/message intent before effect; uncertain outcomes remain unknown and reconcile before retry. Follow docs/database-migrations.md: append only; choose a unique 14-digit version greater than current origin/main at implementation time and recheck before merge; coordinate versions, never edit an applied migration. Explicit RLS and grants for new user-JWT access, no secret/hash/ciphertext reads, named returned columns on JWT writes. Regenerate database.types.ts for schema changes. Migration application is owner-controlled through the validated release path, not this ticket.
 
-## 6. #1823 — otto: show a revisioned brief and persist the five-minute start decision
+## 6. #1835 — otto: route a shared conversation across objectives
+
+Parent: #1815
+
+## What the user can do
+Keep one web conversation while Otto routes interleaved requests and replies to existing objectives or opens a new one.
+
+## Acceptance (check by using the product)
+- [ ] In one web stream interleave an Armada bug, a Skillpack request and a numbered interview answer: Otto visibly links each message to the right objective/round or creates the new repository-bound objective without manual thread switching.
+- [ ] Send short follow-ups mid-turn and retry a message: each is durably accepted once and delivered to the intended active or next turn; ambiguous routing asks a focused clarification rather than changing the wrong objective.
+- [ ] Refresh and inspect the stream plus objective views: message links and pending delivery survive; unauthorized objectives remain inaccessible and a conversation never grants cross-org visibility.
+
+## Out of this ticket
+Cross-repository objectives; standing-instruction storage; mobile/dictation implementation; treating conversational approval as permission to bypass server policy.
+
+## Owned files / areas
+Paths below packages/ are relative to packages/. New DTO modules remain browser-safe and are re-exported only as needed.
+New core/src/otto/conversations.ts; mcp-server/src/otto/conversations.ts, conversation-routing.ts and conversation-api.ts; dashboard /otto/conversations route and conversation-stream component. Own shared conversation/message-objective links and adapter into #1822 interview tools, not their decision reducer. #1818 objective threads remain filtered views. Minimal route/navigation integration only.
+
+Own only these feature modules and their targeted unit tests. Shared export/route registration changes are minimal named integration hunks, not ownership of the containing file. Consumers import the producer’s contract; do not rewrite a dependency’s module.
+
+## Blocking dependencies
+#1818, #1822
+
+## Delivery boundaries
+Planning source: #1815 and its owner comments; #1816 authorizes only server tools that record intent before effect. Web first. Skills run unchanged through Skillpack and must not know Armada. No new CI job, direct merge, deployment or production operation. Use existing launch/auth/provider policies; unknown evidence is never done.
+
+## Migration discipline
+Add shared conversations, ordered durable messages and scoped message-objective/round links; backfill existing objective messages additively without losing thread history. Revision/delivery keys prevent duplicate routing. Explicit membership/owner RLS/grants; links cannot expand visibility. Follow docs/database-migrations.md: append only; choose a unique 14-digit version greater than current origin/main at implementation time and recheck before merge; coordinate versions, never edit an applied migration. Explicit RLS and grants for new user-JWT access, no secret/hash/ciphertext reads, named returned columns on JWT writes. Regenerate database.types.ts for schema changes. Migration application is owner-controlled through the validated release path, not this ticket.
+
+## 7. #1836 — otto: capture and edit standing instructions from conversation
+
+Parent: #1815
+
+## What the user can do
+Give an instruction in passing, see Otto retain it as a scoped standing instruction, and edit or revoke it from the web.
+
+## Acceptance (check by using the product)
+- [ ] Say “Codex only” or set a maximum-open-PR preference in the shared stream: see the extracted instruction, source message, scope and effective status in a visible editable list; ambiguous scope/conflicts ask for clarification rather than silently becoming authority.
+- [ ] Edit or revoke the instruction, refresh, then start another objective: its brief/engine/dispatch preview shows the applicable current revision; already admitted work retains its recorded snapshot and contradictory choices are surfaced.
+- [ ] Say “do not ask me about releases again”: retain it visibly, but show any unsupported effect or authorization requirement; standing instructions never mint access, auto-approve irreversible/production effects, override explicit server policy, or modify Skillpack skills.
+
+## Out of this ticket
+Executing releases/deployments/production actions; general policy language or rules engine; retroactive mutation of running attempts; invisible model memory; changing generic skills.
+
+## Owned files / areas
+Paths below packages/ are relative to packages/. New DTO modules remain browser-safe and are re-exported only as needed.
+New core/src/otto/standing-instructions.ts; mcp-server/src/otto/standing-instructions.ts, instruction-tools.ts and instruction-context.ts; dashboard instruction-list/editor child of shared conversation route. Own extraction/store/edit/revocation and versioned context adapter. #1823 consumes adapter in briefs; #1826 consumes frozen effective context at launch; no ownership of their state machines.
+
+Own only these feature modules and their targeted unit tests. Shared export/route registration changes are minimal named integration hunks, not ownership of the containing file. Consumers import the producer’s contract; do not rewrite a dependency’s module.
+
+## Blocking dependencies
+#1835
+
+## Delivery boundaries
+Planning source: #1815 and its owner comments; #1816 authorizes only server tools that record intent before effect. Web first. Skills run unchanged through Skillpack and must not know Armada. No new CI job, direct merge, deployment or production operation. Use existing launch/auth/provider policies; unknown evidence is never done.
+
+## Migration discipline
+Add scoped versioned standing instructions with source message, author, effective/revoked state, precedence/conflict metadata and immutable objective/attempt context bindings. Explicit RLS/grants and bounded output; instructions are preferences/constraints, not credentials or permission grants. Follow docs/database-migrations.md: append only; choose a unique 14-digit version greater than current origin/main at implementation time and recheck before merge; coordinate versions, never edit an applied migration. Explicit RLS and grants for new user-JWT access, no secret/hash/ciphertext reads, named returned columns on JWT writes. Regenerate database.types.ts for schema changes. Migration application is owner-controlled through the validated release path, not this ticket.
+
+## 8. #1823 — otto: show a revisioned brief and persist the five-minute start decision
 
 Parent: #1815
 
@@ -193,7 +257,7 @@ Parent: #1815
 Review the interview result, start now, cancel, or let the current brief become eligible after five minutes.
 
 ## Acceptance (check by using the product)
-- [ ] Open the brief: see reformulation, size, expected proof, assumptions and missing-access checks; go starts eligibility immediately and cancel prevents it.
+- [ ] Open the brief: see reformulation, size, expected proof, assumptions and missing-access checks; go starts eligibility immediately and cancel prevents it. Applicable standing instructions and their revisions are visible; unsupported/conflicting instructions are surfaced before start.
 - [ ] Leave a brief unanswered for five minutes, including across server restart: exactly the current revision becomes eligible once; editing replaces its deadline and stale go requests cannot start it.
 - [ ] Leave an irreversible choice or missing access unresolved: the objective parks rather than silently starting; reversible unanswered choices appear as assumptions.
 
@@ -207,7 +271,7 @@ New core/src/otto/brief.ts; mcp-server/src/otto/brief.ts and brief-api.ts; dashb
 Own only these feature modules and their targeted unit tests. Shared export/route registration changes are minimal named integration hunks, not ownership of the containing file. Consumers import the producer’s contract; do not rewrite a dependency’s module.
 
 ## Blocking dependencies
-#1822
+#1822, #1835, #1836
 
 ## Delivery boundaries
 Planning source: #1815 and its owner comments; #1816 authorizes only server tools that record intent before effect. Web first. Skills run unchanged through Skillpack and must not know Armada. No new CI job, direct merge, deployment or production operation. Use existing launch/auth/provider policies; unknown evidence is never done.
@@ -215,7 +279,7 @@ Planning source: #1815 and its owner comments; #1816 authorizes only server tool
 ## Migration discipline
 Add brief revisions, eligible/start/cancel timestamps and revision-checked transitions; durable deadline, not a browser timer. Additive only. Follow docs/database-migrations.md: append only; choose a unique 14-digit version greater than current origin/main at implementation time and recheck before merge; coordinate versions, never edit an applied migration. Explicit RLS and grants for new user-JWT access, no secret/hash/ciphertext reads, named returned columns on JWT writes. Regenerate database.types.ts for schema changes. Migration application is owner-controlled through the validated release path, not this ticket.
 
-## 7. #1824 — otto: publish and inspect the internal ticket dependency graph
+## 9. #1824 — otto: publish and inspect the internal ticket dependency graph
 
 Parent: #1815
 
@@ -245,7 +309,7 @@ Planning source: #1815 and its owner comments; #1816 authorizes only server tool
 ## Migration discipline
 New internal tickets/criteria/edges linked to objective and brief revision; uniqueness, scoped access and cycle validation. Keep replaceable observer projections separate. Follow docs/database-migrations.md: append only; choose a unique 14-digit version greater than current origin/main at implementation time and recheck before merge; coordinate versions, never edit an applied migration. Explicit RLS and grants for new user-JWT access, no secret/hash/ciphertext reads, named returned columns on JWT writes. Regenerate database.types.ts for schema changes. Migration application is owner-controlled through the validated release path, not this ticket.
 
-## 8. #1825 — otto: answer typed waits in a web “Your turn” inbox
+## 10. #1825 — otto: answer typed waits in a web “Your turn” inbox
 
 Parent: #1815
 
@@ -275,7 +339,7 @@ Planning source: #1815 and its owner comments; #1816 authorizes only server tool
 ## Migration discipline
 New typed waits/questions with deadlines, answered/default/parked outcomes and deduplicated inbox/reminder delivery. Explicit scoped RLS/grants. Follow docs/database-migrations.md: append only; choose a unique 14-digit version greater than current origin/main at implementation time and recheck before merge; coordinate versions, never edit an applied migration. Explicit RLS and grants for new user-JWT access, no secret/hash/ciphertext reads, named returned columns on JWT writes. Regenerate database.types.ts for schema changes. Migration application is owner-controlled through the validated release path, not this ticket.
 
-## 9. #1826 — otto: launch one ticket with a server-created GitHub issue and linked attempt
+## 11. #1826 — otto: launch one ticket with a server-created GitHub issue and linked attempt
 
 Parent: #1815
 
@@ -283,7 +347,7 @@ Parent: #1815
 Launch a ready ticket from the web and follow its GitHub issue and worker sandbox.
 
 ## Acceptance (check by using the product)
-- [ ] Launch once: the server records intent, creates the issue only now, and binds issue, internal ticket, attempt, account and sandbox; no GitHub token enters Otto’s sandbox.
+- [ ] Launch once: the server records intent, creates the issue only now, and binds issue, internal ticket, attempt, account and sandbox; no GitHub token enters Otto’s sandbox. The admitted engine and worker context enforce supported standing constraints and retain the effective instruction revision snapshot.
 - [ ] Repeat the launch or simulate a lost response: inspect the same issue/attempt, not duplicate work; uncertain external effects park for reconciliation.
 - [ ] Use revoked repository/account access: launch is denied before effect and the thread shows an actionable access wait.
 
@@ -305,7 +369,7 @@ Planning source: #1815 and its owner comments; #1816 authorizes only server tool
 ## Migration discipline
 New attempts and external-effect correlation/receipt records, unique ticket-attempt and issue bindings; foreign keys to existing scoped resources. Use #1822 journal rather than another intent store. Follow docs/database-migrations.md: append only; choose a unique 14-digit version greater than current origin/main at implementation time and recheck before merge; coordinate versions, never edit an applied migration. Explicit RLS and grants for new user-JWT access, no secret/hash/ciphertext reads, named returned columns on JWT writes. Regenerate database.types.ts for schema changes. Migration application is owner-controlled through the validated release path, not this ticket.
 
-## 10. #1827 — otto: dispatch parallel frontiers under an attempt budget and PR slots
+## 12. #1827 — otto: dispatch parallel frontiers under an attempt budget and PR slots
 
 Parent: #1815
 
@@ -335,7 +399,7 @@ Planning source: #1815 and its owner comments; #1816 authorizes only server tool
 ## Migration discipline
 New budget ledger/reservations and scoped PR-slot leases with atomic admission, unique effect keys and reconciliation state. Attempt-count budget only in this slice. Follow docs/database-migrations.md: append only; choose a unique 14-digit version greater than current origin/main at implementation time and recheck before merge; coordinate versions, never edit an applied migration. Explicit RLS and grants for new user-JWT access, no secret/hash/ciphertext reads, named returned columns on JWT writes. Regenerate database.types.ts for schema changes. Migration application is owner-controlled through the validated release path, not this ticket.
 
-## 11. #1828 — otto: wake workers from observed typed waits and expiring access
+## 13. #1828 — otto: wake workers from observed typed waits and expiring access
 
 Parent: #1815
 
@@ -365,7 +429,7 @@ Planning source: #1815 and its owner comments; #1816 authorizes only server tool
 ## Migration discipline
 Add attempt heartbeat/observable expiry fields and resolver dedupe cursors if not already covered by waits; no raw journal/prompts retained as evidence. Follow docs/database-migrations.md: append only; choose a unique 14-digit version greater than current origin/main at implementation time and recheck before merge; coordinate versions, never edit an applied migration. Explicit RLS and grants for new user-JWT access, no secret/hash/ciphertext reads, named returned columns on JWT writes. Regenerate database.types.ts for schema changes. Migration application is owner-controlled through the validated release path, not this ticket.
 
-## 12. #1829 — otto: request GitHub merge-queue entry through a recorded server intent
+## 14. #1829 — otto: request GitHub merge-queue entry through a recorded server intent
 
 Parent: #1815
 
@@ -395,7 +459,7 @@ Planning source: #1815 and its owner comments; #1816 authorizes only server tool
 ## Migration discipline
 No new table expected: use #1822 intents and #1825 waits; add narrowly typed queue outcome metadata if needed. Follow docs/database-migrations.md: append only; choose a unique 14-digit version greater than current origin/main at implementation time and recheck before merge; coordinate versions, never edit an applied migration. Explicit RLS and grants for new user-JWT access, no secret/hash/ciphertext reads, named returned columns on JWT writes. Regenerate database.types.ts for schema changes. Migration application is owner-controlled through the validated release path, not this ticket.
 
-## 13. #1830 — otto: complete criteria only from mechanical or explicit human proof
+## 15. #1830 — otto: complete criteria only from mechanical or explicit human proof
 
 Parent: #1815
 
@@ -425,7 +489,7 @@ Planning source: #1815 and its owner comments; #1816 authorizes only server tool
 ## Migration discipline
 New human attestations and criterion-to-evidence bindings with actor/time/revision/head/target where relevant; server-only derived completion, scoped append-only proof history. Follow docs/database-migrations.md: append only; choose a unique 14-digit version greater than current origin/main at implementation time and recheck before merge; coordinate versions, never edit an applied migration. Explicit RLS and grants for new user-JWT access, no secret/hash/ciphertext reads, named returned columns on JWT writes. Regenerate database.types.ts for schema changes. Migration application is owner-controlled through the validated release path, not this ticket.
 
-## 14. #1831 — otto: issue a final objective receipt with limits and cancellation
+## 16. #1831 — otto: issue a final objective receipt with limits and cancellation
 
 Parent: #1815
 
@@ -455,7 +519,7 @@ Planning source: #1815 and its owner comments; #1816 authorizes only server tool
 ## Migration discipline
 New immutable receipt revision/evidence references and cancellation state if absent; deduplicate final inbox delivery using #1825 storage. Follow docs/database-migrations.md: append only; choose a unique 14-digit version greater than current origin/main at implementation time and recheck before merge; coordinate versions, never edit an applied migration. Explicit RLS and grants for new user-JWT access, no secret/hash/ciphertext reads, named returned columns on JWT writes. Regenerate database.types.ts for schema changes. Migration application is owner-controlled through the validated release path, not this ticket.
 
-## 15. #1832 — otto: show day-one objective interruption and waiting measures
+## 17. #1832 — otto: show day-one objective interruption and waiting measures
 
 Parent: #1815
 
