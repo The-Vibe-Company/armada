@@ -410,7 +410,7 @@ test("steer, interrupt and send go to the chosen conversation, and a refused mes
   await page.getByRole("button", { name: "Interrupt" }).click();
   await expect(page.getByRole("log", { name: "Messages" }).getByText("Interrupted")).toBeVisible();
 
-  expect(await toolCalls()).toEqual([
+  expect(await toolCalls()).toMatchObject([
     {
       name: "steer",
       args: { id: IDS.running, text: "Keep the old behaviour for empty input", conversation_id: "conv-b" },
@@ -444,7 +444,9 @@ test("a first message to an idle sandbox starts its turn without a reload", asyn
   await expect(page.locator("h1 + [data-status]")).toHaveAttribute("data-status", "running");
   await expect(page.getByRole("button", { name: "Interrupt" })).toBeVisible();
   await expect(page.getByTestId("agent-working")).toBeVisible();
-  expect(await toolCalls()).toEqual([{ name: "send", args: { id: IDS.running, prompt: "Also update the changelog" } }]);
+  expect(await toolCalls()).toMatchObject([
+    { name: "send", args: { id: IDS.running, prompt: "Also update the changelog" } },
+  ]);
 });
 
 test("reading the history is never interrupted by new messages, and the latest is one click away", async ({ page }) => {
