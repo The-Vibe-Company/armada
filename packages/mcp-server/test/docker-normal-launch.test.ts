@@ -937,10 +937,26 @@ test("legacy initial prompt replay retains its already-enqueued conversation pay
     f.body.requestId,
     await encryptSecret(JSON.stringify(manifest), key),
   ]);
+  await db.query("update sandboxes set conversation_ids='{}'::text[] where id=$1", [f.body.requestId]);
+  const actualConversation = f.receipt.conversationId;
+  const controls = createDockerSandboxControls(sql, key, {
+    clock: f.clock,
+    send: createDockerNormalSend(sql, key, { enabled: true, clock: f.clock }),
+  });
+  const queued = await controls.invoke(f.caller, "send", {
+    id: f.body.requestId,
+    request_id: randomUUID(),
+    prompt: "Legacy completed reply, unprojected conversation",
+  });
+  expect(queued).toMatchObject({ handled: true, result: { conversationId: actualConversation, status: "queued" } });
+  expect(actualConversation).not.toBe(manifest.promptId);
   const before = f.native.length;
   await server.drain();
   expect((await server.launch(f.caller, f.body)).conversationId).toBe(f.receipt.conversationId);
   expect(f.native).toHaveLength(before);
+  await publishFinished(f);
+  await server.drainQueued();
+  expect(f.native.at(-1)).toMatchObject({ op: "prompt", input: { conversationId: actualConversation } });
   await server.close();
 });
 

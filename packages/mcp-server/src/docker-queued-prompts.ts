@@ -48,22 +48,37 @@ export function createDockerQueuedPrompts(sql: Sql, key: string) {
     const conversationId = manifest.conversationId ?? manifest.promptId;
     if (typeof conversationId !== "string" || !/^[a-f0-9-]{36}$/.test(conversationId))
       throw Error("invalid launch conversation");
-    // An old runtime command without a reserved identity must reconcile its genuine receipt first.
-    if (
-      manifest.conversationId === undefined &&
-      (
-        await tx.query(
-          "select 1 from public.runtime_commands where sandbox_id=$1 and starts_with(request_id,'docker_prompt_') and result_enc is null",
+    if (manifest.conversationId === undefined) {
+      const commands = (
+        await tx.query<{ request_id: string; epoch: string; result_enc: Uint8Array<ArrayBuffer> | null }>(
+          "select request_id,epoch::text,result_enc from public.runtime_commands where sandbox_id=$1 and starts_with(request_id,'docker_prompt_') order by sequence desc",
           [sandboxId],
         )
-      ).rows.length
-    )
-      throw new ProviderError({
-        provider: "docker",
-        code: "unavailable",
-        message: "Legacy launch conversation is still reconciling. Inspect its status before retrying.",
-        retryable: true,
-      });
+      ).rows;
+      for (const command of commands) {
+        if (!command.result_enc) continue;
+        const reply = JSON.parse(await decryptSecret(command.result_enc, key));
+        const actual = reply.body?.result?.conversationId;
+        if (
+          reply.status === 200 &&
+          reply.epoch === command.epoch &&
+          reply.requestId === command.request_id &&
+          reply.body?.version === 1 &&
+          reply.body?.requestId === command.request_id &&
+          typeof actual === "string" &&
+          /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(actual)
+        )
+          return actual;
+      }
+      // Never substitute a new planned identity for a legacy native turn whose real identity is still unknown.
+      if (commands.length)
+        throw new ProviderError({
+          provider: "docker",
+          code: "unavailable",
+          message: "Legacy launch conversation is still reconciling. Inspect its status before retrying.",
+          retryable: true,
+        });
+    }
     return conversationId;
   }
   return {
