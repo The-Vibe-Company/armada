@@ -149,6 +149,15 @@ test("current org metadata is allowlisted; raw interior and mutation require cur
     await db.query("insert into members(org_id,user_id,role) values($1,$2,'admin')", [p.org, outsider]);
     await db.query("update members set role='member' where org_id=$1 and user_id=$2", [p.org, p.admin]);
     expect(await data(p.admin).get(ids[0]!)).toBeNull(); // stale admin claim cannot open
+    await asUser(p.admin, async () => {
+      const rpc = await db.query<SandboxListMetadata>("select * from sandbox_list_metadata()");
+      expect(rpc.rows).toHaveLength(2);
+      for (const row of rpc.rows) {
+        expect(row.canOpen).toBe(false);
+        expect(row.canManage).toBe(false);
+        expect(row.taskOutcome).toBeNull();
+      }
+    });
     await db.query("delete from members where org_id=$1 and user_id=$2", [p.org, p.owner]);
     expect((await data(p.owner).list({ limit: 100 })).total).toBe(0);
     expect(await data(p.owner).get(ids[0]!)).toBeNull();
