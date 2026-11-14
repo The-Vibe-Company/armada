@@ -5,6 +5,7 @@ import {
   DEFAULT_LAUNCH_TTL_SECONDS,
   encryptSecret,
   GitHubHydrationError,
+  HARNESS_CAPABILITIES,
   HARNESS_KINDS,
   HARNESSES,
   type LaunchOptionsResponse,
@@ -2738,16 +2739,23 @@ test("versioned runtime launch is explicit/default-off and never selects native 
 
 // Public HTTP admission owns the opt-in: no allocation when disabled/malformed,
 // and no native agent/configuration fallback on the accepted model-only path.
-test.each([false, true])(
-  "Modal runtime launch prepares explicit/default MCP and skills before its first prompt (%s)",
-  async (fromDefaults) => {
+test.each([
+  { harness: "codex" as const, fromDefaults: false },
+  { harness: "claude" as const, fromDefaults: true },
+  { harness: "opencode" as const, fromDefaults: true },
+])(
+  "Modal runtime launch prepares explicit/default MCP and skills before its first prompt ($harness defaults=$fromDefaults)",
+  async ({ harness, fromDefaults }) => {
     await withServer(async ({ db, options }) => {
-      const harness = fromDefaults ? "claude" : "codex";
       const org = await options.store.createOrg("Modal runtime", STAN);
       options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
       await db.query(
         "insert into credentials(scope,owner_id,kind,value_enc) values('user',$1,$3::public.credential_kind,$2)",
-        [STAN, await encryptSecret("fixture-model-key", KEY), fromDefaults ? "anthropic" : "openai"],
+        [
+          STAN,
+          await encryptSecret("fixture-model-key", KEY),
+          harness === "claude" ? "anthropic" : harness === "opencode" ? "opencode" : "openai",
+        ],
       );
       await db.query(
         `insert into goldens(org_id,owner_id,name,visibility,provider,provider_sandbox_id,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config)
@@ -2769,6 +2777,7 @@ test.each([false, true])(
         golden: "modal-runtime",
         provider: "modal",
         harness,
+        ...(harness === "opencode" ? { model: "opencode/fixture", reasoningEffort: "default" } : {}),
         prompt: "reply",
         runtimeVersion: 1,
         runtimeTransport: "dialout",
@@ -2776,7 +2785,12 @@ test.each([false, true])(
         connections: [],
       };
       const fake = fakeBoat();
-      const host = { ...fake.provider, id: "modal" as const };
+      const host = {
+        ...fake.provider,
+        id: "modal" as const,
+        harnesses: [...fake.provider.harnesses, "opencode" as const],
+        capabilities: { ...fake.provider.capabilities, opencode: HARNESS_CAPABILITIES.opencode },
+      };
       let starts = 0;
       let mcpPrepared = false;
       let skillsInstalled = false;
@@ -2839,7 +2853,7 @@ test.each([false, true])(
         { ...body, skipSkillDefaults: "invalid" },
         { ...body, skills: "invalid" },
         { ...body, connections: ["invalid"] },
-        { ...body, harness: "opencode" },
+        { ...body, harness: "unknown" },
         { ...body, runtimeTransport: undefined },
       ])
         expect((await request(bad))?.status).toBe(400);

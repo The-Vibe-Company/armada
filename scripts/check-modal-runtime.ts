@@ -51,6 +51,7 @@ interface Reply {
     variablesVersion?: number;
     usageVersion?: number;
     claudeVersion?: number;
+    opencodeVersion?: number;
   };
   usage?: SandboxUsage;
   skills?: unknown;
@@ -95,7 +96,19 @@ if (
   options.modalRuntime.followupVersion !== 1
 )
   throw Error("Modal dial-out v1 with same-conversation follow-up is unavailable; no launch attempted.");
-const harness = process.argv.includes("--claude") ? "claude" : "codex";
+if (process.argv.includes("--opencode") && process.argv.includes("--claude"))
+  throw Error("Select only one harness; no launch attempted.");
+const harness = process.argv.includes("--opencode")
+  ? "opencode"
+  : process.argv.includes("--claude")
+    ? "claude"
+    : "codex";
+if (harness === "opencode") {
+  if (options.modalRuntime.opencodeVersion !== 1)
+    throw Error("Modal enrolled OpenCode v1 is unavailable; no launch attempted.");
+  if (["--variables", "--mcp", "--github"].some((flag) => process.argv.includes(flag)))
+    throw Error("OpenCode tool-proof smoke is not yet admitted; no launch attempted.");
+}
 if (harness === "claude" && options.modalRuntime.claudeVersion !== 1)
   throw Error("Modal enrolled Claude v1 is unavailable; no launch attempted.");
 const resumeMode = process.argv.includes("--resume");

@@ -37,6 +37,13 @@ export function createRuntimeProvider(
       resume: false,
       parallelConversations: false,
     },
+    opencode: {
+      ...HARNESS_CAPABILITIES.opencode,
+      steer: operations ? HARNESS_CAPABILITIES.opencode.steer : ("none" as const),
+      interrupt: Boolean(operations),
+      resume: false,
+      parallelConversations: false,
+    },
     claude: {
       ...HARNESS_CAPABILITIES.claude,
       steer: operations ? HARNESS_CAPABILITIES.claude.steer : ("none" as const),
@@ -47,7 +54,7 @@ export function createRuntimeProvider(
   };
   return {
     id: host.id,
-    harnesses: ["codex", "claude"],
+    harnesses: host.id === "modal" ? ["codex", "claude", "opencode"] : ["codex", "claude"],
     capabilities,
     ...(host.managementIdentity ? { managementIdentity: host.managementIdentity.bind(host) } : {}),
     ...(host.backendIdentity ? { backendIdentity: host.backendIdentity.bind(host) } : {}),

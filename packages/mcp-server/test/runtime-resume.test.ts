@@ -15,7 +15,7 @@ import { ENCRYPTION_KEY } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
 
-async function stopped(harness: "codex" | "claude" = "codex", provider: "boat" | "modal" = "boat") {
+async function stopped(harness: "codex" | "claude" | "opencode" = "codex", provider: "boat" | "modal" = "boat") {
   const f = await runtimeFixture(await sharedDatabase(), provider, harness);
   const cp = await createRuntimeCheckpoint(
     f.sql,
@@ -40,6 +40,7 @@ describe.each([
   ["boat", "claude"],
   ["modal", "codex"],
   ["modal", "claude"],
+  ["modal", "opencode"],
 ] as const)("retained runtime resume (%s/%s)", (provider, harness) => {
   let f: Awaited<ReturnType<typeof stopped>>;
   // Cold WASM/migrations and building the stopped checkpoint are prerequisites,

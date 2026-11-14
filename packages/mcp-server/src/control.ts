@@ -793,6 +793,7 @@ async function dispatch(
         skillsVersion: options.modalRuntimeLaunch ? 1 : 0,
         usageVersion: options.modalRuntimeLaunch ? 1 : 0,
         claudeVersion: options.modalRuntimeLaunch ? 1 : 0,
+        opencodeVersion: options.modalRuntimeLaunch ? 1 : 0,
         variablesVersion: options.templates && options.modalRuntimeLaunch && options.modalRuntimeHostFor ? 1 : 0,
       },
       boatRuntime: {
@@ -1223,7 +1224,7 @@ async function dispatch(
         body.runtimeVersion !== 1 ||
         body.runtimeTransport !== "dialout" ||
         body.provider !== "modal" ||
-        (body.harness !== "codex" && body.harness !== "claude") ||
+        (body.harness !== "codex" && body.harness !== "claude" && body.harness !== "opencode") ||
         body.boatRuntime !== undefined ||
         body.armadaAccess ||
         (body.connections !== undefined && !Array.isArray(body.connections)) ||
@@ -1232,7 +1233,7 @@ async function dispatch(
       )
         throw new VaultError(
           "invalid",
-          "Modal runtime v1 requires explicit Codex or Claude launch; helpers are unavailable.",
+          "Modal runtime v1 requires explicit Codex, Claude or OpenCode launch; helpers are unavailable.",
         );
       if (!options.modalRuntimeLaunch || !options.modalRuntimeHostFor)
         throw new VaultError("unavailable", "Modal runtime staging opt-in is disabled.");

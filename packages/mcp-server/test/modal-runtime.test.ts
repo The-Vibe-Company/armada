@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
 import { createSqlSandboxStore, type Sql } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
@@ -6,10 +6,15 @@ import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { createRuntimeServing } from "../src/runtime-serving.ts";
 import { database, ENCRYPTION_KEY, fakeBoat } from "./support.ts";
 
+let prepared: Awaited<ReturnType<typeof database>>;
+beforeAll(async () => {
+  prepared = await database();
+});
+
 // SQL is the owner of immutable routing, epoch handoff and stopped archive authority.
 // This protects Modal admission (previously Boat/Docker only), not provider inference.
-test("Modal Claude dial-out persists routing and retains enrolled authority through launch but not stop", async () => {
-  const { db, people } = await database();
+test("Modal OpenCode dial-out persists routing and retains enrolled authority through launch but not stop", async () => {
+  const { db, people } = prepared;
   try {
     const sql: Sql = {
       query: (q, v) => db.query(q, v),
@@ -36,11 +41,11 @@ test("Modal Claude dial-out persists routing and retains enrolled authority thro
       goldenId: golden.id,
       orgId: people.org,
       ownerId: people.owner,
-      harness: "claude",
+      harness: "opencode",
       status: "starting",
       activityLeaseId: crypto.randomUUID(),
-      model: "claude-sonnet-4-6",
-      reasoningEffort: "high",
+      model: "opencode/fixture",
+      reasoningEffort: "default",
     });
     expect((await store.get(row.id))?.runtimeTransport).toBe("dialout");
     expect(
