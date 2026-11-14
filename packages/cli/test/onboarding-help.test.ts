@@ -22,6 +22,8 @@ test("nested onboarding help is focused and performs no authenticated or secret 
     "org create",
 
     "org connect modal",
+    "org connect",
+    "org connect boat",
     "creds login codex",
     "creds login",
     "creds import",
@@ -125,6 +127,8 @@ test("help detection leaves malformed operations and literal payloads to their p
     ["org", "members", "add", "--role", "-h"],
     ["org", "invitations", "accept", "--file", "-h"],
     ["org", "invitations", "accept", "--", "--help"],
+    ["org", "connect", "boat", "--file", "-h"],
+    ["org", "connect", "boat", "--", "--help"],
     ["constructor", "--help"],
     ["toString", "-h"],
   ])

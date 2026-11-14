@@ -73,14 +73,29 @@ Never put the token in command arguments. --org is not accepted by this command.
 The server validates the invitation and signed-in identity; the token is not printed.
 Example: armada org invitations accept --file /private/invitation-token
 `,
-  "org setup": `Usage: armada org setup [--org <name>]
+  "org setup": `Usage: armada org setup [--org <name>] [--json]
 Show organization provider setup status. Sign in before running the operation.
+Use --org to override a saved selection. This reports configuration, not a live lifecycle test.
 Example: armada org setup --org my-team
 `,
-  "org connect modal": `Usage: armada org connect modal [--org <name>] [--file <path>]
+  "org connect": `Usage: armada org connect boat|modal [--org <name>] [--file <path>] [--json]
+Connect a provider as an organization admin after Armada login.
+Boat takes an API key; Modal takes a token pair. See org connect boat|modal --help.
+Read credentials from stdin/hidden input or a private file, never command arguments.
+Use --org to override a saved organization selection.
+Example: armada org connect modal --org my-team --file /private/modal.json
+`,
+  "org connect boat": `Usage: armada org connect boat [--org <name>] [--file <path>] [--json]
+Connect Boat as an organization admin after Armada login.
+Input: the Boat API key from stdin/hidden input or a private file, never command arguments.
+Use --org to override a saved organization selection.
+Example: armada org connect boat --org my-team --file /private/boat-key
+`,
+  "org connect modal": `Usage: armada org connect modal [--org <name>] [--file <path>] [--json]
 Connect a Modal workspace as an organization admin after armada login.
 Input: JSON with token_id and token_secret (from Modal), or a Modal token pair separated by whitespace.
-Keep real credentials in a private file or stdin, never command arguments.
+Keep real credentials in a private file or stdin/hidden input, never command arguments.
+Use --org to override a saved organization selection.
 Example: armada org connect modal --org my-team --file /private/modal.json
 `,
   "creds login": `Usage: armada creds login codex (--name <name> | --id <id> --expected-version <version>) [--org <name>]
