@@ -38,6 +38,7 @@ Never invent a new key while the original outcome is unknown. Only prompt, TTL, 
 Docker --host takes a host UUID, not a name; it selects the official environment, not a snapshot.
 Readable values may appear in launch manifests; they are not secrets.
 `;
+const ACTIONS = ["create", "list", "get", "publish", "delete", "launch"];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DEFINITION_FLAGS = [
   "--golden",
@@ -56,12 +57,16 @@ const DEFINITION_FLAGS = [
 const usage = (message = "Invalid template command. Run armada template --help.") => new VaultError("invalid", message);
 
 export async function templateCommand(argv: readonly string[], io: VaultIo): Promise<number> {
-  if (!argv.length || argv.includes("--help") || argv.includes("-h")) {
+  if (
+    !argv.length ||
+    (argv.length === 1 && ["--help", "-h"].includes(argv[0] ?? "")) ||
+    (argv.length === 2 && ACTIONS.includes(argv[0] ?? "") && ["--help", "-h"].includes(argv[1] ?? ""))
+  ) {
     io.auth.out(HELP);
     return 0;
   }
   const [action, ...rest] = argv;
-  if (!["create", "list", "get", "publish", "delete", "launch"].includes(action ?? "")) throw usage();
+  if (!ACTIONS.includes(action ?? "")) throw usage();
   const args = parseArgs(rest, [
     "--scope",
     "--revision",
