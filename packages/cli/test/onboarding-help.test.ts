@@ -10,6 +10,8 @@ test("nested onboarding help is focused and performs no authenticated or secret 
     "creds set",
     "golden create",
     "host add",
+    "snapshot size-policy",
+    "golden size-policy",
   ]) {
     for (const flag of ["--help", "-h"]) {
       let out = "";
@@ -30,7 +32,7 @@ test("nested onboarding help is focused and performs no authenticated or secret 
         { env: {}, fetch: Object.assign(forbidden, { preconnect: forbidden }), readStdin: forbidden },
       );
       expect({ code, err }).toEqual({ code: 0, err: "" });
-      expect(out).toContain(`Usage: armada ${command}`);
+      expect(out).toContain(`Usage: armada ${command.replace("golden size-policy", "snapshot size-policy")}`);
       expect(out).toContain("Example: armada");
     }
   }
@@ -44,6 +46,9 @@ test("help detection leaves malformed operations and literal payloads to their p
     ["exec", "sandbox", "--", "--help"],
     ["send", "sandbox", "--help"],
     ["org", "setup", "--", "--help"],
+    ["snapshot", "size-policy", "starter", "--help"],
+    ["snapshot", "size-policy", "--file", "-h"],
+    ["snapshot", "size-policy", "--", "--help"],
     ["constructor", "--help"],
     ["toString", "-h"],
   ])
