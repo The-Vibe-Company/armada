@@ -23,7 +23,7 @@ test("preflight checks the exact account without exposing its material or choosi
   });
 });
 
-test("OpenCode preflight refuses undeclared endpoint models and plain-key catalog defaults", async () => {
+test("OpenCode preflight refuses plain-key catalog defaults", async () => {
   const key = Buffer.alloc(32, 8).toString("base64");
   const engine = { harness: "opencode" as const, model: "armada/deepseek-flash", credentialId: "account_one" };
   const scope = { userId: "user_one", orgId: "org_one" };

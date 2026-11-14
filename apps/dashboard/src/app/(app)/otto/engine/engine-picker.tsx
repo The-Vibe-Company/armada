@@ -68,21 +68,6 @@ export function EnginePicker({
       </div>
       <div>
         <Label htmlFor="engine-model">Model</Label>
-        <select required id="engine-model" className={field} value={model} onChange={(e) => setModel(e.target.value)}>
-          <option value="">Choose a model</option>
-          {harness &&
-            (
-              accounts.find((a) => a.id === credentialId)?.models?.map((id) => ({ id, label: id })) ??
-              HARNESS_CATALOG[harness].models
-            ).map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.label}
-              </option>
-            ))}
-        </select>
-      </div>
-      <div>
-        <Label htmlFor="engine-account">Model account</Label>
         <input
           disabled={pending}
           required
@@ -104,6 +89,29 @@ export function EnginePicker({
               </option>
             ))}
         </datalist>
+      </div>
+      <div>
+        <Label htmlFor="engine-account">Model account</Label>
+        <select
+          disabled={pending}
+          required
+          id="engine-account"
+          className={field}
+          value={credentialId}
+          onChange={(e) => setAccount(e.target.value)}
+        >
+          <option value="">Choose an account</option>
+          {accounts
+            .filter((a) => harness && (HARNESS_CATALOG[harness].credentialKinds as readonly string[]).includes(a.kind))
+            .map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name || a.kind} ({a.status})
+              </option>
+            ))}
+          {credentialId && !accounts.some((a) => a.id === credentialId) && (
+            <option value={credentialId}>Unavailable account</option>
+          )}
+        </select>
         <Link href="/harness" className="mt-2 inline-block text-sm underline">
           Connect a model account
         </Link>
