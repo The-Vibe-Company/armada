@@ -50,6 +50,14 @@ const TITLE = "Templates";
 const DESCRIPTION = "Reusable launch setups for your agents.";
 
 export default async function TemplatesPage({ searchParams }: Props) {
+  // Lookup reads do not depend on template headers or their revision fan-out. Keep their
+  // failures settled until after the list guards so unavailable-list fallbacks still win.
+  const lookupsRead = Promise.allSettled([
+    createClient().then(listGoldens),
+    listSelectedConnections(),
+    listSelectedVault(),
+    listSelectedAccounts(),
+  ]);
   const [selected, list, query] = await Promise.all([selectedOrganization(), listSelectedTemplates(), searchParams]);
   const header = <PageHeader title={TITLE} description={DESCRIPTION} />;
 
@@ -114,12 +122,11 @@ export default async function TemplatesPage({ searchParams }: Props) {
     );
   }
 
-  const [goldens, connections, vault, accounts] = await Promise.all([
-    createClient().then(listGoldens),
-    listSelectedConnections(),
-    listSelectedVault(),
-    listSelectedAccounts(),
-  ]);
+  const results = await lookupsRead;
+  const goldens = fulfilled(results[0]);
+  const connections = fulfilled(results[1]);
+  const vault = fulfilled(results[2]);
+  const accounts = fulfilled(results[3]);
   const lookups = { ...lookupsFrom(goldens, connections, vault), accounts: launchAccounts(accounts, Date.now()) };
   const isAdmin = selected.role === "admin";
   const org = { id: selected.org.id, name: selected.org.name };
@@ -386,4 +393,10 @@ function row(item: TemplateItem, context: RowContext): ResourceRow & { bucket: B
     detail,
     attrs: { "data-template": item.name },
   };
+}
+
+/** Rethrow unexpected lookup failures only when the ready list actually needs the result. */
+function fulfilled<T>(result: PromiseSettledResult<T>): T {
+  if (result.status === "rejected") throw result.reason;
+  return result.value;
 }
