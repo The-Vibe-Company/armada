@@ -5,7 +5,7 @@ import { REQUIRED_MIGRATION } from "../../src/required-migration.ts";
 
 const sqlModule = await import("../../src/sql.ts");
 const originalSQL = Bun.SQL;
-const pools: { max: number; closed: number }[] = [];
+const pools: { max: number; closed: number; leased: number }[] = [];
 let attempts = 0;
 let failUntil = 2;
 let now = 0;
@@ -18,10 +18,19 @@ const sleep = spyOn(Bun, "sleep").mockImplementation((async () => {
 }) as typeof Bun.sleep);
 const clock = spyOn(Date, "now").mockImplementation(() => now);
 Bun.SQL = class {
-  pool: { max: number; closed: number };
+  pool: { max: number; closed: number; leased: number };
   constructor(_url: string, options: { max: number }) {
-    this.pool = { max: options.max, closed: 0 };
+    this.pool = { max: options.max, closed: 0, leased: 0 };
     pools.push(this.pool);
+  }
+  async reserve() {
+    this.pool.leased++;
+    return {
+      unsafe: this.unsafe.bind(this),
+      release: () => {
+        this.pool.leased--;
+      },
+    };
   }
   async unsafe(text: string) {
     if (++attempts <= failUntil)
@@ -32,6 +41,7 @@ Bun.SQL = class {
     return text.includes("supabase_migrations.schema_migrations") ? [{ version: schemaVersion }] : [];
   }
   async close() {
+    assert.equal(this.pool.leased, 0, "Every boot/readiness query releases its client");
     this.pool.closed++;
   }
 } as unknown as typeof Bun.SQL;
