@@ -14,6 +14,7 @@ export function OttoNavigation() {
           ["/otto/objectives", "Objectives"],
           ["/otto/evidence", "Evidence"],
           ["/otto/engine", "Engine"],
+          ["/otto/your-turn", "Your turn"],
         ] as const
       ).map(([href, label]) => {
         const active = href === "/otto" ? pathname === href : pathname.startsWith(href);

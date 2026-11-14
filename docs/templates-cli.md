@@ -25,14 +25,30 @@ Docker placement uses the same definition file and template/routine launch path:
 }
 ```
 
-Docker template definitions do not bind a snapshot (`goldenId` and `goldenBinding` return null). The host must be
-registered, active and in the selected organization, with its issuer still a member.
-Admission freezes the host installation/issuer, model account, connection grants and
-resolved skills; access is checked again before reservation and start. Docker children
-are private to the launcher. This placement does not accept variable/secret bindings,
-repository or size overrides. The dashboard can display and launch Docker templates;
-create/publish/delete them with the CLI. Routines use their persisted owner's authority
-and the same template path, with original-prompt observation through Docker status.
+To use a built Docker environment, add `"snapshotId": "SNAPSHOT_UUID"` to the
+definition above. Publish it using `--file`; snapshot selection is not a launch
+override. Omit `snapshotId` to keep the existing official host environment.
+`goldenId` and `goldenBinding` remain null: Docker snapshots are built per host,
+not reused from Modal or Boat goldens.
+
+The host must be registered, active and in the selected organization, with its
+issuer still a member. A selected snapshot must be ready, visible to the caller
+and bound to that host's current installation. Org templates require org-visible
+snapshots; personal templates can use the owner's private snapshot or an org one.
+Admission freezes the snapshot ID in the revision alongside the host installation/
+issuer, model account, connection grants and resolved skills. Source access is
+checked again before reservation and start. The normal Docker launch path uses
+the snapshot's image and repository config; callers cannot choose another image
+or rerun snapshot init. Existing admitted request keys replay their stored receipt
+even when a source later becomes unavailable; new keys must pass current checks.
+
+Docker children are private to the launcher. Definitions support readable-variable
+and secret references; repository and size launch overrides remain unsupported.
+The dashboard can display and launch Docker templates; create/publish/delete them
+with the CLI. It retains the snapshot binding when reading a revision but does not
+provide a snapshot picker yet. Routines use their persisted owner's authority and
+the same pinned template path, so they inherit its snapshot choice, with original-
+prompt observation through Docker status. Real-host execution is coordinator-owned.
 
 When supplying `--org UUID` on create, explicitly choose `--scope personal|org`.
 Organization templates require an administrator to create, publish or delete.

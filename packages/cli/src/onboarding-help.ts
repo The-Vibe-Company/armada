@@ -10,9 +10,16 @@ Input: JSON with token_id and token_secret (from Modal), or a Modal token pair s
 Keep real credentials in a private file or stdin, never command arguments.
 Example: armada org connect modal --org my-team --file /private/modal.json
 `,
-  "creds login codex": `Usage: armada creds login codex --name <name> [--org <name>]
+  "creds login": `Usage: armada creds login codex (--name <name> | --id <id> --expected-version <version>) [--org <name>]
+Start native Codex device login after Armada login. Keep this terminal open until publishing finishes.
+For Claude, run claude setup-token locally, then use armada creds import claude.
+Example: armada creds login codex --name personal
+`,
+  "creds login codex": `Usage: armada creds login codex (--name <name> | --id <id> --expected-version <version>) [--org <name>]
 Requires a ChatGPT subscription with Codex access and an Armada login.
-Approve the native device login in your browser; keep this terminal open.
+Approve the native device login in your browser; keep this terminal open until publishing finishes.
+Use --name to create an account; replacement requires --id and a positive integer --expected-version.
+Omit --org for personal scope; pass it for organization scope.
 Example: armada creds login codex --name personal
 `,
   "creds list": `Usage: armada creds list [--org <name>] [--json]
@@ -44,6 +51,28 @@ Remove a legacy kind-scoped credential after Armada login and server authorizati
 Omit --org for personal scope; pass it for organization scope.
 This is not an alias for creds remove <id>; use remove for a named account ID.
 Example: armada creds rm openai
+`,
+  "creds presets": `Usage: armada creds presets [--json]
+List built-in connection presets and their harness/model/address requirements.
+No login or provider call is needed. Use a preset ID with armada creds connect.
+Example: armada creds presets --json
+`,
+  "creds connect": `Usage: armada creds connect <preset> --name <name> [--file <path>] [--org <name>] [--json]
+  [--models <id,...>] [--base-url <HTTPS-url>] [--api-version <version>]
+Store a named connection after Armada login. Choose a preset with armada creds presets --json.
+Supply only the API key through stdin/hidden input or a private --file, never command arguments or JSON.
+Presets with harness models reject --models, --base-url and --api-version.
+Chosen-model presets require --models and, unless fixed by the preset, --base-url.
+Fixed-address presets reject --base-url; --api-version is only accepted by supporting presets.
+Official Azure addresses are tested with a tiny billable request per deployment before saving;
+a failed check saves nothing. Omit --org for personal scope.
+Example: armada creds connect openai --name personal --file /private/api-key
+`,
+  "creds test": `Usage: armada creds test <sandbox-id> --model <deployment-model> [--org <name>] [--json]
+Test a sandbox's bound model connection after Armada login and server authorization.
+This can make a billable provider request. No keys or URLs are accepted as arguments.
+A successful check is not a full harness compatibility test. Failure exits 1.
+Example: armada creds test SANDBOX_UUID --model deployment-name --json
 `,
   "creds set": `Usage: armada creds set <kind> [--name <name>] [--org <name>] [--file <path>]
 Store an encrypted credential after armada login. Read the secret from hidden input,
@@ -158,6 +187,18 @@ Example: armada host add --name workstation
 `,
 };
 
+function importHelp(harness?: string): string {
+  return `Usage: armada creds import ${harness ?? "claude|codex"} (--name <name> | --id <id> --expected-version <version>) [--file <path>] [--org <name>]
+Import an existing native credential after Armada login; no native login is started.
+Claude: run claude setup-token locally. Codex: supply native auth JSON.
+Read the credential from stdin/hidden input or a private --file, never command arguments.
+Use --name to create; replacement requires --id and a positive integer --expected-version.
+Omit --org for personal scope; pass it for organization scope.
+Credentials are stored encrypted; allowance information may be unavailable.
+Example: armada creds import ${harness ?? "claude"} --name personal --file /private/native-credential
+`;
+}
+
 export function onboardingHelp(argv: readonly string[]): string | undefined {
   if (!["--help", "-h"].includes(argv.at(-1) ?? "")) return undefined;
   const parts = argv.slice(0, -1);
@@ -183,5 +224,8 @@ export function onboardingHelp(argv: readonly string[]): string | undefined {
   )
     parts[0] = "snapshot";
   const command = parts.join(" ");
+  if (command === "creds import") return importHelp();
+  if (command === "creds import claude") return importHelp("claude");
+  if (command === "creds import codex") return importHelp("codex");
   return Object.hasOwn(HELP, command) ? HELP[command] : undefined;
 }

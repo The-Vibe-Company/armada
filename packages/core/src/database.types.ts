@@ -3593,6 +3593,74 @@ export type Database = {
           },
         ];
       };
+      otto_waits: {
+        Row: {
+          id: string;
+          objective_id: string;
+          org_id: string;
+          owner_id: string;
+          dedupe_key: string;
+          kind: string;
+          reason: string;
+          phase: string;
+          question: string;
+          choices: Json;
+          default_choice: string | null;
+          connection_url: string | null;
+          status: string;
+          resolution: string | null;
+          created_at: string;
+          deadline_at: string;
+          reminded_at: string | null;
+        };
+        Insert: {
+          id?: string;
+          objective_id: string;
+          org_id: string;
+          owner_id: string;
+          dedupe_key: string;
+          kind: string;
+          reason: string;
+          phase: string;
+          question: string;
+          choices?: Json;
+          default_choice?: string | null;
+          connection_url?: string | null;
+          status?: string;
+          resolution?: string | null;
+          created_at?: string;
+          deadline_at?: string;
+          reminded_at?: string | null;
+        };
+        Update: {
+          id?: string;
+          objective_id?: string;
+          org_id?: string;
+          owner_id?: string;
+          dedupe_key?: string;
+          kind?: string;
+          reason?: string;
+          phase?: string;
+          question?: string;
+          choices?: Json;
+          default_choice?: string | null;
+          connection_url?: string | null;
+          status?: string;
+          resolution?: string | null;
+          created_at?: string;
+          deadline_at?: string;
+          reminded_at?: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "otto_waits_objective_id_org_id_owner_id_fkey";
+            columns: ["objective_id", "org_id", "owner_id"];
+            isOneToOne: false;
+            referencedRelation: "otto_objectives";
+            referencedColumns: ["id", "org_id", "owner_id"];
+          },
+        ];
+      };
       personal_skill_defaults: {
         Row: {
           user_id: string;
@@ -4767,6 +4835,7 @@ export type OttoResourceRow = Database["public"]["Tables"]["otto_resources"]["Ro
 export type OttoTaskRow = Database["public"]["Tables"]["otto_tasks"]["Row"];
 export type OttoTicketGraphRow = Database["public"]["Tables"]["otto_ticket_graphs"]["Row"];
 export type OttoTicketPublicationRow = Database["public"]["Tables"]["otto_ticket_publications"]["Row"];
+export type OttoWaitRow = Database["public"]["Tables"]["otto_waits"]["Row"];
 export type PersonalSkillDefaultsRow = Database["public"]["Tables"]["personal_skill_defaults"]["Row"];
 export type ReadableVariableRow = Database["public"]["Tables"]["readable_variables"]["Row"];
 export type ResourceObservation = Database["public"]["Tables"]["resource_observations"]["Row"];

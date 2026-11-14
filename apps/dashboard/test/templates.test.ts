@@ -108,12 +108,13 @@ describe("template DTOs", () => {
       expect(parseRevision({ ...revision, definition: { ...definition, [field]: "other" } })).toBeNull();
   });
 
-  test("Docker revisions retain host placement and do not require a golden lookup", () => {
+  test.each([undefined, REGION])("Docker revisions retain host and optional snapshot placement (%s)", (snapshotId) => {
     const docker = {
       ...definition,
       provider: "docker",
       goldenId: null,
       hostId: SHARED,
+      ...(snapshotId === undefined ? {} : { snapshotId }),
       variables: [],
     };
     const parsed = parseRevision({ ...revision, definition: docker });
@@ -121,7 +122,9 @@ describe("template DTOs", () => {
       provider: "docker",
       goldenId: null,
       hostId: SHARED,
+      ...(snapshotId === undefined ? {} : { snapshotId }),
     });
+    expect(parseRevision({ ...revision, definition: { ...docker, snapshotId: "bad" } })).toBeNull();
     expect(templateState({ revision: parsed }, lookups).label).toBe("Ready");
     expect(parseRevision({ ...revision, definition: { ...docker, hostId: null } })).toBeNull();
     expect(parseRevision({ ...revision, definition: { ...docker, image: "legacy:ignored" } })).toEqual(parsed);

@@ -79,6 +79,9 @@ export default async function ObjectivePage({ params }: { params: Promise<{ id: 
         </section>
         <TicketGraphPanel orgId={selected.org.id} id={id} />
         <TicketGraphForm orgId={selected.org.id} id={id} />
+        <Link href="/otto/your-turn" className="inline-block underline underline-offset-4">
+          Answer pending questions in Your turn
+        </Link>
         <ObjectiveMessageForm orgId={selected.org.id} id={id} />
       </div>
     </>

@@ -169,7 +169,7 @@ for (const mode of [
                     readableVariable: {
                       id: "70000000-0000-4000-8000-000000000001",
                       version: 1,
-                      key: "ARMADA_PARITY_READABLE",
+                      key: "PARITY_READABLE_CANARY",
                     },
                   }
                 : {}),
@@ -324,7 +324,7 @@ for (const mode of [
                   revision: 2,
                   definition: {
                     variables: [
-                      { key: "ARMADA_PARITY_READABLE", variableId: "70000000-0000-4000-8000-000000000001", version: 1 },
+                      { key: "PARITY_READABLE_CANARY", variableId: "70000000-0000-4000-8000-000000000001", version: 1 },
                     ],
                     provider: p,
                     harness: "codex",
@@ -430,7 +430,7 @@ for (const mode of [
                 manifest: {
                   variableProvenance: [
                     {
-                      key: "ARMADA_PARITY_READABLE",
+                      key: "PARITY_READABLE_CANARY",
                       variableId: "70000000-0000-4000-8000-000000000001",
                       version: mode === "readable_manifest" ? 2 : 1,
                     },

@@ -2010,96 +2010,111 @@ test("Docker honors frozen launch pins without re-merging later skill defaults",
 
 // Template placement owner: real admission + normal Docker reservation/commands; fake host/runtime
 // replies exercise transport only. Actual native execution remains the coordinator smoke's proof.
-test("Docker templates freeze admission pins, use normal launch, and replay one durable allocation", async () => {
-  const f = await fixture();
-  const templates = createTemplateService(sql, key);
-  const variable = await createApplicationVault(sql, undefined).command(f.caller, "variable", "set", {
-    org: f.actor.orgId,
-    scope: "personal",
-    name: "APP_REGION",
-    value: "offline-template-region",
-  });
-  const variableId = (variable.item as { id: string }).id;
-  const secretId = randomUUID(),
-    canary = "offline-template-secret";
-  await db.query(
-    "insert into public.application_secrets(id,org_id,owner_id,scope,name,value_enc) values($1,$2,$3,'personal','APP_TOKEN',$4)",
-    [secretId, f.actor.orgId, f.actor.userId, await encryptSecret(canary, key)],
-  );
-  const stores = createSqlData(sql)(f.caller);
-  await db.query("insert into public.personal_skill_defaults(user_id,skills) values($1,$2::text::jsonb)", [
-    f.actor.userId,
-    JSON.stringify(["catalog/frozen@1.0.0"]),
-  ]);
-  const created = await templates.command(f.caller, "create", {
-    org: f.actor.orgId,
-    scope: "personal",
-    name: "docker-template",
-    definition: {
+test.each([false, true])(
+  "Docker templates freeze pins and replay one host/snapshot allocation (snapshot=%s)",
+  async (fromSnapshot) => {
+    const f = fromSnapshot ? await snapshotFixture() : await fixture();
+    const snapshotId = fromSnapshot
+      ? await readyTemplateSnapshot(f as Awaited<ReturnType<typeof snapshotFixture>>)
+      : undefined;
+    const templates = createTemplateService(sql, key);
+    const variable = await createApplicationVault(sql, undefined).command(f.caller, "variable", "set", {
+      org: f.actor.orgId,
+      scope: "personal",
+      name: "APP_REGION",
+      value: "offline-template-region",
+    });
+    const variableId = (variable.item as { id: string }).id;
+    const secretId = randomUUID(),
+      canary = "offline-template-secret";
+    await db.query(
+      "insert into public.application_secrets(id,org_id,owner_id,scope,name,value_enc) values($1,$2,$3,'personal','APP_TOKEN',$4)",
+      [secretId, f.actor.orgId, f.actor.userId, await encryptSecret(canary, key)],
+    );
+    const stores = createSqlData(sql)(f.caller);
+    await db.query("insert into public.personal_skill_defaults(user_id,skills) values($1,$2::text::jsonb)", [
+      f.actor.userId,
+      JSON.stringify(["catalog/frozen@1.0.0"]),
+    ]);
+    const created = await templates.command(f.caller, "create", {
+      org: f.actor.orgId,
+      scope: "personal",
+      name: "docker-template",
+      definition: {
+        provider: "docker",
+        hostId: f.hostId,
+        ...(snapshotId ? { snapshotId } : {}),
+        harness: "codex",
+        modelAccount: { id: f.body.credentialId, version: 2 },
+        variables: [{ key: "APP_REGION", variableId, version: 1 }],
+        secrets: [{ key: "APP_TOKEN", secretId, version: 1 }],
+      },
+    });
+    const id = (created.item as { id: string }).id;
+    let dispatches = 0,
+      allocations = 0,
+      starts = 0;
+    const runtime: TemplateRuntime = {
+      stores: { goldens: stores.goldens, sandboxes: stores.sandboxes, credentials },
+      provider: async () => {
+        throw Error("Docker cannot resolve a golden provider");
+      },
+      beforeDockerReserve: async (tx, sandboxId) => {
+        allocations++;
+        expect((await tx.query("select id from sandboxes where id=$1", [sandboxId])).rows).toHaveLength(0);
+      },
+      beforeDockerStart: async () => {
+        starts++;
+      },
+      launchDocker: async (body, admission) => {
+        dispatches++;
+        await db.query("update public.personal_skill_defaults set skills=$2::text::jsonb where user_id=$1", [
+          f.actor.userId,
+          JSON.stringify(["catalog/changed@2.0.0"]),
+        ]);
+        f.body.requestId = body.requestId as typeof f.body.requestId;
+        return f.service().launch(f.caller, body, admission);
+      },
+    };
+    const input = { org: f.actor.orgId, id, requestKey: "frozen-docker", prompt: f.body.prompt };
+    const result = await templates.command(f.caller, "launch", input, runtime);
+    expect(result).toMatchObject({
+      state: "succeeded",
       provider: "docker",
-      hostId: f.hostId,
-      harness: "codex",
-      modelAccount: { id: f.body.credentialId, version: 2 },
-      variables: [{ key: "APP_REGION", variableId, version: 1 }],
-      secrets: [{ key: "APP_TOKEN", secretId, version: 1 }],
-    },
-  });
-  const id = (created.item as { id: string }).id;
-  let dispatches = 0,
-    allocations = 0,
-    starts = 0;
-  const runtime: TemplateRuntime = {
-    stores: { goldens: stores.goldens, sandboxes: stores.sandboxes, credentials },
-    provider: async () => {
-      throw Error("Docker cannot resolve a golden provider");
-    },
-    beforeDockerReserve: async (tx, sandboxId) => {
-      allocations++;
-      expect((await tx.query("select id from sandboxes where id=$1", [sandboxId])).rows).toHaveLength(0);
-    },
-    beforeDockerStart: async () => {
-      starts++;
-    },
-    launchDocker: async (body, admission) => {
-      dispatches++;
-      await db.query("update public.personal_skill_defaults set skills=$2::text::jsonb where user_id=$1", [
-        f.actor.userId,
-        JSON.stringify(["catalog/changed@2.0.0"]),
-      ]);
-      f.body.requestId = body.requestId as typeof f.body.requestId;
-      return f.service().launch(f.caller, body, admission);
-    },
-  };
-  const input = { org: f.actor.orgId, id, requestKey: "frozen-docker", prompt: f.body.prompt };
-  const result = await templates.command(f.caller, "launch", input, runtime);
-  expect(result).toMatchObject({
-    state: "succeeded",
-    provider: "docker",
-    promptId: f.receipt.promptId,
-    manifest: {
-      golden: null,
-      host: { installationId: f.installationId, ownerId: f.admin.userId },
-      resolvedSkills: ["catalog/frozen@1.0.0"],
-      skillReceipts: [{ reference: "catalog/frozen@1.0.0" }],
-    },
-  });
-  expect(
-    (await db.query("select golden_operation_fence_id from template_launch_requests where id=$1", [result.requestId]))
-      .rows,
-  ).toEqual([{ golden_operation_fence_id: null }]);
-  expect(f.native).toContainEqual(
-    expect.objectContaining({
-      op: "configureReadableVariables",
-      variables: { APP_REGION: "offline-template-region", APP_TOKEN: canary },
-    }),
-  );
-  expect(JSON.stringify(result)).not.toContain(canary);
-  expect(allocations).toBe(1);
-  expect(starts).toBeGreaterThan(0);
-  expect(await counts(f)).toMatchObject({ sandboxes: 1, claims: 1, jobs: 2 });
-  expect(await templates.command(f.caller, "launch", input, runtime)).toEqual(result);
-  expect(dispatches).toBe(1);
-});
+      promptId: f.receipt.promptId,
+      manifest: {
+        golden: null,
+        host: { installationId: f.installationId, ownerId: f.admin.userId },
+        resolvedSkills: ["catalog/frozen@1.0.0"],
+        skillReceipts: [{ reference: "catalog/frozen@1.0.0" }],
+      },
+    });
+    expect(
+      (await db.query("select golden_operation_fence_id from template_launch_requests where id=$1", [result.requestId]))
+        .rows,
+    ).toEqual([{ golden_operation_fence_id: null }]);
+    expect(f.native).toContainEqual(
+      expect.objectContaining({
+        op: "configureReadableVariables",
+        variables: { APP_REGION: "offline-template-region", APP_TOKEN: canary },
+      }),
+    );
+    expect(JSON.stringify(result)).not.toContain(canary);
+    expect(allocations).toBe(1);
+    expect(starts).toBeGreaterThan(0);
+    expect(await counts(f)).toMatchObject({ sandboxes: 1, claims: 1, jobs: 2 });
+    if (snapshotId) {
+      expect(
+        (await db.query("select docker_snapshot_id,docker_image from sandboxes where id=$1", [f.body.requestId]))
+          .rows[0],
+      ).toEqual({ docker_snapshot_id: snapshotId, docker_image: `sha256:${"d".repeat(64)}` });
+      expect(f.native).toContainEqual(expect.objectContaining({ op: "workspaceExec" }));
+      await db.query("update docker_snapshots set status='failed',image_id=null where id=$1", [snapshotId]);
+    }
+    expect(await templates.command(f.caller, "launch", input, runtime)).toEqual(result);
+    expect(dispatches).toBe(1);
+  },
+);
 
 test("Docker template placement refuses inaccessible, revoked and replaced host identities before reservation", async () => {
   for (const change of ["revoked", "replaced", "issuer_removed"] as const) {
@@ -2234,6 +2249,98 @@ async function snapshotFixture(enabled = true, options: Parameters<typeof fixtur
   };
   return { ...f, snapshots, adminCaller, config };
 }
+
+async function readyTemplateSnapshot(f: Awaited<ReturnType<typeof snapshotFixture>>) {
+  const snapshotId = randomUUID();
+  await f.snapshots.command(f.caller, "create", {
+    org: f.actor.orgId,
+    hostId: f.hostId,
+    requestId: snapshotId,
+    name: "template-source",
+    visibility: "private",
+    config: f.config,
+  });
+  const build = await hosts.poll(f.hostToken, f.installationId);
+  if (build?.operation !== "buildSnapshot") throw Error("missing template snapshot build");
+  await hosts.complete(f.hostToken, f.installationId, {
+    requestId: snapshotId,
+    outcome: "completed",
+    imageId: `sha256:${"d".repeat(64)}`,
+  });
+  return snapshotId;
+}
+
+test.each([
+  "private_other",
+  "org_private",
+  "org_shared",
+  "wrong_host",
+  "unready",
+  "replaced",
+  "removed_before_launch",
+] as const)("Docker snapshot templates validate source scope/binding: %s", async (scenario) => {
+  const f = await snapshotFixture();
+  const snapshotId = await readyTemplateSnapshot(f);
+  const templates = createTemplateService(sql, key);
+  const definition = { provider: "docker", hostId: f.hostId, snapshotId, harness: "codex" };
+  const request = { org: f.actor.orgId, scope: "personal", name: "snapshot-template", definition };
+  if (scenario === "private_other")
+    await db.query("update docker_snapshots set owner_id=$2 where id=$1", [snapshotId, f.otherId]);
+  if (scenario === "org_private") {
+    request.scope = "org";
+    await db.query("update docker_snapshots set owner_id=$2 where id=$1", [snapshotId, f.admin.userId]);
+  }
+  if (scenario === "org_shared") {
+    request.scope = "org";
+    await db.query("update docker_snapshots set visibility='org',owner_id=$2 where id=$1", [
+      snapshotId,
+      f.admin.userId,
+    ]);
+    const created = await templates.command(f.adminCaller, "create", request);
+    expect(created.revision).toMatchObject({ definition: { snapshotId, hostId: f.hostId } });
+    return;
+  }
+  if (scenario === "wrong_host") {
+    const registration = await hosts.issueRegistration(f.admin);
+    const other = await hosts.exchangeRegistration(registration.registrationToken, randomUUID());
+    await db.query("update docker_snapshots set host_id=$2 where id=$1", [snapshotId, other.hostId]);
+  }
+  if (scenario === "unready")
+    await db.query("update docker_snapshots set status='building',image_id=null where id=$1", [snapshotId]);
+  if (scenario === "replaced")
+    await db.query("update docker_snapshots set installation_id=$2 where id=$1", [snapshotId, randomUUID()]);
+  if (scenario !== "removed_before_launch") {
+    await expect(
+      templates.command(scenario === "org_private" ? f.adminCaller : f.caller, "create", request),
+    ).rejects.toThrow("environment_");
+    return;
+  }
+  const created = await templates.command(f.caller, "create", request);
+  await db.query("update docker_snapshots set status='failed',image_id=null where id=$1", [snapshotId]);
+  const stores = createSqlData(sql)(f.caller);
+  const launchDocker = () => {
+    throw Error("unavailable snapshot must never dispatch");
+  };
+  await expect(
+    templates.command(
+      f.caller,
+      "launch",
+      {
+        org: f.actor.orgId,
+        id: (created.item as { id: string }).id,
+        requestKey: "unavailable-snapshot",
+      },
+      {
+        stores: { goldens: stores.goldens, sandboxes: stores.sandboxes, credentials },
+        provider: async () => {
+          throw Error("Docker cannot resolve cloud golden");
+        },
+        launchDocker,
+      },
+    ),
+  ).rejects.toThrow("environment_");
+  expect((await db.query("select id from sandboxes where id=$1", [f.body.requestId])).rows).toHaveLength(0);
+});
 
 test.each(["private", "org"] as const)(
   "host snapshot %s publication enforces visibility and launches the baked image without cloning again",

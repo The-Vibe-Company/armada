@@ -27,6 +27,7 @@ type Schema = {
 };
 
 const ROW_ALIASES: Record<string, string> = {
+  otto_waits: "OttoWaitRow",
   otto_engine_preferences: "OttoEnginePreferenceRow",
   otto_objectives: "OttoObjectiveRow",
   otto_ticket_graphs: "OttoTicketGraphRow",
