@@ -344,6 +344,24 @@ describe("database", () => {
     });
   });
 
+  test("golden lists refresh the caller membership set without exposing private rows across orgs", async () => {
+    await withDb(async (db) => {
+      const people = await fixture(db);
+      await db.query("update orgs set name='First org' where id=$1", [people.org]);
+      const other = await fixture(db);
+      const own = await insertGolden(db, people, { name: "own", visibility: "private", owner: people.owner });
+      const shared = await insertGolden(db, other, { name: "shared", visibility: "org", owner: other.owner });
+      await insertGolden(db, other, { name: "hidden", visibility: "private", owner: other.owner });
+      const list = (user: string) => asUser(db, user, () => ids(db, "select id from goldens order by id"));
+      expect(await list(people.owner)).toEqual([own]);
+      await db.query("insert into members(org_id,user_id,role) values($1,$2,'admin')", [other.org, people.owner]);
+      expect(await list(people.owner)).toEqual([own, shared].sort());
+      expect(await list(people.outsider)).toEqual([]);
+      await db.query("delete from members where org_id=$1 and user_id=$2", [people.org, people.owner]);
+      expect(await list(people.owner)).toEqual([shared]);
+    });
+  });
+
   test("a member does not see another member's private golden", async () => {
     await withDb(async (db) => {
       const people = await fixture(db);
