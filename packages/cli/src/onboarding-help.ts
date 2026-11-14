@@ -113,6 +113,24 @@ Disconnect your GitHub connection after Armada login and server authorization.
 Output is JSON even without --json. To connect again, use armada github connect.
 Example: armada github disconnect
 `,
+  "account status": `Usage: armada account status [--json]
+Read account status with authenticated access and server authorization.
+Output is JSON even without --json. This is not a local session-file inspection.
+Example: armada account status --json
+`,
+  "account logout": `Usage: armada account logout
+Sign out the current personal login session remotely, then clear its local session.
+Requires a personal login session; service-token authentication is not supported.
+If ARMADA_TOKEN is set, remove it from this command's environment to use your personal session.
+To clear only the saved local session, use armada logout.
+Example: armada account logout
+`,
+  logout: `Usage: armada logout
+Clear the saved local Armada login without a server request.
+This does not revoke service tokens or remove ARMADA_TOKEN from your environment.
+To sign out a personal session remotely first, use armada account logout.
+Example: armada logout
+`,
   "org setup": `Usage: armada org setup [--org <name>] [--json]
 Show organization provider setup status. Sign in before running the operation.
 Use --org to override a saved selection. This reports configuration, not a live lifecycle test.
