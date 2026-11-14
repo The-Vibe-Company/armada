@@ -23,6 +23,10 @@ test.each([
 });
 
 test("output redaction combines known tokens with longest-first exact secrets", () => {
+  expect(redact(`ghu_${"A".repeat(36)}`, ["A".repeat(20)])).toBe("***");
+  expect(redact("abcdef", ["abcd", "cdef"])).toBe("***");
+  const composite = `ghu_${"A".repeat(36)}.private_suffix`;
+  expect(redact(`failed: ${composite}`, [composite])).toBe("failed: ***");
   expect(redact(`cmp_pat_${"a".repeat(48)} secret-long secret secret-long`, ["secret", "", "secret-long"])).toBe(
     "*** *** *** ***",
   );
