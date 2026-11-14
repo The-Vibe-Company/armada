@@ -76,6 +76,7 @@ describe("database", () => {
         "modal",
         "skillpack",
         "opencode",
+        "morph",
       ]);
       expect(await labels(db, "notify_status")).toEqual(["finished", "failed"]);
     } finally {
