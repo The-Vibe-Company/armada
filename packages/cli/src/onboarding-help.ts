@@ -213,6 +213,15 @@ Read the object from stdin or --file. Keep authentication values out of command 
 Updates cannot change scope; --scope is not accepted. Output is always JSON.
 Example: armada mcp update CONNECTION_UUID --file /private/connection.json --org ORG_UUID
 `,
+  doctor: `Usage: armada doctor [--org UUID] [--json]
+Inspect setup metadata and report check statuses with next-step guidance.
+Checks include session/server, GitHub, organization selection, Docker-host and model-account metadata.
+Use --org to override a saved selection; a sole organization can be selected automatically.
+This is not a full provider lifecycle test or proof that a model request will work.
+--json returns a checks array; otherwise output is a table.
+Exits 1 if any check is failed, otherwise 0; warnings and unknowns are not passes.
+Example: armada doctor --org ORG_UUID --json
+`,
   "org setup": `Usage: armada org setup [--org <name>] [--json]
 Show organization provider setup status. Sign in before running the operation.
 Use --org to override a saved selection. This reports configuration, not a live lifecycle test.
