@@ -1,5 +1,36 @@
 # Changelog
 
+## [2.36.0](https://github.com/The-Vibe-Company/armada/compare/v2.35.2...v2.36.0) (2026-11-14)
+
+
+### Features
+
+* **accounts:** offer Morph account creation and model choice ([#1927](https://github.com/The-Vibe-Company/armada/issues/1927)) ([4daedd2](https://github.com/The-Vibe-Company/armada/commit/4daedd2c362f71ef7e62ff6e507b918813decae3))
+* **core:** configure Morph accounts for Claude Code and Codex ([#1925](https://github.com/The-Vibe-Company/armada/issues/1925)) ([3a1fa97](https://github.com/The-Vibe-Company/armada/commit/3a1fa9756eeb5812629deabf0b0eaf29d5a01b20))
+* **morph:** add parity rows, usage coverage and connection diagnostics ([#1931](https://github.com/The-Vibe-Company/armada/issues/1931)) ([552e0ac](https://github.com/The-Vibe-Company/armada/commit/552e0ac885956451649e5afa0d84c6683e0cfa55))
+
+
+### Bug Fixes
+
+* **cli:** clarify sandbox input command help ([#1932](https://github.com/The-Vibe-Company/armada/issues/1932)) ([eaaa17f](https://github.com/The-Vibe-Company/armada/commit/eaaa17fb3354c54fa971006d5be572cc31255c9b))
+* **cli:** clarify sandbox lifetime and deletion help ([#1923](https://github.com/The-Vibe-Company/armada/issues/1923)) ([ba34f51](https://github.com/The-Vibe-Company/armada/commit/ba34f51e2cd702e02180d31e86c698592690fe51))
+* **cli:** clarify sandbox observation command help ([#1926](https://github.com/The-Vibe-Company/armada/issues/1926)) ([19188d1](https://github.com/The-Vibe-Company/armada/commit/19188d193bc43f5a9915f168a339b0434cb82e9e))
+* **cli:** clarify sandbox recovery command help ([#1920](https://github.com/The-Vibe-Company/armada/issues/1920)) ([2759494](https://github.com/The-Vibe-Company/armada/commit/2759494c6f37488543b49e2c73c1b6230a85dc71))
+* **cli:** distinguish stop and interrupt help ([#1928](https://github.com/The-Vibe-Company/armada/issues/1928)) ([2cfaacf](https://github.com/The-Vibe-Company/armada/commit/2cfaacffc7c4afcd67c9df66d37b84c473343560))
+* **dashboard:** direct cloud recovery to provider overview ([#1935](https://github.com/The-Vibe-Company/armada/issues/1935)) ([0959b8a](https://github.com/The-Vibe-Company/armada/commit/0959b8a15a129314a570d6ea97d14e385f759a47))
+* **deploy:** migrate Railway settings to infrastructure as code ([#1940](https://github.com/The-Vibe-Company/armada/issues/1940)) ([6bf4b89](https://github.com/The-Vibe-Company/armada/commit/6bf4b8933fad8f1964159a9dc2d3988995bfc5e8))
+* **runtime:** persist bounded idle eligibility evidence ([#1939](https://github.com/The-Vibe-Company/armada/issues/1939)) ([8d12dd8](https://github.com/The-Vibe-Company/armada/commit/8d12dd892428105b9f55bf9fd33ec1be3008902b))
+* **runtime:** read checkpoint watermark without transcript bodies ([#1934](https://github.com/The-Vibe-Company/armada/issues/1934)) ([bc20613](https://github.com/The-Vibe-Company/armada/commit/bc206138823593d000fd19e64bc348a4b93c5d5a))
+
+
+### Performance Improvements
+
+* **dashboard:** overlap independent snapshot page reads ([#1921](https://github.com/The-Vibe-Company/armada/issues/1921)) ([4ac9e8d](https://github.com/The-Vibe-Company/armada/commit/4ac9e8df60713820815000688d02da16f22a3c18))
+* **dashboard:** prefetch full sidebar destinations ([#1937](https://github.com/The-Vibe-Company/armada/issues/1937)) ([75deb08](https://github.com/The-Vibe-Company/armada/commit/75deb081e96f6e589a7e3949fddff62d5fe15ce1))
+* **server:** measure SQL pool acquisition and query count ([#1929](https://github.com/The-Vibe-Company/armada/issues/1929)) ([c3a96ff](https://github.com/The-Vibe-Company/armada/commit/c3a96ffd8699a2b4e70359e1e771a12d962d7aeb))
+* **server:** parallelize multi-org golden listing ([#1922](https://github.com/The-Vibe-Company/armada/issues/1922)) ([269ef7b](https://github.com/The-Vibe-Company/armada/commit/269ef7b1bcfdebff8e8a901e38cd7fb3cc272955))
+* **server:** use unnamed queries for Supabase transaction pooling ([#1933](https://github.com/The-Vibe-Company/armada/issues/1933)) ([758aa86](https://github.com/The-Vibe-Company/armada/commit/758aa868f2b12eee69d711cd2fe3f787a525b0e3))
+
 ## [2.35.2](https://github.com/The-Vibe-Company/armada/compare/v2.35.1...v2.35.2) (2026-11-14)
 
 
