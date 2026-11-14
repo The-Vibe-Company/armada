@@ -344,6 +344,9 @@ async function dispatch(
         version: 1,
         enabled: Boolean(options.modalRuntimeLaunch),
         followupVersion: options.runtimeSend ? 1 : 0,
+        idleLaunchVersion: options.modalRuntimeLaunch && options.runtimeSend ? 1 : 0,
+        idleTemplateVersion:
+          options.templates && options.modalRuntimeLaunch && options.modalRuntimeHostFor && options.runtimeSend ? 1 : 0,
         resumeVersion: options.runtimeResume && options.modalRuntimeLaunch ? 1 : 0,
         mcpVersion: options.runtimeMcp ? 2 : 0,
         skillsVersion: options.modalRuntimeLaunch ? 1 : 0,
@@ -812,7 +815,9 @@ async function dispatch(
         );
       if (!options.modalRuntimeLaunch || !options.modalRuntimeHostFor)
         throw new VaultError("unavailable", "Modal runtime staging opt-in is disabled.");
-      required(body, "prompt");
+      if (body.prompt !== undefined) required(body, "prompt");
+      if (body.prompt === undefined && !options.runtimeSend)
+        throw new VaultError("unavailable", "Modal runtime idle first send is unavailable.");
       if (body.id !== undefined) {
         const standard = [
           "org",
@@ -936,6 +941,19 @@ async function dispatch(
     }
     case "golden/list":
       return listGoldens(options, await selectedCaller(options, caller, optional(body, "org")));
+    case "golden/build/find": {
+      if (!options.goldenBuilds || !options.data)
+        throw new VaultError("unavailable", "Durable golden builds are not configured.");
+      const scoped = await selectedCaller(options, caller, optional(body, "org"));
+      const org = await resolveOrg(options.store, caller.userId, scopedOrg(scoped, optional(body, "org")));
+      const golden = selectGolden(await options.data(scoped).goldens.findByName(org.id, required(body, "name")), body);
+      if (!golden)
+        throw new GoldenError(
+          "not_found",
+          "No visible golden has that name and provider. Check golden list in the intended organization.",
+        );
+      return { build: await options.goldenBuilds.findActive(caller.userId, golden.id, [org.id]) };
+    }
     case "golden/build/cancel": {
       if (!options.goldenBuilds) throw new VaultError("unavailable", "Durable golden builds are not configured.");
       const scoped = await selectedCaller(options, caller, optional(body, "org"));
@@ -1109,7 +1127,9 @@ async function snapshotGoldenRoute(
   await data.goldens.assertBackendBinding?.(golden, provider);
   const target = (await connectGolden(provider, data.goldens, actor, golden.name)).golden;
   if (!target.providerSandboxId) throw new GoldenError("conflict", `Golden '${target.name}' has no sandbox yet.`);
-  await scanGoldenSandbox(provider, target.providerSandboxId);
+  await scanGoldenSandbox(provider, target.providerSandboxId, {
+    repositories: target.config.repos.map((repo) => repo.dir),
+  });
   const saved = await snapshotGolden(provider, data.goldens, actor, target.name, options.launch ?? {});
   return { name: saved.golden.name, snapshot: saved.snapshotName };
 }

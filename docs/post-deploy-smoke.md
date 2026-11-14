@@ -1177,8 +1177,21 @@ The `exact-cost` feature name remains for compatibility; in account mode its
 reason explicitly says `unknown` when appropriate. The strict provider parity
 mode is unchanged.
 
+The accounts run prints two Markdown tables (also appended together to
+`GITHUB_STEP_SUMMARY`): an account/provider overview, then **Account feature and
+cost details**. The second table shows every reported feature, including explicit
+not-implemented debt and before/after resume usage and cost checks independently. The historical `exact-cost` feature
+name means fixed-point quote validation, not invoice validation. Its reason
+retains `included in subscription`, a validated `estimated`/`api_equivalent` USD
+reference, or `unknown` and its reason. Subscription inclusion is never a
+zero-dollar pay-as-you-go charge. An optional API-equivalent reference is not
+the subscription payment or an inferred invoice. A failed cost check
+never becomes a displayed verified price. Unconfigured/undeclared cells have an
+explicit `all` not-run row, without synthetic feature passes or zero costs.
+This is reporting only; it makes no extra provider calls.
+
 The `accounts_parity` JSON contains independent per-account/provider feature
-reports; the summary table never overwrites one account with another. A cell
+reports unchanged; neither table overwrites one account with another. A cell
 passes only when the required lifecycle, usage, cost and cleanup observations
 pass. Unsupported or quota-limited prerequisites cannot become a passing cell.
 A successful process exit means no observed failures, not that missing accounts
@@ -1284,6 +1297,28 @@ after resume. It validates precise USD sums when quotes exist, explicit null USD
 and price reasons otherwise, and preserves the earlier per-turn quotes across
 resume. A subscription pass is labeled `included in subscription`, not zero USD.
 
+### Natural idle pause and ordinary-send wake
+
+`--parity --feature idle-pause` observes automatic `stopped` / `idle_paused`
+after a finished token-memory turn. `--feature wake-on-send` additionally sends
+an ordinary recall message (never a resume request), requires its exact final
+assistant answer, and checks the original conversation IDs and absolute expiry
+remain unchanged. Full runs reuse their existing provider sandbox and memory
+turn for both rows. Status reasons are canonical; the optional list-style
+`idlePaused` flag, when supplied, must agree.
+
+The runner reads `/healthz.idlePauseDelayMs`; it never guesses or changes the
+server delay. It allows that delay plus three minutes for the lifecycle sweep
+and checkpoint, within the run deadline and original sandbox expiry. Missing
+diagnostics or a delay longer than the remaining run budget is not-run, never
+a pass. These feature checks necessarily take the configured idle interval
+(ten minutes by default), unlike quick lifecycle cells. Reads do not replace
+natural idle with stop/resume. Cleanup still runs on every known allocation.
+
+This encodes the coordinator's #1562 pause/recall observation. It relies on the
+server's confirmed shutdown projection, not a host ACK; independent provider
+console/host observations remain the coordinator's physical-compute evidence.
+
 ### Steer and interrupt parity
 
 `--parity --feature steer` and `--parity --feature interrupt` reuse the selected
@@ -1300,3 +1335,34 @@ visible debt. Full runs place these controls after resume/usage observations so
 the deliberately interrupted task does not contaminate their cost evidence;
 there are no extra sandbox allocations. These are coordinator/provider probes,
 not unit-test sleeps or CI provider calls.
+
+### Saved-snapshot launch row
+
+`--parity --feature launch-snapshot` uses the configured golden on Modal/Boat.
+It first reads the authorized provider-scoped golden list and requires exactly
+one matching golden with a published `providerSnapshotId`, then launches that
+golden and requires a finished, answered turn. Full runs reuse their ordinary
+golden launch rather than allocating another sandbox. This proves launch from
+an existing saved golden snapshot, not creation of a new checkpoint or mutation
+of an operator's golden. A missing snapshot or wrong-provider source cannot pass.
+Docker's image launch is not a golden snapshot: its row remains explicit
+unsupported debt (#1532), with no allocation for this filtered feature.
+### Configured template-revision parity
+
+Add `template: {"id":"<template UUID>","revision":2}` to a provider case and run
+`--parity --feature templates` (optionally `--only docker` or `--only modal`).
+The probe launches that existing revision idle, checks the frozen manifest's
+provider, harness, model and admitted account against the case, then requires a
+finished answered turn. It never creates, publishes or deletes the operator's
+template. Use a dedicated smoke template; its configured resources are real.
+Missing configuration is `not-run: template_revision_not_configured`, with no
+allocation for the filtered feature.
+
+In a full run, this is one additional launch per configured provider case,
+because template admission is a distinct launch path. The combined table counts
+these starts and includes template cleanup failures. Pending admission replays
+only the identical durable request key; claimed sandbox IDs are journaled before
+waiting for completion and cleaned up even if acknowledgement remains unknown.
+Child probes share the outer run deadline; cleanup keeps its independent budget.
+Boat retains the coordinator-only production opt-in. Template CRUD/publication
+and routine execution are not established by this launch probe.

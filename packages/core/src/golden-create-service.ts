@@ -70,7 +70,11 @@ export interface GoldenCreateDeps {
     },
   ): Promise<void>;
   /** Fail-closed secret scan of the builder, before it may be snapshotted. */
-  scan(provider: Provider, sandboxId: string, context?: { buildId: string }): Promise<void>;
+  scan(
+    provider: Provider,
+    sandboxId: string,
+    context?: { buildId: string; repositories?: readonly string[] },
+  ): Promise<void>;
   verifyHelper?(provider: Provider, sandboxId: string): Promise<Omit<HelperReceipt, "snapshotId">>;
   /** Reserve capacity before any builder starts. Returns an opaque server-only reservation. */
   reserve?(provider: Provider, actor: GoldenActor, existingGolden?: GoldenRecord): Promise<string | undefined>;
@@ -246,7 +250,7 @@ export class GoldenCreateService {
         });
       }
       await enter("secret_scan");
-      await this.deps.scan(provider, builder.id, { buildId });
+      await this.deps.scan(provider, builder.id, { buildId, repositories: prepared.map((repo) => repo.dir) });
       const helperReceipt = await this.deps.verifyHelper?.(provider, builder.id);
       requestedSnapshot = input.existingGolden
         ? `golden-r-${crypto.randomUUID()}`

@@ -281,6 +281,11 @@ function nextStatus(current: SandboxStatus, info: SandboxInfo, prompt: PromptRep
   }
 }
 
+/** A database-only observation: absent provider and turn evidence stays unknown. */
+export function recordedStatus(sandbox: SandboxView): StatusReport {
+  return report(sandbox, sandbox.status, null, null, null);
+}
+
 function report(
   sandbox: SandboxView,
   status: SandboxStatus,
