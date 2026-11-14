@@ -292,6 +292,7 @@ export type {
 } from "./otto/index.ts";
 export type { OttoObjective, OttoObjectiveMessage } from "./otto/objectives.ts";
 export * from "./otto/tickets.ts";
+export type { OttoWait, OttoWaitChoice, OttoWaitInput, OttoWaitKind, OttoWaitReason } from "./otto/waits.ts";
 export {
   dedupeEvents,
   type PromptOutcome,

@@ -169,6 +169,7 @@ describe("database", () => {
         "otto_objective_messages SELECT(body,created_at,id,objective_id,org_id,owner_id,revision)",
         "otto_objectives SELECT(created_at,id,org_id,owner_id,repository,request,revision,updated_at)",
         "otto_ticket_graphs SELECT(brief_revision,created_at,graph,objective_id,org_id,owner_id)",
+        "otto_waits SELECT(choices,connection_url,created_at,deadline_at,dedupe_key,default_choice,id,kind,objective_id,org_id,owner_id,phase,question,reason,reminded_at,resolution,status)",
         "personal_skill_defaults SELECT",
         "readable_variables SELECT",
         "routine_runs SELECT(configuration_version,created_at,id,missed_count_capped,missed_intervals,org_id,owner_id,reason,request_key,routine_id,scheduled_due_at,state,task_checked_at,task_state,template_request_id,updated_at)",

@@ -5,6 +5,7 @@ import type { Route } from "../http.ts";
 import { createOttoObserver, type OttoScope } from "./observation.ts";
 import { recordOrphanDays } from "./orphan-days.ts";
 import { readOttoModel } from "./read-model.ts";
+import { waitStore } from "./waits.ts";
 
 /** Opt-in, one repository binding; credentials never leave the server process. */
 function createRepositoryRuntime(sql: Sql, env: Record<string, string | undefined>) {
@@ -32,6 +33,12 @@ function createRepositoryRuntime(sql: Sql, env: Record<string, string | undefine
           ).rows;
           for (const member of members) {
             const caller = { userId: member.user_id, orgs: [{ orgId, role: member.role }], via: "service" as const };
+            // Deadline-only transitions; evidence-driven wake effects belong to the wait reconciler.
+            try {
+              await waitStore(sql, caller, orgId).reconcile();
+            } catch {
+              console.warn("Otto wait deadlines unavailable");
+            }
             const now = new Date();
             const model = await readOttoModel(sql, scope, caller, now, env.ARMADA_ENCRYPTION_KEY);
             await recordOrphanDays(sql, scope, caller, model.resources, now);
