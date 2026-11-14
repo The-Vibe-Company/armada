@@ -234,7 +234,7 @@ function TemplateForm({
   const chosen = lookups.goldens.find((row) => row.id === golden);
   const goldenProblem =
     chosen && scope === "org" && chosen.visibility !== "org"
-      ? `${chosen.name} is private: an organization template needs a shared environment.`
+      ? `${chosen.name} is private: an organization template needs a shared snapshot.`
       : null;
 
   function next() {

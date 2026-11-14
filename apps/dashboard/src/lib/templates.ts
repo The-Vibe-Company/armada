@@ -292,7 +292,7 @@ export function templateRequest(
   if (!golden) return { ok: false, error: "Choose a snapshot." };
   if (!golden.ready) return { ok: false, error: `${golden.name} has no snapshot yet: snapshot it first.` };
   if (scope === "org" && golden.visibility !== "org")
-    return { ok: false, error: `${golden.name} is private: an organization template needs a shared environment.` };
+    return { ok: false, error: `${golden.name} is private: an organization template needs a shared snapshot.` };
   const model = modelChoice(fields.harness, fields);
   if (!model.ok) return model;
   let modelAccount: TemplateDefinition["modelAccount"];
