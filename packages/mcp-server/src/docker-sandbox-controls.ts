@@ -183,11 +183,16 @@ export function createDockerSandboxControls(
     const queued = await queuedPrompts(id);
     // Native journal events may beat the command ACK. Do not advance a forward reader past
     // an unlinked native prompt: the next read must publish its stable accepted prompt ID.
-    if (
-      request.direction !== "backward" &&
-      queued.some((row) => row.status === "dispatching" && !row.native_prompt_id && row.command_pending)
-    )
-      return { ...page, events: [], cursor: request.cursor ?? `ar1_${id}_0`, hasMore: true };
+    if (queued.some((row) => !row.native_prompt_id && row.command_pending)) {
+      // Neither direction may advance past an unlinked native event, even after cancellation.
+      return {
+        events: [],
+        hasMore: true,
+        ...(page.source ? { source: page.source } : {}),
+        ...(page.runtimeFailure ? { runtimeFailure: page.runtimeFailure } : {}),
+        ...(request.cursor ? { cursor: request.cursor } : {}),
+      };
+    }
     const ids = aliases(queued);
     return {
       ...page,
@@ -352,8 +357,13 @@ export function createDockerSandboxControls(
     // An explicit historical turn does not make a newer, still-running turn idle.
     const latest = events.findLast((event) => event.kind === "prompt");
     const idle = latest?.kind === "prompt" ? !["queued", "running"].includes(latest.status) : row.status === "ready";
-    const ids = aliases(queued);
-    const nativeUsage = withServerCost(usage(row.usage_turns), row.harness);
+    // Usage may have arrived after the initial queue snapshot. Never publish transient native IDs.
+    const finalQueue = includeQueue ? await queuedPrompts(row.id) : [];
+    const ids = aliases(finalQueue);
+    if (prompt && ids.has(prompt.promptId)) prompt = { ...prompt, promptId: ids.get(prompt.promptId)! };
+    const nativeUsage = finalQueue.some((entry) => !entry.native_prompt_id && entry.command_pending)
+      ? null
+      : withServerCost(usage(row.usage_turns), row.harness);
     const nativeSettled =
       terminal(row) ||
       (complete &&

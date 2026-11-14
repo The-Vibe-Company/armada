@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { Sql } from "@armada/core";
 import { decryptSecret } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
@@ -52,7 +52,10 @@ export function createDockerPromptWorker(sql: Sql, key: string, options: Paramet
             ])
           ).rows.length > 0;
         if (!existing && !(await controls.canDispatchQueued(caller, q.sandbox_id))) return;
-        const payload = JSON.parse(await decryptSecret(q.input_enc, key)) as {
+        const plaintext = await decryptSecret(q.input_enc, key);
+        if (createHash("sha256").update(plaintext).digest("hex") !== q.input_hash)
+          throw Error("queued prompt identity mismatch");
+        const payload = JSON.parse(plaintext) as {
           prompt: string;
           conversationId: string | null;
         };

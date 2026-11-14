@@ -926,6 +926,84 @@ test.each([false, true])(
   },
 );
 
+test.each([false, true])(
+  "pre-ACK queued history and usage never expose transient native IDs: cancel %s",
+  async (cancel) => {
+    const f = await fixture();
+    const server = f.service(sql, true, 10000, officialImage, true);
+    const { prompt: _prompt, ...empty } = f.body;
+    await server.launch(f.caller, empty);
+    const controls = createDockerSandboxControls(sql, key, {
+      send: createDockerNormalSend(sql, key, { enabled: true, clock: f.clock }),
+      clock: f.clock,
+    });
+    const requestId = randomUUID();
+    const accepted = await controls.invoke(f.caller, "send", {
+      id: f.body.requestId,
+      request_id: requestId,
+      prompt: "Native journal before ACK",
+    });
+    if (!accepted.handled) throw Error("not handled");
+    const { promptId } = accepted.result as { promptId: string };
+    await server.drain();
+    const waiting = Promise.withResolvers<void>(),
+      release = Promise.withResolvers<void>();
+    const originalWait = f.clock.wait;
+    f.clock.wait = async (ms: number) => {
+      const pending = (
+        await db.query("select 1 from runtime_commands where sandbox_id=$1 and request_id=$2 and result_enc is null", [
+          f.body.requestId,
+          `docker_prompt_${requestId}`,
+        ])
+      ).rows.length;
+      if (pending) {
+        waiting.resolve();
+        await release.promise;
+      }
+      await originalWait(ms);
+    };
+    const dispatch = server.drainQueued();
+    await waiting.promise;
+    await publishFinished(f);
+    await db.query("update public.sandboxes set usage_turns=$2::jsonb where id=$1", [
+      f.body.requestId,
+      JSON.stringify({
+        turnCount: 1,
+        turns: [
+          { promptId: f.receipt.promptId, model: "gpt-6.1-sol", inputTokens: 1, outputTokens: 1, cachedTokens: 0 },
+        ],
+      }),
+    ]);
+    if (cancel) {
+      const stopper = createDockerSandboxControls(sql, key, { clock: { now: f.clock.now, wait: originalWait } });
+      await stopper.invoke(f.caller, "stop", { id: f.body.requestId });
+      await server.drainQueued();
+    }
+    for (const direction of ["forward", "backward"]) {
+      const logs = await controls.invoke(f.caller, "logs", { id: f.body.requestId, direction });
+      expect(logs).toMatchObject({ handled: true, result: { events: [], cursor: null, hasMore: true } });
+      expect(JSON.stringify(logs)).not.toContain(f.receipt.promptId);
+    }
+    expect(await controls.invoke(f.caller, "status", { id: f.body.requestId, prompt_id: promptId })).toMatchObject({
+      handled: true,
+      result: { usage: null },
+    });
+    release.resolve();
+    await dispatch;
+    if (!cancel) {
+      expect(await controls.invoke(f.caller, "logs", { id: f.body.requestId, direction: "backward" })).toMatchObject({
+        handled: true,
+        result: { events: expect.arrayContaining([expect.objectContaining({ promptId })]) },
+      });
+      expect(await controls.invoke(f.caller, "status", { id: f.body.requestId, prompt_id: promptId })).toMatchObject({
+        handled: true,
+        result: { usage: { turns: [expect.objectContaining({ promptId })] } },
+      });
+    }
+    await server.close();
+  },
+);
+
 test("queued prompt receipt publication loss reconciles one native turn and preserves public history identity", async () => {
   const f = await fixture();
   let lost = false;
