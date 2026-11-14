@@ -631,3 +631,61 @@ existing operations default to nonempty). No default flip, native fallback, new
 credentials or manual artifact publication. Live acceptance remains coordinator
 owned; secrets/multi-conversation/default readiness and the production-day gate
 still precede authorized tunnel deletion.
+
+
+## Coordinator-controlled ordinary launch default (not activated by this PR)
+
+The temporary server selector `ARMADA_MODAL_AGENT_PATH` accepts only `native`
+(default/rollback) or `runtime`. Runtime default requires the existing explicit
+`ARMADA_MODAL_DIALOUT=1` and matching `ARMADA_MODAL_RUNTIME_MANIFEST`; invalid or
+incomplete configuration fails startup, never silently chooses native. This PR
+does not set any deployment variable. Do not enable it before the readiness
+matrix and unsupported-flow decisions below are accepted.
+
+The shared core admission policy selects the compute-only Modal host, private
+model-account resolver, common MCP lifecycle and enrolled startup BEFORE fork.
+Ordinary HTTP `sandbox/launch`, MCP `launch`/sized launch, pinned templates and
+owner-scoped routines all use that policy. Request JSON cannot enable/bypass it.
+Selected provider identity must still equal the golden provider; runtime failure,
+missing account binding and unsupported raw-secret/stdio/helper flows never
+fall back to native allocation or inference.
+
+Fresh launch receipts expose `runtime.kind/epoch` and the actual persisted Modal
+`runtimeTransport:dialout`, including ordinary MCP and template receipts. Existing
+completed ordinary/native request receipts remain historical and unchanged after
+a default switch; replay is not a new launch. Existing sandboxes keep their frozen
+transport, so changing the default does not reroute active/stopped native rows.
+
+After coordinator-controlled staging activation, add `--ordinary` to the same
+single-allocation smoke:
+
+```sh
+ARMADA_RUNTIME_SMOKE=one_real_modal_launch bun scripts/check-modal-runtime.ts --ordinary --empty-resume --variables --usage --skills --mcp --github
+```
+
+The script preflights `modalRuntime.defaultPath:runtime`, uses ONLY ordinary routes
+(`sandbox/launch` or `templates/launch`) and omits explicit runtime version/transport
+selection. It still requires actual enrolled/immutable-routing receipts and all
+existing archive/session/epoch/checkpoint/tool/cost/disk proofs. New feature inputs,
+credentials, configuration mutations or artifact publication are not needed.
+Use matching account/harness flags. Unknown allocation or send is not retried.
+
+Rollback sets ONLY `ARMADA_MODAL_AGENT_PATH=native` for future launches. Keep the
+enrolled opt-in, artifacts and resume/control services available for existing
+dial-out rows; keep native control for pre-cutover rows. No resource conversion,
+row rewrite, deployment, default activation or tunnel deletion is performed here.
+
+Before any production cutover: coordinator must verify full ordinary AND explicit
+paths across supported harness/account variants, templates/routines, busy-turn
+controls, GitHub/MCP/skills/readables, idle/empty stop-wake, archives, usage/cost and
+matched cold/warm/resume timings. Raw application-secret templates remain explicitly
+refused; pinned stdio MCP and helper/parallel-conversation compatibility require
+implementation or an explicit owner scope decision before universal default/tunnel
+removal. Fail-closed refusal is not parity acceptance. Staging checks remain Modal
++ owner Docker; Boat production checks are coordinator-only/on demand.
+
+Only after recorded staging approval may the coordinator enable production default,
+record exact SHA/config/time and one full successful production day, then explicitly
+authorize a separate tunnel deletion PR. Preserve machine management, provider
+binding, snapshots and bootstrap exec, and retire/handle old native consumers before
+removing their control/listener/grant/event/distribution paths.

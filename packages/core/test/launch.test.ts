@@ -17,6 +17,7 @@ import {
   type GoldenStore,
   type HarnessCredentials,
   LaunchError,
+  type LaunchOptions,
   type LaunchStores,
   launchSandbox,
   type PromptStatus,
@@ -59,107 +60,210 @@ const owner: GoldenActor = { userId: OWNER, orgId: ORG, role: "member" };
 const other: GoldenActor = { userId: OTHER, orgId: ORG, role: "member" };
 
 describe("launch", () => {
-  test.each([true, false])(
-    "ordinary runtime default prepares workspace before publication/inference (prompt=%s)",
-    async (prompted) => {
-      const world = setup({ golden: golden("org") }),
-        order: string[] = [],
-        commands: string[] = [];
-      const resolve = world.stores.credentials.resolve.bind(world.stores.credentials);
-      const credentials = {
-        ...world.stores.credentials,
-        async resolve(...args: Parameters<typeof resolve>) {
-          return { ...(await resolve(...args)), binding: { credentialId: OWNER, credentialVersion: 1 } };
+  for (const provider of ["boat", "modal"] as const)
+    test.each([true, false])(
+      `${provider} ordinary runtime default prepares workspace before publication/inference (prompt=%s)`,
+      async (prompted) => {
+        const source = golden("org");
+        const world = setup({
+            golden: {
+              ...source,
+              provider,
+              ...(provider === "modal"
+                ? {
+                    providerSandboxId: "modal-builder",
+                    providerSnapshotId: "modal-image",
+                    modal: { workspace: "ws", environment: "main", appId: "app" },
+                  }
+                : {}),
+            },
+          }),
+          order: string[] = [],
+          commands: string[] = [];
+        const childId = provider === "modal" ? "modal-child" : "bx_1";
+        const compute: Provider = {
+          ...world.provider,
+          id: provider,
+          async fork(request) {
+            return { ...(await world.provider.fork(request)), id: childId };
+          },
+          async get(id, options) {
+            return { ...(await world.provider.get(id, options)), id: childId };
+          },
+        };
+        const native: Provider = {
+          ...world.provider,
+          id: provider,
+          async fork() {
+            throw Error("Native fork must not run under the default");
+          },
+        };
+        const resolve = world.stores.credentials.resolve.bind(world.stores.credentials);
+        const credentials = {
+          ...world.stores.credentials,
+          async resolve(...args: Parameters<typeof resolve>) {
+            return { ...(await resolve(...args)), binding: { credentialId: OWNER, credentialVersion: 1 } };
+          },
+        };
+        const result = await launchSandbox(
+          native,
+          world.stores,
+          owner,
+          { golden: "web", harness: "codex", ...(prompted ? { prompt: "ordinary request" } : {}) },
+          {
+            beforeStart: async () => {
+              order.push("admit");
+            },
+            [provider === "boat" ? "boatRuntimeDefault" : "modalRuntimeDefault"]: {
+              provider: async () => compute,
+              credentials,
+              connections: {
+                async validate() {},
+                async bind() {
+                  order.push("bind");
+                },
+                async prepare() {
+                  order.push("mcp");
+                },
+              },
+              policy: {
+                async start() {
+                  order.push("start");
+                  return {
+                    epoch: "1",
+                    async prepareWorkspace(g, onStage, _sleep) {
+                      order.push("workspace");
+                      let retry = false;
+                      await prepareLaunchWorkspace(
+                        {
+                          id: provider,
+                          exec: async () => {
+                            throw Error("No native exec");
+                          },
+                        },
+                        "bx_1",
+                        "logical",
+                        g,
+                        [],
+                        onStage,
+                        async (ms) => {
+                          expect(ms).toBe(1000);
+                          retry = true;
+                        },
+                        async (req, step) => {
+                          commands.push(`${step.phase}:${step.index}:${step.attempt}:${req.cwd}:${req.command}`);
+                          return {
+                            detached: false as const,
+                            timedOut: false,
+                            truncated: false,
+                            exitCode: step.phase === "repository" && step.index === 0 && step.attempt === 0 ? 128 : 0,
+                            stdout: "",
+                            stderr:
+                              step.phase === "repository" && step.index === 0 && step.attempt === 0
+                                ? "detected dubious ownership in repository"
+                                : "",
+                          };
+                        },
+                      );
+                      expect(retry).toBe(true);
+                      return { status: "not_connected" };
+                    },
+                    async prompt() {
+                      expect(order).toEqual(["bind", "start", "workspace", "mcp", "admit"]);
+                      return { promptId: "runtime", conversationId: "conversation", status: "queued" };
+                    },
+                  };
+                },
+              },
+            } satisfies NonNullable<LaunchOptions["boatRuntimeDefault"]>,
+          },
+        );
+        expect(result.runtime).toEqual({ kind: "armada", epoch: "1" });
+        expect(result.sandbox.provider).toBe(provider);
+        expect(result.sandbox.providerSandboxId).toBe(childId);
+        expect(result.sandbox.runtimeTransport).toBe(provider === "modal" ? "dialout" : undefined);
+        expect(result.sandbox.boatRuntime).toBe(provider === "boat" ? true : undefined);
+        expect(order).toEqual(["bind", "start", "workspace", "mcp", "admit"]);
+        if (!prompted) {
+          expect(result.sandbox.status).toBe("ready");
+          expect(result.sandbox.conversationIds).toEqual([]);
+          expect(result.promptId).toBeUndefined();
+        }
+        expect(commands).toHaveLength(4);
+        expect(commands[0]).toContain("repository:0:0:/home/user/web:");
+        expect(commands[1]).toContain("repository:0:1:");
+        expect(commands[2]).toContain("repository:1:0:/home/user/api:");
+        expect(commands[3]).toContain("init:0:0:/home/user:");
+        expect(world.execs).toHaveLength(0);
+        expect(world.prompts).toHaveLength(0);
+        expect(world.forks[0]?.env).toEqual({});
+      },
+    );
+  test.each(["startup", "account", "secret", "provider"] as const)(
+    "Modal default refuses %s without native fallback",
+    async (failure) => {
+      const world = setup({
+        golden: {
+          ...golden("org"),
+          provider: "modal",
+          providerSandboxId: "master",
+          providerSnapshotId: "image",
+          modal: { workspace: "ws", environment: "main", appId: "app" },
+        },
+      });
+      let nativeForks = 0;
+      const native: Provider = {
+        ...world.provider,
+        id: "modal",
+        async fork() {
+          nativeForks++;
+          throw Error("Native fallback forbidden");
         },
       };
-      const result = await launchSandbox(
-        world.provider,
-        world.stores,
-        owner,
-        { golden: "web", harness: "codex", ...(prompted ? { prompt: "ordinary request" } : {}) },
-        {
-          beforeStart: async () => {
-            order.push("admit");
-          },
-          boatRuntimeDefault: {
-            provider: async () => world.provider,
-            credentials,
-            connections: {
-              async validate() {},
-              async bind() {
-                order.push("bind");
-              },
-              async prepare() {
-                order.push("mcp");
-              },
-            },
-            policy: {
-              async start() {
-                order.push("start");
-                return {
-                  epoch: "1",
-                  async prepareWorkspace(g, onStage, _sleep) {
-                    order.push("workspace");
-                    let retry = false;
-                    await prepareLaunchWorkspace(
-                      {
-                        id: "boat",
-                        exec: async () => {
-                          throw Error("No native exec");
-                        },
-                      },
-                      "bx_1",
-                      "logical",
-                      g,
-                      [],
-                      onStage,
-                      async (ms) => {
-                        expect(ms).toBe(1000);
-                        retry = true;
-                      },
-                      async (req, step) => {
-                        commands.push(`${step.phase}:${step.index}:${step.attempt}:${req.cwd}:${req.command}`);
-                        return {
-                          detached: false as const,
-                          timedOut: false,
-                          truncated: false,
-                          exitCode: step.phase === "repository" && step.index === 0 && step.attempt === 0 ? 128 : 0,
-                          stdout: "",
-                          stderr:
-                            step.phase === "repository" && step.index === 0 && step.attempt === 0
-                              ? "detected dubious ownership in repository"
-                              : "",
-                        };
-                      },
-                    );
-                    expect(retry).toBe(true);
-                    return { status: "not_connected" };
-                  },
-                  async prompt() {
-                    expect(order).toEqual(["bind", "start", "workspace", "mcp", "admit"]);
-                    return { promptId: "runtime", conversationId: "conversation", status: "queued" };
-                  },
-                };
-              },
-            },
-          },
+      const compute: Provider = {
+        ...world.provider,
+        id: "modal",
+        async fork(request) {
+          return { ...(await world.provider.fork(request)), id: "modal-child" };
         },
-      );
-      expect(result.runtime).toEqual({ kind: "armada", epoch: "1" });
-      expect(order).toEqual(["bind", "start", "workspace", "mcp", "admit"]);
-      if (!prompted) {
-        expect(result.sandbox.status).toBe("ready");
-        expect(result.sandbox.conversationIds).toEqual([]);
-        expect(result.promptId).toBeUndefined();
-      }
-      expect(commands).toHaveLength(4);
-      expect(commands[0]).toContain("repository:0:0:/home/user/web:");
-      expect(commands[1]).toContain("repository:0:1:");
-      expect(commands[2]).toContain("repository:1:0:/home/user/api:");
-      expect(commands[3]).toContain("init:0:0:/home/user:");
-      expect(world.execs).toHaveLength(0);
-      expect(world.prompts).toHaveLength(0);
-      expect(world.forks[0]?.env).toEqual({});
+        async get(id, opts) {
+          return { ...(await world.provider.get(id, opts)), id: "modal-child" };
+        },
+      };
+      const resolve = world.stores.credentials.resolve.bind(world.stores.credentials);
+      await expect(
+        launchSandbox(
+          native,
+          world.stores,
+          owner,
+          { golden: "web", harness: "codex", prompt: "answer" },
+          {
+            nativeSecretBindings: failure === "secret",
+            modalRuntimeDefault: {
+              provider: async () => (failure === "provider" ? { ...compute, id: "boat" } : compute),
+              credentials: {
+                async resolve(...args) {
+                  const credentials = await resolve(...args);
+                  return {
+                    ...credentials,
+                    ...(failure !== "account" ? { binding: { credentialId: OWNER, credentialVersion: 1 } } : {}),
+                  };
+                },
+              },
+              connections: { async validate() {}, async bind() {} },
+              policy: {
+                async start() {
+                  throw Error("Private startup failure");
+                },
+              },
+            },
+          },
+        ),
+      ).rejects.toMatchObject({ code: failure === "startup" ? "start_failed" : "invalid_request" });
+      expect(nativeForks).toBe(0);
+      expect(world.prompts).toEqual([]);
+      expect(world.execs).toEqual([]);
+      expect(world.forks).toHaveLength(failure === "startup" ? 1 : 0);
     },
   );
   test.each(["key", "auth"] as const)(

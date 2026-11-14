@@ -359,6 +359,24 @@ export async function startServer(
       credentialScope: tokens.scope,
     })) as import("@armada/provider-modal").ModalProvider;
   };
+  if (config.modalAgentPath === "runtime") {
+    if (!modalRuntimePolicy)
+      throw Error("Modal runtime default requires the explicit runtime policy; no native fallback.");
+    launch.modalRuntimeDefault = {
+      policy: modalRuntimePolicy,
+      credentials: launchCredentials(store, config.encryptionKey, undefined, modelAuth),
+      connections: runtimeMcp.connections,
+      provider: (actor, golden) =>
+        modalRuntimeHostFor(
+          { ...golden, runtimeTransport: "dialout" },
+          {
+            userId: actor.userId,
+            orgs: [{ orgId: actor.orgId, role: actor.role }],
+            via: "service",
+          },
+        ),
+    };
+  }
   const boatResume = runtimeLaunch
     ? boatRuntimeResume({ sql, vault: store, key: config.encryptionKey, policy: runtimeLaunch, modelAuth })
     : undefined;

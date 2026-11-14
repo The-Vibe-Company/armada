@@ -34,6 +34,7 @@ interface Reply {
     skillReceipts?: unknown;
   };
   provider?: import("../packages/core/src/sandbox-provider.ts").SandboxProviderId;
+  runtimeTransport?: "dialout";
   githubReady?: boolean;
   mcpReady?: boolean;
   status?: string;
@@ -44,6 +45,7 @@ interface Reply {
   credentialRequests?: number;
   goldens?: { id: string; name: string; provider: string; orgId: string }[];
   modalRuntime?: {
+    defaultPath?: "native" | "runtime";
     version?: number;
     enabled?: boolean;
     followupVersion?: number;
@@ -112,6 +114,9 @@ if (
   options.modalRuntime.followupVersion !== 1
 )
   throw Error("Modal dial-out v1 with same-conversation follow-up is unavailable; no launch attempted.");
+const ordinaryMode = process.argv.includes("--ordinary");
+if (ordinaryMode && options.modalRuntime.defaultPath !== "runtime")
+  throw Error("Ordinary Modal default is not dial-out; no launch attempted.");
 if (process.argv.includes("--opencode") && process.argv.includes("--claude"))
   throw Error("Select only one harness; no launch attempted.");
 const harness = process.argv.includes("--opencode")
@@ -603,11 +608,17 @@ try {
     mcpMode || variablesMode
       ? `Remember token ${memory}. ${[...(variablesMode ? [variableInstruction] : []), ...(mcpMode ? [mcpInstruction] : [])].join(" ")} After it succeeds, reply exactly ${answer}. Do not change files.`
       : `Remember token ${memory}. Reply exactly ${answer}. Do not use tools or change files.`;
-  const raw = await api("sandbox/launch-modal-runtime-v1", {
-    runtimeVersion: 1,
-    runtimeTransport: "dialout",
-    provider: "modal",
-    harness,
+  const route = ordinaryMode
+    ? templateSource
+      ? "templates/launch"
+      : "sandbox/launch"
+    : "sandbox/launch-modal-runtime-v1";
+  const raw = await api(route, {
+    ...(!ordinaryMode
+      ? { runtimeVersion: 1, runtimeTransport: "dialout", provider: "modal", harness }
+      : templateSource
+        ? {}
+        : { provider: "modal", harness }),
     ...(templateSource
       ? { org: templateSource.org, id: templateId, revision: templateSource.revision, requestKey: templateRequestKey }
       : {
@@ -663,7 +674,11 @@ try {
           ...(id ? { id } : {}),
           goldenId: templateSource.goldenId,
           provider: "modal",
-          runtimeTransport: "dialout",
+          ...(raw.runtimeTransport
+            ? { runtimeTransport: raw.runtimeTransport }
+            : ordinaryMode
+              ? {}
+              : { runtimeTransport: "dialout" }),
           skills: raw.manifest?.skillReceipts,
         },
       }
@@ -834,6 +849,7 @@ try {
       epoch,
       source: "armada-runtime",
       answer: "verified",
+      ...(ordinaryMode ? { ordinaryDefault: "verified" } : {}),
       ...(idleMode ? { idleFirstSend: "verified" } : {}),
       ...(emptyResumeMode ? { emptyResume: "verified", retainedFile: "verified" } : {}),
       checkpoint: "verified",
