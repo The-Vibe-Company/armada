@@ -548,8 +548,41 @@ still revoke it.
 
 Matching schema/server/runtime deployment must include
 `20261114090000_runtime_idle_publication.sql`. Native Modal behavior is unchanged.
-This is direct-golden promptless launch/first-send support, not promptless template
-claims or stop/wake of a sandbox that has never had any conversation. `--idle`
-with `--variables` (template mode) refuses before allocation. Those remaining
-admission/lifecycle cases, default rollout and authorized tunnel deletion remain
-separate work. Live acceptance requires a coordinator receipt, not these tests.
+The template extension below adds promptless pinned claims. Stop/wake of a sandbox
+that has never had a conversation, default rollout and authorized tunnel deletion
+remain separate work. Live acceptance requires a coordinator receipt, not these tests.
+
+
+## Promptless pinned templates
+
+Combine `--idle --variables` to launch an existing eligible published Modal
+template without an initial prompt, then issue the first instruction once:
+
+```sh
+ARMADA_RUNTIME_SMOKE=one_real_modal_launch bun scripts/check-modal-runtime.ts --idle --variables --usage --skills --mcp --github --resume
+```
+
+Select the matching account/model/harness (`--claude` or `--opencode` when needed)
+and existing pinned template/readable/default-skill/MCP/GitHub inputs. The smoke
+requires `idleTemplateVersion:1` in addition to existing idle/template capabilities
+before allocation. It freezes the same revision and request key, delivers the
+same immutable readable manifest privately, and uses the existing template claim
+and replay policy rather than a second launch implementation.
+
+A template receipt has no synthesized conversation list: before first send, the
+smoke reads the actual sandbox status and requires its ID, ready state, empty
+conversation list and null prompt, in addition to the receipt and archive checks.
+Foreign/stale/active status evidence cannot trigger a first send. Hash evidence
+is collected only after the first instruction runs with the frozen readables.
+The initial prompt is absent from the launch request, not a blank placeholder.
+
+Completed request replay returns the original ready receipt even after source
+variables or the template header change; adding a prompt to the same request key
+is a conflict, never another fork or inference. Explicit blank/null prompts,
+application-secret bindings and mixed template/source identities remain refused.
+Same one allocation/one retained activation and model turns; uncertain delivery
+is not retried. No new credentials, schema migration or configuration mutations.
+Matching normal server/runtime deployment and the existing
+`20261114090000_runtime_idle_publication.sql` prerequisite are required. Live
+acceptance remains coordinator-owned; this does not enable default cutover or
+tunnel deletion.
