@@ -398,7 +398,7 @@ export class GoldenBuildJobs {
   async reconcileOne(): Promise<void> {
     const row = (
       await this.options.sql.query<Job>(
-        "select * from public.golden_build_jobs where state='recovery_required' and (builder_id is not null or (provider=any($1::public.sandbox_provider[]) and phase='builder')) order by updated_at limit 1",
+        "select * from public.golden_build_jobs where state='recovery_required' and (builder_id is not null or (provider=any($1::public.sandbox_provider[]) and phase='builder') or (phase='authorization' and fence is not null and builder_id is null and snapshot is null)) order by updated_at limit 1",
         [
           // Encode the fixed provider IDs as a PostgreSQL array, not a driver-native JS array.
           "{" +
@@ -418,6 +418,35 @@ export class GoldenBuildJobs {
       [row.id, row.fence],
     );
     if (!attempted.rows.length || !row.fence) return;
+    if (row.phase === "authorization" && row.builder_id === null && row.snapshot === null) {
+      // createGolden is called only after the durable builder phase is fenced.
+      // A late authorization callback cannot enter that phase after recovery owns
+      // the row. No provider resource exists to stop or inspect in this state.
+      await this.transaction(async (sql) => {
+        const current = (
+          await sql.query<Job>("select * from public.golden_build_jobs where id=$1 for update", [row.id])
+        ).rows[0];
+        if (
+          !current ||
+          current.state !== "recovery_required" ||
+          current.phase !== "authorization" ||
+          current.fence !== row.fence ||
+          current.reservation_id !== row.reservation_id ||
+          current.builder_id !== null ||
+          current.snapshot !== null
+        )
+          return;
+        if (current.reservation_id) await sqlGoldenBackendSlots(sql).release(current.reservation_id);
+        await sql.query(
+          "update public.golden_build_jobs set state='failed',failure_reason=coalesce(failure_reason,$2),updated_at=now() where id=$1",
+          [
+            current.id,
+            "detail:Build expired during authorization before any builder started. Its reservation was released; start a new build request when ready.",
+          ],
+        );
+      });
+      return;
+    }
     // Never dispose a source whose snapshot/publication outcome may still depend on it.
     if (reservationRecovery && (row.phase === "snapshot" || row.phase === "persist")) return;
     try {

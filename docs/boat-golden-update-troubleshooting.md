@@ -37,7 +37,15 @@ Neither capacity nor a missing binding proves a GitHub authorization problem.
 ## Recovery limits
 
 Durable running jobs have fenced leases and deadlines. Expired jobs transition
-to recovery; reservations are released only after safe builder reconciliation.
+to recovery. If the durable phase is still authorization, the attempt has a fence,
+and both builder and snapshot references are absent, recovery can release that
+exact reservation without contacting a provider. The row is rechecked under lock,
+marked failed with a safe reason, and the original golden binding is retained.
+A late authorization callback cannot enter the builder phase after recovery owns
+the row. This runs on the worker's recovery tick, not on a database timer.
+
+A missing builder ID alone is not proof of safety: builder-phase or later attempts
+still require their existing provider reconciliation and retain uncertain capacity.
 A timeout must not simply clear a reservation while a provider operation could
 still publish a snapshot. Owners can cancel a queued, never-started build using Cancel queued build beside
 its tracked status in the dashboard, or:
