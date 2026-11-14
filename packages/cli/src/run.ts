@@ -108,12 +108,12 @@ Usage:
                                            server over your own GitHub connection. No BOAT_API_KEY needed.
                                            --setup reads a local script and sends its content to run after
                                            cloning, before the scan.
-  armada golden update <name> (--add-repo <url>[@branch] ... | --repo <url>[@branch] ... | --config <file>) [--init <cmd> ...]
+  armada golden update <name> (--add-repo <url>[@branch] ... | --replace --repo <url>[@branch] ... | --replace --config <file>) [--init <cmd> ...]
                                [--setup <local-file>] [--provider boat|modal] [--org <org>] [--idempotency-key <key>] [--timeout <seconds>]
                                            Rebuild the existing golden in place. One golden may contain
                                            many repositories; visibility and ownership stay unchanged.
-                                           --repo/--config REPLACE the complete repository list and init commands.
-                                           --add-repo preserves all stored repositories and init commands (requires updated server).
+                                           Use --add-repo to append safely, preserving stored repositories and init commands.
+                                           --repo/--config require --replace: they replace the ENTIRE config, even if no repos are dropped.
                                            Create/update admit a durable job, then poll for up to --timeout
                                            seconds (default 60, max 600; 0 returns after admission).
                                            Disconnecting never resubmits or cancels the job.
@@ -566,7 +566,11 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
     return sizePolicyCommand(rest, authOf(io, deps), (path) =>
       path ? (deps.readFile ?? ((p) => Bun.file(p).text()))(path) : (deps.readStdin ?? (() => Bun.stdin.text()))(),
     );
-  const args = parseArgs(rest, subcommand === "retirement" ? ["--limit"] : ["--host", "--request-id"]);
+  const args = parseArgs(
+    rest,
+    subcommand === "retirement" ? ["--limit"] : ["--host", "--request-id"],
+    subcommand === "update" ? ["--replace"] : [],
+  );
   if (args.options.has("--add-repo") && subcommand !== "update")
     throw new GoldenError("invalid_config", "--add-repo is only supported by golden update.");
   if (single(args, "--provider") === "docker") {
@@ -827,6 +831,16 @@ async function update(positionals: string[], args: ReturnType<typeof parseArgs>,
     throw new GoldenError(
       "invalid_config",
       "--add-repo preserves the stored config. Do not combine it with --repo, --config, --init or --setup; use --config for intentional replacement.",
+    );
+  if (additions.length && flag(args, "--replace"))
+    throw new GoldenError(
+      "invalid_config",
+      "--replace cannot be combined with --add-repo; choose append or replacement.",
+    );
+  if (!additions.length && !flag(args, "--replace"))
+    throw new GoldenError(
+      "invalid_config",
+      "Full replacement can drop stored repositories and init commands. Use --add-repo to append safely, or pass --replace with --repo/--config to confirm replacing the entire config.",
     );
   let config: GoldenConfig | undefined;
   try {
