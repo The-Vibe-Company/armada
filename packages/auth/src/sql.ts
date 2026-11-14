@@ -1,6 +1,6 @@
 import { assertHash } from "./codec.ts";
 import { AuthError } from "./errors.ts";
-import type { AuthStore, Membership, OAuthCodeRecord, TokenRecord, TokenTable } from "./types.ts";
+import type { AuthStore, MemberRole, Membership, OAuthCodeRecord, TokenRecord, TokenTable } from "./types.ts";
 
 export interface SqlQuery {
   query<T extends Record<string, unknown>>(sql: string, params?: readonly unknown[]): Promise<{ rows: T[] }>;
@@ -9,6 +9,19 @@ export interface SqlQuery {
 /** Service-role SQL. The API-only CLI calls the server, never the database directly. */
 export function createSqlAuthStore(db: SqlQuery): AuthStore {
   return {
+    async findTokenWithMembership(kind, hash) {
+      assertHash(hash);
+      const result = await db.query<TokenRow & { role: MemberRole }>(
+        `select t.id, t.user_id, t.org_id, t.label, t.revoked_at, t.created_at, m.role
+         from ${table(kind)} t
+         join public.members m on m.user_id = t.user_id and m.org_id = t.org_id
+         where t.hash = $1`,
+        [hash],
+      );
+      const row = result.rows[0];
+      const token = mapToken(row);
+      return token && row ? { token, role: row.role } : null;
+    },
     async findTokenByHash(kind, hash) {
       assertHash(hash);
       const result = await db.query<TokenRow>(

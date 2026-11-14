@@ -1,12 +1,14 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
+import { parseReadableVariableBindings } from "../packages/core/src/readable-variables.ts";
 import { prepareReadableProbe, type ReadableProbeIo } from "./provider-parity-readable-variable.ts";
 
-const binding = { id: "abcdef01-0000-4000-8000-000000000001", version: 1, key: "ARMADA_PARITY_READABLE" };
+const binding = { id: "abcdef01-0000-4000-8000-000000000001", version: 1, key: "PARITY_READABLE_CANARY" };
 const template = { id: "10000000-0000-4000-8000-000000000001", revision: 2 };
 function fixture(mode: string, provider: "boat" | "modal" | "docker" = "modal") {
   const value = `parity_readable_${crypto.randomUUID()}`;
-  const reference = { key: binding.key, variableId: binding.id, version: 1 };
+  // Real publication validation prevents an impossible source fixture from hiding a probe contract mismatch.
+  const reference = parseReadableVariableBindings([{ key: binding.key, variableId: binding.id, version: 1 }])[0]!;
   const calls: string[] = [];
   let digest = "",
     reads = 0;
@@ -130,14 +132,23 @@ test.each(["boat", "modal", "docker"] as const)(
   },
 );
 
-test.each(["revision", "reference", "duplicate", "rotated", "non_canary", "unsafe_key"])(
+test.each(["revision", "reference", "duplicate", "rotated", "non_canary", "unsafe_key", "reserved_key"])(
   "refuses unsafe/stale fixture before a model turn: %s",
   async (mode) => {
     const f = fixture(mode);
     await expect(
-      prepareReadableProbe(template, mode === "unsafe_key" ? { ...binding, key: "PATH;unsafe" } : binding, f.io),
+      prepareReadableProbe(
+        template,
+        mode === "unsafe_key"
+          ? { ...binding, key: "PATH;unsafe" }
+          : mode === "reserved_key"
+            ? { ...binding, key: "ARMADA_PARITY_READABLE" }
+            : binding,
+        f.io,
+      ),
     ).rejects.toThrow(mode === "non_canary" ? "readable_canary_required" : "invalid_readable_binding");
     expect(f.calls).not.toContain("sandbox/send");
+    if (mode === "unsafe_key" || mode === "reserved_key") expect(f.calls).toEqual([]);
   },
 );
 

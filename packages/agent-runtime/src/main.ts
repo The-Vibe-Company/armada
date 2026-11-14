@@ -12,7 +12,7 @@ import { githubRuntimeEnvironment, installUserGitHubTools, runGitHubInstallMode 
 import { runHarnessInstallMode } from "./harness-cache.ts";
 import { checkpointIdentityKey } from "./identity.ts";
 import { ClaudeDriver, CodexDriver, type Grant, Journal, type McpConfiguration, Runner } from "./index.ts";
-import { testModelConnection } from "./model-connection-test.ts";
+import { runtimeModelConnection, testModelConnection } from "./model-connection-test.ts";
 import { quiesceNativeCodex, readNativeCodexAuth, removeNativeCodexAuth } from "./native-auth.ts";
 import { OpenCodeDriver } from "./opencode.ts";
 import { configureOpenCodeEndpoint } from "./opencode-endpoint.ts";
@@ -473,28 +473,12 @@ async function main(dialout = false) {
           if (!opencodeConnection) throw Error("model_connection_test_denied");
           return testModelConnection(opencodeConnection, model, signal);
         }
-        if (harness === "codex" && codexEndpoint && config.codexEnv.OPENAI_API_KEY)
-          return testModelConnection(
-            { harness, endpoint: codexEndpoint, apiKey: config.codexEnv.OPENAI_API_KEY },
-            model,
-            signal,
-          );
-        const env = config.claudeEnv;
-        const key = env.ANTHROPIC_AUTH_TOKEN ?? env.ANTHROPIC_API_KEY;
-        if (harness === "claude" && env.ANTHROPIC_BASE_URL && key)
-          return testModelConnection(
-            {
-              harness,
-              endpoint: {
-                version: 1,
-                baseUrl: env.ANTHROPIC_BASE_URL,
-                auth: env.ANTHROPIC_AUTH_TOKEN ? "bearer" : "api-key",
-              },
-              apiKey: key,
-            },
-            model,
-            signal,
-          );
+        const connection = runtimeModelConnection(
+          harness,
+          harness === "codex" ? config.codexEnv : config.claudeEnv,
+          codexEndpoint,
+        );
+        if (connection) return testModelConnection(connection, model, signal);
         throw Error("model_connection_test_denied");
       },
       readableVariables: fenced ? {} : readableVariables,

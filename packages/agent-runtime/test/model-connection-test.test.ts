@@ -4,7 +4,38 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AUTH_HEADER, type Driver, Journal, Runner } from "../src/index.ts";
-import { type BoundModelConnection, testModelConnection } from "../src/model-connection-test.ts";
+import {
+  type BoundModelConnection,
+  runtimeModelConnection,
+  testModelConnection,
+} from "../src/model-connection-test.ts";
+
+test("runtime probes use vendor defaults for API keys, preserve gateways and refuse subscription auth", () => {
+  expect(runtimeModelConnection("codex", { OPENAI_API_KEY: "openai_key" })).toEqual({
+    harness: "codex",
+    endpoint: { version: 1, baseUrl: "https://api.openai.com/v1" },
+    apiKey: "openai_key",
+  });
+  const custom = { version: 1 as const, baseUrl: "https://example.com/v1" };
+  expect(runtimeModelConnection("codex", { OPENAI_API_KEY: "gateway_key" }, custom)?.endpoint).toEqual(custom);
+  expect(runtimeModelConnection("claude", { ANTHROPIC_API_KEY: "anthropic_key" })).toEqual({
+    harness: "claude",
+    endpoint: { version: 1, baseUrl: "https://api.anthropic.com", auth: "api-key" },
+    apiKey: "anthropic_key",
+  });
+  expect(
+    runtimeModelConnection("claude", {
+      ANTHROPIC_BASE_URL: "https://example.com/anthropic",
+      ANTHROPIC_AUTH_TOKEN: "gateway_token",
+    }),
+  ).toEqual({
+    harness: "claude",
+    endpoint: { version: 1, baseUrl: "https://example.com/anthropic", auth: "bearer" },
+    apiKey: "gateway_token",
+  });
+  expect(runtimeModelConnection("claude", { CLAUDE_CODE_OAUTH_TOKEN: "subscription_token" })).toBeNull();
+  expect(runtimeModelConnection("codex", {})).toBeNull();
+});
 
 test.each(["codex", "bearer", "api-key"])("runtime sends one tiny native-wire request (%s)", async (mode) => {
   const key = randomUUID();

@@ -2463,6 +2463,19 @@ test("CLI/API connection checks require the owner and current bound revision, ex
     ).toBe(0);
     expect((await owner.run(args)).code).not.toBe(0);
     expect(calls).toBe(before);
+    // A standard vendor key has no endpoint metadata, but the same bound runtime can probe it.
+    expect(
+      (
+        await owner.run(["creds", "set", "openai", "--id", account, "--expected-version", "2"], {
+          stdin: "vendor_key_placeholder",
+        })
+      ).code,
+    ).toBe(0);
+    await db.query("update sandboxes set credential_version=3 where id=$1", [id]);
+    receipt = { ok: true, status: 200, error: null, code: null };
+    expect((await owner.run(args)).code).toBe(0);
+    expect(calls).toBe(before + 1);
+    const beforeOpenCode = calls;
     expect(
       (
         await owner.run(
@@ -2494,7 +2507,7 @@ test("CLI/API connection checks require the owner and current bound revision, ex
     expectedModel = "armada/chosen";
     receipt = { ok: true, status: 200, error: null, code: null };
     expect((await owner.run(["creds", "test", openCodeSandbox, "--model", expectedModel, "--json"])).code).toBe(0);
-    expect(calls).toBe(before + 1);
+    expect(calls).toBe(beforeOpenCode + 1);
   });
 });
 

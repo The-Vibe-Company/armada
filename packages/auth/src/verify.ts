@@ -26,12 +26,15 @@ export async function authenticate(authorization: string | null, store: AuthStor
   const token = bearer(authorization);
   const kind = token === null ? null : bearerKind(token);
   if (!token || (kind !== "service" && kind !== "access")) return { ok: false, error: "invalid_token" };
-  const row = await store.findTokenByHash(kind === "service" ? "service" : "mcp", await sha256Hex(token));
+  const table = kind === "service" ? "service" : "mcp";
+  const hash = await sha256Hex(token);
+  const joined = store.findTokenWithMembership ? await store.findTokenWithMembership(table, hash) : undefined;
+  const row = joined === undefined ? await store.findTokenByHash(table, hash) : joined?.token;
   if (!row || row.revokedAt !== null) return { ok: false, error: "invalid_token" };
   if (kind === "access" && (row.label !== "access" || !fresh(row.createdAt, now, ACCESS_TOKEN_TTL_MS))) {
     return { ok: false, error: "invalid_token" };
   }
-  const member = await store.membership(row.userId, row.orgId);
+  const member = joined === undefined ? await store.membership(row.userId, row.orgId) : joined;
   if (!member) return { ok: false, error: "invalid_token" };
   return {
     ok: true,

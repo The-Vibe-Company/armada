@@ -5,6 +5,11 @@ import { run } from "../src/run.ts";
 test("nested onboarding help is focused and performs no authenticated or secret I/O", async () => {
   for (const command of [
     "org setup",
+    "org list",
+    "org use",
+    "org current",
+    "org create",
+
     "org connect modal",
     "creds login codex",
     "creds login",
@@ -12,6 +17,9 @@ test("nested onboarding help is focused and performs no authenticated or secret 
     "creds import claude",
     "creds import codex",
     "creds set",
+    "creds presets",
+    "creds connect",
+    "creds test",
     "creds list",
     "creds rename",
     "creds default",
@@ -98,6 +106,10 @@ test("help detection leaves malformed operations and literal payloads to their p
     ["creds", "remove", "--org", "-h"],
     ["creds", "import", "claude", "--file", "-h"],
     ["creds", "import", "--", "--help"],
+    ["creds", "connect", "openai", "--help"],
+    ["creds", "test", "--model", "-h"],
+    ["org", "use", "my-team", "--help"],
+    ["org", "create", "--", "-h"],
     ["constructor", "--help"],
     ["toString", "-h"],
   ])

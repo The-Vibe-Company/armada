@@ -18,6 +18,34 @@ export type BoundModelConnection =
   | { harness: "opencode"; endpoint: OpenCodeEndpoint; apiKey: string };
 export type { ModelConnectionTestResult } from "@armada/core";
 
+/** Resolve only runtime-owned API-key credentials; subscription OAuth is not a model API key. */
+export function runtimeModelConnection(
+  harness: "claude" | "codex",
+  env: Record<string, string>,
+  codexEndpoint?: CodexEndpoint,
+): BoundModelConnection | null {
+  if (harness === "codex")
+    return env.OPENAI_API_KEY
+      ? {
+          harness,
+          endpoint: codexEndpoint ?? { version: 1, baseUrl: "https://api.openai.com/v1" },
+          apiKey: env.OPENAI_API_KEY,
+        }
+      : null;
+  const apiKey = env.ANTHROPIC_AUTH_TOKEN ?? env.ANTHROPIC_API_KEY;
+  return apiKey
+    ? {
+        harness,
+        endpoint: {
+          version: 1,
+          baseUrl: env.ANTHROPIC_BASE_URL ?? "https://api.anthropic.com",
+          auth: env.ANTHROPIC_AUTH_TOKEN ? "bearer" : "api-key",
+        },
+        apiKey,
+      }
+    : null;
+}
+
 /** One bounded native-wire check. Callers own authorization and network destination admission. */
 export async function testModelConnection(
   connection: BoundModelConnection,
