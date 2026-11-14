@@ -7,13 +7,14 @@ import type { createDockerSandboxControls } from "./docker-sandbox-controls.ts";
 /** Observe only the scheduled initial prompt, using Docker's authorized retained history. */
 export async function observeRoutinePrompt(
   caller: Caller,
-  turn: { sandboxId: string; promptId: string; conversationId?: string | null },
+  turn: { sandboxId: string; promptId: string; conversationId?: string | null; signal?: AbortSignal },
   ports: {
     docker?: Pick<ReturnType<typeof createDockerSandboxControls>, "invoke">;
     get(id: string): Promise<SandboxView | null>;
     provider(sandbox: SandboxView): Promise<Provider>;
   },
 ): Promise<RoutineTaskState> {
+  turn.signal?.throwIfAborted();
   const docker = await ports.docker?.invoke(caller, "status", { id: turn.sandboxId, prompt_id: turn.promptId });
   if (docker?.handled) {
     const state = (docker.result as DockerSandboxStatus).prompt?.state;
@@ -22,6 +23,7 @@ export async function observeRoutinePrompt(
   const sandbox = await ports.get(turn.sandboxId);
   if (!sandbox || sandbox.status === "deleted") return "unknown";
   const result = await promptOutcome(await ports.provider(sandbox), {
+    ...(turn.signal ? { signal: turn.signal } : {}),
     sandboxId: sandbox.providerSandboxId,
     promptId: turn.promptId,
     ...(turn.conversationId ? { conversationId: turn.conversationId } : {}),

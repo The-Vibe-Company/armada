@@ -47,11 +47,16 @@ export function dedupeEvents(events: readonly AgentEvent[]): AgentEvent[] {
  */
 export async function promptOutcome(
   provider: Provider,
-  request: { sandboxId: string; promptId: string; conversationId?: string },
+  request: { sandboxId: string; promptId: string; conversationId?: string; signal?: AbortSignal },
   observation?: { state: PromptState; events: readonly AgentEvent[] },
 ): Promise<PromptOutcome> {
   const state =
-    observation?.state ?? (await provider.getPrompt({ sandboxId: request.sandboxId, promptId: request.promptId }));
+    observation?.state ??
+    (await provider.getPrompt({
+      sandboxId: request.sandboxId,
+      promptId: request.promptId,
+      ...(request.signal ? { signal: request.signal } : {}),
+    }));
   if (state.status === "interrupted" || state.status === "failed") {
     const events = (observation?.events ?? (await promptEvents(provider, request))).filter(
       (event) => event.promptId === request.promptId,
@@ -101,13 +106,15 @@ export async function promptOutcome(
 /** Bounded newest-first read stopping at this prompt's own start, not sandbox creation. */
 export async function readPromptEvents(
   provider: Provider,
-  request: { sandboxId: string; promptId: string; conversationId?: string },
+  request: { sandboxId: string; promptId: string; conversationId?: string; signal?: AbortSignal },
 ): Promise<{ events: AgentEvent[]; complete: boolean }> {
   const all: AgentEvent[] = [];
   let cursor: string | undefined;
   const seen = new Set<string>();
   for (let page = 0; page < OUTCOME_PAGES; page++) {
+    request.signal?.throwIfAborted();
     const read = await provider.events({
+      ...(request.signal ? { signal: request.signal } : {}),
       sandboxId: request.sandboxId,
       direction: "backward",
       ...(cursor ? { cursor } : {}),
@@ -139,7 +146,7 @@ export async function readPromptEvents(
 
 async function promptEvents(
   provider: Provider,
-  request: { sandboxId: string; promptId: string; conversationId?: string },
+  request: { sandboxId: string; promptId: string; conversationId?: string; signal?: AbortSignal },
 ): Promise<AgentEvent[]> {
   try {
     return (await readPromptEvents(provider, request)).events.filter((event) => event.promptId === request.promptId);

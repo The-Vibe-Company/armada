@@ -1,6 +1,6 @@
 /** Dedicated tracked loop: a routine launch must not block sandbox lifecycle cleanup. */
 export function startRoutineWorker(
-  scheduler: { tick(signal?: AbortSignal): Promise<void> },
+  scheduler: { tick(signal?: AbortSignal): Promise<void>; stop?(): void; drain?(): Promise<void> },
   log: (line: string) => void = console.error,
 ) {
   let stopped = false;
@@ -21,12 +21,14 @@ export function startRoutineWorker(
           timer.unref();
         });
     }
+    await scheduler.drain?.();
   })();
   return {
     done,
     stop() {
       stopped = true;
       shutdown.abort();
+      scheduler.stop?.();
       if (timer) clearTimeout(timer);
       wake?.();
     },

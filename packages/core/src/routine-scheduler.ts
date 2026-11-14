@@ -6,6 +6,8 @@ import { VaultError } from "./vault-error.ts";
 export interface RoutineLaunchAdmission {
   /** Called by the template launch immediately before provider allocation, after the claim is durable. */
   beforeFork(tx?: Sql): Promise<void>;
+  /** Cooperative cancellation; raw effects remain owned until settlement. */
+  signal?: AbortSignal;
 }
 
 export type RoutineTaskState = "running" | "finished" | "failed" | "interrupted" | "unknown";
@@ -15,6 +17,7 @@ export interface RoutineSchedulerRuntime {
   observe(
     actor: ApplicationVaultActor,
     prompt: { sandboxId: string; promptId: string; conversationId?: string },
+    signal?: AbortSignal,
   ): Promise<RoutineTaskState>;
   /** The ordinary template path; actor is always the persisted execution owner. */
   launch(
@@ -118,7 +121,7 @@ export function createRoutineScheduler(sql: Sql, runtime: RoutineSchedulerRuntim
     // own terminal claim can resolve uncertainty; a sandbox status alone cannot fence it.
     return settle(run, "reconciling", claim, "launch_uncertain");
   }
-  async function dispatch(run: Run) {
+  async function dispatch(run: Run, signal: AbortSignal) {
     const existing = await templateClaim(run);
     if (existing) return reconcile(run, existing);
     if (run.state === "reconciling") return settle(run, "reconciling", undefined, "launch_uncertain");
@@ -150,7 +153,9 @@ export function createRoutineScheduler(sql: Sql, runtime: RoutineSchedulerRuntim
           requestKey: run.request_key,
         },
         {
+          signal,
           beforeFork: async (tx = sql) => {
+            signal.throwIfAborted();
             // A preflight can outlive its lease while another replica concludes that no claim
             // exists. Fence that stale caller at the provider boundary, not just history publication.
             const current = await tx.query(
@@ -164,7 +169,12 @@ export function createRoutineScheduler(sql: Sql, runtime: RoutineSchedulerRuntim
     } catch {
       const claim = await templateClaim(run);
       if (claim) return reconcile(run, claim);
-      return settle(run, "failed", undefined, "launch_failed");
+      return settle(
+        run,
+        signal.aborted ? "reconciling" : "failed",
+        undefined,
+        signal.aborted ? "launch_uncertain" : "launch_failed",
+      );
     }
     const claim = await templateClaim(run);
     // A normal template launch leaves its durable claim. Do not treat unexplained absence as
@@ -172,12 +182,17 @@ export function createRoutineScheduler(sql: Sql, runtime: RoutineSchedulerRuntim
     if (!claim) return settle(run, "reconciling", undefined, "launch_uncertain");
     return reconcile(run, claim);
   }
-  async function leaseRecovery(): Promise<Run | undefined> {
+  async function leaseRecovery(provider: string): Promise<Run | undefined> {
     return transaction(async (tx) => {
       const run = (
         await tx.query<Run>(
           `select * from public.routine_runs where state in ('admitted','reconciling')
-         and (lease_until is null or lease_until<=now()) order by created_at,id for update skip locked limit 1`,
+         and (lease_until is null or lease_until<=now()) and not (id=any($2::uuid[]))
+         and exists (select 1 from public.routine_run_inputs i
+          join public.launch_template_revisions v on v.template_id=i.template_id and v.revision=i.template_revision
+          where i.run_id=routine_runs.id and coalesce(v.definition->>'provider','unknown')=$1)
+         order by created_at,id for update skip locked limit 1`,
+          [provider, [...dispatches]],
         )
       ).rows[0];
       if (!run) return;
@@ -189,11 +204,15 @@ export function createRoutineScheduler(sql: Sql, runtime: RoutineSchedulerRuntim
       ).rows[0];
     });
   }
-  async function admit(): Promise<Run | undefined | null> {
+  async function admit(provider: string): Promise<Run | undefined | null> {
     return transaction(async (tx) => {
       const routine = (
         await tx.query<Routine>(
-          "select *,now() as db_now from public.routines where status='enabled' and next_due_at<=now() order by next_due_at,id for update skip locked limit 1",
+          `select *,now() as db_now from public.routines where status='enabled' and next_due_at<=now()
+           and exists (select 1 from public.launch_template_revisions v where v.template_id=routines.template_id
+            and v.revision=routines.template_revision and coalesce(v.definition->>'provider','unknown')=$1)
+           order by next_due_at,id for update skip locked limit 1`,
+          [provider],
         )
       ).rows[0];
       if (!routine) return null;
@@ -286,7 +305,7 @@ export function createRoutineScheduler(sql: Sql, runtime: RoutineSchedulerRuntim
       return run;
     });
   }
-  async function observeTask(): Promise<boolean> {
+  async function observeTask(provider: string, signal: AbortSignal): Promise<boolean> {
     const task = await transaction(async (tx) => {
       const candidate = (
         await tx.query<{
@@ -297,9 +316,13 @@ export function createRoutineScheduler(sql: Sql, runtime: RoutineSchedulerRuntim
           prompt_id: string | null;
           conversation_id: string | null;
           task_check_id: string;
-        }>(`select * from public.routine_runs where state='succeeded' and task_state in ('running','unknown')
+        }>(
+          `select * from public.routine_runs where state='succeeded' and task_state in ('running','unknown')
           and (task_checked_at is null or task_checked_at<=now()-interval '1 minute')
-          order by task_checked_at nulls first,id for update skip locked limit 1`)
+          and coalesce((select s.provider::text from public.sandboxes s where s.id=routine_runs.sandbox_id),'unknown')=$1
+          order by task_checked_at nulls first,id for update skip locked limit 1`,
+          [provider],
+        )
       ).rows[0];
       if (!candidate) return;
       return (
@@ -327,12 +350,15 @@ export function createRoutineScheduler(sql: Sql, runtime: RoutineSchedulerRuntim
             promptId: task.prompt_id,
             ...(task.conversation_id ? { conversationId: task.conversation_id } : {}),
           },
+          signal,
         );
-        if (["running", "finished", "failed", "interrupted", "unknown"].includes(observed)) state = observed;
+        if (!signal.aborted && ["running", "finished", "failed", "interrupted", "unknown"].includes(observed))
+          state = observed;
       } catch {
         /* Unavailable evidence is unknown, not a synthetic task failure. */
       }
     }
+    if (signal.aborted) return true;
     await sql.query(
       `update public.routine_runs set task_state=$3,task_check_id=null,updated_at=now()
       where id=$1 and task_check_id=$2 and state='succeeded' and task_state in ('running','unknown')`,
@@ -340,24 +366,81 @@ export function createRoutineScheduler(sql: Sql, runtime: RoutineSchedulerRuntim
     );
     return true;
   }
+  // Separate provider and operation budgets: an unavailable provider cannot occupy
+  // another provider's slots, and observation never consumes dispatch capacity.
+  const providers = ["boat", "modal", "docker", "unknown"];
+  const dispatches = new Set<string>();
+  const effects = new Map<string, Promise<void>>();
+  const controllers = new Set<AbortController>();
   let running = false;
+  let stopped = false;
+  function track(key: string, work: (signal: AbortSignal) => Promise<unknown>) {
+    const controller = new AbortController();
+    controllers.add(controller);
+    if (stopped) controller.abort();
+    // Deadline only requests cancellation: it never releases the raw-effect slot.
+    const timer = setTimeout(() => controller.abort(), 60_000);
+    timer.unref();
+    const effect = Promise.resolve()
+      .then(() => work(controller.signal))
+      .then(
+        () => {},
+        () => {
+          // Durable leases/claims retain failed publication for later recovery.
+        },
+      )
+      .finally(() => {
+        clearTimeout(timer);
+        controllers.delete(controller);
+        effects.delete(key);
+      });
+    effects.set(key, effect);
+  }
+  function trackDispatch(key: string, run: Run) {
+    dispatches.add(run.id);
+    track(key, async (signal) => {
+      try {
+        await dispatch(run, signal);
+      } finally {
+        dispatches.delete(run.id);
+      }
+    });
+  }
   return {
+    /** Shutdown owns raw effects; callers must apply their process shutdown grace period. */
+    stop() {
+      stopped = true;
+      for (const controller of controllers) controller.abort();
+    },
+    async drain() {
+      while (effects.size) await Promise.all([...effects.values()]);
+    },
     async tick(signal?: AbortSignal): Promise<void> {
-      if (running) return;
+      if (running || stopped || signal?.aborted) return;
       running = true;
       try {
-        for (let i = 0; i < 25 && !signal?.aborted; i++) {
-          const run = await leaseRecovery();
-          if (!run) break;
-          await dispatch(run);
-        }
-        for (let i = 0; i < 25 && !signal?.aborted; i++) {
-          if (!(await observeTask())) break;
-        }
-        for (let i = 0; i < 25 && !signal?.aborted; i++) {
-          const run = await admit();
-          if (run === null) break;
-          if (run) await dispatch(run);
+        for (const provider of providers) {
+          if (stopped || signal?.aborted) break;
+          const dispatchKey = `dispatch:${provider}`;
+          if (!effects.has(dispatchKey)) {
+            let run: Run | undefined;
+            for (let i = 0; i < 25; i++) {
+              const candidate = await admit(provider);
+              if (candidate === null) break;
+              if (candidate) {
+                run = candidate;
+                break;
+              }
+            }
+            if (run) trackDispatch(dispatchKey, run);
+          }
+          const recoveryKey = `recovery:${provider}`;
+          if (!effects.has(recoveryKey)) {
+            const recovered = await leaseRecovery(provider);
+            if (recovered) trackDispatch(recoveryKey, recovered);
+          }
+          const observeKey = `observe:${provider}`;
+          if (!effects.has(observeKey)) track(observeKey, (effectSignal) => observeTask(provider, effectSignal));
         }
       } finally {
         running = false;

@@ -21,7 +21,7 @@ interface ServerRoutineOptions {
 /** Routine execution is always rebound to the persisted owner's current membership. */
 export function createServerRoutineScheduler({ sql, control, templates, providers, data }: ServerRoutineOptions) {
   return createRoutineScheduler(sql, {
-    observe: async (actor, turn) => {
+    observe: async (actor, turn, signal) => {
       const orgId = actor.orgs[0]?.orgId;
       const member = (
         await sql.query<{ role: "admin" | "member" }>(
@@ -31,11 +31,15 @@ export function createServerRoutineScheduler({ sql, control, templates, provider
       ).rows[0];
       if (!member) return "unknown";
       const caller = { userId: actor.userId, orgs: [{ orgId: orgId!, role: member.role }], via: "service" as const };
-      return observeRoutinePrompt(caller, turn, {
-        ...(control.dockerControls ? { docker: control.dockerControls } : {}),
-        get: (id) => data(caller).sandboxes.get(id),
-        provider: (sandbox) => providers.resolve(sandbox, caller),
-      });
+      return observeRoutinePrompt(
+        caller,
+        { ...turn, ...(signal ? { signal } : {}) },
+        {
+          ...(control.dockerControls ? { docker: control.dockerControls } : {}),
+          get: (id) => data(caller).sandboxes.get(id),
+          provider: (sandbox) => providers.resolve(sandbox, caller),
+        },
+      );
     },
     launch: async (actor, input, admission) => {
       // Re-read the persisted execution owner's role, never impersonate the editing admin.

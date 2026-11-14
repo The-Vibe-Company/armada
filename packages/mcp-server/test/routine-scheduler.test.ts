@@ -1,7 +1,6 @@
 import { expect, test } from "bun:test";
 import {
   type ApplicationVaultActor,
-  createRoutineScheduler,
   createRoutineService,
   createSqlMcpLaunchPort,
   createSqlMcpRegistry,
@@ -10,11 +9,23 @@ import {
   type Routine,
   type RoutineLaunchAdmission,
   type Sql,
+  createRoutineScheduler as scheduler,
   type TemplateRuntime,
 } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { database, ENCRYPTION_KEY, fakeBoat } from "./support.ts";
+
+// Existing terminal-state cases explicitly drain; tick itself only admits work.
+function createRoutineScheduler(...args: Parameters<typeof scheduler>) {
+  const instance = scheduler(...args);
+  return {
+    async tick() {
+      await instance.tick();
+      await instance.drain();
+    },
+  };
+}
 
 const sharedDatabase = rowOnlyDatabase();
 
@@ -163,9 +174,7 @@ test("restart after template success but lost history publication reconciles the
           }),
         ),
     };
-    await expect(createRoutineScheduler(crashing, { launch: f.launch, observe: f.observe }).tick()).rejects.toThrow(
-      "lost database connection",
-    );
+    await createRoutineScheduler(crashing, { launch: f.launch, observe: f.observe }).tick();
     expect((await f.runs())[0]).toMatchObject({ state: "admitted" });
     const key = (await f.runs())[0]!.request_key;
     expect((await f.db.query("select id from template_launch_requests where client_key=$1", [key])).rows).toHaveLength(
@@ -487,4 +496,88 @@ test("calendar admission counts missed occurrences once and pauses unavailable s
   } finally {
     await f.close();
   }
+});
+
+test("stalled launch and observation retain their slots without blocking healthy provider admission", async () => {
+  const f = await fixture();
+  await f.due();
+  await createRoutineScheduler(f.sql, { launch: f.launch, observe: f.observe }).tick();
+  await f.db.query("update routine_runs set task_checked_at=null where routine_id=$1", [f.routine.id]);
+  const definition = (
+    await f.db.query<{ definition: Record<string, unknown> }>(
+      "select definition from launch_template_revisions where template_id=$1",
+      [f.routine.templateId],
+    )
+  ).rows[0]!.definition;
+  const secondTemplate = (
+    await f.templates.command(f.actor, "create", {
+      org: f.people.org,
+      scope: "personal",
+      name: "Healthy",
+      definition: {
+        goldenId: definition.goldenId,
+        provider: "boat",
+        harness: "codex",
+        model: "gpt-5.4",
+        reasoningEffort: "high",
+        variables: [],
+        connections: [],
+      },
+    })
+  ).item as { id: string };
+  await f.db.query(
+    "insert into launch_template_revisions(template_id,revision,definition,digest,created_by) select template_id,2,jsonb_set(definition,'{provider}','\"modal\"'),digest,created_by from launch_template_revisions where template_id=$1",
+    [secondTemplate.id],
+  );
+  for (const [name, templateId] of [
+    ["Blocked", f.routine.templateId],
+    ["Healthy", secondTemplate.id],
+  ]) {
+    const routine = (
+      await f.service.command(f.actor, "create", {
+        org: f.people.org,
+        scope: "personal",
+        name,
+        templateId,
+        templateRevision: templateId === secondTemplate.id ? 2 : 1,
+        prompt: "Inspect",
+        intervalHours: 1,
+        maxRunsPerDay: 24,
+        ttlSeconds: 600,
+      })
+    ).item as Routine;
+    await f.db.query("update routines set status='enabled',next_due_at=now()-interval '1 second' where id=$1", [
+      routine.id,
+    ]);
+  }
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const launches: string[] = [];
+  let observations = 0;
+  const instance = scheduler(f.sql, {
+    launch: async (_actor, input) => {
+      launches.push(input.id as string);
+      if (input.id === f.routine.templateId) await pending;
+      return {};
+    },
+    observe: async () => {
+      observations++;
+      await pending;
+      return "finished";
+    },
+  });
+  await instance.tick();
+  expect(launches).toContain(secondTemplate.id);
+  expect(launches).toContain(f.routine.templateId);
+  expect(observations).toBe(1);
+  // Expired leases are not permission to replay a still-owned raw dispatch.
+  await f.db.query("update routine_runs set lease_until=now()-interval '1 second' where state='admitted'");
+  await instance.tick();
+  expect(launches.filter((id) => id === f.routine.templateId)).toHaveLength(1);
+  instance.stop();
+  release();
+  await instance.drain();
+  expect((await f.runs())[0]).toMatchObject({ state: "succeeded" });
 });
