@@ -151,7 +151,6 @@ export class GoldenCreateService {
     const authorizationRepos = requested ? requested.map(({ owner, repo }) => `${owner}/${repo}`) : input.repos;
     const { repos, token: callerToken } = await this.deps.authorize(actor, input.visibility, authorizationRepos);
     if (!repos.length) throw new GoldenError("invalid_config", "A golden needs at least one authorized repository.");
-    const installations = new Set(repos.map((r) => r.installationId));
     const prepared = requested ? applyRequestedRepos(repos, requested) : withGoldenDirs(repos);
     const reservation = await this.deps.reserve?.(provider, actor, input.existingGolden);
     const warnings: GoldenBuildWarning[] = [];
@@ -167,7 +166,7 @@ export class GoldenCreateService {
     let ownedSnapshot: string | undefined;
     let artifactSettled = false;
     let builder: Awaited<ReturnType<Provider["createGolden"]>> | undefined;
-    let issued: { token: string; revoke(): Promise<void> } | undefined;
+    const issued: { token: string; revoke(): Promise<void> }[] = [];
     const buildId = this.deps.execution?.id ?? crypto.randomUUID();
     const startedAt = Date.now();
     let phase = "builder";
@@ -185,26 +184,67 @@ export class GoldenCreateService {
         ...(this.deps.execution ? { idempotencyKey: this.deps.execution.id } : {}),
       });
       await this.deps.execution?.builder(builder.id);
-      // A scoped installation token can cover only one installation. Multiple already-authorized
-      // repos use the caller's cached user token, which is never revoked or rotated here.
+      // Each installation token is scoped to exactly the authorized repositories
+      // from that installation. Public/no-App checkouts retain the caller path.
       await enter("checkout_credentials");
-      issued =
-        this.deps.mint && installations.size === 1 && (repos[0]?.installationId ?? 0) > 0
-          ? await this.deps.mint(
-              repos[0]?.installationId ?? 0,
-              repos.map((r) => r.id),
-            )
-          : { token: callerToken, revoke: () => Promise.resolve() };
+      const tokens = new Map<number, string>();
+      if (this.deps.mint) {
+        for (const installationId of new Set(repos.map((repo) => repo.installationId).filter((id) => id > 0))) {
+          let credential: { token: string; revoke(): Promise<void> };
+          try {
+            credential = await this.deps.mint(
+              installationId,
+              repos.filter((repo) => repo.installationId === installationId).map((repo) => repo.id),
+            );
+          } catch (error) {
+            const message =
+              "GitHub could not issue repository checkout credentials. Ask an administrator to verify the configured App signing key and repository installation access, then rebuild.";
+            throw new GoldenError("forbidden", message, { cause: error, safeMessage: message });
+          }
+          issued.push(credential);
+          tokens.set(installationId, credential.token);
+        }
+      }
+      const groups: { key: number; token: string; repos: PreparedRepo[] }[] = [];
+      for (const repository of prepared) {
+        const key = this.deps.mint && repository.installationId > 0 ? repository.installationId : 0;
+        const previous = groups.at(-1);
+        if (previous?.key === key) previous.repos.push(repository);
+        else {
+          const token = key === 0 ? callerToken : tokens.get(key);
+          if (!token)
+            throw new GoldenError(
+              "forbidden",
+              "The authorized GitHub installation has no checkout credential. Reconnect GitHub and retry.",
+            );
+          groups.push({ key, token, repos: [repository] });
+        }
+      }
+      const setup = [input.config?.init ?? [], input.setup ? [input.setup] : []].flat();
+      const onWarning = (warning: GoldenBuildWarning) => {
+        if (!warnings.includes(warning)) warnings.push(warning);
+      };
       await enter("checkout_baseline");
-      await this.deps.ssh(provider, {
-        sandboxId: builder.id,
-        token: issued.token,
-        repositories: prepared.map((repo) => `${repo.owner}/${repo.repo}`),
-        onWarning: (warning) => {
-          if (!warnings.includes(warning)) warnings.push(warning);
-        },
-        script: goldenScript(prepared, [input.config?.init ?? [], input.setup ? [input.setup] : []].flat()),
-      });
+      for (const group of groups) {
+        await this.deps.execution?.phase("checkout_baseline");
+        await this.deps.ssh(provider, {
+          sandboxId: builder.id,
+          token: group.token,
+          repositories: group.repos.map((repo) => `${repo.owner}/${repo.repo}`),
+          onWarning,
+          script: groups.length === 1 ? goldenScript(prepared, setup) : goldenCheckoutFrame(group.repos),
+        });
+      }
+      if (groups.length > 1) {
+        await this.deps.execution?.phase("checkout_baseline");
+        await this.deps.ssh(provider, {
+          sandboxId: builder.id,
+          token: "",
+          repositories: prepared.map((repo) => `${repo.owner}/${repo.repo}`),
+          onWarning,
+          script: goldenScript(prepared, setup, { skipCheckout: true }),
+        });
+      }
       await enter("secret_scan");
       await this.deps.scan(provider, builder.id, { buildId });
       const helperReceipt = await this.deps.verifyHelper?.(provider, builder.id);
@@ -393,9 +433,10 @@ export class GoldenCreateService {
         await this.deps.release?.(reservation).catch(() => {
           cleanupSafe = false;
         });
-      await issued?.revoke().catch(() => {
-        cleanupSafe = false;
-      });
+      for (const credential of issued)
+        await credential.revoke().catch(() => {
+          cleanupSafe = false;
+        });
       let stopped = false;
       if (builder && !uncertainSnapshot && !uncertainPublication) {
         // Use the host cleanup mode: stopping can create an unwanted durable checkpoint.
@@ -609,9 +650,24 @@ export function goldenCheckoutScript(
   ].join("\n");
 }
 
+function goldenCheckoutFrame(repos: readonly PreparedRepo[]): string {
+  return (
+    [
+      "set -euo pipefail",
+      CLEANUP_TRAP,
+      ownershipSetup(repos),
+      "armada_phase=checkout",
+      "armada_command=0",
+      `trap 'armada_status=$?; printf "ARMADA_BUILD_FAILURE %s %s %s\\n" "$armada_phase" "$armada_status" "$armada_command" >&2' ERR`,
+      goldenCheckoutScript(repos),
+    ].join("\n") + "\n"
+  );
+}
+
 export function goldenScript(
   repos: readonly Pick<PreparedRepo, "owner" | "repo" | "branch" | "dir">[],
   setup: readonly string[] = [],
+  options: { skipCheckout?: boolean } = {},
 ): string {
   const lines = [
     "set -euo pipefail",
@@ -622,7 +678,7 @@ export function goldenScript(
     `trap 'armada_status=$?; printf "ARMADA_BUILD_FAILURE %s %s %s\\n" "$armada_phase" "$armada_status" "$armada_command" >&2' ERR`,
     // Keep credentials process-local.  The helper accepts only Git's HTTPS credential
     // protocol for github.com, and no global/system configuration can leak into a clone.
-    goldenCheckoutScript(repos),
+    options.skipCheckout ? "unset ARMADA_GIT_TOKEN" : goldenCheckoutScript(repos),
     baselineSetup(repos),
     "armada_phase=init",
     ...setup.flatMap((command, index) => [`armada_command=${index + 1}`, command]),

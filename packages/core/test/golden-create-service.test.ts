@@ -91,37 +91,148 @@ test("falls back to the caller's own token and never mints when no App is config
   expect(log).toEqual(["caller-token", "scan", "persist"]);
 });
 
-test.each(["multiple-installations", "public-without-installation"])(
-  "authorized checkout uses caller token without minting (%s)",
-  async (mode) => {
-    const log: string[] = [];
-    const s = new GoldenCreateService({
-      authorize: async () => ({
-        repos:
-          mode === "multiple-installations"
-            ? [repo, { owner: "other", repo: "api", id: 2, installationId: 3 }]
-            : [{ ...repo, installationId: 0 }],
-        token: "caller-token",
-      }),
-      mint: async () => {
-        throw new Error("installation mint must not run");
-      },
-      ssh: async (_p, input) => {
-        log.push(input.token);
-      },
-      scan: async () => {},
-      persist: async () => {
-        log.push("persist");
-      },
-    });
-    const p: any = {
+test("public checkout without an installation never mints", async () => {
+  const calls: string[] = [];
+  const service = new GoldenCreateService({
+    authorize: async () => ({ repos: [{ ...repo, installationId: 0 }], token: "caller-token" }),
+    mint: async () => {
+      throw Error("Public checkout must not mint");
+    },
+    ssh: async (_provider, input) => {
+      calls.push(input.token);
+    },
+    scan: async () => {},
+    persist: async () => {},
+  });
+  await service.create(
+    {
       id: "boat",
       createGolden: async () => ({ id: "bx" }),
       snapshot: async ({ name }: any) => ({ name, status: "ready" }),
       stop: async () => {},
-    };
-    await s.create(p, actor, { name: "many", visibility: "org", repos: ["acme/web", "other/api"] });
-    expect(log).toEqual(["caller-token", "persist"]);
+    } as any,
+    actor,
+    { name: "public", visibility: "org", repos: ["acme/web"] },
+  );
+  expect(calls).toEqual(["caller-token"]);
+});
+
+test("two installations and a private sixth repository use scoped tokens per checkout, preserving public fallback and one init pass", async () => {
+  const repositories = [
+    { owner: "acme", repo: "public1", id: 1, installationId: 2 },
+    { owner: "acme", repo: "public2", id: 2, installationId: 2 },
+    { owner: "acme", repo: "public3", id: 3, installationId: 0 },
+    { owner: "acme", repo: "public4", id: 4, installationId: 2 },
+    { owner: "acme", repo: "public5", id: 5, installationId: 2 },
+    { owner: "other", repo: "private6", id: 6, installationId: 3 },
+  ];
+  const minted: { installation: number; ids: number[] }[] = [];
+  const checkout: { token: string; repositories?: readonly string[]; script: string }[] = [];
+  const revoked: number[] = [];
+  const service = new GoldenCreateService({
+    authorize: async () => ({ repos: repositories, token: "caller-token" }),
+    mint: async (installation, ids) => {
+      minted.push({ installation, ids });
+      return {
+        token: "scoped-" + installation,
+        revoke: async () => {
+          revoked.push(installation);
+        },
+      };
+    },
+    ssh: async (_provider, input) => {
+      checkout.push(input);
+    },
+    scan: async () => {},
+    persist: async () => {},
+  });
+  await service.create(
+    {
+      id: "boat",
+      createGolden: async () => ({ id: "bx" }),
+      snapshot: async ({ name }: any) => ({ name, status: "ready" }),
+      stop: async () => {},
+    } as any,
+    actor,
+    {
+      name: "many",
+      visibility: "org",
+      repos: [],
+      config: {
+        repos: withGoldenDirs(repositories).map((repository) => ({
+          ...repository,
+          branch: repository.branch ?? "main",
+        })),
+        init: ["echo all-ready"],
+      },
+    },
+  );
+  expect(minted).toEqual([
+    { installation: 2, ids: [1, 2, 4, 5] },
+    { installation: 3, ids: [6] },
+  ]);
+  expect(checkout.map(({ token, repositories }) => ({ token, repositories }))).toEqual([
+    { token: "scoped-2", repositories: ["acme/public1", "acme/public2"] },
+    { token: "caller-token", repositories: ["acme/public3"] },
+    { token: "scoped-2", repositories: ["acme/public4", "acme/public5"] },
+    { token: "scoped-3", repositories: ["other/private6"] },
+    { token: "", repositories: repositories.map((repository) => repository.owner + "/" + repository.repo) },
+  ]);
+  expect(checkout.filter(({ script }) => script.includes("echo all-ready"))).toHaveLength(1);
+  expect(checkout.at(-1)?.script).not.toContain("git clone");
+  for (const { script } of checkout) {
+    expect(script).not.toContain("scoped-2");
+    expect(script).not.toContain("scoped-3");
+    expect(script).not.toContain("caller-token");
+    expect(script).toContain("unset ARMADA_GIT_TOKEN");
+  }
+  expect(revoked).toEqual([2, 3]);
+});
+
+test.each(["mint", "checkout"])(
+  "all minted installation tokens are revoked after partial %s failure",
+  async (failure) => {
+    const revoked: number[] = [];
+    let snapshots = 0;
+    const service = new GoldenCreateService({
+      authorize: async () => ({
+        repos: [repo, { ...repo, id: 2, repo: "private", installationId: 3 }],
+        token: "caller-token",
+      }),
+      mint: async (installation) => {
+        if (installation === 3 && failure === "mint") throw Error("Synthetic mint failure");
+        return {
+          token: "scoped-" + installation,
+          revoke: async () => {
+            revoked.push(installation);
+          },
+        };
+      },
+      ssh: async () => {
+        throw Error("Synthetic checkout failure");
+      },
+      scan: async () => {},
+      persist: async () => {
+        throw Error("Must not publish");
+      },
+    });
+    await expect(
+      service.create(
+        {
+          id: "boat",
+          createGolden: async () => ({ id: "bx" }),
+          snapshot: async () => {
+            snapshots++;
+            throw Error("Must not snapshot");
+          },
+          stop: async () => {},
+        } as any,
+        actor,
+        { name: "many", visibility: "org", repos: ["acme/web", "acme/private"] },
+      ),
+    ).rejects.toThrow();
+    expect(revoked).toEqual(failure === "mint" ? [2] : [2, 3]);
+    expect(snapshots).toBe(0);
   },
 );
 
