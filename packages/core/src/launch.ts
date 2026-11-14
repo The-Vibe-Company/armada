@@ -184,7 +184,7 @@ export interface LaunchOptions extends GoldenLimits {
       signal: AbortSignal;
       /** Private resume policy: validate configuration before activating compute. */
       activate?: (signal: AbortSignal) => Promise<void>;
-      restoreCheckpoint?: { epoch: string; watermark: number; conversationId: string };
+      restoreCheckpoint?: { epoch: string; watermark: number; conversationId: string | null };
     }): Promise<{
       prompt: Provider["prompt"];
       epoch: string;

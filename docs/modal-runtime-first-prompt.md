@@ -548,9 +548,9 @@ still revoke it.
 
 Matching schema/server/runtime deployment must include
 `20261114090000_runtime_idle_publication.sql`. Native Modal behavior is unchanged.
-The template extension below adds promptless pinned claims. Stop/wake of a sandbox
-that has never had a conversation, default rollout and authorized tunnel deletion
-remain separate work. Live acceptance requires a coordinator receipt, not these tests.
+The template and empty-checkpoint extensions below add those admission/lifecycle
+cases. Default rollout and authorized tunnel deletion remain separate work.
+Live acceptance requires a coordinator receipt, not these tests.
 
 
 ## Promptless pinned templates
@@ -586,3 +586,48 @@ Matching normal server/runtime deployment and the existing
 `20261114090000_runtime_idle_publication.sql` prerequisite are required. Live
 acceptance remains coordinator-owned; this does not enable default cutover or
 tunnel deletion.
+
+
+## Stop and wake before the first conversation
+
+`--empty-resume` checks a retained empty sandbox, not recall of an already-started
+conversation. It implies `--idle` and refuses `--resume` before allocation so the
+check keeps exactly one allocation and one retained activation:
+
+```sh
+ARMADA_RUNTIME_SMOKE=one_real_modal_launch bun scripts/check-modal-runtime.ts --empty-resume
+```
+
+Existing harness/account/template flags can be combined, for example
+`--empty-resume --variables --usage --skills --mcp --github` with an eligible
+published template and existing authorized inputs. Preflight requires
+`emptyResumeVersion:1` and the applicable existing idle/template capabilities.
+
+The check verifies an empty-ready receipt/status/archive, writes a unique
+non-secret file witness through ordinary exec, checkpoints and confirms retained
+stop. Stopped checkpoint/archive reads must not activate compute or reveal an
+inference turn. It then sends one first instruction WITHOUT a conversation ID.
+The receipt must acknowledge a fresh epoch and `sourceCheckpoint.empty:true`
+with the exact old epoch/watermark. A second exec reads/removes the retained file
+witness; the answer and subsequent same-conversation recall are still required
+before the final checkpoint/stop. Unknown stop or first-send outcomes are never
+retried. The witness adds no model turn or credential/configuration input.
+
+The server durably records the empty-restore decision and a stable server-owned
+first conversation before activation. Only a synchronized, sealed journal with
+NO prompts or native session mapping may attest `conversationId:null`; an empty
+or rolled-back disk is not sufficient. That attestation deliberately skips native
+session-load because there is no native session. Existing nonempty restores still
+require their native session proof. A fresh server reconciles the same operation
+and never reactivates/re-enrols or repeats accepted inference. Configured GitHub
+and MCP access are reauthorized before resumed inference on both shared placements.
+The existing GitHub resume smoke accepts only an unconfigured broker or a fresh
+current-epoch revision distinct from the old one before its explicit refresh;
+automatic reauthorization is not mistaken for surviving stale credentials.
+
+Matching schema/server/runtime must include
+`20261114121000_runtime_empty_checkpoint_resume.sql` (private server-only mode;
+existing operations default to nonempty). No default flip, native fallback, new
+credentials or manual artifact publication. Live acceptance remains coordinator
+owned; secrets/multi-conversation/default readiness and the production-day gate
+still precede authorized tunnel deletion.

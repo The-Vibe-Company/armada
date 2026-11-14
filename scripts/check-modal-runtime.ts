@@ -48,6 +48,7 @@ interface Reply {
     enabled?: boolean;
     followupVersion?: number;
     idleLaunchVersion?: number;
+    emptyResumeVersion?: number;
     idleTemplateVersion?: number;
     resumeVersion?: number;
     mcpVersion?: number;
@@ -76,7 +77,7 @@ interface Reply {
   conversationId?: string;
   requestId?: string;
   resumed?: boolean;
-  sourceCheckpoint?: { epoch?: string; watermark?: number };
+  sourceCheckpoint?: { epoch?: string; watermark?: number; empty?: boolean };
   checkpoint?: { state?: string; watermark?: number; acknowledgedSequence?: number };
   source?: string;
   cursor?: string | null;
@@ -131,7 +132,12 @@ if (harness === "opencode") {
 }
 if (harness === "claude" && options.modalRuntime.claudeVersion !== 1)
   throw Error("Modal enrolled Claude v1 is unavailable; no launch attempted.");
-const idleMode = process.argv.includes("--idle");
+const emptyResumeMode = process.argv.includes("--empty-resume");
+if (emptyResumeMode && process.argv.includes("--resume"))
+  throw Error("Select one retained activation mode; no launch attempted.");
+if (emptyResumeMode && options.modalRuntime.emptyResumeVersion !== 1)
+  throw Error("Modal empty-checkpoint resume v1 is unavailable; no launch attempted.");
+const idleMode = process.argv.includes("--idle") || emptyResumeMode;
 if (idleMode && options.modalRuntime.idleLaunchVersion !== 1)
   throw Error("Modal promptless launch/first-send v1 is unavailable; no launch attempted.");
 if (idleMode && process.argv.includes("--variables") && options.modalRuntime.idleTemplateVersion !== 1)
@@ -556,7 +562,12 @@ const verifyPrompt = async (expectedPromptId: string, expectedAnswer: string) =>
   await verifyUsageStatus();
 };
 
-const validateCheckpoint = (receipt: Reply, expectedEpoch: string, requestId: string, watermark?: number) => {
+function validateCheckpoint(
+  receipt: Reply,
+  expectedEpoch: string,
+  requestId: string,
+  watermark?: number,
+): asserts receipt is Reply & { checkpoint: { state: "complete"; watermark: number; acknowledgedSequence: number } } {
   const proof = receipt.checkpoint;
   if (
     receipt.requestId !== requestId ||
@@ -569,7 +580,7 @@ const validateCheckpoint = (receipt: Reply, expectedEpoch: string, requestId: st
     (watermark !== undefined && proof.watermark !== watermark)
   )
     throw Error("Modal checkpoint lacks the current epoch and durable journal ACK.");
-};
+}
 const checkpoint = async (expectedEpoch: string) => {
   const requestId = crypto.randomUUID();
   console.log(JSON.stringify({ operation: "runtime_checkpoint", sandboxId: id, requestId }));
@@ -669,6 +680,9 @@ try {
     (!idleMode && (!promptId || !launched.conversationId))
   )
     throw Error("Missing Modal enrolled launch acknowledgement; reconcile existing allocation, never launch again.");
+  if (skillsMode && launched.sandbox.goldenId !== defaultGoldenId)
+    throw Error("Modal launch selected a different golden than the default-skill policy; no retry.");
+  launchSkills = launched.sandbox.skills;
   if (idleMode && templateSource) {
     const current = await api("sandbox/status", { id });
     if (
@@ -701,13 +715,43 @@ try {
       history.events.some((event) => event.kind === "prompt" || event.kind === "message")
     )
       throw Error("Idle archive already contains inference or lacks common-runtime provenance.");
+    let emptySource: { epoch: string; watermark: number; file: string; nonce: string } | undefined;
+    if (emptyResumeMode) {
+      if (!epoch) throw Error("Missing empty source epoch.");
+      const file = `/home/user/.retained-${crypto.randomUUID()}`,
+        nonce = `EMPTY_${crypto.randomUUID().replaceAll("-", "")}`;
+      const written = await api<{ exitCode?: number; stdout?: string; timedOut?: boolean; truncated?: boolean }>(
+        "sandbox/exec",
+        { id, command: `printf %s ${shellQuote(nonce)} > ${shellQuote(file)}` },
+      );
+      if (written.exitCode !== 0 || written.stdout !== "" || written.timedOut !== false || written.truncated !== false)
+        throw Error("Empty checkpoint file witness could not be written.");
+      const sealed = await checkpoint(epoch);
+      await stopKnown(true);
+      const stopped = await api("sandbox/checkpoint-runtime-v1", {
+        id,
+        runtimeVersion: 1,
+        request_id: sealed.requestId,
+      });
+      validateCheckpoint(stopped, epoch, sealed.requestId, sealed.receipt.checkpoint?.watermark);
+      const history = await api("logs/read", { id, limit: 1000 });
+      if (
+        history.source !== "armada-runtime" ||
+        history.runtimeFailure ||
+        !Array.isArray(history.events) ||
+        history.events.some((event) => event.kind === "prompt" || event.kind === "message")
+      )
+        throw Error("Stopped empty checkpoint contains inference or lost archive provenance.");
+      emptySource = { epoch, watermark: sealed.receipt.checkpoint.watermark, file, nonce };
+      shouldStop = true; // The known sandbox may activate even if its first-send response is lost.
+    }
     const firstRequestId = crypto.randomUUID();
     console.log(JSON.stringify({ operation: "runtime_first_send", sandboxId: id, requestId: firstRequestId }));
     const first = await api("sandbox/send", { id, request_id: firstRequestId, prompt: initialPrompt });
     if (
       first.requestId !== firstRequestId ||
       first.runtime?.kind !== "armada" ||
-      first.runtime.epoch !== epoch ||
+      first.runtime.epoch !== (emptySource ? String(BigInt(emptySource.epoch) + 1n) : epoch) ||
       typeof first.promptId !== "string" ||
       !first.promptId ||
       typeof first.conversationId !== "string" ||
@@ -716,13 +760,32 @@ try {
       throw Error(
         "Missing current-epoch first-send acknowledgement; reconcile the same request identity, never resend.",
       );
+    if (emptySource) {
+      if (
+        first.resumed !== true ||
+        first.sourceCheckpoint?.empty !== true ||
+        first.sourceCheckpoint.epoch !== emptySource.epoch ||
+        first.sourceCheckpoint.watermark !== emptySource.watermark
+      )
+        throw Error("Missing verified empty-checkpoint resume receipt; never retry activation.");
+      epoch = first.runtime.epoch;
+      const read = await api<{ exitCode?: number; stdout?: string; timedOut?: boolean; truncated?: boolean }>(
+        "sandbox/exec",
+        { id, command: `cat ${shellQuote(emptySource.file)} && rm ${shellQuote(emptySource.file)}` },
+      );
+      if (
+        read.exitCode !== 0 ||
+        read.stdout !== emptySource.nonce ||
+        read.timedOut !== false ||
+        read.truncated !== false
+      )
+        throw Error("Empty checkpoint did not preserve the file witness.");
+    }
+    epoch = first.runtime.epoch;
     launched.promptId = promptId = first.promptId;
     launched.conversationId = conversationId = first.conversationId;
   }
   if (!promptId || !conversationId) throw Error("Missing admitted initial Modal conversation.");
-  if (skillsMode && launched.sandbox.goldenId !== defaultGoldenId)
-    throw Error("Modal launch selected a different golden than the default-skill policy; no retry.");
-  launchSkills = launched.sandbox.skills;
   await verifySkillStatus();
   await verifyPrompt(promptId, answer);
   initialGitHubRevision = githubMode ? await configureGitHub(epoch ?? "") : undefined;
@@ -772,6 +835,7 @@ try {
       source: "armada-runtime",
       answer: "verified",
       ...(idleMode ? { idleFirstSend: "verified" } : {}),
+      ...(emptyResumeMode ? { emptyResume: "verified", retainedFile: "verified" } : {}),
       checkpoint: "verified",
       ...(githubMode ? { github: "verified" } : {}),
       ...(mcpMode ? { mcp: "verified" } : {}),
@@ -783,7 +847,7 @@ try {
 } catch (error) {
   failure = error;
 }
-const stopKnown = async () => {
+async function stopKnown(requireRetained = false) {
   if (id && shouldStop) {
     shouldStop = false; // Dispatch once even when its transport outcome is unknown.
     try {
@@ -797,7 +861,8 @@ const stopKnown = async () => {
             (row) =>
               row.id === id &&
               (row.status === "stopped" ||
-                (row.status === "failed" &&
+                (!requireRetained &&
+                  row.status === "failed" &&
                   typeof row.stoppedAt === "string" &&
                   Number.isFinite(Date.parse(row.stoppedAt)))),
           ) === true;
@@ -812,7 +877,7 @@ const stopKnown = async () => {
     await verifySkillStatus();
     if (!failure && usageProof) await verifyUsageStatus();
   }
-};
+}
 try {
   await stopKnown();
 } catch (error) {
@@ -864,7 +929,8 @@ if (
       !/^[1-9][0-9]{0,18}$/.test(resumed.runtime.epoch ?? "") ||
       BigInt(resumed.runtime.epoch ?? "0") !== BigInt(sourceEpoch) + 1n ||
       resumed.sourceCheckpoint?.epoch !== sourceEpoch ||
-      resumed.sourceCheckpoint.watermark !== sourceWatermark
+      resumed.sourceCheckpoint.watermark !== sourceWatermark ||
+      resumed.sourceCheckpoint.empty === true
     )
       throw Error(
         "Modal resume lacks same-conversation/new-epoch/restored-checkpoint acknowledgement; reconcile request_id, never activate again.",
@@ -876,8 +942,14 @@ if (
     if (githubMode) {
       const currentEpoch = resumed.runtime.epoch ?? "";
       const before = await api("github/runtime-status", { id });
-      if (before.configured !== false || before.runtime?.epoch !== currentEpoch)
-        throw Error("Old GitHub configuration survived the runtime epoch change.");
+      if (
+        before.runtime?.kind !== "armada" ||
+        before.runtime.epoch !== currentEpoch ||
+        typeof before.configured !== "boolean" ||
+        (before.configured &&
+          (typeof before.revision !== "string" || !before.revision || before.revision === initialGitHubRevision))
+      )
+        throw Error("GitHub configuration is stale or lacks current-epoch revision proof.");
       const revision = await configureGitHub(currentEpoch);
       if (revision === initialGitHubRevision) throw Error("Resume reused the previous GitHub revision.");
       const requestId = crypto.randomUUID();
