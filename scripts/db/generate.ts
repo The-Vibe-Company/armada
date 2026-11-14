@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { applyMigrations, openDatabase } from "./apply.ts";
 
 type Column = {
@@ -223,14 +222,8 @@ async function introspect(db: Awaited<ReturnType<typeof openDatabase>>): Promise
     enumLabels.set(row.name, labels);
   }
 
-  const retired = new Set(
-    [...readFileSync(new URL("../../docs/retained-tables.md", import.meta.url), "utf8").matchAll(/^- (\w+)$/gm)].map(
-      (match) => match[1],
-    ),
-  );
   const tables = new Map<string, Table>();
   for (const row of columns.rows) {
-    if (retired.has(row.table_name)) continue;
     let table = tables.get(row.table_name);
     if (!table) {
       table = { name: row.table_name, columns: [], foreignKeys: [] };
@@ -245,7 +238,6 @@ async function introspect(db: Awaited<ReturnType<typeof openDatabase>>): Promise
   }
 
   for (const row of foreignKeys.rows) {
-    if (retired.has(row.table_name)) continue;
     const table = tables.get(row.table_name);
     if (!table) throw new Error(`foreign key ${row.name} is on an unknown table`);
     const keys = numbers(row.keys);
