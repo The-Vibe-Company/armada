@@ -16,7 +16,7 @@ export function githubRuntimeEnvironment(
   };
 }
 /** Bash reads this after login profiles as well as for ordinary noninteractive commands. No secret values. */
-export function githubShellEnvironmentScript(root: string): string {
+function githubShellEnvironmentScript(root: string): string {
   const bin = join(root, "bin");
   return `case "\${PATH-}" in ${q(bin)}|${q(bin)}:*) ;; *) export PATH=${q(bin)}:"\${PATH-/usr/local/bin:/usr/bin:/bin}" ;; esac\n`;
 }
