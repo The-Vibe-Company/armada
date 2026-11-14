@@ -102,6 +102,7 @@ const accountMatrix = {
 interface Case {
   githubRepository?: string;
   account?: keyof typeof accountMatrix;
+  notRunReason?: "account has no declared model";
   provider: Provider;
   org: string;
   harness: string;
@@ -952,7 +953,10 @@ async function accountsParity(env: NodeJS.ProcessEnv, io: Io, args: string[]): P
       if (typeof c.account !== "string" || !Object.hasOwn(accountMatrix, c.account))
         invalid(`${path}.account`, `must be one of: ${Object.keys(accountMatrix).join(", ")}`);
       if (accountMatrix[c.account!] !== c.harness) invalid(`${path}.harness`, "must match the selected account label");
-      for (const name of ["org", "model", "modelAccountId", c.provider === "docker" ? "hostId" : "golden"] as const)
+      if (c.notRunReason !== undefined && c.notRunReason !== "account has no declared model")
+        invalid(`${path}.notRunReason`, "must equal account has no declared model when supplied");
+      if (!c.notRunReason) nonempty(c.model, `${path}.model`);
+      for (const name of ["org", "modelAccountId", c.provider === "docker" ? "hostId" : "golden"] as const)
         nonempty(c[name], `${path}.${name}`);
       const key = `${c.provider}:${c.account}`;
       if (seen.has(key)) invalid(`${path}.account`, "duplicate provider/account pair");
@@ -979,9 +983,10 @@ async function accountsParity(env: NodeJS.ProcessEnv, io: Io, args: string[]): P
     accounts[account] = {};
     for (const provider of providers) {
       const c = cases.find((c) => c.account === account && c.provider === provider);
-      let result: object = { status: "not-run", reason: "no account on staging" };
-      let status = "not-run: no account on staging";
-      if (c) {
+      const reason = c?.notRunReason ?? "no account on staging";
+      let result: object = { status: "not-run", reason };
+      let status = `not-run: ${reason}`;
+      if (c && !c.notRunReason) {
         let receipt: Record<string, Partial<Record<Provider, Cell>>> | undefined;
         const ok = await providerParitySmoke(
           { ...env, ARMADA_SMOKE_CASES: JSON.stringify([c]), GITHUB_STEP_SUMMARY: undefined },

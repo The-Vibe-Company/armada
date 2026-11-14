@@ -22,6 +22,7 @@ for (const mode of [
   "accounts",
   "accounts_unknown",
   "accounts_invalid",
+  "accounts_missing_model",
   "accounts_stop_unsupported",
   "accounts_unknown_bad",
   "accounts_price_lost",
@@ -75,7 +76,9 @@ for (const mode of [
               provider,
               org: provider,
               harness: "codex",
-              model: "fake-model",
+              ...(mode === "accounts_missing_model" && account === "codex-azure"
+                ? { model: "", notRunReason: "account has no declared model" }
+                : { model: "fake-model" }),
               modelAccountId: "fake-account",
               golden: "fake-golden",
               hostId: "owned-host",
@@ -349,6 +352,13 @@ for (const mode of [
       for (const account of ["codex-openai", "codex-azure"]) {
         for (const provider of ["modal", "docker"]) {
           const cell = report.accounts[account][provider];
+          if (mode === "accounts_missing_model" && account === "codex-azure") {
+            expect(cell).toEqual({ status: "not-run", reason: "account has no declared model" });
+            expect(lines.join("\n")).toContain(
+              `| codex-azure | ${provider} | not-run: account has no declared model |`,
+            );
+            continue;
+          }
           expect(cell.status).toBe(badCost ? "fail" : mode === "accounts_stop_unsupported" ? "not-run" : "pass");
           expect(cell.features["resume-recall"][provider].status).toBe("pass");
           if (mode === "accounts_unknown") expect(cell.features["exact-cost"][provider].reason).toBe("unknown: price");
@@ -360,8 +370,12 @@ for (const mode of [
         status: "not-run",
         reason: "no account on staging",
       });
-      expect(calls.filter((call) => call.endsWith(":sandbox/launch"))).toHaveLength(4);
-      expect(calls.filter((call) => call.endsWith(":sandbox/delete"))).toHaveLength(4);
+      expect(calls.filter((call) => call.endsWith(":sandbox/launch"))).toHaveLength(
+        mode === "accounts_missing_model" ? 2 : 4,
+      );
+      expect(calls.filter((call) => call.endsWith(":sandbox/delete"))).toHaveLength(
+        mode === "accounts_missing_model" ? 2 : 4,
+      );
       expect(calls.some((call) => call.startsWith("boat:"))).toBe(false);
       return;
     }
@@ -885,6 +899,19 @@ for (const [name, override, field] of [
   ["malformed JSON", { ARMADA_SMOKE_CASES: '{"secret":"never-echo-this"' }, "ARMADA_SMOKE_CASES"],
   ["non-array", { ARMADA_SMOKE_CASES: "{}" }, "ARMADA_SMOKE_CASES"],
   ["non-object", { ARMADA_SMOKE_CASES: "[null]" }, "ARMADA_SMOKE_CASES[0]"],
+  [
+    "unrecognized skip reason",
+    {
+      ARMADA_SMOKE_CASES:
+        '[{"provider":"modal","account":"codex-azure","harness":"codex","notRunReason":"never-echo-this"}]',
+    },
+    "ARMADA_SMOKE_CASES[0].notRunReason",
+  ],
+  [
+    "missing model without explicit metadata skip",
+    { ARMADA_SMOKE_CASES: '[{"provider":"modal","account":"codex-azure","harness":"codex"}]' },
+    "ARMADA_SMOKE_CASES[0].model",
+  ],
   [
     "normal case without label",
     { ARMADA_SMOKE_CASES: '[{"provider":"boat"},{"provider":"modal"}]' },

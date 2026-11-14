@@ -1053,17 +1053,15 @@ for (const base of bases) {
   });
   if (!response.ok) throw new Error(`Account model discovery failed: HTTP ${response.status}`);
   const { connections } = await response.json();
-  const declared = (id, field) => {
+  const custom = (account, harness, id) => {
     const model = connections.find(c => c.id === id)?.models[0]?.model;
-    if (!model) throw new Error(`${field}: no declared model visible in this org; check the account configuration`);
-    return model;
+    return { ...base, account, harness, modelAccountId: id, model: model ?? "",
+      ...(model ? {} : { notRunReason: "account has no declared model" }) };
   };
   result.push(
     { ...base, account: "codex-openai", harness: "codex", modelAccountId: env.SMOKE_OPENAI_ACCOUNT },
-    { ...base, account: "codex-azure", harness: "codex", modelAccountId: env.SMOKE_AZURE_ACCOUNT,
-      model: declared(env.SMOKE_AZURE_ACCOUNT, "SMOKE_AZURE_ACCOUNT") },
-    { ...base, account: "opencode-deepseek", harness: "opencode", modelAccountId: env.SMOKE_DEEPSEEK_ACCOUNT,
-      model: declared(env.SMOKE_DEEPSEEK_ACCOUNT, "SMOKE_DEEPSEEK_ACCOUNT") },
+    custom("codex-azure", "codex", env.SMOKE_AZURE_ACCOUNT),
+    custom("opencode-deepseek", "opencode", env.SMOKE_DEEPSEEK_ACCOUNT),
   );
 }
 console.log(JSON.stringify(result));
@@ -1072,19 +1070,84 @@ export ARMADA_SMOKE_CASES="$accounts_cases"
 bun scripts/post-deploy-smoke.ts --parity --accounts
 ```
 
-This deliberately launches **six cells** (three account selections on two
-providers), with follow-up and resumed turns, then cleanup. Do not rerun the
+This deliberately launches **up to six cells** (three account selections on two
+providers), with follow-up and resumed turns, then cleanup. A custom account
+with no declared model produces `not-run: account has no declared model` for
+only its two cells; the remaining cells still run and the full table prints.
+The internal `notRunReason` is a closed configuration marker, never a pass or a
+reason to allocate compute with a guessed deployment. Account IDs, provider
+resource fields and other configuration still undergo normal validation. Do not rerun the
 expansion on already-expanded cases. No Anthropic or subscription credentials
 are required. Their unconfigured cells remain explicitly not-run, not failures
 or claimed passes. To choose a different declared custom model, replace
 `models[0]` in the recipe with the intended declared model selection.
 
+##### Azure deployment configuration and verification
+
+Both owner-facing creation paths are implemented: **Azure AI Foundry** for
+Codex and **Azure for OpenCode**. The shared preset requires at least one model;
+for Azure, enter the **deployment name configured in your Azure resource**,
+not an assumed underlying model name. In dashboard **Models → Add a model
+account**, select the appropriate provider, enter its OpenAI v1 address and API
+key, and enter the deployment under **Model IDs** (or **Other model IDs** when a
+catalog is shown). A catalog model name is usable only if your deployment
+actually has that name. The preset refuses an empty model list before saving.
+
+CLI equivalents from this checkout, with the staging Armada token already
+exported from your secret source:
+
+```bash
+export ARMADA_URL=https://armada-mcp-staging.up.railway.app
+export AZURE_V1_URL='https://YOUR-RESOURCE.openai.azure.com/openai/v1'
+# For a Foundry resource, use its https://YOUR-RESOURCE.services.ai.azure.com/openai/v1 address.
+export AZURE_DEPLOYMENT='YOUR-ACTUAL-DEPLOYMENT-NAME'
+export AZURE_KEY_FILE='/private/azure-key'
+
+bun run armada creds connect azure-foundry --name 'Azure Codex' \
+  --base-url "$AZURE_V1_URL" --models "$AZURE_DEPLOYMENT" \
+  --file "$AZURE_KEY_FILE"
+
+bun run armada creds connect opencode-azure --name 'Azure OpenCode' \
+  --base-url "$AZURE_V1_URL" --models "$AZURE_DEPLOYMENT" \
+  < "$AZURE_KEY_FILE"
+```
+
+These create separate personal accounts, not a mutation of a retained sandbox's
+billing account. Neither command accepts a secret in argv; omit `--file` to read
+stdin. Use a CLI containing `creds connect` (the source command avoids an old
+installed CLI). OpenCode uses API-key authentication and the v1 Responses path;
+legacy versioned Azure URLs and interactive Entra sign-in are not supported by
+that preset. Save success means **configuration saved, not deployment tested**.
+
+The older **OpenAI API key → Use a custom endpoint** dashboard route can still
+save an endpoint without any deployment list; that legacy gap is tracked in
+#1579. Missing declared metadata does not prove the key or endpoint is invalid,
+but a harness default is not a safe substitute for an Azure deployment name.
+For an existing account, **Replace key → Azure AI Foundry** re-enters the address,
+key and deployment through the required-model preset (and rotates its version);
+or create a new correctly configured account with the commands above.
+An account's name alone cannot establish its sealed endpoint or authentication.
+
+For Codex, dashboard **Test connection** (or
+`bun run armada creds test SANDBOX_ID --model "$AZURE_DEPLOYMENT"`) sends a tiny
+billable request through an already idle Modal sandbox pinned to that account
+and revision; it does not launch/resume a machine or prove the full harness
+lifecycle. This check is not implemented for OpenCode. Its live verification is
+the existing `opencode-azure` accounts cell: use the new account ID and
+`armada/YOUR-ACTUAL-DEPLOYMENT-NAME` as the model. Codex uses the bare deployment
+name. Run both Modal and owned-Docker cells for answer, follow-up, resumed recall,
+usage, honest costs and cleanup. Neither account creation flow automatically
+performs this live test; completing that onboarding validation remains #1579
+work, not a claim made by the configuration or smoke-table repair.
+
 An absent pair prints `not-run: no account on staging`, including subscriptions.
-Only provision supported connections: OpenCode custom connections currently speak
-OpenAI-compatible chat completions, not native Anthropic Messages; its endpoint
-contract has no API-version query field. Claude gateways must speak Anthropic
-Messages; native Azure Foundry authentication is not established. These gaps
-remain tracked by #1579, not advertised as working by this probe.
+Only provision supported connections: the generic **Other OpenAI-compatible**
+OpenCode route speaks chat completions. Dedicated OpenCode presets select native
+Anthropic Messages, OpenAI Responses or Azure v1 Responses instead. Azure's
+OpenCode preset takes no API-version query parameter and supports API keys, not
+interactive Entra sign-in. Claude gateways must speak Anthropic Messages.
+Implemented configuration paths are not evidence of successful live cells; gaps
+and unsupported variants remain tracked by #1579.
 
 The probe sends an initial answer request, a follow-up recall request, then checks
 recall after stop/resume, token receipts, cost classification and cleanup.
