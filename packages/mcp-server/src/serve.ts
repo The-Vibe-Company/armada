@@ -12,6 +12,7 @@ import {
   githubInstallationAppFromEnv,
   type LaunchOptions,
   resolveBoatKey,
+  resolveGitHubAccess,
   VaultError,
 } from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
@@ -55,6 +56,7 @@ import { createModelUsageApi } from "./model-usage.ts";
 import type { NamedLaunchCredentials } from "./named-credentials.ts";
 import { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
 import { createOttoApi } from "./otto/api.ts";
+import { createOttoProofApi } from "./otto/proof-api.ts";
 import { createOttoRuntime } from "./otto/runtime.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
 import { pruneServerRetention } from "./retention-maintenance.ts";
@@ -622,6 +624,30 @@ export async function startServer(
       ...(otto
         ? [
             otto.route,
+            createOttoProofApi(
+              ottoSql ?? sql,
+              otto.scope,
+              (request) =>
+                authenticateCaller(request.headers.get("authorization"), {
+                  store: authStore,
+                  supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
+                  now: new Date(),
+                }),
+              env.ARMADA_OTTO_GITHUB_TOKEN,
+              async (caller, repository) => {
+                const access = await resolveGitHubAccess(
+                  { store, app: githubApp, encryptionKey: config.encryptionKey, caller: "account_status" },
+                  caller.userId,
+                );
+                if (access.status !== "connected") return false;
+                const response = await globalThis.fetch(`https://api.github.com/repos/${repository}`, {
+                  redirect: "error",
+                  signal: AbortSignal.timeout(2000),
+                  headers: { authorization: `Bearer ${access.token}`, accept: "application/vnd.github+json" },
+                });
+                return response.ok;
+              },
+            ),
             createOttoApi(
               ottoSql ?? sql,
               otto.scope,
