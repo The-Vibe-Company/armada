@@ -18,7 +18,8 @@ describe("GitHub installation token", () => {
       fetch: fake,
     });
     expect(result).toMatchObject({ installationId: 7 });
-    expect(seen).toContain("repository_ids");
+    expect(seen).toContain('"repository_ids":[11,12]');
+    expect(seen).toContain('"permissions":{"contents":"read"}');
     expect(seen).not.toContain("ghs_test_secret");
   });
   test("rejects missing scope and impossible expiry", async () => {

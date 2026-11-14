@@ -1288,3 +1288,20 @@ natural idle with stop/resume. Cleanup still runs on every known allocation.
 This encodes the coordinator's #1562 pause/recall observation. It relies on the
 server's confirmed shutdown projection, not a host ACK; independent provider
 console/host observations remain the coordinator's physical-compute evidence.
+
+### Steer and interrupt parity
+
+`--parity --feature steer` and `--parity --feature interrupt` reuse the selected
+provider case's sandbox. The probe sends a controlled terminal-wait task and
+observes that exact prompt running before issuing the control once. Steer must
+produce its unique redirected final assistant answer and a finished event on
+the same run (the Boat steer-record ID is not assumed to be a run ID). Interrupt
+must produce an interrupted outcome for the original prompt; an acknowledgement
+alone, or ordinary completion, is not a pass. Tool-result echoes are not answers.
+
+Each control shares a 110-second observation/request budget, with no mutation
+retries. Cleanup remains independent. Advertised unsupported controls remain
+visible debt. Full runs place these controls after resume/usage observations so
+the deliberately interrupted task does not contaminate their cost evidence;
+there are no extra sandbox allocations. These are coordinator/provider probes,
+not unit-test sleeps or CI provider calls.
