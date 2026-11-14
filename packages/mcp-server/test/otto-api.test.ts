@@ -156,7 +156,7 @@ test("repository discovery isolates a denied repository from healthy observation
     },
   );
   const listing = await route(new Request(`https://armada.test/api/v1/otto/repositories?org_id=${scope.orgId}`));
-  expect((await listing!.json()).items).toEqual([scope.repository]);
+  expect(await listing!.json()).toMatchObject({ items: [scope.repository] });
   const facts = await route(
     new Request(`https://armada.test/api/v1/otto/facts?org_id=${scope.orgId}&repository=${scope.repository}`),
   );

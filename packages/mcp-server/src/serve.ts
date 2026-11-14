@@ -622,6 +622,7 @@ export async function startServer(
         : []),
       ...(otto ? [otto.route] : []),
       ...createOttoRoutes({
+        reader: store,
         sql: ottoSql ?? sql,
         scopes: otto?.scopes ?? [],
         authenticate: (request) =>

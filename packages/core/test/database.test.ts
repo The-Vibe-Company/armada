@@ -165,6 +165,7 @@ describe("database", () => {
         "orgs DELETE",
         "orgs SELECT(created_at,id,name)",
         "orgs UPDATE(boat_api_key_enc,name)",
+        "otto_engine_preferences SELECT",
         "otto_objective_messages SELECT(body,created_at,id,objective_id,org_id,owner_id,revision)",
         "otto_objectives SELECT(created_at,id,org_id,owner_id,repository,request,revision,updated_at)",
         "personal_skill_defaults SELECT",
@@ -213,6 +214,7 @@ describe("database", () => {
         }
         if (!secretName.test(column.column_name)) continue;
         if (
+          id === "otto_engine_preferences.credential_id" ||
           id === "sandboxes.credential_id" ||
           id === "sandboxes.credential_version" ||
           id === "modal_server_harnesses.credential_id" ||

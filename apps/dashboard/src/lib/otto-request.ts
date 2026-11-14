@@ -9,6 +9,7 @@ export async function ottoRequest(options: {
   path: string;
   params?: Record<string, string>;
   body?: unknown;
+  method?: "GET" | "POST" | "PUT";
   signal?: AbortSignal;
   fetch?: typeof fetch;
 }): Promise<{ response: Response; body: unknown }> {
@@ -20,7 +21,7 @@ export async function ottoRequest(options: {
   for (const [key, value] of Object.entries(options.params ?? {})) url.searchParams.set(key, value);
   const signal = options.signal ?? ottoDeadline();
   const response = await (options.fetch ?? fetch)(url, {
-    method: options.body === undefined ? "GET" : "POST",
+    method: options.method ?? (options.body === undefined ? "GET" : "POST"),
     headers: { authorization: `Bearer ${options.token}`, "content-type": "application/json" },
     ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
     redirect: "error",

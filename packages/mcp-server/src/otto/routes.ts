@@ -1,7 +1,8 @@
-import { resolveOttoRepositories, type Sql } from "@armada/core/server";
+import { type CredentialReader, resolveOttoRepositories, type Sql } from "@armada/core/server";
 import type { Caller, CallerResult } from "../caller.ts";
 import type { Route } from "../http.ts";
 import { createOttoApi } from "./api.ts";
+import { createOttoEngineApi } from "./engine-api.ts";
 import { createOttoEvidenceApi } from "./evidence-api.ts";
 import { createOttoObjectivesApi } from "./objectives-api.ts";
 import type { OttoScope } from "./observation.ts";
@@ -9,6 +10,7 @@ import type { OttoScope } from "./observation.ts";
 /** All web endpoints mount together; absent observation configuration is an empty scope, not a missing route. */
 export function createOttoRoutes(options: {
   sql: Sql;
+  reader: CredentialReader;
   scopes: readonly OttoScope[];
   authenticate: (request: Request) => Promise<CallerResult>;
   canReadRepository: (caller: Caller, repository: string) => Promise<boolean>;
@@ -25,6 +27,7 @@ export function createOttoRoutes(options: {
   };
   return [
     createOttoObjectivesApi(sql, authenticate),
+    createOttoEngineApi(sql, options.reader, options.encryptionKey, authenticate),
     createOttoEvidenceApi(sql, scopes, authenticate, options.observerToken, canReadRepository),
     createOttoApi(sql, scopes, authenticate, undefined, options.encryptionKey, canReadRepository),
   ];

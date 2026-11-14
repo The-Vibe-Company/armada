@@ -9,10 +9,11 @@ test("Otto web routes remain mounted without observer configuration", async () =
       },
     },
     scopes: [],
+    reader: { credentials: async () => [], orgBoatKey: async () => null },
     authenticate: async () => ({ ok: false }),
     canReadRepository: async () => false,
   });
-  for (const path of ["objectives", "evidence", "repositories", "summary"]) {
+  for (const path of ["objectives", "evidence", "repositories", "summary", "engine"]) {
     let response: Response | null = null;
     for (const route of routes) {
       response = await route(new Request(`https://armada.test/api/v1/otto/${path}`));
