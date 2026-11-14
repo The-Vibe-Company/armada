@@ -5,7 +5,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BootstrapDescriptor } from "../../core/src/docker-host-job.ts";
 import { createDockerMachineExecutor, DockerMachineError } from "../../core/src/docker-machine.ts";
-import { type Api, type Executor, type Job, register, type State, type Store, tick } from "../src/daemon.ts";
+import {
+  type Api,
+  compactReceipts,
+  type Executor,
+  type Job,
+  register,
+  type State,
+  type Store,
+  tick,
+} from "../src/daemon.ts";
 import { fileStore, httpApi } from "../src/native.ts";
 
 function fail(): never {
@@ -972,3 +981,58 @@ test("TTL index deduplicates active receipts, retires terminal history and rotat
   expect(polls).toBe(4);
   expect((await f.store.load()).receipts).toHaveLength(5);
 });
+
+// Build legacy compacted state through the production compactor, not invented fences.
+test.each(["stop", "delete", "expired", "resumed"] as const)(
+  "legacy compacted %s history preserves only uncertain live TTL obligations",
+  async (kind) => {
+    const f = fixture();
+    await tick(f.store, f.api, f.executor);
+    const state = await f.store.load();
+    delete state.activeTtl;
+    const original = state.receipts[0] ?? fail();
+    if (kind === "expired") {
+      original.expired = true;
+      original.expiryReported = true;
+      state.receipts.push({
+        ...original,
+        operation: "bootstrap",
+        inputHash: "bootstrap_input",
+        requestId: crypto.randomUUID(),
+      });
+      const bootstrap = state.receipts[1] ?? fail();
+      delete bootstrap.expired;
+      delete bootstrap.expiryReported;
+    } else {
+      state.receipts.push({
+        request: original.request,
+        requestId: crypto.randomUUID(),
+        operation: kind === "delete" ? "delete" : "stop",
+        outcome: "completed",
+      });
+      if (kind === "resumed")
+        state.receipts.push({
+          ...original,
+          operation: "resume",
+          inputHash: "resume_input",
+          requestId: crypto.randomUUID(),
+        });
+    }
+    // Reach the real compaction threshold with closed unrelated receipts.
+    state.receipts.push(
+      ...Array.from({ length: 4500 }, () => ({
+        request: { ...original.request, sandboxId: crypto.randomUUID(), generation: crypto.randomUUID() },
+        requestId: crypto.randomUUID(),
+        operation: "delete" as const,
+        outcome: "completed" as const,
+      })),
+    );
+    compactReceipts(state);
+    expect(state.retired?.length).toBeGreaterThan(0);
+    await f.store.save(state);
+    f.swept.length = 0;
+    f.deny();
+    await expect(tick(f.store, f.api, f.executor)).rejects.toThrow("denied");
+    expect(f.swept).toEqual(kind === "resumed" ? [original.request.generation] : []);
+  },
+);

@@ -138,7 +138,26 @@ export async function tick(store: Store, api: Api, executor: Executor, skipSnaps
   // Upgrade legacy state once. Replay identity is retained independently of TTL work.
   if (!state.activeTtl) {
     state.activeTtl = [];
-    for (const receipt of state.receipts) updateActiveTtl(state, receipt);
+    const terminal = new Set<string>();
+    const stopped = new Set<string>();
+    const resumed = new Set(
+      state.receipts.filter((r) => r.operation === "resume").map((r) => generationKey(r.request)),
+    );
+    for (const retired of state.retired ?? []) {
+      if ((retired[4] === "stop" || retired[4] === "delete") && retired[5] !== "completed") continue;
+      if (retired[4] === "stop") stopped.add(retired[2]);
+      // Compacted launch receipts carry durable reported expiry proof. Deletes
+      // are permanent; snapshots do not describe a running machine.
+      else if (retired[4] !== "buildSnapshot") terminal.add(retired[2]);
+    }
+    for (const receipt of state.receipts) {
+      const key = generationKey(receipt.request);
+      if (terminal.has(key) || (stopped.has(key) && !resumed.has(key))) continue;
+      // Old compaction lost stop/resume ordering. A retained resume is uncertain,
+      // not terminal evidence: keep its local expiry obligation rather than
+      // disabling offline TTL for a legitimately resumed container.
+      updateActiveTtl(state, receipt);
+    }
   }
   // One generation per tick bounds the serial Docker prefix. Rotate durably before
   // attempting I/O, so a failing generation cannot monopolize subsequent ticks.
