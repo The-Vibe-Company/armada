@@ -3,7 +3,6 @@ import type { Harness } from "@armada/core";
 import {
   CLAUDE_ENDPOINT_ENV,
   CODEX_ENDPOINT_ENV,
-  dedupeEvents,
   goldenCompatibilityIds,
   goldenForSettings,
   goldenResponse,
@@ -75,6 +74,7 @@ import { readBody, readVaultBody } from "./control-body.ts";
 import { authenticatedCaller, scopedOrg } from "./control-caller.ts";
 import { controlFailureResponse } from "./control-errors.ts";
 import { optional, required, UUID } from "./control-input.ts";
+import { readLogs } from "./control-logs.ts";
 import { fail } from "./control-response.ts";
 import type { CredentialBindingRecovery } from "./credential-binding-recovery.ts";
 import type { DataSource, ScopedData } from "./data.ts";
@@ -84,7 +84,7 @@ import { exposedSecrets, launchCredentials } from "./launch-credentials.ts";
 import { launchOptions, launchProviderOptions } from "./launch-options.ts";
 import { dispatchMcp, type McpControlOptions } from "./mcp-control.ts";
 import { type ModelAuthOwnership, modelAuthCapabilities } from "./model-auth.ts";
-import { isPrivateModelEvent, type ModelUsageApi } from "./model-usage.ts";
+import type { ModelUsageApi } from "./model-usage.ts";
 import {
   connectOrgProvider,
   disconnectOrgProvider,
@@ -101,7 +101,7 @@ import {
   exchangeRoute,
   refreshRoute,
 } from "./public-auth-control.ts";
-import { RequestTiming, withRequestTiming } from "./request-timing.ts";
+import { measureRequestPhase, RequestTiming, withRequestTiming } from "./request-timing.ts";
 import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
@@ -539,15 +539,17 @@ async function dispatch(
         ...(options.runtimeGitHub ? { runtimeGitHub: options.runtimeGitHub } : {}),
         ...(options.connections ? { connections: options.connections } : {}),
         data: options.data(scopedCaller),
-        measure: (phase, work) => measured(options, phase, work),
+        measure: (phase, work) => measureRequestPhase(options.timing, phase, work),
         ...(options.storedProviderFor
           ? {
               storedProvider: (target: ProviderTarget) =>
-                measured(options, "stored_provider", () => options.storedProviderFor!(target, scopedCaller)),
+                measureRequestPhase(options.timing, "stored_provider", () =>
+                  options.storedProviderFor!(target, scopedCaller),
+                ),
             }
           : {}),
         provider: (target) =>
-          measured(options, "provider", () =>
+          measureRequestPhase(options.timing, "provider", () =>
             options.providers
               ? options.providers.resolve(target, scopedCaller)
               : Promise.reject(new VaultError("unavailable", "Resource providers are not configured.")),
@@ -1127,124 +1129,6 @@ async function connectGoldenRoute(options: ControlOptions, caller: Caller, body:
   await data.goldens.assertBackendBinding?.(golden, provider);
   const connected = await connectGolden(provider, data.goldens, actor, name);
   return { golden: connected.golden.name, sandboxId: connected.sandbox.id, webUrl: null };
-}
-
-async function measured<T>(
-  options: ControlOptions,
-  phase: import("./request-timing.ts").TimingPhase,
-  work: () => Promise<T>,
-): Promise<T> {
-  return options.timing ? options.timing.measure(phase, work) : work();
-}
-
-async function readLogs(
-  options: ControlOptions,
-  caller: Caller,
-  id: string,
-  body: Record<string, unknown>,
-): Promise<{
-  events: Awaited<ReturnType<Provider["events"]>>["events"];
-  cursor: string | null;
-  hasMore: boolean;
-  settled: boolean;
-  source?: "armada-runtime";
-  runtimeFailure?: { status: "failed"; reason: string };
-  olderCursor?: string;
-}> {
-  if (options.dockerControls) {
-    const routed = await options.dockerControls.invoke(caller, "logs", {
-      id,
-      ...(body.cursor === undefined ? {} : { since_cursor: body.cursor }),
-      ...(body.conversationId === undefined ? {} : { conversation_id: body.conversationId }),
-      ...Object.fromEntries(
-        ["limit", "all", "direction", "maxBytes", "coalesce", "follow"]
-          .filter((key) => body[key] !== undefined)
-          .map((key) => [key, body[key]]),
-      ),
-    });
-    if (routed.handled) return routed.result as Awaited<ReturnType<typeof readLogs>>;
-  }
-  if (!options.logs) throw new VaultError("unavailable", "Sandbox logs are not configured on the server.");
-  const target = await measured(options, "logs_target", () => options.logs!(caller, id));
-  if (body.direction !== undefined && body.direction !== "forward" && body.direction !== "backward")
-    throw new VaultError("invalid", "Invalid event direction.");
-  for (const key of ["limit", "maxBytes"])
-    if (body[key] !== undefined && typeof body[key] !== "number")
-      throw new VaultError("invalid", "Invalid event pagination.");
-  if (body.coalesce !== undefined && typeof body.coalesce !== "boolean")
-    throw new VaultError("invalid", "Invalid coalesce option.");
-  const backward = body.direction === "backward";
-  const all = body.all === true;
-  if (backward && all) throw new VaultError("invalid", "Backward reads cannot drain all pages.");
-  let olderCursor: string | undefined;
-  const follow = body.follow === true;
-  const maxPages = 100;
-  let cursor = optional(body, "cursor");
-  let hasMore = false;
-  let source: "armada-runtime" | undefined;
-  let runtimeFailure: { status: "failed"; reason: string } | undefined;
-  const events: Awaited<ReturnType<Provider["events"]>>["events"] = [];
-  for (let pageNumber = 0; pageNumber < (all ? maxPages : 1); pageNumber += 1) {
-    const page = await measured(options, "events", () =>
-      target.provider.events({
-        sandboxId: target.providerSandboxId,
-        ...(cursor ? { cursor } : {}),
-        ...(backward ? { direction: "backward" as const } : {}),
-        ...(typeof body.limit === "number" ? { limit: body.limit } : {}),
-        ...(typeof body.maxBytes === "number" ? { maxBytes: body.maxBytes } : {}),
-        ...(typeof body.coalesce === "boolean" ? { coalesce: body.coalesce } : {}),
-        ...(optional(body, "conversationId") ? { conversationId: optional(body, "conversationId")! } : {}),
-      }),
-    );
-    if (page.source) source = page.source;
-    runtimeFailure = page.runtimeFailure ?? runtimeFailure;
-    olderCursor = page.olderCursor;
-    events.push(...page.events);
-    hasMore = page.hasMore;
-    const next = page.cursor ?? cursor;
-    if (!page.hasMore || !next || next === cursor) {
-      cursor = next;
-      break;
-    }
-    cursor = next;
-  }
-  // Ordinary history reads need only the authorized event stream. Live compute is
-  // consulted solely to decide whether a follow request should keep waiting.
-  const info =
-    follow && !runtimeFailure
-      ? await measured(options, "state", () => target.provider.get(target.providerSandboxId))
-      : null;
-  const latest = latestPrompt(events);
-  // A live sandbox with no turn is idle, so following has nothing to wait for.
-  const prompt =
-    follow && !runtimeFailure && latest && info?.state !== "stopped" && info?.state !== "failed"
-      ? await measured(options, "prompt", () =>
-          target.provider.getPrompt({ sandboxId: target.providerSandboxId, promptId: latest }),
-        )
-      : null;
-  return {
-    ...(source ? { source } : {}),
-    ...(runtimeFailure ? { runtimeFailure } : {}),
-    ...(olderCursor ? { olderCursor } : {}),
-    events: dedupeEvents(events).filter((event) => !isPrivateModelEvent(event)),
-    cursor: cursor ?? null,
-    hasMore,
-    settled:
-      !follow ||
-      runtimeFailure !== undefined ||
-      info?.state === "stopped" ||
-      info?.state === "failed" ||
-      (latest === null ? info?.state !== "running" && info?.state !== "starting" : prompt?.done === true),
-  };
-}
-
-function latestPrompt(events: Awaited<ReturnType<Provider["events"]>>["events"]): string | null {
-  let latest: (typeof events)[number] | undefined;
-  for (const event of events) {
-    if (event.kind !== "prompt" || !event.promptId) continue;
-    if (!latest || event.at >= latest.at) latest = event;
-  }
-  return latest?.promptId ?? null;
 }
 
 async function launchRoute(
