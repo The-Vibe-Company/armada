@@ -125,3 +125,41 @@ Static copies have no guaranteed usable lifetime after another client's rotation
 Push work frequently. Use `armada github refresh <sandbox>` for legacy Boat repair;
 reconnect only for revoked or uncertain grants. Automatic credential-helper
 refresh (#908) is the durable remedy, not weakening the refresh fence.
+
+## Service-token callers and provider parity
+
+A service token is attached to an Armada **user ID**. Runtime GitHub access uses
+that user's `github_connections` row, just as a personal session does. A service
+bearer is allowed to use an existing linked connection; it is not a separate
+organization GitHub identity. The selected model credential and Docker host owner
+do not supply this access.
+
+`armada github status` is an account-management endpoint and rejects service
+bearers **before checking the connection**. Its “Sign in as a person” response
+therefore does not prove that the service token's user lacks GitHub access. Sign
+in as the same token-owning user to manage/connect GitHub. Merely switching bearer
+type without connecting that user will not create a GitHub grant.
+
+Docker, managed Boat and managed Modal share the user-token resolver and runtime
+credential broker. There is no organization-installation fallback for runtime
+`git`/`gh`. Golden/snapshot builds are different: after authorizing the creating
+user, their shared build adapter can mint a repository-limited installation token
+for disposable checkout. That build token is not the running agent's identity.
+
+Cloud launches from an already-built checkout may succeed with
+`github.status: not_connected`; an explicit Docker repository checkout cannot be
+prepared without current caller authorization. That is a checkout prerequisite,
+not a different service-token identity rule. The managed Boat/Modal `--github`
+probes require both archived successful `gh` execution and a current-epoch broker
+credential acquisition, not merely an unauthenticated public-repository read.
+
+Missing-connection diagnostics say “This caller has no GitHub connection.”
+Configuration-delivery failures remain distinct: that path is reached only after
+the caller's connection and runtime binding have passed validation. Do not
+relabel an unacknowledged configuration as a missing connection without evidence.
+
+The Docker smoke now checks the completed launch's declared GitHub connection
+before demanding GitHub tool proof (including snapshot proof), so a genuinely
+unconnected caller gets the connection reason rather than a generic missing
+`gh` result. A connected declaration is still not a substitute for the successful
+archived command proof.

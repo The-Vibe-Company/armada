@@ -114,27 +114,25 @@ armada token list
 armada token revoke <id>                                # cuts it off at the next request
 ```
 
-Keep the token in a secret store or an environment variable (`ARMADA_TOKEN` below), never in a file you commit. Then pass it as a bearer:
+Load the token into the client's environment as `ARMADA_TOKEN` through your secret store or CI secret injection. Do not type a literal token into a shell command, enable shell tracing (`set -x`), or pass a bearer header as a command argument: shell expansion exposes the value in argv even when history contains only a variable name.
 
-```sh
-claude mcp add --transport http armada https://armada-mcp-production.up.railway.app/mcp \
-  --header "Authorization: Bearer $ARMADA_TOKEN"
-```
-
-A JSON MCP configuration (Cursor's `mcp.json`, Claude Desktop, most clients), with OAuth (leave out `headers`) or a token:
+For **Claude Code**, edit the project's `.mcp.json` directly (merge this entry with any existing servers). Keep the variable reference literal in the file; Claude Code, not the shell, expands it:
 
 ```json
 {
   "mcpServers": {
     "armada": {
+      "type": "http",
       "url": "https://armada-mcp-production.up.railway.app/mcp",
-      "headers": { "Authorization": "Bearer ${env:ARMADA_TOKEN}" }
+      "headers": { "Authorization": "Bearer ${ARMADA_TOKEN}" }
     }
   }
 }
 ```
 
-How environment variables are interpolated differs between clients (`${env:NAME}` in Cursor, `${NAME}` in Claude Code's `.mcp.json`). Check your client's documentation.
+[Claude Code supports environment expansion in header values](https://code.claude.com/docs/en/mcp#environment-variable-expansion-in-mcpjson). For **Cursor**, use its `mcp.json` with the same URL and headers, omit `type`, and change the header value to `Bearer ${env:ARMADA_TOKEN}` ([Cursor interpolation documentation](https://cursor.com/docs/mcp)). The client process must inherit the variable; a desktop app launched outside your shell may not.
+
+These are client-specific configurations, not portable JSON for Claude Desktop or every MCP client. Prefer OAuth for interactive use (omit the token header). For another headless client, verify its documented environment lookup or protected-file support first; do not substitute a literal token or invent a file flag. Never commit a credential value.
 
 Codex (`~/.codex/config.toml`):
 

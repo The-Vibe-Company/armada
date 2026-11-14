@@ -1,5 +1,6 @@
 import type { Harness } from "./contract.ts";
 import type { CredentialKind } from "./database.types.ts";
+import { GITHUB_CALLER_NOT_CONNECTED } from "./github.ts";
 import type { GitHubLaunchInfo } from "./launch.ts";
 import type { MachineSize, MachineSizeEvidence } from "./machine-size.ts";
 import type { HarnessModels } from "./models.ts";
@@ -129,6 +130,7 @@ export const DOCKER_LAUNCH_FAILURE_MESSAGES = {
   startup: "Docker sandbox startup failed. Check the host and retry with a new request.",
   github:
     "Repository authorization failed. Connect GitHub and grant access to the requested repositories, then launch again.",
+  githubNotConnected: GITHUB_CALLER_NOT_CONNECTED,
   githubDelivery:
     "GitHub configureGitHub setup step failed or was not acknowledged by the sandbox runtime. Check that the image includes git, gh and python3, and that the runtime is connected.",
   environment: "Sandbox environment preparation failed. Check variable and secret bindings, then launch again.",

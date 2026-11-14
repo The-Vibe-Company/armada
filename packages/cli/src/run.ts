@@ -119,6 +119,8 @@ Usage:
                                            seconds (default 60, max 600; 0 returns after admission).
                                            Disconnecting never resubmits or cancels the job.
   armada golden build-cancel <job-id> [--org <org>] [--json]  Cancel your queued, never-started build
+  armada golden build-find <name> [--provider boat|modal] [--org <org>] [--json]
+                                           Find the latest visible active build without a job ID or admission key.
   armada golden build-status <job-id>      Read the authenticated durable build status
   armada golden build-status --idempotency-key <key> --org <org>
                                            Recover an uncertain admission using the saved key.
@@ -713,6 +715,27 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
       });
       if (flag(args, "--json")) io.out(JSON.stringify(job) + "\n");
       else io.out(`Build ${job.jobId}: ${goldenBuildFailureText(job)}\n`);
+      return 0;
+    }
+    case "build-find": {
+      const name = oneName(args.positionals);
+      const auth = authOf(io, deps);
+      const client = await createArmadaApiClient(
+        { env: auth.env, fetch: deps.fetch ?? auth.fetch, session: auth.session },
+        { preserveServerErrors: true },
+      );
+      const result = await client.request<{ build: GoldenBuildStatus | null }>("/api/v1/golden/build/find", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name, provider: providerFlag(args), org: single(args, "--org") }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (flag(args, "--json")) io.out(JSON.stringify(result) + "\n");
+      else if (result.build) {
+        io.out(
+          `Build ${result.build.jobId}: ${result.build.state} (${result.build.phase}).\nRead details with armada golden build-status ${result.build.jobId}. Only its owner can cancel a queued, never-started build with golden build-cancel.\n`,
+        );
+      } else io.out("No visible active build was found. A reservation may still need administrator investigation.\n");
       return 0;
     }
     case "build-status": {

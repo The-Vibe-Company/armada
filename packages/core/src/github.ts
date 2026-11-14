@@ -308,6 +308,10 @@ export type GitHubAccess =
   | { status: "connected"; token: string; identity: GitIdentity; expiresAt?: Date }
   | { status: Exclude<GitHubStatus, "connected">; message: string };
 
+/** Runtime access belongs to the Armada token's user, even when the caller uses a service bearer. */
+export const GITHUB_CALLER_NOT_CONNECTED =
+  "This caller has no GitHub connection. Sign in as the user who owns this Armada token and connect GitHub, then retry.";
+
 export const GITHUB_NOT_CONNECTED =
   "GitHub is not connected for you, so git push and gh in this sandbox are not signed in as you. Connect it in the dashboard under Settings.";
 export const GITHUB_REVOKED =
