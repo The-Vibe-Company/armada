@@ -485,6 +485,15 @@ Example: armada mcp ${action} CONNECTION_UUID --org ORG_UUID --no-browser --time
 `;
 }
 
+function completionHelp(shell?: "bash" | "zsh" | "fish"): string {
+  return `Usage: armada completion ${shell ?? "bash|zsh|fish"}
+Print a shell-completion script to stdout. No login or network request is needed.
+Choose the shell you actually use; inspect the generated script before sourcing it.
+This command does not install completion or modify your shell configuration.
+Example: armada completion ${shell ?? "bash"} > armada-completion.${shell ?? "bash"}
+`;
+}
+
 export function onboardingHelp(argv: readonly string[]): string | undefined {
   if (!["--help", "-h"].includes(argv.at(-1) ?? "")) return undefined;
   const parts = argv.slice(0, -1);
@@ -510,6 +519,10 @@ export function onboardingHelp(argv: readonly string[]): string | undefined {
   )
     parts[0] = "snapshot";
   const command = parts.join(" ");
+  if (command === "completion") return completionHelp();
+  if (command === "completion bash") return completionHelp("bash");
+  if (command === "completion zsh") return completionHelp("zsh");
+  if (command === "completion fish") return completionHelp("fish");
   if (command === "mcp connect") return mcpAuthorizationHelp("connect");
   if (command === "mcp reconnect") return mcpAuthorizationHelp("reconnect");
   if (command === "github connect") return githubAuthorizationHelp("connect");
