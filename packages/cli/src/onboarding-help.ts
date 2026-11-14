@@ -326,6 +326,32 @@ Output is JSON, including the version and configured repository selectors.
 Example: armada snapshot size-policy starter --provider modal --org my-team
 Example: armada snapshot size-policy starter --provider modal --file policy.json
 `,
+  "host list": `Usage: armada host list [--org UUID] [--json]
+List registered Docker hosts after Armada login and server authorization.
+Select an organization first or pass --org UUID. Use IDs/names with host show.
+Example: armada host list --org ORG_UUID --json
+`,
+  "host show": `Usage: armada host show <UUID|name> [--org UUID] [--json]
+Inspect one Docker host after Armada login and server authorization.
+Select an organization first or pass --org UUID. Names must match exactly and be unambiguous.
+A UUID can identify a revoked host; name lookup excludes revoked hosts.
+Example: armada host show workstation --org ORG_UUID --json
+`,
+  "host limits": `Usage: armada host limits <UUID|name> [--org UUID]
+  [--cpus <N>] [--memory <size>] [--max-sandboxes <N>] [--auto]
+Update Docker host policy after Armada login and server authorization.
+Select an organization first or pass --org UUID. Supply at least one override or --auto.
+Combine overrides as needed:
+--cpus must be at least 0.01; --max-sandboxes must be a positive integer.
+--auto resets all limits and cannot be combined with overrides.
+Container changes apply on the next start or resume. Inspect with host show.
+Example: armada host limits workstation --org ORG_UUID --cpus 2 --memory 4GiB
+`,
+  "host revoke": `Usage: armada host revoke <UUID> [--org UUID]
+Revoke a Docker host after Armada login and server authorization.
+Select an organization first or pass --org UUID. Use a host UUID from host list, not a name.
+Example: armada host revoke HOST_UUID --org ORG_UUID
+`,
   "host add": `Usage: armada host add [--name <name>] [--org <UUID>]
 Register your Docker machine after Armada login. Select an organization first or pass --org.
 Run the returned installer only on your intended host; its registration token is short-lived.

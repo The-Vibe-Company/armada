@@ -60,6 +60,11 @@ test("nested onboarding help is focused and performs no authenticated or secret 
     "snapshot update",
     "golden update",
     "host add",
+    "host list",
+    "host show",
+    "host limits",
+    "host revoke",
+
     "snapshot build-find",
     "snapshot build-status",
     "snapshot build-cancel",
@@ -153,6 +158,8 @@ test("help detection leaves malformed operations and literal payloads to their p
     ["github", "install", "--", "--help"],
     ["account", "status", "--", "--help"],
     ["logout", "extra", "-h"],
+    ["host", "show", "workstation", "--help"],
+    ["host", "limits", "--memory", "-h"],
     ["constructor", "--help"],
     ["toString", "-h"],
   ])
