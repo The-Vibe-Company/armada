@@ -39,6 +39,8 @@ const localCodes = new Set([
   "harness_not_advertised",
   "invalid_launch_receipt",
   "invalid_exec_receipt",
+  "invalid_idle_receipt",
+
   "invalid_template_receipt",
   "invalid_control_receipt",
   "control_turn_not_active",
@@ -58,6 +60,8 @@ const steps = {
   logs: "logs",
   exec: "exec",
   github: "github",
+  "idle-pause": "status",
+  "wake-on-send": "followupPrompts",
   stop: "stop",
   resume: "resume",
   steer: "steer",
@@ -72,9 +76,6 @@ const features = [
   "launch-default",
   "launch-snapshot",
   "resume-recall",
-  // #1562: explicit debt rows; manual stop/resume is not idle-pause/wake proof.
-  "idle-pause",
-  "wake-on-send",
   "repository-refresh",
   "readable-variables",
   "application-secrets",
@@ -331,8 +332,36 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
               ? "feature_filtered"
               : "probe_not_implemented",
       );
+  let idleDelay: number | undefined;
+  if (!feature || ["idle-pause", "wake-on-send"].includes(feature)) {
+    try {
+      const response = await io.fetch(`${origin}/healthz`, {
+        method: "GET",
+        redirect: "error",
+        signal: AbortSignal.timeout(10_000),
+        headers: { authorization: `Bearer ${env.ARMADA_TOKEN}` },
+      });
+      const health = (await response.json()) as { idlePauseDelayMs?: number };
+      if (response.ok && Number.isSafeInteger(health.idlePauseDelayMs) && (health.idlePauseDelayMs ?? 0) > 0)
+        idleDelay = health.idlePauseDelayMs;
+    } catch {
+      /* Missing diagnostics are explicit not-run, never a guessed delay. */
+    }
+  }
   let starts = 0;
   for (const c of cases) {
+    const idleFeature = feature && ["idle-pause", "wake-on-send"].includes(feature);
+    const idleUnavailable =
+      idleDelay === undefined
+        ? "idle_delay_not_advertised"
+        : io.now() + idleDelay + 180_000 >= deadline
+          ? "idle_observation_exceeds_run_budget"
+          : undefined;
+    if (idleUnavailable) {
+      for (const name of ["idle-pause", "wake-on-send"])
+        if (!feature || feature === name) record(name, c.provider, "not-run", idleUnavailable);
+      if (idleFeature) continue;
+    }
     const harnessFeature = c.harness === "claude" ? "claude-code" : c.harness;
     const requestedHarness = feature && Object.hasOwn(harnessFeatures, feature);
     for (const name of Object.keys(harnessFeatures))
@@ -524,7 +553,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         observe("exact-cost", "fail", detail.code, detail);
       }
     }
-    async function runTurn(recall = false) {
+    async function runTurn(recall = false, strictRecall = false) {
       const turnStarted = io.now();
       if (!id) throw new Error("launch_not_available");
       const turn = await api<{ promptId: string }>("sandbox/send", {
@@ -549,7 +578,17 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           () =>
             api<{
               cursor?: string;
-              events: { at?: number; kind: string; promptId?: string; status?: string; text?: string }[];
+              events: {
+                at?: number;
+                kind: string;
+                promptId?: string;
+                status?: string;
+                text?: string;
+                partial?: boolean;
+                parentToolUseId?: string;
+                responseKind?: string;
+                retracted?: boolean;
+              }[];
             }>("logs/read", { id, ...(cursor ? { cursor } : {}) }),
           (page) => {
             for (const event of page.events) {
@@ -574,7 +613,15 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
             );
             answered ||= page.events.some(
               (e) =>
-                e.promptId === turn.promptId && e.kind === "message" && e.text?.includes(recall ? memory : "SMOKE_OK"),
+                e.promptId === turn.promptId &&
+                e.kind === "message" &&
+                (strictRecall
+                  ? e.text === memory &&
+                    e.partial === false &&
+                    !e.parentToolUseId &&
+                    e.responseKind !== "tool_result" &&
+                    !e.retracted
+                  : e.text?.includes(recall ? memory : "SMOKE_OK")),
             );
             return finished && answered;
           },
@@ -611,6 +658,57 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       }
       await checkUsage(turn.promptId);
     }
+    type IdleState = {
+      id: string;
+      status: string;
+      idlePaused?: boolean;
+      statusReason?: string | null;
+      expiresAt: string | null;
+      conversationIds: string[];
+    };
+    let idleBaseline: IdleState | undefined;
+    const sameRetainedState = (value: IdleState) => {
+      if (
+        !idleBaseline ||
+        value.id !== id ||
+        value.expiresAt !== idleBaseline.expiresAt ||
+        !Array.isArray(value.conversationIds) ||
+        JSON.stringify([...value.conversationIds].sort()) !== JSON.stringify([...idleBaseline.conversationIds].sort())
+      )
+        throw new Error("invalid_idle_receipt");
+    };
+    async function observeIdle() {
+      idleBaseline = await api<IdleState>("sandbox/detail", { id });
+      if (
+        idleBaseline.id !== id ||
+        !["ready", "running"].includes(idleBaseline.status) ||
+        !idleBaseline.expiresAt ||
+        !Number.isFinite(Date.parse(idleBaseline.expiresAt)) ||
+        !Array.isArray(idleBaseline.conversationIds) ||
+        idleBaseline.conversationIds.length === 0
+      )
+        throw new Error("invalid_idle_receipt");
+      if (idleDelay === undefined) throw new Error("invalid_idle_receipt");
+      const until = Math.min(deadline, io.now() + idleDelay + 180_000);
+      if (Date.parse(idleBaseline.expiresAt) <= until) throw new Error("invalid_idle_receipt");
+      await poll(
+        () => api<IdleState>("sandbox/detail", { id }),
+        (value) => {
+          sameRetainedState(value);
+          if (value.status === "stopped") {
+            if ((value.idlePaused !== undefined && value.idlePaused !== true) || value.statusReason !== "idle_paused")
+              throw new Error("invalid_idle_receipt");
+            return true;
+          }
+          if (!["ready", "running", "stopping"].includes(value.status)) throw new Error("invalid_idle_receipt");
+          return false;
+        },
+        Math.ceil((until - io.now()) / 1000) + 1,
+        until,
+      );
+      stopped = true;
+    }
+
     async function controlTurn(action: "steer" | "interrupt") {
       if (!id) throw new Error("launch_not_available");
       const until = Math.min(deadline, io.now() + 110_000);
@@ -855,11 +953,13 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         step === "launch" ||
         (step === "stop" && !["steer", "interrupt"].includes(feature ?? "")) ||
         step === "delete" ||
-        ((feature === "github" || feature === "templates" || requestedHarness) && step === "send") ||
+        ((feature === "github" || feature === "templates" || idleFeature || requestedHarness) && step === "send") ||
+        (feature === "wake-on-send" && step === "idle-pause") ||
         (["resume", "resume-recall", "usage", "exact-cost"].includes(feature ?? "") &&
           ["send", "resume"].includes(step));
       if (!needed) continue;
       const selected = !feature || step === feature;
+      if (idleUnavailable && (step === "idle-pause" || step === "wake-on-send")) continue;
       if (step === "github" && !c.githubRepository) {
         record("github", c.provider, "not-run", "github_repository_not_configured");
         continue;
@@ -1015,6 +1115,26 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
             if (io.accountProbe) await runTurn(true);
             if (!feature || requestedHarness) record(harnessFeature, c.provider, "pass");
             if (feature === "templates") record("templates", c.provider, "pass");
+          } else if (step === "idle-pause") {
+            await observeIdle();
+          } else if (step === "wake-on-send") {
+            if (!idleBaseline || !stopped) throw new Error("invalid_idle_receipt");
+            // Wake admission may activate compute even if its acknowledgement is lost.
+            // Cleanup must no longer assume the earlier stopped observation is current.
+            stopped = false;
+            stopRequested = false;
+            // Ordinary send, never an explicit resume. Preserve the original deadline and conversation.
+            await runTurn(true, true);
+            const awake = await api<IdleState>("sandbox/detail", { id });
+            sameRetainedState(awake);
+            if (
+              !["ready", "running"].includes(awake.status) ||
+              awake.idlePaused === true ||
+              awake.statusReason === "idle_paused"
+            )
+              throw new Error("invalid_idle_receipt");
+            stopped = false;
+            stopRequested = false;
           } else if (step === "steer" || step === "interrupt") {
             await controlTurn(step);
           } else if (step === "exec") {

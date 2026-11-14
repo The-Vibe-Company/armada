@@ -18,6 +18,8 @@ async function invoke(args: string[], reply: (path: string, body: Record<string,
       },
     },
     {
+      readFile: async () =>
+        JSON.stringify({ repos: [{ url: "https://github.com/acme/new.git", branch: "main", dir: "new" }], init: [] }),
       auth: {
         out: () => {},
         err: () => {},
@@ -91,8 +93,30 @@ test.each([
   },
 );
 
+test.each(["--repo", "--config"])(
+  "replacement through %s requires explicit consent before any request",
+  async (source) => {
+    const result = await invoke([source, "https://github.com/acme/new.git"], () => {
+      throw new Error("No mutation allowed without consent");
+    });
+    expect(result.code).toBe(2);
+    expect(result.calls).toEqual([]);
+    expect(result.errors).toContain("--replace");
+    expect(result.errors).toContain("--add-repo");
+  },
+);
+
+test("append and replacement cannot be requested together", async () => {
+  const result = await invoke(["--add-repo", "https://github.com/acme/new.git", "--replace"], () => {
+    throw new Error("No mutation allowed with contradictory intent");
+  });
+  expect(result.code).toBe(2);
+  expect(result.calls).toEqual([]);
+  expect(result.errors).toContain("choose append or replacement");
+});
+
 test("--repo is explicitly warned as replacement rather than silently advertised as additive", async () => {
-  const result = await invoke(["--repo", "https://github.com/acme/new.git", "--timeout", "0"], () =>
+  const result = await invoke(["--replace", "--repo", "https://github.com/acme/new.git", "--timeout", "0"], () =>
     Response.json({ jobId: "job", state: "queued", phase: "queued", errorCode: null, result: null }, { status: 202 }),
   );
   expect(result.code).toBe(0);
@@ -101,7 +125,7 @@ test("--repo is explicitly warned as replacement rather than silently advertised
 });
 
 test("legacy synchronous update reply is treated as version-skew/unknown outcome, never polled as undefined", async () => {
-  const result = await invoke(["--repo", "https://github.com/acme/new.git", "--json"], () =>
+  const result = await invoke(["--replace", "--repo", "https://github.com/acme/new.git", "--json"], () =>
     Response.json({ name: "web", visibility: "org", snapshot: "saved" }),
   );
   expect(result.code).toBe(1);
@@ -110,3 +134,50 @@ test("legacy synchronous update reply is treated as version-skew/unknown outcome
   expect(result.errors).toContain("inspect golden list before retrying");
   expect(result.errors).not.toContain("Build undefined");
 });
+
+test.each([true, false])(
+  "build-find sends a scoped read-only lookup and does not imply capacity is free (found=%s)",
+  async (found) => {
+    let output = "";
+    const calls: { path: string; body: unknown }[] = [];
+    const code = await run(
+      ["golden", "build-find", "web", "--provider", "boat", "--org", "org"],
+      {
+        out: (text) => {
+          output += text;
+        },
+        err: () => {},
+      },
+      {
+        auth: {
+          out: () => {},
+          err: () => {},
+          env: { ARMADA_TOKEN: token },
+          session: memorySessionStore(),
+          now: () => new Date(),
+          open: () => {},
+          fetch: async (input, init) => {
+            calls.push({ path: new URL(String(input)).pathname, body: JSON.parse(String(init?.body)) });
+            return Response.json({
+              build: found
+                ? {
+                    jobId: "job",
+                    state: "recovery_required",
+                    phase: "snapshot",
+                    errorCode: "build_failed",
+                    failureReason: null,
+                    result: null,
+                  }
+                : null,
+            });
+          },
+        },
+      },
+    );
+    expect(code).toBe(0);
+    expect(calls).toEqual([{ path: "/api/v1/golden/build/find", body: { name: "web", provider: "boat", org: "org" } }]);
+    expect(output).toContain(
+      found ? "Build job: recovery_required (snapshot)" : "A reservation may still need administrator investigation",
+    );
+  },
+);
