@@ -305,6 +305,18 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
     error instanceof AuthError &&
     (error.code === "unauthorized" || (error instanceof ArmadaApiError && error.status === 401));
   try {
+    // Native host management is login-free, including when a global profile flag is present.
+    const localArgs = selectProfile(argv, {}).args;
+    if (localArgs[0] === "host" && ["install", "status", "uninstall"].includes(localArgs[1] ?? ""))
+      return await localHostCommand(
+        localArgs.slice(1),
+        io,
+        deps.localHost ??
+          productionLocalHostIo({
+            ...(deps.fetch ? { fetch: deps.fetch } : {}),
+            ...(deps.readStdin ? { readStdin: deps.readStdin } : {}),
+          }),
+      );
     const selected = selectProfile(argv, deps.env ?? deps.auth?.env ?? process.env);
     argv = selected.args;
     deps = { ...deps, env: selected.env };
@@ -315,8 +327,7 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
         (argv.length === 1 && ["--help", "-h", "--version", "-v"].includes(argv[0] ?? "")) ||
         (argv.length === 2 && ["--help", "-h"].includes(argv[1] ?? "")) ||
         argv[0] === "completion";
-      const localHost = argv[0] === "host" && ["install", "status", "uninstall"].includes(argv[1] ?? "");
-      if (!env.ARMADA_TOKEN && !discovery && !localHost && argv[0] !== "logout") {
+      if (!env.ARMADA_TOKEN && !discovery && argv[0] !== "logout") {
         const login = argv[0] === "login";
         const explicitLoginOrigin = login && argv.some((arg) => arg === "--url" || arg.startsWith("--url="));
         const saved = explicitLoginOrigin ? null : await stores.session.read();
@@ -339,16 +350,6 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
       }
       deps = { ...deps, env, auth: { ...(deps.auth ?? productionAuthIo(io, env)), env, ...stores } };
     }
-    if (argv[0] === "host" && ["install", "status", "uninstall"].includes(argv[1] ?? ""))
-      return await localHostCommand(
-        argv.slice(1),
-        io,
-        deps.localHost ??
-          productionLocalHostIo({
-            ...(deps.fetch ? { fetch: deps.fetch } : {}),
-            ...(deps.readStdin ? { readStdin: deps.readStdin } : {}),
-          }),
-      );
     auth = authOf(io, deps);
     try {
       if (argv.length === 0) {
