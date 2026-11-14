@@ -118,7 +118,7 @@ function followed(status: GoldenBuildStatus, stopped: boolean): { icon: ReactNod
   if (status.state === "succeeded")
     return {
       icon: <CheckCircle2Icon aria-hidden className="size-4 text-success" />,
-      text: `Built ${status.result?.name ?? "the golden"}`,
+      text: `Built ${status.result?.name ?? "the snapshot"}`,
     };
   if (status.state === "failed" || status.state === "recovery_required")
     return {

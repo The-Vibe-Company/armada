@@ -262,7 +262,7 @@ function DisconnectProvider({
             Disconnect {label} from {orgName}?
           </AlertDialogTitle>
           <AlertDialogDescription>
-            New {label} goldens, rebuilds and launches stop. Existing goldens and sandboxes on {label} stay listed.
+            New {label} snapshots, rebuilds and launches stop. Existing snapshots and sandboxes on {label} stay listed.
           </AlertDialogDescription>
         </AlertDialogHeader>
         {state && !state.ok && (

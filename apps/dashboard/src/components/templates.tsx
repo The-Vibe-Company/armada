@@ -163,7 +163,7 @@ export function CreateTemplateDialog(props: {
     <CreateDialog
       label="New"
       title="New template"
-      description="A preset agents start from: an environment, tools, a model and variables."
+      description="A preset agents start from: a snapshot, tools, a model and variables."
       open={open}
       onOpenChange={(next) => {
         setOpen(next);
@@ -241,7 +241,7 @@ function TemplateForm({
     if (!name.trim()) return setProblem("Name the template.");
     const otherModel = root.current?.querySelector<HTMLInputElement>('input[name="other_model"]');
     if (otherModel && !otherModel.value.trim()) return setProblem("Enter the model id.");
-    if (!chosen) return setProblem("Choose an environment.");
+    if (!chosen) return setProblem("Choose a snapshot.");
     if (!chosen.ready) return setProblem(`${chosen.name} has no snapshot yet: snapshot it first.`);
     if (goldenProblem) return setProblem(goldenProblem);
     setProblem(null);
@@ -319,7 +319,7 @@ function TemplateForm({
         )}
         <div className="grid gap-4 sm:grid-cols-2">
           <div className="space-y-2">
-            <Label htmlFor={`${id}-golden`}>Environment</Label>
+            <Label htmlFor={`${id}-golden`}>Snapshot</Label>
             <NativeSelect
               id={`${id}-golden`}
               name="golden"
@@ -328,7 +328,7 @@ function TemplateForm({
               aria-describedby={`${id}-golden-hint`}
               aria-invalid={goldenProblem ? true : undefined}
             >
-              <option value="">Choose an environment</option>
+              <option value="">Choose a snapshot</option>
               {environments.map((row) => (
                 <option key={row.id} value={row.id} disabled={!row.ready}>
                   {row.name} on {PROVIDER_LABELS[row.provider]}
@@ -342,7 +342,7 @@ function TemplateForm({
             >
               {goldenProblem ??
                 (scope === "org"
-                  ? "Shared environments only. Launches use its latest snapshot."
+                  ? "Shared snapshots only. Launches use its latest snapshot."
                   : "Launches use its latest snapshot.")}
             </p>
           </div>
@@ -683,7 +683,7 @@ function Preset({ target }: { target: TemplateLaunchTarget }) {
     {
       key: "environment",
       icon: <LayersIcon />,
-      label: "Environment",
+      label: "Snapshot",
       text: `${target.goldenName ?? "Unavailable"} on ${target.definition.provider === "docker" ? "Docker" : PROVIDER_LABELS[target.definition.provider]}`,
     },
     { key: "agent", icon: <CpuIcon />, label: "Agent", text: target.agent },

@@ -217,7 +217,7 @@ export async function readGoldenCapabilities(
   } catch (error) {
     if (!(error instanceof ControlError)) throw error;
     if (error.status === 404 && error.code === undefined)
-      return { ok: false, reason: "This Armada server does not report golden capacity yet." };
+      return { ok: false, reason: "This Armada server does not report snapshot capacity yet." };
     return { ok: false, reason: error.message };
   }
   if (

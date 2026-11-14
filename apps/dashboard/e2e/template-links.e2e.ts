@@ -24,7 +24,7 @@ for (const phone of [false, true]) {
     });
     await environment.focus();
     await page.keyboard.press("Enter");
-    await expect(page).toHaveURL(/\/environments\?item=00000000-0000-4000-8000-000000000020$/);
+    await expect(page).toHaveURL(/\/snapshots\?item=00000000-0000-4000-8000-000000000020$/);
     const usage = page.locator('[data-golden-panel="shared-golden"] [data-environment-templates]');
     await expect(usage).toContainText("Used by 1 visible template.");
     await expect(usage).not.toContainText("Bob scratch");

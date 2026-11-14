@@ -174,7 +174,7 @@ export async function launchFromTemplate(
     const blocker = provider === "docker" ? null : await newWorkBlocker(org, provider);
     if (blocker) return fail(blocker);
     const golden = (await listGoldens(await createClient())).find((row) => row.id === saved.definition.goldenId);
-    if (!golden && provider !== "docker") return fail("No such golden.");
+    if (!golden && provider !== "docker") return fail("No such snapshot.");
     if (provider === "docker" && size) return fail("Docker templates use their host machine size.");
     const repository = repositoryChoice(formString(data, "repo"), golden ? goldenRepositoryDirs(golden.config) : []);
     if (!repository.ok) return fail(repository.error);

@@ -171,7 +171,7 @@ describe("template state", () => {
     expect(stale).toMatchObject({ bucket: "action", tone: "warning", label: "Variable changed" });
     expect(stale.problems[0]?.text).toContain("publish a new revision");
     expect(templateState(item({ connections: [MINE] }), lookups).label).toBe("Tool not ready");
-    expect(templateState(item({ goldenId: PRIVATE }), lookups).label).toBe("Environment unavailable");
+    expect(templateState(item({ goldenId: PRIVATE }), lookups).label).toBe("Snapshot unavailable");
     expect(templateState({ revision: null }, lookups)).toMatchObject({ bucket: "rest", label: "Details unavailable" });
   });
 
@@ -240,7 +240,7 @@ describe("template form", () => {
       return parsed.ok ? null : parsed.error;
     };
     expect(error({ name: "  " })).toBe("Name the template.");
-    expect(error({ goldenId: "" })).toBe("Choose an environment.");
+    expect(error({ goldenId: "" })).toBe("Choose a snapshot.");
     expect(error({ goldenId: PRIVATE })).toContain("no snapshot yet");
     expect(error({ harness: "other" })).toBe("Choose Claude Code or Codex.");
     expect(error({ connections: [MINE] })).toContain("Linear is not connected");
