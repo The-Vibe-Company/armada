@@ -1,6 +1,7 @@
 import type { Options, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk/core";
 import { query } from "@anthropic-ai/claude-agent-sdk/core";
 import { ChildOwner } from "./children.ts";
+import { ClaudeMessages } from "./claude-messages.ts";
 import { claudeResumeUsage, claudeUsageDelta } from "./claude-resume-usage.ts";
 import { validateHarnessCwd } from "./cwd.ts";
 import { bounded } from "./deadline.ts";
@@ -91,10 +92,7 @@ export class ClaudeDriver implements Driver {
     let nativeSession: string | undefined;
     const privateInputs = new Set<string>();
     let terminalError: HarnessErrorCode | undefined;
-    // Subagent streams can interleave with the top-level stream.
-    const messages = new Map<string | null, string>();
-    const completedText = new Map<string, string>();
-    const completedFrames = new Set<string>();
+    const messages = new ClaudeMessages((event) => c.emit(event));
     const inputs: SDKUserMessage[] = [];
     const push = (text: string) => {
       latest = crypto.randomUUID();
@@ -200,26 +198,7 @@ export class ClaudeDriver implements Driver {
           }
           if (event.type === "stream_event") {
             if (privateUsage) continue;
-            const e = event.event;
-            const parent = event.parent_tool_use_id ?? null;
-            if (e.type === "message_start") messages.set(parent, e.message.id);
-            const messageId = messages.get(parent);
-            if (e.type === "message_stop") messages.delete(parent);
-            if (e.type === "content_block_start" && e.content_block.type === "tool_use")
-              c.emit({
-                kind: "message",
-                text: "",
-                partial: true,
-                tools: [{ id: e.content_block.id, name: e.content_block.name, input: e.content_block.input }],
-              });
-            if (e.type === "content_block_delta" && e.delta.type === "text_delta")
-              c.emit({
-                kind: "message",
-                text: e.delta.text,
-                partial: true,
-                tools: [],
-                ...(messageId ? { messageId, textMode: "delta" as const } : {}),
-              });
+            messages.stream(event);
           } else if (event.type === "assistant") {
             // /usage is a local native command; preserve its experimental structured report
             // without conflating session API cost with subscription allowance.
@@ -236,31 +215,7 @@ export class ClaudeDriver implements Driver {
                     ? "rate_limited"
                     : "harness_failed";
             if (privateUsage) continue;
-            const tools = event.message.content.flatMap((block) =>
-              block.type === "tool_use" ? [{ id: block.id, name: block.name, input: block.input }] : [],
-            );
-            // The pinned CLI emits one assistant frame per completed content block,
-            // not a full message snapshot. Tool/thinking blocks must not erase text.
-            const key = JSON.stringify([event.parent_tool_use_id, event.message.id]);
-            if (!completedFrames.has(event.uuid)) {
-              completedFrames.add(event.uuid);
-              completedText.set(
-                key,
-                (completedText.get(key) ?? "") +
-                  event.message.content.flatMap((b) => (b.type === "text" ? [b.text] : [])).join(""),
-              );
-            }
-            c.emit({
-              kind: "message",
-              messageId: event.message.id,
-              textMode: "snapshot",
-              text: completedText.get(key) ?? "",
-              partial: false,
-              model: event.message.model,
-              responseKind: "assistant",
-              ...(event.parent_tool_use_id ? { parentToolUseId: event.parent_tool_use_id } : {}),
-              tools,
-            });
+            messages.complete(event);
           } else if (event.type === "user") {
             if (privateUsage) continue;
             const content = event.message.content;
