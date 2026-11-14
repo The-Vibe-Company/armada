@@ -89,7 +89,7 @@ export interface ToolContext {
   runtimeCheckpoint?: RuntimeCheckpoint;
   runtimeSend?: RuntimeFollowup;
   measure?: import("./request-timing.ts").RequestTiming["measure"];
-  storedProvider?(target: ProviderTarget): Promise<Provider>;
+  storedProviders?: Partial<Record<SandboxProviderId, ToolContext["provider"]>>;
   templates?: TemplateService;
   skillDefaults?: SkillDefaultsService;
   applicationVault?: ApplicationVault;
@@ -661,16 +661,16 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
   const measure: NonNullable<ToolContext["measure"]> = context.measure ?? ((_phase, work) => work());
   const statusOf = async (sandboxId: string, promptId: string | undefined, stored = false): Promise<StatusReport> => {
     const found = await measure("sandbox_read", () => visible(sandboxId));
-    const useStored = stored && found.provider === "modal" && context.storedProvider !== undefined;
+    const storedProvider = stored ? context.storedProviders?.[found.provider] : undefined;
     const provider =
       found.status === "deleted" || isStatusReadFenced(found)
         ? null
-        : useStored
-          ? await context.storedProvider!(found)
+        : storedProvider
+          ? await storedProvider(found)
           : await context.provider(found);
     const result = await measure("state", () =>
       readStatus(provider, data.sandboxes, found, {
-        stored: useStored,
+        stored: storedProvider !== undefined,
         ...(promptId ? { promptId } : {}),
         now: context.now(),
       }),
@@ -1332,10 +1332,8 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     async (args) => {
       const found = await visible(args.id);
       if (found.status === "deleted") throw new ToolError("conflict", "Sandbox is deleted.");
-      const provider =
-        found.provider === "modal" && context.storedProvider
-          ? await context.storedProvider(found)
-          : await context.provider(found);
+      const storedProvider = context.storedProviders?.[found.provider];
+      const provider = storedProvider ? await storedProvider(found) : await context.provider(found);
       const page = await readLogs(provider, found.providerSandboxId, {
         ...(args.since_cursor ? { since_cursor: args.since_cursor } : {}),
         ...(args.conversation_id ? { conversation_id: args.conversation_id } : {}),

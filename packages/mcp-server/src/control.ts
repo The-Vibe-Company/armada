@@ -542,14 +542,14 @@ async function dispatch(
         ...(options.connections ? { connections: options.connections } : {}),
         data: options.data(scopedCaller),
         measure: (phase, work) => measureRequestPhase(options.timing, phase, work),
-        ...(options.storedProviderFor
+        storedProviders: options.storedProviderFor
           ? {
-              storedProvider: (target: ProviderTarget) =>
+              modal: (target) =>
                 measureRequestPhase(options.timing, "stored_provider", () =>
                   options.storedProviderFor!(target, scopedCaller),
                 ),
             }
-          : {}),
+          : {},
         provider: (target) =>
           measureRequestPhase(options.timing, "provider", () =>
             options.providers
