@@ -632,3 +632,31 @@ the receipt's prompt ID in `logs/read`. Replay the identical request ID/prompt
 without the two redundant fields: require the same receipt and no extra turn.
 A different model/effort must refuse without starting work. Do not allocate a
 sandbox just for this check; Boat is never included in staging acceptance.
+
+### Proving ordinary launch selection before cutover
+
+The existing coordinator checker accepts `--ordinary`. This requires
+`launch/options.boatRuntime.defaultPath:runtime` **before allocation**, then calls
+ordinary `sandbox/launch` without `runtimeVersion` or `boatRuntime` opt-in fields.
+It does not change a server setting. Missing/native defaults refuse without a
+launch; a native receipt or non-runtime history fails the existing proof checks.
+Timing output labels `launchPath:ordinary` so explicit opt-in evidence cannot be
+mistaken for evidence of the ordinary default path. Without this flag the existing
+explicit opt-in launch is unchanged.
+
+Once the coordinator has authorized a normal production server deployment with
+runtime selection, use existing credentials/golden/account, no new test resources:
+
+```sh
+ARMADA_RUNTIME_SMOKE=one_real_boat_launch bun scripts/check-boat-runtime.ts --ordinary --idle --workspace --usage --resume
+```
+
+Use `ARMADA_RUNTIME_HARNESS=claude` with an existing Claude account for its
+separately authorized check. Require idle readiness, first-send/follow-up answers,
+setup before inference, archived `source:armada-runtime`, usage/cost evidence,
+same-conversation recall under the new epoch and stopped history. The lifecycle
+still uses one allocation and one retained-machine activation, no automatic
+allocation retry. Add existing MCP/skills flags only with their real prerequisites.
+Boat is coordinator-only/on-demand in production, never staging/release acceptance.
+This checker mode is evidence tooling, not permission to flip defaults or remove
+the native runner; complete parity and the owner's cutover decision remain gates.
