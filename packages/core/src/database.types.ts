@@ -3285,6 +3285,92 @@ export type Database = {
           },
         ];
       };
+      otto_objective_messages: {
+        Row: {
+          id: string;
+          objective_id: string;
+          org_id: string;
+          owner_id: string;
+          body: string;
+          revision: number;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          objective_id: string;
+          org_id: string;
+          owner_id: string;
+          body: string;
+          revision?: number;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          objective_id?: string;
+          org_id?: string;
+          owner_id?: string;
+          body?: string;
+          revision?: number;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "otto_objective_messages_objective_id_org_id_owner_id_fkey";
+            columns: ["objective_id", "org_id", "owner_id"];
+            isOneToOne: false;
+            referencedRelation: "otto_objectives";
+            referencedColumns: ["id", "org_id", "owner_id"];
+          },
+        ];
+      };
+      otto_objectives: {
+        Row: {
+          id: string;
+          org_id: string;
+          owner_id: string;
+          repository: string;
+          request: string;
+          revision: number;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          org_id: string;
+          owner_id: string;
+          repository: string;
+          request: string;
+          revision?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          org_id?: string;
+          owner_id?: string;
+          repository?: string;
+          request?: string;
+          revision?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "otto_objectives_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "otto_objectives_owner_id_fkey";
+            columns: ["owner_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       otto_orphan_days: {
         Row: {
           org_id: string;
@@ -4601,6 +4687,8 @@ export type Org = Database["public"]["Tables"]["orgs"]["Row"];
 export type OttoEnginePreferenceRow = Database["public"]["Tables"]["otto_engine_preferences"]["Row"];
 export type OttoFactRow = Database["public"]["Tables"]["otto_facts"]["Row"];
 export type OttoGitHubPageRow = Database["public"]["Tables"]["otto_github_pages"]["Row"];
+export type OttoObjectiveMessageRow = Database["public"]["Tables"]["otto_objective_messages"]["Row"];
+export type OttoObjectiveRow = Database["public"]["Tables"]["otto_objectives"]["Row"];
 export type OttoOrphanDayRow = Database["public"]["Tables"]["otto_orphan_days"]["Row"];
 export type OttoResourceRow = Database["public"]["Tables"]["otto_resources"]["Row"];
 export type OttoTaskRow = Database["public"]["Tables"]["otto_tasks"]["Row"];
