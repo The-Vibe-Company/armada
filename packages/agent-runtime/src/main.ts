@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { chmod, mkdir, rm, writeFile } from "node:fs/promises";
-import { CODEX_ENDPOINT_ENV, parseCodexEndpoint } from "@armada/core";
+import { CODEX_ENDPOINT_ENV, OPENCODE_ENDPOINT_ENV, parseCodexEndpoint, parseOpenCodeEndpoint } from "@armada/core";
 import { runArtifactInstallMode } from "./artifact-cache.ts";
 import { configureClaudeEndpoint } from "./claude-endpoint.ts";
 import { configureCodexEndpoint } from "./codex-endpoint.ts";
@@ -158,6 +158,14 @@ async function main(dialout = false) {
     .filter((v) => v.length > 0)
     .sort((a, b) => b.length - a.length);
   const redact = createRedactor(secrets);
+  const opencodeConnection =
+    opencodeEnv[OPENCODE_ENDPOINT_ENV] && opencodeEnv.OPENCODE_API_KEY
+      ? {
+          harness: "opencode" as const,
+          endpoint: parseOpenCodeEndpoint(JSON.parse(opencodeEnv[OPENCODE_ENDPOINT_ENV]!)),
+          apiKey: opencodeEnv.OPENCODE_API_KEY,
+        }
+      : null;
   configureOpenCodeEndpoint(opencodeEnv);
   const journal = new Journal(`${config.root}/journal.sqlite`, redact);
   let lastAuth: string | undefined;
@@ -461,6 +469,10 @@ async function main(dialout = false) {
           }
         : {}),
       testModelConnection: async (harness, model, signal) => {
+        if (harness === "opencode") {
+          if (!opencodeConnection) throw Error("model_connection_test_denied");
+          return testModelConnection(opencodeConnection, model, signal);
+        }
         if (harness === "codex" && codexEndpoint && config.codexEnv.OPENAI_API_KEY)
           return testModelConnection(
             { harness, endpoint: codexEndpoint, apiKey: config.codexEnv.OPENAI_API_KEY },

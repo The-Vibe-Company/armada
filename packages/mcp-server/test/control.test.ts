@@ -2382,6 +2382,9 @@ test("CLI/API connection checks require the owner and current bound revision, ex
     let calls = 0,
       resolutions = 0;
     let receipt: unknown = { ok: false, status: 401, error: "provider_rejected", code: "invalid_api_key" };
+    let expectedHarness: "codex" | "opencode" = "codex";
+    let expectedSandboxId = "modal_probe";
+    let expectedModel = "deployment";
     options.providers = {
       resolve: async () => {
         resolutions++;
@@ -2389,7 +2392,7 @@ test("CLI/API connection checks require the owner and current bound revision, ex
           ...fakeBoat().provider,
           id: "modal" as const,
           get: async () => ({
-            id: "modal_probe",
+            id: expectedSandboxId,
             name: "probe",
             state: "ready" as const,
             providerState: "ready",
@@ -2397,7 +2400,7 @@ test("CLI/API connection checks require the owner and current bound revision, ex
           }),
           testModelConnection: async (request) => {
             calls++;
-            expect(request).toEqual({ sandboxId: "modal_probe", harness: "codex", model: "deployment" });
+            expect(request).toEqual({ sandboxId: expectedSandboxId, harness: expectedHarness, model: expectedModel });
             return receipt as import("@armada/core").ModelConnectionTestResult;
           },
         };
@@ -2460,6 +2463,38 @@ test("CLI/API connection checks require the owner and current bound revision, ex
     ).toBe(0);
     expect((await owner.run(args)).code).not.toBe(0);
     expect(calls).toBe(before);
+    expect(
+      (
+        await owner.run(
+          [
+            "creds",
+            "set",
+            "opencode",
+            "--name",
+            "Custom OpenCode",
+            "--base-url",
+            "https://example.com/v1",
+            "--models",
+            "chosen",
+          ],
+          { stdin: "opencode_key_placeholder" },
+        )
+      ).code,
+    ).toBe(0);
+    const openCodeAccount = (
+      await db.query<{ id: string }>("select id from credentials where owner_id=$1 and kind='opencode'", [STAN])
+    ).rows[0]!.id;
+    const openCodeSandbox = crypto.randomUUID();
+    expectedSandboxId = "modal_probe_opencode";
+    await db.query(
+      "insert into sandboxes(id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status,credential_id,credential_version) values($1,'modal',$2,$3,$4,$5,'opencode','ready',$6,1)",
+      [openCodeSandbox, expectedSandboxId, golden, org.id, STAN, openCodeAccount],
+    );
+    expectedHarness = "opencode";
+    expectedModel = "armada/chosen";
+    receipt = { ok: true, status: 200, error: null, code: null };
+    expect((await owner.run(["creds", "test", openCodeSandbox, "--model", expectedModel, "--json"])).code).toBe(0);
+    expect(calls).toBe(before + 1);
   });
 });
 

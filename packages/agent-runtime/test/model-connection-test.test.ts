@@ -59,6 +59,62 @@ test.each(["codex", "bearer", "api-key"])("runtime sends one tiny native-wire re
   expect(JSON.stringify(result)).not.toContain(key);
 });
 
+test.each([
+  { protocol: undefined, path: "/chat/completions", header: "authorization" },
+  { protocol: "openai", path: "/responses", header: "authorization" },
+  { protocol: "anthropic", path: "/messages", header: "x-api-key" },
+  { protocol: "azure", path: "/responses", header: "api-key" },
+] as const)("OpenCode checks its declared upstream model over $protocol wire", async ({ protocol, path, header }) => {
+  const connection: BoundModelConnection = {
+    harness: "opencode",
+    endpoint: {
+      version: 1,
+      baseUrl: protocol === "azure" ? "https://example.com/openai/v1" : "https://example.com/v1",
+      models: ["chosen"],
+      ...(protocol ? { protocol } : {}),
+    },
+    apiKey: "opencode_key",
+  };
+  let calls = 0;
+  const fetcher = async (url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+    calls++;
+    expect(String(url)).toBe(connection.endpoint.baseUrl + path);
+    expect(new Headers(init?.headers).get(header)).toBe(
+      header === "authorization" ? "Bearer opencode_key" : "opencode_key",
+    );
+    expect(init?.redirect).toBe("error");
+    const body = JSON.parse(String(init?.body));
+    expect(body.model).toBe("chosen");
+    expect(body).toEqual(
+      path === "/responses"
+        ? { model: "chosen", input: ".", max_output_tokens: 16, store: false }
+        : { model: "chosen", max_tokens: 1, messages: [{ role: "user", content: "." }] },
+    );
+    if (protocol === "anthropic") expect(new Headers(init?.headers).get("anthropic-version")).toBe("2023-06-01");
+    return Response.json(
+      path === "/responses"
+        ? { id: "response_id", object: "response", status: "completed" }
+        : protocol === "anthropic"
+          ? { id: "message_id", type: "message", role: "assistant", content: [] }
+          : {
+              id: "chat_id",
+              object: "chat.completion",
+              choices: [{ message: { role: "assistant", content: "reply" } }],
+            },
+    );
+  };
+  expect(await testModelConnection(connection, "armada/chosen", new AbortController().signal, fetcher)).toEqual({
+    ok: true,
+    status: 200,
+    error: null,
+    code: null,
+  });
+  await expect(
+    testModelConnection(connection, "armada/undeclared", new AbortController().signal, fetcher),
+  ).rejects.toThrow("model_connection_test_denied");
+  expect(calls).toBe(1);
+});
+
 test("provider status/codes survive but key-echoing bodies and unknown diagnostics do not", async () => {
   const key = randomUUID();
   const connection: BoundModelConnection = {
@@ -141,13 +197,14 @@ test("private test RPC is grant protected, refuses request destinations/builders
       requestId: "probe",
       result: { ok: true, status: 200, error: null, code: null },
     });
+    expect((await runner.handle(request({ harness: "opencode" }))).status).toBe(200);
     expect(journal.db.query("select count(*) as n from requests").get()).toEqual({ n: 0 });
     const builder = new Runner(journal, grant, { codex: driver, claude: driver }, undefined, undefined, undefined, {
       ...execution,
       credentialFreeBuilder: true,
     });
     expect((await builder.handle(request())).status).toBe(409);
-    expect(calls).toBe(1);
+    expect(calls).toBe(2);
   } finally {
     journal.close();
     rmSync(root, { recursive: true, force: true });

@@ -3,6 +3,7 @@ import {
   type CodexEndpoint,
   type ModelConnectionTestResult,
   modelConnectionErrorCode,
+  OPENCODE_CONNECTION_PROVIDER,
   type OpenCodeEndpoint,
   parseClaudeEndpoint,
   parseCodexEndpoint,
@@ -14,7 +15,7 @@ import { bounded } from "./deadline.ts";
 export type BoundModelConnection =
   | { harness: "codex"; endpoint: CodexEndpoint; apiKey: string }
   | { harness: "claude"; endpoint: ClaudeEndpoint; apiKey: string }
-  | { harness: "opencode"; endpoint: OpenCodeEndpoint & { protocol: "azure" }; apiKey: string };
+  | { harness: "opencode"; endpoint: OpenCodeEndpoint; apiKey: string };
 export type { ModelConnectionTestResult } from "@armada/core";
 
 /** One bounded native-wire check. Callers own authorization and network destination admission. */
@@ -32,17 +33,26 @@ export async function testModelConnection(
       : connection.harness === "opencode"
         ? parseOpenCodeEndpoint(connection.endpoint)
         : parseClaudeEndpoint(connection.endpoint);
-  if (connection.harness === "opencode" && (!("protocol" in endpoint) || endpoint.protocol !== "azure"))
-    throw Error("model_connection_test_denied");
-  const responses = connection.harness !== "claude";
-  const url = new URL(endpoint.baseUrl + (responses ? "/responses" : "/v1/messages"));
+  const openCode = connection.harness === "opencode" ? connection.endpoint : null;
+  const stripped = model.startsWith(`${OPENCODE_CONNECTION_PROVIDER}/`)
+    ? model.slice(OPENCODE_CONNECTION_PROVIDER.length + 1)
+    : model;
+  const upstreamModel = openCode?.models.includes(stripped) ? stripped : model;
+  if (openCode && !openCode.models.includes(upstreamModel)) throw Error("model_connection_test_denied");
+  const messages = connection.harness === "claude" || openCode?.protocol === "anthropic";
+  const responses =
+    !messages && (connection.harness === "codex" || openCode?.protocol === "openai" || openCode?.protocol === "azure");
+  const path = messages ? (openCode ? "/messages" : "/v1/messages") : responses ? "/responses" : "/chat/completions";
+  const url = new URL(endpoint.baseUrl + path);
   if (connection.harness === "codex" && "apiVersion" in endpoint && endpoint.apiVersion)
     url.searchParams.set("api-version", endpoint.apiVersion);
   const headers: Record<string, string> = { "content-type": "application/json" };
-  if (connection.harness === "codex" || ("auth" in endpoint && endpoint.auth === "bearer"))
+  if (openCode?.protocol === "azure") headers["api-key"] = connection.apiKey;
+  else if (openCode?.protocol === "anthropic") headers["x-api-key"] = connection.apiKey;
+  else if (connection.harness === "codex" || openCode || ("auth" in endpoint && endpoint.auth === "bearer"))
     headers.authorization = `Bearer ${connection.apiKey}`;
-  else headers[connection.harness === "opencode" ? "api-key" : "x-api-key"] = connection.apiKey;
-  if (connection.harness === "claude") headers["anthropic-version"] = "2023-06-01";
+  else headers["x-api-key"] = connection.apiKey;
+  if (messages) headers["anthropic-version"] = "2023-06-01";
   const controller = new AbortController();
   const abort = AbortSignal.any([signal, controller.signal]);
   let reader: Pick<ReadableStreamDefaultReader<Uint8Array>, "read" | "cancel"> | undefined;
@@ -57,8 +67,8 @@ export async function testModelConnection(
           signal: abort,
           body: JSON.stringify(
             responses
-              ? { model, input: ".", max_output_tokens: 16, store: false }
-              : { model, max_tokens: 1, messages: [{ role: "user", content: "." }] },
+              ? { model: upstreamModel, input: ".", max_output_tokens: 16, store: false }
+              : { model: upstreamModel, max_tokens: 1, messages: [{ role: "user", content: "." }] },
           ),
         });
         reader = response.body?.getReader();
@@ -88,7 +98,16 @@ export async function testModelConnection(
           typeof body.id === "string" &&
           (responses
             ? body.object === "response" && ["completed", "incomplete"].includes(String(body.status))
-            : body.type === "message" && body.role === "assistant" && Array.isArray(body.content));
+            : messages
+              ? body.type === "message" && body.role === "assistant" && Array.isArray(body.content)
+              : body.object === "chat.completion" &&
+                Array.isArray(body.choices) &&
+                body.choices.some(
+                  (choice) =>
+                    choice &&
+                    typeof choice === "object" &&
+                    (choice as { message?: { role?: unknown } }).message?.role === "assistant",
+                ));
         return { ok: valid, status: response.status, error: valid ? null : "invalid_response", code: null };
       })(),
       15000,

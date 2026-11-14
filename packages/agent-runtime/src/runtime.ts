@@ -207,7 +207,7 @@ export class Runner {
           this.active.size ||
           this.commands.size ||
           !this.execution.testModelConnection ||
-          !["claude", "codex"].includes(r.harness) ||
+          !["claude", "codex", "opencode"].includes(r.harness) ||
           typeof r.model !== "string" ||
           !r.model ||
           r.model.length > 200 ||

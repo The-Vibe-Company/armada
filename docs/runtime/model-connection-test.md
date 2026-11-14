@@ -12,8 +12,8 @@ An already bootstrapped Modal runtime accepts this authenticated protocol-1 RPC:
 ```
 
 Only the selected custom connection from the current private bootstrap is used.
-The RPC accepts no URL, key, arbitrary headers or prompt. Subscription and plain
-vendor-default credentials are not checked by this first primitive. Builders,
+The RPC accepts no URL, key, arbitrary headers or prompt. Subscription, OpenCode plan-key and plain vendor-default credentials are not
+checked by this primitive. Custom OpenCode connections are supported on Modal. Builders,
 checkpointed/busy runners and unsupported/unconfigured harnesses refuse it.
 The operation joins the runtime's in-flight command set so checkpoint waits
 for it. It creates no prompt, journal event or replay receipt; each invocation
@@ -22,7 +22,10 @@ is fresh and may incur a tiny provider charge. No automatic retry is made.
 Codex sends one Responses request (16-token output cap, no storage); Claude
 sends one Messages request (one-token cap) with its configured bearer or
 x-api-key mechanism. A valid incomplete Responses result counts as connectivity,
-not a completed answer. This does not prove harness tool/streaming compatibility.
+not a completed answer. Custom OpenCode connections use their declared protocol:
+chat completions, Responses or Messages, with the same output caps. The runtime
+removes the `armada/` model prefix only against the bound declared model list.
+This does not prove harness tool/streaming compatibility.
 The total deadline is 15 seconds, response body is capped at 16 KiB, redirects
 are forbidden, and caller cancellation aborts the request. JSON response shape
 is checked; an HTML 200 is not success.
@@ -100,8 +103,9 @@ must fail closed. No model key leaves the existing private bootstrap. The Models
 
 ## Models page
 
-Each active API-key account on Models offers **Test connection**. This is for
-custom endpoints only; subscription and vendor-default checks are not supported.
+Each active Claude/Codex API-key account and each custom OpenCode account with
+declared models on Models offers **Test connection**. This is for custom endpoints
+only; subscriptions, OpenCode plan keys and vendor-default checks are not supported.
 Open the dialog, enter the public UUID of your already-running Modal sandbox
 and the endpoint's deployment/model, then **Send tiny check**. Launch an idle
 sandbox with this account first if needed; the action never creates/resumes one.

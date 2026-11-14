@@ -5,6 +5,7 @@ import {
   goldenForSettings,
   isModelConnectionTestResult,
   MAX_SANDBOX_EXTENSION_TTL_SECONDS,
+  OPENCODE_ENDPOINT_ENV,
   parseMachineSizePolicy,
   VERSION,
 } from "@armada/core";
@@ -426,13 +427,15 @@ async function dispatch(
         "Connection checks require a running, bound Modal sandbox; no resume is performed.",
       );
     const harness = found.harness;
-    if (harness !== "claude" && harness !== "codex")
-      throw new VaultError("invalid", "Connection checks currently support Claude and Codex only.");
+    if (harness !== "claude" && harness !== "codex" && harness !== "opencode")
+      throw new VaultError("invalid", "Connection checks support Claude, Codex and custom OpenCode connections only.");
     const model = resolveModelChoice(harness, { model: required(body, "model") }).model;
     const credentials = launchCredentials(options.store, options.encryptionKey, undefined, options.modelAuth);
     const actor: GoldenActor = { userId: found.ownerId, orgId: found.orgId, role: "member" };
     const bound = await credentials.resolve(actor, found.harness, found.credentialId, found.credentialVersion);
-    if (!bound.env[found.harness === "codex" ? CODEX_ENDPOINT_ENV : CLAUDE_ENDPOINT_ENV])
+    const endpointEnv =
+      harness === "opencode" ? OPENCODE_ENDPOINT_ENV : harness === "codex" ? CODEX_ENDPOINT_ENV : CLAUDE_ENDPOINT_ENV;
+    if (!bound.env[endpointEnv])
       throw new VaultError("invalid", "This check supports custom endpoint connections only.");
     await credentials.assertTurn?.(actor, found.id, false);
     const provider = await options.providers.resolve(found, scoped);
