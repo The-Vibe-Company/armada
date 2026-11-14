@@ -1409,9 +1409,9 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
   tool(
     "runtime_resume",
     {
-      title: "Resume a checkpointed Boat runtime",
+      title: "Resume a checkpointed runtime",
       description:
-        "Explicitly activates the same stopped VM, verifies sealed local history/native thread, enrols a new epoch and admits one instruction in the existing conversation. Owner-only; stable request_id, no implicit retry of uncertain activation. Cached outcome is historical, not current machine state.",
+        "Activates the retained sandbox under a fresh epoch and verifies its sealed checkpoint. Continues the saved native conversation, or starts the first only from a verified empty journal. Owner-only; stable request_id, no implicit retry of uncertain activation. Cached outcome is historical, not current machine state.",
       input: {
         id,
         request_id: z.string().uuid(),
@@ -1427,7 +1427,11 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         status: z.enum(["queued", "running", "finished", "failed", "interrupted"]),
         resumed: z.literal(true),
         runtime: z.object({ kind: z.literal("armada"), epoch: z.string() }),
-        sourceCheckpoint: z.object({ epoch: z.string(), watermark: z.number().int().nonnegative() }),
+        sourceCheckpoint: z.object({
+          epoch: z.string(),
+          watermark: z.number().int().nonnegative(),
+          empty: z.literal(true).optional(),
+        }),
       },
       destructive: true,
     },
@@ -1605,7 +1609,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         "sandbox opens a conversation and later sends continue the latest one. To redirect a turn that is " +
         "still running, use steer. The turn runs with the model and effort chosen at launch; model and " +
         "reasoning_effort override them for this turn only. Experimental runtime follow-up requires request_id, " +
-        "an existing conversation; checkpointed stopped sandboxes wake automatically. Model/effort remain pinned to launch.",
+        "an empty ready sandbox, existing conversation, or verified empty checkpoint; stopped sandboxes wake automatically. Model/effort remain pinned to launch.",
       input: {
         id,
         request_id: z
