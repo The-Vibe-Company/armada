@@ -77,6 +77,7 @@ const PRIVATE_POST_PATHS = new Set([
   "golden/size-policy",
   "golden/create",
   "golden/build/status",
+  "golden/build/cancel",
   "golden/update",
   "golden/remove",
   "golden/retirement/dry-run",
@@ -211,7 +212,9 @@ export async function forwardControl(
       signal: AbortSignal.any([
         request.signal,
         AbortSignal.timeout(
-          ["golden/create", "golden/update", "golden/build/status"].includes(relative) ? 15_000 : 660_000,
+          ["golden/create", "golden/update", "golden/build/status", "golden/build/cancel"].includes(relative)
+            ? 15_000
+            : 660_000,
         ),
       ]),
     });

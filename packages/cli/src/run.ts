@@ -115,6 +115,7 @@ Usage:
                                            Create/update admit a durable job, then poll for up to --timeout
                                            seconds (default 60, max 600; 0 returns after admission).
                                            Disconnecting never resubmits or cancels the job.
+  armada golden build-cancel <job-id> [--org <org>] [--json]  Cancel your queued, never-started build
   armada golden build-status <job-id>      Read the authenticated durable build status
   armada golden build-status --idempotency-key <key> --org <org>
                                            Recover an uncertain admission using the saved key.
@@ -222,10 +223,13 @@ Usage:
   armada creds presets [--json]             List the same model connection providers as the dashboard
   armada creds connect <preset> --name NAME [--file PATH] [--org NAME]
                                            Provider key from stdin/file; custom providers take --models and --base-url
+                                           Azure models are resource deployment names; official Azure addresses are tested
+                                           with a tiny billable request per deployment. A failed check saves nothing.
   armada creds set <kind> [--org <name>] [--file <path>]
                                            Store a credential, encrypted; the value is read from stdin or a file
                                            Model accounts: --name NAME creates; --id UUID --expected-version N replaces
-                                           Codex: --base-url URL [--api-version VERSION]; key still comes from stdin/file
+                                           Codex: --base-url URL --models deployment,model [--api-version VERSION]
+                                           Key from stdin/file; Azure requires actual deployment names, not model catalog IDs
                                            Codex endpoints require Modal and the Responses API, not chat completions
                                            Claude: --base-url URL [--endpoint-auth bearer|api-key] (default bearer)
                                            Claude gateways require Modal and support Claude models only; key from stdin/file
@@ -680,6 +684,23 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
         body: JSON.stringify({ id: oneName(args.positionals), visibility, org: single(args, "--org") }),
       });
       io.out(`${JSON.stringify(result)}\n`);
+      return 0;
+    }
+    case "build-cancel": {
+      const auth = authOf(io, deps);
+      const client = await createArmadaApiClient({
+        env: auth.env,
+        fetch: deps.fetch ?? auth.fetch,
+        session: auth.session,
+      });
+      const job = await client.request<GoldenBuildStatus>("/api/v1/golden/build/cancel", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jobId: oneName(args.positionals), org: single(args, "--org") }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (flag(args, "--json")) io.out(JSON.stringify(job) + "\n");
+      else io.out(`Build ${job.jobId}: ${goldenBuildFailureText(job)}\n`);
       return 0;
     }
     case "build-status": {

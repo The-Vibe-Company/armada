@@ -1,4 +1,4 @@
-import { isModelConnectionTestResult } from "@armada/core";
+import { isModelConnectionTestResult, MODEL_ACCOUNT_WRITE_TIMEOUT_MS } from "@armada/core";
 import { type ArmadaApiOptions, ControlError, controlPost } from "./control.ts";
 import {
   type AccountScope,
@@ -49,7 +49,15 @@ const FEATURE = "named model accounts";
 const NOT_OFFERED = "This Armada server does not offer account usage yet.";
 
 export function createAccountControl(options: ArmadaApiOptions) {
-  const post = (route: string, body: object) => controlPost(options, `/api/v1/${route}`, body, FEATURE);
+  const post = (route: string, body: object) =>
+    controlPost(
+      route === ACCOUNT_ROUTES.set
+        ? { ...options, timeoutMs: options.timeoutMs ?? MODEL_ACCOUNT_WRITE_TIMEOUT_MS }
+        : options,
+      `/api/v1/${route}`,
+      body,
+      FEATURE,
+    );
 
   async function account(route: string, body: object): Promise<ModelAccount> {
     const payload = await post(route, body);

@@ -15,18 +15,36 @@ function data(baseUrl: string, key: string, apiVersion = "") {
   form.set("baseUrl", baseUrl);
   form.set("value", key);
   form.set("apiVersion", apiVersion);
+  form.set("customModels", "owner-deployment");
   return form;
 }
+
+test("custom Codex saves require explicit deployment/model names, including replacements", () => {
+  const form = data("https://resource.services.ai.azure.com/openai/v1", randomUUID());
+  for (const models of [null, "", " , \n "]) {
+    if (models === null) form.delete("customModels");
+    else form.set("customModels", models);
+    expect(customAccountValue("openai", form).ok).toBe(false);
+    form.set("connectionMode", "custom");
+    expect(replacementCodexAccountValue(form).ok).toBe(false);
+  }
+});
 
 test.each(["", "/responses"])(
   "dashboard composes a Foundry connection without losing its project path (%s)",
   (suffix) => {
     const key = randomUUID();
     const base = "https://resource.services.ai.azure.com/api/projects/project/openai/v1";
-    const result = customAccountValue("openai", data(base + suffix, key));
+    const form = data(base + suffix, key);
+    form.set("customModels", "owner-deployment, backup-deployment\nowner-deployment");
+    const result = customAccountValue("openai", form);
     expect(result).toEqual({
       ok: true,
-      value: JSON.stringify({ endpoint: { version: 1, baseUrl: base }, apiKey: key }),
+      value: JSON.stringify({
+        endpoint: { version: 1, baseUrl: base },
+        apiKey: key,
+        models: ["owner-deployment", "backup-deployment"],
+      }),
     });
   },
 );
@@ -85,7 +103,11 @@ test("Codex replacement requires a destination and refuses JSON pretending to be
   form.set("connectionMode", "custom");
   expect(replacementCodexAccountValue(form)).toEqual({
     ok: true,
-    value: JSON.stringify({ endpoint: { version: 1, baseUrl: "https://example.com/v1" }, apiKey: key }),
+    value: JSON.stringify({
+      endpoint: { version: 1, baseUrl: "https://example.com/v1" },
+      apiKey: key,
+      models: ["owner-deployment"],
+    }),
   });
 });
 

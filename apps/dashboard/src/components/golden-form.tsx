@@ -3,8 +3,17 @@
 import type { GoldenBuildStatus, SandboxProviderId } from "@armada/core";
 import { goldenBuildFailureText } from "@armada/core";
 import { CheckCircle2Icon, CircleAlertIcon, Loader2Icon, LockIcon, PlusIcon, Trash2Icon } from "lucide-react";
-import { type FormEvent, useActionState, useCallback, useEffect, useId, useRef, useState } from "react";
-import { buildGolden, goldenBuildStatus, recoverGoldenBuild } from "@/app/actions/goldens";
+import {
+  type FormEvent,
+  startTransition,
+  useActionState,
+  useCallback,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+} from "react";
+import { buildGolden, cancelGoldenBuild, goldenBuildStatus, recoverGoldenBuild } from "@/app/actions/goldens";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -97,16 +106,23 @@ function ScopedGoldenForm({
   const [admissionKey, setAdmissionKey] = useState("");
   const [observed, setObserved] = useState<GoldenBuildStatus | null>(null);
   const [pollError, setPollError] = useState("");
+  const [cancelling, setCancelling] = useState(false);
+  const cancelInFlight = useRef(false);
+  const statusReadEpoch = useRef(0);
   // The provider of the admitted job: a rebuild's is the stored golden's; a create's is what was submitted.
   const [admittedProvider, setAdmittedProvider] = useState<SandboxProviderId | null>(
     mode === "update" ? (provider ?? null) : null,
   );
   const refreshStatus = useCallback(async (jobId: string) => {
+    const epoch = statusReadEpoch.current;
     try {
-      setObserved(await goldenBuildStatus(jobId));
+      const next = await goldenBuildStatus(jobId);
+      if (epoch !== statusReadEpoch.current) return;
+      setObserved(next);
       setPollError("");
     } catch {
-      setPollError("Status unavailable. The build may still run; check this job again, do not resubmit.");
+      if (epoch === statusReadEpoch.current)
+        setPollError("Status unavailable. The build may still run; check this job again, do not resubmit.");
     }
   }, []);
   const jobId = observed?.jobId;
@@ -154,15 +170,21 @@ function ScopedGoldenForm({
     const deadline = Date.now() + 120_000;
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
+      if (cancelInFlight.current) {
+        if (Date.now() < deadline) timer = setTimeout(poll, 2000);
+        return;
+      }
+      const epoch = statusReadEpoch.current;
       try {
         const next = await goldenBuildStatus(jobId);
-        if (active) {
+        if (active && epoch === statusReadEpoch.current) {
           setObserved(next);
           setPollError("");
           if (Date.now() < deadline && ["queued", "running"].includes(next.state)) timer = setTimeout(poll, 2000);
-        }
+        } else if (active && Date.now() < deadline) timer = setTimeout(poll, 2000);
       } catch {
-        if (active) setPollError("Polling paused. Check this job again; do not resubmit.");
+        if (active && epoch === statusReadEpoch.current)
+          setPollError("Polling paused. Check this job again; do not resubmit.");
       }
     };
     timer = setTimeout(poll, 2000);
@@ -455,8 +477,44 @@ function ScopedGoldenForm({
             }
           />
           {observed && (
-            <Button type="button" variant="outline" onClick={() => void refreshStatus(observed.jobId)}>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={cancelling}
+              onClick={() => void refreshStatus(observed.jobId)}
+            >
               Check build status
+            </Button>
+          )}
+          {observed?.state === "queued" && (
+            <Button
+              type="button"
+              variant="outline"
+              disabled={cancelling}
+              onClick={() => {
+                if (cancelInFlight.current) return;
+                cancelInFlight.current = true;
+                statusReadEpoch.current++;
+                setCancelling(true);
+                const jobId = observed.jobId;
+                startTransition(async () => {
+                  try {
+                    const result = await cancelGoldenBuild(jobId, orgId);
+                    if (result.ok && result.build) {
+                      setObserved(result.build);
+                      setPollError("");
+                    } else if (!result.ok) setPollError(result.error);
+                  } catch {
+                    setPollError("Cancellation could not be confirmed. Check build status before trying again.");
+                  } finally {
+                    cancelInFlight.current = false;
+                    setCancelling(false);
+                  }
+                });
+              }}
+            >
+              {cancelling && <Loader2Icon className="animate-spin" aria-hidden />}
+              {cancelling ? "Cancelling…" : "Cancel queued build"}
             </Button>
           )}
           {observed && ["succeeded", "failed"].includes(observed.state) && (

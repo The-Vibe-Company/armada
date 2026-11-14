@@ -286,6 +286,48 @@ export class GoldenBuildJobs {
     // Do not decrypt payload for status: even service-side readers need no arbitrary setup text.
     return this.dto(job);
   }
+  /** Only the requesting owner may cancel work that has provably never started.
+   * Locking the same row as runOne makes cancellation and worker admission exclusive.
+   */
+  async cancel(userId: string, id: string, allowedOrgs: readonly string[]): Promise<GoldenBuildStatus> {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))
+      throw new GoldenError("not_found", "No such build.");
+    return this.transaction(async (sql) => {
+      const job = (
+        await sql.query<Job>(
+          `select j.* from public.golden_build_jobs j
+           join public.members m on m.org_id=j.org_id and m.user_id=$1
+           where j.id=$2 and j.owner_id=$1 and j.org_id=any($3::uuid[])
+             and (j.golden_id is null or exists(
+               select 1 from public.goldens g where g.id=j.golden_id and (g.visibility='org' or g.owner_id=$1)))
+           for update of j`,
+          [userId, id, "{" + allowedOrgs.join(",") + "}"],
+        )
+      ).rows[0];
+      if (!job) throw new GoldenError("not_found", "No such build.");
+      const reason =
+        "detail:Build cancelled by its owner before a builder started. Start a new build request when ready.";
+      if (job.state === "failed" && job.failure_reason === reason) return this.dto(job);
+      if (
+        job.state !== "queued" ||
+        job.phase !== "queued" ||
+        job.fence !== null ||
+        job.builder_id !== null ||
+        job.snapshot !== null
+      )
+        throw new GoldenError(
+          "conflict",
+          "This build has already started or needs recovery; cancellation cannot safely release its reservation. Check build status and ask an administrator to reconcile it.",
+        );
+      if (job.reservation_id) await sqlGoldenBackendSlots(sql).release(job.reservation_id);
+      await sql.query(
+        "update public.golden_build_jobs set state='failed',error_code='build_failed',failure_reason=$2,updated_at=now() where id=$1",
+        [job.id, reason],
+      );
+      return this.dto({ ...job, state: "failed", error_code: "build_failed", failure_reason: reason });
+    });
+  }
+
   private dto(job: Job, name?: string): GoldenBuildStatus {
     return {
       jobId: job.id,

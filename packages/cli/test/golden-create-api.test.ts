@@ -231,3 +231,49 @@ for (const state of ["succeeded", "queued"] as const) {
     expect(output).not.toContain(token);
   });
 }
+
+test("golden build-cancel sends only job and org through authenticated API and prints cancellation", async () => {
+  const jobId = "11111111-1111-4111-8111-111111111111";
+  const calls: { path: string; body: unknown; auth: string | null }[] = [];
+  let output = "";
+  const code = await run(
+    ["golden", "build-cancel", jobId, "--org", "org-id"],
+    {
+      out: (text) => {
+        output += text;
+      },
+      err: () => {},
+    },
+    {
+      auth: {
+        out: () => {},
+        err: () => {},
+        env: { ARMADA_TOKEN: token },
+        session: memorySessionStore(),
+        now: () => new Date(),
+        open: () => {},
+        fetch: async (input, init) => {
+          calls.push({
+            path: new URL(String(input)).pathname,
+            body: JSON.parse(String(init?.body)),
+            auth: new Headers(init?.headers).get("authorization"),
+          });
+          return Response.json({
+            jobId,
+            state: "failed",
+            phase: "queued",
+            errorCode: "build_failed",
+            failureReason: "detail:Build cancelled by its owner before a builder started.",
+            result: null,
+          });
+        },
+      },
+    },
+  );
+  expect(code).toBe(0);
+  expect(calls).toEqual([
+    { path: "/api/v1/golden/build/cancel", body: { jobId, org: "org-id" }, auth: "Bearer " + token },
+  ]);
+  expect(output).toContain("cancelled by its owner");
+  expect(output).not.toContain(token);
+});

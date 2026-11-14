@@ -1,5 +1,68 @@
 # Changelog
 
+## [2.30.0](https://github.com/The-Vibe-Company/armada/compare/v2.29.0...v2.30.0) (2026-11-14)
+
+
+### Features
+
+* **accounts:** show billing identity and safely switch retained runtimes ([#1635](https://github.com/The-Vibe-Company/armada/issues/1635)) ([a3510cc](https://github.com/The-Vibe-Company/armada/commit/a3510ccd8647c837c1ecc6f065a5786402097857))
+* **cli:** connect accounts with shared provider presets ([#1622](https://github.com/The-Vibe-Company/armada/issues/1622)) ([b5bbce5](https://github.com/The-Vibe-Company/armada/commit/b5bbce5245653bbc6a21f3004c0f0e5c4302e365))
+* **cli:** show GitHub connection and repository scope in doctor ([#1658](https://github.com/The-Vibe-Company/armada/issues/1658)) ([4a6f70d](https://github.com/The-Vibe-Company/armada/commit/4a6f70db70e60ed40094ae95948f49a65f6a9e88))
+* **docker:** accept queued prompts during sandbox startup ([#1682](https://github.com/The-Vibe-Company/armada/issues/1682)) ([a9b72e5](https://github.com/The-Vibe-Company/armada/commit/a9b72e5d9dec1a2e55b57b5d3326c00990dcc26d))
+* **golden:** cancel owned queued builds from CLI and dashboard ([#1703](https://github.com/The-Vibe-Company/armada/issues/1703)) ([700866b](https://github.com/The-Vibe-Company/armada/commit/700866b388e3dac78020d34f73a2c608f6a8d535))
+* **lifecycle:** pause idle native sandboxes safely ([#1605](https://github.com/The-Vibe-Company/armada/issues/1605)) ([fb18933](https://github.com/The-Vibe-Company/armada/commit/fb18933bafb45864aef5022f7ab02b70696e84f6))
+* **modal:** admit Claude through the common runtime ([#1665](https://github.com/The-Vibe-Company/armada/issues/1665)) ([2d3c260](https://github.com/The-Vibe-Company/armada/commit/2d3c260a68fdc827386505e1e2737f4d5ab2d64d))
+* **modal:** admit OpenCode through the common runtime ([#1670](https://github.com/The-Vibe-Company/armada/issues/1670)) ([b06a3c8](https://github.com/The-Vibe-Company/armada/commit/b06a3c869f7e7cd57fd491d160b319047588a1f0))
+* **modal:** prepare workspaces through enrolled runtime commands ([#1669](https://github.com/The-Vibe-Company/armada/issues/1669)) ([f3b5ee5](https://github.com/The-Vibe-Company/armada/commit/f3b5ee561cfd4fcd4d8c6b842274a143f1a9c6cf))
+* **modal:** route enrolled runtime control operations ([#1663](https://github.com/The-Vibe-Company/armada/issues/1663)) ([bd8933b](https://github.com/The-Vibe-Company/armada/commit/bd8933b22d086f94af99bc8bf87931fba50e7e41))
+* **modal:** share runtime subscription account ownership ([#1667](https://github.com/The-Vibe-Company/armada/issues/1667)) ([870b0c9](https://github.com/The-Vibe-Company/armada/commit/870b0c90d1296d66f2bf7ddb172d3da8b3227a9b))
+* **opencode:** support native Anthropic Messages accounts ([#1614](https://github.com/The-Vibe-Company/armada/issues/1614)) ([cd0136f](https://github.com/The-Vibe-Company/armada/commit/cd0136f3f97e615a3bb63e452cb56f28546ccb47))
+* **opencode:** support native Azure v1 accounts ([#1616](https://github.com/The-Vibe-Company/armada/issues/1616)) ([63077ca](https://github.com/The-Vibe-Company/armada/commit/63077caf9ade63289fbfcdce215c68b15f1b996c))
+* **opencode:** support native OpenAI Responses accounts ([#1625](https://github.com/The-Vibe-Company/armada/issues/1625)) ([c0f8d26](https://github.com/The-Vibe-Company/armada/commit/c0f8d26b851914d81fa86f3fecda1bd70bfdcf81))
+* **runtime:** support idle Boat launch and first send ([#1621](https://github.com/The-Vibe-Company/armada/issues/1621)) ([30260f9](https://github.com/The-Vibe-Company/armada/commit/30260f900090319fdf680e90737a6bc4f771d5a8))
+* **server:** expose the applied idle-pause delay ([#1607](https://github.com/The-Vibe-Company/armada/issues/1607)) ([2aa814c](https://github.com/The-Vibe-Company/armada/commit/2aa814c5347f7d9e5ae66510ef6757806f3e823f))
+* **smoke:** opt in to coordinator production Boat parity ([#1609](https://github.com/The-Vibe-Company/armada/issues/1609)) ([8354755](https://github.com/The-Vibe-Company/armada/commit/83547559ef8bdcef0680e541d495da6590c78529))
+* **smoke:** probe GitHub clone and push authorization parity ([#1617](https://github.com/The-Vibe-Company/armada/issues/1617)) ([6bf16f7](https://github.com/The-Vibe-Company/armada/commit/6bf16f7b93bdb7f96c517c3af7b436cf2fe60c4e))
+
+
+### Bug Fixes
+
+* **accounts:** validate Azure deployments before saving ([#1700](https://github.com/The-Vibe-Company/armada/issues/1700)) ([9048a54](https://github.com/The-Vibe-Company/armada/commit/9048a5433bd3060ca3f87e652615e0bdf6527259))
+* **boat:** retain mutable events across forward log cursors ([#1629](https://github.com/The-Vibe-Company/armada/issues/1629)) ([3573090](https://github.com/The-Vibe-Company/armada/commit/357309087623dc9b8f814254400d70438379c54f))
+* **clients:** preserve send identity across runtime wake ([#1584](https://github.com/The-Vibe-Company/armada/issues/1584)) ([a190bea](https://github.com/The-Vibe-Company/armada/commit/a190beac6fe8ac6308195affc1142856a50ba849))
+* **cli:** flag host daemon version skew in doctor ([#1661](https://github.com/The-Vibe-Company/armada/issues/1661)) ([ae78dc4](https://github.com/The-Vibe-Company/armada/commit/ae78dc421a41ed803d028f9c7eed832bd1810672))
+* **core:** distinguish Boat golden rebuild admission blockers ([#1696](https://github.com/The-Vibe-Company/armada/issues/1696)) ([3fa897f](https://github.com/The-Vibe-Company/armada/commit/3fa897fa7111a2a12c8737dd5b3b4cadaf392980))
+* **dashboard:** clarify Models fallback states ([#1642](https://github.com/The-Vibe-Company/armada/issues/1642)) ([9f3a2f3](https://github.com/The-Vibe-Company/armada/commit/9f3a2f3f38bef78a65e4cdf46115ba45aac088da))
+* **dashboard:** clarify provider choices and hide setup ghosts ([#1699](https://github.com/The-Vibe-Company/armada/issues/1699)) ([c3c0727](https://github.com/The-Vibe-Company/armada/commit/c3c0727f931b100310377bf73606de1953ea2c48))
+* **dashboard:** clarify Skills setup and read recovery ([#1659](https://github.com/The-Vibe-Company/armada/issues/1659)) ([843c0b6](https://github.com/The-Vibe-Company/armada/commit/843c0b6a1554395e2bf38c51f3b21ffc4e689b3f))
+* **dashboard:** clarify Templates fallback and recovery states ([#1680](https://github.com/The-Vibe-Company/armada/issues/1680)) ([32240d5](https://github.com/The-Vibe-Company/armada/commit/32240d5b1b4b2e28ca42566f2b8bbc1ea34974e0))
+* **dashboard:** clarify Tools read and recovery states ([#1644](https://github.com/The-Vibe-Company/armada/issues/1644)) ([9257fa0](https://github.com/The-Vibe-Company/armada/commit/9257fa0db278688772e7cf0ef03d2e6d6417d829))
+* **dashboard:** clarify Variables recovery and delivery limits ([#1649](https://github.com/The-Vibe-Company/armada/issues/1649)) ([dcb7993](https://github.com/The-Vibe-Company/armada/commit/dcb7993af6e302514076e3b1aa6d3aab441950ec))
+* **dashboard:** explain sandbox pause and pinned account kind ([#1697](https://github.com/The-Vibe-Company/armada/issues/1697)) ([ab2b33a](https://github.com/The-Vibe-Company/armada/commit/ab2b33aff4c76dab89787c00d84505a8044e2230))
+* **dashboard:** give opaque sandbox IDs readable list names ([#1636](https://github.com/The-Vibe-Company/armada/issues/1636)) ([33c58b5](https://github.com/The-Vibe-Company/armada/commit/33c58b50abaa13866adc560a101eb0270f318adb))
+* **dashboard:** guide Routines recovery and template setup ([#1686](https://github.com/The-Vibe-Company/armada/issues/1686)) ([f3fa3fd](https://github.com/The-Vibe-Company/armada/commit/f3fa3fd16a7d122446273df361cb3bbf88d1699d))
+* **dashboard:** name Docker hosts in the sandbox list ([#1631](https://github.com/The-Vibe-Company/armada/issues/1631)) ([6562212](https://github.com/The-Vibe-Company/armada/commit/6562212b4b0b65948588fb9d37516e3af9dc206a))
+* **dashboard:** share the launch surface across providers ([#1641](https://github.com/The-Vibe-Company/armada/issues/1641)) ([fdf64ae](https://github.com/The-Vibe-Company/armada/commit/fdf64ae8b5ebfade4fcaab3dbaf81f5b103864b2))
+* **dashboard:** shorten model-account provider selection ([#1624](https://github.com/The-Vibe-Company/armada/issues/1624)) ([ae95a77](https://github.com/The-Vibe-Company/armada/commit/ae95a7714ec6113a89a5f207199f99f6dba4aa5a))
+* **dashboard:** show cloud accounts and machines together ([#1619](https://github.com/The-Vibe-Company/armada/issues/1619)) ([8421f7a](https://github.com/The-Vibe-Company/armada/commit/8421f7ab18ba9964df60629844977a3881ae204e))
+* **deploy:** require Railway tokens and coalesce pending staging ([#1623](https://github.com/The-Vibe-Company/armada/issues/1623)) ([1184ddf](https://github.com/The-Vibe-Company/armada/commit/1184ddfd360aa7c7d99a8ab57294bd61608e8614))
+* **devx:** wait for paused sandbox wake when sending ([#1666](https://github.com/The-Vibe-Company/armada/issues/1666)) ([0349455](https://github.com/The-Vibe-Company/armada/commit/034945520054418a8cb43c87cdcaa92981948e1b))
+* **docker:** admit sends after accepted launch and prioritize stop ([#1668](https://github.com/The-Vibe-Company/armada/issues/1668)) ([27a315e](https://github.com/The-Vibe-Company/armada/commit/27a315e83908163b6260d991b4c8621a74496f81))
+* **docker:** distinguish GitHub runtime delivery failures ([#1650](https://github.com/The-Vibe-Company/armada/issues/1650)) ([2ee2056](https://github.com/The-Vibe-Company/armada/commit/2ee20562d96c430ba2e493e243920c31e11a2461))
+* **docker:** repair repository snapshot builds and report failures ([#1638](https://github.com/The-Vibe-Company/armada/issues/1638)) ([c6462cb](https://github.com/The-Vibe-Company/armada/commit/c6462cb56831fda3b500859bc678d70d9e0cdb98))
+* **docker:** return accepted launches before repository preparation ([#1645](https://github.com/The-Vibe-Company/armada/issues/1645)) ([39e6925](https://github.com/The-Vibe-Company/armada/commit/39e6925bf34b65ff83206926694395fe9b55bd4f))
+* **docker:** return launch conversations in queued send receipts ([#1690](https://github.com/The-Vibe-Company/armada/issues/1690)) ([a5da7b4](https://github.com/The-Vibe-Company/armada/commit/a5da7b4535a92ec1242f4e67d42aa1d9d2f1a9b5))
+* **docker:** use a buildx-compatible snapshot secret source ([#1651](https://github.com/The-Vibe-Company/armada/issues/1651)) ([ff381ce](https://github.com/The-Vibe-Company/armada/commit/ff381cefee2dfddcd9d6534d19ccae7a75cff1ce))
+* **docker:** use a GitHub-capable source deployment image ([#1657](https://github.com/The-Vibe-Company/armada/issues/1657)) ([2dd4f08](https://github.com/The-Vibe-Company/armada/commit/2dd4f0869335bf6522a88d184434588069f3a3d7))
+* **docker:** use the owner default model account when omitted ([#1640](https://github.com/The-Vibe-Company/armada/issues/1640)) ([0c625ca](https://github.com/The-Vibe-Company/armada/commit/0c625ca5cda60fea48221233341d57b8bda5fff9))
+* **opencode:** publish terminal answer snapshots and verify usage projection ([#1646](https://github.com/The-Vibe-Company/armada/issues/1646)) ([15afda9](https://github.com/The-Vibe-Company/armada/commit/15afda9029c204b72d6b33fa133c0a04d637a13d))
+* **release:** check environment configuration before publication ([#1637](https://github.com/The-Vibe-Company/armada/issues/1637)) ([ab17966](https://github.com/The-Vibe-Company/armada/commit/ab17966168b86f98bee4b90ca746960c4d9c25a9))
+* **smoke:** explain accounts matrix configuration failures ([#1678](https://github.com/The-Vibe-Company/armada/issues/1678)) ([edbb2d4](https://github.com/The-Vibe-Company/armada/commit/edbb2d4354b92abe154ac60aeca00b27f61af226))
+* **smoke:** keep accounts without deployments in the matrix ([#1685](https://github.com/The-Vibe-Company/armada/issues/1685)) ([3a567e6](https://github.com/The-Vibe-Company/armada/commit/3a567e608ce4e38483a57e45b272453fe342ede1))
+* **smoke:** measure turn polling and reconcile settled deletion ([#1611](https://github.com/The-Vibe-Company/armada/issues/1611)) ([0197015](https://github.com/The-Vibe-Company/armada/commit/01970155b8a270bfc323d2bb322b09c3cec8c68f))
+* **smoke:** reconcile fenced scoped turns and pending cleanup ([#1648](https://github.com/The-Vibe-Company/armada/issues/1648)) ([fee1b4a](https://github.com/The-Vibe-Company/armada/commit/fee1b4a43e403e713d5f39d0532b77113172e2c9))
+* **smoke:** report blocked Docker recall and usage probes ([#1689](https://github.com/The-Vibe-Company/armada/issues/1689)) ([5a5e6bf](https://github.com/The-Vibe-Company/armada/commit/5a5e6bf0991532712844e4fb2b829d2e57797a04))
+
 ## [2.29.0](https://github.com/The-Vibe-Company/armada/compare/v2.28.0...v2.29.0) (2026-11-13)
 
 

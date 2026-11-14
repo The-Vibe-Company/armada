@@ -181,11 +181,24 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
       }
     },
 
-    async upsertCredential(scope, ownerId, kind, valueEnc) {
+    async upsertCredential(scope, ownerId, kind, valueEnc, actorId) {
       if (kind !== "boat" && kind !== "modal" && kind !== "skillpack") {
         if (!sql.transaction) throw new VaultError("unavailable", "Credential writes require a transaction.");
         await sql.transaction(async (tx) => {
           await tx.query("select pg_advisory_xact_lock(hashtextextended($1, 0))", [ownerId]);
+          // A public legacy write carries its authenticated actor. Lock current org
+          // authority in this same mutation transaction, including after slow admission checks.
+          if (actorId !== undefined) {
+            if (scope === "user" && ownerId !== actorId)
+              throw new VaultError("forbidden", "Only the account owner can do that.");
+            if (scope === "org") {
+              const admin = await tx.query(
+                "select 1 from public.members where org_id=$1 and user_id=$2 and role='admin' for share",
+                [ownerId, actorId],
+              );
+              if (!admin.rows.length) throw new VaultError("forbidden", "Only an org admin can do that.");
+            }
+          }
           const found = await tx.query<{ id: string }>(
             "select id from public.credentials where scope=$1::public.credential_scope and owner_id=$2 and kind=$3::public.credential_kind and status <> 'deleted' for update",
             [scope, ownerId, kind],

@@ -98,6 +98,57 @@ describe("orgs and members", () => {
 });
 
 describe("credentials", () => {
+  test("legacy org account writes recheck locked authorization at persistence after validation", async () => {
+    await withVault(async ({ db, store, people }) => {
+      const org = await createOrg(store, people.stan, "Azure admission");
+      await db.query("insert into members(org_id,user_id,role) values($1,$2,'admin')", [org.id, people.ada]);
+      await setCredential(store, KEY, people.stan, {
+        scope: "org",
+        org: org.id,
+        kind: "openai",
+        value: "previous-account-key",
+      });
+      const before = (
+        await db.query("select id,value_enc,version from credentials where owner_id=$1 and kind='openai'", [org.id])
+      ).rows;
+      let checked = 0;
+      const gated: VaultStore = {
+        ...store,
+        upsertCredential: async (scope, owner, kind, sealed, actor) => {
+          // Deterministic interleaving after core's final read but before the real
+          // persistence transaction. No waits or concurrent process is needed.
+          await db.query("update members set role='member' where org_id=$1 and user_id=$2", [org.id, people.stan]);
+          return store.upsertCredential(scope, owner, kind, sealed, actor);
+        },
+      };
+      await expect(
+        setCredential(
+          gated,
+          KEY,
+          people.stan,
+          {
+            scope: "org",
+            org: org.id,
+            kind: "openai",
+            value: JSON.stringify({
+              endpoint: { version: 1, baseUrl: "https://resource.openai.azure.com/openai/v1" },
+              models: ["deployment"],
+              apiKey: "candidate-key",
+            }),
+          },
+          async () => {
+            checked++;
+          },
+        ),
+      ).rejects.toMatchObject({ code: "forbidden" });
+      expect(checked).toBe(1);
+      const after = (
+        await db.query("select id,value_enc,version from credentials where owner_id=$1 and kind='openai'", [org.id])
+      ).rows;
+      expect(after).toEqual(before);
+    });
+  });
+
   test("a credential is ciphertext in the database and comes back through the resolver", async () => {
     await withVault(async ({ db, store, people }) => {
       await createOrg(store, people.stan, "Vibe");
