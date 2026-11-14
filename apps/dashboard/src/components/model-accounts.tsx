@@ -126,13 +126,22 @@ function ConnectionTestDialog({
   orgId: string;
   choices: ConnectionTestChoices;
 }) {
+  const descriptionId = useId();
   return (
     <Dialog>
       <DialogTrigger asChild>
-        <Button variant="outline" size="sm" aria-label={`Test connection, ${account.name}`}>
+        <Button
+          variant="outline"
+          size="sm"
+          aria-label={`Test connection, ${account.name}`}
+          aria-describedby={descriptionId}
+        >
           Test connection
         </Button>
       </DialogTrigger>
+      <p id={descriptionId} className="mt-1 text-xs text-muted-foreground">
+        Custom endpoints only, using a running Modal sandbox. Standard vendor keys cannot be tested here.
+      </p>
       <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Test {account.name}</DialogTitle>
@@ -1328,7 +1337,7 @@ export function AddAccountDialog({
                 id={`${id}-provider`}
                 value={choice}
                 onChange={(event) => setChoice(event.target.value as AddChoice)}
-                aria-describedby={`${id}-provider-hint`}
+                aria-describedby={`${id}-provider-hint ${id}-availability`}
               >
                 <optgroup label="Subscriptions">
                   {SUBSCRIPTION_KINDS.map((value) => (
@@ -1350,6 +1359,17 @@ export function AddAccountDialog({
                 {preset ? ` · ${preset.hint}` : " using your subscription"}.
               </p>
             </div>
+            <p
+              id={`${id}-availability`}
+              className="rounded-md border bg-muted/30 p-3 text-sm"
+              data-connection-availability
+            >
+              {kind === "opencode"
+                ? "OpenCode runs on Modal only. Boat and Docker hosts are not supported. Connection testing is not available for OpenCode."
+                : preset?.models === "choose"
+                  ? "This custom connection requires Modal. It is not available on Boat or Docker hosts."
+                  : "With a standard vendor account, Codex and Claude Code run on Modal, Boat and Docker hosts. Custom endpoints require Modal."}
+            </p>
 
             {isAdmin && (
               <fieldset className="space-y-2">
@@ -1565,6 +1585,11 @@ export function HarnessAccounts({
         <h2 id={headingId} className="text-base font-semibold">
           {harnessLabel}
         </h2>
+        <p className="text-xs text-muted-foreground" data-harness-availability>
+          {harness === "opencode"
+            ? "Modal only. OpenCode is not available on Boat or Docker hosts. Connection testing is not available for OpenCode."
+            : "Standard vendor accounts work on Modal, Boat and Docker hosts. Custom endpoints require Modal; testing also requires a running Modal sandbox."}
+        </p>
         {accounts.length > 0 && <LaunchUses resolved={resolved} harnessLabel={harnessLabel} now={now} />}
       </div>
       {accounts.length === 0 && (
