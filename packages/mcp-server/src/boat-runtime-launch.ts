@@ -1,7 +1,8 @@
-import { type LaunchOptions, prepareLaunchWorkspace } from "@armada/core/server";
+import type { LaunchOptions } from "@armada/core/server";
 import { startBoatRuntime } from "@armada/provider-boat";
 import { boatRuntimeConfiguration } from "./boat-runtime-configuration.ts";
 import { createRuntimeLaunch, type RuntimeLaunchOptions } from "./runtime-launch.ts";
+import { runtimeWorkspace } from "./runtime-workspace.ts";
 
 /** Build policy once; choose it explicitly for a launch, never as a native fallback.
  * Manifest/origin are trusted server deployment inputs, not client parameters.
@@ -17,7 +18,7 @@ export function boatRuntimeLaunch(
   const { architecture, modelAuth } = options;
   return {
     async start(input) {
-      const { host, actor, sandbox, credentials, signal } = input;
+      const { host, actor, sandbox, credentials } = input;
       if (sandbox.boatRuntime !== true || host.id !== "boat") throw Error("runtime_selection_required");
       return startRuntime({
         input,
@@ -31,28 +32,7 @@ export function boatRuntimeLaunch(
             ...(modelAuth ? { modelAuth } : {}),
           }),
         bootstrap: () => (request) => startBoatRuntime(host, request),
-        extensions: (agent, epoch) => ({
-          prepareWorkspace: async (golden, progress, sleep) => {
-            await agent.workspaceHealth(epoch, signal);
-            const github = options.github
-              ? await options.github.prepareLaunch(
-                  { userId: actor.userId, orgs: [{ orgId: actor.orgId, role: actor.role }], via: "service" },
-                  sandbox.id,
-                )
-              : { status: "not_connected" as const, message: "GitHub is not configured." };
-            await prepareLaunchWorkspace(
-              host,
-              sandbox.providerSandboxId,
-              sandbox.id,
-              golden,
-              credentials.secrets,
-              progress,
-              sleep,
-              (request, step) => agent.workspaceExec(request, step, epoch, signal),
-            );
-            return github;
-          },
-        }),
+        extensions: (agent, epoch) => runtimeWorkspace(input, agent, epoch, options.github),
       });
     },
   };

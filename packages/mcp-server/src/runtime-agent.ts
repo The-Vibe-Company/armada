@@ -172,7 +172,7 @@ export function createRuntimeAgent(
         epoch,
       );
       if (health.ready !== true || health.generation !== epoch || health.workspaceVersion !== 1)
-        throw new Error("Boat runtime workspace setup requires updated runtime artifacts; no native fallback.");
+        throw new Error("Runtime workspace setup requires updated runtime artifacts; no native fallback.");
     },
     async workspaceExec(
       request: import("@armada/core").ExecRequest,

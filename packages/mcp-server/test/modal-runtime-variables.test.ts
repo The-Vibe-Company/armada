@@ -107,10 +107,15 @@ async function fixture(isolated = false, harness: "codex" | "claude" = "codex") 
         const selectedEnv = harness === "claude" ? plan.configuration.claudeEnv : plan.configuration.codexEnv;
         const key = harness === "claude" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY";
         expect(selectedEnv[key]).toBe(credentials.env[key]);
+        expect(plan.configuration.readableVariables.APP_REGION).toBe(selectedEnv.APP_REGION);
+        expect(plan.configuration.execEnv).not.toHaveProperty(key);
         expect(Reflect.get(plan.configuration, "mcp")).toEqual({ revision: "modal_runtime_empty_v1", servers: {} });
         starts.push(Object.fromEntries(Object.entries(selectedEnv).filter(([key]) => key === "APP_REGION")));
         return {
           epoch: "7",
+          async prepareWorkspace() {
+            return { status: "not_connected" as const };
+          },
           prompt: async () => ({ promptId: `prompt-${++prompts}`, conversationId: "conversation", status: "queued" }),
         };
       },

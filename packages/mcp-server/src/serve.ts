@@ -317,6 +317,7 @@ export async function startServer(
       serverUrl: config.publicUrl,
       manifest,
       architecture: manifest.architecture,
+      ...(runtimeGitHub ? { github: runtimeGitHub } : {}),
     });
   }
   // Docker placement is a separate, explicit API preview. Host polling remains
