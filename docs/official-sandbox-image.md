@@ -1,6 +1,6 @@
-# Official Docker sandbox image — release foundation
+# Official Docker sandbox image
 
-Issue #1528, slice 1. Registry: **GHCR**, package
+Issue #1528. Registry: **GHCR**, package
 `ghcr.io/the-vibe-company/armada-sandbox`. Only the release workflow publishes,
 only for a validated release tag, and only `linux/amd64`. PR CI never builds it.
 There is no `latest` alias: a release records `version` and `image@sha256:…`
@@ -28,20 +28,38 @@ artifacts live under `/opt/armada`; they are not yet wired to per-sandbox caches
   existing version tag's digest rather than replacing its image. Do not manually
   retag or delete a released image.
 
-## Subsequent slices / validation
+## Implementation and acceptance status
 
-Slice 2 must make normal launches use this pin, seed verified per-sandbox caches
-from the public artifacts, remove user image inputs, and use #1507's host pull
-work rather than duplicate it. Server container deployment must carry the same
-release pin (release binaries already do; source-built server images do not).
-Slices 3–4 own snapshot version metadata and the explicit rebuild offer. They
-must leave old snapshots usable. #1464 owns repository preparation, not this image.
+The release image, normal launch policy, snapshot provenance and explicit rebuild
+flow are implemented. Do not restore the superseded snapshot catalog/UI branches:
+version recording was consolidated into #1497, and #1574 added the update offer.
 
-Coordinator after release: inspect the recorded GHCR digest and architecture;
-anonymously pull it on the owner's host, check UID1000 workspace ownership and
-Git/gh/Python/build tools, and verify no checkout/secrets. Full no-input launch
-and snapshot update acceptance require the later slices. No provider allocation,
-publishing, deployment or migration is performed by this change's local checks.
+| Requirement | Implementation / operator reference |
+| --- | --- |
+| Release-only, immutable official image | `images/sandbox/Dockerfile`, `.github/workflows/release.yml`, `packages/core/src/official-sandbox-image.ts` |
+| No normal user image selection | Normal launch policy below; [source-deployment compatibility](docker-staging-image-compatibility.md) |
+| Snapshot records and lists its built-on version | [Host-local snapshots](docker-snapshots.md), including migration prerequisites |
+| Dashboard and CLI offer an explicit rebuild | [Updating an older snapshot](docker-snapshots.md#updating-an-older-snapshot-1528) |
+
+These paths are not evidence of deployed acceptance. After a publishing release,
+the coordinator must verify on the owner's host:
+
+1. Inspect the release's recorded GHCR digest and `linux/amd64` architecture;
+   confirm anonymous pull, UID 1000 workspace ownership, tools and absence of
+   checkout/secrets in the bare image.
+2. Launch **Armada default** without an image input and confirm that the admitted
+   image matches the deployed server's release pin, not the client's version.
+   Use the existing [real-host lifecycle check](docker-snapshots.md#coordinators-one-real-host-acceptance-check)
+   for snapshot build/launch evidence; do not substitute assistant claims.
+3. Keep a ready snapshot built on an older stable version. Confirm its built-on
+   version and update offer in the dashboard and CLI. Explicitly rebuild it and
+   confirm a new snapshot uses the deployed version while the old one still
+   launches. Nothing should rebuild automatically on upgrade.
+
+Staging acceptance covers owner-enabled Modal and Docker probes only; Boat is
+not part of the release gate. Any Boat production verification is coordinator-only
+and separate from this Docker image acceptance. Workers do not publish, deploy,
+apply migrations or operate the owner's host.
 
 ## Slice 2: normal launch policy
 
