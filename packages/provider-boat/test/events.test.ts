@@ -326,9 +326,21 @@ test.each([
 ] as const)(
   "forward cursor observes an in-place terminal prompt and drains later answers (limit=%s, maxBytes=%s)",
   async (limit, maxBytes) => {
-    const nativePrompt = { ...prompt, data: { ...prompt.data, status: "running" } };
+    const nativePrompt = { ...prompt, id: "prompt-event-row", data: { ...prompt.data, status: "running" } };
     const nativePartial = { ...partial, data: { ...partial.data } };
-    const history = [nativePrompt, nativePartial] as (typeof prompt | typeof tools | typeof partial)[];
+    // Force the active turn behind multiple physical pages, as on a reused sandbox.
+    // Event row IDs deliberately differ from the prompt receipt's task ID.
+    const history = [
+      ...Array.from({ length: 201 }, (_, i) => ({
+        ...prompt,
+        id: `old-event-${i}`,
+        timestamp: prompt.timestamp - 202 + i,
+        taskId: `old-prompt-${i}`,
+        data: { ...prompt.data, status: "finished" },
+      })),
+      nativePrompt,
+      nativePartial,
+    ] as (typeof prompt | typeof tools | typeof partial)[];
     const queries: URLSearchParams[] = [];
     const provider = createBoatProvider({
       apiKey: KEY,
@@ -376,14 +388,24 @@ test.each([
       conversationId: "conv_1",
     });
     let running = await provider.events({ sandboxId: ID, limit, maxBytes });
-    expect(running.events[0]).toMatchObject({ promptId: receipt.promptId, kind: "prompt", status: "running" });
-    while (running.hasMore)
+    const initial = [...running.events];
+    while (running.hasMore) {
       running = await provider.events({
         sandboxId: ID,
         ...(running.cursor ? { cursor: running.cursor } : {}),
         limit,
         maxBytes,
       });
+      initial.push(...running.events);
+    }
+    expect(initial).toContainEqual(
+      expect.objectContaining({
+        id: nativePrompt.id,
+        promptId: receipt.promptId,
+        kind: "prompt",
+        status: "running",
+      }),
+    );
     // The row's timestamp/id stay put. A native timestamp cursor cannot see this edit.
     nativePrompt.data.status = "finished";
     nativePartial.data.content = "SMOKE_OK";
@@ -403,7 +425,7 @@ test.each([
       if (!result.hasMore) break;
     }
     expect(observed).toMatchObject([
-      { id: prompt.id, promptId: receipt.promptId, kind: "prompt", status: "finished", text: prompt.data.prompt },
+      { id: nativePrompt.id, promptId: receipt.promptId, kind: "prompt", status: "finished", text: prompt.data.prompt },
       { id: partial.id, promptId: receipt.promptId, kind: "message", text: "SMOKE_OK", partial: false },
       { id: "newest", promptId: receipt.promptId, kind: "message", text: "newest" },
     ]);
