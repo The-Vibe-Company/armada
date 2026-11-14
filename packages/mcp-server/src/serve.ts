@@ -634,7 +634,7 @@ export async function startServer(
             otto.route,
             createOttoProofApi(
               ottoSql ?? sql,
-              otto.scope,
+              otto.scopes,
               (request) =>
                 authenticateCaller(request.headers.get("authorization"), {
                   store: authStore,
