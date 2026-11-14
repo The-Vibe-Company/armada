@@ -68,23 +68,29 @@ async function SandboxesContent({ searchParams }: Props) {
   const filters = parseSandboxFilters(await searchParams);
   const supabase = await createClient();
   const selected = await selectedOrganization();
-  const [{ rows, total, inventoryTotal, skipped, facets }, directory, setup, hostRead] = await Promise.all([
-    listSandboxes(supabase, filters, viewer.id),
-    listMemberships(supabase, viewer.id)
-      .then((items) => items.filter((item) => item.org.id === selected?.org.id))
-      .then((memberships) =>
-        memberDirectory(
-          supabase,
-          memberships.map((item) => item.org.id),
-        ),
-      ),
-    selected ? readProviderSetup(selected.org.id) : null,
-    readSelectedDockerHosts(),
-  ]);
-  const [costs, hostNames] = await Promise.all([
-    listSandboxCosts(supabase, rows),
+  const inventory = listSandboxes(supabase, filters, viewer.id);
+  const hosts = readSelectedDockerHosts();
+  // Enrich rows as soon as their actual dependencies resolve, not after unrelated setup/directory reads.
+  const costsRead = inventory.then(({ rows }) => listSandboxCosts(supabase, rows));
+  const namesRead = Promise.all([inventory, hosts]).then(([{ rows }, hostRead]) =>
     listSandboxHostNames(supabase, rows, hostRead.state === "ready" ? hostRead.list : null),
-  ]);
+  );
+  const [{ rows, total, inventoryTotal, skipped, facets }, directory, setup, hostRead, costs, hostNames] =
+    await Promise.all([
+      inventory,
+      listMemberships(supabase, viewer.id)
+        .then((items) => items.filter((item) => item.org.id === selected?.org.id))
+        .then((memberships) =>
+          memberDirectory(
+            supabase,
+            memberships.map((item) => item.org.id),
+          ),
+        ),
+      selected ? readProviderSetup(selected.org.id) : null,
+      hosts,
+      costsRead,
+      namesRead,
+    ]);
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const now = new Date();
   const filtered = hasSandboxFilters(filters);
