@@ -36,6 +36,9 @@ const DESCRIPTION = (
  * Armada to install skills, so it has its own entry.
  */
 export default async function SkillsPage() {
+  // Template usage is independent of the resource list. Settle speculative failures so
+  // the resource's unavailable/no-org fallback still takes precedence.
+  const templatesRead = Promise.allSettled([listSelectedTemplates()]);
   const [selected, list] = await Promise.all([selectedOrganization(), readSelectedSkillpackKeys()]);
   const header = <PageHeader title={TITLE} description={DESCRIPTION} />;
 
@@ -91,7 +94,9 @@ export default async function SkillsPage() {
       </>
     );
 
-  const templates = await listSelectedTemplates();
+  const [templateResult] = await templatesRead;
+  if (templateResult.status === "rejected") throw templateResult.reason;
+  const templates = templateResult.value;
   return (
     <>
       <SkillpackKeyView
