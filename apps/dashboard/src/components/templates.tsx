@@ -684,7 +684,7 @@ function Preset({ target }: { target: TemplateLaunchTarget }) {
       key: "environment",
       icon: <LayersIcon />,
       label: "Snapshot",
-      text: `${target.goldenName ?? "Unavailable"} on ${target.definition.provider === "docker" ? "Docker" : PROVIDER_LABELS[target.definition.provider]}`,
+      text: `${target.goldenName ?? "Unavailable"} on ${PROVIDER_LABELS[target.definition.provider]}`,
     },
     { key: "agent", icon: <CpuIcon />, label: "Agent", text: target.agent },
     ...(target.definition.skills.length

@@ -5,9 +5,9 @@ import {
   isRecord,
   isSandboxProvider,
   normalizeGitHubGoldenConfig,
+  SANDBOX_PLACEMENT_LABELS as PROVIDER_LABELS,
   parseGoldenConfig,
   parseGoldenName,
-  SANDBOX_PROVIDERS,
   type SandboxProviderId,
 } from "@armada/core";
 import type { GoldenCapabilities } from "./control.ts";
@@ -16,9 +16,8 @@ import type { Tone } from "./status-tone.ts";
 /** One repository row of the golden form, as typed. */
 export type RepoRow = { url: string; branch: string; dir: string; history?: string };
 
-/** The backends a golden can be built on, in the order the form offers them. */
-export const GOLDEN_PROVIDERS = SANDBOX_PROVIDERS;
-export const PROVIDER_LABELS: Record<SandboxProviderId, string> = { boat: "Boat", modal: "Modal" };
+export { SANDBOX_PROVIDERS as GOLDEN_PROVIDERS } from "@armada/core";
+export { PROVIDER_LABELS };
 
 /** The fields of the golden form, as strings, before any check. */
 export type GoldenFormFields = {
