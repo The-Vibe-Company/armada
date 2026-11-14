@@ -12,6 +12,9 @@ test("nested onboarding help is focused and performs no authenticated or secret 
     "creds import claude",
     "creds import codex",
     "creds set",
+    "creds presets",
+    "creds connect",
+    "creds test",
     "creds list",
     "creds rename",
     "creds default",
@@ -98,6 +101,8 @@ test("help detection leaves malformed operations and literal payloads to their p
     ["creds", "remove", "--org", "-h"],
     ["creds", "import", "claude", "--file", "-h"],
     ["creds", "import", "--", "--help"],
+    ["creds", "connect", "openai", "--help"],
+    ["creds", "test", "--model", "-h"],
     ["constructor", "--help"],
     ["toString", "-h"],
   ])
