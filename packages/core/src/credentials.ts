@@ -68,11 +68,7 @@ export function toHarnessCredentials(resolved: ResolvedCredentials, github?: Git
 
 /** Replaces every secret in `text`, so command output and error messages are safe to show. */
 export function redact(text: string, secrets: readonly string[]): string {
-  let out = redactKnownTokens(text);
-  for (const secret of [...secrets].sort((a, b) => b.length - a.length)) {
-    if (secret !== "") out = out.split(secret).join("***");
-  }
-  return out;
+  return redactKnownTokens(text, secrets);
 }
 
 function authJsonSecrets(value: string): string[] {
